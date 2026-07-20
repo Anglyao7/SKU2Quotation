@@ -1,0 +1,317 @@
+name: ai-trade-cloud-local
+
+x-image-build: &image-build
+  context: .
+  dockerfile: apps/api/Dockerfile
+  args:
+    ATC_RELEASE: local-compose
+    ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:-local}
+    ATC_MIGRATION_HEAD: "20260720_0021"
+    ATC_CONFIG_VERSION: local-compose-v1
+
+x-runtime-environment: &runtime-environment
+  APP_ENV: development
+  ATC_PERSISTENCE_MODE: postgresql
+  ATC_CONFIG_VERSION: local-compose-v1
+  AUTO_MIGRATE: "false"
+  SEED_DEMO_DATA: "false"
+  DATABASE_URL: postgresql+psycopg://atc_app:${ATC_APP_DB_PASSWORD:-atc-local-app}@postgres:5432/ai_trade_cloud
+  AUTH_DATABASE_URL: postgresql+psycopg://atc_auth:${ATC_AUTH_DB_PASSWORD:-atc-local-auth}@postgres:5432/ai_trade_cloud
+  AUTH_PROFILE: local_fake
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-atc-local-jwt-secret-not-for-staging}
+  AUTH_TOKEN_PEPPER: ${AUTH_TOKEN_PEPPER:-atc-local-token-pepper-not-for-staging}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8000}
+  PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
+  OBJECT_STORAGE_BACKEND: s3
+  OBJECT_STORAGE_BUCKET: atc-local-files
+  OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
+  OBJECT_STORAGE_REGION: us-east-1
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-atclocal}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-atc-local-minio-password}
+  FILE_SCANNER_PROFILE: clamav
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: "3310"
+  FILE_WORKER_INLINE: "false"
+  OUTBOX_PUBLISHER_PROFILE: rabbitmq
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:-atc_local}:${RABBITMQ_PASSWORD:-atc-local-rabbitmq}@rabbitmq:5672/atc
+  OUTBOX_EXCHANGE: atc.domain-events
+  PRODUCT_EVENT_QUEUE: atc.product-knowledge-projector-v1
+  RABBITMQ_QUEUE_TYPE: quorum
+  RABBITMQ_DELIVERY_LIMIT: "5"
+  RABBITMQ_DEAD_LETTER_EXCHANGE: atc.dead-letter
+  RABBITMQ_DEAD_LETTER_QUEUE: atc.product-knowledge-projector-v1.dlq
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.2-pg16-bookworm
+    environment:
+      POSTGRES_DB: ai_trade_cloud
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-atc-local-postgres-admin}
+    ports:
+      - 127.0.0.1:${ATC_POSTGRES_PORT:-55432}:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_trade_cloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [data]
+
+  redis:
+    image: redis:7.4.9-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-atc-local-redis}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-atc-local-redis}
+    ports:
+      - 127.0.0.1:${ATC_REDIS_PORT:-56379}:6379
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [data]
+
+  rabbitmq:
+    image: rabbitmq:4.1.8-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-atc_local}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-atc-local-rabbitmq}
+      RABBITMQ_DEFAULT_VHOST: atc
+    ports:
+      - 127.0.0.1:${ATC_RABBITMQ_PORT:-5672}:5672
+      - 127.0.0.1:${ATC_RABBITMQ_MANAGEMENT_PORT:-15672}:15672
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [data]
+
+  minio:
+    image: atc-minio-local:RELEASE.2025-10-15T17-29-55Z
+    build:
+      context: .
+      dockerfile: infra/images/minio/Dockerfile
+      args:
+        MINIO_VERSION: RELEASE.2025-10-15T17-29-55Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-atclocal}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-atc-local-minio-password}
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - 127.0.0.1:${ATC_MINIO_PORT:-59000}:9000
+      - 127.0.0.1:${ATC_MINIO_CONSOLE_PORT:-59001}:9001
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [data]
+
+  clamav:
+    image: clamav/clamav:1.5.2
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping=1 --wait=30 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 35s
+      start_period: 120s
+      retries: 10
+    restart: unless-stopped
+    networks: [data, egress]
+
+  db-bootstrap:
+    image: atc-migration-local:${ATC_COMMIT_SHA:-local}
+    build:
+      <<: *image-build
+      target: migration
+    command: ["python", "-m", "scripts.bootstrap_postgres_roles"]
+    environment:
+      ATC_POSTGRES_ADMIN_URL: postgresql+psycopg://postgres:${POSTGRES_ADMIN_PASSWORD:-atc-local-postgres-admin}@postgres:5432/ai_trade_cloud
+      ATC_MIGRATION_DB_PASSWORD: ${ATC_MIGRATION_DB_PASSWORD:-atc-local-migration}
+      ATC_APP_DB_PASSWORD: ${ATC_APP_DB_PASSWORD:-atc-local-app}
+      ATC_AUTH_DB_PASSWORD: ${ATC_AUTH_DB_PASSWORD:-atc-local-auth}
+      ATC_WORKER_DB_PASSWORD: ${ATC_WORKER_DB_PASSWORD:-atc-local-worker}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [data]
+
+  db-migrate:
+    image: atc-migration-local:${ATC_COMMIT_SHA:-local}
+    build:
+      <<: *image-build
+      target: migration
+    environment:
+      DATABASE_URL: postgresql+psycopg://atc_migration:${ATC_MIGRATION_DB_PASSWORD:-atc-local-migration}@postgres:5432/ai_trade_cloud
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    restart: "no"
+    networks: [data]
+
+  db-grants:
+    image: atc-migration-local:${ATC_COMMIT_SHA:-local}
+    build:
+      <<: *image-build
+      target: migration
+    command: ["python", "-m", "scripts.grant_runtime_roles"]
+    environment:
+      ATC_POSTGRES_OWNER_URL: postgresql+psycopg://atc_migration:${ATC_MIGRATION_DB_PASSWORD:-atc-local-migration}@postgres:5432/ai_trade_cloud
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    networks: [data]
+
+  dependency-bootstrap:
+    image: atc-migration-local:${ATC_COMMIT_SHA:-local}
+    build:
+      <<: *image-build
+      target: migration
+    command: ["python", "-m", "scripts.bootstrap_local_dependencies"]
+    environment:
+      OBJECT_STORAGE_BUCKET: atc-local-files
+      OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
+      OBJECT_STORAGE_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-atclocal}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-atc-local-minio-password}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-atc_local}:${RABBITMQ_PASSWORD:-atc-local-rabbitmq}@rabbitmq:5672/atc
+      OUTBOX_EXCHANGE: atc.domain-events
+      PRODUCT_EVENT_QUEUE: atc.product-knowledge-projector-v1
+      RABBITMQ_QUEUE_TYPE: quorum
+      RABBITMQ_DELIVERY_LIMIT: "5"
+      RABBITMQ_DEAD_LETTER_EXCHANGE: atc.dead-letter
+      RABBITMQ_DEAD_LETTER_QUEUE: atc.product-knowledge-projector-v1.dlq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: "no"
+    networks: [data]
+
+  api:
+    image: atc-api-local:${ATC_COMMIT_SHA:-local}
+    build:
+      <<: *image-build
+      target: api
+    environment:
+      <<: *runtime-environment
+      SEED_DEMO_DATA: "true"
+    ports:
+      - 127.0.0.1:${ATC_API_PORT:-8000}:8000
+    depends_on:
+      db-grants:
+        condition: service_completed_successfully
+      dependency-bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [app, data]
+
+  file-worker:
+    image: atc-worker-local:${ATC_COMMIT_SHA:-local}
+    build:
+      <<: *image-build
+      target: worker
+    command: ["python", "-m", "scripts.run_file_worker", "--tenant-id", "00000000-0000-0000-0000-000000000002"]
+    environment:
+      <<: *runtime-environment
+      DATABASE_URL: postgresql+psycopg://atc_worker:${ATC_WORKER_DB_PASSWORD:-atc-local-worker}@postgres:5432/ai_trade_cloud
+      WORKER_ID: atc-local-file-worker
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [data]
+
+  outbox-relay:
+    image: atc-worker-local:${ATC_COMMIT_SHA:-local}
+    build:
+      <<: *image-build
+      target: worker
+    command: ["python", "-m", "scripts.run_outbox_relay", "--tenant-id", "00000000-0000-0000-0000-000000000002"]
+    environment:
+      <<: *runtime-environment
+      DATABASE_URL: postgresql+psycopg://atc_worker:${ATC_WORKER_DB_PASSWORD:-atc-local-worker}@postgres:5432/ai_trade_cloud
+      OUTBOX_RELAY_ID: atc-local-outbox-relay
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [data]
+
+  product-event-consumer:
+    image: atc-worker-local:${ATC_COMMIT_SHA:-local}
+    build:
+      <<: *image-build
+      target: worker
+    command: ["python", "-m", "scripts.run_product_event_consumer"]
+    environment:
+      <<: *runtime-environment
+      DATABASE_URL: postgresql+psycopg://atc_worker:${ATC_WORKER_DB_PASSWORD:-atc-local-worker}@postgres:5432/ai_trade_cloud
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [data]
+
+  web:
+    image: atc-web-local:${ATC_COMMIT_SHA:-local}
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /
+    ports:
+      - 127.0.0.1:${ATC_WEB_PORT:-5173}:8080
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks: [app]
+
+networks:
+  app:
+  data:
+    internal: true
+  egress:
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+  minio-data:
+  clamav-data:

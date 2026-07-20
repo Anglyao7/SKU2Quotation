@@ -1,0 +1,505 @@
+export interface AuthUser {
+  id: string;
+  displayName: string;
+  email?: string;
+  isPlatformAdmin: boolean;
+}
+
+export interface AuthWorkspaceContext {
+  tenantId?: string;
+  membershipId?: string;
+  tenantName?: string;
+  tenantSlug?: string;
+  defaultWorkspace?: string;
+}
+
+export interface MembershipSummary {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  tenantSlug: string;
+  status: string;
+}
+
+export interface AuthTokenData {
+  accessToken: string;
+  expiresIn: number;
+  csrfToken: string;
+  sessionId: string;
+  requiresTenantSelection: boolean;
+  user: AuthUser;
+  context: AuthWorkspaceContext;
+}
+
+export interface CurrentUser {
+  user: AuthUser;
+  context: AuthWorkspaceContext;
+  memberships: MembershipSummary[];
+}
+
+export interface PermissionSet {
+  membershipId: string;
+  permissionVersion: number;
+  permissions: string[];
+}
+
+export type ImportJobStatus = "scanning" | "parsing" | "needs_review" | "published" | "failed";
+
+export interface ImportJob {
+  id: string;
+  filename: string;
+  supplier: string;
+  detectedType: string;
+  status: ImportJobStatus;
+  progress: number;
+  products: number;
+  warnings: number;
+  createdAt: string;
+  parser?: string;
+  extensionMatches?: boolean;
+  errorMessage?: string;
+}
+
+export interface FileDetection {
+  filename: string;
+  detected_type: string;
+  extension_matches: boolean;
+  parser: string;
+  warning?: string | null;
+}
+
+export interface ReviewField {
+  key: string;
+  label: string;
+  source: string;
+  normalized: string;
+  confidence: number;
+}
+
+export interface ReviewItem {
+  id: string;
+  jobId?: string;
+  taskId?: string;
+  candidateGroupKey?: string;
+  appliedProductId?: string;
+  status?: "pending" | "approved" | "rejected";
+  name: string;
+  model: string;
+  category?: string;
+  supplier: string;
+  source: string;
+  location: string;
+  imageStatus: "SOURCE" | "APPROVED";
+  fields: ReviewField[];
+}
+
+export interface DashboardMetric {
+  key: string;
+  label: string;
+  value: number;
+  unit?: string;
+  status: string;
+  destination: string;
+}
+
+export interface DashboardSnapshot {
+  generatedAt: string;
+  dataScope: "TENANT" | "SELF";
+  metrics: DashboardMetric[];
+  recentImports: Array<{
+    id: string;
+    filename: string;
+    supplierName: string;
+    status: string;
+    progress: number;
+    productsCount: number;
+    warningsCount: number;
+    createdAt: string;
+  }>;
+  dataHealth?: {
+    score: number;
+    activeProducts: number;
+    approvedImageCoverage: number;
+    supplierSourceCoverage: number;
+    validPriceCoverage: number;
+  };
+}
+
+export interface ProductOffer {
+  supplierProductId: string;
+  supplierId: string;
+  supplierName: string;
+  supplierSku?: string;
+  skuId?: string;
+  moq?: number;
+  moqUnit?: string;
+  leadTimeDays?: number;
+  unitPrice?: number;
+  currency?: string;
+  priceValidity: "VALID" | "EXPIRING" | "EXPIRED" | "UNKNOWN";
+  validTo?: string;
+}
+
+export interface CoreProduct {
+  id: string;
+  productCode?: string;
+  name: string;
+  model: string;
+  status: string;
+  category: string;
+  categoryId?: string;
+  supplier: string;
+  price?: number;
+  currency?: string;
+  moq?: number;
+  updated: string;
+  imageStatus: "SOURCE" | "APPROVED" | "NONE";
+  tags: string[];
+  skuCount: number;
+  supplierCount: number;
+  currentVersion: number;
+  capabilities: string[];
+}
+
+export interface ProductSku {
+  id: string;
+  productId: string;
+  skuCode: string;
+  name?: string;
+  optionValues: Record<string, string | number | boolean>;
+  barcode?: string;
+  defaultMoq?: number;
+  moqUnit?: string;
+  weight?: number;
+  weightUnit?: string;
+  status: "DRAFT" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
+  version: number;
+  updatedAt: string;
+}
+
+export interface PublicCatalogOffer {
+  id: string;
+  skuId: string;
+  unitPrice: number;
+  currency: string;
+  tags: string[];
+  publicationStatus: "DRAFT" | "PUBLISHED" | "SUSPENDED";
+  publishedAt?: string;
+  validFrom?: string;
+  validTo?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProductAttribute {
+  id: string;
+  definitionId?: string;
+  key: string;
+  value: unknown;
+  unitCode?: string;
+  reviewStatus: string;
+}
+
+export interface ProductActivity {
+  id: string;
+  entityType: string;
+  entityId: string;
+  action: string;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  actorMembershipId: string;
+  occurredAt: string;
+}
+
+export interface ProductDetail extends CoreProduct {
+  description?: string;
+  defaultUnit?: string;
+  attributes: ProductAttribute[];
+  skus: ProductSku[];
+  sources: ProductOffer[];
+  activity: ProductActivity[];
+}
+
+export interface ProductCategory {
+  id: string;
+  parentId?: string;
+  code: string;
+  name: string;
+  path?: string;
+  status: string;
+  sortOrder: number;
+  version: number;
+}
+
+export interface AttributeDefinition {
+  id: string;
+  categoryId?: string;
+  attributeKey: string;
+  displayName: string;
+  dataType: "TEXT" | "NUMBER" | "BOOLEAN" | "ENUM";
+  unitCode?: string;
+  enumValues?: string[];
+  isRequired: boolean;
+  isVariant: boolean;
+  isFilterable: boolean;
+  isMatchable: boolean;
+  status: string;
+  version: number;
+}
+
+export interface SupplierPrice {
+  id: string;
+  productId: string;
+  supplierProductId: string;
+  supplierId: string;
+  supplierName: string;
+  skuId?: string;
+  minQuantity: number;
+  maxQuantity?: number;
+  unitPrice: number;
+  currency: string;
+  unitCode: string;
+  incoterm?: string;
+  taxStatus?: string;
+  validFrom: string;
+  validTo?: string;
+  status: string;
+  priceValidity: ProductOffer["priceValidity"];
+  confirmedAt?: string;
+  createdAt: string;
+}
+
+export interface SupplierScore {
+  overallScore?: number;
+  qualityScore?: number;
+  priceScore?: number;
+  deliveryScore?: number;
+  responseScore?: number;
+  riskScore?: number;
+  sampleSize: number;
+  methodVersion: string;
+  calculatedAt: string;
+}
+
+export interface SupplierProfile {
+  id: string;
+  supplierCode: string;
+  name: string;
+  category: string;
+  categorySummary?: string;
+  countryCode?: string;
+  website?: string;
+  status: string;
+  riskLevel: string;
+  health: string;
+  version: number;
+  activeProducts: number;
+  activeSkus: number;
+  pendingReviews: number;
+  validPrices: number;
+  expiredPrices: number;
+  latestImportAt?: string;
+  updatedAt: string;
+  latestScore?: SupplierScore;
+}
+
+export interface SupplierProfileDetail extends SupplierProfile {
+  sources: Array<{
+    supplierProductId: string;
+    productId: string;
+    productCode: string;
+    productName: string;
+    skuId?: string;
+    supplierSku?: string;
+    moq?: number;
+    moqUnit?: string;
+    leadTimeDays?: number;
+    status: string;
+    unitPrice?: number;
+    currency?: string;
+    priceValidTo?: string;
+    priceValidity: string;
+  }>;
+  recentImports: Array<{
+    id: string;
+    filename: string;
+    status: string;
+    productsCount: number;
+    warningsCount: number;
+    createdAt: string;
+  }>;
+}
+
+export interface HybridSearchEvidence {
+  documentId: string;
+  chunkId: string;
+  chunkType: string;
+  contentHash: string;
+  excerpt: string;
+}
+
+export interface HybridSearchResult {
+  productId: string;
+  productCode?: string;
+  name: string;
+  sourceVersion: number;
+  score: number;
+  scoreBreakdown: { keyword: number; semantic: number; attribute: number; supplier: number };
+  supplierSignalStatus: string;
+  evidence: HybridSearchEvidence[];
+  rankingVersion: string;
+  degradedChannels: string[];
+  product?: ProductDetail;
+}
+
+export interface HybridSearchResponse {
+  query: string;
+  rankingVersion: string;
+  model: { provider: string; name: string; version: string; dimensions: number };
+  degradedChannels: string[];
+  results: HybridSearchResult[];
+}
+
+export interface InquiryItem {
+  id: string;
+  lineNumber: number;
+  rawRequirement: string;
+  normalizedRequirement: Record<string, unknown>;
+  quantity?: number;
+  unitCode?: string;
+  imageSearchId?: string;
+  status: string;
+  version: number;
+}
+
+export interface InquiryRecord {
+  id: string;
+  inquiryNumber: string;
+  customerId?: string;
+  temporaryCustomerName?: string;
+  currency: string;
+  language: string;
+  status: string;
+  version: number;
+  items: InquiryItem[];
+}
+
+export interface InquiryMatch {
+  id: string;
+  inquiryItemId: string;
+  productId: string;
+  skuId?: string;
+  supplierProductId?: string;
+  productVersion: number;
+  rank: number;
+  totalScore: number;
+  scoreBreakdown: Record<string, unknown>;
+  reasons: string[];
+  gaps: string[];
+  evidence: Array<Record<string, unknown>>;
+  rankingVersion: string;
+  status: string;
+}
+
+export interface QuotationRecord {
+  id: string;
+  quotationNumber: string;
+  inquiryId: string;
+  customerId: string;
+  currency: string;
+  status: string;
+  currentVersion: number;
+  totalAmount: number;
+  expiresAt?: string;
+  approvalStatus: string;
+  versionHash: string;
+  createdAt: string;
+  updatedAt: string;
+  versions: Array<{
+    versionNumber: number;
+    totalAmount: number;
+    currency: string;
+    ruleVersion: string;
+    contentHash: string;
+    approvalStatus: string;
+    createdAt: string;
+  }>;
+  items: Array<{
+    id: string;
+    inquiryItemId: string;
+    productId: string;
+    productSnapshot: Record<string, unknown>;
+    sourceSnapshot: Record<string, unknown>;
+    quantity: number;
+    unitCode: string;
+    unitCost?: number;
+    targetMarginRate?: number;
+    unitPrice: number;
+    lineTotal: number;
+    warnings: string[];
+  }>;
+}
+
+export interface QuotationSummary {
+  id: string;
+  quotationNumber: string;
+  customerName: string;
+  currency: string;
+  status: string;
+  currentVersion: number;
+  totalAmount: number;
+  updatedAt: string;
+}
+
+export interface PublicQuoteDraftItem {
+  id: string;
+  skuId: string;
+  position: number;
+  quantity: number;
+  skuCode: string;
+  name: string;
+  description?: string;
+  category?: string;
+  tags: string[];
+  imageUrl?: string;
+  minimumOrderQuantity: number;
+  unitCode: string;
+  currency: string;
+  unitPrice: number;
+  lineTotal: number;
+  productVersion: number;
+  skuVersion: number;
+}
+
+export interface PublicQuoteDraft {
+  id: string;
+  tenantId: string;
+  quoteNumber: string;
+  status: string;
+  customerName: string;
+  customerCompany?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  notes?: string;
+  currency: string;
+  subtotal: number;
+  total: number;
+  validUntil: string;
+  createdAt: string;
+  contentHash: string;
+  disclaimer: string;
+  disclaimerVersion: string;
+  items: PublicQuoteDraftItem[];
+}
+
+export interface PublicQuoteDraftSummary {
+  id: string;
+  quoteNumber: string;
+  status: string;
+  customerName: string;
+  customerCompany?: string;
+  currency: string;
+  total: number;
+  validUntil: string;
+  createdAt: string;
+}

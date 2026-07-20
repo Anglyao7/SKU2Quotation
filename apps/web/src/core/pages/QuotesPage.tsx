@@ -1,0 +1,107 @@
+import { Badge, Button, Card, Dialog, Heading, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
+import { CheckCircle, FileText, PencilSimple, ShieldCheck, ShoppingCartSimple, X } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CoreApiError, decideQuotation, getPublicQuoteDraft, getQuotation, listPublicQuoteDrafts, listQuotations, reviseQuotation } from "../api";
+import { useCoreAuth } from "../AuthContext";
+import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
+import type { PublicQuoteDraft, PublicQuoteDraftSummary, QuotationRecord, QuotationSummary } from "../types";
+
+const statusLabel: Record<string, string> = { DRAFT: "草稿", SUBMITTED: "客户已提交", PENDING_REVIEW: "待人工确认", PENDING_CONFIRMATION: "客户提交，待人工确认", CALCULATED: "待人工批准", NEEDS_APPROVAL: "规则审批", PENDING: "待批准", APPROVED: "已批准", SENT: "已发送", ACCEPTED: "已接受", REJECTED: "已拒绝", EXPIRED: "已过期", NOT_REQUIRED: "无需审批" };
+const label = (value: string) => statusLabel[value] ?? value;
+type LineDraft = { quantity: number; targetMarginRate: number };
+
+export function QuotesPage() {
+  const { hasPermission } = useCoreAuth();
+  const canRevise = hasPermission("quotation.create");
+  const canApprove = hasPermission("quotation.approve");
+  const [quotes, setQuotes] = useState<QuotationSummary[]>([]);
+  const [publicDrafts, setPublicDrafts] = useState<PublicQuoteDraftSummary[]>([]);
+  const [detail, setDetail] = useState<QuotationRecord>();
+  const [publicDetail, setPublicDetail] = useState<PublicQuoteDraft>();
+  const [drafts, setDrafts] = useState<Record<string, LineDraft>>({});
+  const [changeReason, setChangeReason] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [draftNotice, setDraftNotice] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(""); setDraftNotice("");
+    const [quotationResult, draftResult] = await Promise.allSettled([listQuotations(), listPublicQuoteDrafts()]);
+    if (quotationResult.status === "fulfilled") setQuotes(quotationResult.value);
+    else setError(quotationResult.reason instanceof Error ? quotationResult.reason.message : "正式报价加载失败");
+    if (draftResult.status === "fulfilled") setPublicDrafts(draftResult.value);
+    else if (draftResult.reason instanceof CoreApiError && draftResult.reason.status === 404) { setPublicDrafts([]); setDraftNotice("客户前台草稿接口尚未启用；正式报价不受影响。"); }
+    else setDraftNotice(draftResult.reason instanceof Error ? `客户前台草稿暂不可用：${draftResult.reason.message}` : "客户前台草稿暂不可用");
+    setLoading(false);
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const pending = quotes.filter((row) => ["CALCULATED", "NEEDS_APPROVAL"].includes(row.status)).length;
+  const approved = quotes.filter((row) => row.status === "APPROVED").length;
+  const currencies = useMemo(() => new Set(quotes.map((row) => row.currency)).size, [quotes]);
+
+  const openQuote = async (quoteId: string) => {
+    setLoading(true); setError("");
+    try { const row = await getQuotation(quoteId); setDetail(row); setDrafts(Object.fromEntries(row.items.map((item) => [item.id, { quantity: item.quantity, targetMarginRate: item.targetMarginRate ?? .2 }]))); setChangeReason(""); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "报价详情加载失败"); }
+    finally { setLoading(false); }
+  };
+  const openPublicDraft = async (draftId: string) => {
+    setLoading(true); setError("");
+    try { setPublicDetail(await getPublicQuoteDraft(draftId)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "客户草稿详情加载失败"); }
+    finally { setLoading(false); }
+  };
+
+  const saveRevision = async () => {
+    if (!detail || changeReason.trim().length < 3) { setError("请填写至少 3 个字符的修改原因。"); return; }
+    setSaving(true); setError("");
+    try {
+      const revised = await reviseQuotation(detail, detail.items.map((item) => ({ itemId: item.id, quantity: drafts[item.id]?.quantity ?? item.quantity, targetMarginRate: drafts[item.id]?.targetMarginRate ?? item.targetMarginRate ?? .2 })), changeReason.trim());
+      setDetail(revised); setDrafts(Object.fromEntries(revised.items.map((item) => [item.id, { quantity: item.quantity, targetMarginRate: item.targetMarginRate ?? .2 }]))); setChangeReason(""); await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "报价版本保存失败"); }
+    finally { setSaving(false); }
+  };
+
+  const approve = async () => {
+    if (!detail) return;
+    setSaving(true); setError("");
+    try { setDetail(await decideQuotation(detail.id, "APPROVED", "负责人已在报价工作台复核当前版本")); await load(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "报价审批失败"); }
+    finally { setSaving(false); }
+  };
+
+  return <div className="core-workspace">
+    <CorePageHeading eyebrow="版本化报价" title="报价工作台" description="客户前台提交的是待确认草稿；正式 Quotation 由内部规则计算并绑定人工审批。" actions={<Button variant="soft" color="gray" onClick={() => void load()}>刷新</Button>} />
+    <section className="core-metric-grid">
+      <Card className="core-summary-card"><Text size="2" color="gray">正式报价</Text><strong>{quotes.length}</strong><Text size="1">当前租户权威报价表</Text></Card>
+      <Card className="core-summary-card"><Text size="2" color="gray">客户待确认草稿</Text><strong>{publicDrafts.length}</strong><Text size="1">尚未形成内部正式承诺</Text></Card>
+      <Card className="core-summary-card"><Text size="2" color="gray">等待人工批准</Text><strong>{pending}</strong><Text size="1">发送前必须完成审批</Text></Card>
+      <Card className="core-summary-card"><Text size="2" color="gray">已批准 / 币种</Text><strong>{approved} / {currencies}</strong><Text size="1">不做隐式汇率换算</Text></Card>
+    </section>
+    {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
+    {draftNotice ? <Card className="core-notice"><FileText /><Text size="2">{draftNotice}</Text></Card> : null}
+
+    <Tabs.Root defaultValue="official">
+      <Tabs.List><Tabs.Trigger value="official">正式报价 ({quotes.length})</Tabs.Trigger><Tabs.Trigger value="public">客户前台草稿 ({publicDrafts.length})</Tabs.Trigger></Tabs.List>
+      <Tabs.Content value="official"><Card className="core-table-card"><div className="core-table core-quotes-table"><div className="core-table-head"><span>报价编号 / 客户</span><span>版本</span><span>金额</span><span>审批门禁</span><span>状态</span><span>更新时间</span></div>{quotes.map((quote) => <button type="button" className="core-table-row" key={quote.id} onClick={() => void openQuote(quote.id)}><span className="core-name-cell"><span className="core-row-icon"><FileText /></span><span><strong>{quote.customerName}</strong><small>{quote.quotationNumber}</small></span></span><strong>v{quote.currentVersion}</strong><strong>{quote.currency} {quote.totalAmount.toFixed(2)}</strong><span><ShieldCheck />人工</span><Badge color={quote.status === "APPROVED" ? "jade" : quote.status === "REJECTED" ? "red" : "amber"}>{label(quote.status)}</Badge><span>{coreDate(quote.updatedAt)}</span></button>)}{loading && !quotes.length ? <CoreLoading label="正在读取报价版本" /> : null}{!loading && !quotes.length ? <CoreEmpty title="尚无正式报价" description="从询盘工作台人工选择候选并创建报价。" /> : null}</div></Card></Tabs.Content>
+      <Tabs.Content value="public"><Card className="core-notice"><ShoppingCartSimple /><div><Text weight="bold" as="div">客户前台提交，待内部人工确认</Text><Text size="2" color="gray">这些记录只保存客户意向和当时的商品快照，不等于正式 Quotation，也不能直接发送为承诺。</Text></div></Card><div className="core-draft-grid">{publicDrafts.map((draft) => <Card className="core-draft-card" key={draft.id} onClick={() => void openPublicDraft(draft.id)}><div className="core-panel-heading"><div><Text size="1" color="gray">{draft.quoteNumber}</Text><Heading size="4">{draft.customerCompany || draft.customerName}</Heading></div><Badge color="amber">{label(draft.status)}</Badge></div><Text size="2" color="gray">联系人：{draft.customerName}</Text><strong>{draft.currency} {draft.total.toFixed(2)}</strong><Text size="1" color="gray">提交于 {coreDate(draft.createdAt)} · 有效至 {coreDate(draft.validUntil)}</Text><Button variant="soft">查看客户提交快照</Button></Card>)}{!loading && !publicDrafts.length ? <CoreEmpty title="暂无客户前台草稿" description="客户在店铺提交报价请求后，会进入这里等待人工确认。" /> : null}</div></Tabs.Content>
+    </Tabs.Root>
+
+    <Dialog.Root open={Boolean(detail)} onOpenChange={(open) => { if (!open) setDetail(undefined); }}><Dialog.Content className="core-detail-dialog">{detail ? <OfficialQuoteDetail quote={detail} drafts={drafts} setDrafts={setDrafts} changeReason={changeReason} setChangeReason={setChangeReason} canRevise={canRevise} canApprove={canApprove} saving={saving} onSave={saveRevision} onApprove={approve} onClose={() => setDetail(undefined)} /> : <CoreLoading />}</Dialog.Content></Dialog.Root>
+    <Dialog.Root open={Boolean(publicDetail)} onOpenChange={(open) => { if (!open) setPublicDetail(undefined); }}><Dialog.Content className="core-detail-dialog">{publicDetail ? <PublicDraftDetail draft={publicDetail} onClose={() => setPublicDetail(undefined)} /> : <CoreLoading />}</Dialog.Content></Dialog.Root>
+  </div>;
+}
+
+function OfficialQuoteDetail({ quote, drafts, setDrafts, changeReason, setChangeReason, canRevise, canApprove, saving, onSave, onApprove, onClose }: { quote: QuotationRecord; drafts: Record<string, LineDraft>; setDrafts: React.Dispatch<React.SetStateAction<Record<string, LineDraft>>>; changeReason: string; setChangeReason: (value: string) => void; canRevise: boolean; canApprove: boolean; saving: boolean; onSave: () => Promise<void>; onApprove: () => Promise<void>; onClose: () => void }) {
+  return <><div className="core-dialog-heading"><div><Text size="1" color="gray">正式报价 · v{quote.currentVersion}</Text><Dialog.Title>{quote.quotationNumber}</Dialog.Title><Dialog.Description>{quote.currency} {quote.totalAmount.toFixed(2)} · {label(quote.status)} · {quote.versionHash.slice(0, 12)}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose}><X /></Button></div><Card className="core-notice"><PencilSimple /><Text size="2">编辑会创建新版本，不会覆盖当前版本。</Text></Card>
+    <div className="core-quote-lines">{quote.items.map((item) => { const draft = drafts[item.id] ?? { quantity: item.quantity, targetMarginRate: item.targetMarginRate ?? .2 }; return <Card key={item.id}><div><Text weight="bold" as="div">{String(item.productSnapshot.name ?? item.productSnapshot.code ?? item.productId)}</Text><Text size="1" color="gray">{String(item.productSnapshot.code ?? item.productId)}</Text></div><label>数量<TextField.Root type="number" disabled={!canRevise} value={String(draft.quantity)} onChange={(event) => setDrafts((rows) => ({ ...rows, [item.id]: { ...draft, quantity: Number(event.target.value) } }))} /></label><label>目标毛利 %<TextField.Root type="number" disabled={!canRevise} value={String(Math.round(draft.targetMarginRate * 100))} onChange={(event) => setDrafts((rows) => ({ ...rows, [item.id]: { ...draft, targetMarginRate: Number(event.target.value) / 100 } }))} /></label><div><Text weight="bold" as="div">{quote.currency} {item.unitPrice.toFixed(2)}</Text><Text size="1" color="gray">小计 {item.lineTotal.toFixed(2)}</Text></div></Card>; })}</div>
+    {canRevise ? <div className="core-revision-controls"><label>修改原因（写入审计快照）<TextArea value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="例如：客户调整首批数量" /></label><Button disabled={saving} onClick={() => void onSave()}><PencilSimple />保存为 v{quote.currentVersion + 1}</Button></div> : <Text size="2" color="gray">当前角色只能查看报价。</Text>}
+    {quote.approvalStatus === "PENDING" && canApprove ? <Button color="green" disabled={saving} onClick={() => void onApprove()}><CheckCircle />人工确认并批准当前 v{quote.currentVersion}</Button> : null}
+    <Heading size="4">不可变版本历史</Heading><div className="core-list">{quote.versions.map((version) => <div className="core-list-row" key={version.versionNumber}><ShieldCheck /><div><Text weight="bold" as="div">v{version.versionNumber} · {version.currency} {version.totalAmount.toFixed(2)}</Text><Text size="1" color="gray">{coreDate(version.createdAt)} · {version.ruleVersion} · {version.contentHash.slice(0, 16)}</Text></div><Badge color={version.approvalStatus === "APPROVED" ? "jade" : "gray"}>{label(version.approvalStatus)}</Badge></div>)}</div></>;
+}
+
+function PublicDraftDetail({ draft, onClose }: { draft: PublicQuoteDraft; onClose: () => void }) {
+  return <><div className="core-dialog-heading"><div><Text size="1" color="gray">客户前台提交 · 只读意向快照</Text><Dialog.Title>{draft.quoteNumber}</Dialog.Title><Dialog.Description>{draft.customerCompany || draft.customerName} · {coreDate(draft.createdAt)}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose}><X /></Button></div><Card className="core-warning"><ShieldCheck /><div><Text weight="bold" as="div">这不是正式 Quotation</Text><Text size="2">客户草稿必须由内部成员核对客户、库存、采购价和利润规则后，才能进入正式询盘与报价流程。</Text></div></Card><div className="core-master-grid"><Card><Text size="1" color="gray">联系人</Text><Heading size="3">{draft.customerName}</Heading><Text size="1">{draft.customerEmail ?? draft.customerPhone ?? "—"}</Text></Card><Card><Text size="1" color="gray">客户草稿总额</Text><Heading size="3">{draft.currency} {draft.total.toFixed(2)}</Heading></Card><Card><Text size="1" color="gray">有效至</Text><Heading size="3">{coreDate(draft.validUntil)}</Heading></Card><Card><Text size="1" color="gray">内容快照</Text><code>{draft.contentHash.slice(0, 18)}…</code></Card></div><Heading size="4">客户选择的商品快照</Heading><div className="core-list">{draft.items.map((item) => <div className="core-list-row" key={item.id}><ShoppingCartSimple /><div><Text weight="bold" as="div">{item.name}</Text><Text size="1" color="gray">{item.skuCode} · 产品 v{item.productVersion} / SKU v{item.skuVersion}</Text></div><Text size="2">{item.quantity} {item.unitCode}</Text><Text weight="bold">{item.currency} {item.lineTotal.toFixed(2)}</Text></div>)}</div>{draft.notes ? <Card><Text size="1" color="gray">客户备注</Text><Text as="div">{draft.notes}</Text></Card> : null}<Text size="1" color="gray">{draft.disclaimer}</Text></>;
+}

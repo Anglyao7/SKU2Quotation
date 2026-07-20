@@ -1,0 +1,62 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+*.egg-info/
+.tox/
+
+# Node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+.npm/
+.pnpm-store/
+
+# Runtime data and generated files
+*.db
+*.sqlite3
+*.log
+apps/api/var/
+apps/api/generated/
+apps/api/uploads/
+uploads/
+generated/
+logs/
+tmp/
+temp/
+test-results/
+playwright-report/
+
+# Local agent/tool state
+.learnings/
+
+# Private business inputs and generated review artifacts
+项目输入/
+审查结果/
+work/
+
+# Transitional source trees; final runtime code lives under apps/.
+/backend/
+/frontend/
+/产品开发/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
