@@ -537,6 +537,7 @@ def test_sensitive_query_strings_are_excluded_from_every_http_access_log() -> No
     assert "combined" not in nginx
     assert "access_log /dev/stdout atc_safe if=$atc_access_loggable;" in nginx
     assert "set_real_ip_from 172.31.10.0/24;" in nginx
+    assert "set_real_ip_from 172.31.20.0/24;" in nginx
     assert "limit_req zone=atc_api_per_ip" in nginx
     assert "client_max_body_size 260m;" in nginx
     assert "X-Quote-Download-Token" not in nginx
