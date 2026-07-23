@@ -84,8 +84,8 @@ cd /opt/ai-trade-cloud/app
 install -m 0600 .env.production.example .env.production
 ```
 
-编辑 `.env.production`，替换所有占位值。除首次用户临时密码外，每个服务
-密码和密钥应独立生成，不要重复使用：
+编辑 `.env.production`，替换所有占位值。每个服务密码和密钥应独立生成，
+不要重复使用：
 
 ```bash
 openssl rand -hex 32
@@ -101,7 +101,8 @@ printf 'Aa1!%s\n' "$(openssl rand -hex 24)"
 
 `OIDC_BOOTSTRAP_ADMIN_EMAIL` 必须是真实、唯一且由运营者控制的邮箱。
 `BOOTSTRAP_*` 定义首次组织、租户和 OWNER；初始化命令是幂等的。
-Keycloak 首位用户第一次登录必须更改临时密码并设置 TOTP。
+Keycloak 首位用户使用上述初始密码直接登录；上线后应通过受信任运维流程
+轮换为仅运营者知晓的强密码。
 部署脚本通过 JSON 解析器渲染 Keycloak realm；邮箱或显示值中合法的
 `/`、`&` 等字符不会被 shell 文本替换破坏。
 
@@ -112,8 +113,8 @@ Keycloak 首位用户第一次登录必须更改临时密码并设置 TOTP。
 
 Compact 公开 Beta 用 `ATC_ENABLE_SMTP` 明确决定是否接入真实 SMTP。
 设为 `false` 时不要填写假 SMTP 参数；首次 bootstrap 管理员仍是已验证
-邮箱，但首次登录必须修改临时密码并配置 TOTP，Keycloak 对账会跳过 SMTP
-投递测试。此模式不能发送忘记密码或成员动作邮件。设为 `true` 时必须填写
+邮箱并可直接使用账号密码登录，Keycloak 对账会跳过 SMTP 投递测试。
+此模式不能发送忘记密码或成员验证邮件。设为 `true` 时必须填写
 全部真实 `KEYCLOAK_SMTP_*` 参数，对账会实际测试投递。Standard 仍强制
 启用 SMTP。
 
@@ -207,9 +208,7 @@ curl --fail "https://auth.${ATC_DOMAIN}/realms/atc/.well-known/openid-configurat
 关闭 Uvicorn access log；Caddy 不启用请求访问日志；Nginx 使用专用
 `atc_safe` 格式，只记录客户端 IP、方法和无 query 的规范化 `$uri`，
 绝不记录 `$request`、`$request_uri`、Referer 或任意请求头，
-并对报价下载和 OIDC callback 整条关闭访问日志。Caddy 还会在
-`/login/callback` 精确路径覆写 `Referrer-Policy: no-referrer`，避免授权码
-或 state 随后续同源资源请求外带。报价下载凭证只能放在
+并对报价下载等敏感路径关闭访问日志。报价下载凭证只能放在
 `X-Quote-Download-Token` 请求头，禁止恢复成 URL query；代理和应用日志
 都不得记录该请求头。其余 API 请求按 Caddy 验证后的真实客户端 IP 限速，
 并限制请求体最大 260 MiB；应用还通过启用 Redis 的限流层做第二道保护。
@@ -267,11 +266,12 @@ sudo ./infra/production/keycloak-provision-user.sh \
 
 该命令启动的一次性容器只加入私有 `identity` 网络，直接访问
 `http://keycloak:8080`；Keycloak 管理 API 仍不会暴露到公网。管理员密码与
-临时用户密码均只从当前终端无回显读取，不进入参数、环境变量或业务 API。
-新身份固定以 `emailVerified=false` 创建，并要求验证邮箱、修改临时密码和
-配置 TOTP。生产包装脚本始终要求 Keycloak 发送动作邮件，完成后回到
-`/login`；发信失败时命令失败且身份保持未验证，可以在 SMTP 恢复后安全
-重试。正式流程不提供人工伪造 `emailVerified` 的旁路。
+初始用户密码均只从当前终端无回显读取，不进入参数、环境变量或业务 API。
+第三个参数可指定与该邮箱绑定的 E.164 手机号作为用户名；Keycloak 的邮箱
+登录能力使邮箱和手机号都可用于登录。默认新身份以
+`emailVerified=false` 创建，并要求完成邮箱验证；发信失败时身份保持未验证，
+可以在 SMTP 恢复后安全重试。只有完成线下核验并留存证据时，运维人员才可
+显式传入 `--email-verified`。
 
 镜像搜索在 `IMAGE_INTELLIGENCE_PROFILE=disabled` 时明确关闭；只有接入并
 审核远程 provider 后才能启用，生产环境绝不能使用 deterministic 适配器。

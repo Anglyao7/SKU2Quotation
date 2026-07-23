@@ -1,7 +1,7 @@
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field, SecretStr, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -12,6 +12,47 @@ class LoginRequest(BaseModel):
     redirect_uri: str = Field(min_length=1, max_length=1000)
     nonce: str | None = Field(default=None, min_length=32, max_length=200)
     device_label: str | None = Field(default=None, max_length=120)
+
+
+class PasswordLoginRequest(BaseModel):
+    """A password grant whose secret is verified only by the identity provider."""
+
+    grant_type: Literal["password"]
+    identifier: str
+    password: SecretStr
+    device_label: str | None = Field(default=None, max_length=120)
+
+    @field_validator("identifier")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        normalized = value.strip()
+        if (
+            not normalized
+            or len(normalized) > 320
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in normalized
+            )
+        ):
+            raise ValueError("identifier is invalid")
+        return normalized
+
+
+def _default_login_grant_type(value: object) -> object:
+    """Keep pre-grant_type authorization-code clients backward compatible."""
+
+    if isinstance(value, dict) and "grant_type" not in value:
+        return {**value, "grant_type": "authorization_code"}
+    return value
+
+
+AuthLoginRequest = Annotated[
+    Annotated[
+        LoginRequest | PasswordLoginRequest,
+        Field(discriminator="grant_type"),
+    ],
+    BeforeValidator(_default_login_grant_type),
+]
 
 
 class AuthPublicConfig(BaseModel):

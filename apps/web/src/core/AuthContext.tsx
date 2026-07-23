@@ -12,8 +12,8 @@ import {
   getCurrentUser,
   getPermissions,
   listMemberships,
-  loginEnterpriseOidc,
   loginLocalDemo,
+  loginPassword as loginPasswordRequest,
   logoutSession,
   refreshAuthSession,
   switchTenant as switchTenantRequest,
@@ -34,12 +34,7 @@ interface AuthState {
 export interface CoreAuthContextValue extends AuthState {
   loading: boolean;
   loginDemo: () => Promise<void>;
-  loginOidc: (input: {
-    authorizationCode: string;
-    codeVerifier: string;
-    redirectUri: string;
-    nonce: string;
-  }) => Promise<void>;
+  loginPassword: (identifier: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   switchTenant: (membershipId: string) => Promise<void>;
   hasPermission: (permission: string) => boolean;
@@ -112,15 +107,10 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
     }
   }, [hydrate]);
 
-  const loginOidc = useCallback(async (input: {
-    authorizationCode: string;
-    codeVerifier: string;
-    redirectUri: string;
-    nonce: string;
-  }) => {
+  const loginPassword = useCallback(async (identifier: string, password: string) => {
     setState((current) => ({ ...current, status: "restoring", error: undefined }));
     try {
-      await hydrate(await loginEnterpriseOidc(input));
+      await hydrate(await loginPasswordRequest(identifier, password));
     } catch (reason) {
       setState({ ...initialState, status: "anonymous", error: errorMessage(reason) });
       throw reason;
@@ -143,26 +133,24 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
   }, [hydrate]);
 
   const logout = useCallback(async () => {
-    let enterpriseEndSession: string | undefined;
     try {
-      enterpriseEndSession = await logoutSession();
+      await logoutSession();
     } catch {
       clearCoreAuthSession();
     }
     setState({ ...initialState, status: "anonymous" });
-    if (enterpriseEndSession) window.location.assign(enterpriseEndSession);
   }, []);
 
   const value = useMemo<CoreAuthContextValue>(() => ({
     ...state,
     loading: state.status === "restoring",
     loginDemo,
-    loginOidc,
+    loginPassword,
     logout,
     switchTenant,
     hasPermission: (permission) => state.permissions.has(permission),
     hasAnyPermission: (...permissions) => permissions.length === 0 || permissions.some((permission) => state.permissions.has(permission)),
-  }), [loginDemo, loginOidc, logout, state, switchTenant]);
+  }), [loginDemo, loginPassword, logout, state, switchTenant]);
 
   return <CoreAuthContext.Provider value={value}>{children}</CoreAuthContext.Provider>;
 }

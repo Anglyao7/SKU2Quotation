@@ -79,7 +79,7 @@ const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
   { path: "/store/:tenantSlug", element: <LegacyStoreRedirect /> },
   { path: "/login", element: <LoginPage /> },
-  { path: "/login/callback", element: <LoginPage /> },
+  { path: "/login/callback", element: <Navigate to="/login" replace /> },
   { path: "/privacy", element: <PrivacyPage /> },
   {
     element: <ProtectedRoute />,

@@ -177,15 +177,20 @@ def test_reserved_tenant_slugs_cover_every_static_top_level_web_route() -> None:
     assert {"api", "assets", "healthz"} <= RESERVED_TENANT_SLUGS
 
 
-def test_keycloak_provisioning_keeps_secrets_interactive_and_email_unverified() -> None:
+def test_keycloak_provisioning_keeps_secrets_interactive_and_direct_grant_ready() -> None:
     source = (
         API_ROOT / "scripts" / "provision_keycloak_user_interactive.py"
     ).read_text(encoding="utf-8")
     assert "getpass(" in source
     assert "--admin-password" not in source
     assert "--temporary-password" not in source
-    assert '"emailVerified": False' in source
-    assert '"emailVerified": True' not in source
+    assert '"emailVerified": email_verified' in source
+    assert '"temporary": False' in source
+    assert '["VERIFY_EMAIL"]' in source
+    assert '"UPDATE_PASSWORD"' in source
+    assert '"CONFIGURE_TOTP"' in source
+    assert "BLOCKING_PASSWORD_ACTIONS" in source
+    assert "E164_PATTERN" in source
     assert 'parsed.hostname == "keycloak"' in source
     assert "parsed.port == 8080" in source
     assert "password" not in source.partition("def parser()")[2].lower()

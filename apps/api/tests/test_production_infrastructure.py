@@ -342,7 +342,12 @@ def test_keycloak_import_and_public_management_boundary_are_fail_closed() -> Non
         / "atc-realm.json.template"
     ).read_text(encoding="utf-8")
     assert '"emailVerified": true' in realm
-    assert '"CONFIGURE_TOTP"' in realm
+    assert '"registrationEmailAsUsername": false' in realm
+    assert '"loginWithEmailAllowed": true' in realm
+    assert '"standardFlowEnabled": false' in realm
+    assert '"directAccessGrantsEnabled": true' in realm
+    assert '"requiredActions": []' in realm
+    assert '"temporary": false' in realm
     assert '"eventsEnabled": true' in realm
     assert '"adminEventsEnabled": true' in realm
     assert '"adminEventsDetailsEnabled": true' in realm
@@ -374,6 +379,8 @@ def test_keycloak_import_and_public_management_boundary_are_fail_closed() -> Non
     assert "acquire_global_operation_lock" in provision_wrapper
     assert "--admin-password" not in provision_wrapper
     assert "--send-actions-email" in provision_wrapper
+    assert '--username "${login_identifier}"' in provision_wrapper
+    assert "--email-verified" in provision_wrapper
     assert '--redirect-uri "https://${ATC_DOMAIN}/login"' in provision_wrapper
     assert 'mode="${3:-}"' not in provision_wrapper
 
@@ -479,7 +486,7 @@ def test_keycloak_initial_password_validation_matches_realm_policy() -> None:
     )
     assert (
         "KEYCLOAK_INITIAL_USER_PASSWORD="
-        "'REPLACE_WITH_STRONG_MIXED_TEMPORARY_PASSWORD'"
+        "'REPLACE_WITH_STRONG_MIXED_INITIAL_PASSWORD'"
     ) in example
     assert "printf 'Aa1!%s\\n'" in example
 
@@ -530,10 +537,8 @@ def test_keycloak_realm_renderer_omits_smtp_only_when_explicitly_disabled(
     realm = json.loads(output.read_text(encoding="utf-8"))
     assert "smtpServer" not in realm
     assert realm["users"][0]["emailVerified"] is True
-    assert realm["users"][0]["requiredActions"] == [
-        "UPDATE_PASSWORD",
-        "CONFIGURE_TOTP",
-    ]
+    assert realm["users"][0]["requiredActions"] == []
+    assert realm["users"][0]["credentials"][0]["temporary"] is False
 
 
 def test_sensitive_query_strings_are_excluded_from_every_http_access_log() -> None:

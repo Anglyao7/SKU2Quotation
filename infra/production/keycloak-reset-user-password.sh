@@ -8,9 +8,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
 (( EUID == 0 )) || die "Keycloak password reset must run as root"
-username="${1:-}"
-[[ "${username}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] \
-  || die "usage: $0 <user-email>"
+login_identifier="${1:-}"
+if [[ "${login_identifier}" == *"@"* ]]; then
+  [[ "${login_identifier}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] \
+    || die "usage: $0 <user-email-or-e164-phone>"
+  lookup_field="email"
+else
+  [[ "${login_identifier}" =~ ^\+[1-9][0-9]{7,14}$ ]] \
+    || die "usage: $0 <user-email-or-e164-phone>"
+  lookup_field="username"
+fi
 require_command docker
 require_command python3
 load_production_env
@@ -21,7 +28,7 @@ user_id="$(
     /opt/keycloak/bin/kcadm.sh get users \
     -r atc \
     -q exact=true \
-    -q "username=${username}" \
+    -q "${lookup_field}=${login_identifier}" \
     --fields id \
     --format csv \
     --noquotes \
@@ -30,9 +37,9 @@ user_id="$(
 [[ "${user_id}" =~ ^[0-9a-fA-F-]{36}$ ]] \
   || die "exactly one Keycloak user was not found; authenticate kcadm first"
 
-IFS= read -r -s -p "New temporary password: " new_password
+IFS= read -r -s -p "New password: " new_password
 printf '\n'
-IFS= read -r -s -p "Repeat temporary password: " confirmation
+IFS= read -r -s -p "Repeat new password: " confirmation
 printf '\n'
 [[ "${new_password}" == "${confirmation}" ]] || die "passwords do not match"
 (( ${#new_password} >= 12 )) || die "password must contain at least 12 characters"
@@ -44,7 +51,7 @@ printf '\n'
 payload="$(
   printf '%s' "${new_password}" \
     | python3 -c \
-      'import json,sys; print(json.dumps({"type":"password","temporary":True,"value":sys.stdin.read()}))'
+      'import json,sys; print(json.dumps({"type":"password","temporary":False,"value":sys.stdin.read()}))'
 )"
 new_password=""
 confirmation=""
@@ -64,4 +71,32 @@ printf '%s' "${payload}" \
     ' reset-password "${user_id}"
 payload=""
 
-info "temporary password updated; the user must change it at next login"
+user_payload="$(
+  compose exec -T keycloak \
+    /opt/keycloak/bin/kcadm.sh get "users/${user_id}" -r atc \
+    | python3 -c '
+import json
+import sys
+
+user = json.load(sys.stdin)
+blocked = {"UPDATE_PASSWORD", "CONFIGURE_TOTP"}
+user["requiredActions"] = [
+    action for action in user.get("requiredActions", []) if action not in blocked
+]
+print(json.dumps(user))
+'
+)"
+printf '%s' "${user_payload}" \
+  | compose exec -T keycloak /bin/sh -ec '
+      temporary_file="$(mktemp)"
+      trap "rm -f -- \"${temporary_file}\"" EXIT
+      chmod 600 "${temporary_file}"
+      cat >"${temporary_file}"
+      /opt/keycloak/bin/kcadm.sh update \
+        "users/$1" \
+        -r atc \
+        -f "${temporary_file}"
+    ' clear-blocking-actions "${user_id}"
+user_payload=""
+
+info "permanent password updated; direct login is available once email is verified"

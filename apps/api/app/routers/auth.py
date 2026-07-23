@@ -8,13 +8,14 @@ from sqlalchemy.orm import Session
 
 from ..auth_schemas import (
     AuthContext,
+    AuthLoginRequest,
     AuthPublicConfig,
     AuthTokenData,
     AuthTokenResponse,
     AuthUser,
-    LoginRequest,
     MembershipSummary,
     MeResponse,
+    PasswordLoginRequest,
     PermissionResponse,
     TenantContextRequest,
 )
@@ -27,6 +28,7 @@ from ..services.auth.service import (
     access_ttl_seconds,
     login,
     logout,
+    password_login,
     refresh,
     switch_tenant,
 )
@@ -147,28 +149,56 @@ def auth_config_endpoint(response: Response) -> AuthPublicConfig:
 
 @router.post("/auth/login", response_model=AuthTokenResponse)
 def login_endpoint(
-    payload: LoginRequest,
+    payload: AuthLoginRequest,
     request: Request,
     response: Response,
     session: Session = Depends(get_auth_session),
 ) -> AuthTokenResponse:
     response.headers.update(NO_STORE_HEADERS)
-    enforce_rate_limit(
-        request,
-        scope="auth-login",
-        limit=configured_limit("RATE_LIMIT_LOGIN_REQUESTS", 10),
-        window_seconds=configured_limit(
-            "RATE_LIMIT_LOGIN_WINDOW_SECONDS", 60, maximum=86_400
-        ),
-        token=payload.authorization_code,
-    )
-    try:
-        result = login(
-            session,
-            payload,
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
+    if isinstance(payload, PasswordLoginRequest):
+        enforce_rate_limit(
+            request,
+            scope="auth-password-login",
+            limit=configured_limit(
+                "RATE_LIMIT_PASSWORD_LOGIN_REQUESTS",
+                configured_limit("RATE_LIMIT_LOGIN_REQUESTS", 10),
+            ),
+            window_seconds=configured_limit(
+                "RATE_LIMIT_PASSWORD_LOGIN_WINDOW_SECONDS",
+                configured_limit(
+                    "RATE_LIMIT_LOGIN_WINDOW_SECONDS",
+                    60,
+                    maximum=86_400,
+                ),
+                maximum=86_400,
+            ),
+            additional_subjects=(("account", payload.identifier.casefold()),),
         )
+    else:
+        enforce_rate_limit(
+            request,
+            scope="auth-login",
+            limit=configured_limit("RATE_LIMIT_LOGIN_REQUESTS", 10),
+            window_seconds=configured_limit(
+                "RATE_LIMIT_LOGIN_WINDOW_SECONDS", 60, maximum=86_400
+            ),
+            token=payload.authorization_code,
+        )
+    try:
+        if isinstance(payload, PasswordLoginRequest):
+            result = password_login(
+                session,
+                payload,
+                user_agent=request.headers.get("user-agent"),
+                ip_address=request.client.host if request.client else None,
+            )
+        else:
+            result = login(
+                session,
+                payload,
+                user_agent=request.headers.get("user-agent"),
+                ip_address=request.client.host if request.client else None,
+            )
     except AuthError as exc:
         raise _http_error(exc) from exc
     _set_refresh_cookie(response, result.refresh_token)

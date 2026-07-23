@@ -1,111 +1,225 @@
-import { Button, Callout, Card, Heading, Text } from "@radix-ui/themes";
-import { ArrowRight, Buildings, LockKey, ShieldCheck, WarningCircle } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { Button, Callout, Card, Heading, Text, TextField } from "@radix-ui/themes";
+import {
+  ArrowRight,
+  Buildings,
+  Eye,
+  EyeSlash,
+  LockKey,
+  WarningCircle,
+} from "@phosphor-icons/react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Brand } from "../components/Brand";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useCoreAuth } from "../core/AuthContext";
 import { getAuthConfig, type AuthPublicConfig } from "../core/api";
-import {
-  buildOidcAuthorizationUrl,
-  consumeOidcTransaction,
-  createOidcTransaction,
-} from "../core/authPkce";
 
 export function LoginPage() {
-  const { status, loginDemo, loginOidc, memberships, switchTenant, error: authError } = useCoreAuth();
+  const {
+    status,
+    loginDemo,
+    loginPassword,
+    memberships,
+    switchTenant,
+    error: authError,
+  } = useCoreAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const callbackStarted = useRef(false);
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [configLoading, setConfigLoading] = useState(true);
   const [error, setError] = useState("");
   const [config, setConfig] = useState<AuthPublicConfig>();
-  const [callbackReturnTo, setCallbackReturnTo] = useState("/console");
   const destination = (location.state as { from?: string } | null)?.from || "/console";
-  const isCallback = location.pathname === "/login/callback";
+  const visibleError = error || authError;
+  const isDemo = config?.provider === "local_fake";
 
   useEffect(() => {
     void getAuthConfig()
       .then(setConfig)
-      .catch((caught) => setError(caught instanceof Error ? caught.message : "认证服务配置不可用"));
+      .catch((caught) => {
+        setError(caught instanceof Error ? caught.message : "认证服务配置不可用");
+      })
+      .finally(() => setConfigLoading(false));
   }, []);
 
   useEffect(() => {
     if (status === "authenticated") {
-      navigate(isCallback ? callbackReturnTo : destination, { replace: true });
+      navigate(destination, { replace: true });
     }
-  }, [callbackReturnTo, destination, isCallback, navigate, status]);
+  }, [destination, navigate, status]);
 
-  useEffect(() => {
-    if (!isCallback || callbackStarted.current) return;
-    callbackStarted.current = true;
+  const submitPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting || status === "restoring") return;
     setSubmitting(true);
     setError("");
-    const parameters = new URLSearchParams(location.search);
-    // Authorization codes are single-use secrets. Remove them from browser
-    // history immediately, before any network exchange or error rendering.
-    window.history.replaceState(window.history.state, "", "/login/callback");
-    void (async () => {
-      try {
-        const transaction = consumeOidcTransaction(parameters.get("state"));
-        setCallbackReturnTo(transaction.returnTo);
-        const providerError = parameters.get("error");
-        if (providerError) throw new Error("企业身份平台未完成授权，请重新登录。");
-        const authorizationCode = parameters.get("code");
-        if (!authorizationCode) throw new Error("登录回调缺少授权码，请重新登录。");
-        await loginOidc({
-          authorizationCode,
-          codeVerifier: transaction.codeVerifier,
-          redirectUri: transaction.redirectUri,
-          nonce: transaction.nonce,
-        });
-      } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "企业账号登录失败");
-      } finally {
-        setSubmitting(false);
-      }
-    })();
-  }, [isCallback, location.search, loginOidc]);
-
-  const login = async () => {
-    setSubmitting(true); setError("");
     try {
-      if (!config) throw new Error("认证配置仍在加载，请稍后重试。");
-      if (config.provider === "local_fake") {
-        await loginDemo();
-        return;
-      }
-      if (!config.clientId || !config.authorizationEndpoint) {
-        throw new Error("企业身份平台配置不完整。");
-      }
-      const { transaction, codeChallenge } = await createOidcTransaction(destination);
-      window.location.assign(buildOidcAuthorizationUrl({
-        provider: "enterprise_oidc",
-        clientId: config.clientId,
-        authorizationEndpoint: config.authorizationEndpoint,
-        scopes: config.scopes,
-        codeChallengeMethod: config.codeChallengeMethod,
-      }, transaction, codeChallenge));
+      await loginPassword(identifier, password);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "账号登录失败");
+      setError(caught instanceof Error ? caught.message : "账号或密码错误");
+    } finally {
       setSubmitting(false);
     }
   };
-  const chooseTenant = async (membershipId: string) => {
-    setSubmitting(true); setError("");
-    try { await switchTenant(membershipId); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "工作区切换失败"); }
-    finally { setSubmitting(false); }
+
+  const enterDemo = async () => {
+    setSubmitting(true);
+    setError("");
+    try {
+      await loginDemo();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "开发演示登录失败");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  return <main className="login-page">
-    <div className="login-topbar"><Brand /><ThemeToggle /></div>
-    <div className="login-layout">
-      <section className="login-story"><Text size="2" color="gray">AI Trade Cloud · 商家运营控制台</Text><Heading size="9" as="h1">让产品、供应、询盘和报价成为一条可信链路。</Heading><Text size="4" color="gray">从供应商文件到正式报价，每一步都有租户边界、来源证据和人工确认。</Text><div className="login-feature-list"><div><strong>产品唯一事实来源</strong><span>SKU、价格和供应商证据统一关联</span></div><div><strong>租户权限隔离</strong><span>服务端会话决定成员与工作区</span></div><div><strong>报价人工门禁</strong><span>版本化规则计算，批准后才可对客</span></div></div></section>
-      <Card className="login-card" variant="surface"><div className="login-card-heading"><span className="login-lock"><LockKey size={24} weight="duotone" /></span><div><Heading size="6">{status === "selecting_tenant" ? "选择工作区" : isCallback ? "正在验证企业账号" : config?.provider === "local_fake" ? "进入开发演示" : "登录商家工作台"}</Heading><Text size="2" color="gray">{status === "selecting_tenant" ? "此身份属于多个租户，请确认本次上下文" : config?.provider === "local_fake" ? "当前为本地开发身份验证流程" : "使用企业身份平台安全登录"}</Text></div></div>
-        {status === "selecting_tenant" ? <div className="login-form">{memberships.map((membership) => <Button key={membership.id} size="3" variant="soft" disabled={submitting || membership.status.toUpperCase() !== "ACTIVE"} onClick={() => void chooseTenant(membership.id)}><Buildings />{membership.tenantName}<ArrowRight /></Button>)}{!memberships.length ? <Text size="2" color="gray">当前身份没有可用成员关系。</Text> : null}</div> : <div className="login-form"><Callout.Root color="green"><Callout.Icon><ShieldCheck /></Callout.Icon><Callout.Text>采用 Authorization Code + PKCE；Access Token 仅保存在内存，刷新凭据使用 HttpOnly Cookie。</Callout.Text></Callout.Root>{!isCallback ? <Button size="3" loading={submitting || status === "restoring" || !config} onClick={() => void login()}>{config?.provider === "local_fake" ? "使用开发演示身份进入" : "使用企业账号登录"}<ArrowRight /></Button> : error ? <Button size="3" asChild><Link to="/login">重新登录<ArrowRight /></Link></Button> : <Button size="3" loading={submitting || status === "restoring"} disabled>正在完成安全验证</Button>}</div>}
-        {(error || authError) ? <Callout.Root color="red" mt="4"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error || authError}</Callout.Text></Callout.Root> : null}
-      </Card>
-    </div><Link to="/" className="login-back-link">返回官网</Link>
-  </main>;
+  const chooseTenant = async (membershipId: string) => {
+    setSubmitting(true);
+    setError("");
+    try {
+      await switchTenant(membershipId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "工作区切换失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="login-page">
+      <div className="login-topbar"><Brand /><ThemeToggle /></div>
+      <div className="login-layout">
+        <section className="login-story">
+          <Text size="2" color="gray">AI Trade Cloud · 商家运营控制台</Text>
+          <Heading size="9" as="h1">让产品、供应、询盘和报价成为一条可信链路。</Heading>
+          <Text size="4" color="gray">从供应商文件到正式报价，每一步都有租户边界、来源证据和人工确认。</Text>
+          <div className="login-feature-list">
+            <div><strong>产品唯一事实来源</strong><span>SKU、价格和供应商证据统一关联</span></div>
+            <div><strong>租户权限隔离</strong><span>服务端会话决定成员与工作区</span></div>
+            <div><strong>报价人工门禁</strong><span>版本化规则计算，批准后才可对客</span></div>
+          </div>
+        </section>
+
+        <Card className="login-card" variant="surface">
+          <div className="login-card-heading">
+            <span className="login-lock"><LockKey size={24} weight="duotone" /></span>
+            <div>
+              <Heading size="6">{status === "selecting_tenant" ? "选择工作区" : isDemo ? "进入开发演示" : "登录商家工作台"}</Heading>
+              <Text size="2" color="gray">{status === "selecting_tenant" ? "确认本次使用的商家空间" : isDemo ? "当前为本地开发身份验证流程" : "使用商家账号和密码登录"}</Text>
+            </div>
+          </div>
+
+          {status === "selecting_tenant" ? (
+            <div className="login-form">
+              {memberships.map((membership) => (
+                <Button
+                  key={membership.id}
+                  size="3"
+                  variant="soft"
+                  disabled={submitting || membership.status.toUpperCase() !== "ACTIVE"}
+                  onClick={() => void chooseTenant(membership.id)}
+                >
+                  <Buildings />
+                  {membership.tenantName}
+                  <ArrowRight />
+                </Button>
+              ))}
+              {!memberships.length ? <Text size="2" color="gray">当前账号没有可用的商家空间。</Text> : null}
+            </div>
+          ) : isDemo ? (
+            <div className="login-form">
+              <Button
+                size="3"
+                loading={submitting || status === "restoring"}
+                onClick={() => void enterDemo()}
+              >
+                使用开发演示身份进入
+                <ArrowRight />
+              </Button>
+            </div>
+          ) : (
+            <form className="login-form login-credentials-form" autoComplete="on" onSubmit={submitPassword}>
+              <label className="field-group" htmlFor="login-identifier">
+                <Text size="2" weight="medium">账号</Text>
+                <TextField.Root
+                  id="login-identifier"
+                  name="identifier"
+                  size="3"
+                  value={identifier}
+                  onChange={(event) => {
+                    setIdentifier(event.target.value);
+                    if (error) setError("");
+                  }}
+                  placeholder="账号、邮箱或手机号"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  maxLength={320}
+                  required
+                  aria-invalid={Boolean(visibleError)}
+                  aria-describedby={visibleError ? "login-error" : "login-identifier-help"}
+                />
+                <Text id="login-identifier-help" size="1" color="gray">可使用商家账号、登录邮箱或绑定手机号</Text>
+              </label>
+
+              <label className="field-group" htmlFor="login-password">
+                <Text size="2" weight="medium">密码</Text>
+                <TextField.Root
+                  id="login-password"
+                  name="password"
+                  size="3"
+                  type={passwordVisible ? "text" : "password"}
+                  value={password}
+                  onChange={(event) => {
+                    setPassword(event.target.value);
+                    if (error) setError("");
+                  }}
+                  placeholder="请输入密码"
+                  autoComplete="current-password"
+                  maxLength={256}
+                  required
+                  aria-invalid={Boolean(visibleError)}
+                  aria-describedby={visibleError ? "login-error" : undefined}
+                >
+                  <TextField.Slot side="right">
+                    <button
+                      type="button"
+                      className="login-password-toggle"
+                      aria-label={passwordVisible ? "隐藏密码" : "显示密码"}
+                      aria-pressed={passwordVisible}
+                      onClick={() => setPasswordVisible((current) => !current)}
+                    >
+                      {passwordVisible ? <EyeSlash size={18} /> : <Eye size={18} />}
+                    </button>
+                  </TextField.Slot>
+                </TextField.Root>
+              </label>
+
+              <Button
+                type="submit"
+                size="3"
+                loading={submitting || status === "restoring"}
+                disabled={configLoading}
+              >
+                登录工作台
+                <ArrowRight />
+              </Button>
+            </form>
+          )}
+
+          {visibleError ? (
+            <Callout.Root id="login-error" color="red" mt="4" role="alert">
+              <Callout.Icon><WarningCircle /></Callout.Icon>
+              <Callout.Text>{visibleError}</Callout.Text>
+            </Callout.Root>
+          ) : null}
+        </Card>
+      </div>
+      <Link to="/" className="login-back-link">返回官网</Link>
+    </main>
+  );
 }

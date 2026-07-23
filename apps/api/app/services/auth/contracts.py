@@ -23,6 +23,13 @@ class IdentityProviderPort(Protocol):
         nonce: str | None = None,
     ) -> IdentityClaim: ...
 
+    def authenticate_password(
+        self,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim: ...
+
 
 class IdentityProviderError(ValueError):
     pass

@@ -102,7 +102,7 @@ from app.services.product_intelligence.adoption import (
 from app.services.product_intelligence.normalization import normalize_product_field
 from app.services.rbac import has_permission, list_permissions
 from app.services.auth.tokens import REFRESH_COOKIE_NAME, hash_secret
-from app.services.auth.contracts import IdentityClaim
+from app.services.auth.contracts import IdentityClaim, IdentityProviderError
 from app.services.auth.oidc_provider import OidcIdentityProviderAdapter
 from app.production_bootstrap import bootstrap_production_owner
 from app.tenant_slugs import RESERVED_TENANT_SLUGS
@@ -452,6 +452,140 @@ def test_public_auth_config_never_exposes_oidc_secrets(
     assert "secret" not in serialized
     assert "token_endpoint" not in serialized
     assert "jwks" not in serialized
+
+
+def test_password_login_uses_keycloak_and_reuses_hardened_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    membership_id = uuid4()
+    provider_key = f"oidc:{'c' * 32}"
+    subject = f"password-subject-{uuid4()}"
+    email = f"password-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Password User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    captured_provider: dict[str, str] = {}
+    captured_limit: dict[str, object] = {}
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        captured_provider.update(identifier=identifier, password=password)
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=email,
+            email_verified=True,
+            display_name="Password User",
+        )
+
+    def capture_limit(_request: object, **kwargs: object) -> None:
+        captured_limit.update(kwargs)
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr("app.routers.auth.enforce_rate_limit", capture_limit)
+
+    with TestClient(app) as password_client:
+        response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": "+8613800138000",
+                "password": "not-stored-password",
+                "device_label": "pytest-password-browser",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert "httponly" in response.headers["set-cookie"].lower()
+    assert "not-stored-password" not in response.text
+    assert captured_provider == {
+        "identifier": "+8613800138000",
+        "password": "not-stored-password",
+    }
+    assert captured_limit["scope"] == "auth-password-login"
+    assert captured_limit["additional_subjects"] == (
+        ("account", "+8613800138000"),
+    )
+    assert "token" not in captured_limit
+    token_data = response.json()["data"]
+    assert token_data["context"]["membership_id"] == str(membership_id)
+    with SessionLocal() as session:
+        auth_session = session.get(AuthSessionRow, UUID(token_data["session_id"]))
+        assert auth_session is not None
+        assert auth_session.user_id == user_id
+        assert auth_session.device_label == "pytest-password-browser"
+
+
+def test_password_login_returns_only_generic_authentication_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_password(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        assert identifier == "missing@example.test"
+        assert password == "wrong-password"
+        raise IdentityProviderError("upstream account does not exist")
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        reject_password,
+    )
+    with TestClient(app) as password_client:
+        response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": "missing@example.test",
+                "password": "wrong-password",
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "detail": {
+            "code": "AUTH_INVALID_CREDENTIALS",
+            "message": "authentication failed",
+        }
+    }
+    serialized = response.text.lower()
+    assert "missing@example.test" not in serialized
+    assert "wrong-password" not in serialized
+    assert "does not exist" not in serialized
 
 
 def test_enterprise_oidc_binds_only_verified_pending_invitation(

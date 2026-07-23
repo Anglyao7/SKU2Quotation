@@ -374,31 +374,13 @@ def public_oidc_config() -> dict[str, object]:
 class OidcIdentityProviderAdapter:
     provider_name = "enterprise_oidc"
 
-    def exchange_authorization_code(
-        self,
+    @staticmethod
+    def _request_tokens(
         *,
-        authorization_code: str,
-        code_verifier: str,
-        redirect_uri: str,
-        nonce: str | None = None,
-    ) -> IdentityClaim:
-        settings = load_oidc_settings()
-        if redirect_uri not in settings.redirect_uris:
-            raise IdentityProviderError("OIDC redirect URI is not allowed")
-        if not nonce or len(nonce) < 32:
-            raise IdentityProviderError("OIDC nonce is missing")
-        discovery = get_oidc_discovery(
-            settings.issuer,
-            settings.timeout_seconds,
-            settings.allowed_endpoint_hosts,
-        )
-        token_payload: dict[str, str] = {
-            "grant_type": "authorization_code",
-            "code": authorization_code,
-            "code_verifier": code_verifier,
-            "redirect_uri": redirect_uri,
-            "client_id": settings.client_id,
-        }
+        settings: OidcSettings,
+        discovery: OidcDiscovery,
+        token_payload: dict[str, str],
+    ) -> dict[str, Any]:
         request_auth: tuple[str, str] | None = None
         if settings.token_endpoint_auth_method == "client_secret_basic":
             request_auth = (settings.client_id, settings.client_secret)
@@ -419,6 +401,17 @@ class OidcIdentityProviderAdapter:
             raise IdentityProviderError("OIDC token exchange failed") from exc
         if not isinstance(tokens, dict):
             raise IdentityProviderError("OIDC token response is invalid")
+        return tokens
+
+    @classmethod
+    def _identity_claim_from_tokens(
+        cls,
+        *,
+        tokens: dict[str, Any],
+        nonce: str | None,
+        settings: OidcSettings,
+        discovery: OidcDiscovery,
+    ) -> IdentityClaim:
         id_token = tokens.get("id_token")
         access_token = tokens.get("access_token")
         token_type = tokens.get("token_type", "Bearer")
@@ -430,13 +423,13 @@ class OidcIdentityProviderAdapter:
         ):
             raise IdentityProviderError("OIDC token response is incomplete")
 
-        claims = self._verify_id_token(
+        claims = cls._verify_id_token(
             id_token=id_token,
             nonce=nonce,
             settings=settings,
             discovery=discovery,
         )
-        userinfo = self._userinfo(
+        userinfo = cls._userinfo(
             endpoint=discovery.userinfo_endpoint,
             access_token=access_token,
             timeout=settings.timeout_seconds,
@@ -465,11 +458,85 @@ class OidcIdentityProviderAdapter:
             display_name=display_name.strip()[:120],
         )
 
+    def exchange_authorization_code(
+        self,
+        *,
+        authorization_code: str,
+        code_verifier: str,
+        redirect_uri: str,
+        nonce: str | None = None,
+    ) -> IdentityClaim:
+        settings = load_oidc_settings()
+        if redirect_uri not in settings.redirect_uris:
+            raise IdentityProviderError("OIDC redirect URI is not allowed")
+        if not nonce or len(nonce) < 32:
+            raise IdentityProviderError("OIDC nonce is missing")
+        discovery = get_oidc_discovery(
+            settings.issuer,
+            settings.timeout_seconds,
+            settings.allowed_endpoint_hosts,
+        )
+        token_payload: dict[str, str] = {
+            "grant_type": "authorization_code",
+            "code": authorization_code,
+            "code_verifier": code_verifier,
+            "redirect_uri": redirect_uri,
+            "client_id": settings.client_id,
+        }
+        tokens = self._request_tokens(
+            settings=settings,
+            discovery=discovery,
+            token_payload=token_payload,
+        )
+        return self._identity_claim_from_tokens(
+            tokens=tokens,
+            nonce=nonce,
+            settings=settings,
+            discovery=discovery,
+        )
+
+    def authenticate_password(
+        self,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        if (
+            not identifier
+            or len(identifier) > 320
+            or not password
+            or len(password) > 1024
+        ):
+            raise IdentityProviderError("password authentication failed")
+        settings = load_oidc_settings()
+        discovery = get_oidc_discovery(
+            settings.issuer,
+            settings.timeout_seconds,
+            settings.allowed_endpoint_hosts,
+        )
+        tokens = self._request_tokens(
+            settings=settings,
+            discovery=discovery,
+            token_payload={
+                "grant_type": "password",
+                "client_id": settings.client_id,
+                "username": identifier,
+                "password": password,
+                "scope": " ".join(settings.scopes),
+            },
+        )
+        return self._identity_claim_from_tokens(
+            tokens=tokens,
+            nonce=None,
+            settings=settings,
+            discovery=discovery,
+        )
+
     @staticmethod
     def _verify_id_token(
         *,
         id_token: str,
-        nonce: str,
+        nonce: str | None,
         settings: OidcSettings,
         discovery: OidcDiscovery,
     ) -> dict[str, Any]:
@@ -495,16 +562,26 @@ class OidcIdentityProviderAdapter:
                 issuer=settings.issuer,
                 leeway=30,
                 options={
-                    "require": ["exp", "iat", "iss", "aud", "sub", "nonce"],
+                    "require": [
+                        "exp",
+                        "iat",
+                        "iss",
+                        "aud",
+                        "sub",
+                        *(["nonce"] if nonce is not None else []),
+                    ],
                 },
             )
         except IdentityProviderError:
             raise
         except (jwt.PyJWTError, ValueError) as exc:
             raise IdentityProviderError("OIDC ID token validation failed") from exc
-        token_nonce = claims.get("nonce")
-        if not isinstance(token_nonce, str) or not hmac.compare_digest(token_nonce, nonce):
-            raise IdentityProviderError("OIDC nonce mismatch")
+        if nonce is not None:
+            token_nonce = claims.get("nonce")
+            if not isinstance(token_nonce, str) or not hmac.compare_digest(
+                token_nonce, nonce
+            ):
+                raise IdentityProviderError("OIDC nonce mismatch")
         audience = claims.get("aud")
         if (
             isinstance(audience, list)

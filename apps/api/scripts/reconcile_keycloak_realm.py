@@ -63,6 +63,13 @@ CLIENT_MANAGED_ATTRIBUTES = (
     "pkce.code.challenge.method",
     "post.logout.redirect.uris",
 )
+BOOTSTRAP_USER_MANAGED_FIELDS = (
+    "username",
+    "email",
+    "enabled",
+    "emailVerified",
+    "requiredActions",
+)
 
 
 def _desired_configuration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -93,13 +100,20 @@ def _desired_configuration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(secret, str) or len(secret) < 32:
         raise SystemExit("Rendered Keycloak client secret is invalid.")
     users = document.get("users")
-    if (
-        not isinstance(users, list)
-        or len(users) != 1
-        or not isinstance(users[0], dict)
-        or not isinstance(users[0].get("email"), str)
-    ):
+    if not isinstance(users, list) or len(users) != 1 or not isinstance(users[0], dict):
         raise SystemExit("Rendered Keycloak operator email is invalid.")
+    desired_user = users[0]
+    for field in BOOTSTRAP_USER_MANAGED_FIELDS:
+        if field not in desired_user:
+            raise SystemExit(f"Rendered Keycloak operator is missing managed field {field}.")
+    if (
+        not isinstance(desired_user["username"], str)
+        or not isinstance(desired_user["email"], str)
+        or not isinstance(desired_user["enabled"], bool)
+        or not isinstance(desired_user["emailVerified"], bool)
+        or not isinstance(desired_user["requiredActions"], list)
+    ):
+        raise SystemExit("Rendered Keycloak operator configuration is invalid.")
     return document, desired_client
 
 
@@ -205,6 +219,49 @@ def reconcile(
         json=updated_realm,
     )
 
+    desired_user = desired_realm["users"][0]
+    desired_email = str(desired_user["email"]).strip().lower()
+    user_rows = _request(
+        client,
+        "GET",
+        f"{realm_path}/users",
+        expected={200},
+        headers=headers,
+        params={"email": desired_email, "exact": "true"},
+    ).json()
+    exact_users = [
+        row
+        for row in user_rows
+        if isinstance(row, dict)
+        and str(row.get("email", "")).strip().lower() == desired_email
+    ]
+    if len(exact_users) != 1:
+        raise SystemExit("Expected exactly one managed Keycloak bootstrap user.")
+    user_uuid = str(exact_users[0].get("id", ""))
+    if not user_uuid:
+        raise SystemExit("Managed Keycloak bootstrap user has no identifier.")
+    user_path = f"{realm_path}/users/{quote(user_uuid, safe='')}"
+    current_user = _request(
+        client,
+        "GET",
+        user_path,
+        expected={200},
+        headers=headers,
+    ).json()
+    if not isinstance(current_user, dict):
+        raise SystemExit("Keycloak returned an invalid bootstrap user representation.")
+    updated_user = deepcopy(current_user)
+    for field in BOOTSTRAP_USER_MANAGED_FIELDS:
+        updated_user[field] = desired_user[field]
+    _request(
+        client,
+        "PUT",
+        user_path,
+        expected={204},
+        headers=headers,
+        json=updated_user,
+    )
+
     client_id = str(desired_client["clientId"])
     client_rows = _request(
         client,
@@ -272,6 +329,18 @@ def reconcile(
             raise SystemExit("Keycloak realm verification failed for smtpServer.")
     elif verified_realm.get("smtpServer") not in (None, {}):
         raise SystemExit("Keycloak realm verification failed for smtpServer.")
+    verified_user = _request(
+        client,
+        "GET",
+        user_path,
+        expected={200},
+        headers=headers,
+    ).json()
+    if not isinstance(verified_user, dict):
+        raise SystemExit("Keycloak returned an invalid bootstrap user representation.")
+    for field in BOOTSTRAP_USER_MANAGED_FIELDS:
+        if verified_user.get(field) != desired_user[field]:
+            raise SystemExit(f"Keycloak bootstrap user verification failed for {field}.")
     verified_client = _request(
         client,
         "GET",

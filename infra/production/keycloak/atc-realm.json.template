@@ -4,7 +4,7 @@
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,
-  "registrationEmailAsUsername": true,
+  "registrationEmailAsUsername": false,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
   "resetPasswordAllowed": true,
@@ -42,8 +42,8 @@
       "protocol": "openid-connect",
       "publicClient": false,
       "secret": "__OIDC_CLIENT_SECRET__",
-      "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": false,
       "frontchannelLogout": true,
       "redirectUris": [
@@ -75,15 +75,12 @@
       "lastName": "Owner",
       "enabled": true,
       "emailVerified": true,
-      "requiredActions": [
-        "UPDATE_PASSWORD",
-        "CONFIGURE_TOTP"
-      ],
+      "requiredActions": [],
       "credentials": [
         {
           "type": "password",
           "value": "__KEYCLOAK_INITIAL_USER_PASSWORD__",
-          "temporary": true
+          "temporary": false
         }
       ]
     }

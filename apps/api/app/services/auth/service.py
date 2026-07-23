@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from ...auth_schemas import LoginRequest
+from ...auth_schemas import LoginRequest, PasswordLoginRequest
 from ...identity_models import (
     AuthRefreshTokenRow,
     AuthSessionRow,
@@ -215,7 +215,54 @@ def login(
     except IdentityProviderError as exc:
         raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed") from exc
 
-    if request.provider == "enterprise_oidc" and (
+    return _issue_authenticated_session(
+        session,
+        claim=claim,
+        provider=request.provider,
+        device_label=request.device_label,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+
+
+def password_login(
+    session: Session,
+    request: PasswordLoginRequest,
+    *,
+    user_agent: str | None,
+    ip_address: str | None,
+) -> IssuedSession:
+    adapter = _identity_adapter("enterprise_oidc")
+    password = request.password.get_secret_value()
+    if not password or len(password) > 1024:
+        raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
+    try:
+        claim = adapter.authenticate_password(
+            identifier=request.identifier,
+            password=password,
+        )
+    except IdentityProviderError as exc:
+        raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed") from exc
+    return _issue_authenticated_session(
+        session,
+        claim=claim,
+        provider="enterprise_oidc",
+        device_label=request.device_label,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+
+
+def _issue_authenticated_session(
+    session: Session,
+    *,
+    claim: IdentityClaim,
+    provider: str,
+    device_label: str | None,
+    user_agent: str | None,
+    ip_address: str | None,
+) -> IssuedSession:
+    if provider == "enterprise_oidc" and (
         not claim.email_verified or not claim.email_normalized
     ):
         raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
@@ -226,7 +273,7 @@ def login(
             UserRow.identity_subject == claim.subject,
         )
     )
-    if user is None and request.provider == "enterprise_oidc":
+    if user is None and provider == "enterprise_oidc":
         user = _activate_verified_invitation(session, claim=claim)
     if user is None or user.status != "active":
         raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
@@ -247,7 +294,7 @@ def login(
         session_version=1,
         permission_version=membership.permission_version if membership else 1,
         csrf_token_hash=hash_secret(csrf_token),
-        device_label=request.device_label,
+        device_label=device_label,
         user_agent_summary=(user_agent or "")[:300] or None,
         ip_hash=_ip_hash(ip_address),
         issued_at=now,

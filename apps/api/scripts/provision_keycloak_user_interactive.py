@@ -2,17 +2,54 @@
 
 Run this through the production one-off Compose service, or from a trusted
 operator workstation with an approved private Keycloak administration path.
-Administrator and temporary-user passwords are read from the terminal with
-echo disabled, kept only in memory, and never sent to the application API.
+Administrator and initial-user passwords are read from the terminal with echo
+disabled, kept only in memory, and never sent to the application API.
 """
 
 from __future__ import annotations
 
 import argparse
 from getpass import getpass
+import re
 from urllib.parse import quote, urlparse
 
 import httpx
+
+
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+E164_PATTERN = re.compile(r"^\+[1-9][0-9]{7,14}$")
+BLOCKING_PASSWORD_ACTIONS = {"UPDATE_PASSWORD", "CONFIGURE_TOTP"}
+
+
+def _normalized_email(value: str) -> str:
+    email = value.strip().lower()
+    if len(email) > 320 or not EMAIL_PATTERN.fullmatch(email):
+        raise SystemExit("A valid invited email is required.")
+    return email
+
+
+def _login_identifier(value: str | None, *, invited_email: str) -> str:
+    identifier = (value or invited_email).strip()
+    if "@" in identifier:
+        normalized = _normalized_email(identifier)
+        if normalized != invited_email:
+            raise SystemExit("An email login identifier must match the invited email.")
+        return normalized
+    if not E164_PATTERN.fullmatch(identifier):
+        raise SystemExit(
+            "Login identifier must be the invited email or an E.164 phone number."
+        )
+    return identifier
+
+
+def _valid_password(value: str) -> bool:
+    return (
+        len(value) >= 12
+        and any(character.isupper() for character in value)
+        and any(character.islower() for character in value)
+        and any(character.isdigit() for character in value)
+        and any(not character.isalnum() and not character.isspace() for character in value)
+    )
 
 
 def _safe_base_url(value: str, *, allow_internal_keycloak_http: bool = False) -> str:
@@ -57,10 +94,11 @@ def provision(arguments: argparse.Namespace) -> None:
         arguments.server_url,
         allow_internal_keycloak_http=arguments.allow_internal_keycloak_http,
     )
-    email = arguments.email.strip().lower()
+    email = _normalized_email(arguments.email)
+    username = _login_identifier(arguments.username, invited_email=email)
     display_name = arguments.display_name.strip()
-    if email.count("@") != 1 or not display_name:
-        raise SystemExit("A valid invited email and non-empty display name are required.")
+    if not display_name:
+        raise SystemExit("A non-empty display name is required.")
 
     admin_password = getpass("Keycloak administrator password: ")
     if not admin_password:
@@ -100,14 +138,75 @@ def provision(arguments: argparse.Namespace) -> None:
         if len(exact) > 1:
             raise SystemExit("Multiple Keycloak users use this email; resolve the ambiguity first.")
 
+        username_lookup = _request(
+            client,
+            "GET",
+            f"{admin_root}/users",
+            expected={200},
+            headers=headers,
+            params={"username": username, "exact": "true"},
+        ).json()
+        username_conflicts = [
+            row
+            for row in username_lookup
+            if isinstance(row, dict)
+            and str(row.get("username", "")).casefold() == username.casefold()
+            and str(row.get("email", "")).strip().lower() != email
+        ]
+        if username_conflicts:
+            raise SystemExit("The requested login identifier already belongs to another user.")
+
+        email_verified = bool(arguments.email_verified)
         if exact:
             user_id = str(exact[0]["id"])
-            print(f"Existing Keycloak identity found for {email}; no password was changed.")
+            user_path = f"{admin_root}/users/{quote(user_id, safe='')}"
+            current_user = _request(
+                client,
+                "GET",
+                user_path,
+                expected={200},
+                headers=headers,
+            ).json()
+            if not isinstance(current_user, dict):
+                raise SystemExit("Keycloak returned an invalid user representation.")
+            email_verified = email_verified or current_user.get("emailVerified") is True
+            required_actions = [
+                action
+                for action in current_user.get("requiredActions", [])
+                if action not in BLOCKING_PASSWORD_ACTIONS
+                and (action != "VERIFY_EMAIL" or not email_verified)
+            ]
+            if not email_verified and "VERIFY_EMAIL" not in required_actions:
+                required_actions.append("VERIFY_EMAIL")
+            current_user.update(
+                {
+                    "username": username,
+                    "email": email,
+                    "enabled": True,
+                    "emailVerified": email_verified,
+                    "requiredActions": required_actions,
+                }
+            )
+            _request(
+                client,
+                "PUT",
+                user_path,
+                expected={204},
+                headers=headers,
+                json=current_user,
+            )
+            print(
+                f"Existing Keycloak identity updated for {email}; "
+                "its password was not changed."
+            )
         else:
-            temporary_password = getpass("Temporary user password (12+ characters): ")
-            confirmation = getpass("Repeat temporary user password: ")
-            if temporary_password != confirmation or len(temporary_password) < 12:
-                raise SystemExit("Temporary passwords did not match or were shorter than 12 characters.")
+            initial_password = getpass("Initial user password: ")
+            confirmation = getpass("Repeat initial user password: ")
+            if initial_password != confirmation or not _valid_password(initial_password):
+                raise SystemExit(
+                    "Passwords must match and contain 12+ characters with upper, lower, "
+                    "digit, and special characters."
+                )
             create_response = _request(
                 client,
                 "POST",
@@ -115,12 +214,12 @@ def provision(arguments: argparse.Namespace) -> None:
                 expected={201},
                 headers=headers,
                 json={
-                    "username": email,
+                    "username": username,
                     "email": email,
                     "firstName": display_name,
                     "enabled": True,
-                    "emailVerified": False,
-                    "requiredActions": ["VERIFY_EMAIL", "UPDATE_PASSWORD", "CONFIGURE_TOTP"],
+                    "emailVerified": email_verified,
+                    "requiredActions": [] if email_verified else ["VERIFY_EMAIL"],
                 },
             )
             location = create_response.headers.get("location", "")
@@ -135,13 +234,13 @@ def provision(arguments: argparse.Namespace) -> None:
                 headers=headers,
                 json={
                     "type": "password",
-                    "value": temporary_password,
-                    "temporary": True,
+                    "value": initial_password,
+                    "temporary": False,
                 },
             )
-            print(f"Created disabled-by-policy login identity for {email}; emailVerified remains false.")
+            print(f"Created Keycloak password identity for {email}.")
 
-        if arguments.send_actions_email:
+        if arguments.send_actions_email and not email_verified:
             params: dict[str, str] = {}
             if arguments.login_client_id:
                 params["client_id"] = arguments.login_client_id
@@ -154,15 +253,17 @@ def provision(arguments: argparse.Namespace) -> None:
                 expected={204},
                 headers=headers,
                 params=params,
-                json=["VERIFY_EMAIL", "UPDATE_PASSWORD", "CONFIGURE_TOTP"],
+                json=["VERIFY_EMAIL"],
             )
-            print("Verification/setup email requested. Login remains blocked until Keycloak verifies it.")
-        else:
+            print("Verification email requested. Login remains blocked until Keycloak verifies it.")
+        elif not email_verified:
             print(
                 "SMTP action email was not requested. Keep emailVerified=false until an operator "
                 "verifies mailbox ownership out of band, records the evidence, and marks it verified "
                 "in Keycloak Admin Console. This manual attestation is less auditable than SMTP."
             )
+        else:
+            print("Email ownership is recorded as verified; direct password login is enabled.")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -182,7 +283,16 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--admin-client-id", default="admin-cli")
     command.add_argument("--admin-username", default="admin")
     command.add_argument("--email", required=True, help="Exact email already invited in the SaaS")
+    command.add_argument(
+        "--username",
+        help="Login name: the invited email or an E.164 phone number",
+    )
     command.add_argument("--display-name", required=True)
+    command.add_argument(
+        "--email-verified",
+        action="store_true",
+        help="Operator attests that mailbox ownership was verified out of band",
+    )
     command.add_argument("--send-actions-email", action="store_true")
     command.add_argument("--login-client-id")
     command.add_argument("--redirect-uri")

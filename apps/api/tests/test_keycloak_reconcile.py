@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from scripts.reconcile_keycloak_realm import (
+    BOOTSTRAP_USER_MANAGED_FIELDS,
     CLIENT_MANAGED_ATTRIBUTES,
     CLIENT_MANAGED_FIELDS,
     REALM_MANAGED_FIELDS,
@@ -21,7 +22,15 @@ def test_desired_configuration_accepts_compact_realm_without_smtp(
 ) -> None:
     realm = {
         "realm": "atc",
-        "users": [{"email": "owner@example.cn"}],
+        "users": [
+            {
+                "username": "owner@example.cn",
+                "email": "owner@example.cn",
+                "enabled": True,
+                "emailVerified": True,
+                "requiredActions": [],
+            }
+        ],
         **{field: f"desired-{field}" for field in REALM_MANAGED_FIELDS},
         "clients": [
             {
@@ -53,7 +62,15 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
 ) -> None:
     desired_realm = {
         "realm": "atc",
-        "users": [{"email": "owner@example.cn"}],
+        "users": [
+            {
+                "username": "owner@example.cn",
+                "email": "owner@example.cn",
+                "enabled": True,
+                "emailVerified": True,
+                "requiredActions": [],
+            }
+        ],
         **{field: f"desired-{field}" for field in REALM_MANAGED_FIELDS},
     }
     desired_realm.update(
@@ -90,8 +107,8 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
         {
             "enabled": True,
             "publicClient": False,
-            "standardFlowEnabled": True,
-            "directAccessGrantsEnabled": False,
+            "standardFlowEnabled": False,
+            "directAccessGrantsEnabled": True,
             "serviceAccountsEnabled": False,
             "frontchannelLogout": True,
             "redirectUris": [
@@ -122,6 +139,15 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
             "email": None,
             "emailVerified": False,
         },
+        "realm_user": {
+            "id": "realm-user-uuid",
+            "username": "owner@example.cn",
+            "email": "owner@example.cn",
+            "enabled": True,
+            "emailVerified": False,
+            "requiredActions": ["UPDATE_PASSWORD", "CONFIGURE_TOTP"],
+            "operatorCustomUserField": "preserved",
+        },
     }
     smtp_tests: list[dict[str, object]] = []
 
@@ -149,6 +175,21 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
             return httpx.Response(200, json=state["realm"])
         if path == "/admin/realms/atc" and request.method == "PUT":
             state["realm"] = json.loads(request.content)
+            return httpx.Response(204)
+        if path == "/admin/realms/atc/users" and request.method == "GET":
+            assert request.url.params["email"] == "owner@example.cn"
+            assert request.url.params["exact"] == "true"
+            return httpx.Response(200, json=[state["realm_user"]])
+        if (
+            path == "/admin/realms/atc/users/realm-user-uuid"
+            and request.method == "GET"
+        ):
+            return httpx.Response(200, json=state["realm_user"])
+        if (
+            path == "/admin/realms/atc/users/realm-user-uuid"
+            and request.method == "PUT"
+        ):
+            state["realm_user"] = json.loads(request.content)
             return httpx.Response(204)
         if path == "/admin/realms/atc/clients" and request.method == "GET":
             assert request.url.params["clientId"] == "atc-web"
@@ -183,6 +224,9 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
     assert state["realm"]["operatorCustomRealmField"] == "preserved"
     assert state["master_admin"]["email"] == "owner@example.cn"
     assert state["master_admin"]["emailVerified"] is True
+    assert state["realm_user"]["operatorCustomUserField"] == "preserved"
+    for field in BOOTSTRAP_USER_MANAGED_FIELDS:
+        assert state["realm_user"][field] == desired_realm["users"][0][field]
     for field in REALM_MANAGED_FIELDS:
         assert state["realm"][field] == desired_realm[field]
     if smtp_enabled:

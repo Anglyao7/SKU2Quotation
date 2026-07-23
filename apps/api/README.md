@@ -36,7 +36,7 @@ python -m venv .venv
 
 API 文档：`http://127.0.0.1:8000/docs`
 
-Web 认证壳层使用内存 Access Token、HttpOnly Refresh Cookie 和 Session-scoped CSRF Token。刷新页面会旋转 Refresh Token 并恢复可信 Session；旧 LocalStorage Access Token 会被清除。开发环境登录使用 `local_fake`，Staging/Production 必须注册批准的 OIDC Provider，否则启动保持 fail-closed。
+Web 认证壳层使用内存 Access Token、HttpOnly Refresh Cookie 和 Session-scoped CSRF Token。刷新页面会旋转 Refresh Token 并恢复可信 Session；旧 LocalStorage Access Token 会被清除。开发环境登录使用 `local_fake`；Staging/Production 的账号、邮箱或手机号与密码由 Keycloak 校验，否则启动保持 fail-closed。
 
 工作区认证接口：
 
@@ -161,7 +161,7 @@ $env:RABBITMQ_URL='amqp://user:password@rabbitmq:5672/%2F'
 - `GET /api/v1/me`
 - `GET /api/v1/me/permissions`
 
-生产不保存本地密码；登录通过 OIDC Authorization Code + PKCE Provider Port。仓库中的 `local_fake` Adapter 只允许非生产 profile。Refresh Token 仅写 Secure/HttpOnly/SameSite Cookie，数据库只存 HMAC hash；Access Token 每次请求仍需回查 Session、ACTIVE Membership、Tenant 与 permission version。客户端提交的 tenant header 不作为授权根。
+生产不保存本地密码；浏览器通过同源 HTTPS 提交账号标识和密码，FastAPI 仅将凭据转交 Keycloak Direct Grant 校验，并验证返回令牌的签名、issuer、audience、subject 与已验证邮箱。仓库中的 `local_fake` Adapter 只允许非生产 profile。Refresh Token 仅写 Secure/HttpOnly/SameSite Cookie，数据库只存 HMAC hash；Access Token 每次请求仍需回查 Session、ACTIVE Membership、Tenant 与 permission version。客户端提交的 tenant header 不作为授权根。
 
 平台管理员先在“商家管理 → 邀请成员”登记邮箱和租户角色，再由受信任运维人员在生产服务器执行：
 
@@ -171,12 +171,12 @@ sudo ./infra/production/keycloak-provision-user.sh \
 ```
 
 包装脚本启动一个只加入 Keycloak 私有 `identity` 网络的一次性容器；
-公网 `/admin*` 仍然保持关闭。Keycloak 管理员密码和临时用户密码只通过
+公网 `/admin*` 仍然保持关闭。Keycloak 管理员密码和初始用户密码只通过
 无回显终端提示输入；脚本没有密码命令行参数，也不会把凭据交给业务 API、
-环境变量或容器配置。脚本始终以 `emailVerified=false` 创建身份，并强制由
-Keycloak SMTP 发送验证、改密和 TOTP 动作邮件，完成后回到 `/login`。
-SMTP 配置是生产部署必填项；发信失败时保持未验证并允许安全重试，不提供
-人工伪造邮箱已验证状态的生产旁路。
+环境变量或容器配置。初始密码直接保存为永久凭据；默认仍以
+`emailVerified=false` 创建身份，并由 Keycloak SMTP 发送邮箱验证邮件。
+SMTP 发信失败时身份保持未验证并允许安全重试。只有运维人员已完成线下
+邮箱核验并留存证据时，才可显式使用 `--email-verified`。
 
 生产启动导入只创建不存在的 Realm。后续发布由
 `infra/production/keycloak-reconcile.sh` 通过私有 Admin API 对账受管 Realm

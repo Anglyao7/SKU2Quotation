@@ -117,6 +117,99 @@ def test_oidc_id_token_requires_valid_signature_audience_issuer_and_nonce(
         )
 
 
+def test_oidc_password_grant_validates_tokens_without_exposing_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issuer = "https://identity.example.test/realms/atc"
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    settings = OidcSettings(
+        issuer=issuer,
+        client_id="atc-web",
+        client_secret="S" * 48,
+        scopes=("openid", "profile", "email"),
+        redirect_uris=("https://app.example.test/login/callback",),
+        token_endpoint_auth_method="client_secret_basic",
+        allowed_algorithms=("RS256",),
+        allowed_endpoint_hosts=("identity.example.test",),
+        timeout_seconds=5,
+    )
+    discovery = OidcDiscovery(
+        issuer=issuer,
+        authorization_endpoint=f"{issuer}/authorize",
+        token_endpoint=f"{issuer}/token",
+        jwks_uri=f"{issuer}/jwks",
+        userinfo_endpoint=None,
+        end_session_endpoint=f"{issuer}/logout",
+        signing_algorithms=("RS256",),
+    )
+    now = datetime.now(UTC)
+    token = jwt.encode(
+        {
+            "iss": issuer,
+            "aud": "atc-web",
+            "sub": "password-subject",
+            "email": "OWNER@EXAMPLE.TEST",
+            "email_verified": True,
+            "name": "Password Owner",
+            "iat": now,
+            "exp": now + timedelta(minutes=5),
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "password-key"},
+    )
+    captured: dict[str, object] = {}
+
+    def token_request(url: str, **kwargs: object) -> httpx.Response:
+        captured.update({"url": url, **kwargs})
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "provider-access-token",
+                "id_token": token,
+                "token_type": "Bearer",
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.load_oidc_settings",
+        lambda: settings,
+    )
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.get_oidc_discovery",
+        lambda *_args: discovery,
+    )
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.get_signing_key",
+        lambda _token, **_kwargs: public_key,
+    )
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.httpx.post",
+        token_request,
+    )
+
+    claim = OidcIdentityProviderAdapter().authenticate_password(
+        identifier="+8613800138000",
+        password="correct horse battery staple",
+    )
+
+    assert claim.subject == "password-subject"
+    assert claim.email_normalized == "owner@example.test"
+    assert claim.email_verified is True
+    assert captured["url"] == discovery.token_endpoint
+    assert captured["auth"] == ("atc-web", "S" * 48)
+    assert captured["follow_redirects"] is False
+    assert captured["data"] == {
+        "grant_type": "password",
+        "client_id": "atc-web",
+        "username": "+8613800138000",
+        "password": "correct horse battery staple",
+        "scope": "openid profile email",
+    }
+
+
 def test_oidc_discovery_endpoints_are_origin_allowlisted_and_jwks_never_redirects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

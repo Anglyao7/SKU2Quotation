@@ -39,3 +39,14 @@ class FakeIdentityProviderAdapter:
             subject=subject,
             email_verified=True,
         )
+
+    def authenticate_password(
+        self,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        del identifier, password
+        raise IdentityProviderError(
+            "password authentication is unavailable for the fake provider"
+        )

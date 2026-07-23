@@ -1,0 +1,25 @@
+export interface PasswordLoginPayload {
+  grant_type: "password";
+  identifier: string;
+  password: string;
+  device_label: string;
+}
+
+export function buildPasswordLoginPayload(
+  identifier: string,
+  password: string,
+): PasswordLoginPayload {
+  const normalizedIdentifier = identifier.trim();
+  if (!normalizedIdentifier) {
+    throw new Error("请输入账号、邮箱或手机号。");
+  }
+  if (!password) {
+    throw new Error("请输入密码。");
+  }
+  return {
+    grant_type: "password",
+    identifier: normalizedIdentifier,
+    password,
+    device_label: "AI Trade Cloud Web",
+  };
+}

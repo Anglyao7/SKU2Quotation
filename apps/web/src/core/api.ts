@@ -27,6 +27,7 @@ import type {
   SupplierProfile,
   SupplierProfileDetail,
 } from "./types";
+import { buildPasswordLoginPayload } from "./authCredentials";
 
 const CSRF_STORAGE_KEY = "atc.csrfToken";
 let accessToken: string | undefined;
@@ -44,12 +45,6 @@ const API_BASE = resolveApiBase();
 
 export interface AuthPublicConfig {
   provider: "local_fake" | "enterprise_oidc";
-  clientId?: string;
-  authorizationEndpoint?: string;
-  endSessionEndpoint?: string;
-  postLogoutRedirectUri?: string;
-  scopes: string[];
-  codeChallengeMethod: "S256";
 }
 
 export class CoreApiError extends Error {
@@ -221,42 +216,13 @@ export async function loginLocalDemo(): Promise<AuthTokenData> {
 }
 
 export async function getAuthConfig(): Promise<AuthPublicConfig> {
-  const row = await request<{
-    provider: "local_fake" | "enterprise_oidc";
-    client_id?: string | null;
-    authorization_endpoint?: string | null;
-    end_session_endpoint?: string | null;
-    post_logout_redirect_uri?: string | null;
-    scopes: string[];
-    code_challenge_method: "S256";
-  }>("/auth/config", {}, false);
-  return {
-    provider: row.provider,
-    clientId: defined(row.client_id),
-    authorizationEndpoint: defined(row.authorization_endpoint),
-    endSessionEndpoint: defined(row.end_session_endpoint),
-    postLogoutRedirectUri: defined(row.post_logout_redirect_uri),
-    scopes: row.scopes,
-    codeChallengeMethod: row.code_challenge_method,
-  };
+  return request<AuthPublicConfig>("/auth/config", {}, false);
 }
 
-export async function loginEnterpriseOidc(input: {
-  authorizationCode: string;
-  codeVerifier: string;
-  redirectUri: string;
-  nonce: string;
-}): Promise<AuthTokenData> {
+export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
   const payload = await request<{ data: ApiAuthTokenData }>("/auth/login", {
     method: "POST",
-    body: JSON.stringify({
-      provider: "enterprise_oidc",
-      authorization_code: input.authorizationCode,
-      code_verifier: input.codeVerifier,
-      redirect_uri: input.redirectUri,
-      nonce: input.nonce,
-      device_label: "AI Trade Cloud Web",
-    }),
+    body: JSON.stringify(buildPasswordLoginPayload(identifier, password)),
   }, false);
   return acceptAuthData(payload.data);
 }
@@ -300,32 +266,12 @@ export async function getPermissions(): Promise<PermissionSet> {
   return { membershipId: row.membership_id, permissionVersion: row.permission_version, permissions: row.permissions };
 }
 
-export async function logoutSession(): Promise<string | undefined> {
-  let authConfig: AuthPublicConfig | undefined;
-  try {
-    authConfig = await getAuthConfig();
-  } catch {
-    // Local session revocation must still proceed if discovery is unavailable.
-  }
+export async function logoutSession(): Promise<void> {
   try {
     await request<void>("/auth/logout", { method: "POST" }, false);
   } finally {
     clearCoreAuthSession();
   }
-  if (
-    authConfig?.provider !== "enterprise_oidc"
-    || !authConfig.clientId
-    || !authConfig.endSessionEndpoint
-    || !authConfig.postLogoutRedirectUri
-  ) return undefined;
-  const expectedRedirect = `${window.location.origin}/login`;
-  if (authConfig.postLogoutRedirectUri !== expectedRedirect) {
-    throw new CoreApiError("企业退出地址与当前站点不匹配。", 503);
-  }
-  const endSession = new URL(authConfig.endSessionEndpoint);
-  endSession.searchParams.set("client_id", authConfig.clientId);
-  endSession.searchParams.set("post_logout_redirect_uri", expectedRedirect);
-  return endSession.toString();
 }
 
 interface ApiImportJob {

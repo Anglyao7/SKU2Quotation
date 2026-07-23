@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "test:auth": "node scripts/test-auth-pkce.mjs",
+    "test:auth": "node scripts/test-auth-password.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
