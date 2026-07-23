@@ -564,6 +564,8 @@ services:
       - scripts.reconcile_keycloak_realm
     volumes:
       - ../../.runtime/keycloak/atc-realm.json:/run/atc/atc-realm.json:ro
+    group_add:
+      - "0"
     restart: "no"
     security_opt: [no-new-privileges:true]
     networks: [identity]

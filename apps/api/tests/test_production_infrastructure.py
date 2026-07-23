@@ -150,6 +150,7 @@ def test_production_compose_has_one_public_edge_and_private_dependencies() -> No
     assert services["keycloak-reconciler"]["volumes"] == [
         "../../.runtime/keycloak/atc-realm.json:/run/atc/atc-realm.json:ro"
     ]
+    assert services["keycloak-reconciler"]["group_add"] == ["0"]
     assert set(services["postgres"]["networks"]) == {"data"}
     assert set(services["keycloak-postgres"]["networks"]) == {"identity"}
     assert services["redis"]["command"][-1] == "noeviction"
@@ -240,6 +241,7 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
     assert services["api"]["volumes"] == [
         "local-object-data:/var/lib/atc/object-storage"
     ]
+    assert services["keycloak-reconciler"]["group_add"] == ["0"]
 
     for name in (
         "caddy",
