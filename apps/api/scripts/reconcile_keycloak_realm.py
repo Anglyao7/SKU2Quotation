@@ -99,6 +99,11 @@ def _desired_configuration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     default_client_scopes = desired_client.get("defaultClientScopes")
     if (
         not isinstance(default_client_scopes, list)
+        or any(
+            not isinstance(scope, str) or not scope
+            for scope in default_client_scopes
+        )
+        or len(default_client_scopes) != len(set(default_client_scopes))
         or "service_account" not in default_client_scopes
     ):
         raise SystemExit(
@@ -468,6 +473,19 @@ def reconcile(
         headers=headers,
     ).json()
     for field in CLIENT_MANAGED_FIELDS:
+        if field == "defaultClientScopes":
+            verified_scopes = verified_client.get(field)
+            desired_scopes = desired_client[field]
+            if (
+                not isinstance(verified_scopes, list)
+                or any(not isinstance(scope, str) for scope in verified_scopes)
+                or sorted(verified_scopes) != sorted(desired_scopes)
+            ):
+                raise SystemExit(
+                    "Keycloak client verification failed for "
+                    "defaultClientScopes."
+                )
+            continue
         if verified_client.get(field) != desired_client[field]:
             raise SystemExit(f"Keycloak client verification failed for {field}.")
     verified_attributes = verified_client.get("attributes") or {}

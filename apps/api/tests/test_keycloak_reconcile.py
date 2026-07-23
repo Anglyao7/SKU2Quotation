@@ -298,6 +298,9 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
             return httpx.Response(200, json=state["client"])
         if path == "/admin/realms/atc/clients/client-uuid" and request.method == "PUT":
             state["client"] = json.loads(request.content)
+            state["client"]["defaultClientScopes"] = list(
+                reversed(state["client"]["defaultClientScopes"])
+            )
             return httpx.Response(204)
         if (
             path
@@ -376,7 +379,10 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
         assert smtp_tests == []
     assert state["client"]["attributes"]["operator.custom"] == "preserved"
     for field in CLIENT_MANAGED_FIELDS:
-        assert state["client"][field] == desired_client[field]
+        if field == "defaultClientScopes":
+            assert sorted(state["client"][field]) == sorted(desired_client[field])
+        else:
+            assert state["client"][field] == desired_client[field]
     for field in CLIENT_MANAGED_ATTRIBUTES:
         assert (
             state["client"]["attributes"][field]
