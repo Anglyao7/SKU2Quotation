@@ -169,7 +169,6 @@ secret_values=(
   OIDC_CLIENT_SECRET
   KEYCLOAK_DB_PASSWORD
   KEYCLOAK_ADMIN_PASSWORD
-  KEYCLOAK_INITIAL_USER_PASSWORD
 )
 if [[ "${ATC_DEPLOYMENT_PROFILE}" == "standard" ]]; then
   secret_values+=(RABBITMQ_PASSWORD MINIO_ROOT_PASSWORD)
@@ -179,6 +178,18 @@ for name in "${secret_values[@]}"; do
   [[ "${value}" =~ ^[0-9A-Fa-f]{64,}$ ]] \
     || die "${name} must be at least 32 random bytes encoded as hexadecimal"
 done
+
+initial_user_password="${KEYCLOAK_INITIAL_USER_PASSWORD}"
+(( ${#initial_user_password} >= 16 )) \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain at least 16 characters"
+[[ "${initial_user_password}" =~ [[:upper:]] ]] \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain an uppercase letter"
+[[ "${initial_user_password}" =~ [[:lower:]] ]] \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain a lowercase letter"
+[[ "${initial_user_password}" =~ [[:digit:]] ]] \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain a digit"
+[[ "${initial_user_password}" =~ [^[:alnum:][:space:]] ]] \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain a special character"
 
 [[ "${ATC_BACKUP_ROOT}" == /* && "${ATC_BACKUP_ROOT}" != "/" ]] \
   || die "ATC_BACKUP_ROOT must be a dedicated absolute directory"

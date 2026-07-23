@@ -396,13 +396,14 @@ def test_keycloak_realm_renderer_json_escapes_environment_values(
     )
     output = tmp_path / "realm.json"
     email = "owner+ops&/cn@example.cn"
+    initial_password = 'Aa1!quote"slash\\amp&less<'
     environment = {
         **os.environ,
         "ATC_DOMAIN": "catalog.example.cn",
         "OIDC_CLIENT_ID": "atc-web",
         "OIDC_CLIENT_SECRET": "a" * 64,
         "OIDC_BOOTSTRAP_ADMIN_EMAIL": email,
-        "KEYCLOAK_INITIAL_USER_PASSWORD": "b" * 64,
+        "KEYCLOAK_INITIAL_USER_PASSWORD": initial_password,
         "KEYCLOAK_SMTP_HOST": "smtp.example.cn",
         "KEYCLOAK_SMTP_PORT": "587",
         "KEYCLOAK_SMTP_FROM": "no-reply@example.cn",
@@ -420,12 +421,44 @@ def test_keycloak_realm_renderer_json_escapes_environment_values(
     realm = json.loads(output.read_text(encoding="utf-8"))
     assert realm["users"][0]["email"] == email
     assert realm["users"][0]["username"] == email
+    assert realm["users"][0]["credentials"][0]["value"] == initial_password
     assert realm["clients"][0]["redirectUris"] == [
         "https://catalog.example.cn/login/callback",
         "https://catalog.example.cn/login",
     ]
     assert realm["smtpServer"]["password"] == "c" * 32
     assert output.stat().st_mode & 0o777 == 0o600
+
+
+def test_keycloak_initial_password_validation_matches_realm_policy() -> None:
+    validator = (
+        REPOSITORY_ROOT
+        / "infra"
+        / "production"
+        / "scripts"
+        / "validate_env.sh"
+    ).read_text(encoding="utf-8")
+    hex_secret_block = validator.split("secret_values=(", 1)[1].split(
+        "\n)", 1
+    )[0]
+    assert "KEYCLOAK_INITIAL_USER_PASSWORD" not in hex_secret_block
+    assert "initial_user_password" in validator
+    for password_class in (
+        "[[:upper:]]",
+        "[[:lower:]]",
+        "[[:digit:]]",
+        "[^[:alnum:][:space:]]",
+    ):
+        assert password_class in validator
+
+    example = (REPOSITORY_ROOT / ".env.production.example").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "KEYCLOAK_INITIAL_USER_PASSWORD="
+        "'REPLACE_WITH_STRONG_MIXED_TEMPORARY_PASSWORD'"
+    ) in example
+    assert "printf 'Aa1!%s\\n'" in example
 
 
 def test_keycloak_realm_renderer_omits_smtp_only_when_explicitly_disabled(
@@ -453,7 +486,7 @@ def test_keycloak_realm_renderer_omits_smtp_only_when_explicitly_disabled(
         "OIDC_CLIENT_ID": "atc-web",
         "OIDC_CLIENT_SECRET": "a" * 64,
         "OIDC_BOOTSTRAP_ADMIN_EMAIL": "owner@example.cn",
-        "KEYCLOAK_INITIAL_USER_PASSWORD": "b" * 64,
+        "KEYCLOAK_INITIAL_USER_PASSWORD": "Aa1!" + "b" * 60,
     }
     for name in (
         "KEYCLOAK_SMTP_HOST",

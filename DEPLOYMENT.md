@@ -84,11 +84,19 @@ cd /opt/ai-trade-cloud/app
 install -m 0600 .env.production.example .env.production
 ```
 
-编辑 `.env.production`，替换所有占位值。每个密码和密钥应独立生成，
-不要重复使用：
+编辑 `.env.production`，替换所有占位值。除首次用户临时密码外，每个服务
+密码和密钥应独立生成，不要重复使用：
 
 ```bash
 openssl rand -hex 32
+```
+
+`KEYCLOAK_INITIAL_USER_PASSWORD` 不能使用纯 hex：它必须至少 16 位并同时
+包含大写字母、小写字母、数字和特殊字符。可用下列命令生成后，以单引号
+包裹写入环境文件：
+
+```bash
+printf 'Aa1!%s\n' "$(openssl rand -hex 24)"
 ```
 
 `OIDC_BOOTSTRAP_ADMIN_EMAIL` 必须是真实、唯一且由运营者控制的邮箱。
