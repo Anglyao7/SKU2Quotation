@@ -268,9 +268,27 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
     compact_caddy = (
         REPOSITORY_ROOT / "infra" / "production" / "Caddyfile.compact"
     ).read_text(encoding="utf-8")
+    www_redirect = (
+        REPOSITORY_ROOT
+        / "infra"
+        / "production"
+        / "Caddyfile.www-redirect"
+    ).read_text(encoding="utf-8")
+    production_library = (
+        REPOSITORY_ROOT
+        / "infra"
+        / "production"
+        / "scripts"
+        / "lib.sh"
+    ).read_text(encoding="utf-8")
     assert "import /etc/caddy/sites-enabled/*.caddy" in compact_caddy
     assert "reverse_proxy atc-frontend:8080" in compact_caddy
     assert "reverse_proxy web:8080" not in compact_caddy
+    assert "www.{$ATC_DOMAIN}" in www_redirect
+    assert "redir https://{$ATC_DOMAIN}{uri} permanent" in www_redirect
+    assert '"${PRODUCTION_DIR}/Caddyfile.www-redirect" "${www_site}"' in (
+        production_library
+    )
 
 
 def test_production_auth_and_workers_keep_least_privilege_boundaries() -> None:

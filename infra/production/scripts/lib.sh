@@ -95,16 +95,21 @@ compose_file_arguments() {
 render_caddy_sites() {
   local sites_dir="${RUNTIME_DIR}/caddy/sites-enabled"
   local legacy_site="${sites_dir}/legacy-www.caddy"
+  local www_site="${sites_dir}/www.caddy"
   mkdir -p "${sites_dir}"
   chown 0:0 "${RUNTIME_DIR}" "${RUNTIME_DIR}/caddy" "${sites_dir}"
   chmod 750 "${RUNTIME_DIR}" "${RUNTIME_DIR}/caddy" "${sites_dir}"
+  rm -f "${legacy_site}"
 
   if [[ "${ATC_DEPLOYMENT_PROFILE:-standard}" == "compact" \
     && "${ATC_ENABLE_LEGACY_WWW:-false}" == "true" ]]; then
     install -o root -g root -m 0640 \
-      "${PRODUCTION_DIR}/Caddyfile.legacy-www" "${legacy_site}"
+      "${PRODUCTION_DIR}/Caddyfile.legacy-www" "${www_site}"
+  elif [[ "${ATC_DEPLOYMENT_PROFILE:-standard}" == "compact" ]]; then
+    install -o root -g root -m 0640 \
+      "${PRODUCTION_DIR}/Caddyfile.www-redirect" "${www_site}"
   else
-    rm -f "${legacy_site}"
+    rm -f "${www_site}"
   fi
 }
 

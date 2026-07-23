@@ -1,0 +1,4 @@
+www.{$ATC_DOMAIN} {
+	import security_headers
+	redir https://{$ATC_DOMAIN}{uri} permanent
+}
