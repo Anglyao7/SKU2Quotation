@@ -272,6 +272,20 @@ def test_member_invitation_migration_has_database_email_race_guard() -> None:
         assert role in invitation_source
 
 
+def test_postgres_oidc_binding_qualifies_the_tenant_loop_variable() -> None:
+    source = (
+        API_ROOT
+        / "migrations"
+        / "versions"
+        / "20260723_0025_fix_oidc_invitation_binding.py"
+    ).read_text(encoding="utf-8")
+
+    assert "FOREACH v_tenant_id IN ARRAY p_tenant_ids LOOP" in source
+    assert "membership.tenant_id = v_tenant_id" in source
+    assert "tenant.id = v_tenant_id" in source
+    assert "membership.tenant_id = tenant_id" not in source
+
+
 def test_managed_runtime_fails_before_database_initialization(tmp_path: Path) -> None:
     environment = os.environ.copy()
     environment.update(
