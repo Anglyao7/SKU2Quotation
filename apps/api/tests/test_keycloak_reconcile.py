@@ -41,6 +41,7 @@ def test_desired_configuration_accepts_compact_realm_without_smtp(
                     for field in CLIENT_MANAGED_FIELDS
                 },
                 "serviceAccountsEnabled": True,
+                "defaultClientScopes": ["profile", "email", "service_account"],
                 "attributes": {
                     field: f"desired-{field}"
                     for field in CLIENT_MANAGED_ATTRIBUTES
@@ -81,6 +82,7 @@ def test_desired_configuration_requires_password_management_service_account(
                     for field in CLIENT_MANAGED_FIELDS
                 },
                 "serviceAccountsEnabled": False,
+                "defaultClientScopes": ["profile", "email", "service_account"],
                 "attributes": {
                     field: f"desired-{field}"
                     for field in CLIENT_MANAGED_ATTRIBUTES
@@ -92,6 +94,45 @@ def test_desired_configuration_requires_password_management_service_account(
     path.write_text(json.dumps(realm), encoding="utf-8")
 
     with pytest.raises(SystemExit, match="password-management service account"):
+        _desired_configuration(path)
+
+
+def test_desired_configuration_requires_service_account_default_scope(
+    tmp_path: Path,
+) -> None:
+    realm = {
+        "realm": "atc",
+        "users": [
+            {
+                "username": "owner@example.cn",
+                "email": "owner@example.cn",
+                "enabled": True,
+                "emailVerified": True,
+                "requiredActions": [],
+            }
+        ],
+        **{field: f"desired-{field}" for field in REALM_MANAGED_FIELDS},
+        "clients": [
+            {
+                "clientId": "atc-web",
+                "secret": "a" * 64,
+                **{
+                    field: f"desired-{field}"
+                    for field in CLIENT_MANAGED_FIELDS
+                },
+                "serviceAccountsEnabled": True,
+                "defaultClientScopes": ["profile", "email"],
+                "attributes": {
+                    field: f"desired-{field}"
+                    for field in CLIENT_MANAGED_ATTRIBUTES
+                },
+            }
+        ],
+    }
+    path = tmp_path / "realm-without-service-account-scope.json"
+    path.write_text(json.dumps(realm), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="service_account default scope"):
         _desired_configuration(path)
 
 
@@ -155,7 +196,7 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
                 "https://catalog.example.cn/login",
             ],
             "webOrigins": ["https://catalog.example.cn"],
-            "defaultClientScopes": ["openid", "profile", "email"],
+            "defaultClientScopes": ["openid", "profile", "email", "service_account"],
         }
     )
     state = {

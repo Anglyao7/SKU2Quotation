@@ -63,7 +63,8 @@
         "roles",
         "profile",
         "basic",
-        "email"
+        "email",
+        "service_account"
       ]
     }
   ],

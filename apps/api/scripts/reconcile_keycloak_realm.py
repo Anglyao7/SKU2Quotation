@@ -96,6 +96,15 @@ def _desired_configuration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             "Rendered Keycloak client must enable its password-management "
             "service account."
         )
+    default_client_scopes = desired_client.get("defaultClientScopes")
+    if (
+        not isinstance(default_client_scopes, list)
+        or "service_account" not in default_client_scopes
+    ):
+        raise SystemExit(
+            "Rendered Keycloak client must include its service_account "
+            "default scope."
+        )
     desired_attributes = desired_client.get("attributes")
     if not isinstance(desired_attributes, dict):
         raise SystemExit("Rendered Keycloak client attributes are invalid.")
