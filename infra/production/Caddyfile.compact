@@ -26,11 +26,11 @@
 
 	@api path /api/*
 	handle @api {
-		reverse_proxy web:8080
+		reverse_proxy atc-frontend:8080
 	}
 
 	handle {
-		reverse_proxy web:8080
+		reverse_proxy atc-frontend:8080
 	}
 }
 

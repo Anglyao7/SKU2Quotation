@@ -131,7 +131,10 @@ services:
           memory: 128M
         reservations:
           memory: 32M
-    networks: [app]
+    networks:
+      app:
+        aliases:
+          - atc-frontend
 
   api:
     <<: *service-defaults

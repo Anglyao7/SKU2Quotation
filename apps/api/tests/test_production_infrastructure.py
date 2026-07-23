@@ -242,6 +242,7 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
         "local-object-data:/var/lib/atc/object-storage"
     ]
     assert services["keycloak-reconciler"]["group_add"] == ["0"]
+    assert services["web"]["networks"]["app"]["aliases"] == ["atc-frontend"]
 
     for name in (
         "caddy",
@@ -268,6 +269,8 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
         REPOSITORY_ROOT / "infra" / "production" / "Caddyfile.compact"
     ).read_text(encoding="utf-8")
     assert "import /etc/caddy/sites-enabled/*.caddy" in compact_caddy
+    assert "reverse_proxy atc-frontend:8080" in compact_caddy
+    assert "reverse_proxy web:8080" not in compact_caddy
 
 
 def test_production_auth_and_workers_keep_least_privilege_boundaries() -> None:
