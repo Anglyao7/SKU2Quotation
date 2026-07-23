@@ -16,6 +16,7 @@ import { Brand } from "./components/Brand";
 import { ErrorState } from "./components/States";
 import { useCoreAuth } from "./core/AuthContext";
 import { AiSearchPage } from "./core/pages/AiSearchPage";
+import { AccountSettingsPage } from "./core/pages/AccountSettingsPage";
 import { CoreDashboardPage } from "./core/pages/DashboardPage";
 import { InquiryPage } from "./core/pages/InquiryPage";
 import { PermissionsPage } from "./core/pages/PermissionsPage";
@@ -95,6 +96,7 @@ const router = createBrowserRouter([
         { path: "suppliers", element: <PermissionGate anyOf={["supplier.view", "supplier.manage", "product.import"]}><SuppliersPage /></PermissionGate> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
+        { path: "account", element: <AccountSettingsPage /> },
         { path: "system/permissions", element: <PermissionsPage /> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
         { path: "review", element: <Navigate to="/console/products/review" replace /> },
@@ -110,6 +112,7 @@ const router = createBrowserRouter([
   { path: "/review", element: <Navigate to="/console/products/review" replace /> },
   { path: "/inquiries", element: <Navigate to="/console/inquiries" replace /> },
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },
+  { path: "/account", element: <Navigate to="/console/account" replace /> },
   { path: "/system/permissions", element: <Navigate to="/console/system/permissions" replace /> },
   {
     path: "/:tenantSlug",

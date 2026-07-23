@@ -15,6 +15,7 @@ from ..auth_schemas import (
     AuthUser,
     MembershipSummary,
     MeResponse,
+    PasswordChangeRequest,
     PasswordLoginRequest,
     PermissionResponse,
     TenantContextRequest,
@@ -26,6 +27,7 @@ from ..services.auth.service import (
     IssuedSession,
     active_memberships_for_access_token,
     access_ttl_seconds,
+    change_password,
     login,
     logout,
     password_login,
@@ -250,6 +252,41 @@ def logout_endpoint(
     except AuthError as exc:
         raise _http_error(exc) from exc
     response.delete_cookie(REFRESH_COOKIE_NAME, path="/api/v1/auth")
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
+
+
+@router.put("/auth/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password_endpoint(
+    payload: PasswordChangeRequest,
+    request: Request,
+    response: Response,
+    csrf_token: str = Header(alias="X-CSRF-Token"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    session: Session = Depends(get_auth_session),
+) -> Response:
+    response.headers.update(NO_STORE_HEADERS)
+    access_token = _bearer_value(credentials)
+    enforce_rate_limit(
+        request,
+        scope="auth-password-change",
+        limit=configured_limit("RATE_LIMIT_PASSWORD_CHANGE_REQUESTS", 5),
+        window_seconds=configured_limit(
+            "RATE_LIMIT_PASSWORD_CHANGE_WINDOW_SECONDS",
+            900,
+            maximum=86_400,
+        ),
+        token=access_token,
+    )
+    try:
+        change_password(
+            session,
+            payload,
+            access_token=access_token,
+            csrf_token=csrf_token,
+        )
+    except AuthError as exc:
+        raise _http_error(exc) from exc
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
 

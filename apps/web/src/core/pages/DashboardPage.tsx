@@ -1,10 +1,20 @@
 import { Badge, Button, Card, Heading, Progress, Text } from "@radix-ui/themes";
-import { ArrowRight, Database, FileText, Package, Sparkle } from "@phosphor-icons/react";
+import {
+  ArrowRight,
+  Buildings,
+  ChatCircleDots,
+  CheckCircle,
+  Cube,
+  FileArrowUp,
+  FileText,
+  Package,
+  Sparkle,
+} from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { getDashboard } from "../api";
-import { CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
-import type { DashboardSnapshot } from "../types";
+import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
+import type { DashboardMetric, DashboardSnapshot } from "../types";
 
 const metricNames: Record<string, string> = {
   active_skus: "有效 SKU",
@@ -26,6 +36,24 @@ const destination: Record<string, string> = {
   pending_product_reviews: "/console/products/review",
 };
 
+const metricIcons: Record<string, typeof Cube> = {
+  active_skus: Cube,
+  active_suppliers: Buildings,
+  today_inquiries: ChatCircleDots,
+  inquiries_today: ChatCircleDots,
+  open_inquiries: ChatCircleDots,
+  pending_quotations: FileText,
+  pending_product_reviews: Package,
+};
+
+const priorityKeys = [
+  "pending_product_reviews",
+  "pending_quotations",
+  "open_inquiries",
+  "today_inquiries",
+  "inquiries_today",
+];
+
 export function CoreDashboardPage() {
   const [data, setData] = useState<DashboardSnapshot>();
   const [loading, setLoading] = useState(true);
@@ -40,52 +68,79 @@ export function CoreDashboardPage() {
   useEffect(() => { void load(); }, [load]);
 
   const metrics = useMemo(() => (data?.metrics ?? []).slice(0, 4), [data]);
+  const priorities = useMemo(
+    () => (data?.metrics ?? [])
+      .filter((metric) => priorityKeys.includes(metric.key) && metric.value > 0)
+      .sort((left, right) => priorityKeys.indexOf(left.key) - priorityKeys.indexOf(right.key))
+      .slice(0, 3),
+    [data],
+  );
   if (loading && !data) return <div className="core-workspace"><CoreLoading label="正在读取实时经营数据" /></div>;
 
   return (
     <div className="core-workspace">
       <CorePageHeading
-        eyebrow={data?.dataScope === "SELF" ? "我的工作台" : "企业经营指挥中心"}
-        title="今天最需要关注的业务"
-        description="询盘、报价、产品审核与供应网络均来自当前租户的实时数据。"
-        actions={<><Button asChild variant="soft"><Link to="/console/ai-search"><Sparkle />AI 查产品</Link></Button><Button onClick={() => void load()}>刷新</Button></>}
+        eyebrow={data?.dataScope === "SELF" ? "我的工作台" : "当前商家 · 实时数据"}
+        title="工作台"
+        description="先处理需要确认的业务，再继续整理 SKU、供应商与报价。"
+        actions={<><Button asChild variant="soft"><Link to="/console/ai-search"><Sparkle />AI 查找</Link></Button><Button asChild><Link to="/console/products"><Cube />管理 SKU</Link></Button></>}
       />
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
-      <section className="core-metric-grid">
+
+      <section className="core-dashboard-focus">
+        <Card className="core-focus-card">
+          <div className="core-panel-heading">
+            <div><Text size="1" color="gray">今日待办</Text><Heading size="5">{priorities.length ? "需要你确认的事项" : "当前没有紧急事项"}</Heading></div>
+            <Badge color={priorities.length ? "amber" : "jade"}>{priorities.length ? `${priorities.length} 类待处理` : "状态正常"}</Badge>
+          </div>
+          {priorities.length ? (
+            <div className="core-priority-list">
+              {priorities.map((metric) => <PriorityRow metric={metric} key={metric.key} />)}
+            </div>
+          ) : (
+            <div className="core-clear-state">
+              <span><CheckCircle size={24} weight="duotone" /></span>
+              <div><Text weight="medium" as="div">待审核、待确认与进行中事项均已清空</Text><Text size="2" color="gray">可以继续补充商品资料，或从客户需求开始一次新的匹配。</Text></div>
+            </div>
+          )}
+          <div className="core-quick-actions" aria-label="常用操作">
+            <Button asChild variant="soft" color="gray"><Link to="/console/suppliers"><FileArrowUp />导入资料</Link></Button>
+            <Button asChild variant="soft" color="gray"><Link to="/console/inquiries"><ChatCircleDots />新建询盘</Link></Button>
+            <Button asChild variant="soft" color="gray"><Link to="/console/quotes"><FileText />查看报价</Link></Button>
+          </div>
+        </Card>
+
+        <Card className="core-panel core-health-panel">
+          <div className="core-panel-heading"><div><Text size="1" color="gray">商品资料完整度</Text><Heading size="5">{data?.dataHealth ? `${data.dataHealth.score} / 100` : "暂不可见"}</Heading></div><Package size={23} /></div>
+          {data?.dataHealth ? (
+            <div className="core-health">
+              <Health label="已批准图片" value={data.dataHealth.approvedImageCoverage} />
+              <Health label="供应商证据" value={data.dataHealth.supplierSourceCoverage} />
+              <Health label="有效价格" value={data.dataHealth.validPriceCoverage} />
+              <Button asChild variant="ghost" size="1"><Link to="/console/products">完善商品资料<ArrowRight /></Link></Button>
+            </div>
+          ) : <Text size="2" color="gray">当前角色无法查看资料完整度。</Text>}
+        </Card>
+      </section>
+
+      <section className="core-metric-grid" aria-label="经营指标">
         {metrics.map((metric, index) => (
           <Card asChild key={metric.key} className="core-metric-card">
             <Link to={destination[metric.key] ?? metric.destination ?? "/console"}>
-              <span className="core-metric-icon">{index % 2 ? <FileText /> : <Database />}</span>
-              <Text size="2" color="gray">{metricNames[metric.key] ?? metric.label}</Text>
-              <strong>{metric.value.toLocaleString("zh-CN")}{metric.unit ?? ""}</strong>
-              <Text size="1" color="gray">{metric.status === "AVAILABLE" ? "实时数据" : "部分数据源降级"}</Text>
+              <MetricIcon metric={metric} fallbackIndex={index} />
+              <span className="core-metric-copy">
+                <Text size="2" color="gray">{metricNames[metric.key] ?? metric.label}</Text>
+                <strong>{metric.value.toLocaleString("zh-CN")}{metric.unit ?? ""}</strong>
+              </span>
+              <span className="core-metric-foot"><Text size="1" color="gray">{metric.status === "AVAILABLE" ? "实时更新" : "部分数据暂不可用"}</Text><ArrowRight /></span>
             </Link>
           </Card>
         ))}
       </section>
 
-      <section className="core-dashboard-grid">
-        <Card className="core-panel core-ai-brief">
-          <div className="core-panel-heading"><div><Text size="1" color="gray">AI 业务简报</Text><Heading size="4">人工确认前的优先事项</Heading></div><Sparkle size={24} /></div>
-          <Text size="3">系统已经整理当前租户的待办。产品字段与报价版本仍需授权成员确认后才能发布或对客。</Text>
-          <div className="core-action-links"><Button asChild><Link to="/console/inquiries">处理询盘<ArrowRight /></Link></Button><Button asChild variant="soft"><Link to="/console/products/review">审核产品</Link></Button></div>
-        </Card>
-        <Card className="core-panel">
-          <div className="core-panel-heading"><div><Text size="1" color="gray">唯一事实来源</Text><Heading size="4">产品数据健康度</Heading></div><Package size={24} /></div>
-          {data?.dataHealth ? (
-            <div className="core-health">
-              <div className="core-health-score"><strong>{data.dataHealth.score}</strong><span>/100</span></div>
-              <Health label="已批准图片" value={data.dataHealth.approvedImageCoverage} />
-              <Health label="供应商证据" value={data.dataHealth.supplierSourceCoverage} />
-              <Health label="有效价格" value={data.dataHealth.validPriceCoverage} />
-            </div>
-          ) : <Text size="2" color="gray">当前角色无法查看数据健康度。</Text>}
-        </Card>
-      </section>
-
       <Card className="core-panel">
-        <div className="core-panel-heading"><div><Text size="1" color="gray">最近动态</Text><Heading size="4">产品与供应网络</Heading></div><Button asChild size="1" variant="ghost"><Link to="/console/suppliers">查看全部</Link></Button></div>
-        <div className="core-list">
+        <div className="core-panel-heading"><div><Text size="1" color="gray">最近导入</Text><Heading size="4">商品资料处理记录</Heading></div><Button asChild size="1" variant="ghost"><Link to="/console/suppliers">查看全部</Link></Button></div>
+        {data?.recentImports.length ? <div className="core-list">
           {data?.recentImports.slice(0, 6).map((job) => (
             <div className="core-list-row" key={job.id}>
               <span className="core-row-icon"><FileText /></span>
@@ -94,10 +149,26 @@ export function CoreDashboardPage() {
               <Text size="1" color="gray">{coreDate(job.createdAt)}</Text>
             </div>
           ))}
-          {!data?.recentImports.length ? <Text size="2" color="gray">当前租户暂无导入动态。</Text> : null}
-        </div>
+        </div> : <CoreEmpty title="还没有导入记录" description="先建立供应商档案，再上传 CSV、XLSX、PDF 或 Word 商品资料。" action={<Button asChild variant="soft"><Link to="/console/suppliers"><FileArrowUp />开始导入</Link></Button>} />}
       </Card>
     </div>
+  );
+}
+
+function MetricIcon({ metric, fallbackIndex }: { metric: DashboardMetric; fallbackIndex: number }) {
+  const Icon = metricIcons[metric.key] ?? (fallbackIndex % 2 ? FileText : Cube);
+  return <span className="core-metric-icon"><Icon /></span>;
+}
+
+function PriorityRow({ metric }: { metric: DashboardMetric }) {
+  const Icon = metricIcons[metric.key] ?? FileText;
+  return (
+    <Link className="core-priority-row" to={destination[metric.key] ?? metric.destination ?? "/console"}>
+      <span className="core-row-icon"><Icon /></span>
+      <span><Text weight="medium" as="div">{metricNames[metric.key] ?? metric.label}</Text><Text size="1" color="gray">打开工作区处理并确认</Text></span>
+      <strong>{metric.value.toLocaleString("zh-CN")}</strong>
+      <ArrowRight />
+    </Link>
   );
 }
 

@@ -69,6 +69,42 @@ class SkuResponse(BaseModel):
     updated_at: datetime
 
 
+class SkuSupplierSummary(BaseModel):
+    count: int = Field(ge=0)
+    primary_supplier_id: str | None = None
+    primary_supplier_name: str | None = None
+    names: list[str] = Field(default_factory=list)
+
+
+class SkuListItem(BaseModel):
+    id: UUID
+    sku_code: str
+    name: str
+    product_id: UUID
+    product_code: str | None
+    product_name: str
+    category: ProductCategorySummary | None
+    tags: list[str]
+    supplier_summary: SkuSupplierSummary
+    default_moq: Decimal | None
+    moq_unit: str | None
+    public_price: Decimal | None
+    public_currency: str | None
+    public_offer_status: Literal["DRAFT", "PUBLISHED", "SUSPENDED"] | None
+    status: str
+    version: int
+    updated_at: datetime
+    image_status: Literal["APPROVED", "SOURCE", "NONE"]
+
+
+class SkuListPage(BaseModel):
+    items: list[SkuListItem]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total: int = Field(ge=0)
+    pages: int = Field(ge=0)
+
+
 class SkuCreateItem(BaseModel):
     sku_code: str = Field(min_length=1, max_length=160)
     name: str | None = Field(default=None, max_length=500)

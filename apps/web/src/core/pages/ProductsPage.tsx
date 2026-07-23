@@ -1,6 +1,6 @@
 import { Badge, Button, Card, Dialog, Heading, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowsClockwise, ClockCounterClockwise, Cube, CurrencyCircleDollar, MagnifyingGlass, Plus, ShieldCheck, Tag, X } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowsClockwise, CaretRight, ClockCounterClockwise, CurrencyCircleDollar, ImageSquare, MagnifyingGlass, Plus, ShieldCheck, Tag, X } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   createAttributeDefinition,
@@ -11,104 +11,229 @@ import {
   listCategories,
   listPublicCatalogOffers,
   listPrices,
-  listProducts,
+  listSkus,
   updateSku,
   upsertPublicCatalogOffer,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
-import type { AttributeDefinition, CoreProduct, ProductCategory, ProductDetail, ProductSku, PublicCatalogOffer, SupplierPrice } from "../types";
+import type { AttributeDefinition, ProductCategory, ProductDetail, ProductSku, PublicCatalogOffer, SkuListItem, SkuListPage, SupplierPrice } from "../types";
 
 const splitValues = (value: string) => value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
+const emptySkuPage: SkuListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
+
+const skuStatusLabel: Record<ProductSku["status"], string> = {
+  ACTIVE: "在售",
+  DRAFT: "草稿",
+  INACTIVE: "已下架",
+  ARCHIVED: "已归档",
+};
+
+const offerStatusLabel: Record<NonNullable<SkuListItem["publicOfferStatus"]>, string> = {
+  PUBLISHED: "公开价已发布",
+  DRAFT: "公开价草稿",
+  SUSPENDED: "公开价已暂停",
+};
+
+function skuStatusColor(status: ProductSku["status"]): "jade" | "amber" | "gray" {
+  if (status === "ACTIVE") return "jade";
+  if (status === "DRAFT") return "amber";
+  return "gray";
+}
+
+function skuPrice(row: SkuListItem) {
+  if (row.publicPrice === undefined) return "未设置";
+  return `${row.publicCurrency ?? ""} ${row.publicPrice.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
+}
+
+function skuMoq(row: SkuListItem) {
+  if (row.defaultMoq === undefined) return "未设置";
+  return `${row.defaultMoq.toLocaleString("zh-CN")} ${row.moqUnit ?? ""}`.trim();
+}
+
+function skuUpdatedDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
 
 export function ProductsPage() {
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const [categoryId, setCategoryId] = useState("");
-  const [approvedOnly, setApprovedOnly] = useState(false);
-  const [products, setProducts] = useState<CoreProduct[]>([]);
+  const [status, setStatus] = useState<"" | ProductSku["status"]>("");
+  const [page, setPage] = useState(1);
+  const [result, setResult] = useState<SkuListPage>(emptySkuPage);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [selected, setSelected] = useState<ProductDetail>();
+  const [detailInitialTab, setDetailInitialTab] = useState<"overview" | "skus">(
+    params.get("view") === "skus" ? "skus" : "overview",
+  );
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
+  const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
     setError("");
-    try { setProducts(await listProducts({ q: query, categoryId: categoryId || undefined, approvedImagesOnly: approvedOnly })); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "产品加载失败"); setProducts([]); }
-    finally { setLoading(false); }
-  }, [approvedOnly, categoryId, query]);
+    try {
+      const next = await listSkus({
+        q: query.trim() || undefined,
+        categoryId: categoryId || undefined,
+        statuses: status ? [status] : undefined,
+        page,
+        pageSize: 50,
+      });
+      if (sequence === loadSequence.current) setResult(next);
+    } catch (reason) {
+      if (sequence === loadSequence.current) {
+        setError(reason instanceof Error ? reason.message : "SKU 商品库加载失败");
+      }
+    } finally {
+      if (sequence === loadSequence.current) setLoading(false);
+    }
+  }, [categoryId, page, query, status]);
 
   useEffect(() => { void listCategories().then(setCategories).catch(() => setCategories([])); }, []);
-  useEffect(() => { const timer = window.setTimeout(() => void load(), 220); return () => window.clearTimeout(timer); }, [load]);
+  useEffect(() => { const timer = window.setTimeout(() => void load(), 240); return () => window.clearTimeout(timer); }, [load]);
 
-  const openProduct = useCallback(async (productId: string) => {
+  const openProduct = useCallback(async (productId: string, initialTab: "overview" | "skus" = "overview") => {
+    setDetailInitialTab(initialTab);
     setDetailLoading(true);
     setError("");
-    try { setSelected(await getProduct(productId)); setParams((current) => { const next = new URLSearchParams(current); next.set("product", productId); return next; }, { replace: true }); }
+    try {
+      setSelected(await getProduct(productId));
+      setParams((current) => {
+        const next = new URLSearchParams(current);
+        next.set("product", productId);
+        if (initialTab === "skus") next.set("view", "skus");
+        else next.delete("view");
+        return next;
+      }, { replace: true });
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : "产品详情加载失败"); }
     finally { setDetailLoading(false); }
   }, [setParams]);
 
   useEffect(() => {
     const productId = params.get("product");
-    if (productId && selected?.id !== productId) void openProduct(productId);
+    if (productId && selected?.id !== productId) {
+      void openProduct(productId, params.get("view") === "skus" ? "skus" : "overview");
+    }
     // Product selection is restored from the URL once on entry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const close = () => {
     setSelected(undefined);
-    setParams((current) => { const next = new URLSearchParams(current); next.delete("product"); return next; }, { replace: true });
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("product");
+      next.delete("view");
+      return next;
+    }, { replace: true });
   };
   const refreshSelected = async () => { if (selected) setSelected(await getProduct(selected.id)); };
+  const resetFilters = () => {
+    setQuery("");
+    setCategoryId("");
+    setStatus("");
+    setPage(1);
+  };
+  const rangeStart = result.total ? (result.page - 1) * result.pageSize + 1 : 0;
+  const rangeEnd = Math.min(result.page * result.pageSize, result.total);
 
   return (
     <div className="core-workspace">
       <CorePageHeading
-        eyebrow="产品主数据"
-        title="产品中心"
-        description="一份可信 Product 同时支撑供应商、AI 搜索、询盘与报价。"
-        actions={<Button asChild><Link to="/console/products/review"><ShieldCheck />打开审核队列</Link></Button>}
+        eyebrow="商品资料"
+        title="SKU 商品库"
+        description="直接按 SKU 管理对客名称、公开价格、供应来源和上下架状态。点击任一行可进入所属产品继续编辑。"
+        actions={<Button asChild variant="soft"><Link to="/console/products/review"><ShieldCheck />待审核商品</Link></Button>}
       />
-      <Card className="core-toolbar">
-        <TextField.Root value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索产品名称、编码或 SKU"><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
-        <select value={categoryId} onChange={(event) => setCategoryId(event.target.value)} aria-label="产品分类"><option value="">全部分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
-        <label className="core-check"><input type="checkbox" checked={approvedOnly} onChange={(event) => setApprovedOnly(event.target.checked)} />仅显示已批准图片</label>
-        <Button variant="soft" color="gray" onClick={() => void load()}><ArrowsClockwise />刷新</Button>
+      <Card className="core-sku-toolbar">
+        <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="搜索 SKU、商品名称或产品编码" aria-label="搜索 SKU 商品库"><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
+        <select value={categoryId} onChange={(event) => { setCategoryId(event.target.value); setPage(1); }} aria-label="按产品分类筛选"><option value="">全部分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+        <select value={status} onChange={(event) => { setStatus(event.target.value as "" | ProductSku["status"]); setPage(1); }} aria-label="按 SKU 状态筛选">
+          <option value="">全部状态</option>
+          <option value="ACTIVE">在售</option>
+          <option value="DRAFT">草稿</option>
+          <option value="INACTIVE">已下架</option>
+          <option value="ARCHIVED">已归档</option>
+        </select>
+        <Button variant="soft" color="gray" disabled={loading} onClick={() => void load()}><ArrowsClockwise />刷新</Button>
       </Card>
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
-      {loading && !products.length ? <CoreLoading label="正在读取权威产品数据" /> : (
-        <div className="core-product-grid">
-          {products.map((product) => (
-            <Card className="core-product-card" key={product.id} onClick={() => void openProduct(product.id)}>
-              <div className="core-product-art"><Cube size={34} /><Badge color={product.imageStatus === "APPROVED" ? "jade" : "gray"}>{product.imageStatus === "APPROVED" ? "图片已批准" : "仅来源图"}</Badge></div>
-              <div><Text size="1" color="gray">{product.productCode ?? product.model} · v{product.currentVersion}</Text><Heading size="4">{product.name}</Heading></div>
-              <div className="core-chip-row">{product.tags.slice(0, 3).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</div>
-              <div className="core-product-facts"><span>{product.category}</span><span>{product.supplierCount} 个供应来源</span><span>{product.skuCount} 个 SKU</span></div>
-              <Button variant="soft">查看详情</Button>
-            </Card>
-          ))}
-          {!loading && !products.length && !error ? <CoreEmpty title="没有符合条件的产品" description="请更换关键词或重置筛选条件。" /> : null}
-        </div>
-      )}
+      {loading && !result.items.length ? <CoreLoading label="正在读取 SKU 商品库" /> : null}
+      {!loading && !result.items.length && !error ? <CoreEmpty title="没有符合条件的 SKU" description="尝试更换关键词、分类或状态。" action={<Button variant="soft" onClick={resetFilters}>清除筛选</Button>} /> : null}
+      {result.items.length ? (
+        <>
+          <div className="core-sku-list-meta" aria-live="polite">
+            <Text size="2" color="gray">共 <strong>{result.total.toLocaleString("zh-CN")}</strong> 个 SKU · 当前显示 {rangeStart}–{rangeEnd}</Text>
+            {loading ? <Text size="1" color="gray">正在更新结果…</Text> : <Text size="1" color="gray">每页 {result.pageSize} 条</Text>}
+          </div>
+          <Card className="core-sku-table-card">
+            <div className="core-sku-table" role="table" aria-label="SKU 商品列表">
+              <div className="core-sku-table-head" role="row">
+                <span>SKU / 所属产品</span><span>分类与标签</span><span>供应商</span><span>MOQ</span><span>公开价</span><span>状态</span><span>更新时间</span><span aria-hidden="true" />
+              </div>
+              {result.items.map((sku) => (
+                <button type="button" className="core-sku-table-row" role="row" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={`打开 SKU ${sku.skuCode} 的编辑详情`}>
+                  <span className="core-sku-name-cell">
+                    <span className={`core-sku-image-state ${sku.imageStatus.toLowerCase()}`} title={sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片"}><ImageSquare /></span>
+                    <span><strong className="core-tabular">{sku.skuCode}</strong><small>{sku.name}</small><small>{sku.productCode ?? "未设产品编码"} · {sku.productName}</small></span>
+                  </span>
+                  <span className="core-sku-category-cell"><strong>{sku.category?.name ?? "未分类"}</strong><span className="core-chip-row">{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span></span>
+                  <span><strong>{sku.supplierSummary.primarySupplierName ?? "未关联"}</strong><small>{sku.supplierSummary.count > 1 ? `共 ${sku.supplierSummary.count} 家供应商` : sku.supplierSummary.count ? "1 家供应商" : "等待关联供应来源"}</small></span>
+                  <span className="core-tabular"><strong>{skuMoq(sku)}</strong><small>默认起订量</small></span>
+                  <span className="core-tabular"><strong>{skuPrice(sku)}</strong><small>{sku.publicOfferStatus ? offerStatusLabel[sku.publicOfferStatus] : "尚无公开报价"}</small></span>
+                  <Badge color={skuStatusColor(sku.status)}>{skuStatusLabel[sku.status]}</Badge>
+                  <span><strong>{skuUpdatedDate(sku.updatedAt)}</strong><small>v{sku.version}</small></span>
+                  <CaretRight aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          </Card>
+          <div className="core-sku-mobile-list">
+            {result.items.map((sku) => (
+              <button type="button" className="core-sku-mobile-card" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={`打开 SKU ${sku.skuCode} 的编辑详情`}>
+                <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name}</strong><small>{sku.productName}</small></span><Badge color={skuStatusColor(sku.status)}>{skuStatusLabel[sku.status]}</Badge></span>
+                <span className="core-sku-mobile-facts"><span><small>公开价</small><strong className="core-tabular">{skuPrice(sku)}</strong></span><span><small>MOQ</small><strong className="core-tabular">{skuMoq(sku)}</strong></span><span><small>供应商</small><strong>{sku.supplierSummary.primarySupplierName ?? "未关联"}</strong></span></span>
+                <span className="core-chip-row"><Badge color="gray">{sku.category?.name ?? "未分类"}</Badge>{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
+                <span className="core-sku-mobile-footer"><small>更新于 {skuUpdatedDate(sku.updatedAt)}</small><span>SKU 详情<CaretRight /></span></span>
+              </button>
+            ))}
+          </div>
+          {result.pages > 1 ? (
+            <nav className="core-sku-pagination" aria-label="SKU 列表分页">
+              <Button variant="soft" color="gray" disabled={loading || result.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>上一页</Button>
+              <Text size="2" color="gray">第 <strong>{result.page}</strong> / {result.pages} 页</Text>
+              <Button variant="soft" color="gray" disabled={loading || result.page >= result.pages} onClick={() => setPage((current) => Math.min(result.pages, current + 1))}>下一页</Button>
+            </nav>
+          ) : null}
+        </>
+      ) : null}
 
       <Dialog.Root open={Boolean(selected || detailLoading)} onOpenChange={(open) => { if (!open) close(); }}>
         <Dialog.Content className="core-detail-dialog">
-          {detailLoading || !selected ? <CoreLoading label="正在读取产品聚合视图" /> : <ProductDetailPanel product={selected} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
+          {detailLoading || !selected ? <CoreLoading label="正在读取产品聚合视图" /> : <ProductDetailPanel product={selected} initialTab={detailInitialTab} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
         </Dialog.Content>
       </Dialog.Root>
     </div>
   );
 }
 
-function ProductDetailPanel({ product, onChanged, onClose }: { product: ProductDetail; onChanged: () => Promise<void>; onClose: () => void }) {
+function ProductDetailPanel({ product, initialTab, onChanged, onClose }: { product: ProductDetail; initialTab: "overview" | "skus"; onChanged: () => Promise<void>; onClose: () => void }) {
   return (
     <>
       <div className="core-dialog-heading"><div><Text size="1" color="gray">权威产品记录 · v{product.currentVersion}</Text><Dialog.Title>{product.name}</Dialog.Title><Dialog.Description>{product.productCode ?? "产品"} · {product.category}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label="关闭"><X /></Button></div>
-      <Tabs.Root defaultValue="overview">
+      <Tabs.Root key={`${product.id}:${initialTab}`} defaultValue={initialTab}>
         <Tabs.List><Tabs.Trigger value="overview">主数据</Tabs.Trigger><Tabs.Trigger value="skus">SKU ({product.skus.length})</Tabs.Trigger><Tabs.Trigger value="prices">价格历史</Tabs.Trigger><Tabs.Trigger value="attributes">分类属性</Tabs.Trigger><Tabs.Trigger value="activity">活动</Tabs.Trigger></Tabs.List>
         <Tabs.Content value="overview"><div className="core-master-grid"><Fact label="状态" value={product.status} /><Fact label="产品版本" value={`v${product.currentVersion}`} /><Fact label="供应来源" value={String(product.supplierCount)} /><Fact label="SKU" value={String(product.skuCount)} /><section><Text size="1" color="gray">标准描述</Text><p>{product.description || "尚未维护标准描述。"}</p></section><section><Text size="1" color="gray">媒体门禁</Text><p>当前状态：{product.imageStatus}。来源图未经独立审核不会进入客户页面或报价文件。</p></section></div></Tabs.Content>
         <Tabs.Content value="skus"><SkuPanel product={product} onChanged={onChanged} /></Tabs.Content>

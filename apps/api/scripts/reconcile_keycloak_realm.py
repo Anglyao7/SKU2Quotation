@@ -70,6 +70,7 @@ BOOTSTRAP_USER_MANAGED_FIELDS = (
     "emailVerified",
     "requiredActions",
 )
+SERVICE_ACCOUNT_REALM_MANAGEMENT_ROLES = ("manage-users",)
 
 
 def _desired_configuration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -90,6 +91,11 @@ def _desired_configuration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     for field in CLIENT_MANAGED_FIELDS:
         if field not in desired_client:
             raise SystemExit(f"Rendered Keycloak client is missing managed field {field}.")
+    if desired_client["serviceAccountsEnabled"] is not True:
+        raise SystemExit(
+            "Rendered Keycloak client must enable its password-management "
+            "service account."
+        )
     desired_attributes = desired_client.get("attributes")
     if not isinstance(desired_attributes, dict):
         raise SystemExit("Rendered Keycloak client attributes are invalid.")
@@ -308,6 +314,110 @@ def reconcile(
         json=updated_client,
     )
 
+    service_account_user_path: str | None = None
+    realm_management_client_path: str | None = None
+    if desired_client["serviceAccountsEnabled"] is True:
+        service_account_user = _request(
+            client,
+            "GET",
+            f"{client_path}/service-account-user",
+            expected={200},
+            headers=headers,
+        ).json()
+        service_account_user_id = (
+            str(service_account_user.get("id", ""))
+            if isinstance(service_account_user, dict)
+            else ""
+        )
+        if not service_account_user_id:
+            raise SystemExit("Managed Keycloak service account has no identifier.")
+        service_account_user_path = (
+            f"{realm_path}/users/{quote(service_account_user_id, safe='')}"
+        )
+        realm_management_rows = _request(
+            client,
+            "GET",
+            f"{realm_path}/clients",
+            expected={200},
+            headers=headers,
+            params={"clientId": "realm-management"},
+        ).json()
+        exact_realm_management_clients = [
+            row
+            for row in realm_management_rows
+            if isinstance(row, dict) and row.get("clientId") == "realm-management"
+        ]
+        if (
+            len(exact_realm_management_clients) != 1
+            or not exact_realm_management_clients[0].get("id")
+        ):
+            raise SystemExit("Expected exactly one realm-management client.")
+        realm_management_client_uuid = quote(
+            str(exact_realm_management_clients[0]["id"]),
+            safe="",
+        )
+        realm_management_client_path = (
+            f"{realm_path}/clients/{realm_management_client_uuid}"
+        )
+        role_mapping_path = (
+            f"{service_account_user_path}/role-mappings/clients/"
+            f"{realm_management_client_uuid}"
+        )
+        current_role_mappings = _request(
+            client,
+            "GET",
+            role_mapping_path,
+            expected={200},
+            headers=headers,
+        ).json()
+        if not isinstance(current_role_mappings, list):
+            raise SystemExit("Keycloak service-account role mappings are invalid.")
+        current_role_names = {
+            row.get("name")
+            for row in current_role_mappings
+            if isinstance(row, dict)
+        }
+        unexpected_roles = [
+            row
+            for row in current_role_mappings
+            if isinstance(row, dict)
+            and row.get("name") not in SERVICE_ACCOUNT_REALM_MANAGEMENT_ROLES
+        ]
+        if unexpected_roles:
+            _request(
+                client,
+                "DELETE",
+                role_mapping_path,
+                expected={204},
+                headers=headers,
+                json=unexpected_roles,
+            )
+        missing_roles: list[dict[str, Any]] = []
+        for role_name in SERVICE_ACCOUNT_REALM_MANAGEMENT_ROLES:
+            if role_name in current_role_names:
+                continue
+            role = _request(
+                client,
+                "GET",
+                f"{realm_management_client_path}/roles/{quote(role_name, safe='')}",
+                expected={200},
+                headers=headers,
+            ).json()
+            if not isinstance(role, dict) or role.get("name") != role_name:
+                raise SystemExit(
+                    f"Keycloak realm-management role {role_name} is invalid."
+                )
+            missing_roles.append(role)
+        if missing_roles:
+            _request(
+                client,
+                "POST",
+                role_mapping_path,
+                expected={204},
+                headers=headers,
+                json=missing_roles,
+            )
+
     verified_realm = _request(
         client,
         "GET",
@@ -368,6 +478,32 @@ def reconcile(
         str(desired_client["secret"]),
     ):
         raise SystemExit("Keycloak client secret verification failed.")
+    if (
+        desired_client["serviceAccountsEnabled"] is True
+        and service_account_user_path is not None
+        and realm_management_client_path is not None
+    ):
+        realm_management_client_uuid = realm_management_client_path.rsplit(
+            "/",
+            1,
+        )[-1]
+        verified_role_mappings = _request(
+            client,
+            "GET",
+            (
+                f"{service_account_user_path}/role-mappings/clients/"
+                f"{realm_management_client_uuid}"
+            ),
+            expected={200},
+            headers=headers,
+        ).json()
+        verified_role_names = {
+            row.get("name")
+            for row in verified_role_mappings
+            if isinstance(row, dict)
+        }
+        if verified_role_names != set(SERVICE_ACCOUNT_REALM_MANAGEMENT_ROLES):
+            raise SystemExit("Keycloak service-account role verification failed.")
     if "smtpServer" in desired_realm:
         _request(
             client,

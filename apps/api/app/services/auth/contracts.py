@@ -30,6 +30,17 @@ class IdentityProviderPort(Protocol):
         password: str,
     ) -> IdentityClaim: ...
 
+    def change_password(
+        self,
+        *,
+        subject: str,
+        new_password: str,
+    ) -> None: ...
+
 
 class IdentityProviderError(ValueError):
+    pass
+
+
+class IdentityProviderPasswordPolicyError(IdentityProviderError):
     pass

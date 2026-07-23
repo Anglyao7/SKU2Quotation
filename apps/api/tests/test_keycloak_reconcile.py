@@ -40,6 +40,7 @@ def test_desired_configuration_accepts_compact_realm_without_smtp(
                     field: f"desired-{field}"
                     for field in CLIENT_MANAGED_FIELDS
                 },
+                "serviceAccountsEnabled": True,
                 "attributes": {
                     field: f"desired-{field}"
                     for field in CLIENT_MANAGED_ATTRIBUTES
@@ -54,6 +55,44 @@ def test_desired_configuration_accepts_compact_realm_without_smtp(
 
     assert "smtpServer" not in desired_realm
     assert desired_client["clientId"] == "atc-web"
+
+
+def test_desired_configuration_requires_password_management_service_account(
+    tmp_path: Path,
+) -> None:
+    realm = {
+        "realm": "atc",
+        "users": [
+            {
+                "username": "owner@example.cn",
+                "email": "owner@example.cn",
+                "enabled": True,
+                "emailVerified": True,
+                "requiredActions": [],
+            }
+        ],
+        **{field: f"desired-{field}" for field in REALM_MANAGED_FIELDS},
+        "clients": [
+            {
+                "clientId": "atc-web",
+                "secret": "a" * 64,
+                **{
+                    field: f"desired-{field}"
+                    for field in CLIENT_MANAGED_FIELDS
+                },
+                "serviceAccountsEnabled": False,
+                "attributes": {
+                    field: f"desired-{field}"
+                    for field in CLIENT_MANAGED_ATTRIBUTES
+                },
+            }
+        ],
+    }
+    path = tmp_path / "realm-without-service-account.json"
+    path.write_text(json.dumps(realm), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="password-management service account"):
+        _desired_configuration(path)
 
 
 @pytest.mark.parametrize("smtp_enabled", [True, False])
@@ -109,7 +148,7 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
             "publicClient": False,
             "standardFlowEnabled": False,
             "directAccessGrantsEnabled": True,
-            "serviceAccountsEnabled": False,
+            "serviceAccountsEnabled": True,
             "frontchannelLogout": True,
             "redirectUris": [
                 "https://catalog.example.cn/login/callback",
@@ -148,6 +187,13 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
             "requiredActions": ["UPDATE_PASSWORD", "CONFIGURE_TOTP"],
             "operatorCustomUserField": "preserved",
         },
+        "service_account_roles": [
+            {
+                "id": "realm-admin-role-uuid",
+                "name": "realm-admin",
+                "clientRole": True,
+            }
+        ],
     }
     smtp_tests: list[dict[str, object]] = []
 
@@ -192,6 +238,16 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
             state["realm_user"] = json.loads(request.content)
             return httpx.Response(204)
         if path == "/admin/realms/atc/clients" and request.method == "GET":
+            if request.url.params["clientId"] == "realm-management":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "id": "realm-management-uuid",
+                            "clientId": "realm-management",
+                        }
+                    ],
+                )
             assert request.url.params["clientId"] == "atc-web"
             return httpx.Response(
                 200,
@@ -202,6 +258,48 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
         if path == "/admin/realms/atc/clients/client-uuid" and request.method == "PUT":
             state["client"] = json.loads(request.content)
             return httpx.Response(204)
+        if (
+            path
+            == "/admin/realms/atc/clients/client-uuid/service-account-user"
+            and request.method == "GET"
+        ):
+            return httpx.Response(200, json={"id": "service-account-user-uuid"})
+        if (
+            path
+            == "/admin/realms/atc/clients/realm-management-uuid/roles/manage-users"
+            and request.method == "GET"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "manage-users-role-uuid",
+                    "name": "manage-users",
+                    "clientRole": True,
+                },
+            )
+        if (
+            path
+            == "/admin/realms/atc/users/service-account-user-uuid/"
+            "role-mappings/clients/realm-management-uuid"
+        ):
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json=state["service_account_roles"],
+                )
+            if request.method == "POST":
+                state["service_account_roles"].extend(json.loads(request.content))
+                return httpx.Response(204)
+            if request.method == "DELETE":
+                removed_names = {
+                    role["name"] for role in json.loads(request.content)
+                }
+                state["service_account_roles"] = [
+                    role
+                    for role in state["service_account_roles"]
+                    if role["name"] not in removed_names
+                ]
+                return httpx.Response(204)
         if path == "/admin/realms/atc/clients/client-uuid/client-secret":
             return httpx.Response(200, json={"value": desired_client["secret"]})
         if path == "/admin/realms/atc/testSMTPConnection":
@@ -244,3 +342,6 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
             == desired_client["attributes"][field]
         )
     assert state["client"]["secret"] == desired_client["secret"]
+    assert {
+        role["name"] for role in state["service_account_roles"]
+    } == {"manage-users"}

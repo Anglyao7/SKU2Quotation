@@ -60,9 +60,12 @@ export function AiSearchPage() {
         <section className="core-search-results">
           <div className="core-result-summary">
             <div><Heading size="5">找到 {response.results.length} 个匹配</Heading><Text size="2" color="gray">“{response.query}”</Text></div>
-            <div className="core-provenance"><Badge color="jade"><ShieldCheck />租户已过滤</Badge><Badge color="gray">{response.rankingVersion}</Badge><Badge color="gray">{response.model.name} · {response.model.version}</Badge></div>
+            <div className="core-provenance">
+              <Badge color="jade"><ShieldCheck />仅搜索当前工作区</Badge>
+              <Badge color="gray">关键词 + 语义匹配</Badge>
+            </div>
           </div>
-          {response.degradedChannels.length ? <Card className="core-warning"><WarningCircle /><Text size="2">降级运行：{response.degradedChannels.join("、")}</Text></Card> : null}
+          {response.degradedChannels.length ? <Card className="core-warning"><WarningCircle /><Text size="2">部分智能匹配能力暂不可用，已自动使用可用信号继续搜索。</Text></Card> : null}
           {constraints.length ? <div className="core-chip-row"><Text size="1" color="gray">已识别需求</Text>{constraints.map((item) => <Badge key={item} color="gray">{item}</Badge>)}</div> : null}
           <div className="core-result-list">
             {response.results.map((result, index) => {

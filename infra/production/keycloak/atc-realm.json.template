@@ -44,7 +44,7 @@
       "secret": "__OIDC_CLIENT_SECRET__",
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": true,
-      "serviceAccountsEnabled": false,
+      "serviceAccountsEnabled": true,
       "frontchannelLogout": true,
       "redirectUris": [
         "https://__ATC_DOMAIN__/login/callback",

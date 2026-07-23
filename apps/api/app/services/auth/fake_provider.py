@@ -50,3 +50,14 @@ class FakeIdentityProviderAdapter:
         raise IdentityProviderError(
             "password authentication is unavailable for the fake provider"
         )
+
+    def change_password(
+        self,
+        *,
+        subject: str,
+        new_password: str,
+    ) -> None:
+        del subject, new_password
+        raise IdentityProviderError(
+            "password changes are unavailable for the fake provider"
+        )

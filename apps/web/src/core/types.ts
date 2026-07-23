@@ -177,6 +177,44 @@ export interface ProductSku {
   updatedAt: string;
 }
 
+export interface SkuListItem {
+  id: string;
+  skuCode: string;
+  name: string;
+  productId: string;
+  productCode?: string;
+  productName: string;
+  category?: {
+    id: string;
+    code: string;
+    name: string;
+  };
+  tags: string[];
+  supplierSummary: {
+    count: number;
+    primarySupplierId?: string;
+    primarySupplierName?: string;
+    names: string[];
+  };
+  defaultMoq?: number;
+  moqUnit?: string;
+  publicPrice?: number;
+  publicCurrency?: string;
+  publicOfferStatus?: "DRAFT" | "PUBLISHED" | "SUSPENDED";
+  status: ProductSku["status"];
+  version: number;
+  updatedAt: string;
+  imageStatus: "SOURCE" | "APPROVED" | "NONE";
+}
+
+export interface SkuListPage {
+  items: SkuListItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  pages: number;
+}
+
 export interface PublicCatalogOffer {
   id: string;
   skuId: string;

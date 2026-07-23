@@ -9,12 +9,16 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 import jwt
 
-from .contracts import IdentityClaim, IdentityProviderError
+from .contracts import (
+    IdentityClaim,
+    IdentityProviderError,
+    IdentityProviderPasswordPolicyError,
+)
 
 
 SAFE_SIGNING_ALGORITHMS = frozenset(
@@ -531,6 +535,173 @@ class OidcIdentityProviderAdapter:
             settings=settings,
             discovery=discovery,
         )
+
+    @staticmethod
+    def _keycloak_admin_realm_url(settings: OidcSettings) -> str:
+        """Build the realm admin URL on the isolated identity-admin network."""
+
+        parsed = urlsplit(settings.issuer)
+        issuer_path = parsed.path.rstrip("/")
+        marker = "/realms/"
+        marker_index = issuer_path.rfind(marker)
+        if marker_index < 0:
+            raise IdentityProviderError(
+                "OIDC provider does not support password management"
+            )
+        realm_segment = issuer_path[marker_index + len(marker) :]
+        if not realm_segment or "/" in realm_segment:
+            raise IdentityProviderError(
+                "OIDC provider does not support password management"
+            )
+        configured_base = os.getenv("KEYCLOAK_ADMIN_BASE_URL", "").strip()
+        app_env = os.getenv("APP_ENV", "development").lower()
+        managed = app_env in {"staging", "production", "prod"}
+        if configured_base:
+            admin_base = urlsplit(configured_base)
+            try:
+                internal_managed_base = (
+                    admin_base.scheme == "http"
+                    and admin_base.hostname == "keycloak"
+                    and admin_base.port == 8080
+                    and admin_base.path in {"", "/"}
+                    and not admin_base.query
+                    and not admin_base.fragment
+                    and admin_base.username is None
+                    and admin_base.password is None
+                )
+            except ValueError as exc:
+                raise IdentityProviderError(
+                    "Keycloak password-management endpoint is invalid"
+                ) from exc
+            if managed and not internal_managed_base:
+                raise IdentityProviderError(
+                    "Keycloak password-management endpoint is invalid"
+                )
+            if not managed and not internal_managed_base:
+                _https_endpoint(
+                    configured_base.rstrip("/"),
+                    issuer=settings.issuer,
+                    allowed_hosts=settings.allowed_endpoint_hosts,
+                )
+            base_path = admin_base.path.rstrip("/")
+            admin_url = urlunsplit(
+                (
+                    admin_base.scheme,
+                    admin_base.netloc,
+                    f"{base_path}/admin/realms/{realm_segment}",
+                    "",
+                    "",
+                )
+            )
+        else:
+            if managed:
+                raise IdentityProviderError(
+                    "Keycloak password-management endpoint is unavailable"
+                )
+            base_path = issuer_path[:marker_index]
+            admin_url = urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    f"{base_path}/admin/realms/{realm_segment}",
+                    "",
+                    "",
+                )
+            )
+            _https_endpoint(
+                admin_url,
+                issuer=settings.issuer,
+                allowed_hosts=settings.allowed_endpoint_hosts,
+            )
+        return admin_url
+
+    @classmethod
+    def _service_access_token(
+        cls,
+        *,
+        settings: OidcSettings,
+        discovery: OidcDiscovery,
+    ) -> str:
+        tokens = cls._request_tokens(
+            settings=settings,
+            discovery=discovery,
+            token_payload={
+                "grant_type": "client_credentials",
+                "client_id": settings.client_id,
+            },
+        )
+        access_token = tokens.get("access_token")
+        token_type = tokens.get("token_type", "Bearer")
+        if (
+            not isinstance(access_token, str)
+            or not access_token
+            or not isinstance(token_type, str)
+            or token_type.lower() != "bearer"
+        ):
+            raise IdentityProviderError(
+                "OIDC service account token response is invalid"
+            )
+        return access_token
+
+    def change_password(
+        self,
+        *,
+        subject: str,
+        new_password: str,
+    ) -> None:
+        """Terminate provider sessions, then reset only the authenticated subject."""
+
+        if (
+            not subject
+            or len(subject) > 255
+            or not new_password
+            or len(new_password) > 128
+        ):
+            raise IdentityProviderError("password change failed")
+        settings = load_oidc_settings()
+        discovery = get_oidc_discovery(
+            settings.issuer,
+            settings.timeout_seconds,
+            settings.allowed_endpoint_hosts,
+        )
+        admin_realm_url = self._keycloak_admin_realm_url(settings)
+        access_token = self._service_access_token(
+            settings=settings,
+            discovery=discovery,
+        )
+        user_url = f"{admin_realm_url}/users/{quote(subject, safe='')}"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        }
+        try:
+            logout_response = httpx.post(
+                f"{user_url}/logout",
+                headers=headers,
+                timeout=settings.timeout_seconds,
+                follow_redirects=False,
+            )
+            logout_response.raise_for_status()
+            password_response = httpx.put(
+                f"{user_url}/reset-password",
+                headers=headers,
+                json={
+                    "type": "password",
+                    "temporary": False,
+                    "value": new_password,
+                },
+                timeout=settings.timeout_seconds,
+                follow_redirects=False,
+            )
+            if password_response.status_code == 400:
+                raise IdentityProviderPasswordPolicyError(
+                    "password policy rejected the new password"
+                )
+            password_response.raise_for_status()
+        except IdentityProviderPasswordPolicyError:
+            raise
+        except httpx.HTTPError as exc:
+            raise IdentityProviderError("password change failed") from exc
 
     @staticmethod
     def _verify_id_token(

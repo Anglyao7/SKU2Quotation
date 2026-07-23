@@ -118,6 +118,7 @@ from app.services.outbox_consumer import consume_product_committed_message
 from app.workers.file_processing import process_file_worker_job
 from app.workers.outbox_relay import relay_one_outbox_event
 from app.use_cases.product_center import list_products as list_authoritative_products
+from app.use_cases.product_center import list_skus as list_authoritative_skus
 from app.use_cases.product_center import upsert_public_offer as upsert_public_offer_use_case
 from app.product_center_schemas import PublicCatalogOfferUpsertRequest
 from app.use_cases.workspace import create_supplier as create_supplier_use_case
@@ -586,6 +587,428 @@ def test_password_login_returns_only_generic_authentication_errors(
     assert "missing@example.test" not in serialized
     assert "wrong-password" not in serialized
     assert "does not exist" not in serialized
+
+
+def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    membership_id = uuid4()
+    provider_key = f"oidc:{'d' * 32}"
+    subject = f"password-change-subject-{uuid4()}"
+    email = f"password-change-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Password Change User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    authenticated_passwords: list[tuple[str, str]] = []
+    changed_passwords: list[tuple[str, str]] = []
+    limits: list[dict[str, object]] = []
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        authenticated_passwords.append((identifier, password))
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=email,
+            email_verified=True,
+            display_name="Password Change User",
+        )
+
+    def update(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        subject: str,
+        new_password: str,
+    ) -> None:
+        changed_passwords.append((subject, new_password))
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "change_password",
+        update,
+    )
+    monkeypatch.setattr(
+        "app.routers.auth.enforce_rate_limit",
+        lambda _request, **kwargs: limits.append(kwargs),
+    )
+
+    with TestClient(app) as password_client:
+        current_login = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        peer_login = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        assert current_login.status_code == 200, current_login.text
+        assert peer_login.status_code == 200, peer_login.text
+        current_data = current_login.json()["data"]
+        peer_data = peer_login.json()["data"]
+        limits.clear()
+        response = password_client.put(
+            "/api/v1/auth/password",
+            headers={
+                "Authorization": f"Bearer {current_data['access_token']}",
+                "X-CSRF-Token": current_data["csrf_token"],
+            },
+            json={
+                "current_password": "InitialPass!123",
+                "new_password": "UpdatedPass!456",
+            },
+        )
+
+    assert response.status_code == 204, response.text
+    assert response.content == b""
+    assert response.headers["cache-control"] == "no-store"
+    assert authenticated_passwords[-1] == (email, "InitialPass!123")
+    assert changed_passwords == [(subject, "UpdatedPass!456")]
+    assert limits == [
+        {
+            "scope": "auth-password-change",
+            "limit": 5,
+            "window_seconds": 900,
+            "token": current_data["access_token"],
+        }
+    ]
+    with SessionLocal() as session:
+        current_auth_session = session.get(
+            AuthSessionRow,
+            UUID(current_data["session_id"]),
+        )
+        peer_auth_session = session.get(
+            AuthSessionRow,
+            UUID(peer_data["session_id"]),
+        )
+        assert current_auth_session is not None
+        assert current_auth_session.revoked_at is None
+        assert peer_auth_session is not None
+        assert peer_auth_session.revoked_at is not None
+        assert peer_auth_session.revocation_reason == "PASSWORD_CHANGED"
+        peer_tokens = session.scalars(
+            select(AuthRefreshTokenRow).where(
+                AuthRefreshTokenRow.auth_session_id == peer_auth_session.id
+            )
+        ).all()
+        assert peer_tokens
+        assert all(token.revoked_at is not None for token in peer_tokens)
+        current_tokens = session.scalars(
+            select(AuthRefreshTokenRow).where(
+                AuthRefreshTokenRow.auth_session_id == current_auth_session.id
+            )
+        ).all()
+        assert current_tokens
+        assert all(token.revoked_at is None for token in current_tokens)
+
+
+@pytest.mark.parametrize(
+    ("new_password", "expected_code"),
+    [
+        ("short", "PASSWORD_POLICY_VIOLATION"),
+        ("NoSpecialCharacter123", "PASSWORD_POLICY_VIOLATION"),
+        ("InitialPass!123", "PASSWORD_POLICY_VIOLATION"),
+    ],
+)
+def test_password_change_rejects_weak_or_reused_password_before_provider_update(
+    monkeypatch: pytest.MonkeyPatch,
+    new_password: str,
+    expected_code: str,
+) -> None:
+    user_id = uuid4()
+    provider_key = f"oidc:{'e' * 32}"
+    subject = f"password-policy-subject-{uuid4()}"
+    email = f"password-policy-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Password Policy User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=uuid4(),
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    provider_calls: list[str] = []
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        provider_calls.append(password)
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=email,
+            email_verified=True,
+        )
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "change_password",
+        lambda *_args, **_kwargs: pytest.fail("provider update must not run"),
+    )
+    monkeypatch.setattr("app.routers.auth.enforce_rate_limit", lambda *_args, **_kwargs: None)
+
+    with TestClient(app) as password_client:
+        login_response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        data = login_response.json()["data"]
+        provider_calls.clear()
+        response = password_client.put(
+            "/api/v1/auth/password",
+            headers={
+                "Authorization": f"Bearer {data['access_token']}",
+                "X-CSRF-Token": data["csrf_token"],
+            },
+            json={
+                "current_password": "InitialPass!123",
+                "new_password": new_password,
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == expected_code
+    assert "InitialPass!123" not in response.text
+    assert new_password not in response.text
+    assert provider_calls == []
+
+
+def test_password_change_hides_wrong_password_and_cross_account_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    provider_key = f"oidc:{'f' * 32}"
+    subject = f"password-current-subject-{uuid4()}"
+    email = f"password-current-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Current Password User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=uuid4(),
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        if password == "InitialPass!123":
+            return IdentityClaim(
+                provider=provider_key,
+                subject=subject,
+                email_normalized=email,
+                email_verified=True,
+            )
+        if password == "CrossAccount!123":
+            return IdentityClaim(
+                provider=provider_key,
+                subject="another-keycloak-user",
+                email_normalized="another@example.test",
+                email_verified=True,
+            )
+        raise IdentityProviderError("upstream current password detail")
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "change_password",
+        lambda *_args, **_kwargs: pytest.fail("provider update must not run"),
+    )
+    monkeypatch.setattr("app.routers.auth.enforce_rate_limit", lambda *_args, **_kwargs: None)
+
+    with TestClient(app) as password_client:
+        login_response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        data = login_response.json()["data"]
+        for candidate in ("WrongCurrent!123", "CrossAccount!123"):
+            response = password_client.put(
+                "/api/v1/auth/password",
+                headers={
+                    "Authorization": f"Bearer {data['access_token']}",
+                    "X-CSRF-Token": data["csrf_token"],
+                },
+                json={
+                    "current_password": candidate,
+                    "new_password": "UpdatedPass!456",
+                },
+            )
+            assert response.status_code == 401
+            assert response.json() == {
+                "detail": {
+                    "code": "CURRENT_PASSWORD_INVALID",
+                    "message": "current password is invalid",
+                }
+            }
+            assert candidate not in response.text
+            assert "upstream" not in response.text
+
+
+def test_password_change_requires_current_session_csrf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    provider_key = f"oidc:{'1' * 32}"
+    subject = f"password-csrf-subject-{uuid4()}"
+    email = f"password-csrf-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Password CSRF User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=uuid4(),
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    provider_calls: list[str] = []
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        provider_calls.append(password)
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=email,
+            email_verified=True,
+        )
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr("app.routers.auth.enforce_rate_limit", lambda *_args, **_kwargs: None)
+
+    with TestClient(app) as password_client:
+        login_response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        data = login_response.json()["data"]
+        provider_calls.clear()
+        response = password_client.put(
+            "/api/v1/auth/password",
+            headers={
+                "Authorization": f"Bearer {data['access_token']}",
+                "X-CSRF-Token": "incorrect-csrf-token",
+            },
+            json={
+                "current_password": "InitialPass!123",
+                "new_password": "UpdatedPass!456",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "AUTH_CSRF_INVALID"
+    assert provider_calls == []
 
 
 def test_enterprise_oidc_binds_only_verified_pending_invitation(
@@ -2892,6 +3315,224 @@ def test_product_query_and_image_filter() -> None:
     response = client.get("/api/v1/products", params={"q": "围栏", "approved_images_only": True})
     assert response.status_code == 200
     assert [row["model"] for row in response.json()] == ["PF-8G01"]
+
+
+def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
+    suffix = uuid4().hex[:8].upper()
+    product_id = uuid4()
+    first_sku_id = uuid4()
+    second_sku_id = uuid4()
+    other_tenant_id = uuid4()
+    with SessionLocal() as session:
+        category = ProductCategoryRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            code=f"SKU-LIST-{suffix}",
+            name=f"SKU List Category {suffix}",
+            path=f"SKU-LIST-{suffix}",
+            status="ACTIVE",
+        )
+        session.add(category)
+        session.flush()
+        product = ProductRow(
+            id=product_id,
+            tenant_id=DEFAULT_TENANT_ID,
+            product_code=f"PRODUCT-{suffix}",
+            name=f"SKU List Product {suffix}",
+            category_id=category.id,
+            status="ACTIVE",
+        )
+        session.add(product)
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=first_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"{suffix}-ACTIVE",
+                    name=f"Active SKU {suffix}",
+                    option_values={},
+                    default_moq=Decimal("12"),
+                    moq_unit="piece",
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=second_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"{suffix}-DRAFT",
+                    name=f"Draft SKU {suffix}",
+                    option_values={},
+                    default_moq=Decimal("24"),
+                    moq_unit="piece",
+                    status="DRAFT",
+                ),
+            ]
+        )
+        session.add(
+            ProductImageRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                storage_provider="TEST",
+                bucket="test",
+                object_key=f"tests/{suffix}/main.jpg",
+                content_type="image/jpeg",
+                byte_size=128,
+                sha256="c" * 64,
+                image_role="MAIN",
+                approval_status="APPROVED",
+            )
+        )
+        session.flush()
+        supplier = session.get(SupplierRow, "SUP-001")
+        assert supplier is not None
+        session.add(
+            SupplierProductRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                supplier_id=supplier.id,
+                product_id=product_id,
+                sku_id=first_sku_id,
+                supplier_sku=f"SUP-{suffix}",
+                supplier_product_name=f"Supplier SKU {suffix}",
+                moq=Decimal("12"),
+                moq_unit="piece",
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            PublicCatalogOfferRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                sku_id=first_sku_id,
+                unit_price=Decimal("123.45"),
+                currency="USD",
+                tags=["outdoor", "featured"],
+                publication_status="DRAFT",
+            )
+        )
+
+        other_category = ProductCategoryRow(
+            tenant_id=other_tenant_id,
+            code=f"OTHER-{suffix}",
+            name=f"Other Category {suffix}",
+            path=f"OTHER-{suffix}",
+            status="ACTIVE",
+        )
+        session.add(
+            TenantRow(
+                id=other_tenant_id,
+                organization_id=DEFAULT_ORGANIZATION_ID,
+                slug=f"sku-list-{uuid4().hex[:8]}",
+                name=f"Other SKU Tenant {suffix}",
+            )
+        )
+        session.flush()
+        session.add(other_category)
+        session.flush()
+        other_product = ProductRow(
+            tenant_id=other_tenant_id,
+            product_code=f"OTHER-PRODUCT-{suffix}",
+            name=f"Other SKU List Product {suffix}",
+            category_id=other_category.id,
+            status="ACTIVE",
+        )
+        session.add(other_product)
+        session.flush()
+        session.add(
+            SkuRow(
+                tenant_id=other_tenant_id,
+                product_id=other_product.id,
+                sku_code=f"{suffix}-MUST-NOT-LEAK",
+                name=f"Other Tenant SKU {suffix}",
+                option_values={},
+                status="ACTIVE",
+            )
+        )
+        session.commit()
+
+    first_page = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "page": 1, "page_size": 1},
+    )
+    assert first_page.status_code == 200, first_page.text
+    assert first_page.json()["page"] == 1
+    assert first_page.json()["page_size"] == 1
+    assert first_page.json()["total"] == 2
+    assert first_page.json()["pages"] == 2
+    assert len(first_page.json()["items"]) == 1
+
+    second_page = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "page": 2, "page_size": 1},
+    )
+    assert second_page.status_code == 200, second_page.text
+    returned_codes = {
+        first_page.json()["items"][0]["sku_code"],
+        second_page.json()["items"][0]["sku_code"],
+    }
+    assert returned_codes == {f"{suffix}-ACTIVE", f"{suffix}-DRAFT"}
+    assert f"{suffix}-MUST-NOT-LEAK" not in returned_codes
+
+    complete = client.get("/api/v1/product-center/skus", params={"q": suffix})
+    assert complete.status_code == 200, complete.text
+    assert complete.json()["page_size"] == 50
+    by_code = {item["sku_code"]: item for item in complete.json()["items"]}
+    active = by_code[f"{suffix}-ACTIVE"]
+    assert active["name"] == f"Active SKU {suffix}"
+    assert active["product_id"] == str(product_id)
+    assert active["product_code"] == f"PRODUCT-{suffix}"
+    assert active["product_name"] == f"SKU List Product {suffix}"
+    assert active["category"]["id"] == str(category.id)
+    assert active["category"]["code"] == f"SKU-LIST-{suffix}"
+    assert active["tags"] == ["outdoor", "featured"]
+    assert active["supplier_summary"]["count"] == 1
+    assert active["supplier_summary"]["primary_supplier_id"] == "SUP-001"
+    assert active["supplier_summary"]["names"] == [supplier.name]
+    assert Decimal(str(active["default_moq"])) == Decimal("12")
+    assert active["moq_unit"] == "piece"
+    assert Decimal(str(active["public_price"])) == Decimal("123.45")
+    assert active["public_currency"] == "USD"
+    assert active["public_offer_status"] == "DRAFT"
+    assert active["status"] == "ACTIVE"
+    assert active["version"] == 1
+    assert active["updated_at"]
+    assert active["image_status"] == "APPROVED"
+
+    category_filtered = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "category_id": str(category.id)},
+    )
+    assert category_filtered.status_code == 200
+    assert category_filtered.json()["total"] == 2
+
+    status_filtered = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "status": "active"},
+    )
+    assert status_filtered.status_code == 200
+    assert [item["sku_code"] for item in status_filtered.json()["items"]] == [
+        f"{suffix}-ACTIVE"
+    ]
+
+    invalid_status = client.get(
+        "/api/v1/product-center/skus",
+        params={"status": "UNKNOWN"},
+    )
+    assert invalid_status.status_code == 422
+    assert invalid_status.json()["detail"]["code"] == "SKU_STATUS_INVALID"
+
+    with SessionLocal() as session:
+        with pytest.raises(ApplicationError) as denied:
+            list_authoritative_skus(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                permissions=frozenset(),
+                query=suffix,
+                category_id=None,
+                statuses=[],
+                page=1,
+                page_size=50,
+            )
+        assert denied.value.code == "PERMISSION_REQUIRED"
 
 
 def test_upload_parse_review_and_approve_xlsx() -> None:

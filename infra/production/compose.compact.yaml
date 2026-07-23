@@ -35,6 +35,7 @@ x-api-environment: &api-environment
   OIDC_ISSUER: https://auth.${ATC_DOMAIN:?ATC_DOMAIN is required}/realms/atc
   OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?OIDC_CLIENT_ID is required}
   OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?OIDC_CLIENT_SECRET is required}
+  KEYCLOAK_ADMIN_BASE_URL: http://keycloak:8080
   OIDC_REDIRECT_URIS: https://${ATC_DOMAIN:?ATC_DOMAIN is required}/login/callback
   OIDC_POST_LOGOUT_REDIRECT_URI: https://${ATC_DOMAIN:?ATC_DOMAIN is required}/login
   OIDC_SCOPES: openid profile email
@@ -178,7 +179,7 @@ services:
           memory: 640M
         reservations:
           memory: 192M
-    networks: [app, data, egress]
+    networks: [app, data, identity-admin, egress]
 
   postgres:
     <<: *service-defaults
@@ -323,7 +324,7 @@ services:
           memory: 896M
         reservations:
           memory: 384M
-    networks: [edge, identity]
+    networks: [edge, identity, identity-admin]
 
   object-storage-bootstrap:
     image: alpine:3.22.1
@@ -476,6 +477,8 @@ networks:
   data:
     internal: true
   identity:
+    internal: true
+  identity-admin:
     internal: true
   egress:
 

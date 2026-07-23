@@ -43,6 +43,7 @@ Web 认证壳层使用内存 Access Token、HttpOnly Refresh Cookie 和 Session-
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/refresh`
 - `POST /api/v1/auth/logout`
+- `PUT /api/v1/auth/password`
 - `GET /api/v1/auth/memberships`
 - `POST /api/v1/auth/tenant-context`
 - `GET /api/v1/me`
@@ -157,11 +158,12 @@ $env:RABBITMQ_URL='amqp://user:password@rabbitmq:5672/%2F'
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/refresh`
 - `POST /api/v1/auth/logout`
+- `PUT /api/v1/auth/password`
 - `POST /api/v1/auth/tenant-context`
 - `GET /api/v1/me`
 - `GET /api/v1/me/permissions`
 
-生产不保存本地密码；浏览器通过同源 HTTPS 提交账号标识和密码，FastAPI 仅将凭据转交 Keycloak Direct Grant 校验，并验证返回令牌的签名、issuer、audience、subject 与已验证邮箱。仓库中的 `local_fake` Adapter 只允许非生产 profile。Refresh Token 仅写 Secure/HttpOnly/SameSite Cookie，数据库只存 HMAC hash；Access Token 每次请求仍需回查 Session、ACTIVE Membership、Tenant 与 permission version。客户端提交的 tenant header 不作为授权根。
+生产不保存本地密码；浏览器通过同源 HTTPS 提交账号标识和密码，FastAPI 仅将凭据转交 Keycloak Direct Grant 校验，并验证返回令牌的签名、issuer、audience、subject 与已验证邮箱。自助改密还要求当前 Access Token、Session CSRF Token 和当前密码；Keycloak confidential client 的 service account 仅授予 `realm-management/manage-users`，只按已验证 subject 执行用户会话注销与密码更新。成功后当前应用 Session 保留，其他应用 Session 与 Refresh Token 会被撤销。仓库中的 `local_fake` Adapter 只允许非生产 profile。Refresh Token 仅写 Secure/HttpOnly/SameSite Cookie，数据库只存 HMAC hash；Access Token 每次请求仍需回查 Session、ACTIVE Membership、Tenant 与 permission version。客户端提交的 tenant header 不作为授权根。
 
 平台管理员先在“商家管理 → 邀请成员”登记邮箱和租户角色，再由受信任运维人员在生产服务器执行：
 

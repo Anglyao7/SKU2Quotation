@@ -1,5 +1,5 @@
 import { Badge, Button, Card, Dialog, Heading, Progress, Tabs, Text, TextField } from "@radix-ui/themes";
-import { ArrowSquareOut, Buildings, FileArrowUp, FileText, ShieldCheck, Warning, X } from "@phosphor-icons/react";
+import { ArrowRight, Buildings, FileArrowUp, FileText, ShieldCheck, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { createImport, createSupplierProfile, detectFile, getSupplierProfile, listImports, listSupplierProfiles } from "../api";
 import { useCoreAuth } from "../AuthContext";
@@ -81,9 +81,9 @@ export function SuppliersPage() {
     <div className="core-workspace">
       <CorePageHeading
         eyebrow="供应网络"
-        title="供应商与导入"
-        description="把供应商档案、来源证据、价格新鲜度和导入任务放在同一条可信链路中。"
-        actions={<><Button variant="soft" color="gray" onClick={() => void load()}>刷新</Button>{canManageSuppliers ? <Button variant="soft" onClick={() => setCreatingSupplier(true)}><Buildings />新增供应商</Button> : null}{canImport ? <><select value={selectedSupplierId} onChange={(event) => setSelectedSupplierId(event.target.value)} aria-label="选择资料所属供应商"><option value="">选择资料所属供应商</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select><Button disabled={!selectedSupplierId} onClick={() => inputRef.current?.click()}><FileArrowUp />导入供应商文件</Button></> : null}<input ref={inputRef} hidden type="file" accept=".xlsx,.xls,.csv,.docx,.doc,.pdf,.pptx" onChange={(event) => void inspectFile(event.target.files?.[0])} /></>}
+        title="供应商"
+        description="集中查看供应商档案、关联 SKU、价格有效性与待处理资料。"
+        actions={<><Button variant="soft" color="gray" onClick={() => void load()}>刷新</Button>{canManageSuppliers ? <Button onClick={() => setCreatingSupplier(true)}><Buildings />新增供应商</Button> : null}</>}
       />
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
       <section className="core-metric-grid core-metric-grid-three">
@@ -92,21 +92,49 @@ export function SuppliersPage() {
         <Card className="core-summary-card"><Text size="2" color="gray">需要关注</Text><strong>{suppliers.filter((row) => row.expiredPrices > 0 || row.pendingReviews > 0).length}</strong><Text size="1">存在过期价格或待审记录</Text></Card>
       </section>
 
+      {canImport ? <Card className="core-import-bar">
+        <div className="core-import-bar-copy"><span className="core-row-icon"><FileArrowUp /></span><div><Text weight="medium" as="div">导入供应商商品资料</Text><Text size="1" color="gray">选择资料归属后上传，文件会先经过隔离扫描和格式识别。</Text></div></div>
+        <select value={selectedSupplierId} onChange={(event) => setSelectedSupplierId(event.target.value)} aria-label="选择资料所属供应商"><option value="">选择资料所属供应商</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select>
+        <Button disabled={!selectedSupplierId || busy} onClick={() => inputRef.current?.click()}><FileArrowUp />选择文件</Button>
+        <input ref={inputRef} hidden type="file" accept=".xlsx,.xls,.csv,.docx,.doc,.pdf,.pptx" onChange={(event) => void inspectFile(event.target.files?.[0])} />
+      </Card> : null}
+
       <Tabs.Root defaultValue={canViewSuppliers ? "suppliers" : "imports"}>
         <Tabs.List><Tabs.Trigger value="suppliers" disabled={!canViewSuppliers}>供应商网络</Tabs.Trigger><Tabs.Trigger value="imports" disabled={!canImport}>导入动态</Tabs.Trigger></Tabs.List>
         <Tabs.Content value="suppliers">
-          {loading && !suppliers.length ? <CoreLoading label="正在读取供应商档案" /> : <div className="core-supplier-grid">
+          {loading && !suppliers.length ? <CoreLoading label="正在读取供应商档案" /> : suppliers.length ? <Card className="core-table-card core-supplier-table-card">
+            <div className="core-table-scroll"><div className="core-supplier-table">
+              <div className="core-supplier-table-head"><span>供应商</span><span>主营类目</span><span>有效 SKU</span><span>价格状态</span><span>综合评分</span><span>状态</span><span /></div>
+              {suppliers.map((supplier) => (
+                <button className="core-supplier-table-row" type="button" key={supplier.id} onClick={() => void openSupplier(supplier.id)}>
+                  <span className="core-name-cell"><span className="core-supplier-icon"><Buildings /></span><span><strong>{supplier.name}</strong><small>{supplier.supplierCode} · {supplier.countryCode ?? "地区未维护"}</small></span></span>
+                  <span>{supplier.categorySummary ?? supplier.category}</span>
+                  <strong className="core-tabular">{supplier.activeSkus}</strong>
+                  <span className="core-price-health"><Text size="1">{supplier.validPrices} 条有效</Text>{supplier.expiredPrices ? <Text size="1" color="orange">{supplier.expiredPrices} 条过期</Text> : null}</span>
+                  <strong className="core-tabular">{supplier.latestScore?.overallScore ?? "—"}</strong>
+                  <Badge color={supplier.health.toUpperCase() === "HEALTHY" ? "jade" : "amber"}>{label(supplier.health)}</Badge>
+                  <ArrowRight />
+                </button>
+              ))}
+            </div></div>
+          </Card> : <CoreEmpty title="暂无供应商档案" description="先新增供应商，再选择它并上传产品资料。" action={canManageSuppliers ? <Button onClick={() => setCreatingSupplier(true)}><Buildings />新增供应商</Button> : undefined} />}
+          {!loading && suppliers.length ? <div className="core-supplier-mobile-list">
             {suppliers.map((supplier) => (
-              <Card className="core-supplier-card" key={supplier.id} onClick={() => void openSupplier(supplier.id)}>
-                <div className="core-panel-heading"><span className="core-supplier-icon"><Buildings /></span><Badge color={supplier.health.toUpperCase() === "HEALTHY" ? "jade" : "amber"}>{label(supplier.health)}</Badge></div>
-                <div><Text size="1" color="gray">{supplier.supplierCode} · {supplier.countryCode ?? "国家未维护"}</Text><Heading size="4">{supplier.name}</Heading><Text size="2" color="gray">{supplier.categorySummary ?? supplier.category}</Text></div>
-                <div className="core-supplier-score"><div><Text size="1" color="gray">综合评分</Text><strong>{supplier.latestScore?.overallScore ?? "—"}</strong></div><div><Text size="1" color="gray">有效 SKU</Text><strong>{supplier.activeSkus}</strong></div><div><Text size="1" color="gray">待审核</Text><strong>{supplier.pendingReviews}</strong></div></div>
-                <div className="core-chip-row"><Badge color="gray">{supplier.validPrices} 条有效价格</Badge>{supplier.expiredPrices ? <Badge color="amber">{supplier.expiredPrices} 条过期</Badge> : null}</div>
-                <Button variant="soft">查看证据与采购事实<ArrowSquareOut /></Button>
-              </Card>
+              <button className="core-supplier-mobile-card" type="button" key={supplier.id} onClick={() => void openSupplier(supplier.id)} aria-label={`打开供应商 ${supplier.name}`}>
+                <span className="core-supplier-mobile-heading">
+                  <span className="core-supplier-icon"><Buildings /></span>
+                  <span><small>{supplier.supplierCode}</small><strong>{supplier.name}</strong><small>{supplier.countryCode ?? "地区未维护"} · {supplier.categorySummary ?? supplier.category}</small></span>
+                  <Badge color={supplier.health.toUpperCase() === "HEALTHY" ? "jade" : "amber"}>{label(supplier.health)}</Badge>
+                </span>
+                <span className="core-supplier-mobile-facts">
+                  <span><small>有效 SKU</small><strong>{supplier.activeSkus}</strong></span>
+                  <span><small>有效价格</small><strong>{supplier.validPrices}</strong></span>
+                  <span><small>综合评分</small><strong>{supplier.latestScore?.overallScore ?? "—"}</strong></span>
+                </span>
+                <span className="core-supplier-mobile-footer">{supplier.expiredPrices || supplier.pendingReviews ? <Text size="1" color="orange">{supplier.expiredPrices} 条过期价格 · {supplier.pendingReviews} 条待审</Text> : <Text size="1" color="gray">资料状态正常</Text>}<span>查看档案<ArrowRight /></span></span>
+              </button>
             ))}
-            {!loading && !suppliers.length ? <CoreEmpty title="暂无供应商档案" description="先新增供应商，再选择它并上传产品资料。" /> : null}
-          </div>}
+          </div> : null}
         </Tabs.Content>
         <Tabs.Content value="imports">
           <Card className="core-notice"><ShieldCheck size={24} /><div><Text weight="bold" as="div">文件先隔离扫描，再生成候选草稿</Text><Text size="2" color="gray">解析结果不会自动成为产品主数据，所有低置信度字段必须人工复核。</Text></div></Card>

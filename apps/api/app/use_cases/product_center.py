@@ -32,7 +32,10 @@ from ..product_center_schemas import (
     ProductReviewQueueItem,
     ReviewQueueField,
     SkuBatchCreateRequest,
+    SkuListItem,
+    SkuListPage,
     SkuResponse,
+    SkuSupplierSummary,
     SkuUpdateRequest,
     SupplierPriceCreateRequest,
     SupplierPriceResponse,
@@ -53,6 +56,8 @@ FIELD_LABELS = {
     "packing": "包装",
     "description": "产品描述",
 }
+
+SKU_STATUSES = frozenset({"DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"})
 
 
 def _require(permissions: frozenset[str], permission: str) -> None:
@@ -278,6 +283,133 @@ def list_products(
         _card(session, tenant_id=tenant_id, product=row, permissions=permissions)
         for row in rows
     ]
+
+
+def list_skus(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    query: str,
+    category_id: UUID | None,
+    statuses: list[str],
+    page: int,
+    page_size: int,
+) -> SkuListPage:
+    _require(permissions, "product.view")
+    normalized_statuses = sorted(
+        {status.strip().upper() for status in statuses if status.strip()}
+    )
+    invalid_statuses = set(normalized_statuses) - SKU_STATUSES
+    if invalid_statuses:
+        raise ApplicationError(
+            "SKU_STATUS_INVALID",
+            f"Unsupported SKU status: {', '.join(sorted(invalid_statuses))}",
+        )
+
+    rows, total = repository.list_sku_page_rows(
+        session,
+        tenant_id=tenant_id,
+        query=query,
+        category_id=category_id,
+        statuses=normalized_statuses,
+        page=page,
+        page_size=page_size,
+    )
+    sku_ids = {row.sku.id for row in rows}
+    product_ids = {row.product.id for row in rows}
+
+    suppliers_by_sku: dict[UUID, list[tuple[Any, Any]]] = {}
+    suppliers_by_product: dict[UUID, list[tuple[Any, Any]]] = {}
+    for source, supplier in repository.list_supplier_rows_for_sku_page(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=sku_ids,
+        product_ids=product_ids,
+    ):
+        target = (
+            suppliers_by_sku.setdefault(source.sku_id, [])
+            if source.sku_id is not None
+            else suppliers_by_product.setdefault(source.product_id, [])
+        )
+        target.append((source, supplier))
+
+    image_statuses_by_product: dict[UUID, set[str]] = {}
+    for product_id, approval_status in repository.list_image_statuses_for_products(
+        session,
+        tenant_id=tenant_id,
+        product_ids=product_ids,
+    ):
+        image_statuses_by_product.setdefault(product_id, set()).add(approval_status)
+
+    items: list[SkuListItem] = []
+    for row in rows:
+        supplier_rows = [
+            *suppliers_by_sku.get(row.sku.id, []),
+            *suppliers_by_product.get(row.product.id, []),
+        ]
+        unique_suppliers: list[Any] = []
+        seen_supplier_ids: set[str] = set()
+        for _source, supplier in supplier_rows:
+            if supplier.id in seen_supplier_ids:
+                continue
+            seen_supplier_ids.add(supplier.id)
+            unique_suppliers.append(supplier)
+
+        image_states = image_statuses_by_product.get(row.product.id, set())
+        image_status = (
+            "APPROVED"
+            if "APPROVED" in image_states
+            else "SOURCE" if image_states else "NONE"
+        )
+        offer = row.public_offer
+        items.append(
+            SkuListItem(
+                id=row.sku.id,
+                sku_code=row.sku.sku_code,
+                name=row.sku.name or row.product.name,
+                product_id=row.product.id,
+                product_code=row.product.product_code,
+                product_name=row.product.name,
+                category=(
+                    ProductCategorySummary(
+                        id=row.category.id,
+                        code=row.category.code,
+                        name=row.category.name,
+                    )
+                    if row.category
+                    else None
+                ),
+                tags=list(offer.tags) if offer else [],
+                supplier_summary=SkuSupplierSummary(
+                    count=len(unique_suppliers),
+                    primary_supplier_id=(
+                        unique_suppliers[0].id if unique_suppliers else None
+                    ),
+                    primary_supplier_name=(
+                        unique_suppliers[0].name if unique_suppliers else None
+                    ),
+                    names=[supplier.name for supplier in unique_suppliers[:3]],
+                ),
+                default_moq=row.sku.default_moq,
+                moq_unit=row.sku.moq_unit,
+                public_price=offer.unit_price if offer else None,
+                public_currency=offer.currency if offer else None,
+                public_offer_status=offer.publication_status if offer else None,
+                status=row.sku.status,
+                version=row.sku.version,
+                updated_at=row.sku.updated_at,
+                image_status=image_status,
+            )
+        )
+
+    return SkuListPage(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=(total + page_size - 1) // page_size,
+    )
 
 
 def get_product(

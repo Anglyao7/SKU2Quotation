@@ -174,6 +174,8 @@ def _oidc_errors(values: Mapping[str, str]) -> list[str]:
         errors.append("OIDC_CLIENT_AUTH_METHOD_INVALID")
     if not _secret_is_safe(_value(values, "OIDC_CLIENT_SECRET")):
         errors.append("OIDC_CLIENT_SECRET_INVALID")
+    if _value(values, "KEYCLOAK_ADMIN_BASE_URL") != "http://keycloak:8080":
+        errors.append("KEYCLOAK_ADMIN_BASE_URL_INVALID")
     redirect_uris = [
         item.strip()
         for item in _value(values, "OIDC_REDIRECT_URIS").split(",")

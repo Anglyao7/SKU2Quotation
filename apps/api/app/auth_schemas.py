@@ -38,6 +38,13 @@ class PasswordLoginRequest(BaseModel):
         return normalized
 
 
+class PasswordChangeRequest(BaseModel):
+    """Secrets used for one authenticated, self-service password change."""
+
+    current_password: SecretStr
+    new_password: SecretStr
+
+
 def _default_login_grant_type(value: object) -> object:
     """Keep pre-grant_type authorization-code clients backward compatible."""
 

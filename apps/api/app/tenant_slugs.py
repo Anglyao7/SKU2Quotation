@@ -13,6 +13,7 @@ from typing import Final
 RESERVED_TENANT_SLUGS: Final[frozenset[str]] = frozenset(
     {
         # React application routes.
+        "account",
         "ai-search",
         "console",
         "dashboard",

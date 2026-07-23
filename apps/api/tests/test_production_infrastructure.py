@@ -126,13 +126,29 @@ def test_production_compose_has_one_public_edge_and_private_dependencies() -> No
     assert value["networks"]["app"]["internal"] is True
     assert value["networks"]["data"]["internal"] is True
     assert value["networks"]["identity"]["internal"] is True
+    assert value["networks"]["identity-admin"]["internal"] is True
     assert value["networks"]["app"]["ipam"]["config"][0]["subnet"] == "172.31.10.0/24"
 
     caddy = services["caddy"]
     assert "env_file" not in caddy
     assert set(caddy["environment"]) == {"ATC_DOMAIN", "CADDY_ACME_EMAIL"}
     assert set(caddy["networks"]) == {"edge", "app"}
-    assert set(services["keycloak"]["networks"]) == {"edge", "identity"}
+    assert set(services["keycloak"]["networks"]) == {
+        "edge",
+        "identity",
+        "identity-admin",
+    }
+    assert set(services["api"]["networks"]) == {
+        "app",
+        "data",
+        "identity-admin",
+        "egress",
+    }
+    assert {
+        name
+        for name, service in services.items()
+        if "identity-admin" in service.get("networks", ())
+    } == {"api", "keycloak"}
     assert set(services["keycloak-user-provisioner"]["networks"]) == {"identity"}
     assert services["keycloak-user-provisioner"]["entrypoint"] == [
         "python",
@@ -224,6 +240,7 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
     assert value["networks"]["app"]["internal"] is True
     assert value["networks"]["data"]["internal"] is True
     assert value["networks"]["identity"]["internal"] is True
+    assert value["networks"]["identity-admin"]["internal"] is True
     assert value["networks"]["app"]["ipam"]["config"][0]["subnet"] == (
         "172.31.20.0/24"
     )
@@ -237,7 +254,24 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
     assert environment["OUTBOX_PUBLISHER_PROFILE"] == "inline_database"
     assert environment["AUTH_PROFILE"] == "enterprise_oidc"
     assert environment["OIDC_ISSUER"].startswith("https://auth.")
+    assert environment["KEYCLOAK_ADMIN_BASE_URL"] == "http://keycloak:8080"
     assert environment["RATE_LIMIT_ENABLED"] == "true"
+    assert set(services["api"]["networks"]) == {
+        "app",
+        "data",
+        "identity-admin",
+        "egress",
+    }
+    assert set(services["keycloak"]["networks"]) == {
+        "edge",
+        "identity",
+        "identity-admin",
+    }
+    assert {
+        name
+        for name, service in services.items()
+        if "identity-admin" in service.get("networks", ())
+    } == {"api", "keycloak"}
     assert services["api"]["volumes"] == [
         "local-object-data:/var/lib/atc/object-storage"
     ]
@@ -302,6 +336,7 @@ def test_production_auth_and_workers_keep_least_privilege_boundaries() -> None:
         == "${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}"
     )
     assert api_environment["AUTH_PROFILE"] == "enterprise_oidc"
+    assert api_environment["KEYCLOAK_ADMIN_BASE_URL"] == "http://keycloak:8080"
     assert "OIDC_REDIRECT_URIS" in api_environment
     assert "OIDC_REDIRECT_URI" not in api_environment
     assert api_environment["RATE_LIMIT_ENABLED"] == "true"
@@ -346,6 +381,7 @@ def test_keycloak_import_and_public_management_boundary_are_fail_closed() -> Non
     assert '"loginWithEmailAllowed": true' in realm
     assert '"standardFlowEnabled": false' in realm
     assert '"directAccessGrantsEnabled": true' in realm
+    assert '"serviceAccountsEnabled": true' in realm
     assert '"requiredActions": []' in realm
     assert '"temporary": false' in realm
     assert '"eventsEnabled": true' in realm
@@ -405,6 +441,9 @@ def test_keycloak_import_and_public_management_boundary_are_fail_closed() -> Non
         REPOSITORY_ROOT / "apps" / "api" / "scripts" / "reconcile_keycloak_realm.py"
     ).read_text(encoding="utf-8")
     assert "--admin-password" not in reconcile_source
+    assert 'SERVICE_ACCOUNT_REALM_MANAGEMENT_ROLES = ("manage-users",)' in (
+        reconcile_source
+    )
 
 
 def test_keycloak_realm_renderer_json_escapes_environment_values(

@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from ...auth_schemas import LoginRequest, PasswordLoginRequest
+from ...auth_schemas import LoginRequest, PasswordChangeRequest, PasswordLoginRequest
 from ...identity_models import (
     AuthRefreshTokenRow,
     AuthSessionRow,
@@ -21,7 +21,12 @@ from ...identity_models import (
     UserRow,
 )
 from ..invitation_email_lock import acquire_invitation_email_lock
-from .contracts import IdentityClaim, IdentityProviderError, IdentityProviderPort
+from .contracts import (
+    IdentityClaim,
+    IdentityProviderError,
+    IdentityProviderPasswordPolicyError,
+    IdentityProviderPort,
+)
 from .fake_provider import FakeIdentityProviderAdapter
 from .oidc_provider import OidcIdentityProviderAdapter
 from .tokens import (
@@ -251,6 +256,140 @@ def password_login(
         user_agent=user_agent,
         ip_address=ip_address,
     )
+
+
+def _password_policy_error() -> AuthError:
+    return AuthError(
+        "PASSWORD_POLICY_VIOLATION",
+        (
+            "new password must be 12-128 characters and include an uppercase "
+            "letter, lowercase letter, digit, and special character"
+        ),
+        status_code=422,
+    )
+
+
+def _validate_new_password(
+    *,
+    current_password: str,
+    new_password: str,
+    user: UserRow,
+) -> None:
+    if (
+        len(new_password) < 12
+        or len(new_password) > 128
+        or any(
+            character.isspace() or ord(character) < 32
+            for character in new_password
+        )
+        or not any(character.isupper() for character in new_password)
+        or not any(character.islower() for character in new_password)
+        or not any(character.isdigit() for character in new_password)
+        or not any(
+            not character.isalnum() and not character.isspace()
+            for character in new_password
+        )
+    ):
+        raise _password_policy_error()
+    if hmac.compare_digest(
+        current_password.encode("utf-8"),
+        new_password.encode("utf-8"),
+    ):
+        raise _password_policy_error()
+    normalized = new_password.casefold()
+    email = (user.email_normalized or "").casefold()
+    if email and normalized in {email, email.split("@", 1)[0]}:
+        raise _password_policy_error()
+
+
+def change_password(
+    session: Session,
+    request: PasswordChangeRequest,
+    *,
+    access_token: str,
+    csrf_token: str,
+) -> None:
+    """Verify the old secret, revoke peer sessions, and update Keycloak only."""
+
+    auth_session, user, _claims = session_from_access_token(
+        session,
+        access_token,
+        context_required=False,
+    )
+    if not hmac.compare_digest(
+        auth_session.csrf_token_hash,
+        hash_secret(csrf_token),
+    ):
+        raise AuthError(
+            "AUTH_CSRF_INVALID",
+            "CSRF validation failed",
+            status_code=403,
+        )
+    current_password = request.current_password.get_secret_value()
+    new_password = request.new_password.get_secret_value()
+    if not current_password or len(current_password) > 1024:
+        raise AuthError(
+            "CURRENT_PASSWORD_INVALID",
+            "current password is invalid",
+        )
+    _validate_new_password(
+        current_password=current_password,
+        new_password=new_password,
+        user=user,
+    )
+    if not user.email_normalized or not user.identity_provider.startswith("oidc:"):
+        raise AuthError(
+            "PASSWORD_CHANGE_UNAVAILABLE",
+            "password change is unavailable for this account",
+            status_code=409,
+        )
+
+    adapter = _identity_adapter("enterprise_oidc")
+    try:
+        claim = adapter.authenticate_password(
+            identifier=user.email_normalized,
+            password=current_password,
+        )
+    except IdentityProviderError as exc:
+        raise AuthError(
+            "CURRENT_PASSWORD_INVALID",
+            "current password is invalid",
+        ) from exc
+    if (
+        claim.provider != user.identity_provider
+        or claim.subject != user.identity_subject
+    ):
+        raise AuthError(
+            "CURRENT_PASSWORD_INVALID",
+            "current password is invalid",
+        )
+
+    peer_sessions = session.scalars(
+        select(AuthSessionRow)
+        .where(
+            AuthSessionRow.user_id == user.id,
+            AuthSessionRow.id != auth_session.id,
+            AuthSessionRow.revoked_at.is_(None),
+        )
+        .with_for_update()
+    ).all()
+    for peer_session in peer_sessions:
+        _revoke_family(session, peer_session, "PASSWORD_CHANGED")
+    session.commit()
+
+    try:
+        adapter.change_password(
+            subject=user.identity_subject,
+            new_password=new_password,
+        )
+    except IdentityProviderPasswordPolicyError as exc:
+        raise _password_policy_error() from exc
+    except IdentityProviderError as exc:
+        raise AuthError(
+            "PASSWORD_CHANGE_FAILED",
+            "password could not be changed; please retry",
+            status_code=503,
+        ) from exc
 
 
 def _issue_authenticated_session(

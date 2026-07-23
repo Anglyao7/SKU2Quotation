@@ -6,7 +6,10 @@ import pytest
 import httpx
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from app.services.auth.contracts import IdentityProviderError
+from app.services.auth.contracts import (
+    IdentityProviderError,
+    IdentityProviderPasswordPolicyError,
+)
 from app.services.auth.oidc_provider import (
     OidcDiscovery,
     OidcIdentityProviderAdapter,
@@ -208,6 +211,205 @@ def test_oidc_password_grant_validates_tokens_without_exposing_credentials(
         "password": "correct horse battery staple",
         "scope": "openid profile email",
     }
+
+
+def test_keycloak_password_change_uses_service_account_and_exact_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("KEYCLOAK_ADMIN_BASE_URL", raising=False)
+    issuer = "https://identity.example.test/auth/realms/atc"
+    settings = OidcSettings(
+        issuer=issuer,
+        client_id="atc-web",
+        client_secret="S" * 48,
+        scopes=("openid", "profile", "email"),
+        redirect_uris=("https://app.example.test/login/callback",),
+        token_endpoint_auth_method="client_secret_basic",
+        allowed_algorithms=("RS256",),
+        allowed_endpoint_hosts=("identity.example.test",),
+        timeout_seconds=5,
+    )
+    discovery = OidcDiscovery(
+        issuer=issuer,
+        authorization_endpoint=f"{issuer}/authorize",
+        token_endpoint=f"{issuer}/token",
+        jwks_uri=f"{issuer}/jwks",
+        userinfo_endpoint=None,
+        end_session_endpoint=f"{issuer}/logout",
+        signing_algorithms=("RS256",),
+    )
+    requests: list[tuple[str, str, dict[str, object]]] = []
+
+    def post(url: str, **kwargs: object) -> httpx.Response:
+        requests.append(("POST", url, kwargs))
+        if url == discovery.token_endpoint:
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "service-account-access-token",
+                    "token_type": "Bearer",
+                },
+                request=httpx.Request("POST", url),
+            )
+        return httpx.Response(204, request=httpx.Request("POST", url))
+
+    def put(url: str, **kwargs: object) -> httpx.Response:
+        requests.append(("PUT", url, kwargs))
+        return httpx.Response(204, request=httpx.Request("PUT", url))
+
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.load_oidc_settings",
+        lambda: settings,
+    )
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.get_oidc_discovery",
+        lambda *_args: discovery,
+    )
+    monkeypatch.setattr("app.services.auth.oidc_provider.httpx.post", post)
+    monkeypatch.setattr("app.services.auth.oidc_provider.httpx.put", put)
+
+    OidcIdentityProviderAdapter().change_password(
+        subject="user/subject with spaces",
+        new_password="UpdatedPass!456",
+    )
+
+    token_request = requests[0]
+    assert token_request[0:2] == ("POST", discovery.token_endpoint)
+    assert token_request[2]["auth"] == ("atc-web", "S" * 48)
+    assert token_request[2]["data"] == {
+        "grant_type": "client_credentials",
+        "client_id": "atc-web",
+    }
+    logout_request = requests[1]
+    reset_request = requests[2]
+    expected_user_url = (
+        "https://identity.example.test/auth/admin/realms/atc/"
+        "users/user%2Fsubject%20with%20spaces"
+    )
+    assert logout_request[0:2] == ("POST", f"{expected_user_url}/logout")
+    assert reset_request[0:2] == ("PUT", f"{expected_user_url}/reset-password")
+    assert logout_request[2]["headers"]["Authorization"] == (
+        "Bearer service-account-access-token"
+    )
+    assert reset_request[2]["json"] == {
+        "type": "password",
+        "temporary": False,
+        "value": "UpdatedPass!456",
+    }
+    assert all(request[2]["follow_redirects"] is False for request in requests)
+
+
+def test_keycloak_password_change_maps_policy_failure_without_upstream_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("KEYCLOAK_ADMIN_BASE_URL", raising=False)
+    issuer = "https://identity.example.test/realms/atc"
+    settings = OidcSettings(
+        issuer=issuer,
+        client_id="atc-web",
+        client_secret="S" * 48,
+        scopes=("openid", "profile", "email"),
+        redirect_uris=("https://app.example.test/login/callback",),
+        token_endpoint_auth_method="client_secret_basic",
+        allowed_algorithms=("RS256",),
+        allowed_endpoint_hosts=("identity.example.test",),
+        timeout_seconds=5,
+    )
+    discovery = OidcDiscovery(
+        issuer=issuer,
+        authorization_endpoint=f"{issuer}/authorize",
+        token_endpoint=f"{issuer}/token",
+        jwks_uri=f"{issuer}/jwks",
+        userinfo_endpoint=None,
+        end_session_endpoint=f"{issuer}/logout",
+        signing_algorithms=("RS256",),
+    )
+
+    def post(url: str, **_kwargs: object) -> httpx.Response:
+        if url == discovery.token_endpoint:
+            return httpx.Response(
+                200,
+                json={"access_token": "service-token", "token_type": "Bearer"},
+                request=httpx.Request("POST", url),
+            )
+        return httpx.Response(204, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.load_oidc_settings",
+        lambda: settings,
+    )
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.get_oidc_discovery",
+        lambda *_args: discovery,
+    )
+    monkeypatch.setattr("app.services.auth.oidc_provider.httpx.post", post)
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.httpx.put",
+        lambda url, **_kwargs: httpx.Response(
+            400,
+            json={"errorMessage": "passwordHistory(secret detail)"},
+            request=httpx.Request("PUT", url),
+        ),
+    )
+
+    with pytest.raises(
+        IdentityProviderPasswordPolicyError,
+        match="password policy rejected",
+    ) as exc_info:
+        OidcIdentityProviderAdapter().change_password(
+            subject="keycloak-user-id",
+            new_password="UpdatedPass!456",
+        )
+    assert "passwordHistory" not in str(exc_info.value)
+
+
+def test_password_management_rejects_non_keycloak_issuer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = OidcSettings(
+        issuer="https://identity.example.test/application/o/atc/",
+        client_id="atc-web",
+        client_secret="S" * 48,
+        scopes=("openid", "profile", "email"),
+        redirect_uris=("https://app.example.test/login/callback",),
+        token_endpoint_auth_method="client_secret_basic",
+        allowed_algorithms=("RS256",),
+        allowed_endpoint_hosts=("identity.example.test",),
+        timeout_seconds=5,
+    )
+
+    with pytest.raises(IdentityProviderError, match="does not support"):
+        OidcIdentityProviderAdapter._keycloak_admin_realm_url(settings)
+
+
+def test_managed_password_admin_endpoint_is_restricted_to_internal_keycloak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = OidcSettings(
+        issuer="https://identity.example.test/realms/atc",
+        client_id="atc-web",
+        client_secret="S" * 48,
+        scopes=("openid", "profile", "email"),
+        redirect_uris=("https://app.example.test/login/callback",),
+        token_endpoint_auth_method="client_secret_basic",
+        allowed_algorithms=("RS256",),
+        allowed_endpoint_hosts=("identity.example.test",),
+        timeout_seconds=5,
+    )
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("KEYCLOAK_ADMIN_BASE_URL", "http://keycloak:8080")
+    assert OidcIdentityProviderAdapter._keycloak_admin_realm_url(settings) == (
+        "http://keycloak:8080/admin/realms/atc"
+    )
+
+    monkeypatch.setenv(
+        "KEYCLOAK_ADMIN_BASE_URL",
+        "https://identity.example.test",
+    )
+    with pytest.raises(IdentityProviderError, match="endpoint is invalid"):
+        OidcIdentityProviderAdapter._keycloak_admin_realm_url(settings)
 
 
 def test_oidc_discovery_endpoints_are_origin_allowlisted_and_jwks_never_redirects(

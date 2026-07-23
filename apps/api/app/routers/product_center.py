@@ -17,6 +17,7 @@ from ..product_center_schemas import (
     PublicCatalogOfferResponse,
     PublicCatalogOfferUpsertRequest,
     SkuBatchCreateRequest,
+    SkuListPage,
     SkuResponse,
     SkuUpdateRequest,
     SupplierPriceCreateRequest,
@@ -56,6 +57,31 @@ def list_products(
             statuses=product_status,
             approved_images_only=approved_images_only,
             limit=limit,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get("/product-center/skus", response_model=SkuListPage)
+def list_skus(
+    q: str = Query(default="", max_length=200),
+    category_id: UUID | None = None,
+    sku_status: list[str] = Query(default=[], alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    session: Session = Depends(get_authenticated_session),
+) -> SkuListPage:
+    context = _context(session)
+    try:
+        return use_cases.list_skus(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            query=q,
+            category_id=category_id,
+            statuses=sku_status,
+            page=page,
+            page_size=page_size,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

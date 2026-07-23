@@ -23,10 +23,13 @@ import type {
   QuotationRecord,
   QuotationSummary,
   ReviewItem,
+  SkuListItem,
+  SkuListPage,
   SupplierPrice,
   SupplierProfile,
   SupplierProfileDetail,
 } from "./types";
+import { buildPasswordChangePayload } from "./accountPassword";
 import { buildPasswordLoginPayload } from "./authCredentials";
 
 const CSRF_STORAGE_KEY = "atc.csrfToken";
@@ -225,6 +228,35 @@ export async function loginPassword(identifier: string, password: string): Promi
     body: JSON.stringify(buildPasswordLoginPayload(identifier, password)),
   }, false);
   return acceptAuthData(payload.data);
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const submit = async () => {
+    const csrfToken = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
+    if (!csrfToken) throw new CoreApiError("会话校验信息已失效，请重新登录。", 419);
+    await request<void>("/auth/password", {
+      method: "PUT",
+      headers: { "X-CSRF-Token": csrfToken },
+      body: JSON.stringify(buildPasswordChangePayload(currentPassword, newPassword)),
+    }, false);
+  };
+
+  try {
+    await submit();
+  } catch (caught) {
+    const detail = caught instanceof CoreApiError && caught.details && typeof caught.details === "object"
+      ? (caught.details as { detail?: { code?: string } }).detail
+      : undefined;
+    if (!(caught instanceof CoreApiError) || caught.status !== 401 || detail?.code === "CURRENT_PASSWORD_INVALID") {
+      throw caught;
+    }
+    const restored = await refreshAuthSession();
+    if (!restored) {
+      window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+      throw new CoreApiError("会话已失效，请重新登录。", 419);
+    }
+    await submit();
+  }
 }
 
 export async function listMemberships() {
@@ -484,6 +516,40 @@ interface ApiSku {
   updated_at: string;
 }
 
+interface ApiSkuListItem {
+  id: string;
+  sku_code: string;
+  name: string;
+  product_id: string;
+  product_code?: string | null;
+  product_name: string;
+  category?: { id: string; code: string; name: string } | null;
+  tags: string[];
+  supplier_summary: {
+    count: number;
+    primary_supplier_id?: string | null;
+    primary_supplier_name?: string | null;
+    names: string[];
+  };
+  default_moq?: number | string | null;
+  moq_unit?: string | null;
+  public_price?: number | string | null;
+  public_currency?: string | null;
+  public_offer_status?: SkuListItem["publicOfferStatus"] | null;
+  status: SkuListItem["status"];
+  version: number;
+  updated_at: string;
+  image_status: SkuListItem["imageStatus"];
+}
+
+interface ApiSkuListPage {
+  items: ApiSkuListItem[];
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
+}
+
 interface ApiProductDetail extends ApiProduct {
   description?: string | null;
   default_unit?: string | null;
@@ -551,6 +617,34 @@ function mapSku(row: ApiSku): ProductSku {
   };
 }
 
+function mapSkuListItem(row: ApiSkuListItem): SkuListItem {
+  return {
+    id: row.id,
+    skuCode: row.sku_code,
+    name: row.name,
+    productId: row.product_id,
+    productCode: defined(row.product_code),
+    productName: row.product_name,
+    category: row.category ?? undefined,
+    tags: row.tags ?? [],
+    supplierSummary: {
+      count: row.supplier_summary.count,
+      primarySupplierId: defined(row.supplier_summary.primary_supplier_id),
+      primarySupplierName: defined(row.supplier_summary.primary_supplier_name),
+      names: row.supplier_summary.names ?? [],
+    },
+    defaultMoq: row.default_moq == null ? undefined : Number(row.default_moq),
+    moqUnit: defined(row.moq_unit),
+    publicPrice: row.public_price == null ? undefined : Number(row.public_price),
+    publicCurrency: defined(row.public_currency),
+    publicOfferStatus: defined(row.public_offer_status),
+    status: row.status,
+    version: row.version,
+    updatedAt: row.updated_at,
+    imageStatus: row.image_status,
+  };
+}
+
 function mapActivity(row: ApiProductDetail["activity"][number]): ProductActivity {
   return { id: row.id, entityType: row.entity_type, entityId: row.entity_id, action: row.action, before: row.before, after: row.after, actorMembershipId: row.actor_membership_id, occurredAt: row.occurred_at };
 }
@@ -565,6 +659,29 @@ export async function listProducts(params: { q?: string; categoryId?: string; ap
   if (params.categoryId) query.set("category_id", params.categoryId);
   if (params.approvedImagesOnly) query.set("approved_images_only", "true");
   return (await request<ApiProduct[]>(`/products${query.size ? `?${query}` : ""}`)).map(mapProduct);
+}
+
+export async function listSkus(params: {
+  q?: string;
+  categoryId?: string;
+  statuses?: ProductSku["status"][];
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<SkuListPage> {
+  const query = new URLSearchParams();
+  if (params.q) query.set("q", params.q);
+  if (params.categoryId) query.set("category_id", params.categoryId);
+  for (const status of params.statuses ?? []) query.append("status", status);
+  query.set("page", String(params.page ?? 1));
+  query.set("page_size", String(params.pageSize ?? 50));
+  const row = await request<ApiSkuListPage>(`/product-center/skus?${query}`);
+  return {
+    items: row.items.map(mapSkuListItem),
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    pages: row.pages,
+  };
 }
 
 export async function getProduct(productId: string): Promise<ProductDetail> {

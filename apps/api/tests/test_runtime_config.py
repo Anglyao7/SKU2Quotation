@@ -23,6 +23,7 @@ def _managed_environment(**overrides: str) -> dict[str, str]:
         "OIDC_ISSUER": "https://identity.example.test/application/o/atc/",
         "OIDC_CLIENT_ID": "atc-web",
         "OIDC_CLIENT_SECRET": "S" * 48,
+        "KEYCLOAK_ADMIN_BASE_URL": "http://keycloak:8080",
         "OIDC_REDIRECT_URIS": "https://staging.aitradecloud.example/login/callback",
         "OIDC_SCOPES": "openid profile email",
         "OIDC_ALLOWED_ALGORITHMS": "RS256,ES256",
@@ -165,6 +166,24 @@ def test_managed_runtime_rejects_oidc_logout_open_redirect() -> None:
         )
     )
     assert "OIDC_POST_LOGOUT_REDIRECT_URI_INVALID" in errors
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "",
+        "https://auth.example.test",
+        "http://keycloak-postgres:5432",
+        "http://keycloak:8080/admin",
+    ),
+)
+def test_managed_runtime_requires_isolated_keycloak_admin_endpoint(
+    value: str,
+) -> None:
+    errors = startup_configuration_errors(
+        _managed_environment(KEYCLOAK_ADMIN_BASE_URL=value)
+    )
+    assert "KEYCLOAK_ADMIN_BASE_URL_INVALID" in errors
 
 
 def test_managed_runtime_rejects_reserved_bootstrap_tenant_slugs() -> None:
