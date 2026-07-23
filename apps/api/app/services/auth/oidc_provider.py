@@ -50,6 +50,10 @@ def _csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _space_separated(value: str) -> tuple[str, ...]:
+    return tuple(item for item in value.split() if item)
+
+
 def load_oidc_settings() -> OidcSettings:
     try:
         timeout = float(os.getenv("OIDC_HTTP_TIMEOUT_SECONDS", "10"))
@@ -62,7 +66,9 @@ def load_oidc_settings() -> OidcSettings:
         issuer=issuer,
         client_id=os.getenv("OIDC_CLIENT_ID", "").strip(),
         client_secret=os.getenv("OIDC_CLIENT_SECRET", ""),
-        scopes=_csv(os.getenv("OIDC_SCOPES", "openid profile email")),
+        scopes=_space_separated(
+            os.getenv("OIDC_SCOPES", "openid profile email")
+        ),
         redirect_uris=_csv(os.getenv("OIDC_REDIRECT_URIS", "")),
         token_endpoint_auth_method=os.getenv(
             "OIDC_TOKEN_ENDPOINT_AUTH_METHOD", "client_secret_basic"

@@ -13,7 +13,26 @@ from app.services.auth.oidc_provider import (
     OidcSettings,
     _https_endpoint,
     _load_jwks,
+    load_oidc_settings,
 )
+
+
+def test_oidc_settings_accept_standard_space_delimited_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "OIDC_ISSUER",
+        "https://identity.example.test/realms/atc",
+    )
+    monkeypatch.setenv("OIDC_CLIENT_ID", "atc-web")
+    monkeypatch.setenv("OIDC_CLIENT_SECRET", "S" * 48)
+    monkeypatch.setenv(
+        "OIDC_REDIRECT_URIS",
+        "https://app.example.test/login/callback",
+    )
+    monkeypatch.setenv("OIDC_SCOPES", "openid profile email")
+
+    assert load_oidc_settings().scopes == ("openid", "profile", "email")
 
 
 def test_oidc_id_token_requires_valid_signature_audience_issuer_and_nonce(
