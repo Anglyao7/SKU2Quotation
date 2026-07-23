@@ -178,7 +178,9 @@ fi
 
 info "starting or retaining durable dependencies"
 if [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]]; then
-  compose up --detach --wait postgres redis keycloak-postgres keycloak object-storage-bootstrap
+  compose up --detach --wait postgres redis keycloak-postgres keycloak
+  info "initializing the compact local object volume"
+  compose run --rm --no-deps object-storage-bootstrap
 else
   compose up --detach --wait postgres redis rabbitmq minio clamav keycloak-postgres keycloak
 fi

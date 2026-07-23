@@ -570,6 +570,16 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     assert "compact production requires at least 3 GiB RAM" in deploy
     assert "COMPOSE_PARALLEL_LIMIT=1" in deploy
     assert "ATC_COMPACT_SWAP_GIB" in deploy
+    assert (
+        "compose up --detach --wait postgres redis keycloak-postgres keycloak\n"
+        in deploy
+    )
+    assert "compose run --rm --no-deps object-storage-bootstrap" in deploy
+    assert deploy.index(
+        "compose up --detach --wait postgres redis keycloak-postgres keycloak"
+    ) < deploy.index("compose run --rm --no-deps object-storage-bootstrap")
+    compact_api_dependencies = _compact_compose()["services"]["api"]["depends_on"]
+    assert "object-storage-bootstrap" not in compact_api_dependencies
     restic_initializer = (
         REPOSITORY_ROOT / "infra" / "production" / "restic-init.sh"
     ).read_text(encoding="utf-8")
