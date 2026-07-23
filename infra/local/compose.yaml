@@ -6,7 +6,7 @@ x-image-build: &image-build
   args:
     ATC_RELEASE: local-compose
     ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:-local}
-    ATC_MIGRATION_HEAD: "20260720_0021"
+    ATC_MIGRATION_HEAD: "20260723_0024"
     ATC_CONFIG_VERSION: local-compose-v1
 
 x-runtime-environment: &runtime-environment
@@ -148,6 +148,7 @@ services:
       ATC_APP_DB_PASSWORD: ${ATC_APP_DB_PASSWORD:-atc-local-app}
       ATC_AUTH_DB_PASSWORD: ${ATC_AUTH_DB_PASSWORD:-atc-local-auth}
       ATC_WORKER_DB_PASSWORD: ${ATC_WORKER_DB_PASSWORD:-atc-local-worker}
+      ATC_SCHEDULER_DB_PASSWORD: ${ATC_SCHEDULER_DB_PASSWORD:-atc-local-scheduler}
     depends_on:
       postgres:
         condition: service_healthy

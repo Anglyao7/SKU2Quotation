@@ -40,6 +40,16 @@ def find_published_profile_by_tenant(
     )
 
 
+def find_profile_by_tenant(
+    session: Session, *, tenant_id: UUID
+) -> TenantPublicProfileRow | None:
+    return session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id,
+        )
+    )
+
+
 def get_active_tenant(
     session: Session, *, tenant_id: UUID, slug: str | None = None
 ) -> TenantRow | None:

@@ -1,0 +1,91 @@
+{
+  "realm": "atc",
+  "displayName": "澄湾选品",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "passwordPolicy": "length(12) and digits(1) and upperCase(1) and lowerCase(1) and specialChars(1) and notUsername(undefined)",
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "eventsEnabled": true,
+  "eventsExpiration": 2592000,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "smtpServer": {
+    "host": "__KEYCLOAK_SMTP_HOST__",
+    "port": "__KEYCLOAK_SMTP_PORT__",
+    "from": "__KEYCLOAK_SMTP_FROM__",
+    "replyTo": "__KEYCLOAK_SMTP_REPLY_TO__",
+    "auth": "true",
+    "user": "__KEYCLOAK_SMTP_USERNAME__",
+    "password": "__KEYCLOAK_SMTP_PASSWORD__",
+    "starttls": "true",
+    "ssl": "false"
+  },
+  "clients": [
+    {
+      "clientId": "__OIDC_CLIENT_ID__",
+      "name": "AI Trade Cloud Web",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "__OIDC_CLIENT_SECRET__",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "redirectUris": [
+        "https://__ATC_DOMAIN__/login/callback",
+        "https://__ATC_DOMAIN__/login"
+      ],
+      "webOrigins": [
+        "https://__ATC_DOMAIN__"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://__ATC_DOMAIN__/login"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "basic",
+        "email"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "__OIDC_BOOTSTRAP_ADMIN_EMAIL__",
+      "email": "__OIDC_BOOTSTRAP_ADMIN_EMAIL__",
+      "firstName": "Platform",
+      "lastName": "Owner",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [
+        "UPDATE_PASSWORD",
+        "CONFIGURE_TOTP"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "__KEYCLOAK_INITIAL_USER_PASSWORD__",
+          "temporary": true
+        }
+      ]
+    }
+  ]
+}

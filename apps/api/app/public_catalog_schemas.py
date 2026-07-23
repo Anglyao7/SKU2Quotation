@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -12,6 +13,7 @@ PUBLIC_DRAFT_DISCLAIMER = (
     "在商家完成审核并签发正式报价前，不构成要约、承诺或正式报价。"
 )
 PUBLIC_DRAFT_DISCLAIMER_VERSION = "public-draft-v1"
+PUBLIC_PRIVACY_NOTICE_VERSION = "privacy-v1"
 
 
 class PublicStoreResponse(BaseModel):
@@ -65,6 +67,7 @@ class PublicQuoteDraftCreate(BaseModel):
     customer_email: str | None = Field(default=None, max_length=320)
     customer_phone: str | None = Field(default=None, max_length=80)
     notes: str | None = Field(default=None, max_length=5000)
+    privacy_acknowledged: Literal[True]
     items: list[PublicCartItem] = Field(min_length=1, max_length=200)
 
     @field_validator(

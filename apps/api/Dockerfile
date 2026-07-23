@@ -3,8 +3,9 @@ FROM python:3.12.13-slim-bookworm AS runtime
 
 ARG ATC_RELEASE=local
 ARG ATC_COMMIT_SHA=unknown
-ARG ATC_MIGRATION_HEAD=20260720_0021
+ARG ATC_MIGRATION_HEAD=20260723_0024
 ARG ATC_CONFIG_VERSION=container-default-v1
+ARG PIP_VERSION=26.1.2
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -25,7 +26,8 @@ RUN groupadd --gid 10001 atc \
 WORKDIR /app
 
 COPY apps/api/requirements.txt ./requirements.txt
-RUN python -m pip install --no-cache-dir --requirement requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade "pip==${PIP_VERSION}" \
+    && python -m pip install --no-cache-dir --requirement requirements.txt
 
 COPY apps/api/alembic.ini ./alembic.ini
 COPY apps/api/migrations ./migrations

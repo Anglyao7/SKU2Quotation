@@ -1,0 +1,19 @@
+[Unit]
+Description=AI Trade Cloud daily application, identity, and object backup
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=__ATC_INSTALL_DIR__
+ExecStart=__ATC_INSTALL_DIR__/infra/production/backup.sh
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h
+
+[Install]
+WantedBy=multi-user.target

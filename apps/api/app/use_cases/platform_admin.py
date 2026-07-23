@@ -11,13 +11,18 @@ from ..database import set_request_context
 from ..domain.errors import ApplicationError
 from ..identity_models import TenantRow
 from ..platform_admin_schemas import (
+    PlatformMemberInvitation,
+    PlatformMemberInvitationCreate,
     PlatformTenantCreate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
 )
 from ..public_catalog_models import TenantPublicProfileRow
 from ..repositories import platform_admin_repository as repository
+from ..saas_seed import ensure_tenant_rbac
 from ..services.auth.dependencies import RequestContext
+from ..services.member_invitations import invite_tenant_member as create_member_invitation
+from ..tenant_slugs import is_reserved_tenant_slug
 
 
 def _require_platform_admin(context: RequestContext) -> None:
@@ -99,6 +104,12 @@ def create_tenant(
 ) -> PlatformTenantSummary:
     _require_platform_admin(context)
     slug = request.slug.lower()
+    if is_reserved_tenant_slug(slug):
+        raise ApplicationError(
+            "TENANT_SLUG_RESERVED",
+            "This storefront slug is reserved by the platform.",
+            kind="invalid",
+        )
     if repository.find_tenant_by_slug(session, slug) is not None:
         raise ApplicationError(
             "TENANT_SLUG_EXISTS",
@@ -126,6 +137,7 @@ def create_tenant(
                     publication_status="PUBLISHED" if request.active else "SUSPENDED",
                 )
             )
+            ensure_tenant_rbac(session, tenant_id=tenant.id)
             session.flush()
         session.commit()
     except IntegrityError as exc:
@@ -175,3 +187,50 @@ def update_tenant(
         session.flush()
     session.commit()
     return _summary(session, context=context, tenant=tenant)
+
+
+def invite_tenant_member(
+    session: Session,
+    identity_session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID,
+    request: PlatformMemberInvitationCreate,
+) -> PlatformMemberInvitation:
+    _require_platform_admin(context)
+    tenant = repository.get_tenant(session, tenant_id)
+    if tenant is None:
+        raise ApplicationError("TENANT_NOT_FOUND", "Tenant was not found.", kind="not_found")
+    if tenant.status != "active":
+        raise ApplicationError(
+            "TENANT_NOT_ACTIVE",
+            "Members can only be invited to an active tenant.",
+            kind="conflict",
+        )
+
+    # Older tenants may predate automatic role provisioning. Repairing the
+    # approved system catalogue is idempotent and remains tenant-scoped.
+    with _tenant_scope(session, context=context, tenant_id=tenant.id):
+        ensure_tenant_rbac(session, tenant_id=tenant.id)
+    session.commit()
+
+    result = create_member_invitation(
+        identity_session,
+        actor_user_id=context.user_id,
+        tenant_id=tenant.id,
+        email=request.email,
+        display_name=request.display_name,
+        role_code=request.role,
+    )
+    return PlatformMemberInvitation(
+        tenant_id=tenant.id,
+        user_id=result.user_id,
+        membership_id=result.membership_id,
+        email=result.email,
+        display_name=result.display_name,
+        role=result.role,  # type: ignore[arg-type]
+        membership_status=result.membership_status,  # type: ignore[arg-type]
+        created=result.created,
+        identity_already_bound=result.identity_already_bound,
+        requires_identity_provider_provisioning=not result.identity_already_bound,
+    )

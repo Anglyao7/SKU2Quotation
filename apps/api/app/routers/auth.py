@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..auth_schemas import (
     AuthContext,
+    AuthPublicConfig,
     AuthTokenData,
     AuthTokenResponse,
     AuthUser,
@@ -30,18 +31,23 @@ from ..services.auth.service import (
     switch_tenant,
 )
 from ..services.auth.tokens import REFRESH_COOKIE_NAME, REFRESH_TTL_SECONDS
+from ..services.auth.contracts import IdentityProviderError
+from ..services.auth.oidc_provider import public_oidc_config
+from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..domain.errors import ApplicationError
 from ..use_cases.authentication import get_current_user
 from .errors import application_http_error
 
 
 router = APIRouter(prefix="/api/v1", tags=["authentication"])
+NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
 def _http_error(exc: AuthError) -> HTTPException:
     return HTTPException(
         status_code=exc.status_code,
         detail={"code": exc.code, "message": exc.message},
+        headers=NO_STORE_HEADERS,
     )
 
 
@@ -100,6 +106,45 @@ def _bearer_value(credentials: HTTPAuthorizationCredentials | None) -> str:
     return credentials.credentials
 
 
+@router.get("/auth/config", response_model=AuthPublicConfig)
+def auth_config_endpoint(response: Response) -> AuthPublicConfig:
+    """Return only browser-safe authorization metadata.
+
+    Token, userinfo and JWKS endpoints as well as the client secret remain
+    server-side. The browser needs only the authorization endpoint and public
+    client metadata to start Authorization Code + PKCE.
+    """
+
+    response.headers.update(NO_STORE_HEADERS)
+    profile = os.getenv("AUTH_PROFILE", "local_fake").lower()
+    if profile == "local_fake" and os.getenv("APP_ENV", "development").lower() not in {
+        "staging",
+        "production",
+        "prod",
+    }:
+        return AuthPublicConfig(provider="local_fake")
+    if profile != "enterprise_oidc":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "AUTH_PROVIDER_UNAVAILABLE",
+                "message": "approved identity provider is not configured",
+            },
+            headers=NO_STORE_HEADERS,
+        )
+    try:
+        return AuthPublicConfig.model_validate(public_oidc_config())
+    except IdentityProviderError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "AUTH_PROVIDER_UNAVAILABLE",
+                "message": "identity provider metadata is unavailable",
+            },
+            headers=NO_STORE_HEADERS,
+        ) from exc
+
+
 @router.post("/auth/login", response_model=AuthTokenResponse)
 def login_endpoint(
     payload: LoginRequest,
@@ -107,6 +152,16 @@ def login_endpoint(
     response: Response,
     session: Session = Depends(get_auth_session),
 ) -> AuthTokenResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    enforce_rate_limit(
+        request,
+        scope="auth-login",
+        limit=configured_limit("RATE_LIMIT_LOGIN_REQUESTS", 10),
+        window_seconds=configured_limit(
+            "RATE_LIMIT_LOGIN_WINDOW_SECONDS", 60, maximum=86_400
+        ),
+        token=payload.authorization_code,
+    )
     try:
         result = login(
             session,
@@ -127,9 +182,23 @@ def refresh_endpoint(
     csrf_token: str = Header(alias="X-CSRF-Token"),
     session: Session = Depends(get_auth_session),
 ) -> AuthTokenResponse:
+    response.headers.update(NO_STORE_HEADERS)
     raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
+    enforce_rate_limit(
+        request,
+        scope="auth-refresh",
+        limit=configured_limit("RATE_LIMIT_REFRESH_REQUESTS", 30),
+        window_seconds=configured_limit(
+            "RATE_LIMIT_REFRESH_WINDOW_SECONDS", 60, maximum=86_400
+        ),
+        token=raw_refresh,
+    )
     if not raw_refresh:
-        raise HTTPException(status_code=401, detail={"code": "AUTH_SESSION_EXPIRED"})
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "AUTH_SESSION_EXPIRED"},
+            headers=NO_STORE_HEADERS,
+        )
     try:
         result = refresh(session, refresh_token=raw_refresh, csrf_token=csrf_token)
     except AuthError as exc:
@@ -145,6 +214,7 @@ def logout_endpoint(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: Session = Depends(get_auth_session),
 ) -> Response:
+    response.headers.update(NO_STORE_HEADERS)
     try:
         logout(session, access_token=_bearer_value(credentials))
     except AuthError as exc:
@@ -163,9 +233,14 @@ def tenant_context_endpoint(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: Session = Depends(get_auth_session),
 ) -> AuthTokenResponse:
+    response.headers.update(NO_STORE_HEADERS)
     raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
     if not raw_refresh:
-        raise HTTPException(status_code=401, detail={"code": "AUTH_SESSION_EXPIRED"})
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "AUTH_SESSION_EXPIRED"},
+            headers=NO_STORE_HEADERS,
+        )
     try:
         result = switch_tenant(
             session,

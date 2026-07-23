@@ -163,6 +163,29 @@ $env:RABBITMQ_URL='amqp://user:password@rabbitmq:5672/%2F'
 
 生产不保存本地密码；登录通过 OIDC Authorization Code + PKCE Provider Port。仓库中的 `local_fake` Adapter 只允许非生产 profile。Refresh Token 仅写 Secure/HttpOnly/SameSite Cookie，数据库只存 HMAC hash；Access Token 每次请求仍需回查 Session、ACTIVE Membership、Tenant 与 permission version。客户端提交的 tenant header 不作为授权根。
 
+平台管理员先在“商家管理 → 邀请成员”登记邮箱和租户角色，再由受信任运维人员在生产服务器执行：
+
+```bash
+sudo ./infra/production/keycloak-provision-user.sh \
+  owner@example.com "Merchant Owner"
+```
+
+包装脚本启动一个只加入 Keycloak 私有 `identity` 网络的一次性容器；
+公网 `/admin*` 仍然保持关闭。Keycloak 管理员密码和临时用户密码只通过
+无回显终端提示输入；脚本没有密码命令行参数，也不会把凭据交给业务 API、
+环境变量或容器配置。脚本始终以 `emailVerified=false` 创建身份，并强制由
+Keycloak SMTP 发送验证、改密和 TOTP 动作邮件，完成后回到 `/login`。
+SMTP 配置是生产部署必填项；发信失败时保持未验证并允许安全重试，不提供
+人工伪造邮箱已验证状态的生产旁路。
+
+生产启动导入只创建不存在的 Realm。后续发布由
+`infra/production/keycloak-reconcile.sh` 通过私有 Admin API 对账受管 Realm
+与 confidential client 字段，并验证 client secret；管理员凭据只经 stdin
+传入一次性容器。对账还会绑定受控运营邮箱并调用 Keycloak SMTP 测试接口，
+让错误的邮件连接或认证配置在应用切换前失败。这样域名、精确回调地址和
+OIDC secret 的受控轮换不会依赖 Keycloak 对已存在 Realm 明确跳过的启动
+导入行为。
+
 `users` 是全局身份；一个 User 通过 Membership 加入多个 Tenant。Role 属于 Tenant，Permission 是平台级稳定键。关联表使用复合租户外键，防止跨租户 UUID 引用。
 
 Phase 2 已把原有 `suppliers`、`source_files`、`import_jobs`、`review_items` 回填到固定 local Tenant，并增加 tenant-aware FK 和 RLS。旧 `SUP-*` ID 继续作为兼容主键，现有上传、解析、复核与报价接口不变。

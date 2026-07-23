@@ -15,6 +15,7 @@ class FakeIdentityProviderAdapter:
         authorization_code: str,
         code_verifier: str,
         redirect_uri: str,
+        nonce: str | None = None,
     ) -> IdentityClaim:
         app_env = os.getenv("APP_ENV", "development").lower()
         profile = os.getenv("AUTH_PROFILE", "local_fake").lower()
@@ -33,4 +34,8 @@ class FakeIdentityProviderAdapter:
         subject = authorization_code.removeprefix("fake:").strip()
         if not subject or len(subject) > 255:
             raise IdentityProviderError("authorization code exchange failed")
-        return IdentityClaim(provider="local-bootstrap", subject=subject)
+        return IdentityClaim(
+            provider="local-bootstrap",
+            subject=subject,
+            email_verified=True,
+        )

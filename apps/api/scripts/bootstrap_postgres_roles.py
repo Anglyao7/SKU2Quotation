@@ -21,6 +21,11 @@ ROLE_ENVIRONMENTS: Final = {
     "application": ("ATC_APP_DB_ROLE", "atc_app", "ATC_APP_DB_PASSWORD"),
     "identity": ("ATC_AUTH_DB_ROLE", "atc_auth", "ATC_AUTH_DB_PASSWORD"),
     "worker": ("ATC_WORKER_DB_ROLE", "atc_worker", "ATC_WORKER_DB_PASSWORD"),
+    "scheduler": (
+        "ATC_SCHEDULER_DB_ROLE",
+        "atc_scheduler",
+        "ATC_SCHEDULER_DB_PASSWORD",
+    ),
 }
 
 
@@ -64,7 +69,14 @@ def bootstrap_postgres_roles() -> dict[str, object]:
                 cursor.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,))
                 if cursor.fetchone() is None:
                     cursor.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(role_name)))
-                bypass = sql.SQL("BYPASSRLS") if purpose == "identity" else sql.SQL("NOBYPASSRLS")
+                # Identity validates memberships and the scheduler discovers
+                # active tenant IDs before either can bind a tenant context.
+                # Their table grants remain deliberately narrow.
+                bypass = (
+                    sql.SQL("BYPASSRLS")
+                    if purpose in {"identity", "scheduler"}
+                    else sql.SQL("NOBYPASSRLS")
+                )
                 cursor.execute(
                     sql.SQL(
                         "ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
@@ -73,7 +85,10 @@ def bootstrap_postgres_roles() -> dict[str, object]:
                 )
 
             migration_role = roles["migration"][0]
-            runtime_roles = [roles[key][0] for key in ("application", "identity", "worker")]
+            runtime_roles = [
+                roles[key][0]
+                for key in ("application", "identity", "worker", "scheduler")
+            ]
             cursor.execute(
                 sql.SQL("ALTER DATABASE {} OWNER TO {}").format(
                     sql.Identifier(database_name), sql.Identifier(migration_role)
@@ -120,7 +135,7 @@ def bootstrap_postgres_roles() -> dict[str, object]:
             purpose: {
                 "name": role_name,
                 "superuser": False,
-                "bypass_rls": purpose == "identity",
+                "bypass_rls": purpose in {"identity", "scheduler"},
             }
             for purpose, (role_name, _password) in roles.items()
         },

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run AI Trade Cloud backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=atc-backup.service
+
+[Install]
+WantedBy=timers.target

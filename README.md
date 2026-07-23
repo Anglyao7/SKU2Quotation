@@ -10,6 +10,7 @@ apps/
   web/    React、TypeScript、Vite 与 Nginx
 infra/
   images/minio/   固定版本的本地 MinIO 镜像
+  production/     公网 Compose、Caddy、部署/回滚与备份恢复
 docker-compose.yml
 ```
 
@@ -70,6 +71,10 @@ docker compose ps
 
 所有宿主机端口只绑定 `127.0.0.1`。PostgreSQL、Redis、RabbitMQ、MinIO 与 ClamAV 位于内部数据网络；本配置仅用于 Local/CI，不是生产部署方案。
 
+公网正式环境不要直接修改本地 Compose。域名、HTTPS、自托管 OIDC、
+最小暴露面、不可变提交部署、回滚和灾备步骤见
+[DEPLOYMENT.md](./DEPLOYMENT.md)。
+
 停止并保留数据：
 
 ```bash
@@ -107,8 +112,8 @@ docker compose down --volumes
 - `GET /api/store/{tenant_slug}`
 - `GET /api/store/{tenant_slug}/skus`
 - `POST /api/store/{tenant_slug}/quotes`
-- `GET /api/quotes/{quote_id}/pdf?token=...`
-- `GET /api/quotes/{quote_id}/xlsx?token=...`
+- `GET /api/quotes/{quote_id}/pdf`（下载凭证放在 `X-Quote-Download-Token` 请求头）
+- `GET /api/quotes/{quote_id}/xlsx`（下载凭证放在 `X-Quote-Download-Token` 请求头）
 
 报价、价格、产品发布和对客图片均保留人工确认点；兼容商品前台创建的是待确认报价草稿，不会绕过审批。
 

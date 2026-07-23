@@ -69,6 +69,14 @@ const workflow = [
   },
 ];
 
+const configuredStorefrontSlug = String(
+  import.meta.env.VITE_PRIMARY_STOREFRONT_SLUG || "demo",
+).trim().toLowerCase();
+const primaryStorefrontSlug = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/.test(
+  configuredStorefrontSlug,
+) ? configuredStorefrontSlug : "demo";
+const primaryStorefrontPath = `/${primaryStorefrontSlug}`;
+
 export function LandingPage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [headerElevated, setHeaderElevated] = useState(false);
@@ -173,8 +181,8 @@ export function LandingPage() {
                 收拢散落的 SKU 资料，串起查找、选择与报价，让每一次客户回应更从容。
               </p>
               <div className={styles.heroActions}>
-                <Link className={styles.primaryButton} to="/demo">
-                  查看演示 <ArrowRight size={18} weight="bold" />
+                <Link className={styles.primaryButton} to={primaryStorefrontPath}>
+                  查看商品前台 <ArrowRight size={18} weight="bold" />
                 </Link>
                 <Link className={styles.secondaryButton} to="/login">登录工作台</Link>
               </div>
@@ -193,7 +201,7 @@ export function LandingPage() {
               <figure className={styles.productProof}>
                 <figcaption>
                   <span>澄湾商品前台</span>
-                  <strong>yourdomain.com/demo</strong>
+                  <strong>{window.location.host}/{primaryStorefrontSlug}</strong>
                 </figcaption>
                 <img
                   src="/assets/marketing/storefront-preview.png"
@@ -343,8 +351,8 @@ export function LandingPage() {
               <h2>先让第一批商品，走完抵达客户的路。</h2>
               <p>从一家商家、一张表格开始，完成一次真实的展示、选择与报价。</p>
             </div>
-            <Link className={styles.primaryButton} to="/demo">
-              查看演示 <ArrowRight size={18} weight="bold" />
+            <Link className={styles.primaryButton} to={primaryStorefrontPath}>
+              查看商品前台 <ArrowRight size={18} weight="bold" />
             </Link>
           </Reveal>
         </section>
@@ -356,8 +364,10 @@ export function LandingPage() {
           <nav aria-label="页脚导航">
             <a href="#product">产品</a>
             <a href="#workflow">流程</a>
-            <Link to="/demo">查看演示</Link>
+            <Link to={primaryStorefrontPath}>查看商品前台</Link>
             <Link to="/login">登录工作台</Link>
+            <Link to="/privacy">隐私政策</Link>
+            <a href="/licenses/Noto-CJK-OFL.txt">字体许可</a>
           </nav>
           <small>© {new Date().getFullYear()} 澄湾选品</small>
         </div>

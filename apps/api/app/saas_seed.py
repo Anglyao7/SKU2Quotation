@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -72,6 +73,84 @@ ROLE_SEEDS = {
         "order.view", "order.manage",
     },
 }
+
+
+def ensure_tenant_rbac(session: Session, *, tenant_id: UUID) -> dict[str, RoleRow]:
+    """Idempotently provision the immutable system-role catalogue for one tenant.
+
+    The caller must already have bound the target tenant RLS context.  The
+    function deliberately does not commit so it can participate in tenant
+    creation and other administrative transactions.
+    """
+
+    permissions = {
+        permission.code: permission
+        for permission in session.scalars(
+            select(PermissionRow).execution_options(include_deleted=True)
+        ).all()
+    }
+    for seed in PERMISSION_SEEDS:
+        if seed.code not in permissions:
+            permission = PermissionRow(
+                code=seed.code,
+                module=seed.module,
+                action=seed.action,
+                description=seed.description,
+            )
+            session.add(permission)
+            permissions[seed.code] = permission
+        elif permissions[seed.code].deleted_at is not None:
+            restore_deleted(permissions[seed.code])
+
+    roles = {
+        role.code: role
+        for role in session.scalars(
+            select(RoleRow)
+            .where(RoleRow.tenant_id == tenant_id)
+            .execution_options(include_deleted=True)
+        ).all()
+    }
+    for code in ROLE_SEEDS:
+        if code not in roles:
+            role = RoleRow(
+                tenant_id=tenant_id,
+                code=code,
+                name=code.title(),
+                is_system=True,
+                status="active",
+            )
+            session.add(role)
+            roles[code] = role
+        elif roles[code].deleted_at is not None:
+            restore_deleted(roles[code])
+            roles[code].status = "active"
+
+    session.flush()
+    existing_role_permissions = {
+        (row.role_id, row.permission_id): row
+        for row in session.scalars(
+            select(RolePermissionRow)
+            .where(RolePermissionRow.tenant_id == tenant_id)
+            .execution_options(include_deleted=True)
+        ).all()
+    }
+    for role_code, permission_codes in ROLE_SEEDS.items():
+        role = roles[role_code]
+        for permission_code in permission_codes:
+            permission = permissions[permission_code]
+            key = (role.id, permission.id)
+            if key not in existing_role_permissions:
+                session.add(
+                    RolePermissionRow(
+                        tenant_id=tenant_id,
+                        role_id=role.id,
+                        permission_id=permission.id,
+                    )
+                )
+            elif existing_role_permissions[key].deleted_at is not None:
+                restore_deleted(existing_role_permissions[key])
+    session.flush()
+    return roles
 
 
 def demo_seed_enabled() -> bool:
@@ -152,70 +231,7 @@ def seed_saas_foundation(session: Session) -> None:
         restore_deleted(membership)
         membership.status = "active"
 
-    permissions = {
-        permission.code: permission
-        for permission in session.scalars(
-            select(PermissionRow).execution_options(include_deleted=True)
-        ).all()
-    }
-    for seed in PERMISSION_SEEDS:
-        if seed.code not in permissions:
-            permission = PermissionRow(
-                code=seed.code,
-                module=seed.module,
-                action=seed.action,
-                description=seed.description,
-            )
-            session.add(permission)
-            permissions[seed.code] = permission
-        elif permissions[seed.code].deleted_at is not None:
-            restore_deleted(permissions[seed.code])
-
-    roles = {
-        role.code: role
-        for role in session.scalars(
-            select(RoleRow)
-            .where(RoleRow.tenant_id == DEFAULT_TENANT_ID)
-            .execution_options(include_deleted=True)
-        ).all()
-    }
-    for code in ROLE_SEEDS:
-        if code not in roles:
-            role = RoleRow(
-                tenant_id=DEFAULT_TENANT_ID,
-                code=code,
-                name=code.title(),
-                is_system=True,
-                status="active",
-            )
-            session.add(role)
-            roles[code] = role
-        elif roles[code].deleted_at is not None:
-            restore_deleted(roles[code])
-            roles[code].status = "active"
-
-    session.flush()
-    existing_role_permissions = {
-        (row.role_id, row.permission_id): row
-        for row in session.scalars(
-            select(RolePermissionRow)
-            .where(RolePermissionRow.tenant_id == DEFAULT_TENANT_ID)
-            .execution_options(include_deleted=True)
-        ).all()
-    }
-    for role_code, permission_codes in ROLE_SEEDS.items():
-        role = roles[role_code]
-        for permission_code in permission_codes:
-            permission = permissions[permission_code]
-            key = (role.id, permission.id)
-            if key not in existing_role_permissions:
-                session.add(RolePermissionRow(
-                    tenant_id=DEFAULT_TENANT_ID,
-                    role_id=role.id,
-                    permission_id=permission.id,
-                ))
-            elif existing_role_permissions[key].deleted_at is not None:
-                restore_deleted(existing_role_permissions[key])
+    roles = ensure_tenant_rbac(session, tenant_id=DEFAULT_TENANT_ID)
 
     owner_role = roles["OWNER"]
     owner_assignment = session.scalar(

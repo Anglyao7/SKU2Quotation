@@ -1,0 +1,682 @@
+name: ai-trade-cloud-production
+
+x-api-build: &api-build
+  context: ../..
+  dockerfile: apps/api/Dockerfile
+  args:
+    ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
+    ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    ATC_MIGRATION_HEAD: "20260723_0024"
+    ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
+
+x-api-environment: &api-environment
+  APP_ENV: production
+  ATC_PERSISTENCE_MODE: postgresql
+  ATC_STRICT_RUNTIME: "true"
+  ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
+  ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+  ATC_MIGRATION_HEAD: "20260723_0024"
+  ATC_IMAGE_DIGEST: ${ATC_IMAGE_DIGEST:?ATC_IMAGE_DIGEST is required}
+  ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
+  BOOTSTRAP_TENANT_SLUG: ${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}
+  AUTO_MIGRATE: "false"
+  SEED_DEMO_DATA: "false"
+  AUTH_TEST_BYPASS: "false"
+  DATABASE_URL: postgresql+psycopg://atc_app:${ATC_APP_DB_PASSWORD:?ATC_APP_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+  AUTH_DATABASE_URL: postgresql+psycopg://atc_auth:${ATC_AUTH_DB_PASSWORD:?ATC_AUTH_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+  AUTH_PROFILE: enterprise_oidc
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
+  AUTH_TOKEN_PEPPER: ${AUTH_TOKEN_PEPPER:?AUTH_TOKEN_PEPPER is required}
+  AUTH_ACCESS_TTL_SECONDS: ${AUTH_ACCESS_TTL_SECONDS:-600}
+  AUTH_SESSION_TTL_SECONDS: ${AUTH_SESSION_TTL_SECONDS:-43200}
+  AUTH_REFRESH_TTL_SECONDS: ${AUTH_REFRESH_TTL_SECONDS:-2592000}
+  AUTH_REFRESH_RETRY_GRACE_SECONDS: ${AUTH_REFRESH_RETRY_GRACE_SECONDS:-5}
+  OIDC_ISSUER: https://auth.${ATC_DOMAIN:?ATC_DOMAIN is required}/realms/atc
+  OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?OIDC_CLIENT_ID is required}
+  OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?OIDC_CLIENT_SECRET is required}
+  OIDC_REDIRECT_URIS: https://${ATC_DOMAIN:?ATC_DOMAIN is required}/login/callback
+  OIDC_POST_LOGOUT_REDIRECT_URI: https://${ATC_DOMAIN:?ATC_DOMAIN is required}/login
+  OIDC_SCOPES: openid profile email
+  OIDC_BOOTSTRAP_ADMIN_EMAIL: ${OIDC_BOOTSTRAP_ADMIN_EMAIL:?OIDC_BOOTSTRAP_ADMIN_EMAIL is required}
+  PUBLIC_BASE_URL: https://${ATC_DOMAIN:?ATC_DOMAIN is required}
+  PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
+  ATC_CORS_ORIGINS: https://${ATC_DOMAIN:?ATC_DOMAIN is required}
+  OBJECT_STORAGE_BACKEND: s3
+  OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}
+  OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
+  OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+  AWS_DEFAULT_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+  FILE_SCANNER_PROFILE: clamav
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: "3310"
+  CLAMAV_TIMEOUT_SECONDS: ${CLAMAV_TIMEOUT_SECONDS:-30}
+  FILE_WORKER_INLINE: "false"
+  OUTBOX_PUBLISHER_PROFILE: rabbitmq
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/atc
+  OUTBOX_EXCHANGE: atc.domain-events
+  PRODUCT_EVENT_QUEUE: atc.product-knowledge-projector-v1
+  RABBITMQ_QUEUE_TYPE: quorum
+  RABBITMQ_DELIVERY_LIMIT: "5"
+  RABBITMQ_DEAD_LETTER_EXCHANGE: atc.dead-letter
+  RABBITMQ_DEAD_LETTER_QUEUE: atc.product-knowledge-projector-v1.dlq
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+  RATE_LIMIT_ENABLED: "true"
+  IMAGE_INTELLIGENCE_PROFILE: ${IMAGE_INTELLIGENCE_PROFILE:-disabled}
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  caddy:
+    <<: *service-defaults
+    image: caddy:2.10.2-alpine
+    environment:
+      ATC_DOMAIN: ${ATC_DOMAIN:?ATC_DOMAIN is required}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?CADDY_ACME_EMAIL is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          memory: 64M
+    networks:
+      edge:
+      app:
+        aliases:
+          - auth.${ATC_DOMAIN:?ATC_DOMAIN is required}
+
+  web:
+    <<: *service-defaults
+    image: atc-web:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /
+        ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+        VITE_PRIMARY_STOREFRONT_SLUG: ${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}
+        VITE_LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:?LEGAL_OPERATOR_NAME is required}
+        VITE_PRIVACY_CONTACT_EMAIL: ${PRIVACY_CONTACT_EMAIL:?PRIVACY_CONTACT_EMAIL is required}
+        VITE_PRIVACY_EFFECTIVE_DATE: ${PRIVACY_EFFECTIVE_DATE:-2026-07-23}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          memory: 64M
+    networks: [app]
+
+  api:
+    <<: *service-defaults
+    image: atc-api:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: api
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips=172.31.10.0/24
+      - --no-access-log
+    environment:
+      <<: *api-environment
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,urllib.request;
+          assert json.load(urllib.request.urlopen(
+          'http://127.0.0.1:8000/api/v1/health/ready',
+          timeout=3))['status']=='ready'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 1536M
+        reservations:
+          memory: 384M
+    networks: [app, data, egress]
+
+  tenant-worker:
+    <<: *service-defaults
+    profiles: [workers]
+    image: atc-worker:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: worker
+    command:
+      - python
+      - -m
+      - scripts.run_tenant_workers
+    environment:
+      APP_ENV: production
+      ATC_PERSISTENCE_MODE: postgresql
+      ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
+      ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+      ATC_MIGRATION_HEAD: "20260723_0024"
+      ATC_IMAGE_DIGEST: ${ATC_IMAGE_DIGEST:?ATC_IMAGE_DIGEST is required}
+      ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
+      AUTO_MIGRATE: "false"
+      SEED_DEMO_DATA: "false"
+      DATABASE_URL: postgresql+psycopg://atc_worker:${ATC_WORKER_DB_PASSWORD:?ATC_WORKER_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+      TENANT_DIRECTORY_DATABASE_URL: postgresql+psycopg://atc_scheduler:${ATC_SCHEDULER_DB_PASSWORD:?ATC_SCHEDULER_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+      OBJECT_STORAGE_BACKEND: s3
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}
+      OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      FILE_SCANNER_PROFILE: clamav
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      CLAMAV_TIMEOUT_SECONDS: ${CLAMAV_TIMEOUT_SECONDS:-30}
+      FILE_WORKER_INLINE: "false"
+      OUTBOX_PUBLISHER_PROFILE: rabbitmq
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/atc
+      OUTBOX_EXCHANGE: atc.domain-events
+      WORKER_ID: atc-production-file-worker
+      OUTBOX_RELAY_ID: atc-production-outbox-relay
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512M
+        reservations:
+          memory: 128M
+    networks: [data, egress]
+
+  product-event-consumer:
+    <<: *service-defaults
+    profiles: [workers]
+    image: atc-worker:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: worker
+    command: ["python", "-m", "scripts.run_product_event_consumer"]
+    environment:
+      APP_ENV: production
+      ATC_PERSISTENCE_MODE: postgresql
+      ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
+      ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+      ATC_MIGRATION_HEAD: "20260723_0024"
+      ATC_IMAGE_DIGEST: ${ATC_IMAGE_DIGEST:?ATC_IMAGE_DIGEST is required}
+      ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
+      AUTO_MIGRATE: "false"
+      SEED_DEMO_DATA: "false"
+      DATABASE_URL: postgresql+psycopg://atc_worker:${ATC_WORKER_DB_PASSWORD:?ATC_WORKER_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/atc
+      OUTBOX_EXCHANGE: atc.domain-events
+      PRODUCT_EVENT_QUEUE: atc.product-knowledge-projector-v1
+      RABBITMQ_QUEUE_TYPE: quorum
+      RABBITMQ_DELIVERY_LIMIT: "5"
+      RABBITMQ_DEAD_LETTER_EXCHANGE: atc.dead-letter
+      RABBITMQ_DEAD_LETTER_QUEUE: atc.product-knowledge-projector-v1.dlq
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512M
+        reservations:
+          memory: 128M
+    networks: [data, egress]
+
+  postgres:
+    <<: *service-defaults
+    image: pgvector/pgvector:0.8.2-pg16-bookworm
+    environment:
+      POSTGRES_DB: ai_trade_cloud
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_trade_cloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 2G
+        reservations:
+          memory: 512M
+    networks: [data]
+
+  redis:
+    <<: *service-defaults
+    image: redis:7.4.9-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-384mb}
+      - --maxmemory-policy
+      - noeviction
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          memory: 128M
+    networks: [data]
+
+  rabbitmq:
+    <<: *service-defaults
+    image: rabbitmq:4.1.8-management-alpine
+    hostname: atc-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?RABBITMQ_USER is required}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
+      RABBITMQ_DEFAULT_VHOST: atc
+      RABBITMQ_NODENAME: rabbit@atc-rabbitmq
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+        reservations:
+          memory: 256M
+    networks: [data]
+
+  minio:
+    <<: *service-defaults
+    image: atc-minio:RELEASE.2025-10-15T17-29-55Z
+    build:
+      context: ../..
+      dockerfile: infra/images/minio/Dockerfile
+      args:
+        MINIO_VERSION: RELEASE.2025-10-15T17-29-55Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+        reservations:
+          memory: 256M
+    networks: [data]
+
+  clamav:
+    <<: *service-defaults
+    image: clamav/clamav:1.5.2
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping=1 --wait=30 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 35s
+      start_period: 180s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 2G
+        reservations:
+          memory: 768M
+    networks: [data, egress]
+
+  keycloak-postgres:
+    <<: *service-defaults
+    profiles: [identity]
+    image: postgres:16.9-bookworm
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required}
+    volumes:
+      - keycloak-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+        reservations:
+          memory: 256M
+    networks: [identity]
+
+  keycloak:
+    <<: *service-defaults
+    profiles: [identity]
+    image: quay.io/keycloak/keycloak:26.7.0
+    user: "1000:0"
+    command: ["start", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required}
+      KC_HOSTNAME: https://auth.${ATC_DOMAIN:?ATC_DOMAIN is required}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "false"
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?KEYCLOAK_ADMIN_USERNAME is required}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
+    volumes:
+      - ../../.runtime/keycloak/atc-realm.json:/opt/keycloak/data/import/atc-realm.json:ro
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          { printf 'GET /health/ready HTTP/1.0\r\n\r\n' >&3;
+          grep -q '200 OK' <&3; } 3<>/dev/tcp/127.0.0.1/9000
+      interval: 20s
+      timeout: 10s
+      start_period: 90s
+      retries: 15
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 1536M
+        reservations:
+          memory: 512M
+    networks: [edge, identity]
+
+  db-bootstrap:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    command: ["python", "-m", "scripts.bootstrap_postgres_roles"]
+    environment:
+      ATC_POSTGRES_ADMIN_URL: postgresql+psycopg://postgres:${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD is required}@postgres:5432/ai_trade_cloud
+      ATC_MIGRATION_DB_PASSWORD: ${ATC_MIGRATION_DB_PASSWORD:?ATC_MIGRATION_DB_PASSWORD is required}
+      ATC_APP_DB_PASSWORD: ${ATC_APP_DB_PASSWORD:?ATC_APP_DB_PASSWORD is required}
+      ATC_AUTH_DB_PASSWORD: ${ATC_AUTH_DB_PASSWORD:?ATC_AUTH_DB_PASSWORD is required}
+      ATC_WORKER_DB_PASSWORD: ${ATC_WORKER_DB_PASSWORD:?ATC_WORKER_DB_PASSWORD is required}
+      ATC_SCHEDULER_DB_PASSWORD: ${ATC_SCHEDULER_DB_PASSWORD:?ATC_SCHEDULER_DB_PASSWORD is required}
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  db-migrate:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    environment:
+      DATABASE_URL: postgresql+psycopg://atc_migration:${ATC_MIGRATION_DB_PASSWORD:?ATC_MIGRATION_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  db-grants:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    command: ["python", "-m", "scripts.grant_runtime_roles"]
+    environment:
+      ATC_POSTGRES_OWNER_URL: postgresql+psycopg://atc_migration:${ATC_MIGRATION_DB_PASSWORD:?ATC_MIGRATION_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  production-bootstrap:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    command: ["python", "-m", "scripts.bootstrap_production_owner"]
+    environment:
+      APP_ENV: production
+      ATC_BOOTSTRAP_DATABASE_URL: postgresql+psycopg://atc_migration:${ATC_MIGRATION_DB_PASSWORD:?ATC_MIGRATION_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+      BOOTSTRAP_ORGANIZATION_CODE: ${BOOTSTRAP_ORGANIZATION_CODE:?BOOTSTRAP_ORGANIZATION_CODE is required}
+      BOOTSTRAP_ORGANIZATION_NAME: ${BOOTSTRAP_ORGANIZATION_NAME:?BOOTSTRAP_ORGANIZATION_NAME is required}
+      BOOTSTRAP_TENANT_SLUG: ${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}
+      BOOTSTRAP_TENANT_NAME: ${BOOTSTRAP_TENANT_NAME:?BOOTSTRAP_TENANT_NAME is required}
+      BOOTSTRAP_OWNER_EMAIL: ${OIDC_BOOTSTRAP_ADMIN_EMAIL:?OIDC_BOOTSTRAP_ADMIN_EMAIL is required}
+      BOOTSTRAP_OWNER_NAME: ${BOOTSTRAP_OWNER_NAME:?BOOTSTRAP_OWNER_NAME is required}
+      BOOTSTRAP_PLATFORM_ADMIN: ${BOOTSTRAP_PLATFORM_ADMIN:-true}
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  keycloak-user-provisioner:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    entrypoint:
+      - python
+      - -m
+      - scripts.provision_keycloak_user_interactive
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [identity]
+
+  keycloak-reconciler:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    entrypoint:
+      - python
+      - -m
+      - scripts.reconcile_keycloak_realm
+    volumes:
+      - ../../.runtime/keycloak/atc-realm.json:/run/atc/atc-realm.json:ro
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [identity]
+
+  dependency-bootstrap:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    command: ["python", "-m", "scripts.bootstrap_local_dependencies"]
+    environment:
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}
+      OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/atc
+      OUTBOX_EXCHANGE: atc.domain-events
+      PRODUCT_EVENT_QUEUE: atc.product-knowledge-projector-v1
+      RABBITMQ_QUEUE_TYPE: quorum
+      RABBITMQ_DELIVERY_LIMIT: "5"
+      RABBITMQ_DEAD_LETTER_EXCHANGE: atc.dead-letter
+      RABBITMQ_DEAD_LETTER_QUEUE: atc.product-knowledge-projector-v1.dlq
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  backup-minio:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    entrypoint: ["python", "/opt/atc-ops/backup_object_storage.py"]
+    environment:
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}
+      OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    volumes:
+      - ./scripts:/opt/atc-ops:ro
+      - ${ATC_BACKUP_STAGING_DIR:-/tmp/atc-backup}:/backup
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  restore-minio:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    entrypoint: ["python", "/opt/atc-ops/restore_object_storage.py"]
+    environment:
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}
+      OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    volumes:
+      - ./scripts:/opt/atc-ops:ro
+      - ${ATC_BACKUP_STAGING_DIR:-/tmp/atc-restore}:/backup
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  backup-rabbitmq:
+    profiles: [ops]
+    image: alpine:3.22.1
+    command:
+      - tar
+      - --numeric-owner
+      - -czf
+      - /backup/rabbitmq-data.tar.gz
+      - -C
+      - /source
+      - .
+    volumes:
+      - rabbitmq-data:/source:ro
+      - ${ATC_BACKUP_STAGING_DIR:-/tmp/atc-backup}:/backup
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+
+  restore-rabbitmq:
+    profiles: [ops]
+    image: alpine:3.22.1
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- '{}' '+';
+        tar --numeric-owner -xzf /backup/rabbitmq-data.tar.gz -C /target
+    volumes:
+      - rabbitmq-data:/target
+      - ${ATC_BACKUP_STAGING_DIR:-/tmp/atc-restore}:/backup:ro
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+
+networks:
+  edge:
+  app:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.10.0/24
+  data:
+    internal: true
+  identity:
+    internal: true
+  egress:
+
+volumes:
+  caddy-data:
+  caddy-config:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+  minio-data:
+  clamav-data:
+  keycloak-postgres-data:

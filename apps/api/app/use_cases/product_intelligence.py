@@ -21,9 +21,11 @@ from ..repositories.product_intelligence_repository import (
     latest_decisions_by_group,
     list_candidates_with_evidence,
 )
+from ..runtime_config import inline_database_outbox_enabled
 from ..services.product_intelligence.adoption import (
     ProductAdoptionError,
     approve_candidate_group,
+    dispatch_product_committed_event,
     reject_candidate_group,
 )
 from ..services.rbac import has_permission
@@ -87,8 +89,15 @@ def list_candidates(
     session: Session,
     *,
     tenant_id: UUID,
+    user_id: UUID,
     task_id: UUID,
 ) -> list[ProductFieldCandidate]:
+    _require_permission(
+        session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        permission_code="product.review",
+    )
     rows = list_candidates_with_evidence(
         session,
         tenant_id=tenant_id,
@@ -191,6 +200,15 @@ def approve_candidate(
             change_reason=request.change_reason,
         )
         session.commit()
+        outbox_status = result.outbox_status
+        if inline_database_outbox_enabled():
+            dispatch = dispatch_product_committed_event(
+                session,
+                tenant_id=tenant_id,
+                event_id=result.outbox_event_id,
+            )
+            session.commit()
+            outbox_status = dispatch.status
     except ProductAdoptionError as exc:
         session.rollback()
         raise _adoption_error(exc) from exc
@@ -206,7 +224,7 @@ def approve_candidate(
         product_id=str(result.product_id),
         product_version=result.product_version,
         outbox_event_id=str(result.outbox_event_id),
-        outbox_status=result.outbox_status,
+        outbox_status=outbox_status,
         idempotent=result.idempotent,
     )
 

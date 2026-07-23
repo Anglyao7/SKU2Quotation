@@ -34,6 +34,7 @@ export interface Storefront {
   slug: string;
   description?: string;
   logo_url?: string | null;
+  contact_email?: string | null;
   default_currency?: string;
   categories?: string[];
   tags?: string[];
@@ -78,6 +79,7 @@ export interface CreateQuoteInput {
   customer_company?: string;
   customer_email?: string;
   notes?: string;
+  privacy_acknowledged: true;
   items: QuoteItemInput[];
 }
 
@@ -160,4 +162,25 @@ export interface TenantPayload {
   slug: string;
   contact_email?: string;
   active: boolean;
+}
+
+export type TenantRoleCode = "OWNER" | "ADMIN" | "SALES" | "PURCHASING";
+
+export interface MemberInvitationPayload {
+  email: string;
+  display_name: string;
+  role: TenantRoleCode;
+}
+
+export interface MemberInvitation {
+  tenant_id: string;
+  user_id: string;
+  membership_id: string;
+  email: string;
+  display_name: string;
+  role: TenantRoleCode;
+  membership_status: "invited" | "active";
+  created: boolean;
+  identity_already_bound: boolean;
+  requires_identity_provider_provisioning: boolean;
 }

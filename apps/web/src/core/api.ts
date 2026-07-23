@@ -42,6 +42,16 @@ function resolveApiBase() {
 
 const API_BASE = resolveApiBase();
 
+export interface AuthPublicConfig {
+  provider: "local_fake" | "enterprise_oidc";
+  clientId?: string;
+  authorizationEndpoint?: string;
+  endSessionEndpoint?: string;
+  postLogoutRedirectUri?: string;
+  scopes: string[];
+  codeChallengeMethod: "S256";
+}
+
 export class CoreApiError extends Error {
   status: number;
   details?: unknown;
@@ -210,6 +220,47 @@ export async function loginLocalDemo(): Promise<AuthTokenData> {
   return acceptAuthData(payload.data);
 }
 
+export async function getAuthConfig(): Promise<AuthPublicConfig> {
+  const row = await request<{
+    provider: "local_fake" | "enterprise_oidc";
+    client_id?: string | null;
+    authorization_endpoint?: string | null;
+    end_session_endpoint?: string | null;
+    post_logout_redirect_uri?: string | null;
+    scopes: string[];
+    code_challenge_method: "S256";
+  }>("/auth/config", {}, false);
+  return {
+    provider: row.provider,
+    clientId: defined(row.client_id),
+    authorizationEndpoint: defined(row.authorization_endpoint),
+    endSessionEndpoint: defined(row.end_session_endpoint),
+    postLogoutRedirectUri: defined(row.post_logout_redirect_uri),
+    scopes: row.scopes,
+    codeChallengeMethod: row.code_challenge_method,
+  };
+}
+
+export async function loginEnterpriseOidc(input: {
+  authorizationCode: string;
+  codeVerifier: string;
+  redirectUri: string;
+  nonce: string;
+}): Promise<AuthTokenData> {
+  const payload = await request<{ data: ApiAuthTokenData }>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({
+      provider: "enterprise_oidc",
+      authorization_code: input.authorizationCode,
+      code_verifier: input.codeVerifier,
+      redirect_uri: input.redirectUri,
+      nonce: input.nonce,
+      device_label: "AI Trade Cloud Web",
+    }),
+  }, false);
+  return acceptAuthData(payload.data);
+}
+
 export async function listMemberships() {
   return (await request<ApiMembershipSummary[]>("/auth/memberships")).map(mapMembership);
 }
@@ -249,12 +300,32 @@ export async function getPermissions(): Promise<PermissionSet> {
   return { membershipId: row.membership_id, permissionVersion: row.permission_version, permissions: row.permissions };
 }
 
-export async function logoutSession() {
+export async function logoutSession(): Promise<string | undefined> {
+  let authConfig: AuthPublicConfig | undefined;
+  try {
+    authConfig = await getAuthConfig();
+  } catch {
+    // Local session revocation must still proceed if discovery is unavailable.
+  }
   try {
     await request<void>("/auth/logout", { method: "POST" }, false);
   } finally {
     clearCoreAuthSession();
   }
+  if (
+    authConfig?.provider !== "enterprise_oidc"
+    || !authConfig.clientId
+    || !authConfig.endSessionEndpoint
+    || !authConfig.postLogoutRedirectUri
+  ) return undefined;
+  const expectedRedirect = `${window.location.origin}/login`;
+  if (authConfig.postLogoutRedirectUri !== expectedRedirect) {
+    throw new CoreApiError("企业退出地址与当前站点不匹配。", 503);
+  }
+  const endSession = new URL(authConfig.endSessionEndpoint);
+  endSession.searchParams.set("client_id", authConfig.clientId);
+  endSession.searchParams.set("post_logout_redirect_uri", expectedRedirect);
+  return endSession.toString();
 }
 
 interface ApiImportJob {

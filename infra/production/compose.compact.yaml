@@ -1,0 +1,485 @@
+name: ai-trade-cloud-compact
+
+x-api-build: &api-build
+  context: ../..
+  dockerfile: apps/api/Dockerfile
+  args:
+    ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
+    ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    ATC_MIGRATION_HEAD: "20260723_0024"
+    ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
+
+x-api-environment: &api-environment
+  APP_ENV: production
+  ATC_PERSISTENCE_MODE: postgresql
+  ATC_RUNTIME_PROFILE: compact
+  ATC_STRICT_RUNTIME: "true"
+  ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
+  ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+  ATC_MIGRATION_HEAD: "20260723_0024"
+  ATC_IMAGE_DIGEST: ${ATC_IMAGE_DIGEST:?ATC_IMAGE_DIGEST is required}
+  ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
+  BOOTSTRAP_TENANT_SLUG: ${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}
+  AUTO_MIGRATE: "false"
+  SEED_DEMO_DATA: "false"
+  AUTH_TEST_BYPASS: "false"
+  DATABASE_URL: postgresql+psycopg://atc_app:${ATC_APP_DB_PASSWORD:?ATC_APP_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+  AUTH_DATABASE_URL: postgresql+psycopg://atc_auth:${ATC_AUTH_DB_PASSWORD:?ATC_AUTH_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+  AUTH_PROFILE: enterprise_oidc
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
+  AUTH_TOKEN_PEPPER: ${AUTH_TOKEN_PEPPER:?AUTH_TOKEN_PEPPER is required}
+  AUTH_ACCESS_TTL_SECONDS: ${AUTH_ACCESS_TTL_SECONDS:-600}
+  AUTH_SESSION_TTL_SECONDS: ${AUTH_SESSION_TTL_SECONDS:-43200}
+  AUTH_REFRESH_TTL_SECONDS: ${AUTH_REFRESH_TTL_SECONDS:-2592000}
+  AUTH_REFRESH_RETRY_GRACE_SECONDS: ${AUTH_REFRESH_RETRY_GRACE_SECONDS:-5}
+  OIDC_ISSUER: https://auth.${ATC_DOMAIN:?ATC_DOMAIN is required}/realms/atc
+  OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?OIDC_CLIENT_ID is required}
+  OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?OIDC_CLIENT_SECRET is required}
+  OIDC_REDIRECT_URIS: https://${ATC_DOMAIN:?ATC_DOMAIN is required}/login/callback
+  OIDC_POST_LOGOUT_REDIRECT_URI: https://${ATC_DOMAIN:?ATC_DOMAIN is required}/login
+  OIDC_SCOPES: openid profile email
+  OIDC_BOOTSTRAP_ADMIN_EMAIL: ${OIDC_BOOTSTRAP_ADMIN_EMAIL:?OIDC_BOOTSTRAP_ADMIN_EMAIL is required}
+  PUBLIC_BASE_URL: https://${ATC_DOMAIN:?ATC_DOMAIN is required}
+  PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
+  ATC_CORS_ORIGINS: https://${ATC_DOMAIN:?ATC_DOMAIN is required}
+  OBJECT_STORAGE_BACKEND: local
+  OBJECT_STORAGE_LOCAL_ROOT: /var/lib/atc/object-storage
+  FILE_SCANNER_PROFILE: restricted
+  FILE_WORKER_INLINE: "true"
+  OUTBOX_PUBLISHER_PROFILE: inline_database
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+  RATE_LIMIT_ENABLED: "true"
+  IMAGE_INTELLIGENCE_PROFILE: ${IMAGE_INTELLIGENCE_PROFILE:-disabled}
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  caddy:
+    <<: *service-defaults
+    image: caddy:2.10.2-alpine
+    environment:
+      ATC_DOMAIN: ${ATC_DOMAIN:?ATC_DOMAIN is required}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?CADDY_ACME_EMAIL is required}
+      ATC_LEGACY_WWW_UPSTREAM: ${ATC_LEGACY_WWW_UPSTREAM:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile.compact:/etc/caddy/Caddyfile:ro
+      - ../../.runtime/caddy/sites-enabled:/etc/caddy/sites-enabled:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.30"
+          memory: 128M
+        reservations:
+          memory: 32M
+    networks:
+      edge:
+      app:
+        aliases:
+          - auth.${ATC_DOMAIN:?ATC_DOMAIN is required}
+
+  web:
+    <<: *service-defaults
+    image: atc-web:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /
+        ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+        VITE_PRIMARY_STOREFRONT_SLUG: ${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}
+        VITE_LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:?LEGAL_OPERATOR_NAME is required}
+        VITE_PRIVACY_CONTACT_EMAIL: ${PRIVACY_CONTACT_EMAIL:?PRIVACY_CONTACT_EMAIL is required}
+        VITE_PRIVACY_EFFECTIVE_DATE: ${PRIVACY_EFFECTIVE_DATE:-2026-07-23}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.30"
+          memory: 128M
+        reservations:
+          memory: 32M
+    networks: [app]
+
+  api:
+    <<: *service-defaults
+    image: atc-api:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: api
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips=172.31.20.0/24
+      - --no-access-log
+    environment:
+      <<: *api-environment
+    volumes:
+      - local-object-data:/var/lib/atc/object-storage
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,urllib.request;
+          assert json.load(urllib.request.urlopen(
+          'http://127.0.0.1:8000/api/v1/health/ready',
+          timeout=3))['status']=='ready'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      object-storage-bootstrap:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "1.25"
+          memory: 640M
+        reservations:
+          memory: 192M
+    networks: [app, data, egress]
+
+  postgres:
+    <<: *service-defaults
+    image: pgvector/pgvector:0.8.2-pg16-bookworm
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=384MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - max_connections=40
+    environment:
+      POSTGRES_DB: ai_trade_cloud
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_trade_cloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "1.25"
+          memory: 768M
+        reservations:
+          memory: 256M
+    networks: [data]
+
+  redis:
+    <<: *service-defaults
+    image: redis:7.4.9-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-64mb}
+      - --maxmemory-policy
+      - noeviction
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 160M
+        reservations:
+          memory: 48M
+    networks: [data]
+
+  keycloak-postgres:
+    <<: *service-defaults
+    profiles: [identity]
+    image: postgres:16.9-bookworm
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - max_connections=30
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required}
+    volumes:
+      - keycloak-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "0.60"
+          memory: 384M
+        reservations:
+          memory: 128M
+    networks: [identity]
+
+  keycloak:
+    <<: *service-defaults
+    profiles: [identity]
+    image: quay.io/keycloak/keycloak:26.7.0
+    user: "1000:0"
+    command: ["start", "--import-realm", "--cache=local"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required}
+      KC_HOSTNAME: https://auth.${ATC_DOMAIN:?ATC_DOMAIN is required}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "false"
+      JAVA_OPTS_KC_HEAP: -XX:InitialRAMPercentage=25 -XX:MaxRAMPercentage=60
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?KEYCLOAK_ADMIN_USERNAME is required}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
+    volumes:
+      - ../../.runtime/keycloak/atc-realm.json:/opt/keycloak/data/import/atc-realm.json:ro
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          { printf 'GET /health/ready HTTP/1.0\r\n\r\n' >&3;
+          grep -q '200 OK' <&3; } 3<>/dev/tcp/127.0.0.1/9000
+      interval: 20s
+      timeout: 10s
+      start_period: 120s
+      retries: 15
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 896M
+        reservations:
+          memory: 384M
+    networks: [edge, identity]
+
+  object-storage-bootstrap:
+    image: alpine:3.22.1
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        mkdir -p /objects &&
+        chown 10001:10001 /objects &&
+        chmod 0700 /objects
+    volumes:
+      - local-object-data:/objects
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+
+  db-bootstrap:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    command: ["python", "-m", "scripts.bootstrap_postgres_roles"]
+    environment:
+      ATC_POSTGRES_ADMIN_URL: postgresql+psycopg://postgres:${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD is required}@postgres:5432/ai_trade_cloud
+      ATC_MIGRATION_DB_PASSWORD: ${ATC_MIGRATION_DB_PASSWORD:?ATC_MIGRATION_DB_PASSWORD is required}
+      ATC_APP_DB_PASSWORD: ${ATC_APP_DB_PASSWORD:?ATC_APP_DB_PASSWORD is required}
+      ATC_AUTH_DB_PASSWORD: ${ATC_AUTH_DB_PASSWORD:?ATC_AUTH_DB_PASSWORD is required}
+      ATC_WORKER_DB_PASSWORD: ${ATC_WORKER_DB_PASSWORD:?ATC_WORKER_DB_PASSWORD is required}
+      ATC_SCHEDULER_DB_PASSWORD: ${ATC_SCHEDULER_DB_PASSWORD:?ATC_SCHEDULER_DB_PASSWORD is required}
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  db-migrate:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    environment:
+      DATABASE_URL: postgresql+psycopg://atc_migration:${ATC_MIGRATION_DB_PASSWORD:?ATC_MIGRATION_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  db-grants:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    command: ["python", "-m", "scripts.grant_runtime_roles"]
+    environment:
+      ATC_POSTGRES_OWNER_URL: postgresql+psycopg://atc_migration:${ATC_MIGRATION_DB_PASSWORD:?ATC_MIGRATION_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  production-bootstrap:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    command: ["python", "-m", "scripts.bootstrap_production_owner"]
+    environment:
+      APP_ENV: production
+      ATC_BOOTSTRAP_DATABASE_URL: postgresql+psycopg://atc_migration:${ATC_MIGRATION_DB_PASSWORD:?ATC_MIGRATION_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+      BOOTSTRAP_ORGANIZATION_CODE: ${BOOTSTRAP_ORGANIZATION_CODE:?BOOTSTRAP_ORGANIZATION_CODE is required}
+      BOOTSTRAP_ORGANIZATION_NAME: ${BOOTSTRAP_ORGANIZATION_NAME:?BOOTSTRAP_ORGANIZATION_NAME is required}
+      BOOTSTRAP_TENANT_SLUG: ${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}
+      BOOTSTRAP_TENANT_NAME: ${BOOTSTRAP_TENANT_NAME:?BOOTSTRAP_TENANT_NAME is required}
+      BOOTSTRAP_OWNER_EMAIL: ${OIDC_BOOTSTRAP_ADMIN_EMAIL:?OIDC_BOOTSTRAP_ADMIN_EMAIL is required}
+      BOOTSTRAP_OWNER_NAME: ${BOOTSTRAP_OWNER_NAME:?BOOTSTRAP_OWNER_NAME is required}
+      BOOTSTRAP_PLATFORM_ADMIN: ${BOOTSTRAP_PLATFORM_ADMIN:-true}
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [data]
+
+  keycloak-user-provisioner:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    entrypoint:
+      - python
+      - -m
+      - scripts.provision_keycloak_user_interactive
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [identity]
+
+  keycloak-reconciler:
+    profiles: [ops]
+    image: atc-migration:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    build:
+      <<: *api-build
+      target: migration
+    entrypoint:
+      - python
+      - -m
+      - scripts.reconcile_keycloak_realm
+    volumes:
+      - ../../.runtime/keycloak/atc-realm.json:/run/atc/atc-realm.json:ro
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    networks: [identity]
+
+  backup-local-objects:
+    profiles: [ops]
+    image: alpine:3.22.1
+    command:
+      - tar
+      - --numeric-owner
+      - -czf
+      - /backup/local-object-storage.tar.gz
+      - -C
+      - /source
+      - .
+    volumes:
+      - local-object-data:/source:ro
+      - ${ATC_BACKUP_STAGING_DIR:-/tmp/atc-backup}:/backup
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+
+  restore-local-objects:
+    profiles: [ops]
+    image: alpine:3.22.1
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- '{}' '+';
+        tar --numeric-owner -xzf /backup/local-object-storage.tar.gz -C /target
+    volumes:
+      - local-object-data:/target
+      - ${ATC_BACKUP_STAGING_DIR:-/tmp/atc-restore}:/backup:ro
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+
+networks:
+  edge:
+  app:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.20.0/24
+  data:
+    internal: true
+  identity:
+    internal: true
+  egress:
+
+volumes:
+  caddy-data:
+  caddy-config:
+  postgres-data:
+  redis-data:
+  keycloak-postgres-data:
+  local-object-data:

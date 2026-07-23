@@ -102,6 +102,10 @@ from app.services.product_intelligence.adoption import (
 from app.services.product_intelligence.normalization import normalize_product_field
 from app.services.rbac import has_permission, list_permissions
 from app.services.auth.tokens import REFRESH_COOKIE_NAME, hash_secret
+from app.services.auth.contracts import IdentityClaim
+from app.services.auth.oidc_provider import OidcIdentityProviderAdapter
+from app.production_bootstrap import bootstrap_production_owner
+from app.tenant_slugs import RESERVED_TENANT_SLUGS
 from app.model_mixins import mark_deleted, restore_deleted
 from app.adapters.file_scanner import (
     DeterministicDevelopmentScanner,
@@ -330,6 +334,51 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     )
     assert refresh_response.status_code == 200, refresh_response.text
     rotated_data = refresh_response.json()["data"]
+    rotated_refresh = refresh_response.cookies.get(REFRESH_COOKIE_NAME)
+    assert rotated_refresh
+
+    # A second tab can already have sent the same cookie/CSRF pair before the
+    # first response updates the shared cookie jar. The row lock serializes
+    # that loser behind the first rotation; the bounded retry must return the
+    # same successor without advancing or revoking the token family.
+    with TestClient(app) as concurrent_client:
+        concurrent_client.cookies.set(
+            REFRESH_COOKIE_NAME,
+            raw_refresh,
+            path="/api/v1/auth",
+        )
+        concurrent_response = concurrent_client.post(
+            "/api/v1/auth/refresh",
+            headers={"X-CSRF-Token": csrf_token},
+        )
+    assert concurrent_response.status_code == 200, concurrent_response.text
+    assert concurrent_response.cookies.get(REFRESH_COOKIE_NAME) == rotated_refresh
+    assert concurrent_response.json()["data"]["csrf_token"] == rotated_data["csrf_token"]
+    with SessionLocal() as session:
+        auth_session = session.get(AuthSessionRow, UUID(token_data["session_id"]))
+        assert auth_session is not None
+        assert auth_session.revoked_at is None
+        assert auth_session.rotation_counter == 1
+        stored_tokens = session.scalars(
+            select(AuthRefreshTokenRow)
+            .where(AuthRefreshTokenRow.auth_session_id == auth_session.id)
+            .order_by(AuthRefreshTokenRow.sequence_number)
+        ).all()
+        assert len(stored_tokens) == 2
+        assert stored_tokens[0].rotation_request_hash
+        assert stored_tokens[0].retry_grace_expires_at
+        assert stored_tokens[1].token_hash == hash_secret(rotated_refresh)
+        assert rotated_refresh not in {
+            stored_tokens[0].token_hash,
+            stored_tokens[0].rotation_request_hash,
+            stored_tokens[1].token_hash,
+        }
+        # Move beyond the explicit grace window to model a genuine replay,
+        # without slowing the suite down.
+        stored_tokens[0].retry_grace_expires_at = datetime.now(UTC) - timedelta(
+            seconds=1
+        )
+        session.commit()
 
     with TestClient(app) as replay_client:
         replay_client.cookies.set(REFRESH_COOKIE_NAME, raw_refresh, path="/api/v1/auth")
@@ -366,6 +415,255 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     ).status_code == 401
 
 
+def test_public_auth_config_never_exposes_oidc_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local = client.get("/api/v1/auth/config")
+    assert local.status_code == 200
+    assert local.json() == {
+        "provider": "local_fake",
+        "client_id": None,
+        "authorization_endpoint": None,
+        "end_session_endpoint": None,
+        "post_logout_redirect_uri": None,
+        "scopes": [],
+        "code_challenge_method": "S256",
+    }
+    assert local.headers["cache-control"] == "no-store"
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        "app.routers.auth.public_oidc_config",
+        lambda: {
+            "provider": "enterprise_oidc",
+            "client_id": "public-web-client",
+            "authorization_endpoint": "https://identity.example.test/authorize",
+            "end_session_endpoint": "https://identity.example.test/logout",
+            "post_logout_redirect_uri": "https://app.example.test/login",
+            "scopes": ["openid", "profile", "email"],
+            "code_challenge_method": "S256",
+        },
+    )
+    configured = client.get("/api/v1/auth/config")
+    assert configured.status_code == 200
+    assert configured.json()["client_id"] == "public-web-client"
+    assert configured.json()["post_logout_redirect_uri"] == "https://app.example.test/login"
+    serialized = configured.text.lower()
+    assert "secret" not in serialized
+    assert "token_endpoint" not in serialized
+    assert "jwks" not in serialized
+
+
+def test_enterprise_oidc_binds_only_verified_pending_invitation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email = f"verified-{uuid4().hex}@example.test"
+    invited_user_id = uuid4()
+    invited_membership_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=invited_user_id,
+                email_normalized=email,
+                display_name="Pending Owner",
+                identity_provider="pending_oidc",
+                identity_subject=f"pending:{invited_user_id}",
+                status="invited",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=invited_membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=invited_user_id,
+                status="invited",
+            )
+        )
+        session.commit()
+
+    provider_key = f"oidc:{'a' * 32}"
+
+    def verified_exchange(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        authorization_code: str,
+        code_verifier: str,
+        redirect_uri: str,
+        nonce: str | None = None,
+    ) -> IdentityClaim:
+        assert authorization_code == "one-time-code"
+        assert len(code_verifier) >= 43
+        assert redirect_uri == "https://app.example.test/login/callback"
+        assert nonce == "N" * 43
+        return IdentityClaim(
+            provider=provider_key,
+            subject="enterprise-subject-1",
+            email_normalized=email,
+            email_verified=True,
+            display_name="Verified Owner",
+        )
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "exchange_authorization_code",
+        verified_exchange,
+    )
+    with TestClient(app) as oidc_client:
+        response = oidc_client.post(
+            "/api/v1/auth/login",
+            json={
+                "provider": "enterprise_oidc",
+                "authorization_code": "one-time-code",
+                "code_verifier": "V" * 64,
+                "redirect_uri": "https://app.example.test/login/callback",
+                "nonce": "N" * 43,
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    with SessionLocal() as session:
+        user = session.get(UserRow, invited_user_id)
+        membership = session.get(MembershipRow, invited_membership_id)
+        assert user is not None and membership is not None
+        assert (user.identity_provider, user.identity_subject, user.status) == (
+            provider_key,
+            "enterprise-subject-1",
+            "active",
+        )
+        assert user.display_name == "Verified Owner"
+        assert membership.status == "active"
+        assert membership.joined_at is not None
+
+
+def test_enterprise_oidc_rejects_unverified_email_and_jit_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    unknown_email = f"unknown-{uuid4().hex}@example.test"
+
+    def claim(email_verified: bool) -> IdentityClaim:
+        return IdentityClaim(
+            provider=f"oidc:{'b' * 32}",
+            subject=f"subject-{uuid4()}",
+            email_normalized=unknown_email,
+            email_verified=email_verified,
+            display_name="Unknown User",
+        )
+
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "exchange_authorization_code",
+        lambda _self, **_kwargs: claim(False),
+    )
+    payload = {
+        "provider": "enterprise_oidc",
+        "authorization_code": "unverified",
+        "code_verifier": "V" * 64,
+        "redirect_uri": "https://app.example.test/login/callback",
+        "nonce": "N" * 43,
+    }
+    with TestClient(app) as oidc_client:
+        unverified = oidc_client.post("/api/v1/auth/login", json=payload)
+    assert unverified.status_code == 401
+
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "exchange_authorization_code",
+        lambda _self, **_kwargs: claim(True),
+    )
+    with TestClient(app) as oidc_client:
+        no_invite = oidc_client.post("/api/v1/auth/login", json=payload)
+    assert no_invite.status_code == 401
+    with SessionLocal() as session:
+        assert (
+            session.scalar(
+                select(func.count(UserRow.id)).where(
+                    UserRow.email_normalized == unknown_email
+                )
+            )
+            == 0
+        )
+
+
+def test_production_bootstrap_is_idempotent_and_leaves_owner_pending_oidc() -> None:
+    unique = uuid4().hex[:12]
+    parameters = {
+        "organization_code": f"ORG{unique.upper()}",
+        "organization_name": "Production Organization",
+        "tenant_slug": f"production-{unique}",
+        "tenant_name": "Production Tenant",
+        "owner_email": f"owner-{unique}@example.test",
+        "owner_display_name": "Production Owner",
+        "platform_admin": True,
+    }
+    with SessionLocal() as session:
+        first = bootstrap_production_owner(session, **parameters)
+    with SessionLocal() as session:
+        second = bootstrap_production_owner(session, **parameters)
+        user = session.get(UserRow, first.user_id)
+        membership = session.get(MembershipRow, first.membership_id)
+        owner_role = session.scalar(
+            select(RoleRow).where(
+                RoleRow.tenant_id == first.tenant_id,
+                RoleRow.code == "OWNER",
+            )
+        )
+        assert user is not None and membership is not None and owner_role is not None
+        assert user.identity_provider == "pending_oidc"
+        assert user.status == "invited"
+        assert user.is_platform_admin is True
+        assert membership.status == "invited"
+        assert session.scalar(
+            select(func.count(MembershipRoleRow.id)).where(
+                MembershipRoleRow.tenant_id == first.tenant_id,
+                MembershipRoleRow.membership_id == first.membership_id,
+                MembershipRoleRow.role_id == owner_role.id,
+            )
+        ) == 1
+    assert first == second
+
+
+@pytest.mark.parametrize("slug", sorted(RESERVED_TENANT_SLUGS))
+def test_production_bootstrap_rejects_reserved_tenant_slug_before_writes(
+    slug: str,
+) -> None:
+    unique = uuid4().hex[:12]
+    with SessionLocal() as session:
+        organization_count = session.scalar(select(func.count(OrganizationRow.id)))
+        tenant_count = session.scalar(select(func.count(TenantRow.id)))
+        with pytest.raises(ValueError, match="reserved by the platform"):
+            bootstrap_production_owner(
+                session,
+                organization_code=f"RSV{unique.upper()}",
+                organization_name="Must Not Be Created",
+                tenant_slug=slug,
+                tenant_name="Reserved Storefront",
+                owner_email=f"reserved-{unique}@example.test",
+                owner_display_name="Reserved Owner",
+            )
+        assert session.scalar(select(func.count(OrganizationRow.id))) == organization_count
+        assert session.scalar(select(func.count(TenantRow.id))) == tenant_count
+
+
+def test_platform_admin_rejects_every_reserved_storefront_slug() -> None:
+    for slug in sorted(RESERVED_TENANT_SLUGS):
+        response = client.post(
+            "/api/admin/tenants",
+            json={"name": f"Reserved {slug}", "slug": slug},
+        )
+        assert response.status_code == 422, (slug, response.text)
+    with SessionLocal() as session:
+        assert (
+            session.scalar(
+                select(func.count(TenantRow.id)).where(
+                    TenantRow.slug.in_(RESERVED_TENANT_SLUGS)
+                )
+            )
+            == 0
+        )
+
+
 def test_platform_admin_manages_tenant_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -388,6 +686,64 @@ def test_platform_admin_manages_tenant_lifecycle(
     assert tenant["contact_email"] == "ops@merchant.example"
     assert tenant["sku_count"] == 0 and tenant["quote_count"] == 0
     assert client.get(f"/api/store/{slug}").status_code == 200
+
+    invited_email = f"owner-{uuid4().hex}@merchant.example"
+    invitation = client.post(
+        f"/api/admin/tenants/{tenant_id}/member-invitations",
+        json={
+            "email": invited_email.upper(),
+            "display_name": "Merchant Owner",
+            "role": "owner",
+        },
+    )
+    assert invitation.status_code == 201, invitation.text
+    invitation_data = invitation.json()
+    assert invitation_data["email"] == invited_email
+    assert invitation_data["role"] == "OWNER"
+    assert invitation_data["membership_status"] == "invited"
+    assert invitation_data["requires_identity_provider_provisioning"] is True
+    with SessionLocal() as session:
+        invited_user = session.get(UserRow, UUID(invitation_data["user_id"]))
+        invited_membership = session.get(
+            MembershipRow, UUID(invitation_data["membership_id"])
+        )
+        roles = {
+            role.code: role
+            for role in session.scalars(
+                select(RoleRow).where(RoleRow.tenant_id == UUID(tenant_id))
+            ).all()
+        }
+        assert set(roles) == {"OWNER", "ADMIN", "SALES", "PURCHASING"}
+        assert invited_user is not None and invited_membership is not None
+        assert invited_user.identity_provider == "pending_oidc"
+        assert invited_user.status == "invited"
+        assert invited_membership.tenant_id == UUID(tenant_id)
+        assert session.scalar(
+            select(func.count(MembershipRoleRow.id)).where(
+                MembershipRoleRow.tenant_id == UUID(tenant_id),
+                MembershipRoleRow.membership_id == invited_membership.id,
+                MembershipRoleRow.role_id == roles["OWNER"].id,
+            )
+        ) == 1
+    repeated_invitation = client.post(
+        f"/api/admin/tenants/{tenant_id}/member-invitations",
+        json={
+            "email": invited_email,
+            "display_name": "Merchant Owner",
+            "role": "OWNER",
+        },
+    )
+    assert repeated_invitation.status_code == 201
+    assert repeated_invitation.json()["created"] is False
+    rejected_role = client.post(
+        f"/api/admin/tenants/{tenant_id}/member-invitations",
+        json={
+            "email": f"custom-{uuid4().hex}@merchant.example",
+            "display_name": "Custom Role",
+            "role": "SUPERADMIN",
+        },
+    )
+    assert rejected_role.status_code == 422
 
     merchant_user_id = uuid4()
     with SessionLocal() as session:
@@ -507,6 +863,114 @@ def test_platform_admin_routes_reject_regular_members(
         )
         assert denied.status_code == 403
         assert denied.json()["detail"]["code"] == "PLATFORM_ADMIN_REQUIRED"
+        denied_invitation = regular_client.post(
+            f"/api/admin/tenants/{DEFAULT_TENANT_ID}/member-invitations",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "email": f"denied-{uuid4().hex}@example.test",
+                "display_name": "Denied",
+                "role": "SALES",
+            },
+        )
+        assert denied_invitation.status_code == 403
+        assert denied_invitation.json()["detail"]["code"] == "PLATFORM_ADMIN_REQUIRED"
+
+
+def test_member_invitation_rejects_ambiguous_global_email() -> None:
+    email = f"ambiguous-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        for index in range(2):
+            user_id = uuid4()
+            session.add(
+                UserRow(
+                    id=user_id,
+                    email_normalized=email,
+                    display_name=f"Ambiguous {index}",
+                    identity_provider="pending_oidc",
+                    identity_subject=f"pending:{user_id}",
+                    status="invited",
+                )
+            )
+        session.commit()
+    response = client.post(
+        f"/api/admin/tenants/{DEFAULT_TENANT_ID}/member-invitations",
+        json={"email": email, "display_name": "Ambiguous", "role": "SALES"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "MEMBER_EMAIL_AMBIGUOUS"
+
+
+def test_ai_read_projection_and_candidate_routes_enforce_rbac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    membership_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=f"{user_id.hex}@ai-rbac.test",
+                display_name="AI Route No-Permission User",
+                identity_provider="local-bootstrap",
+                identity_subject=str(user_id),
+                status="active",
+                is_platform_admin=False,
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as regular_client:
+        login_response = regular_client.post(
+            "/api/v1/auth/login",
+            json={
+                "provider": "local_fake",
+                "authorization_code": f"fake:{user_id}",
+                "code_verifier": "R" * 43,
+                "redirect_uri": "http://127.0.0.1:5173/login/callback",
+            },
+        )
+        assert login_response.status_code == 200, login_response.text
+        headers = {
+            "Authorization": f"Bearer {login_response.json()['data']['access_token']}"
+        }
+        denied_projection = regular_client.post(
+            f"/api/v1/ai/knowledge/products/{uuid4()}/project",
+            headers=headers,
+        )
+        denied_search = regular_client.post(
+            "/api/v1/ai/search/products",
+            headers=headers,
+            json={"query": "restricted product", "limit": 5},
+        )
+        denied_candidates = regular_client.get(
+            f"/api/v1/ai/product-intelligence/tasks/{uuid4()}/candidates",
+            headers=headers,
+        )
+        denied_quote_download = regular_client.get(
+            f"/api/v1/public-quote-drafts/{uuid4()}/pdf",
+            headers=headers,
+        )
+
+    for response in (
+        denied_projection,
+        denied_search,
+        denied_candidates,
+        denied_quote_download,
+    ):
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"]["code"] in {
+            "PERMISSION_DENIED",
+            "PERMISSION_REQUIRED",
+        }
 
 
 def test_refresh_cookie_is_secure_in_staging(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -593,6 +1057,17 @@ def test_multi_tenant_session_requires_server_validated_tenant_switch(
     assert switch_response.status_code == 200, switch_response.text
     switched = switch_response.json()["data"]
     assert switched["context"]["tenant_id"] == str(tenant_id)
+    assert client.get("/api/v1/me", headers=auth_header).status_code == 401
+    stale_switch = client.post(
+        "/api/v1/auth/tenant-context",
+        json={"membership_id": str(DEFAULT_MEMBERSHIP_ID)},
+        headers={
+            "Authorization": f"Bearer {access}",
+            "X-CSRF-Token": switched["csrf_token"],
+        },
+    )
+    assert stale_switch.status_code == 401
+    assert stale_switch.json()["detail"]["code"] == "AUTH_SESSION_EXPIRED"
     me_response = client.get(
         "/api/v1/me",
         headers={
@@ -602,6 +1077,13 @@ def test_multi_tenant_session_requires_server_validated_tenant_switch(
     )
     assert me_response.status_code == 200, me_response.text
     assert me_response.json()["context"]["tenant_id"] == str(tenant_id)
+    # A stale switch must fail before consuming the currently locked refresh
+    # token; the legitimate switched session can still rotate it afterwards.
+    post_stale_refresh = client.post(
+        "/api/v1/auth/refresh",
+        headers={"X-CSRF-Token": switched["csrf_token"]},
+    )
+    assert post_stale_refresh.status_code == 200, post_stale_refresh.text
 
 
 def test_phase4a1a_schema_contains_only_approved_product_intelligence_tables() -> None:
@@ -3097,6 +3579,75 @@ def test_multiline_catalog_header_does_not_pollute_field_mapping(tmp_path: Path)
     }
 
 
+def test_compact_inline_database_approval_projects_and_publishes_outbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_id = _create_pending_product_event(tmp_path, suffix=uuid4().hex[:6])
+    with SessionLocal() as session:
+        event = session.get(OutboxEventRow, event_id)
+        assert event is not None and event.decision_id is not None
+        decision = session.get(ProductCandidateDecisionRow, event.decision_id)
+        assert decision is not None
+        task_id = decision.ai_task_id
+        group_key = decision.candidate_group_key
+        idempotency_key = decision.idempotency_key
+        confirmed_values = dict(decision.human_values)
+        product_id = decision.product_id
+        assert product_id is not None
+        product = session.get(ProductRow, product_id)
+        assert product is not None
+        product_name = product.name
+        assert event.status == "PENDING"
+        assert product.search_document_version == 0
+
+    monkeypatch.setenv("ATC_RUNTIME_PROFILE", "compact")
+    monkeypatch.setenv("OUTBOX_PUBLISHER_PROFILE", "inline_database")
+    response = client.post(
+        f"/api/v1/ai/product-intelligence/tasks/{task_id}/groups/{group_key}/approve",
+        json={
+            "idempotency_key": idempotency_key,
+            "confirmed_values": confirmed_values,
+            "activate": True,
+        },
+    )
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["idempotent"] is True
+    assert payload["outbox_event_id"] == str(event_id)
+    assert payload["outbox_status"] == "PUBLISHED"
+
+    with SessionLocal() as session:
+        event = session.get(OutboxEventRow, event_id)
+        product = session.get(ProductRow, product_id)
+        assert event is not None and event.status == "PUBLISHED"
+        assert event.published_at is not None
+        assert product is not None and product.search_document_version == 1
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(KnowledgeDocumentRow)
+                .where(
+                    KnowledgeDocumentRow.tenant_id == DEFAULT_TENANT_ID,
+                    KnowledgeDocumentRow.source_entity_id == product_id,
+                    KnowledgeDocumentRow.source_version == 1,
+                    KnowledgeDocumentRow.status == "ACTIVE",
+                )
+            )
+            == 1
+        )
+
+    search = client.post(
+        "/api/v1/ai/search/products",
+        json={"query": product_name, "limit": 10},
+    )
+    assert search.status_code == 200, search.text
+    assert any(
+        row["product_id"] == str(product_id)
+        for row in search.json()["results"]
+    )
+
+
 def test_outbox_relay_retry_dead_letter_expired_lease_and_metrics(
     tmp_path: Path,
 ) -> None:
@@ -3547,6 +4098,53 @@ def test_development_image_provider_is_fail_closed_in_production(monkeypatch: py
     monkeypatch.setenv("IMAGE_INTELLIGENCE_PROFILE", "deterministic")
     with pytest.raises(RuntimeError, match="forbidden"):
         get_image_intelligence_provider()
+
+
+def test_disabled_image_intelligence_returns_service_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IMAGE_INTELLIGENCE_PROFILE", "disabled")
+    with SessionLocal() as session:
+        product = session.scalar(
+            select(ProductRow).where(ProductRow.tenant_id == DEFAULT_TENANT_ID)
+        )
+        assert product is not None
+        image_id = uuid4()
+        session.add(
+            ProductImageRow(
+                id=image_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product.id,
+                storage_provider="local",
+                bucket="local",
+                object_key=f"disabled-provider/{image_id}.png",
+                original_filename="disabled-provider.png",
+                content_type="image/png",
+                byte_size=16,
+                sha256="0" * 64,
+                image_role="GALLERY",
+                sort_order=0,
+                approval_status="APPROVED",
+            )
+        )
+        session.commit()
+
+    projection = client.post(f"/api/v1/product-images/{image_id}/intelligence")
+    assert projection.status_code == 503
+    assert projection.json()["detail"]["code"] == "IMAGE_INTELLIGENCE_UNAVAILABLE"
+
+    search = client.post(
+        "/api/v1/image-searches",
+        files={
+            "file": (
+                "query.png",
+                b"\x89PNG\r\n\x1a\nquery",
+                "image/png",
+            )
+        },
+    )
+    assert search.status_code == 503
+    assert search.json()["detail"]["code"] == "IMAGE_INTELLIGENCE_UNAVAILABLE"
 
 
 def test_dashboard_and_supplier_profiles_use_tenant_scoped_authoritative_data() -> None:
@@ -4039,6 +4637,16 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     original_name = sku_data["name"]
     original_price = Decimal(str(sku_data["price"]))
 
+    rejected_without_privacy_acknowledgment = client.post(
+        "/api/store/demo/quotes",
+        json={
+            "customer_name": "No Privacy Acknowledgment",
+            "privacy_acknowledged": False,
+            "items": [{"sku_id": sku_data["id"], "quantity": 1}],
+        },
+    )
+    assert rejected_without_privacy_acknowledgment.status_code == 422
+
     create_response = client.post(
         "/api/store/demo/quotes",
         json={
@@ -4047,10 +4655,13 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
             "customer_email": "buyer@example.test",
             "customer_phone": "@PHONE",
             "notes": "@SUM(A1:A2)",
+            "privacy_acknowledged": True,
             "items": [{"sku_id": sku_data["id"], "quantity": 2}],
         },
     )
     assert create_response.status_code == 201, create_response.text
+    assert create_response.headers["cache-control"] == "no-store"
+    assert create_response.headers["pragma"] == "no-cache"
     draft = create_response.json()
     assert draft["status"] == "PENDING_CONFIRMATION"
     assert draft["quote_number"].startswith("QD-")
@@ -4058,7 +4669,10 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     assert Decimal(str(draft["total"])) == original_price * 2
     raw_token = draft["download_token"]
     assert raw_token and raw_token.startswith(f"{DEFAULT_TENANT_ID}.")
+    assert "token=" not in draft["pdf_url"]
+    assert "token=" not in draft["xlsx_url"]
     quote_id = UUID(draft["id"])
+    download_headers = {"X-Quote-Download-Token": raw_token}
 
     with SessionLocal() as session:
         stored = session.scalar(
@@ -4079,6 +4693,8 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert snapshot_item.name_snapshot == original_name
         assert snapshot_item.unit_price_snapshot == original_price
         assert stored_draft.snapshot["status"] == "PENDING_CONFIRMATION"
+        assert stored_draft.snapshot["privacy_notice"]["acknowledged"] is True
+        assert stored_draft.snapshot["privacy_notice"]["version"] == "privacy-v1"
 
         sku = session.get(SkuRow, UUID(sku_data["id"]))
         offer = session.scalar(
@@ -4091,13 +4707,15 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         offer.unit_price = Decimal("9999.00")
         session.commit()
     try:
-        pdf_response = client.get(draft["pdf_url"])
+        pdf_response = client.get(draft["pdf_url"], headers=download_headers)
         assert pdf_response.status_code == 200, pdf_response.text
         assert pdf_response.content.startswith(b"%PDF")
         assert pdf_response.headers["x-quote-status"] == "PENDING_CONFIRMATION"
+        assert pdf_response.headers["cache-control"] == "private, no-store"
+        assert pdf_response.headers["pragma"] == "no-cache"
         assert "PENDING-CONFIRMATION.pdf" in pdf_response.headers["content-disposition"]
 
-        xlsx_response = client.get(draft["xlsx_url"])
+        xlsx_response = client.get(draft["xlsx_url"], headers=download_headers)
         assert xlsx_response.status_code == 200, xlsx_response.text
         workbook = load_workbook(BytesIO(xlsx_response.content), data_only=False)
         sheet = workbook.active
@@ -4114,12 +4732,23 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
 
         merchant_list = client.get("/api/v1/public-quote-drafts")
         assert merchant_list.status_code == 200
+        assert merchant_list.headers["cache-control"] == "no-store"
+        assert merchant_list.headers["pragma"] == "no-cache"
         assert str(quote_id) in {item["id"] for item in merchant_list.json()}
         merchant_detail = client.get(f"/api/v1/public-quote-drafts/{quote_id}")
         assert merchant_detail.status_code == 200
+        assert merchant_detail.headers["cache-control"] == "no-store"
+        assert merchant_detail.headers["pragma"] == "no-cache"
         assert merchant_detail.json()["download_token"] is None
         assert merchant_detail.json()["pdf_url"] is None
         assert merchant_detail.json()["items"][0]["name_snapshot"] == original_name
+        merchant_pdf = client.get(
+            f"/api/v1/public-quote-drafts/{quote_id}/pdf"
+        )
+        assert merchant_pdf.status_code == 200
+        assert merchant_pdf.content.startswith(b"%PDF")
+        assert merchant_pdf.headers["cache-control"] == "private, no-store"
+        assert merchant_pdf.headers["pragma"] == "no-cache"
     finally:
         with SessionLocal() as session:
             sku = session.get(SkuRow, UUID(sku_data["id"]))
@@ -4135,8 +4764,13 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
 
     forged_tenant_token = f"{uuid4()}.{raw_token.split('.', 1)[1]}"
     assert client.get(
-        f"/api/quotes/{quote_id}/pdf", params={"token": forged_tenant_token}
+        f"/api/quotes/{quote_id}/pdf",
+        headers={"X-Quote-Download-Token": forged_tenant_token},
     ).status_code == 404
+    query_only = client.get(
+        f"/api/quotes/{quote_id}/pdf", params={"token": raw_token}
+    )
+    assert query_only.status_code == 422
 
     with SessionLocal() as session:
         stored = session.scalar(
@@ -4147,7 +4781,10 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert stored is not None
         stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         session.commit()
-    expired = client.get(f"/api/quotes/{quote_id}/pdf", params={"token": raw_token})
+    expired = client.get(
+        f"/api/quotes/{quote_id}/pdf",
+        headers={"X-Quote-Download-Token": raw_token},
+    )
     assert expired.status_code == 410
     assert expired.json()["detail"]["code"] == "DOWNLOAD_EXPIRED"
 
@@ -4221,6 +4858,7 @@ def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_read
         "/api/store/demo/quotes",
         json={
             "customer_name": "Cross Tenant Attempt",
+            "privacy_acknowledged": True,
             "items": [{"sku_id": str(sku_b), "quantity": 1}],
         },
     )
@@ -4232,6 +4870,8 @@ def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_read
     assert str(draft_b) not in {item["id"] for item in merchant_list.json()}
     merchant_detail = client.get(f"/api/v1/public-quote-drafts/{draft_b}")
     assert merchant_detail.status_code == 404
+    merchant_pdf = client.get(f"/api/v1/public-quote-drafts/{draft_b}/pdf")
+    assert merchant_pdf.status_code == 404
 
 
 def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:
@@ -4258,7 +4898,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260720_0021"
+        ).scalar() == "20260723_0024"
     upgraded_engine.dispose()
     command.check(config)
 

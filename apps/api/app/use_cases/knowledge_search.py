@@ -15,12 +15,23 @@ from ..services.hybrid_search import hybrid_product_search
 from ..services.knowledge import KnowledgeProjectionError, project_product_knowledge
 
 
+def _require(permissions: frozenset[str], code: str) -> None:
+    if code not in permissions:
+        raise ApplicationError(
+            "PERMISSION_DENIED",
+            f"Permission is required: {code}",
+            kind="forbidden",
+        )
+
+
 def project_product(
     session: Session,
     *,
     tenant_id: UUID,
+    permissions: frozenset[str],
     product_id: UUID,
 ) -> KnowledgeProjectionResponse:
+    _require(permissions, "product.edit")
     try:
         result = project_product_knowledge(
             session,
@@ -41,8 +52,10 @@ def search_products(
     session: Session,
     *,
     tenant_id: UUID,
+    permissions: frozenset[str],
     request: HybridSearchRequest,
 ) -> HybridSearchResponse:
+    _require(permissions, "product.view")
     try:
         result = hybrid_product_search(
             session,

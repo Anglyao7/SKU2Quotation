@@ -1,0 +1,5 @@
+www.{$ATC_DOMAIN} {
+	import security_headers
+	encode zstd gzip
+	reverse_proxy {$ATC_LEGACY_WWW_UPSTREAM}
+}

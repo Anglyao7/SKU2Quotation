@@ -27,6 +27,7 @@ import { api, ApiError } from "./lib/api";
 import { LandingPage } from "./pages/marketing/LandingPage";
 import { StorePage } from "./pages/StorePage";
 import { LoginPage } from "./pages/LoginPage";
+import { PrivacyPage } from "./pages/PrivacyPage";
 import { ConsoleLayout } from "./pages/console/ConsoleLayout";
 import { TenantManagementPage } from "./pages/console/TenantManagementPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -78,6 +79,8 @@ const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
   { path: "/store/:tenantSlug", element: <LegacyStoreRedirect /> },
   { path: "/login", element: <LoginPage /> },
+  { path: "/login/callback", element: <LoginPage /> },
+  { path: "/privacy", element: <PrivacyPage /> },
   {
     element: <ProtectedRoute />,
     children: [{

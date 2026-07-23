@@ -21,6 +21,7 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useMemo, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { imageFallback, money, quoteNumber } from "../lib/format";
 import type { CreateQuoteInput, Quote, Sku } from "../types";
@@ -32,12 +33,14 @@ export interface CartLine {
 
 interface CartDrawerProps {
   slug: string;
+  storeName: string;
+  contactEmail?: string | null;
   lines: CartLine[];
   onQuantity: (skuId: string, quantity: number) => void;
   onClear: () => void;
 }
 
-export function CartDrawer({ slug, lines, onQuantity, onClear }: CartDrawerProps) {
+export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, onClear }: CartDrawerProps) {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [downloading, setDownloading] = useState<"pdf" | "xlsx" | null>(null);
@@ -56,11 +59,17 @@ export function CartDrawer({ slug, lines, onQuantity, onClear }: CartDrawerProps
     setSubmitting(true);
     setError("");
     const data = new FormData(event.currentTarget);
+    if (data.get("privacy_acknowledged") !== "on") {
+      setError("请先阅读并确认隐私政策。");
+      setSubmitting(false);
+      return;
+    }
     const payload: CreateQuoteInput = {
       customer_name: String(data.get("customer_name") || "").trim(),
       customer_company: String(data.get("customer_company") || "").trim() || undefined,
       customer_email: String(data.get("customer_email") || "").trim() || undefined,
       notes: String(data.get("notes") || "").trim() || undefined,
+      privacy_acknowledged: true,
       items: lines.map((line) => ({ sku_id: line.sku.id, quantity: line.quantity })),
     };
     try {
@@ -192,6 +201,14 @@ export function CartDrawer({ slug, lines, onQuantity, onClear }: CartDrawerProps
                 <TextArea name="notes" placeholder="交期、包装或其他说明" resize="vertical" />
               </label>
             </div>
+            <label className="privacy-consent">
+              <input type="checkbox" name="privacy_acknowledged" required />
+              <span>
+                我已阅读并理解<Link to="/privacy" target="_blank" rel="noreferrer">《隐私政策》</Link>；
+                我填写的信息将提供给 {storeName}，仅用于生成和跟进本次报价
+                {contactEmail ? <>（联系邮箱：<a href={`mailto:${contactEmail}`}>{contactEmail}</a>）</> : null}。
+              </span>
+            </label>
             {error && <Callout.Root color="red"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error}</Callout.Text></Callout.Root>}
             <Button type="submit" size="3" loading={submitting} disabled={!lines.length}>一键生成报价单</Button>
           </form>

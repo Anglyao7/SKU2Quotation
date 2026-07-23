@@ -2,6 +2,8 @@ import type {
   AuthToken,
   CreateQuoteInput,
   DashboardData,
+  MemberInvitation,
+  MemberInvitationPayload,
   Quote,
   Sku,
   SkuList,
@@ -134,9 +136,13 @@ function consolePath(path: string) {
   return path;
 }
 
-async function download(path: string, filename: string, auth = false) {
-  const headers = new Headers();
-  if (auth) {
+async function download(
+  path: string,
+  filename: string,
+  options: { auth?: boolean; headers?: HeadersInit } = {},
+) {
+  const headers = new Headers(options.headers);
+  if (options.auth) {
     const token = authStorage.getToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);
   }
@@ -199,8 +205,9 @@ export const api = {
     })),
   downloadStoreQuote: (quoteId: string, type: "pdf" | "xlsx", token?: string | null) =>
     download(
-      `/api/quotes/${encodeURIComponent(quoteId)}/${type}${token ? `?token=${encodeURIComponent(token)}` : ""}`,
+      `/api/quotes/${encodeURIComponent(quoteId)}/${type}`,
       `quotation-${quoteId}.${type}`,
+      token ? { headers: { "X-Quote-Download-Token": token } } : {},
     ),
 
   async getDashboard() {
@@ -236,7 +243,11 @@ export const api = {
     return normalizeList<Quote>(raw).items.map(normalizeQuote);
   },
   downloadConsoleQuote: (quoteId: string, type: "pdf" | "xlsx") =>
-    download(`/api/quotes/${quoteId}/${type}`, `quotation-${quoteId}.${type}`, true),
+    download(
+      `/api/v1/public-quote-drafts/${quoteId}/${type}`,
+      `quotation-${quoteId}.${type}`,
+      { auth: true },
+    ),
 
   async getTenants(): Promise<Tenant[]> {
     const raw = await request<unknown>("/api/admin/tenants", {}, true);
@@ -249,4 +260,10 @@ export const api = {
     request<Tenant>(`/api/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify({ name: payload.name, contact_email: payload.contact_email || null, active: payload.active }) }, true),
   deactivateTenant: (id: string) =>
     request<Tenant>(`/api/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify({ active: false }) }, true),
+  inviteTenantMember: (tenantId: string, payload: MemberInvitationPayload) =>
+    request<MemberInvitation>(
+      `/api/admin/tenants/${tenantId}/member-invitations`,
+      { method: "POST", body: JSON.stringify(payload) },
+      true,
+    ),
 };

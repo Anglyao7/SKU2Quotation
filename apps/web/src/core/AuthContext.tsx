@@ -12,6 +12,7 @@ import {
   getCurrentUser,
   getPermissions,
   listMemberships,
+  loginEnterpriseOidc,
   loginLocalDemo,
   logoutSession,
   refreshAuthSession,
@@ -33,6 +34,12 @@ interface AuthState {
 export interface CoreAuthContextValue extends AuthState {
   loading: boolean;
   loginDemo: () => Promise<void>;
+  loginOidc: (input: {
+    authorizationCode: string;
+    codeVerifier: string;
+    redirectUri: string;
+    nonce: string;
+  }) => Promise<void>;
   logout: () => Promise<void>;
   switchTenant: (membershipId: string) => Promise<void>;
   hasPermission: (permission: string) => boolean;
@@ -105,6 +112,21 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
     }
   }, [hydrate]);
 
+  const loginOidc = useCallback(async (input: {
+    authorizationCode: string;
+    codeVerifier: string;
+    redirectUri: string;
+    nonce: string;
+  }) => {
+    setState((current) => ({ ...current, status: "restoring", error: undefined }));
+    try {
+      await hydrate(await loginEnterpriseOidc(input));
+    } catch (reason) {
+      setState({ ...initialState, status: "anonymous", error: errorMessage(reason) });
+      throw reason;
+    }
+  }, [hydrate]);
+
   const switchTenant = useCallback(async (membershipId: string) => {
     setState((current) => ({ ...current, status: "restoring", error: undefined }));
     try {
@@ -121,23 +143,26 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
   }, [hydrate]);
 
   const logout = useCallback(async () => {
+    let enterpriseEndSession: string | undefined;
     try {
-      await logoutSession();
+      enterpriseEndSession = await logoutSession();
     } catch {
       clearCoreAuthSession();
     }
     setState({ ...initialState, status: "anonymous" });
+    if (enterpriseEndSession) window.location.assign(enterpriseEndSession);
   }, []);
 
   const value = useMemo<CoreAuthContextValue>(() => ({
     ...state,
     loading: state.status === "restoring",
     loginDemo,
+    loginOidc,
     logout,
     switchTenant,
     hasPermission: (permission) => state.permissions.has(permission),
     hasAnyPermission: (...permissions) => permissions.length === 0 || permissions.some((permission) => state.permissions.has(permission)),
-  }), [loginDemo, logout, state, switchTenant]);
+  }), [loginDemo, loginOidc, logout, state, switchTenant]);
 
   return <CoreAuthContext.Provider value={value}>{children}</CoreAuthContext.Provider>;
 }

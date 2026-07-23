@@ -7,7 +7,7 @@ import os
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -24,6 +24,7 @@ from ..public_catalog_models import (
 from ..public_catalog_schemas import (
     PUBLIC_DRAFT_DISCLAIMER,
     PUBLIC_DRAFT_DISCLAIMER_VERSION,
+    PUBLIC_PRIVACY_NOTICE_VERSION,
     PublicQuoteDocument,
     PublicQuoteDraftCreate,
     PublicQuoteDraftItemResponse,
@@ -296,8 +297,6 @@ def _draft_response(
 ) -> PublicQuoteDraftResponse:
     base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
     document_base = f"{base}/api/quotes/{draft.id}" if base else f"/api/quotes/{draft.id}"
-    query = urlencode({"token": raw_token}) if raw_token else ""
-    suffix = f"?{query}" if query else ""
     return PublicQuoteDraftResponse(
         id=draft.id,
         tenant_id=draft.tenant_id,
@@ -320,8 +319,8 @@ def _draft_response(
         items=[_item_response(item) for item in items],
         download_token=raw_token,
         download_expires_at=token_expires_at,
-        pdf_url=f"{document_base}/pdf{suffix}" if raw_token else None,
-        xlsx_url=f"{document_base}/xlsx{suffix}" if raw_token else None,
+        pdf_url=f"{document_base}/pdf" if raw_token else None,
+        xlsx_url=f"{document_base}/xlsx" if raw_token else None,
     )
 
 
@@ -435,6 +434,11 @@ def create_public_quote_draft(
             "phone": request.customer_phone,
         },
         "notes": request.notes,
+        "privacy_notice": {
+            "acknowledged": request.privacy_acknowledged,
+            "version": PUBLIC_PRIVACY_NOTICE_VERSION,
+            "acknowledged_at": now.isoformat(),
+        },
         "currency": currency,
         "subtotal_amount": str(subtotal),
         "estimated_total": str(subtotal),
@@ -612,3 +616,33 @@ def get_tenant_quote_draft(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
     )
     return _draft_response(draft, items)
+
+
+def get_tenant_quote_document(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+) -> PublicQuoteDocument:
+    _require(permissions, "quotation.view")
+    tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
+    draft = repository.get_quote_draft(
+        session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
+    )
+    if tenant is None or draft is None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    profile = repository.find_profile_by_tenant(session, tenant_id=tenant_id)
+    items = repository.list_quote_draft_items(
+        session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
+    )
+    return PublicQuoteDocument(
+        tenant_name=tenant.name,
+        contact_email=profile.contact_email if profile else None,
+        contact_phone=profile.contact_phone if profile else None,
+        quote=_draft_response(draft, items),
+    )

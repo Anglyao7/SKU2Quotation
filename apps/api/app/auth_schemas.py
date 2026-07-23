@@ -10,7 +10,18 @@ class LoginRequest(BaseModel):
     authorization_code: str = Field(min_length=1, max_length=500)
     code_verifier: str = Field(min_length=43, max_length=128)
     redirect_uri: str = Field(min_length=1, max_length=1000)
+    nonce: str | None = Field(default=None, min_length=32, max_length=200)
     device_label: str | None = Field(default=None, max_length=120)
+
+
+class AuthPublicConfig(BaseModel):
+    provider: Literal["local_fake", "enterprise_oidc"]
+    client_id: str | None = None
+    authorization_endpoint: str | None = None
+    end_session_endpoint: str | None = None
+    post_logout_redirect_uri: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    code_challenge_method: Literal["S256"] = "S256"
 
 
 class TenantContextRequest(BaseModel):

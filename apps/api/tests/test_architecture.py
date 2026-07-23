@@ -4,8 +4,11 @@ import ast
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+
+from app.tenant_slugs import RESERVED_TENANT_SLUGS
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 API_ROOT = APP_ROOT.parent
@@ -131,9 +134,12 @@ def test_composed_routes_preserve_the_public_contract(tmp_path: Path) -> None:
         ("GET", "/api/quotes/{quote_draft_id}/xlsx"),
         ("GET", "/api/v1/public-quote-drafts"),
         ("GET", "/api/v1/public-quote-drafts/{quote_draft_id}"),
+        ("GET", "/api/v1/public-quote-drafts/{quote_draft_id}/pdf"),
+        ("GET", "/api/v1/public-quote-drafts/{quote_draft_id}/xlsx"),
         ("GET", "/api/admin/tenants"),
         ("POST", "/api/admin/tenants"),
         ("PATCH", "/api/admin/tenants/{tenant_id}"),
+        ("POST", "/api/admin/tenants/{tenant_id}/member-invitations"),
     }
     assert expected.issubset(routes)
 
@@ -154,6 +160,111 @@ def test_web_auth_shell_keeps_access_tokens_out_of_persistent_storage() -> None:
         "/quotations",
     ):
         assert route in routing_source
+
+
+def test_reserved_tenant_slugs_cover_every_static_top_level_web_route() -> None:
+    app_source = (
+        REPOSITORY_ROOT / "apps" / "web" / "src" / "App.tsx"
+    ).read_text(encoding="utf-8")
+    route_paths = re.findall(r'\bpath:\s*"(/[^"]*)"', app_source)
+    static_top_level_routes = {
+        segment
+        for path in route_paths
+        if (segment := path.removeprefix("/").split("/", 1)[0])
+        and not segment.startswith(":")
+    }
+    assert static_top_level_routes <= RESERVED_TENANT_SLUGS
+    assert {"api", "assets", "healthz"} <= RESERVED_TENANT_SLUGS
+
+
+def test_keycloak_provisioning_keeps_secrets_interactive_and_email_unverified() -> None:
+    source = (
+        API_ROOT / "scripts" / "provision_keycloak_user_interactive.py"
+    ).read_text(encoding="utf-8")
+    assert "getpass(" in source
+    assert "--admin-password" not in source
+    assert "--temporary-password" not in source
+    assert '"emailVerified": False' in source
+    assert '"emailVerified": True' not in source
+    assert 'parsed.hostname == "keycloak"' in source
+    assert "parsed.port == 8080" in source
+    assert "password" not in source.partition("def parser()")[2].lower()
+
+
+def test_member_invitation_migration_has_database_email_race_guard() -> None:
+    invitation_source = (
+        API_ROOT
+        / "migrations"
+        / "versions"
+        / "20260723_0023_tenant_member_invitations.py"
+    ).read_text(encoding="utf-8")
+    binding_source = (
+        API_ROOT
+        / "migrations"
+        / "versions"
+        / "20260723_0022_oidc_invitation_binding.py"
+    ).read_text(encoding="utf-8")
+    lock_service_source = (
+        APP_ROOT / "services" / "invitation_email_lock.py"
+    ).read_text(encoding="utf-8")
+    auth_source = (
+        APP_ROOT / "services" / "auth" / "service.py"
+    ).read_text(encoding="utf-8")
+    member_source = (
+        APP_ROOT / "services" / "member_invitations.py"
+    ).read_text(encoding="utf-8")
+    grant_source = (
+        API_ROOT / "scripts" / "grant_runtime_roles.py"
+    ).read_text(encoding="utf-8")
+
+    assert "CREATE UNIQUE INDEX uq_users_active_normalized_email" in invitation_source
+    assert "CREATE OR REPLACE FUNCTION public.atc_lock_invitation_email" in binding_source
+    assert "pg_advisory_xact_lock(hashtextextended(v_email, 0))" in binding_source
+    assert "PERFORM public.atc_lock_invitation_email(p_email)" in binding_source
+    assert "PERFORM public.atc_lock_invitation_email(v_email)" in invitation_source
+    assert "public.atc_lock_invitation_email(:normalized_email)" in lock_service_source
+    assert "acquire_invitation_email_lock" in auth_source
+    assert "acquire_invitation_email_lock" in member_source
+    assert "GRANT EXECUTE ON FUNCTION " in grant_source
+    assert "public.atc_lock_invitation_email(text)" in grant_source
+    assert "SECURITY DEFINER" in invitation_source
+    assert "is_platform_admin = TRUE" not in invitation_source
+
+    binding_function = binding_source[
+        binding_source.index(
+            "CREATE OR REPLACE FUNCTION public.atc_bind_oidc_invitation"
+        ) :
+    ]
+    invitation_function = invitation_source[
+        invitation_source.index(
+            "CREATE OR REPLACE FUNCTION public.atc_invite_tenant_member"
+        ) :
+    ]
+    activation_function = auth_source[
+        auth_source.index("def _activate_verified_invitation") :
+        auth_source.index("\ndef login")
+    ]
+    member_invitation_function = member_source[
+        member_source.index("def _postgres_invite") :
+        member_source.index("\ndef _sqlite_invite")
+    ]
+    assert binding_function.index(
+        "PERFORM public.atc_lock_invitation_email(p_email)"
+    ) < binding_function.index("UPDATE public.users")
+    assert invitation_function.index(
+        "PERFORM public.atc_lock_invitation_email(v_email)"
+    ) < invitation_function.index("SELECT u.is_platform_admin")
+    assert activation_function.index(
+        "acquire_invitation_email_lock"
+    ) < activation_function.index("candidates = session.scalars")
+    assert activation_function.index(
+        "acquire_invitation_email_lock"
+    ) < activation_function.index("invited_pairs = session.execute")
+    assert member_invitation_function.index(
+        "acquire_invitation_email_lock"
+    ) < member_invitation_function.index("users = list")
+    for role in ("OWNER", "ADMIN", "SALES", "PURCHASING"):
+        assert role in invitation_source
 
 
 def test_managed_runtime_fails_before_database_initialization(tmp_path: Path) -> None:

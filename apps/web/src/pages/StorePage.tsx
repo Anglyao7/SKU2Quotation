@@ -143,6 +143,8 @@ export function StorePage() {
             </Button>
             <CartDrawer
               slug={tenantSlug}
+              storeName={store.name}
+              contactEmail={store.contact_email}
               lines={Object.values(cart)}
               onQuantity={updateQuantity}
               onClear={() => setCart({})}
@@ -249,6 +251,12 @@ export function StorePage() {
           </Container>
         </section>
       </main>
+      <footer className="store-footer">
+        <Container size="4" className="store-footer-inner">
+          <Text size="1" color="gray">商品与报价由 {store.name} 提供，报价草稿须经商家确认。</Text>
+          <Link to="/privacy">隐私政策</Link>
+        </Container>
+      </footer>
     </div>
   );
 }

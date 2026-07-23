@@ -1,0 +1,57 @@
+{
+	email {$CADDY_ACME_EMAIL}
+	admin off
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		-Server
+	}
+}
+
+{$ATC_DOMAIN} {
+	import security_headers
+	header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; upgrade-insecure-requests"
+	@oidc_callback path /login/callback
+	header @oidc_callback Referrer-Policy "no-referrer"
+	encode zstd gzip
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy web:8080
+	}
+
+	handle {
+		reverse_proxy web:8080
+	}
+}
+
+auth.{$ATC_DOMAIN} {
+	import security_headers
+	encode zstd gzip
+
+	@management path /admin /admin/* /realms/master /realms/master/* /health /health/* /metrics /metrics/*
+	respond @management 404
+
+	@public_keycloak path /realms/atc /realms/atc/* /resources /resources/*
+	handle @public_keycloak {
+		reverse_proxy keycloak:8080 {
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}
+
+import /etc/caddy/sites-enabled/*.caddy

@@ -269,6 +269,11 @@ class AuthRefreshTokenRow(Base):
     __table_args__ = (
         CheckConstraint("sequence_number >= 0", name="sequence_number_nonnegative"),
         CheckConstraint("expires_at > issued_at", name="expiry_after_issue"),
+        CheckConstraint(
+            "(rotation_request_hash IS NULL AND retry_grace_expires_at IS NULL) "
+            "OR (rotation_request_hash IS NOT NULL AND retry_grace_expires_at IS NOT NULL)",
+            name="retry_metadata_pair",
+        ),
         UniqueConstraint("token_hash", name="uq_auth_refresh_tokens_hash"),
         UniqueConstraint(
             "auth_session_id",
@@ -291,6 +296,10 @@ class AuthRefreshTokenRow(Base):
     sequence_number: Mapped[int] = mapped_column(default=0, nullable=False)
     replaced_by_token_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("auth_refresh_tokens.id", ondelete="SET NULL"), nullable=True
+    )
+    rotation_request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retry_grace_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     issued_at: Mapped[datetime] = mapped_column(
