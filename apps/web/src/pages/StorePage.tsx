@@ -13,6 +13,7 @@ import {
 import { ArrowCounterClockwise, MagnifyingGlass, SlidersHorizontal, UserCircle } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLoaderData } from "react-router-dom";
+import { BRAND_NAME_ZH } from "../brand";
 import { Brand } from "../components/Brand";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
@@ -55,7 +56,7 @@ export function StorePage() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = `${loadedStore.name} | 澄湾选品`;
+    document.title = `${loadedStore.name} | ${BRAND_NAME_ZH}`;
     return () => {
       document.title = previousTitle;
     };

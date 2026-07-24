@@ -36,6 +36,6 @@ export function imageFallback(skuCode: string) {
 }
 
 export function initials(name?: string) {
-  const source = name?.trim() || "澄湾";
+  const source = name?.trim() || "智贸云";
   return source.slice(0, 2).toUpperCase();
 }

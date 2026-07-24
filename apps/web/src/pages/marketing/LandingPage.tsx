@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { BRAND_FULL_NAME, BRAND_NAME_ZH } from "../../brand";
 import { Brand } from "../../components/Brand";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import styles from "./LandingPage.module.css";
@@ -76,7 +77,7 @@ export function LandingPage() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = "澄湾选品 | 万千货品，自成脉络";
+    document.title = `${BRAND_FULL_NAME} | 万千货品，自成脉络`;
     return () => {
       document.title = previousTitle;
     };
@@ -192,12 +193,12 @@ export function LandingPage() {
             <Reveal>
               <figure className={styles.productProof}>
                 <figcaption>
-                  <span>澄湾商品前台</span>
+                  <span>{BRAND_NAME_ZH}商品前台</span>
                   <strong>yourdomain.com/demo</strong>
                 </figcaption>
                 <img
                   src="/assets/marketing/storefront-preview.png"
-                  alt="澄湾选品 Demo 商品前台，包含 SKU 搜索、标签筛选和商品卡片"
+                  alt={`${BRAND_NAME_ZH} Demo 商品前台，包含 SKU 搜索、标签筛选和商品卡片`}
                   width="863"
                   height="875"
                   loading="lazy"
@@ -223,7 +224,7 @@ export function LandingPage() {
 
           <Reveal className={styles.painCopy}>
             <h2>好商品，不该失落在表格之间。</h2>
-            <p>当规格、图片、价格与供应商各自散落，每一次寻找都在重复昨天。澄湾把它们重新编入同一条脉络。</p>
+            <p>当规格、图片、价格与供应商各自散落，每一次寻找都在重复昨天。{BRAND_NAME_ZH}把它们重新编入同一条脉络。</p>
             <dl className={styles.painList}>
               <div>
                 <dt>资料有归处</dt>
@@ -359,7 +360,7 @@ export function LandingPage() {
             <Link to="/demo">查看演示</Link>
             <Link to="/login">登录工作台</Link>
           </nav>
-          <small>© {new Date().getFullYear()} 澄湾选品</small>
+          <small>© {new Date().getFullYear()} {BRAND_FULL_NAME}</small>
         </div>
       </footer>
     </div>
