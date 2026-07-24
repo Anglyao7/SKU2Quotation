@@ -20,7 +20,7 @@ from .identity_models import (
 )
 from .public_catalog_models import TenantPublicProfileRow
 from .saas_seed import PERMISSION_SEEDS, ROLE_SEEDS
-from .tenant_slugs import is_reserved_tenant_slug
+from .tenant_slugs import is_reserved_tenant_slug, storefront_slug_from_name
 
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
@@ -68,13 +68,14 @@ def bootstrap_production_owner(
     """
 
     code = organization_code.strip().upper()
-    slug = tenant_slug.strip().lower()
+    identity_slug = tenant_slug.strip().lower()
+    canonical_slug = storefront_slug_from_name(tenant_name)
     email = _normalized_email(owner_email)
     if not ORG_CODE_PATTERN.fullmatch(code):
         raise ValueError("organization code is invalid")
-    if not SLUG_PATTERN.fullmatch(slug):
+    if not SLUG_PATTERN.fullmatch(identity_slug):
         raise ValueError("tenant slug is invalid")
-    if is_reserved_tenant_slug(slug):
+    if is_reserved_tenant_slug(identity_slug):
         raise ValueError("tenant slug is reserved by the platform")
     if not organization_name.strip() or len(organization_name.strip()) > 200:
         raise ValueError("organization name is invalid")
@@ -86,7 +87,9 @@ def bootstrap_production_owner(
     # Stable IDs make the operation idempotent even for the migration/table
     # owner, which is NOBYPASSRLS and subject to FORCE RLS policies.
     organization_id = uuid5(BOOTSTRAP_NAMESPACE, f"organization:{code}")
-    tenant_id = uuid5(BOOTSTRAP_NAMESPACE, f"tenant:{code}:{slug}")
+    # Keep the configured bootstrap slug solely as a stable deployment
+    # identity. The customer-facing path follows the editable merchant name.
+    tenant_id = uuid5(BOOTSTRAP_NAMESPACE, f"tenant:{code}:{identity_slug}")
     user_id = uuid5(BOOTSTRAP_NAMESPACE, f"owner:{email}")
     membership_id = uuid5(
         BOOTSTRAP_NAMESPACE, f"membership:{tenant_id}:{user_id}"
@@ -118,13 +121,13 @@ def bootstrap_production_owner(
         tenant = TenantRow(
             id=tenant_id,
             organization_id=organization.id,
-            slug=slug,
+            slug=canonical_slug,
             name=tenant_name.strip(),
             status="active",
         )
         session.add(tenant)
         session.flush()
-    elif tenant.organization_id != organization.id or tenant.slug != slug:
+    elif tenant.organization_id != organization.id:
         raise ValueError("bootstrap tenant identity does not match")
     elif tenant.status != "active":
         raise ValueError("existing tenant is not active")

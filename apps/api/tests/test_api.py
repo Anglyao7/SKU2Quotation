@@ -110,7 +110,7 @@ from app.services.auth.contracts import IdentityClaim, IdentityProviderError
 from app.services.auth.oidc_provider import OidcIdentityProviderAdapter
 from app.services.auth.service import AuthError, _validate_new_password
 from app.production_bootstrap import bootstrap_production_owner
-from app.tenant_slugs import RESERVED_TENANT_SLUGS
+from app.tenant_slugs import RESERVED_TENANT_SLUGS, storefront_slug_from_name
 from app.model_mixins import mark_deleted, restore_deleted
 from app.adapters.file_scanner import (
     DeterministicDevelopmentScanner,
@@ -1398,28 +1398,49 @@ def test_enterprise_oidc_rejects_unverified_email_and_jit_registration(
 
 def test_production_bootstrap_is_idempotent_and_leaves_owner_pending_oidc() -> None:
     unique = uuid4().hex[:12]
+    tenant_name = f"Production Tenant {unique}"
     parameters = {
         "organization_code": f"ORG{unique.upper()}",
         "organization_name": "Production Organization",
         "tenant_slug": f"production-{unique}",
-        "tenant_name": "Production Tenant",
+        "tenant_name": tenant_name,
         "owner_email": f"owner-{unique}@example.test",
         "owner_display_name": "Production Owner",
         "platform_admin": True,
     }
     with SessionLocal() as session:
         first = bootstrap_production_owner(session, **parameters)
+        tenant = session.get(TenantRow, first.tenant_id)
+        assert tenant is not None
+        assert tenant.slug == storefront_slug_from_name(tenant_name)
+        tenant.name = "自定义商家名"
+        tenant.slug = "自定义商家名"
+        profile = session.get(TenantPublicProfileRow, tenant.id)
+        assert profile is not None
+        profile.slug = tenant.slug
+        session.commit()
     with SessionLocal() as session:
         second = bootstrap_production_owner(session, **parameters)
         user = session.get(UserRow, first.user_id)
         membership = session.get(MembershipRow, first.membership_id)
+        tenant = session.get(TenantRow, first.tenant_id)
+        profile = session.get(TenantPublicProfileRow, first.tenant_id)
         owner_role = session.scalar(
             select(RoleRow).where(
                 RoleRow.tenant_id == first.tenant_id,
                 RoleRow.code == "OWNER",
             )
         )
-        assert user is not None and membership is not None and owner_role is not None
+        assert (
+            user is not None
+            and membership is not None
+            and owner_role is not None
+            and tenant is not None
+            and profile is not None
+        )
+        assert tenant.name == "自定义商家名"
+        assert tenant.slug == "自定义商家名"
+        assert profile.slug == "自定义商家名"
         assert user.identity_provider == "pending_oidc"
         assert user.status == "invited"
         assert user.is_platform_admin is True
