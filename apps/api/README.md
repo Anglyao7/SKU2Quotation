@@ -1,4 +1,4 @@
-# AI Trade Cloud API
+# 智贸云 API
 
 当前数据库实施状态：**Architecture Conformance Gate ACG-001 至 ACG-010 已完成；Vision/Image Embedding 与 Inquiry → Matching → Human-confirmed Quotation 闭环已实现。**
 

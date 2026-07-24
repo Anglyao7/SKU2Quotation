@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Trade Cloud daily application, identity, and object backup
+Description=智贸云 daily application, identity, and object backup
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target

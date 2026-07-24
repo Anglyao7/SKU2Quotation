@@ -1,6 +1,6 @@
 {
   "realm": "atc",
-  "displayName": "澄湾选品",
+  "displayName": "智贸云",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,
@@ -37,7 +37,7 @@
   "clients": [
     {
       "clientId": "__OIDC_CLIENT_ID__",
-      "name": "AI Trade Cloud Web",
+      "name": "智贸云 Web",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,

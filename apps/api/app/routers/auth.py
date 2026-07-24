@@ -15,6 +15,8 @@ from ..auth_schemas import (
     AuthUser,
     MembershipSummary,
     MeResponse,
+    MerchantSettingsResponse,
+    MerchantSettingsUpdate,
     PasswordChangeRequest,
     PasswordLoginRequest,
     PermissionResponse,
@@ -40,6 +42,7 @@ from ..services.auth.oidc_provider import public_oidc_config
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..domain.errors import ApplicationError
 from ..use_cases.authentication import get_current_user
+from ..use_cases import tenant_settings
 from .errors import application_http_error
 
 
@@ -366,3 +369,30 @@ def permissions_endpoint(
         permission_version=context.permission_version,
         permissions=sorted(context.permissions),
     )
+
+
+@router.get("/me/merchant", response_model=MerchantSettingsResponse)
+def merchant_settings_endpoint(
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> MerchantSettingsResponse:
+    try:
+        return tenant_settings.get_merchant_settings(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/me/merchant", response_model=MerchantSettingsResponse)
+def update_merchant_settings_endpoint(
+    payload: MerchantSettingsUpdate,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> MerchantSettingsResponse:
+    try:
+        return tenant_settings.update_merchant_settings(
+            session,
+            context=context,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc

@@ -2,6 +2,8 @@ import { Avatar, Badge, Button, Callout, Card, Heading, Text, TextField } from "
 import {
   CheckCircle,
   Circle,
+  ArrowSquareOut,
+  Buildings,
   Eye,
   EyeSlash,
   Info,
@@ -9,9 +11,13 @@ import {
   ShieldCheck,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useCoreAuth } from "../AuthContext";
-import { changePassword, CoreApiError } from "../api";
+import {
+  changePassword,
+  CoreApiError,
+  updateMerchantSettings,
+} from "../api";
 import {
   passwordRules,
   passwordStrength,
@@ -37,7 +43,17 @@ function describedBy(...ids: Array<string | false | undefined>) {
 }
 
 export function AccountSettingsPage() {
-  const { profile, memberships } = useCoreAuth();
+  const {
+    profile,
+    memberships,
+    hasPermission,
+    reloadProfile,
+  } = useCoreAuth();
+  const [merchantName, setMerchantName] = useState("");
+  const [merchantSlug, setMerchantSlug] = useState("");
+  const [merchantError, setMerchantError] = useState("");
+  const [merchantSuccess, setMerchantSuccess] = useState("");
+  const [merchantSubmitting, setMerchantSubmitting] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -63,6 +79,15 @@ export function AccountSettingsPage() {
   const strength = strengthCopy[passwordStrength(newPassword, rules)];
   const activeMembership = memberships.find((membership) => membership.id === profile?.context.membershipId);
   const displayName = user?.displayName || user?.email || "当前成员";
+  const canManageMerchant = hasPermission("system.settings_manage");
+  const storefrontUrl = merchantSlug
+    ? `${window.location.origin}/${encodeURIComponent(merchantSlug)}`
+    : "";
+
+  useEffect(() => {
+    setMerchantName(profile?.context.tenantName ?? "");
+    setMerchantSlug(profile?.context.tenantSlug ?? "");
+  }, [profile?.context.tenantName, profile?.context.tenantSlug]);
 
   const clearFeedback = (field: keyof PasswordChangeValidation) => {
     setFieldErrors((current) => {
@@ -122,12 +147,38 @@ export function AccountSettingsPage() {
     }
   };
 
+  const submitMerchant = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalized = merchantName.trim();
+    if (!canManageMerchant || merchantSubmitting || !normalized) return;
+    setMerchantSubmitting(true);
+    setMerchantError("");
+    setMerchantSuccess("");
+    try {
+      const updated = await updateMerchantSettings(normalized);
+      setMerchantName(updated.name);
+      setMerchantSlug(updated.slug);
+      await reloadProfile();
+      setMerchantSuccess("商家名称和前台地址已更新，旧地址会自动跳转到新地址。");
+    } catch (caught) {
+      if (caught instanceof CoreApiError && caught.status === 409) {
+        setMerchantError("该商家名称对应的前台地址已被使用，请换一个名称。");
+      } else if (caught instanceof CoreApiError && caught.status === 403) {
+        setMerchantError("当前成员没有修改商家资料的权限。");
+      } else {
+        setMerchantError("商家资料保存失败，请稍后重试。");
+      }
+    } finally {
+      setMerchantSubmitting(false);
+    }
+  };
+
   return (
     <div className="core-workspace account-settings-page">
       <CorePageHeading
         eyebrow="账户与安全"
-        title="管理你的账户"
-        description="查看当前身份信息，并更新用于登录工作台的密码。"
+        title="账户与商家资料"
+        description="管理当前商家名称、公开前台地址与登录密码。"
       />
 
       <div className="account-settings-grid">
@@ -175,7 +226,87 @@ export function AccountSettingsPage() {
           </Card>
         </aside>
 
-        <Card className="account-password-card">
+        <div className="account-settings-content">
+          <Card className="account-merchant-card">
+            <div className="account-section-heading">
+              <span className="account-section-icon"><Buildings size={22} aria-hidden="true" /></span>
+              <div>
+                <Heading size="5">商家资料</Heading>
+                <Text size="2" color="gray">商家名称会同步成为商品前台地址。</Text>
+              </div>
+            </div>
+
+            <form className="account-merchant-form" onSubmit={submitMerchant}>
+              <div className="account-field">
+                <label htmlFor="account-merchant-name">商家名称</label>
+                <TextField.Root
+                  id="account-merchant-name"
+                  size="3"
+                  value={merchantName}
+                  onChange={(event) => {
+                    setMerchantName(event.target.value);
+                    setMerchantError("");
+                    setMerchantSuccess("");
+                  }}
+                  maxLength={200}
+                  required
+                  disabled={!canManageMerchant}
+                  placeholder="请输入对外展示的商家名称"
+                />
+                <Text size="1" color="gray">
+                  中文可直接用于路径；空格和标点会自动整理。修改后已有链接仍然有效。
+                </Text>
+              </div>
+
+              {storefrontUrl ? (
+                <div className="account-storefront-preview">
+                  <div>
+                    <Text size="1" color="gray">当前商品前台</Text>
+                    <Text size="2" weight="medium">{storefrontUrl}</Text>
+                  </div>
+                  <Button asChild size="2" variant="soft">
+                    <a href={storefrontUrl} target="_blank" rel="noreferrer">
+                      查看前台<ArrowSquareOut size={16} />
+                    </a>
+                  </Button>
+                </div>
+              ) : null}
+
+              {merchantError ? (
+                <Callout.Root color="red" role="alert">
+                  <Callout.Icon><WarningCircle /></Callout.Icon>
+                  <Callout.Text>{merchantError}</Callout.Text>
+                </Callout.Root>
+              ) : null}
+              {merchantSuccess ? (
+                <Callout.Root color="green" role="status">
+                  <Callout.Icon><CheckCircle /></Callout.Icon>
+                  <Callout.Text>{merchantSuccess}</Callout.Text>
+                </Callout.Root>
+              ) : null}
+
+              <div className="account-merchant-actions">
+                {!canManageMerchant ? (
+                  <Text size="1" color="gray">仅商家所有者或管理员可以修改。</Text>
+                ) : <span />}
+                <Button
+                  type="submit"
+                  size="3"
+                  loading={merchantSubmitting}
+                  disabled={
+                    !canManageMerchant
+                    || merchantSubmitting
+                    || !merchantName.trim()
+                    || merchantName.trim() === profile?.context.tenantName
+                  }
+                >
+                  保存商家资料
+                </Button>
+              </div>
+            </form>
+          </Card>
+
+          <Card className="account-password-card">
           <div className="account-section-heading">
             <span className="account-section-icon"><LockKey size={22} aria-hidden="true" /></span>
             <div>
@@ -322,7 +453,8 @@ export function AccountSettingsPage() {
               </Button>
             </div>
           </form>
-        </Card>
+          </Card>
+        </div>
       </div>
     </div>
   );

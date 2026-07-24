@@ -21,11 +21,34 @@ from ..public_catalog_models import (
 def find_published_profile_by_slug(
     session: Session, *, slug: str
 ) -> TenantPublicProfileRow | None:
-    return session.scalar(
+    normalized = slug.casefold().strip()
+    profile = session.scalar(
         select(TenantPublicProfileRow).where(
-            TenantPublicProfileRow.slug == slug,
+            TenantPublicProfileRow.slug == normalized,
             TenantPublicProfileRow.publication_status == "PUBLISHED",
+            TenantPublicProfileRow.deleted_at.is_(None),
         )
+    )
+    if profile is not None:
+        return profile
+    profiles = session.scalars(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.publication_status == "PUBLISHED",
+            TenantPublicProfileRow.deleted_at.is_(None),
+        )
+    ).all()
+    return next(
+        (
+            row
+            for row in profiles
+            if normalized
+            in {
+                str(alias).casefold().strip()
+                for alias in (row.legacy_slugs or [])
+                if str(alias).strip()
+            }
+        ),
+        None,
     )
 
 

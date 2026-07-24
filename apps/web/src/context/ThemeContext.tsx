@@ -9,7 +9,7 @@ interface ThemeContextValue {
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
-const THEME_KEY = "qingwan.theme";
+const THEME_KEY = "zhimaoyun.theme";
 
 function initialTheme(): ThemeMode {
   const saved = localStorage.getItem(THEME_KEY);

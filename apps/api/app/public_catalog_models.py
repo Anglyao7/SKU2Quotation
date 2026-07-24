@@ -47,6 +47,9 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
     )
     slug: Mapped[str] = mapped_column(String(80), nullable=False)
+    legacy_slugs: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     logo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)

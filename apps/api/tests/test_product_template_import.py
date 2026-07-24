@@ -22,7 +22,7 @@ def _write_workbook(path: Path, rows: list[list[object]], *, headers=None) -> No
     workbook.close()
 
 
-def test_fixed_template_keeps_note_separate_from_default_moq(tmp_path: Path) -> None:
+def test_fixed_template_keeps_note_without_creating_a_moq(tmp_path: Path) -> None:
     path = tmp_path / "商品模版.xlsx"
     _write_workbook(
         path,
@@ -44,7 +44,7 @@ def test_fixed_template_keeps_note_separate_from_default_moq(tmp_path: Path) -> 
     assert result.rows[0].sku_code == "SKU-001"
     assert str(result.rows[0].unit_price) == "20.00"
     assert result.rows[0].note == "12"
-    assert str(result.rows[0].default_moq) == "1"
+    assert result.rows[0].default_moq is None
     assert result.rows[0].image_urls == ("https://img.example.com/sku-001.jpg",)
     assert result.warnings == ()
 

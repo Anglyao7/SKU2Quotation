@@ -37,6 +37,7 @@ export interface CoreAuthContextValue extends AuthState {
   loginPassword: (identifier: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   switchTenant: (membershipId: string) => Promise<void>;
+  reloadProfile: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
   hasAnyPermission: (...permissions: string[]) => boolean;
 }
@@ -141,6 +142,28 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
     setState({ ...initialState, status: "anonymous" });
   }, []);
 
+  const reloadProfile = useCallback(async () => {
+    const [profile, memberships] = await Promise.all([
+      getCurrentUser(),
+      listMemberships(),
+    ]);
+    setState((current) => ({
+      ...current,
+      profile,
+      memberships,
+      session: current.session
+        ? {
+            ...current.session,
+            context: {
+              ...current.session.context,
+              tenantName: profile.context.tenantName,
+              tenantSlug: profile.context.tenantSlug,
+            },
+          }
+        : current.session,
+    }));
+  }, []);
+
   const value = useMemo<CoreAuthContextValue>(() => ({
     ...state,
     loading: state.status === "restoring",
@@ -148,9 +171,10 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
     loginPassword,
     logout,
     switchTenant,
+    reloadProfile,
     hasPermission: (permission) => state.permissions.has(permission),
     hasAnyPermission: (...permissions) => permissions.length === 0 || permissions.some((permission) => state.permissions.has(permission)),
-  }), [loginDemo, loginPassword, logout, state, switchTenant]);
+  }), [loginDemo, loginPassword, logout, reloadProfile, state, switchTenant]);
 
   return <CoreAuthContext.Provider value={value}>{children}</CoreAuthContext.Provider>;
 }

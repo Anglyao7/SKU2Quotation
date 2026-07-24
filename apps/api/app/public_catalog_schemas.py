@@ -39,7 +39,6 @@ class PublicSkuResponse(BaseModel):
     tags: list[str]
     price: Decimal
     currency: str
-    moq: Decimal
     unit_code: str
     image_url: str | None
     product_version: int
@@ -100,7 +99,6 @@ class PublicQuoteDraftItemResponse(BaseModel):
     category_snapshot: str | None
     tags_snapshot: list[str]
     image_url_snapshot: str | None
-    minimum_order_quantity: Decimal
     unit_code_snapshot: str
     currency_snapshot: str
     unit_price_snapshot: Decimal

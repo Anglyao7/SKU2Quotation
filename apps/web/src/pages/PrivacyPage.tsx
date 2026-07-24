@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { Brand } from "../components/Brand";
 
 const operatorName = String(
-  import.meta.env.VITE_LEGAL_OPERATOR_NAME || "澄湾选品运营方",
+  import.meta.env.VITE_LEGAL_OPERATOR_NAME || "智贸云运营方",
 ).trim();
 const privacyContactEmail = String(
   import.meta.env.VITE_PRIVACY_CONTACT_EMAIL || "",
@@ -16,7 +16,7 @@ const effectiveDate = String(
 export function PrivacyPage() {
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = "隐私政策 | 澄湾选品";
+    document.title = "隐私政策 | 智贸云";
     return () => {
       document.title = previousTitle;
     };
@@ -37,7 +37,7 @@ export function PrivacyPage() {
         </div>
 
         <p className="legal-lead">
-          本政策说明 {operatorName}（“平台运营者”）如何处理你在澄湾选品官网、商家商品前台与报价流程中提供的个人信息。
+          本政策说明 {operatorName}（“平台运营者”）如何处理你在智贸云官网、商家商品前台与报价流程中提供的个人信息。
           商家通过其专属前台独立接收并处理报价需求时，也应履行相应的个人信息保护义务。
         </p>
 

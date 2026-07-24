@@ -52,7 +52,6 @@ export interface Sku {
   image_url?: string | null;
   price?: number | string | null;
   currency?: string;
-  moq?: number | null;
   stock?: number | null;
   active?: boolean;
   status?: "active" | "inactive";
@@ -143,7 +142,6 @@ export interface SkuPayload {
   image_url?: string;
   price?: number | null;
   currency: string;
-  moq?: number | null;
   stock?: number | null;
   active: boolean;
 }
@@ -159,7 +157,7 @@ export interface SkuImportResult {
 
 export interface TenantPayload {
   name: string;
-  slug: string;
+  slug?: string;
   contact_email?: string;
   active: boolean;
 }

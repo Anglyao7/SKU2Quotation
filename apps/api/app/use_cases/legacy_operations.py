@@ -291,7 +291,7 @@ def build_product_template_workbook() -> bytes:
         "商品型号": "必填，作为 SKU 唯一标识；重复型号只保留首次出现的行。",
         "商品价格": "选填。填写有效数字后自动发布报价；留空时只进入后台商品库。",
         "商品描述": "选填。商品详情说明。",
-        "备注": "选填，仅作为商品备注；不会改变起订量（MOQ）。",
+        "备注": "选填，仅作为商品补充说明。",
     }
     image_instruction = "选填。填写可公开访问的 HTTP(S) 商品图片地址。"
     widths = (28, 18, 22, 14, 44, 24, *([38] * 10))
@@ -307,7 +307,7 @@ def build_product_template_workbook() -> bytes:
         cell.alignment = header_alignment
         cell.comment = Comment(
             instructions.get(header, image_instruction),
-            "4Ever API",
+            "智贸云",
         )
         sheet.column_dimensions[get_column_letter(index)].width = width
 

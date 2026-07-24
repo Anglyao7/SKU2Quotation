@@ -77,7 +77,7 @@ def seed_product_center_demo(session: Session) -> None:
             TenantPublicProfileRow(
                 tenant_id=DEFAULT_TENANT_ID,
                 slug="demo",
-                description="AI Trade Cloud 本地演示产品目录",
+                description="智贸云本地演示产品目录",
                 contact_email="owner@local.aitradecloud.invalid",
                 publication_status="PUBLISHED",
             )

@@ -34,7 +34,10 @@ class PlatformTenantSummary(BaseModel):
 
 class PlatformTenantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    slug: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9-]{1,78})[a-z0-9]$")
+    slug: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9](?:[a-z0-9-]{1,78})[a-z0-9]$",
+    )
     contact_email: str | None = Field(default=None, max_length=320)
     active: bool = True
     default_locale: str = Field(default="zh-CN", min_length=2, max_length=20)
@@ -48,8 +51,8 @@ class PlatformTenantCreate(BaseModel):
 
     @field_validator("slug")
     @classmethod
-    def reject_reserved_storefront_slug(cls, value: str) -> str:
-        if is_reserved_tenant_slug(value):
+    def reject_reserved_storefront_slug(cls, value: str | None) -> str | None:
+        if value is not None and is_reserved_tenant_slug(value):
             raise ValueError("This storefront slug is reserved by the platform.")
         return value
 

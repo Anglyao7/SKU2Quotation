@@ -6,6 +6,7 @@ import {
   RouterProvider,
   createBrowserRouter,
   isRouteErrorResponse,
+  redirect,
   useLocation,
   useParams,
   useRouteError,
@@ -52,10 +53,17 @@ function PlatformAdminGate({ children }: { children: ReactNode }) {
   return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">仅平台管理员可以管理商家</Heading><Text size="2" color="gray">租户创建、启停和平台级状态不属于商家成员权限。</Text><Button asChild variant="soft"><a href="/console">返回仪表盘</a></Button></Card></div>;
 }
 
-async function storefrontLoader({ params }: LoaderFunctionArgs) {
+async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
-  try { return await api.getStore(tenantSlug); }
+  try {
+    const store = await api.getStore(tenantSlug);
+    if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
+      const currentUrl = new URL(request.url);
+      return redirect(`/${encodeURIComponent(store.slug)}${currentUrl.search}${currentUrl.hash}`);
+    }
+    return store;
+  }
   catch (error) {
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
     throw error;

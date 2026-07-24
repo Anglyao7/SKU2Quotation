@@ -20,7 +20,7 @@ assert.deepEqual(email, {
   grant_type: "password",
   identifier: "owner@example.com",
   password: "Secret 123!",
-  device_label: "AI Trade Cloud Web",
+  device_label: "智贸云 Web",
 });
 
 assert.equal(

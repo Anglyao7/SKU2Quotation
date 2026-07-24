@@ -17,7 +17,7 @@ from alembic.config import Config
 from fastapi import Response
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
-from sqlalchemy import create_engine, delete, func, inspect, select
+from sqlalchemy import MetaData, create_engine, delete, func, inspect, select
 from sqlalchemy.exc import IntegrityError
 
 
@@ -136,6 +136,7 @@ from app.public_catalog_models import (
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
     PublicQuoteDraftRow,
+    TenantPublicProfileRow,
 )
 
 
@@ -414,6 +415,53 @@ def test_readiness_fails_closed_on_migration_mismatch(
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
     assert response.json()["dependencies"]["database"]["reason"] == "MIGRATION_HEAD_MISMATCH"
+
+
+def test_merchant_name_updates_storefront_path_and_preserves_old_link() -> None:
+    new_name = f"智贸云测试商家{uuid4().hex[:6]}"
+    with SessionLocal() as session:
+        tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert tenant is not None and profile is not None
+        original_name = tenant.name
+        original_tenant_slug = tenant.slug
+        original_profile_slug = profile.slug
+        original_aliases = list(profile.legacy_slugs or [])
+
+    try:
+        response = client.patch(
+            "/api/v1/me/merchant",
+            json={"name": new_name},
+        )
+        assert response.status_code == 200, response.text
+        updated = response.json()
+        assert updated["name"] == new_name
+        assert updated["slug"] == new_name.casefold()
+        assert updated["storefront_path"] == f"/{new_name.casefold()}"
+
+        canonical = client.get(f"/api/store/{updated['slug']}")
+        assert canonical.status_code == 200
+        assert canonical.json()["name"] == new_name
+        assert canonical.json()["slug"] == updated["slug"]
+
+        legacy = client.get(f"/api/store/{original_tenant_slug}")
+        assert legacy.status_code == 200
+        assert legacy.json()["slug"] == updated["slug"]
+
+        me = client.get("/api/v1/me")
+        assert me.status_code == 200
+        assert me.json()["context"]["tenant_name"] == new_name
+        assert me.json()["context"]["tenant_slug"] == updated["slug"]
+    finally:
+        with SessionLocal() as session:
+            tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert tenant is not None and profile is not None
+            tenant.name = original_name
+            tenant.slug = original_tenant_slug
+            profile.slug = original_profile_slug
+            profile.legacy_slugs = original_aliases
+            session.commit()
 
 
 def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3821,7 +3869,7 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         assert sheet["A1"].fill.fgColor.rgb == "0023453B"
         assert sheet["A1"].font.bold is True
         assert sheet["F1"].comment is not None
-        assert "不会改变起订量" in sheet["F1"].comment.text
+        assert "商品补充说明" in sheet["F1"].comment.text
     finally:
         workbook.close()
 
@@ -4036,7 +4084,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
     sku_by_code = {
         row["sku_code"]: row for row in sku_response.json()["items"]
     }
-    assert sku_by_code["TPL-API-001"]["default_moq"] == "1.000000"
+    assert sku_by_code["TPL-API-001"]["default_moq"] is None
     assert sku_by_code["TPL-API-001"]["public_price"] == "12.50"
     assert sku_by_code["TPL-API-001"]["public_offer_status"] == "PUBLISHED"
     assert sku_by_code["TPL-API-001"]["image_status"] == "APPROVED"
@@ -6252,6 +6300,7 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
         assert "unit_cost" not in item
         assert "supplier_product_id" not in item
         assert "supplier_price" not in item
+        assert "moq" not in item
 
     filtered = client.get(
         "/api/store/demo/skus",
@@ -6578,18 +6627,31 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     )
     assert rejected_without_privacy_acknowledgment.status_code == 422
 
-    create_response = client.post(
-        "/api/store/demo/quotes",
-        json={
-            "customer_name": "=2+2",
-            "customer_company": "+Formula Company",
-            "customer_email": "buyer@example.test",
-            "customer_phone": "@PHONE",
-            "notes": "@SUM(A1:A2)",
-            "privacy_acknowledged": True,
-            "items": [{"sku_id": sku_data["id"], "quantity": 2}],
-        },
-    )
+    with SessionLocal() as session:
+        sku = session.get(SkuRow, UUID(sku_data["id"]))
+        assert sku is not None
+        original_moq = sku.default_moq
+        sku.default_moq = Decimal("500")
+        session.commit()
+    try:
+        create_response = client.post(
+            "/api/store/demo/quotes",
+            json={
+                "customer_name": "=2+2",
+                "customer_company": "+Formula Company",
+                "customer_email": "buyer@example.test",
+                "customer_phone": "@PHONE",
+                "notes": "@SUM(A1:A2)",
+                "privacy_acknowledged": True,
+                "items": [{"sku_id": sku_data["id"], "quantity": 2}],
+            },
+        )
+    finally:
+        with SessionLocal() as session:
+            sku = session.get(SkuRow, UUID(sku_data["id"]))
+            assert sku is not None
+            sku.default_moq = original_moq
+            session.commit()
     assert create_response.status_code == 201, create_response.text
     assert create_response.headers["cache-control"] == "no-store"
     assert create_response.headers["pragma"] == "no-cache"
@@ -6602,6 +6664,7 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     assert raw_token and raw_token.startswith(f"{DEFAULT_TENANT_ID}.")
     assert "token=" not in draft["pdf_url"]
     assert "token=" not in draft["xlsx_url"]
+    assert "minimum_order_quantity" not in draft["items"][0]
     quote_id = UUID(draft["id"])
     download_headers = {"X-Quote-Download-Token": raw_token}
 
@@ -6829,7 +6892,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260724_0026"
+        ).scalar() == "20260724_0027"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -6839,6 +6902,91 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)
+
+
+def test_merchant_path_migration_uses_name_and_keeps_previous_slug(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "merchant-path-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+    command.upgrade(config, "20260724_0026")
+
+    migration_engine = create_engine(migration_url)
+    metadata = MetaData()
+    metadata.reflect(migration_engine)
+    organization_id = uuid4()
+    tenant_id = uuid4()
+    organization_key = organization_id.hex
+    tenant_key = tenant_id.hex
+    now = datetime.now(UTC)
+    with migration_engine.begin() as connection:
+        connection.execute(
+            metadata.tables["organizations"].insert(),
+            {
+                "id": organization_key,
+                "code": "MIGRATION",
+                "name": "Migration Organization",
+                "status": "active",
+                "created_at": now,
+                "updated_at": now,
+                "deleted_at": None,
+            },
+        )
+        connection.execute(
+            metadata.tables["tenants"].insert(),
+            {
+                "id": tenant_key,
+                "organization_id": organization_key,
+                "slug": "qingwan",
+                "name": "澄湾选品",
+                "default_locale": "zh-CN",
+                "default_currency": "CNY",
+                "timezone": "Asia/Shanghai",
+                "status": "active",
+                "created_at": now,
+                "updated_at": now,
+                "deleted_at": None,
+            },
+        )
+        connection.execute(
+            metadata.tables["tenant_public_profiles"].insert(),
+            {
+                "tenant_id": tenant_key,
+                "slug": "qingwan",
+                "description": None,
+                "logo_url": None,
+                "contact_email": None,
+                "contact_phone": None,
+                "publication_status": "PUBLISHED",
+                "created_at": now,
+                "updated_at": now,
+                "deleted_at": None,
+            },
+        )
+    migration_engine.dispose()
+
+    command.upgrade(config, "20260724_0027")
+    migrated_engine = create_engine(migration_url)
+    migrated_metadata = MetaData()
+    migrated_metadata.reflect(migrated_engine)
+    with migrated_engine.connect() as connection:
+        tenant = connection.execute(
+            select(migrated_metadata.tables["tenants"]).where(
+                migrated_metadata.tables["tenants"].c.id == tenant_key
+            )
+        ).mappings().one()
+        profile = connection.execute(
+            select(migrated_metadata.tables["tenant_public_profiles"]).where(
+                migrated_metadata.tables["tenant_public_profiles"].c.tenant_id
+                == tenant_key
+            )
+        ).mappings().one()
+        assert tenant["slug"] == "澄湾选品"
+        assert profile["slug"] == "澄湾选品"
+        assert profile["legacy_slugs"] == ["qingwan"]
+    migrated_engine.dispose()
 
 
 def _add_tenant_member_with_role(

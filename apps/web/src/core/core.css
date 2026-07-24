@@ -119,7 +119,7 @@
 .core-sku-list-meta strong { color: var(--core-ink); font-variant-numeric: tabular-nums; }
 .core-sku-table-card { padding: 0 !important; overflow-x: auto !important; }
 .core-sku-table { min-width: 900px; }
-.core-sku-table-head, .core-sku-table-row { display: grid; grid-template-columns: minmax(250px, 1.5fr) minmax(145px, .8fr) 92px 120px 72px 106px 18px; align-items: center; gap: 10px; }
+.core-sku-table-head, .core-sku-table-row { display: grid; grid-template-columns: minmax(270px, 1.6fr) minmax(160px, .9fr) 130px 72px 106px 18px; align-items: center; gap: 10px; }
 .core-sku-table-head { min-height: 44px; padding: 0 16px; color: var(--core-muted); background: var(--core-soft); font-size: 11px; }
 .core-sku-table-row { width: 100%; min-height: 82px; padding: 10px 16px; border: 0; border-top: 1px solid var(--core-line); color: var(--core-ink); background: var(--core-surface); text-align: left; cursor: pointer; transition: background 150ms ease, box-shadow 150ms ease; }
 .core-sku-table-row:hover { background: var(--core-soft); }

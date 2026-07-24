@@ -41,9 +41,16 @@
 }
 
 .account-profile-card,
+.account-merchant-card,
 .account-password-card,
 .account-security-note {
   padding: 20px !important;
+}
+
+.account-settings-content {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
 }
 
 .account-profile-heading {
@@ -119,9 +126,46 @@
   line-height: 1.65;
 }
 
+.account-merchant-card,
 .account-password-card {
   display: grid;
   gap: 24px;
+}
+
+.account-merchant-form {
+  display: grid;
+  gap: 18px;
+}
+
+.account-storefront-preview {
+  min-width: 0;
+  padding: 13px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--core-line);
+  border-radius: 12px;
+  background: var(--core-soft);
+}
+
+.account-storefront-preview > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.account-storefront-preview > div > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-merchant-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .account-section-heading {
@@ -270,6 +314,7 @@
   }
 
   .account-profile-card,
+  .account-merchant-card,
   .account-password-card,
   .account-security-note {
     padding: 17px !important;
@@ -293,6 +338,14 @@
     flex-direction: column;
   }
 
+  .account-storefront-preview,
+  .account-merchant-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-storefront-preview .rt-Button,
+  .account-merchant-actions .rt-Button,
   .account-password-actions .rt-Button {
     width: 100%;
   }

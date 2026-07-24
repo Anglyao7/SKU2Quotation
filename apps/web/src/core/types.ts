@@ -32,9 +32,15 @@ export interface AuthTokenData {
 }
 
 export interface CurrentUser {
-  user: AuthUser;
-  context: AuthWorkspaceContext;
-  memberships: MembershipSummary[];
+    user: AuthUser;
+    context: AuthWorkspaceContext;
+    memberships: MembershipSummary[];
+}
+
+export interface MerchantSettings {
+  name: string;
+  slug: string;
+  storefrontPath: string;
 }
 
 export interface PermissionSet {
@@ -174,8 +180,6 @@ export interface ProductOffer {
   supplierName: string;
   supplierSku?: string;
   skuId?: string;
-  moq?: number;
-  moqUnit?: string;
   leadTimeDays?: number;
   unitPrice?: number;
   currency?: string;
@@ -194,7 +198,6 @@ export interface CoreProduct {
   supplier: string;
   price?: number;
   currency?: string;
-  moq?: number;
   updated: string;
   imageStatus: "SOURCE" | "APPROVED" | "NONE";
   tags: string[];
@@ -211,8 +214,6 @@ export interface ProductSku {
   name?: string;
   optionValues: Record<string, string | number | boolean>;
   barcode?: string;
-  defaultMoq?: number;
-  moqUnit?: string;
   weight?: number;
   weightUnit?: string;
   status: "DRAFT" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
@@ -239,8 +240,6 @@ export interface SkuListItem {
     primarySupplierName?: string;
     names: string[];
   };
-  defaultMoq?: number;
-  moqUnit?: string;
   publicPrice?: number;
   publicCurrency?: string;
   publicOfferStatus?: "DRAFT" | "PUBLISHED" | "SUSPENDED";
@@ -392,8 +391,6 @@ export interface SupplierProfileDetail extends SupplierProfile {
     productName: string;
     skuId?: string;
     supplierSku?: string;
-    moq?: number;
-    moqUnit?: string;
     leadTimeDays?: number;
     status: string;
     unitPrice?: number;
@@ -543,7 +540,6 @@ export interface PublicQuoteDraftItem {
   category?: string;
   tags: string[];
   imageUrl?: string;
-  minimumOrderQuantity: number;
   unitCode: string;
   currency: string;
   unitPrice: number;

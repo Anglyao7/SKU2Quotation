@@ -183,7 +183,7 @@ def seed_saas_foundation(session: Session) -> None:
     )
     if organization is None:
         organization = OrganizationRow(
-            id=DEFAULT_ORGANIZATION_ID, code="LOCAL", name="AI Trade Cloud Local"
+            id=DEFAULT_ORGANIZATION_ID, code="LOCAL", name="智贸云本地组织"
         )
         session.add(organization)
     elif organization.deleted_at is not None:

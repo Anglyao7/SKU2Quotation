@@ -1,1 +1,1 @@
-"""Operational scripts for AI Trade Cloud API."""
+"""Operational scripts for 智贸云 API."""

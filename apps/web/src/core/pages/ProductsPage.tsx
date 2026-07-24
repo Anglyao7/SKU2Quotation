@@ -63,11 +63,6 @@ function skuPrice(row: SkuListItem) {
   return `${row.publicCurrency ?? ""} ${row.publicPrice.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
 }
 
-function skuMoq(row: SkuListItem) {
-  if (row.defaultMoq === undefined) return "未设置";
-  return `${row.defaultMoq.toLocaleString("zh-CN")} ${row.moqUnit ?? ""}`.trim();
-}
-
 function skuUpdatedDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
@@ -367,7 +362,7 @@ export function ProductsPage() {
           <Card className="core-sku-table-card">
             <div className="core-sku-table" role="table" aria-label="SKU 商品列表">
               <div className="core-sku-table-head" role="row">
-                <span>SKU / 商品</span><span>分类与标签</span><span>MOQ</span><span>公开价</span><span>状态</span><span>更新时间</span><span aria-hidden="true" />
+                <span>SKU / 商品</span><span>分类与标签</span><span>公开价</span><span>状态</span><span>更新时间</span><span aria-hidden="true" />
               </div>
               {result.items.map((sku) => (
                 <button type="button" className="core-sku-table-row" role="row" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={`打开 SKU ${sku.skuCode} 的编辑详情`}>
@@ -376,7 +371,6 @@ export function ProductsPage() {
                     <span><strong className="core-tabular">{sku.skuCode}</strong><small>{sku.name || sku.productName}</small></span>
                   </span>
                   <span className="core-sku-category-cell"><strong>{sku.category?.name ?? "未分类"}</strong><span className="core-chip-row">{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span></span>
-                  <span className="core-tabular"><strong>{skuMoq(sku)}</strong><small>默认起订量</small></span>
                   <span className="core-tabular"><strong>{skuPrice(sku)}</strong><small>{sku.publicOfferStatus ? offerStatusLabel[sku.publicOfferStatus] : "尚无公开报价"}</small></span>
                   <Badge color={skuStatusColor(sku.status)}>{skuStatusLabel[sku.status]}</Badge>
                   <span><strong>{skuUpdatedDate(sku.updatedAt)}</strong><small>v{sku.version}</small></span>
@@ -389,7 +383,7 @@ export function ProductsPage() {
             {result.items.map((sku) => (
               <button type="button" className="core-sku-mobile-card" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={`打开 SKU ${sku.skuCode} 的编辑详情`}>
                 <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><Badge color={skuStatusColor(sku.status)}>{skuStatusLabel[sku.status]}</Badge></span>
-                <span className="core-sku-mobile-facts"><span><small>公开价</small><strong className="core-tabular">{skuPrice(sku)}</strong></span><span><small>MOQ</small><strong className="core-tabular">{skuMoq(sku)}</strong></span><span><small>图片</small><strong>{imageStatusLabel(sku.imageStatus)}</strong></span></span>
+                <span className="core-sku-mobile-facts"><span><small>公开价</small><strong className="core-tabular">{skuPrice(sku)}</strong></span><span><small>图片</small><strong>{imageStatusLabel(sku.imageStatus)}</strong></span></span>
                 <span className="core-chip-row"><Badge color="gray">{sku.category?.name ?? "未分类"}</Badge>{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
                 <span className="core-sku-mobile-footer"><small>更新于 {skuUpdatedDate(sku.updatedAt)}</small><span>SKU 详情<CaretRight /></span></span>
               </button>
@@ -420,7 +414,7 @@ export function ProductsPage() {
             <span className="core-row-icon"><FileXls /></span>
             <div>
               <Text weight="bold" as="div">当前固定模版：商品模版.xlsx</Text>
-              <Text size="2" color="gray">“商品型号”作为唯一 SKU；备注仅作说明；图片列读取图床链接，MOQ 暂统一为 1。</Text>
+              <Text size="2" color="gray">“商品型号”作为唯一 SKU；备注仅作说明；图片列读取图床链接。</Text>
               <div className="core-chip-row" aria-label="固定模版字段">
                 {["商品名称", "商品分类", "商品型号", "商品价格", "商品描述", "备注", "商品图片1–10"].map((field) => <Badge color="gray" key={field}>{field}</Badge>)}
               </div>
@@ -567,7 +561,6 @@ function SkuPanel({ product, onChanged }: { product: ProductDetail; onChanged: (
   const [offers, setOffers] = useState<PublicCatalogOffer[]>([]);
   const [skuCode, setSkuCode] = useState(`${product.productCode ?? "SKU"}-${product.skus.length + 1}`);
   const [skuName, setSkuName] = useState(product.name);
-  const [defaultMoq, setDefaultMoq] = useState("1");
   const [firstValues, setFirstValues] = useState("");
   const [secondValues, setSecondValues] = useState("");
   const [prefix, setPrefix] = useState(product.productCode ?? "SKU");
@@ -594,8 +587,6 @@ function SkuPanel({ product, onChanged }: { product: ProductDetail; onChanged: (
         skuCode: skuCode.trim(),
         name: skuName.trim() || undefined,
         optionValues: {},
-        defaultMoq: Math.max(1, Number(defaultMoq) || 1),
-        moqUnit: product.defaultUnit ?? "piece",
         status: "DRAFT",
       }]);
       await onChanged();
@@ -620,7 +611,6 @@ function SkuPanel({ product, onChanged }: { product: ProductDetail; onChanged: (
       <div><Text weight="bold" as="div">新增基础 SKU</Text><Text size="1" color="gray">不需要先配置变体属性；新建后先保存为草稿。</Text></div>
       <label>SKU 编码<TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} /></label>
       <label>前台名称<TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
-      <label>默认 MOQ<TextField.Root type="number" min="1" value={defaultMoq} onChange={(event) => setDefaultMoq(event.target.value)} /></label>
       <Button disabled={!skuCode.trim() || busy} onClick={() => void createSingle()}><Plus />创建草稿 SKU</Button>
     </Card> : <Text size="2" color="gray">当前角色只有查看权限。</Text>}
     {canEdit && definitions.length ? <Card className="core-form-grid">
@@ -633,7 +623,7 @@ function SkuPanel({ product, onChanged }: { product: ProductDetail; onChanged: (
     <div className="core-list">{product.skus.map((sku) => {
       const offer = offers.find((item) => item.skuId === sku.id);
       return <Card key={sku.id}>
-        <div className="core-list-row"><Tag /><div><Text weight="medium" as="div">{sku.skuCode}</Text><Text size="1" color="gray">{sku.name || Object.values(sku.optionValues).join(" · ") || "基础款"} · MOQ {sku.defaultMoq ?? 1}</Text></div><Badge color={sku.status === "ACTIVE" ? "jade" : "gray"}>{sku.status}</Badge><Text size="1">v{sku.version}</Text>{canEdit && sku.status !== "ACTIVE" ? <Button size="1" disabled={busy} onClick={() => void changeStatus(sku, "ACTIVE")}>激活 SKU</Button> : null}{canEdit && sku.status === "ACTIVE" ? <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => void changeStatus(sku, "INACTIVE")}>下架 SKU</Button> : null}</div>
+        <div className="core-list-row"><Tag /><div><Text weight="medium" as="div">{sku.skuCode}</Text><Text size="1" color="gray">{sku.name || Object.values(sku.optionValues).join(" · ") || "基础款"}</Text></div><Badge color={sku.status === "ACTIVE" ? "jade" : "gray"}>{sku.status}</Badge><Text size="1">v{sku.version}</Text>{canEdit && sku.status !== "ACTIVE" ? <Button size="1" disabled={busy} onClick={() => void changeStatus(sku, "ACTIVE")}>激活 SKU</Button> : null}{canEdit && sku.status === "ACTIVE" ? <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => void changeStatus(sku, "INACTIVE")}>下架 SKU</Button> : null}</div>
         {canViewCatalog ? <PublicOfferEditor sku={sku} offer={offer} canPublish={canPublish} onChanged={async () => { await loadOffers(); await onChanged(); }} /> : null}
       </Card>;
     })}{!product.skus.length ? <CoreEmpty title="还没有 SKU" description="先创建一个基础 SKU；不必预先建立类目变体定义。" /> : null}</div>

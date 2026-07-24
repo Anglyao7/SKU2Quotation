@@ -41,7 +41,7 @@ export function ProductCard({ sku, quantity, onAdd }: { sku: Sku; quantity: numb
         <div className="sku-card-footer">
           <div>
             <Text as="div" size="3" weight="bold" className="price-text">{money(sku.price, sku.currency)}</Text>
-            <Text as="div" size="1" color="gray">{sku.moq ? `${sku.moq} 件起订` : "起订量可协商"}</Text>
+            <Text as="div" size="1" color="gray">可加入报价清单</Text>
           </div>
           <Tooltip content="加入报价清单">
             <IconButton size="3" onClick={onAdd} aria-label={`将 ${sku.name} 加入报价清单`}>

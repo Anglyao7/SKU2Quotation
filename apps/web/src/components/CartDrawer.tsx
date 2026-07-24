@@ -161,7 +161,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
                   <div className="quantity-control">
                     <Tooltip content="减少数量">
                       <IconButton type="button" size="1" variant="soft" color="gray" onClick={() => onQuantity(sku.id, quantity - 1)} aria-label="减少数量">
-                        {quantity <= (sku.moq || 1) ? <Trash size={14} /> : <Minus size={14} />}
+                        {quantity <= 1 ? <Trash size={14} /> : <Minus size={14} />}
                       </IconButton>
                     </Tooltip>
                     <Text size="2" weight="medium">{quantity}</Text>

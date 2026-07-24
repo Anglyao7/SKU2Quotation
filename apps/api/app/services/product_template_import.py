@@ -66,7 +66,7 @@ class ProductTemplateRow:
     unit_price: Decimal | None
     description: str | None
     note: str | None
-    default_moq: Decimal
+    default_moq: Decimal | None
     image_urls: tuple[str, ...]
 
 
@@ -287,9 +287,7 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                     unit_price=unit_price,
                     description=_cell_text(values[4]) or None,
                     note=note,
-                    # "备注" is free text. MOQ stays 1 until the fixed
-                    # workbook contract gains an explicit MOQ column.
-                    default_moq=Decimal("1"),
+                    default_moq=None,
                     image_urls=tuple(image_urls),
                 )
             )
@@ -736,7 +734,7 @@ def process_product_template_import(
                     name=template_row.name,
                     option_values=_template_option_values(template_row.note),
                     default_moq=template_row.default_moq,
-                    moq_unit="piece",
+                    moq_unit=None,
                     status="ACTIVE",
                     created_by_user_id=user_id,
                     updated_by_user_id=user_id,
@@ -760,7 +758,7 @@ def process_product_template_import(
                         existing=sku.option_values,
                     ),
                     "default_moq": template_row.default_moq,
-                    "moq_unit": sku.moq_unit or "piece",
+                    "moq_unit": None,
                     "status": "ACTIVE",
                     "deleted_at": None,
                 }

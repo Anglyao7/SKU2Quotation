@@ -1,4 +1,4 @@
-"""AI Trade Cloud API composition root.
+"""智贸云 API composition root.
 
 Business orchestration belongs to ``use_cases``; persistence belongs to
 ``repositories``; this module only initializes infrastructure and composes
@@ -40,7 +40,7 @@ def _initialize_runtime() -> None:
 
 def create_app() -> FastAPI:
     application = FastAPI(
-        title="AI Trade Cloud API",
+        title="智贸云 API",
         version="0.3.0",
         description="AI 原生外贸平台 API：可信租户上下文、供应商导入、产品审核与知识检索。",
     )

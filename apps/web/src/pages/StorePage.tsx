@@ -55,7 +55,7 @@ export function StorePage() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = `${loadedStore.name} | 澄湾选品`;
+    document.title = `${loadedStore.name} | 智贸云`;
     return () => {
       document.title = previousTitle;
     };
@@ -118,14 +118,13 @@ export function StorePage() {
   const addToCart = (sku: Sku) => {
     setCart((current) => ({
       ...current,
-      [sku.id]: { sku, quantity: current[sku.id] ? current[sku.id].quantity + 1 : Math.max(1, sku.moq || 1) },
+      [sku.id]: { sku, quantity: current[sku.id] ? current[sku.id].quantity + 1 : 1 },
     }));
   };
   const updateQuantity = (skuId: string, quantity: number) => {
     setCart((current) => {
       const next = { ...current };
-      const minimum = current[skuId]?.sku.moq || 1;
-      if (quantity < minimum) delete next[skuId];
+      if (quantity < 1) delete next[skuId];
       else next[skuId] = { ...next[skuId], quantity };
       return next;
     });

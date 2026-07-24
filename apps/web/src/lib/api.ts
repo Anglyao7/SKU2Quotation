@@ -224,11 +224,11 @@ export const api = {
     return { ...list, items: list.items.map(normalizeSku), page: Number(meta.page || page), pages: Number(meta.pages || 0) };
   },
   createSku: (payload: SkuPayload) => {
-    const body = { ...payload, price: payload.price ?? 0, moq: payload.moq ?? 1 };
+    const body = { ...payload, price: payload.price ?? 0 };
     return request<Sku>(consolePath("/api/console/skus"), { method: "POST", body: JSON.stringify(body) }, true);
   },
   updateSku: (id: string, payload: SkuPayload) => {
-    const body = { ...payload, price: payload.price ?? 0, moq: payload.moq ?? 1 };
+    const body = { ...payload, price: payload.price ?? 0 };
     return request<Sku>(consolePath(`/api/console/skus/${id}`), { method: "PATCH", body: JSON.stringify(body) }, true);
   },
   deleteSku: (id: string) =>

@@ -94,7 +94,7 @@ export function LoginPage() {
       <div className="login-topbar"><Brand /><ThemeToggle /></div>
       <div className="login-layout">
         <section className="login-story">
-          <Text size="2" color="gray">AI Trade Cloud · 商家运营控制台</Text>
+          <Text size="2" color="gray">智贸云 · 商家运营控制台</Text>
           <Heading size="9" as="h1">让商品、询盘和报价成为一条可信链路。</Heading>
           <Text size="4" color="gray">从商品模版到正式报价，每一步都有租户边界、来源记录和人工确认。</Text>
           <div className="login-feature-list">

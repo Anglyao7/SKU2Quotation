@@ -20,6 +20,6 @@ export function buildPasswordLoginPayload(
     grant_type: "password",
     identifier: normalizedIdentifier,
     password,
-    device_label: "AI Trade Cloud Web",
+    device_label: "智贸云 Web",
   };
 }

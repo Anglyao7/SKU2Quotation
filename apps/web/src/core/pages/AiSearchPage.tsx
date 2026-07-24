@@ -8,7 +8,7 @@ import type { HybridSearchResponse } from "../types";
 
 const examples = [
   "适合巴西市场的小型防水狗玩具",
-  "食品级硅胶水瓶，MOQ 低于 500",
+  "食品级硅胶水瓶，目标价低于 20 元",
   "适合欧洲市场的环保旅行收纳包",
 ];
 
@@ -76,7 +76,7 @@ export function AiSearchPage() {
                   <div className="core-result-body">
                     <div className="core-result-title"><div><Text size="1" color="gray">{result.productCode ?? "产品"} · 来源版本 v{result.sourceVersion}</Text><Heading size="4">{result.name}</Heading></div><strong>{percent(result.score)}</strong></div>
                     <div className="core-score-grid">{Object.entries(result.scoreBreakdown).map(([key, value]) => <div key={key}><span><Text size="1" color="gray">{scoreLabels[key] ?? key}</Text><Text size="1" weight="bold">{percent(value)}</Text></span><Progress value={value * 100} /></div>)}</div>
-                    <div className="core-fact-row"><span>供应商：{result.product?.supplier || "暂无证据"}</span><span>MOQ：{result.product?.moq ?? "—"}</span><span>交期：{result.product?.sources[0]?.leadTimeDays ? `${result.product.sources[0].leadTimeDays} 天` : "—"}</span></div>
+                    <div className="core-fact-row"><span>供应商：{result.product?.supplier || "暂无证据"}</span><span>参考价：{result.product?.price === undefined ? "—" : `${result.product.currency ?? ""} ${result.product.price.toFixed(2)}`}</span><span>交期：{result.product?.sources[0]?.leadTimeDays ? `${result.product.sources[0].leadTimeDays} 天` : "—"}</span></div>
                     <div className="core-row-actions"><Button variant="ghost" color="gray" onClick={() => setExpanded(open ? undefined : result.productId)}>{open ? <CaretUp /> : <CaretDown />}匹配依据</Button><Button asChild variant="soft"><Link to={`/console/products?product=${encodeURIComponent(result.productId)}`}>查看产品</Link></Button><Button asChild><Link to={`/console/inquiries?product=${encodeURIComponent(result.productId)}&q=${encodeURIComponent(response.query)}`}>加入询盘<ArrowRight /></Link></Button></div>
                     {open ? <div className="core-evidence-list">{result.evidence.map((item) => <blockquote key={item.chunkId}><Text size="1" color="gray">{item.chunkType} · {item.contentHash.slice(0, 10)}</Text><p>{item.excerpt}</p></blockquote>)}{!result.evidence.length ? <Text size="2" color="gray">该结果暂未返回证据摘录。</Text> : null}</div> : null}
                   </div>

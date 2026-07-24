@@ -32,10 +32,10 @@ export function quoteNumber(quote: { quote_no?: string; number?: string; id: str
 }
 
 export function imageFallback(skuCode: string) {
-  return `https://picsum.photos/seed/qingwan-${encodeURIComponent(skuCode)}/720/540`;
+  return `https://picsum.photos/seed/zhimaoyun-${encodeURIComponent(skuCode)}/720/540`;
 }
 
 export function initials(name?: string) {
-  const source = name?.trim() || "澄湾";
+  const source = name?.trim() || "智贸云";
   return source.slice(0, 2).toUpperCase();
 }

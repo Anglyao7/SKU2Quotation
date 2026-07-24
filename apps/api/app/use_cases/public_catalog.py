@@ -117,7 +117,7 @@ def _resolve_store(session: Session, *, slug: str):
         raise ApplicationError("STORE_NOT_FOUND", "Store was not found.", kind="not_found")
     set_public_tenant_context(session, tenant_id=profile.tenant_id)
     tenant = repository.get_active_tenant(
-        session, tenant_id=profile.tenant_id, slug=normalized
+        session, tenant_id=profile.tenant_id
     )
     if tenant is None:
         raise ApplicationError("STORE_NOT_FOUND", "Store was not found.", kind="not_found")
@@ -141,9 +141,6 @@ def get_store(session: Session, *, slug: str) -> PublicStoreResponse:
 
 def _sku_response(row: object, *, image: object | None, slug: str) -> PublicSkuResponse:
     offer, sku, product, category = row
-    moq = Decimal(sku.default_moq or 1)
-    if moq <= 0:
-        moq = Decimal("1")
     tags = [str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()]
     return PublicSkuResponse(
         id=sku.id,
@@ -155,8 +152,7 @@ def _sku_response(row: object, *, image: object | None, slug: str) -> PublicSkuR
         tags=list(dict.fromkeys(tags)),
         price=_money(Decimal(offer.unit_price)),
         currency=offer.currency,
-        moq=moq,
-        unit_code=sku.moq_unit or product.default_unit or "piece",
+        unit_code=product.default_unit or "piece",
         image_url=_public_image_url(image, slug=slug),
         product_version=product.current_version,
         sku_version=sku.version,
@@ -278,7 +274,6 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
         category_snapshot=row.category_snapshot,
         tags_snapshot=row.tags_snapshot,
         image_url_snapshot=row.image_url_snapshot,
-        minimum_order_quantity=row.minimum_order_quantity,
         unit_code_snapshot=row.unit_code_snapshot,
         currency_snapshot=row.currency_snapshot,
         unit_price_snapshot=row.unit_price_snapshot,
@@ -361,15 +356,7 @@ def create_public_quote_draft(
     subtotal = Decimal("0")
     for position, cart_item in enumerate(request.items, 1):
         offer, sku, product, category = row_by_sku[cart_item.sku_id]
-        minimum = Decimal(sku.default_moq or 1)
-        if minimum <= 0:
-            minimum = Decimal("1")
         quantity = Decimal(cart_item.quantity)
-        if quantity < minimum:
-            raise ApplicationError(
-                "PUBLIC_CART_BELOW_MOQ",
-                f"Quantity for {sku.sku_code} must be at least {minimum}.",
-            )
         unit_price = _money(Decimal(offer.unit_price))
         line_total = _money(unit_price * quantity)
         subtotal += line_total
@@ -390,8 +377,8 @@ def create_public_quote_draft(
             category_snapshot=category.name if category is not None else None,
             tags_snapshot=list(dict.fromkeys(tags)),
             image_url_snapshot=image_url,
-            minimum_order_quantity=minimum,
-            unit_code_snapshot=sku.moq_unit or product.default_unit or "piece",
+            minimum_order_quantity=Decimal("1"),
+            unit_code_snapshot=product.default_unit or "piece",
             currency_snapshot=currency,
             unit_price_snapshot=unit_price,
             line_total=line_total,
@@ -410,7 +397,6 @@ def create_public_quote_draft(
                 "tags": item_row.tags_snapshot,
                 "image_url": image_url,
                 "quantity": str(quantity),
-                "minimum_order_quantity": str(minimum),
                 "unit_code": item_row.unit_code_snapshot,
                 "currency": currency,
                 "unit_price": str(unit_price),
