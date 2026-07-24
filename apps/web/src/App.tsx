@@ -23,7 +23,6 @@ import { PermissionsPage } from "./core/pages/PermissionsPage";
 import { ProductsPage } from "./core/pages/ProductsPage";
 import { QuotesPage } from "./core/pages/QuotesPage";
 import { ReviewPage } from "./core/pages/ReviewPage";
-import { SuppliersPage } from "./core/pages/SuppliersPage";
 import { api, ApiError } from "./lib/api";
 import { LandingPage } from "./pages/marketing/LandingPage";
 import { StorePage } from "./pages/StorePage";
@@ -93,7 +92,7 @@ const router = createBrowserRouter([
         { path: "ai-search", element: <PermissionGate anyOf={["product.view"]}><AiSearchPage /></PermissionGate> },
         { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
         { path: "products/review", element: <PermissionGate anyOf={["product.review"]}><ReviewPage /></PermissionGate> },
-        { path: "suppliers", element: <PermissionGate anyOf={["supplier.view", "supplier.manage"]}><SuppliersPage /></PermissionGate> },
+        { path: "suppliers", element: <Navigate to="/console/products" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
@@ -108,7 +107,7 @@ const router = createBrowserRouter([
   { path: "/dashboard", element: <Navigate to="/console" replace /> },
   { path: "/ai-search", element: <Navigate to="/console/ai-search" replace /> },
   { path: "/products", element: <Navigate to="/console/products" replace /> },
-  { path: "/suppliers", element: <Navigate to="/console/suppliers" replace /> },
+  { path: "/suppliers", element: <Navigate to="/console/products" replace /> },
   { path: "/review", element: <Navigate to="/console/products/review" replace /> },
   { path: "/inquiries", element: <Navigate to="/console/inquiries" replace /> },
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },

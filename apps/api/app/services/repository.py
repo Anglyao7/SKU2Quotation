@@ -58,11 +58,43 @@ def supplier_models(session: Session, *, tenant_id: UUID) -> list[Supplier]:
     ) for row in rows]
 
 
-def import_job_model(row: ImportJobRow) -> ImportJob:
+def import_job_model(
+    row: ImportJobRow,
+    *,
+    warning_limit: int | None = None,
+) -> ImportJob:
+    latest_worker = (
+        max(row.worker_jobs, key=lambda worker: worker.created_at)
+        if row.worker_jobs
+        else None
+    )
+    result_details = dict(latest_worker.checkpoint) if latest_worker else {}
+    raw_warnings = result_details.get("warnings", [])
+    all_warning_messages = (
+        [str(warning) for warning in raw_warnings]
+        if isinstance(raw_warnings, list)
+        else []
+    )
+    try:
+        warning_total = max(
+            len(all_warning_messages),
+            int(result_details.get("warning_total", row.warnings_count)),
+        )
+    except (TypeError, ValueError):
+        warning_total = max(len(all_warning_messages), row.warnings_count)
+    warning_messages = (
+        all_warning_messages[:warning_limit]
+        if warning_limit is not None
+        else all_warning_messages
+    )
+    if warning_total > len(warning_messages):
+        result_details["warnings"] = warning_messages
+        result_details["warnings_truncated"] = warning_total - len(warning_messages)
     return ImportJob(
         id=row.id,
         filename=row.source_file.original_filename,
         supplier=row.supplier_name,
+        source_type=row.source_type,
         detected_type=row.source_file.detected_type,
         status=JobStatus(row.status),
         progress=row.progress,
@@ -72,6 +104,8 @@ def import_job_model(row: ImportJobRow) -> ImportJob:
         parser=row.source_file.parser,
         extension_matches=row.source_file.extension_matches,
         error_message=row.error_message,
+        warning_messages=warning_messages,
+        result_details=result_details,
     )
 
 
@@ -83,7 +117,10 @@ def get_import_job(
 ) -> ImportJobRow | None:
     return session.scalar(
         select(ImportJobRow)
-        .options(selectinload(ImportJobRow.source_file))
+        .options(
+            selectinload(ImportJobRow.source_file),
+            selectinload(ImportJobRow.worker_jobs),
+        )
         .where(
             ImportJobRow.tenant_id == tenant_id,
             ImportJobRow.id == job_id,
@@ -99,12 +136,17 @@ def list_import_job_models(
 ) -> list[ImportJob]:
     rows = session.scalars(
         select(ImportJobRow)
-        .options(selectinload(ImportJobRow.source_file))
+        .options(
+            selectinload(ImportJobRow.source_file),
+            selectinload(ImportJobRow.worker_jobs),
+        )
         .where(ImportJobRow.tenant_id == tenant_id)
         .order_by(ImportJobRow.created_at.desc())
         .limit(limit)
     ).all()
-    return [import_job_model(row) for row in rows]
+    # Polling/list responses stay bounded. The per-job endpoint still exposes
+    # every persisted warning on demand.
+    return [import_job_model(row, warning_limit=20) for row in rows]
 
 
 def review_item_model(row: ReviewItemRow) -> ReviewItem:

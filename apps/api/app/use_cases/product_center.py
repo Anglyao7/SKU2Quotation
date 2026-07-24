@@ -13,6 +13,7 @@ from ..model_mixins import utcnow
 from ..product_center_models import (
     AttributeDefinitionRow,
     ProductAuditEventRow,
+    SKU_TEMPLATE_SOURCE_OPTION_KEY,
     SkuRow,
     SupplierPriceRow,
 )
@@ -556,6 +557,20 @@ def update_sku(
         )
     before = _sku_response(row).model_dump(mode="json")
     for field, value in request.model_dump(exclude={"expected_version"}, exclude_unset=True).items():
+        if field == "option_values" and value is not None:
+            # Template ownership is server-managed metadata. Users may edit
+            # visible variant values, but cannot remove or forge the marker
+            # that makes later authoritative snapshots safe.
+            editable_values = dict(value)
+            editable_values.pop(SKU_TEMPLATE_SOURCE_OPTION_KEY, None)
+            source_marker = row.option_values.get(SKU_TEMPLATE_SOURCE_OPTION_KEY)
+            if source_marker is not None:
+                editable_values[SKU_TEMPLATE_SOURCE_OPTION_KEY] = source_marker
+                if "备注" in row.option_values:
+                    editable_values["备注"] = row.option_values["备注"]
+                else:
+                    editable_values.pop("备注", None)
+            value = editable_values
         setattr(row, field, value)
     row.version += 1
     row.updated_by_user_id = user_id

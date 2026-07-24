@@ -19,6 +19,7 @@ class DashboardMetric(BaseModel):
 class DashboardImport(BaseModel):
     id: str
     filename: str
+    source_type: str
     supplier_name: str
     status: str
     progress: int

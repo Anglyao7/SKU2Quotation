@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import os
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from openpyxl import Workbook
+from openpyxl.comments import Comment
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session
 
 from ..data import PRODUCTS
@@ -33,6 +38,10 @@ from ..model_mixins import utcnow
 from ..services.file_detection import detect_file_path, detect_file_type
 from ..services.import_processing import new_id
 from ..services.pricing import calculate_price
+from ..services.product_template_import import (
+    PRODUCT_TEMPLATE_HEADERS,
+    PRODUCT_TEMPLATE_SHEET,
+)
 from ..services.repository import (
     get_import_job,
     import_job_model,
@@ -106,6 +115,20 @@ async def create_import(
     _require_permission(permissions, "product.import")
     original_filename = Path(upload.filename or "unnamed").name
     normalized_source_type = source_type.strip().upper()[:40] or "UNKNOWN"
+    if normalized_source_type == "PRODUCT_TEMPLATE":
+        # A fixed-template import writes authoritative products and may publish
+        # public offers. Requiring all three capabilities prevents a scoped
+        # importer from escalating into product editing or catalog publishing.
+        _require_permission(permissions, "product.edit")
+        _require_permission(permissions, "catalog.publish")
+    if (
+        normalized_source_type == "PRODUCT_TEMPLATE"
+        and Path(original_filename).suffix.lower() != ".xlsx"
+    ):
+        raise ApplicationError(
+            "PRODUCT_TEMPLATE_FORMAT_INVALID",
+            "商品库只接受固定格式的 .xlsx 商品模版。",
+        )
     supplier = (
         find_supplier(session, tenant_id=tenant_id, supplier_id=supplier_id)
         if supplier_id
@@ -133,6 +156,17 @@ async def create_import(
 
     with storage.materialize(stored.object_key) as quarantine_path:
         detection = detect_file_path(quarantine_path, original_filename)
+    if normalized_source_type == "PRODUCT_TEMPLATE" and (
+        detection.detected_type != "OOXML / XLSX" or not detection.extension_matches
+    ):
+        try:
+            storage.delete(stored.object_key)
+        except Exception:
+            pass
+        raise ApplicationError(
+            "PRODUCT_TEMPLATE_FORMAT_INVALID",
+            "文件不是有效的 XLSX 商品模版，请使用根目录约定的商品模版格式。",
+        )
     now = utcnow()
     media_id = uuid4()
     worker_job_id = uuid4()
@@ -173,7 +207,13 @@ async def create_import(
         tenant_id=tenant_id,
         source_file_id=source_id,
         supplier_id=supplier.id if supplier else None,
-        supplier_name=supplier.name if supplier else "Supplier pending selection",
+        supplier_name=(
+            supplier.name
+            if supplier
+            else "商品模版"
+            if normalized_source_type == "PRODUCT_TEMPLATE"
+            else "Supplier pending selection"
+        ),
         source_type=normalized_source_type,
         status="scanning",
         progress=5,
@@ -227,6 +267,63 @@ async def create_import(
         candidate_status=worker_result.candidate_status if worker_result else None,
         candidate_idempotent=worker_result.candidate_idempotent if worker_result else False,
     )
+
+
+def build_product_template_workbook() -> bytes:
+    """Build the canonical, blank product-import workbook.
+
+    The importer remains the source of truth for the worksheet and header
+    contract; this download mirrors those constants exactly.
+    """
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = PRODUCT_TEMPLATE_SHEET
+    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+
+    header_fill = PatternFill(fill_type="solid", fgColor="23453B")
+    header_font = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFF")
+    header_border = Border(bottom=Side(style="medium", color="D18B67"))
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    instructions = {
+        "商品名称": "必填。面向客户展示的商品名称。",
+        "商品分类": "必填。分类不存在时系统会自动创建。",
+        "商品型号": "必填，作为 SKU 唯一标识；重复型号只保留首次出现的行。",
+        "商品价格": "选填。填写有效数字后自动发布报价；留空时只进入后台商品库。",
+        "商品描述": "选填。商品详情说明。",
+        "备注": "选填，仅作为商品备注；不会改变起订量（MOQ）。",
+    }
+    image_instruction = "选填。填写可公开访问的 HTTP(S) 商品图片地址。"
+    widths = (28, 18, 22, 14, 44, 24, *([38] * 10))
+
+    for index, (header, width) in enumerate(
+        zip(PRODUCT_TEMPLATE_HEADERS, widths, strict=True),
+        start=1,
+    ):
+        cell = sheet.cell(row=1, column=index)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.border = header_border
+        cell.alignment = header_alignment
+        cell.comment = Comment(
+            instructions.get(header, image_instruction),
+            "4Ever API",
+        )
+        sheet.column_dimensions[get_column_letter(index)].width = width
+
+    sheet.row_dimensions[1].height = 34
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(PRODUCT_TEMPLATE_HEADERS))}1"
+    sheet.sheet_view.showGridLines = False
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.print_title_rows = "1:1"
+
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
 
 
 def list_review_items(

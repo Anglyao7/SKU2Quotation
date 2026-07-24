@@ -89,11 +89,13 @@ export interface ImportJob {
   id: string;
   filename: string;
   supplier: string;
+  sourceType: string;
   detectedType: string;
   status: ImportJobStatus;
   progress: number;
   products: number;
   warnings: number;
+  warningMessages: string[];
   createdAt: string;
   parser?: string;
   extensionMatches?: boolean;
@@ -150,6 +152,7 @@ export interface DashboardSnapshot {
     id: string;
     filename: string;
     supplierName: string;
+    sourceType: string;
     status: string;
     progress: number;
     productsCount: number;

@@ -1,6 +1,5 @@
 import { Avatar, Badge, Button, DropdownMenu, Select, Text } from "@radix-ui/themes";
 import {
-  Buildings,
   CaretDown,
   CaretRight,
   ChartDonut,
@@ -41,7 +40,6 @@ const navigationGroups = [
     label: "商品",
     items: [
       { to: "/console/products", label: "SKU 商品库", mobileLabel: "SKU", icon: Cube, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: true },
-      { to: "/console/suppliers", label: "供应商", mobileLabel: "供应商", icon: Buildings, permissions: ["supplier.view", "supplier.manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/products/review", label: "待审核", mobileLabel: "审核", icon: ShieldCheck, permissions: ["product.review"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },

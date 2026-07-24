@@ -52,7 +52,7 @@ export function ReviewPage() {
   return <div className="core-workspace">
     <CorePageHeading eyebrow="人工确认边界" title="产品审核队列" description="逐字段比对来源证据。产品发布与图片批准是两套独立门禁。" actions={<Button variant="soft" color="gray" onClick={() => void load()}>刷新队列</Button>} />
     {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
-    {loading && !items.length ? <CoreLoading label="正在读取待审核候选" /> : !item ? <CoreEmpty title="审核队列已清空" description="新的供应商导入生成候选后，会出现在这里。" /> : <div className="core-review-layout">
+    {loading && !items.length ? <CoreLoading label="正在读取待审核候选" /> : !item ? <CoreEmpty title="审核队列已清空" description="需要人工确认的非标准资料产生候选后，会出现在这里。" /> : <div className="core-review-layout">
       <Card className="core-review-queue">
         <div className="core-panel-heading"><div><Text size="1" color="gray">实时队列</Text><Heading size="4">标准化候选</Heading></div><Badge color="amber">{items.filter((row) => row.status !== "approved").length} 待处理</Badge></div>
         <div className="core-review-rows">{items.map((row) => <button type="button" className={row.id === item.id ? "active" : ""} key={row.id} onClick={() => { setSelectedId(row.id); setEdits({}); }}><span className="core-row-icon"><Image /></span><span><strong>{row.name || "产品名待确认"}</strong><small>{row.model || "型号待确认"} · {row.location}</small></span>{row.status === "approved" ? <Check /> : <span>›</span>}</button>)}</div>

@@ -17,7 +17,7 @@ from alembic.config import Config
 from fastapi import Response
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
-from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy import create_engine, delete, func, inspect, select
 from sqlalchemy.exc import IntegrityError
 
 
@@ -99,6 +99,10 @@ from app.services.product_intelligence.adoption import (
     dispatch_product_committed_event,
     reject_candidate_group,
 )
+from app.services.product_template_import import (
+    PRODUCT_TEMPLATE_HEADERS,
+    PRODUCT_TEMPLATE_SHEET,
+)
 from app.services.product_intelligence.normalization import normalize_product_field
 from app.services.rbac import has_permission, list_permissions
 from app.services.auth.tokens import REFRESH_COOKIE_NAME, hash_secret
@@ -113,10 +117,12 @@ from app.adapters.file_scanner import (
     get_file_scanner,
 )
 from app.adapters.object_storage import get_object_storage
+from app.ports.file_scanner import FileScanResult
 from app.adapters.image_intelligence import get_image_intelligence_provider
 from app.adapters.outbox_publisher import InMemoryOutboxPublisher, get_outbox_publisher
 from app.services.outbox_consumer import consume_product_committed_message
 from app.workers.file_processing import process_file_worker_job
+import app.workers.file_processing as file_processing_worker
 from app.workers.outbox_relay import relay_one_outbox_event
 from app.use_cases.product_center import list_products as list_authoritative_products
 from app.use_cases.product_center import list_skus as list_authoritative_skus
@@ -134,6 +140,164 @@ from app.public_catalog_models import (
 
 
 client = TestClient(app)
+
+
+def _product_template_bytes(rows: list[list[object]]) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = PRODUCT_TEMPLATE_SHEET
+    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    for row in rows:
+        sheet.append(row)
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+    return content.getvalue()
+
+
+def _cleanup_template_test_records(
+    *,
+    import_job_ids: list[str],
+    sku_codes: list[str],
+    category_names: list[str],
+) -> None:
+    object_keys: list[str] = []
+    with SessionLocal() as session:
+        sku_rows = session.scalars(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code.in_(sku_codes),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+        sku_ids = [row.id for row in sku_rows]
+        product_ids = [row.product_id for row in sku_rows]
+        if sku_ids:
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                    PublicCatalogOfferRow.sku_id.in_(sku_ids),
+                )
+            )
+        if product_ids:
+            session.execute(
+                delete(ProductImageRow).where(
+                    ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductImageRow.product_id.in_(product_ids),
+                )
+            )
+        if sku_ids:
+            session.execute(
+                delete(SkuRow).where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.id.in_(sku_ids),
+                )
+            )
+        if product_ids:
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductAuditEventRow.product_id.in_(product_ids),
+                )
+            )
+            session.execute(
+                delete(ProductRow).where(
+                    ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductRow.id.in_(product_ids),
+                )
+            )
+
+        if import_job_ids:
+            import_rows = session.scalars(
+                select(ImportJobRow)
+                .where(
+                    ImportJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    ImportJobRow.id.in_(import_job_ids),
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+            worker_rows = session.scalars(
+                select(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    WorkerJobRow.import_job_id.in_(import_job_ids),
+                )
+            ).all()
+            source_file_ids = {
+                *(row.source_file_id for row in import_rows),
+                *(row.source_file_id for row in worker_rows),
+            }
+            source_rows = (
+                session.scalars(
+                    select(SourceFileRow)
+                    .where(
+                        SourceFileRow.tenant_id == DEFAULT_TENANT_ID,
+                        SourceFileRow.id.in_(source_file_ids),
+                    )
+                    .execution_options(include_deleted=True)
+                ).all()
+                if source_file_ids
+                else []
+            )
+            media_object_ids = {
+                *(row.media_object_id for row in worker_rows if row.media_object_id),
+                *(row.media_object_id for row in source_rows if row.media_object_id),
+            }
+            media_rows = (
+                session.scalars(
+                    select(MediaObjectRow)
+                    .where(
+                        MediaObjectRow.tenant_id == DEFAULT_TENANT_ID,
+                        MediaObjectRow.id.in_(media_object_ids),
+                    )
+                    .execution_options(include_deleted=True)
+                ).all()
+                if media_object_ids
+                else []
+            )
+            object_keys = [row.object_key for row in media_rows]
+            session.execute(
+                delete(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    WorkerJobRow.import_job_id.in_(import_job_ids),
+                )
+            )
+            session.execute(
+                delete(ImportJobRow).where(
+                    ImportJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    ImportJobRow.id.in_(import_job_ids),
+                )
+            )
+            if source_file_ids:
+                session.execute(
+                    delete(SourceFileRow).where(
+                        SourceFileRow.tenant_id == DEFAULT_TENANT_ID,
+                        SourceFileRow.id.in_(source_file_ids),
+                    )
+                )
+            if media_object_ids:
+                session.execute(
+                    delete(MediaObjectRow).where(
+                        MediaObjectRow.tenant_id == DEFAULT_TENANT_ID,
+                        MediaObjectRow.id.in_(media_object_ids),
+                    )
+                )
+        if category_names:
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductCategoryRow.name.in_(category_names),
+                )
+            )
+        session.commit()
+
+    storage = get_object_storage()
+    for object_key in object_keys:
+        storage.delete(object_key)
+        if "/source/" in object_key:
+            storage.delete(object_key.replace("/source/", "/quarantine/", 1))
+        elif "/quarantine/" in object_key:
+            storage.delete(object_key.replace("/quarantine/", "/source/", 1))
 
 
 def _create_pending_product_event(tmp_path: Path, *, suffix: str) -> UUID:
@@ -3621,6 +3785,452 @@ def test_upload_parse_review_and_approve_xlsx() -> None:
     assert approval.json() == {"id": item_id, "status": "approved", "image_status": "SOURCE"}
 
 
+def test_product_template_download_matches_the_strict_import_contract() -> None:
+    response = client.get("/api/v1/product-template.xlsx")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert "filename*=UTF-8''" in response.headers["content-disposition"]
+
+    workbook = load_workbook(BytesIO(response.content), read_only=False, data_only=True)
+    try:
+        assert workbook.sheetnames == ["商品列表"]
+        sheet = workbook["商品列表"]
+        assert sheet.max_row == 1
+        assert [sheet.cell(row=1, column=index).value for index in range(1, 17)] == [
+            "商品名称",
+            "商品分类",
+            "商品型号",
+            "商品价格",
+            "商品描述",
+            "备注",
+            "商品图片1",
+            "商品图片2",
+            "商品图片3",
+            "商品图片4",
+            "商品图片5",
+            "商品图片6",
+            "商品图片7",
+            "商品图片8",
+            "商品图片9",
+            "商品图片10",
+        ]
+        assert sheet.freeze_panes == "A2"
+        assert sheet.auto_filter.ref == "A1:P1"
+        assert sheet["A1"].fill.fgColor.rgb == "0023453B"
+        assert sheet["A1"].font.bold is True
+        assert sheet["F1"].comment is not None
+        assert "不会改变起订量" in sheet["F1"].comment.text
+    finally:
+        workbook.close()
+
+
+def test_fixed_product_template_imports_without_supplier_and_publishes_priced_skus(
+    request: pytest.FixtureRequest,
+) -> None:
+    created_import_job_ids: list[str] = []
+
+    def cleanup_template_products() -> None:
+        with SessionLocal() as session:
+            sku_rows = session.scalars(
+                select(SkuRow)
+                .where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.sku_code.in_(["TPL-API-001", "TPL-API-002"]),
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+            sku_ids = [row.id for row in sku_rows]
+            product_ids = [row.product_id for row in sku_rows]
+            if sku_ids:
+                session.execute(
+                    delete(PublicCatalogOfferRow).where(
+                        PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                        PublicCatalogOfferRow.sku_id.in_(sku_ids),
+                    )
+                )
+            if product_ids:
+                session.execute(
+                    delete(ProductImageRow).where(
+                        ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductImageRow.product_id.in_(product_ids),
+                    )
+                )
+            if sku_ids:
+                session.execute(
+                    delete(SkuRow).where(
+                        SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                        SkuRow.id.in_(sku_ids),
+                    )
+                )
+            if product_ids:
+                session.execute(
+                    delete(ProductAuditEventRow).where(
+                        ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductAuditEventRow.product_id.in_(product_ids),
+                    )
+                )
+                session.execute(
+                    delete(ProductRow).where(
+                        ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductRow.id.in_(product_ids),
+                    )
+                )
+            if created_import_job_ids:
+                worker_rows = session.scalars(
+                    select(WorkerJobRow).where(
+                        WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                        WorkerJobRow.import_job_id.in_(created_import_job_ids),
+                    )
+                ).all()
+                source_file_ids = [row.source_file_id for row in worker_rows]
+                media_object_ids = [row.media_object_id for row in worker_rows]
+                session.execute(
+                    delete(WorkerJobRow).where(
+                        WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                        WorkerJobRow.import_job_id.in_(created_import_job_ids),
+                    )
+                )
+                session.execute(
+                    delete(ImportJobRow).where(
+                        ImportJobRow.tenant_id == DEFAULT_TENANT_ID,
+                        ImportJobRow.id.in_(created_import_job_ids),
+                    )
+                )
+                if source_file_ids:
+                    session.execute(
+                        delete(SourceFileRow).where(
+                            SourceFileRow.tenant_id == DEFAULT_TENANT_ID,
+                            SourceFileRow.id.in_(source_file_ids),
+                        )
+                    )
+                if media_object_ids:
+                    session.execute(
+                        delete(MediaObjectRow).where(
+                            MediaObjectRow.tenant_id == DEFAULT_TENANT_ID,
+                            MediaObjectRow.id.in_(media_object_ids),
+                        )
+                    )
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductCategoryRow.name == "模版测试分类",
+                )
+            )
+            session.commit()
+
+    cleanup_template_products()
+    request.addfinalizer(cleanup_template_products)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "商品列表"
+    sheet.append([
+        "商品名称",
+        "商品分类",
+        "商品型号",
+        "商品价格",
+        "商品描述",
+        "备注",
+        "商品图片1",
+        "商品图片2",
+        "商品图片3",
+        "商品图片4",
+        "商品图片5",
+        "商品图片6",
+        "商品图片7",
+        "商品图片8",
+        "商品图片9",
+        "商品图片10",
+    ])
+    sheet.append([
+        "模版商品 A",
+        "模版测试分类",
+        "TPL-API-001",
+        "12.5",
+        "固定模版商品描述",
+        "10",
+        "https://img.example.com/tpl-api-001.jpg",
+        *([None] * 9),
+    ])
+    sheet.append([
+        "重复商品 A",
+        "模版测试分类",
+        "TPL-API-001",
+        99,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    sheet.append([
+        "模版商品 B",
+        "模版测试分类",
+        "TPL-API-002",
+        "",
+        None,
+        None,
+        *([None] * 10),
+    ])
+    for duplicate_index in range(1003):
+        sheet.append([
+            f"额外重复商品 {duplicate_index + 1}",
+            "模版测试分类",
+            "TPL-API-001",
+            88 + duplicate_index,
+            None,
+            None,
+            *([None] * 10),
+        ])
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+
+    assert response.status_code == 201, response.text
+    job = response.json()
+    created_import_job_ids.append(job["id"])
+    assert job["source_type"] == "PRODUCT_TEMPLATE"
+    assert job["supplier"] == "商品模版"
+    assert job["status"] == "published"
+    assert job["products"] == 2
+    assert job["warnings"] == 1005
+    assert len(job["warning_messages"]) == 1000
+    assert sum("重复" in warning for warning in job["warning_messages"]) == 999
+    assert any("第 1002 行" in warning for warning in job["warning_messages"])
+    assert "另有 1002 条提醒" in job["error_message"]
+    assert job["result_details"]["warnings_truncated"] == 5
+    assert job["result_details"]["outcome"] == "TEMPLATE_IMPORTED"
+    assert job["result_details"]["imported"] == 2
+    assert job["candidate_fields"] == 0
+
+    listed_job = next(
+        row
+        for row in client.get("/api/v1/imports", params={"limit": 500}).json()
+        if row["id"] == job["id"]
+    )
+    assert len(listed_job["warning_messages"]) == 20
+    assert len(listed_job["result_details"]["warnings"]) == 20
+    assert listed_job["result_details"]["warnings_truncated"] == 985
+    detailed_job = client.get(f"/api/v1/imports/{job['id']}").json()
+    assert len(detailed_job["warning_messages"]) == 1000
+    assert len(detailed_job["result_details"]["warnings"]) == 1000
+    assert detailed_job["result_details"]["warnings_truncated"] == 5
+
+    sku_response = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": "TPL-API", "page_size": 10},
+    )
+    assert sku_response.status_code == 200
+    assert sku_response.json()["total"] == 2
+    sku_by_code = {
+        row["sku_code"]: row for row in sku_response.json()["items"]
+    }
+    assert sku_by_code["TPL-API-001"]["default_moq"] == "1.000000"
+    assert sku_by_code["TPL-API-001"]["public_price"] == "12.50"
+    assert sku_by_code["TPL-API-001"]["public_offer_status"] == "PUBLISHED"
+    assert sku_by_code["TPL-API-001"]["image_status"] == "APPROVED"
+    assert sku_by_code["TPL-API-002"]["public_price"] is None
+
+    # Re-importing the fixed template may refresh its note/marker, but must
+    # preserve product-center variant attributes maintained outside Excel.
+    with SessionLocal() as session:
+        sku_a = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+        )
+        assert sku_a is not None
+        sku_a_id = sku_a.id
+        sku_a_version = sku_a.version
+    sku_update = client.patch(
+        f"/api/v1/skus/{sku_a_id}",
+        json={
+            "expected_version": sku_a_version,
+            "option_values": {
+                "颜色": "红色",
+                "_sku2quotation": "客户端不能覆盖内部标记",
+            },
+        },
+    )
+    assert sku_update.status_code == 200, sku_update.text
+    assert sku_update.json()["option_values"]["颜色"] == "红色"
+    assert sku_update.json()["option_values"]["_sku2quotation"] == {
+        "source": "PRODUCT_TEMPLATE",
+        "schema": 1,
+    }
+
+    review_response = client.get(
+        "/api/v1/review-items",
+        params={"job_id": job["id"]},
+    )
+    assert review_response.status_code == 200
+    assert review_response.json() == []
+
+    repeated = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert repeated.status_code == 201, repeated.text
+    created_import_job_ids.append(repeated.json()["id"])
+    assert repeated.json()["status"] == "published"
+    assert repeated.json()["products"] == 2
+    assert "未变化 2" in repeated.json()["error_message"]
+    repeated_skus = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": "TPL-API", "page_size": 10},
+    ).json()
+    assert repeated_skus["total"] == 2
+    repeated_by_code = {
+        row["sku_code"]: row for row in repeated_skus["items"]
+    }
+    assert repeated_by_code["TPL-API-001"]["version"] == 2
+    assert repeated_by_code["TPL-API-002"]["version"] == 1
+    with SessionLocal() as session:
+        preserved_sku = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+        )
+        assert preserved_sku is not None
+        assert preserved_sku.option_values["颜色"] == "红色"
+
+    with SessionLocal() as session:
+        sku_a = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+        )
+        assert sku_a is not None
+        product_a_id = sku_a.product_id
+        offer_a = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == sku_a.id,
+            )
+        )
+        image_a = session.scalar(
+            select(ProductImageRow).where(
+                ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductImageRow.object_key
+                == "https://img.example.com/tpl-api-001.jpg",
+            )
+        )
+        assert offer_a is not None
+        assert image_a is not None
+        offer_a_id = offer_a.id
+        image_a_id = image_a.id
+
+    reduced_workbook = load_workbook(
+        BytesIO(client.get("/api/v1/product-template.xlsx").content)
+    )
+    reduced_sheet = reduced_workbook["商品列表"]
+    reduced_sheet.append([
+        "模版商品 B",
+        "模版测试分类",
+        "TPL-API-002",
+        "",
+        None,
+        None,
+        *([None] * 10),
+    ])
+    reduced_content = BytesIO()
+    reduced_workbook.save(reduced_content)
+    reduced_workbook.close()
+    reduced = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                reduced_content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert reduced.status_code == 201, reduced.text
+    created_import_job_ids.append(reduced.json()["id"])
+    assert "归档 1" in reduced.json()["error_message"]
+
+    with SessionLocal() as session:
+        sku_a = session.scalar(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+            .execution_options(include_deleted=True)
+        )
+        product_a = session.get(
+            ProductRow,
+            product_a_id,
+            execution_options={"include_deleted": True},
+        )
+        offer_a = session.get(
+            PublicCatalogOfferRow,
+            offer_a_id,
+            execution_options={"include_deleted": True},
+        )
+        image_a = session.get(
+            ProductImageRow,
+            image_a_id,
+            execution_options={"include_deleted": True},
+        )
+        assert sku_a is not None and sku_a.status == "ARCHIVED"
+        assert product_a is not None and product_a.status == "ARCHIVED"
+        assert offer_a is not None and offer_a.publication_status == "SUSPENDED"
+        assert image_a is not None and image_a.deleted_at is not None
+
+    restored = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert restored.status_code == 201, restored.text
+    created_import_job_ids.append(restored.json()["id"])
+    with SessionLocal() as session:
+        sku_a = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+        )
+        product_a = session.get(ProductRow, product_a_id)
+        offer_a = session.get(PublicCatalogOfferRow, offer_a_id)
+        image_a = session.get(ProductImageRow, image_a_id)
+        assert sku_a is not None and sku_a.status == "ACTIVE"
+        assert product_a is not None and product_a.status == "ACTIVE"
+        assert offer_a is not None and offer_a.publication_status == "PUBLISHED"
+        assert offer_a.unit_price == Decimal("12.50")
+        assert image_a is not None and image_a.deleted_at is None
+
+
 def test_file_security_clean_upload_promotes_object_before_parsing() -> None:
     response = client.post(
         "/api/v1/imports",
@@ -3778,6 +4388,511 @@ def test_persistent_file_worker_recovers_scanner_failure_and_expired_lease(
         assert worker_job.attempt_count == 2
         assert worker_job.lease_owner is None
         assert import_job.status == "needs_review"
+
+
+def test_product_template_worker_retry_resumes_from_promoted_source(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    monkeypatch.setenv("FILE_WORKER_INLINE", "false")
+    template_bytes = client.get("/api/v1/product-template.xlsx").content
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                template_bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert response.status_code == 201, response.text
+    import_job_id = response.json()["id"]
+
+    def cleanup_import_graph() -> None:
+        with SessionLocal() as session:
+            worker_rows = session.scalars(
+                select(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    WorkerJobRow.import_job_id == import_job_id,
+                )
+            ).all()
+            source_file_ids = [row.source_file_id for row in worker_rows]
+            media_object_ids = [row.media_object_id for row in worker_rows]
+            session.execute(
+                delete(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    WorkerJobRow.import_job_id == import_job_id,
+                )
+            )
+            session.execute(
+                delete(ImportJobRow).where(
+                    ImportJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    ImportJobRow.id == import_job_id,
+                )
+            )
+            if source_file_ids:
+                session.execute(
+                    delete(SourceFileRow).where(
+                        SourceFileRow.tenant_id == DEFAULT_TENANT_ID,
+                        SourceFileRow.id.in_(source_file_ids),
+                    )
+                )
+            if media_object_ids:
+                session.execute(
+                    delete(MediaObjectRow).where(
+                        MediaObjectRow.tenant_id == DEFAULT_TENANT_ID,
+                        MediaObjectRow.id.in_(media_object_ids),
+                    )
+                )
+            session.commit()
+
+    request.addfinalizer(cleanup_import_graph)
+    with SessionLocal() as session:
+        worker_job = session.scalar(
+            select(WorkerJobRow).where(WorkerJobRow.import_job_id == import_job_id)
+        )
+        assert worker_job is not None
+        worker_job_id = worker_job.id
+
+    original_processor = file_processing_worker.process_product_template_import
+
+    def transient_import_failure(*_args: object, **_kwargs: object) -> object:
+        raise ConnectionError("temporary importer dependency failure")
+
+    monkeypatch.setattr(
+        file_processing_worker,
+        "process_product_template_import",
+        transient_import_failure,
+    )
+    first_now = datetime.now(UTC)
+    with SessionLocal() as session:
+        first = process_file_worker_job(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=worker_job_id,
+            worker_id="template-import-first-attempt",
+            scanner=DeterministicDevelopmentScanner(),
+            now=first_now,
+        )
+    assert first.status == "RETRY"
+
+    with SessionLocal() as session:
+        worker_job = session.get(WorkerJobRow, worker_job_id)
+        import_job = session.get(ImportJobRow, import_job_id)
+        assert worker_job is not None and import_job is not None
+        media = session.get(MediaObjectRow, worker_job.media_object_id)
+        source = session.get(SourceFileRow, worker_job.source_file_id)
+        assert media is not None and source is not None
+        assert worker_job.checkpoint["promoted"] is True
+        assert worker_job.checkpoint["last_error_stage"] == "IMPORT"
+        assert (media.zone, media.status, media.scan_status) == (
+            "SOURCE",
+            "AVAILABLE",
+            "CLEAN",
+        )
+        assert source.security_status == "ACCEPTED"
+        source_key = media.object_key
+
+    class MustNotRescan:
+        engine_name = "must-not-rescan"
+
+        def scan(self, _path: Path) -> object:
+            raise AssertionError("promoted source must not be scanned or promoted again")
+
+    monkeypatch.setattr(
+        file_processing_worker,
+        "process_product_template_import",
+        original_processor,
+    )
+    with SessionLocal() as session:
+        recovered = process_file_worker_job(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=worker_job_id,
+            worker_id="template-import-retry",
+            scanner=MustNotRescan(),  # type: ignore[arg-type]
+            now=first_now + timedelta(seconds=5),
+        )
+    assert recovered.status == "SUCCEEDED"
+    assert recovered.outcome == "TEMPLATE_REJECTED"
+
+    storage = get_object_storage()
+    source_path = storage.local_path(source_key)
+    quarantine_path = storage.local_path(
+        source_key.replace("/source/", "/quarantine/", 1)
+    )
+    assert source_path is not None and source_path.is_file()
+    assert quarantine_path is not None and not quarantine_path.exists()
+    import_response = client.get(f"/api/v1/imports/{import_job_id}")
+    assert import_response.status_code == 200
+    assert import_response.json()["warning_messages"] == [
+        "模版中没有可导入的有效商品。"
+    ]
+
+
+def test_older_product_template_retry_cannot_override_newer_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    import_job_ids: list[str] = []
+    sku_codes = ["SNAP-COMMON", "SNAP-OLD-ONLY", "SNAP-NEW-ONLY"]
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=sku_codes,
+            category_names=["快照顺序测试"],
+        )
+    )
+    _cleanup_template_test_records(
+        import_job_ids=import_job_ids,
+        sku_codes=sku_codes,
+        category_names=["快照顺序测试"],
+    )
+
+    old_template = _product_template_bytes([
+        [
+            "旧版共同商品",
+            "快照顺序测试",
+            "SNAP-COMMON",
+            "10",
+            None,
+            None,
+            *([None] * 10),
+        ],
+        [
+            "旧版独有商品",
+            "快照顺序测试",
+            "SNAP-OLD-ONLY",
+            "11",
+            None,
+            None,
+            *([None] * 10),
+        ],
+    ])
+    newer_template = _product_template_bytes([
+        [
+            "新版共同商品",
+            "快照顺序测试",
+            "SNAP-COMMON",
+            "20",
+            None,
+            None,
+            *([None] * 10),
+        ],
+        [
+            "新版独有商品",
+            "快照顺序测试",
+            "SNAP-NEW-ONLY",
+            "21",
+            None,
+            None,
+            *([None] * 10),
+        ],
+    ])
+
+    monkeypatch.setenv("FILE_WORKER_INLINE", "false")
+    old_response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "旧商品模版.xlsx",
+                old_template,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert old_response.status_code == 201, old_response.text
+    old_job_id = old_response.json()["id"]
+    import_job_ids.append(old_job_id)
+    with SessionLocal() as session:
+        old_worker = session.scalar(
+            select(WorkerJobRow).where(WorkerJobRow.import_job_id == old_job_id)
+        )
+        assert old_worker is not None
+        old_worker_id = old_worker.id
+
+    monkeypatch.setenv("FILE_WORKER_INLINE", "true")
+    newer_response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "新商品模版.xlsx",
+                newer_template,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert newer_response.status_code == 201, newer_response.text
+    assert newer_response.json()["status"] == "published"
+    newer_job_id = newer_response.json()["id"]
+    import_job_ids.append(newer_job_id)
+
+    # Remove clock-resolution and scheduling variance from the ordering
+    # assertion: the newer snapshot is explicitly one second later.
+    ordering_base = datetime.now(UTC) - timedelta(minutes=1)
+    with SessionLocal() as session:
+        old_job = session.get(ImportJobRow, old_job_id)
+        newer_job = session.get(ImportJobRow, newer_job_id)
+        common_before = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "SNAP-COMMON",
+            )
+        )
+        assert old_job is not None and newer_job is not None and common_before is not None
+        old_job.created_at = ordering_base
+        newer_job.created_at = ordering_base + timedelta(seconds=1)
+        common_id = common_before.id
+        common_version = common_before.version
+        common_product_id = common_before.product_id
+        common_offer = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == common_before.id,
+            )
+        )
+        assert common_offer is not None
+        common_offer_id = common_offer.id
+        newer_worker = session.scalar(
+            select(WorkerJobRow).where(WorkerJobRow.import_job_id == newer_job_id)
+        )
+        assert newer_worker is not None
+        newer_worker_id = newer_worker.id
+        session.commit()
+
+    # Simulate a failure after the template transaction has committed but
+    # before the outer worker checkpoint is durable. The applied snapshot must
+    # remain published so an older retry can still see it.
+    with SessionLocal() as session:
+        checkpoint_retry = file_processing_worker._record_retry(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=newer_worker_id,
+            error=ConnectionError("checkpoint commit interrupted"),
+            now=datetime.now(UTC),
+        )
+    assert checkpoint_retry.status == "RETRY"
+    with SessionLocal() as session:
+        newer_job = session.get(ImportJobRow, newer_job_id)
+        newer_worker = session.get(WorkerJobRow, newer_worker_id)
+        assert newer_job is not None and newer_job.status == "published"
+        assert newer_worker is not None
+        assert newer_worker.checkpoint["template_snapshot_committed"] is True
+
+    with SessionLocal() as session:
+        stale_result = process_file_worker_job(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=old_worker_id,
+            worker_id="stale-template-retry",
+            scanner=DeterministicDevelopmentScanner(),
+            now=datetime.now(UTC),
+        )
+    assert stale_result.status == "SUCCEEDED"
+    assert stale_result.outcome == "TEMPLATE_SUPERSEDED"
+
+    stale_detail = client.get(f"/api/v1/imports/{old_job_id}")
+    assert stale_detail.status_code == 200
+    assert stale_detail.json()["status"] == "failed"
+    assert stale_detail.json()["warnings"] == 1
+    assert len(stale_detail.json()["warning_messages"]) == 1
+    assert "早于已经生效的新版本" in stale_detail.json()["error_message"]
+
+    with SessionLocal() as session:
+        common_after = session.get(SkuRow, common_id)
+        common_product = session.get(ProductRow, common_product_id)
+        common_offer = session.get(PublicCatalogOfferRow, common_offer_id)
+        new_only = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "SNAP-NEW-ONLY",
+            )
+        )
+        old_only = session.scalar(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "SNAP-OLD-ONLY",
+            )
+            .execution_options(include_deleted=True)
+        )
+        assert common_after is not None and common_after.version == common_version
+        assert common_product is not None and common_product.name == "新版共同商品"
+        assert common_offer is not None and common_offer.unit_price == Decimal("20.00")
+        assert new_only is not None and new_only.status == "ACTIVE"
+        assert old_only is None
+
+
+@pytest.mark.parametrize("infected_after_recovery", [False, True])
+def test_file_worker_recovers_promotion_completed_before_checkpoint_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    infected_after_recovery: bool,
+) -> None:
+    import_job_ids: list[str] = []
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[],
+            category_names=[],
+        )
+    )
+    monkeypatch.setenv("FILE_WORKER_INLINE", "false")
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                _product_template_bytes([]),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert response.status_code == 201, response.text
+    import_job_id = response.json()["id"]
+    import_job_ids.append(import_job_id)
+
+    crash_time = datetime.now(UTC)
+    with SessionLocal() as session:
+        worker = session.scalar(
+            select(WorkerJobRow).where(WorkerJobRow.import_job_id == import_job_id)
+        )
+        assert worker is not None
+        media = session.get(MediaObjectRow, worker.media_object_id)
+        source = session.get(SourceFileRow, worker.source_file_id)
+        import_job = session.get(ImportJobRow, import_job_id)
+        assert media is not None and source is not None and import_job is not None
+        worker_id = worker.id
+        quarantine_key = media.object_key
+        source_key = quarantine_key.replace("/quarantine/", "/source/", 1)
+        worker.status = "RUNNING"
+        worker.attempt_count = 1
+        worker.lease_owner = "worker-crashed-after-promotion"
+        worker.lease_expires_at = crash_time - timedelta(seconds=1)
+        worker.checkpoint = {}
+        media.status = "SCANNING"
+        media.scan_status = "RUNNING"
+        source.security_status = "SCANNING"
+        import_job.status = "scanning"
+        import_job.progress = 10
+        session.commit()
+
+    storage = get_object_storage()
+    storage.promote(quarantine_key=quarantine_key, source_key=source_key)
+    assert not storage.exists(quarantine_key)
+    assert storage.exists(source_key)
+    with SessionLocal() as session:
+        worker = session.get(WorkerJobRow, worker_id)
+        media = session.get(MediaObjectRow, worker.media_object_id) if worker else None
+        assert worker is not None and media is not None
+        assert worker.checkpoint == {}
+        assert media.object_key == quarantine_key
+        assert media.zone == "QUARANTINE"
+
+    recovery_promotions: list[tuple[str, str]] = []
+    expected_recovered_source_key = source_key
+    expected_quarantine_key = quarantine_key
+
+    class RecoveryStorage:
+        backend_name = storage.backend_name
+
+        def put_file(self, *args: object, **kwargs: object) -> None:
+            storage.put_file(*args, **kwargs)  # type: ignore[arg-type]
+
+        def promote(self, *, quarantine_key: str, source_key: str) -> None:
+            recovery_promotions.append((quarantine_key, source_key))
+            if not infected_after_recovery:
+                raise AssertionError("clean recovered source must not be promoted a second time")
+            assert (quarantine_key, source_key) == (
+                expected_recovered_source_key,
+                expected_quarantine_key,
+            )
+            storage.promote(quarantine_key=quarantine_key, source_key=source_key)
+
+        def exists(self, object_key: str) -> bool:
+            return storage.exists(object_key)
+
+        def delete(self, object_key: str) -> None:
+            storage.delete(object_key)
+
+        def materialize(self, object_key: str):
+            return storage.materialize(object_key)
+
+        def local_path(self, object_key: str):
+            return storage.local_path(object_key)
+
+    scanned_paths: list[Path] = []
+
+    class CountingScanner:
+        engine_name = "counting-development-scanner"
+
+        def scan(self, path: Path):
+            scanned_paths.append(path)
+            if infected_after_recovery:
+                return FileScanResult(
+                    clean=False,
+                    engine=self.engine_name,
+                    signature="RECOVERED-INFECTED-TEST",
+                    detail_code="RECOVERED_INFECTED",
+                )
+            return DeterministicDevelopmentScanner().scan(path)
+
+    with SessionLocal() as session:
+        recovered = process_file_worker_job(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=worker_id,
+            worker_id="worker-after-promotion-crash",
+            storage=RecoveryStorage(),  # type: ignore[arg-type]
+            scanner=CountingScanner(),  # type: ignore[arg-type]
+            now=crash_time,
+        )
+    assert recovered.status == "SUCCEEDED"
+    assert recovered.outcome == (
+        "QUARANTINED" if infected_after_recovery else "TEMPLATE_REJECTED"
+    )
+    assert scanned_paths == [storage.local_path(source_key)]
+
+    with SessionLocal() as session:
+        worker = session.get(WorkerJobRow, worker_id)
+        media = session.get(MediaObjectRow, worker.media_object_id) if worker else None
+        source = session.get(SourceFileRow, worker.source_file_id) if worker else None
+        assert worker is not None and media is not None and source is not None
+        assert worker.attempt_count == 2
+        assert worker.checkpoint["promotion_recovered"] is True
+        if infected_after_recovery:
+            assert not worker.checkpoint.get("promoted", False)
+            assert worker.checkpoint["outcome"] == "QUARANTINED"
+            assert (media.object_key, media.zone, media.status, media.scan_status) == (
+                quarantine_key,
+                "QUARANTINE",
+                "REJECTED",
+                "INFECTED",
+            )
+            assert source.security_status == "QUARANTINED"
+        else:
+            assert worker.checkpoint["promoted"] is True
+            assert worker.checkpoint["outcome"] == "TEMPLATE_REJECTED"
+            assert (media.object_key, media.zone, media.status, media.scan_status) == (
+                source_key,
+                "SOURCE",
+                "AVAILABLE",
+                "CLEAN",
+            )
+            assert source.security_status == "ACCEPTED"
+    if infected_after_recovery:
+        assert recovery_promotions == [(source_key, quarantine_key)]
+        assert storage.exists(quarantine_key)
+        assert not storage.exists(source_key)
+    else:
+        assert recovery_promotions == []
+        assert storage.exists(source_key)
+        assert not storage.exists(quarantine_key)
 
 
 def test_development_scanner_is_fail_closed_in_production(
@@ -5804,6 +6919,51 @@ def _local_access_token(test_client: TestClient, user_id: UUID) -> str:
     )
     assert switched.status_code == 200, switched.text
     return switched.json()["data"]["access_token"]
+
+
+def test_product_template_import_requires_edit_and_publish_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sales_user_id, _ = _add_tenant_member_with_role(
+        role_code="SALES",
+        display_name="Template Import Sales Guard",
+    )
+    purchasing_user_id, _ = _add_tenant_member_with_role(
+        role_code="PURCHASING",
+        display_name="Template Import Purchasing Guard",
+    )
+    template_bytes = client.get("/api/v1/product-template.xlsx").content
+    with SessionLocal() as session:
+        before_count = session.scalar(select(func.count()).select_from(ImportJobRow))
+
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as scoped_client:
+        cases = (
+            (sales_user_id, "product.edit"),
+            (purchasing_user_id, "catalog.publish"),
+        )
+        for user_id, missing_permission in cases:
+            token = _local_access_token(scoped_client, user_id)
+            response = scoped_client.post(
+                "/api/v1/imports",
+                headers={"Authorization": f"Bearer {token}"},
+                files={
+                    "file": (
+                        "商品模版.xlsx",
+                        template_bytes,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+                data={"source_type": "PRODUCT_TEMPLATE"},
+            )
+            assert response.status_code == 403, response.text
+            assert response.json()["detail"] == {
+                "code": "PERMISSION_DENIED",
+                "message": f"Permission is required: {missing_permission}",
+            }
+
+    with SessionLocal() as session:
+        assert session.scalar(select(func.count()).select_from(ImportJobRow)) == before_count
 
 
 def test_tenant_access_control_manages_custom_roles_and_isolates_members() -> None:

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
 from ..product_center_models import SkuRow, SupplierPriceRow
 from ..product_supplier_models import ProductImageRow, ProductRow, SupplierProductRow, SupplierScoreRow
+from ..public_catalog_models import PublicCatalogOfferRow
 from ..trade_flow_models import InquiryRow, QuotationRow
 
 
@@ -47,14 +48,34 @@ def dashboard_snapshot(
     approved_images = int(session.scalar(select(func.count(func.distinct(ProductImageRow.product_id))).where(ProductImageRow.tenant_id == tenant_id, ProductImageRow.approval_status == "APPROVED")) or 0)
     sourced_products = int(session.scalar(select(func.count(func.distinct(SupplierProductRow.product_id))).where(SupplierProductRow.tenant_id == tenant_id, SupplierProductRow.status == "ACTIVE")) or 0)
     priced_products = int(session.scalar(
-        select(func.count(func.distinct(SupplierProductRow.product_id)))
-        .join(SupplierPriceRow, and_(SupplierPriceRow.tenant_id == SupplierProductRow.tenant_id, SupplierPriceRow.supplier_product_id == SupplierProductRow.id))
+        select(func.count(func.distinct(SkuRow.product_id)))
+        .join(
+            PublicCatalogOfferRow,
+            and_(
+                PublicCatalogOfferRow.tenant_id == SkuRow.tenant_id,
+                PublicCatalogOfferRow.sku_id == SkuRow.id,
+            ),
+        )
+        .join(
+            ProductRow,
+            and_(
+                ProductRow.tenant_id == SkuRow.tenant_id,
+                ProductRow.id == SkuRow.product_id,
+            ),
+        )
         .where(
-            SupplierProductRow.tenant_id == tenant_id,
-            SupplierProductRow.status == "ACTIVE",
-            SupplierPriceRow.status == "CONFIRMED",
-            SupplierPriceRow.valid_from <= now,
-            or_(SupplierPriceRow.valid_to.is_(None), SupplierPriceRow.valid_to >= now),
+            SkuRow.tenant_id == tenant_id,
+            SkuRow.status == "ACTIVE",
+            ProductRow.status == "ACTIVE",
+            PublicCatalogOfferRow.publication_status == "PUBLISHED",
+            or_(
+                PublicCatalogOfferRow.valid_from.is_(None),
+                PublicCatalogOfferRow.valid_from <= now,
+            ),
+            or_(
+                PublicCatalogOfferRow.valid_to.is_(None),
+                PublicCatalogOfferRow.valid_to >= now,
+            ),
         )
     ) or 0)
     return {

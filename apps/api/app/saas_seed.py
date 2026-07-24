@@ -36,7 +36,7 @@ PERMISSION_SEEDS = (
     PermissionSeed("product.view", "product", "view", "View products"),
     PermissionSeed("product.create", "product", "create", "Create products"),
     PermissionSeed("product.edit", "product", "edit", "Edit products"),
-    PermissionSeed("product.import", "product", "import", "Import supplier product files"),
+    PermissionSeed("product.import", "product", "import", "Import the fixed product workbook"),
     PermissionSeed("product.review", "product", "review", "Review and adopt product candidates"),
     PermissionSeed("product.cost.read", "product", "cost_read", "View supplier cost history"),
     PermissionSeed("product.cost.write", "product", "cost_write", "Create supplier cost records"),
@@ -107,6 +107,10 @@ def ensure_tenant_rbac(session: Session, *, tenant_id: UUID) -> dict[str, RoleRo
             permissions[seed.code] = permission
         elif permissions[seed.code].deleted_at is not None:
             restore_deleted(permissions[seed.code])
+        permission = permissions[seed.code]
+        permission.module = seed.module
+        permission.action = seed.action
+        permission.description = seed.description
 
     roles = {
         role.code: role

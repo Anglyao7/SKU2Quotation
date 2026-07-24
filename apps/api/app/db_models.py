@@ -156,6 +156,9 @@ class ImportJobRow(AuditTimestampMixin, Base):
     reviews: Mapped[list["ReviewItemRow"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
+    worker_jobs: Mapped[list["WorkerJobRow"]] = relationship(
+        back_populates="import_job"
+    )
 
 
 class ReviewItemRow(AuditTimestampMixin, Base):

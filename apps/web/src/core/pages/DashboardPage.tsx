@@ -1,7 +1,6 @@
 import { Badge, Button, Card, Heading, Progress, Text } from "@radix-ui/themes";
 import {
   ArrowRight,
-  Buildings,
   ChatCircleDots,
   CheckCircle,
   Cube,
@@ -13,12 +12,12 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { getDashboard } from "../api";
+import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import type { DashboardMetric, DashboardSnapshot } from "../types";
 
 const metricNames: Record<string, string> = {
   active_skus: "有效 SKU",
-  active_suppliers: "活跃供应商",
   today_inquiries: "今日询盘",
   inquiries_today: "今日询盘",
   open_inquiries: "进行中询盘",
@@ -28,7 +27,6 @@ const metricNames: Record<string, string> = {
 
 const destination: Record<string, string> = {
   active_skus: "/console/products",
-  active_suppliers: "/console/suppliers",
   today_inquiries: "/console/inquiries",
   inquiries_today: "/console/inquiries",
   open_inquiries: "/console/inquiries",
@@ -38,7 +36,6 @@ const destination: Record<string, string> = {
 
 const metricIcons: Record<string, typeof Cube> = {
   active_skus: Cube,
-  active_suppliers: Buildings,
   today_inquiries: ChatCircleDots,
   inquiries_today: ChatCircleDots,
   open_inquiries: ChatCircleDots,
@@ -54,7 +51,19 @@ const priorityKeys = [
   "inquiries_today",
 ];
 
+const importStatusLabel: Record<string, string> = {
+  scanning: "安全扫描",
+  parsing: "导入中",
+  needs_review: "待复核",
+  published: "已完成",
+  failed: "导入失败",
+};
+
 export function CoreDashboardPage() {
+  const { hasPermission } = useCoreAuth();
+  const canImport = hasPermission("product.import")
+    && hasPermission("product.edit")
+    && hasPermission("catalog.publish");
   const [data, setData] = useState<DashboardSnapshot>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -67,12 +76,19 @@ export function CoreDashboardPage() {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  const metrics = useMemo(() => (data?.metrics ?? []).slice(0, 4), [data]);
+  const metrics = useMemo(
+    () => (data?.metrics ?? []).filter((metric) => metric.key !== "active_suppliers").slice(0, 4),
+    [data],
+  );
   const priorities = useMemo(
     () => (data?.metrics ?? [])
       .filter((metric) => priorityKeys.includes(metric.key) && metric.value > 0)
       .sort((left, right) => priorityKeys.indexOf(left.key) - priorityKeys.indexOf(right.key))
       .slice(0, 3),
+    [data],
+  );
+  const templateImports = useMemo(
+    () => (data?.recentImports ?? []).filter((job) => job.sourceType === "PRODUCT_TEMPLATE"),
     [data],
   );
   if (loading && !data) return <div className="core-workspace"><CoreLoading label="正在读取实时经营数据" /></div>;
@@ -82,7 +98,7 @@ export function CoreDashboardPage() {
       <CorePageHeading
         eyebrow={data?.dataScope === "SELF" ? "我的工作台" : "当前商家 · 实时数据"}
         title="工作台"
-        description="先处理需要确认的业务，再继续整理 SKU、供应商与报价。"
+        description="先处理需要确认的业务，再继续整理 SKU 商品库与报价。"
         actions={<><Button asChild variant="soft"><Link to="/console/ai-search"><Sparkle />AI 查找</Link></Button><Button asChild><Link to="/console/products"><Cube />管理 SKU</Link></Button></>}
       />
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
@@ -104,7 +120,7 @@ export function CoreDashboardPage() {
             </div>
           )}
           <div className="core-quick-actions" aria-label="常用操作">
-            <Button asChild variant="soft" color="gray"><Link to="/console/suppliers"><FileArrowUp />导入资料</Link></Button>
+            {canImport ? <Button asChild variant="soft" color="gray"><Link to="/console/products?import=1"><FileArrowUp />导入商品模版</Link></Button> : null}
             <Button asChild variant="soft" color="gray"><Link to="/console/inquiries"><ChatCircleDots />新建询盘</Link></Button>
             <Button asChild variant="soft" color="gray"><Link to="/console/quotes"><FileText />查看报价</Link></Button>
           </div>
@@ -115,7 +131,6 @@ export function CoreDashboardPage() {
           {data?.dataHealth ? (
             <div className="core-health">
               <Health label="已批准图片" value={data.dataHealth.approvedImageCoverage} />
-              <Health label="供应商证据" value={data.dataHealth.supplierSourceCoverage} />
               <Health label="有效价格" value={data.dataHealth.validPriceCoverage} />
               <Button asChild variant="ghost" size="1"><Link to="/console/products">完善商品资料<ArrowRight /></Link></Button>
             </div>
@@ -139,17 +154,17 @@ export function CoreDashboardPage() {
       </section>
 
       <Card className="core-panel">
-        <div className="core-panel-heading"><div><Text size="1" color="gray">最近导入</Text><Heading size="4">商品资料处理记录</Heading></div><Button asChild size="1" variant="ghost"><Link to="/console/suppliers">查看全部</Link></Button></div>
-        {data?.recentImports.length ? <div className="core-list">
-          {data?.recentImports.slice(0, 6).map((job) => (
+        <div className="core-panel-heading"><div><Text size="1" color="gray">最近导入</Text><Heading size="4">商品模版处理记录</Heading></div>{canImport ? <Button asChild size="1" variant="ghost"><Link to="/console/products?import=1">查看全部</Link></Button> : null}</div>
+        {templateImports.length ? <div className="core-list">
+          {templateImports.slice(0, 6).map((job) => (
             <div className="core-list-row" key={job.id}>
               <span className="core-row-icon"><FileText /></span>
-              <div><Text weight="medium" as="div">{job.filename}</Text><Text size="1" color="gray">{job.supplierName} · {job.productsCount} 条候选 · {job.warningsCount} 条提醒</Text></div>
-              <Badge color={job.status === "failed" ? "red" : job.status === "parsing" ? "amber" : "jade"}>{job.status}</Badge>
+              <div><Text weight="medium" as="div">{job.filename}</Text><Text size="1" color="gray">{job.productsCount} 个 SKU · {job.warningsCount} 条提醒</Text></div>
+              <Badge color={job.status === "failed" ? "red" : job.status === "published" ? "jade" : "amber"}>{importStatusLabel[job.status] ?? job.status}</Badge>
               <Text size="1" color="gray">{coreDate(job.createdAt)}</Text>
             </div>
           ))}
-        </div> : <CoreEmpty title="还没有导入记录" description="先建立供应商档案，再上传 CSV、XLSX、PDF 或 Word 商品资料。" action={<Button asChild variant="soft"><Link to="/console/suppliers"><FileArrowUp />开始导入</Link></Button>} />}
+        </div> : <CoreEmpty title="还没有导入记录" description="使用固定的商品模版.xlsx，一次导入当前商家的全部商品。" action={canImport ? <Button asChild variant="soft"><Link to="/console/products?import=1"><FileArrowUp />导入商品模版</Link></Button> : undefined} />}
       </Card>
     </div>
   );

@@ -48,6 +48,7 @@ function resolveApiBase() {
 }
 
 const API_BASE = resolveApiBase();
+export const PRODUCT_TEMPLATE_DOWNLOAD_URL = `${API_BASE}/product-template.xlsx`;
 
 export interface AuthPublicConfig {
   provider: "local_fake" | "enterprise_oidc";
@@ -429,11 +430,13 @@ interface ApiImportJob {
   id: string;
   filename: string;
   supplier: string;
+  source_type: string;
   detected_type: string;
   status: ImportJob["status"];
   progress: number;
   products: number;
   warnings: number;
+  warning_messages: string[];
   created_at: string;
   parser: string;
   extension_matches: boolean;
@@ -445,11 +448,13 @@ function mapImport(row: ApiImportJob): ImportJob {
     id: row.id,
     filename: row.filename,
     supplier: row.supplier,
+    sourceType: row.source_type,
     detectedType: row.detected_type,
     status: row.status,
     progress: row.progress,
     products: row.products,
     warnings: row.warnings,
+    warningMessages: row.warning_messages ?? [],
     createdAt: row.created_at,
     parser: row.parser,
     extensionMatches: row.extension_matches,
@@ -508,11 +513,22 @@ export async function listImports() {
   return (await request<ApiImportJob[]>("/imports")).map(mapImport);
 }
 
+export async function getImport(jobId: string) {
+  return mapImport(await request<ApiImportJob>(`/imports/${encodeURIComponent(jobId)}`));
+}
+
 export async function createImport(file: File, supplierId?: string) {
   const body = new FormData();
   body.append("file", file);
   body.append("source_type", "SUPPLIER_CATALOG");
   if (supplierId) body.append("supplier_id", supplierId);
+  return mapImport(await request<ApiImportJob>("/imports", { method: "POST", body }));
+}
+
+export async function createProductTemplateImport(file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("source_type", "PRODUCT_TEMPLATE");
   return mapImport(await request<ApiImportJob>("/imports", { method: "POST", body }));
 }
 
@@ -918,11 +934,11 @@ export async function createPrice(input: { supplierProductId: string; skuId?: st
   }));
 }
 
-interface ApiDashboard { generated_at: string; data_scope: "TENANT" | "SELF"; metrics: Array<{ key: string; label: string; value: number; unit?: string | null; status: string; destination: string }>; recent_imports: Array<{ id: string; filename: string; supplier_name: string; status: string; progress: number; products_count: number; warnings_count: number; created_at: string }>; data_health?: { score: number; active_products: number; approved_image_coverage: number; supplier_source_coverage: number; valid_price_coverage: number } | null }
+interface ApiDashboard { generated_at: string; data_scope: "TENANT" | "SELF"; metrics: Array<{ key: string; label: string; value: number; unit?: string | null; status: string; destination: string }>; recent_imports: Array<{ id: string; filename: string; supplier_name: string; source_type: string; status: string; progress: number; products_count: number; warnings_count: number; created_at: string }>; data_health?: { score: number; active_products: number; approved_image_coverage: number; supplier_source_coverage: number; valid_price_coverage: number } | null }
 
 export async function getDashboard(): Promise<DashboardSnapshot> {
   const row = await request<ApiDashboard>("/dashboard");
-  return { generatedAt: row.generated_at, dataScope: row.data_scope, metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })), dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined };
+  return { generatedAt: row.generated_at, dataScope: row.data_scope, metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, sourceType: item.source_type, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })), dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined };
 }
 
 interface ApiSupplierProfile { id: string; supplier_code: string; name: string; category: string; category_summary?: string | null; country_code?: string | null; website?: string | null; status: string; risk_level: string; health: string; version: number; active_products: number; active_skus: number; pending_reviews: number; valid_prices: number; expired_prices: number; latest_import_at?: string | null; updated_at: string; latest_score?: { overall_score?: number | string | null; quality_score?: number | string | null; price_score?: number | string | null; delivery_score?: number | string | null; response_score?: number | string | null; risk_score?: number | string | null; sample_size: number; method_version: string; calculated_at: string } | null }

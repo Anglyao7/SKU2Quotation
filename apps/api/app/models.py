@@ -28,6 +28,7 @@ class ImportJob(BaseModel):
     id: str
     filename: str
     supplier: str
+    source_type: str = "UNKNOWN"
     detected_type: str
     status: JobStatus
     progress: int = Field(ge=0, le=100)
@@ -37,6 +38,8 @@ class ImportJob(BaseModel):
     parser: str = "manual_review"
     extension_matches: bool = True
     error_message: str | None = None
+    warning_messages: list[str] = Field(default_factory=list)
+    result_details: dict[str, object] = Field(default_factory=dict)
 
 
 class SupplierFileImportResponse(ImportJob):

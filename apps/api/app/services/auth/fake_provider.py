@@ -4,6 +4,15 @@ from urllib.parse import urlparse
 from .contracts import IdentityClaim, IdentityProviderError
 
 
+def _allowed_redirect_hosts() -> set[str]:
+    configured = {
+        host.strip().lower().rstrip(".")
+        for host in os.getenv("LOCAL_FAKE_REDIRECT_HOSTS", "").split(",")
+        if host.strip()
+    }
+    return {"localhost", "127.0.0.1", "::1", *configured}
+
+
 class FakeIdentityProviderAdapter:
     """Non-production authorization-code adapter for local and automated tests."""
 
@@ -24,10 +33,11 @@ class FakeIdentityProviderAdapter:
         if len(code_verifier) < 43 or len(code_verifier) > 128:
             raise IdentityProviderError("invalid PKCE verifier")
         parsed = urlparse(redirect_uri)
-        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
-            "localhost",
-            "127.0.0.1",
-        }:
+        redirect_hostname = (parsed.hostname or "").lower().rstrip(".")
+        if (
+            parsed.scheme not in {"http", "https"}
+            or redirect_hostname not in _allowed_redirect_hosts()
+        ):
             raise IdentityProviderError("redirect URI is not allowed")
         if not authorization_code.startswith("fake:"):
             raise IdentityProviderError("authorization code exchange failed")

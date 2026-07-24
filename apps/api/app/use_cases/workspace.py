@@ -83,7 +83,9 @@ def get_dashboard(
         source_coverage = coverage(data["sourced_products"])
         price_coverage = coverage(data["priced_products"])
         data_health = DashboardDataHealth(
-            score=round((image_coverage + source_coverage + price_coverage) / 3 * 100),
+            # Supplier linkage is optional in the fixed-template architecture,
+            # so it must not lower the merchant's product-data health score.
+            score=round((image_coverage + price_coverage) / 2 * 100),
             active_products=active_products,
             approved_image_coverage=image_coverage,
             supplier_source_coverage=source_coverage,
@@ -93,6 +95,7 @@ def get_dashboard(
         DashboardImport(
             id=job.id,
             filename=source.original_filename,
+            source_type=job.source_type,
             supplier_name=job.supplier_name,
             status=job.status,
             progress=job.progress,
