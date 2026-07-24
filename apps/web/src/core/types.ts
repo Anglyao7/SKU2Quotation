@@ -43,6 +43,46 @@ export interface PermissionSet {
   permissions: string[];
 }
 
+export interface TenantPermission {
+  code: string;
+  module: string;
+  action: string;
+  description?: string;
+}
+
+export interface TenantRole {
+  id: string;
+  code: string;
+  name: string;
+  description?: string;
+  isSystem: boolean;
+  status: string;
+  permissionCodes: string[];
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantMemberRole {
+  id: string;
+  code: string;
+  name: string;
+  isSystem: boolean;
+}
+
+export interface TenantMember {
+  id: string;
+  userId: string;
+  displayName: string;
+  email?: string;
+  jobTitle?: string;
+  status: string;
+  permissionVersion: number;
+  roles: TenantMemberRole[];
+  joinedAt?: string;
+  createdAt: string;
+}
+
 export type ImportJobStatus = "scanning" | "parsing" | "needs_review" | "published" | "failed";
 
 export interface ImportJob {

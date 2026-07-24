@@ -104,6 +104,7 @@ from app.services.rbac import has_permission, list_permissions
 from app.services.auth.tokens import REFRESH_COOKIE_NAME, hash_secret
 from app.services.auth.contracts import IdentityClaim, IdentityProviderError
 from app.services.auth.oidc_provider import OidcIdentityProviderAdapter
+from app.services.auth.service import AuthError, _validate_new_password
 from app.production_bootstrap import bootstrap_production_owner
 from app.tenant_slugs import RESERVED_TENANT_SLUGS
 from app.model_mixins import mark_deleted, restore_deleted
@@ -691,7 +692,7 @@ def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
             },
             json={
                 "current_password": "InitialPass!123",
-                "new_password": "UpdatedPass!456",
+                "new_password": "Simple42",
             },
         )
 
@@ -699,7 +700,7 @@ def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
     assert response.content == b""
     assert response.headers["cache-control"] == "no-store"
     assert authenticated_passwords[-1] == (email, "InitialPass!123")
-    assert changed_passwords == [(subject, "UpdatedPass!456")]
+    assert changed_passwords == [(subject, "Simple42")]
     assert limits == [
         {
             "scope": "auth-password-change",
@@ -741,8 +742,11 @@ def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
 @pytest.mark.parametrize(
     ("new_password", "expected_code"),
     [
-        ("short", "PASSWORD_POLICY_VIOLATION"),
-        ("NoSpecialCharacter123", "PASSWORD_POLICY_VIOLATION"),
+        ("short1", "PASSWORD_POLICY_VIOLATION"),
+        ("12345678", "PASSWORD_POLICY_VIOLATION"),
+        ("abcdefgh", "PASSWORD_POLICY_VIOLATION"),
+        ("Abcd 123", "PASSWORD_POLICY_VIOLATION"),
+        ("A1" + "b" * 127, "PASSWORD_POLICY_VIOLATION"),
         ("InitialPass!123", "PASSWORD_POLICY_VIOLATION"),
     ],
 )
@@ -833,6 +837,43 @@ def test_password_change_rejects_weak_or_reused_password_before_provider_update(
     assert "InitialPass!123" not in response.text
     assert new_password not in response.text
     assert provider_calls == []
+
+
+def test_new_password_policy_accepts_letters_digits_and_optional_symbols() -> None:
+    user = UserRow(
+        id=uuid4(),
+        email_normalized="merchant42@example.test",
+        display_name="Merchant42",
+        identity_provider=f"oidc:{'9' * 32}",
+        identity_subject=f"password-policy-unit-{uuid4()}",
+        status="active",
+    )
+
+    for password in ("Simple42", "ABCDEFG1", "abcdefg1", "Abcd!234"):
+        _validate_new_password(
+            current_password="Current1",
+            new_password=password,
+            user=user,
+        )
+
+    for password in (
+        "short1",
+        "12345678",
+        "abcdefgh",
+        "Abcd 123",
+        "A1" + "b" * 127,
+        "Current1",
+        "merchant42@example.test",
+        "merchant42",
+        "Merchant42",
+    ):
+        with pytest.raises(AuthError) as exc_info:
+            _validate_new_password(
+                current_password="Current1",
+                new_password=password,
+                user=user,
+            )
+        assert exc_info.value.code == "PASSWORD_POLICY_VIOLATION"
 
 
 def test_password_change_hides_wrong_password_and_cross_account_claims(
@@ -1270,7 +1311,7 @@ def test_platform_admin_manages_tenant_lifecycle(
                 select(RoleRow).where(RoleRow.tenant_id == UUID(tenant_id))
             ).all()
         }
-        assert set(roles) == {"OWNER", "ADMIN", "SALES", "PURCHASING"}
+        assert set(roles) == {"OWNER", "ADMIN", "SALES", "PURCHASING", "VIEWER"}
         assert invited_user is not None and invited_membership is not None
         assert invited_user.identity_provider == "pending_oidc"
         assert invited_user.status == "invited"
@@ -5673,7 +5714,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260723_0025"
+        ).scalar() == "20260724_0026"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -5683,3 +5724,419 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)
+
+
+def _add_tenant_member_with_role(
+    *,
+    role_code: str,
+    display_name: str,
+) -> tuple[UUID, UUID]:
+    user_id = uuid4()
+    membership_id = uuid4()
+    with SessionLocal() as session:
+        role = session.scalar(
+            select(RoleRow).where(
+                RoleRow.tenant_id == DEFAULT_TENANT_ID,
+                RoleRow.code == role_code,
+            )
+        )
+        assert role is not None
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=f"{user_id.hex}@access-control.test",
+                display_name=display_name,
+                identity_provider="local-bootstrap",
+                identity_subject=str(user_id),
+                status="active",
+                is_platform_admin=False,
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.flush()
+        session.add(
+            MembershipRoleRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                membership_id=membership_id,
+                role_id=role.id,
+                assigned_by_user_id=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.commit()
+    return user_id, membership_id
+
+
+def _local_access_token(test_client: TestClient, user_id: UUID) -> str:
+    response = test_client.post(
+        "/api/v1/auth/login",
+        json={
+            "provider": "local_fake",
+            "authorization_code": f"fake:{user_id}",
+            "code_verifier": "R" * 43,
+            "redirect_uri": "http://127.0.0.1:5173/login/callback",
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    if not data["requires_tenant_selection"]:
+        return data["access_token"]
+    headers = {"Authorization": f"Bearer {data['access_token']}"}
+    memberships = test_client.get(
+        "/api/v1/auth/memberships", headers=headers
+    )
+    assert memberships.status_code == 200, memberships.text
+    membership = next(
+        row
+        for row in memberships.json()
+        if row["tenant_id"] == str(DEFAULT_TENANT_ID)
+    )
+    switched = test_client.post(
+        "/api/v1/auth/tenant-context",
+        headers={**headers, "X-CSRF-Token": data["csrf_token"]},
+        json={"membership_id": membership["id"]},
+    )
+    assert switched.status_code == 200, switched.text
+    return switched.json()["data"]["access_token"]
+
+
+def test_tenant_access_control_manages_custom_roles_and_isolates_members() -> None:
+    _user_id, membership_id = _add_tenant_member_with_role(
+        role_code="VIEWER",
+        display_name="Access Control Target",
+    )
+    role_code = f"AUDITOR_{uuid4().hex[:8].upper()}"
+    created = client.post(
+        "/api/v1/access-control/roles",
+        json={
+            "code": role_code,
+            "name": "报价审阅",
+            "description": "只读报价与图册",
+            "permission_codes": ["quotation.view"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    custom_role = created.json()
+    assert custom_role["is_system"] is False
+    assert custom_role["permission_codes"] == ["quotation.view"]
+
+    updated = client.patch(
+        f"/api/v1/access-control/roles/{custom_role['id']}",
+        json={"permission_codes": ["quotation.view", "catalog.view"]},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["permission_codes"] == ["catalog.view", "quotation.view"]
+
+    before = next(
+        row
+        for row in client.get("/api/v1/access-control/members").json()
+        if row["id"] == str(membership_id)
+    )
+    assigned = client.put(
+        f"/api/v1/access-control/members/{membership_id}/roles",
+        json={"role_ids": [custom_role["id"]]},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert [role["code"] for role in assigned.json()["roles"]] == [role_code]
+    assert assigned.json()["permission_version"] == before["permission_version"] + 1
+
+    owner_role = next(
+        role
+        for role in client.get("/api/v1/access-control/roles").json()
+        if role["code"] == "OWNER"
+    )
+    immutable = client.patch(
+        f"/api/v1/access-control/roles/{owner_role['id']}",
+        json={"name": "Mutable Owner"},
+    )
+    assert immutable.status_code == 409
+    assert immutable.json()["detail"]["code"] == "SYSTEM_ROLE_IMMUTABLE"
+
+    organization_id = uuid4()
+    other_tenant_id = uuid4()
+    other_user_id = uuid4()
+    other_membership_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            OrganizationRow(
+                id=organization_id,
+                code=f"ACL-{organization_id.hex[:8]}",
+                name="Cross Tenant ACL",
+            )
+        )
+        session.add(
+            UserRow(
+                id=other_user_id,
+                email_normalized=f"{other_user_id.hex}@cross-acl.test",
+                display_name="Cross Tenant Member",
+                identity_provider="local-bootstrap",
+                identity_subject=str(other_user_id),
+                status="active",
+            )
+        )
+        session.flush()
+        session.add(
+            TenantRow(
+                id=other_tenant_id,
+                organization_id=organization_id,
+                slug=f"acl-{other_tenant_id.hex[:10]}",
+                name="Cross Tenant ACL",
+            )
+        )
+        session.flush()
+        session.add(
+            MembershipRow(
+                id=other_membership_id,
+                tenant_id=other_tenant_id,
+                user_id=other_user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    cross_tenant = client.put(
+        f"/api/v1/access-control/members/{other_membership_id}/roles",
+        json={"role_ids": [custom_role["id"]]},
+    )
+    assert cross_tenant.status_code == 404
+    assert cross_tenant.json()["detail"]["code"] == "MEMBERSHIP_NOT_FOUND"
+
+
+def test_viewer_cannot_write_or_manage_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer_user_id, _membership_id = _add_tenant_member_with_role(
+        role_code="VIEWER",
+        display_name="Read Only Viewer",
+    )
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as viewer_client:
+        token = _local_access_token(viewer_client, viewer_user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        assert (
+            viewer_client.get(
+                "/api/v1/product-center/skus", headers=headers
+            ).status_code
+            == 200
+        )
+        denied_supplier = viewer_client.post(
+            "/api/v1/supplier-profiles",
+            headers=headers,
+            json={
+                "supplier_code": f"NO-{uuid4().hex[:8]}",
+                "name": "Viewer Cannot Create",
+                "category": "test",
+                "country_code": "CN",
+            },
+        )
+        denied_role = viewer_client.post(
+            "/api/v1/access-control/roles",
+            headers=headers,
+            json={
+                "code": f"NO_{uuid4().hex[:8].upper()}",
+                "name": "No escalation",
+                "permission_codes": ["product.view"],
+            },
+        )
+    assert denied_supplier.status_code == 403
+    assert denied_role.status_code == 403
+    assert denied_role.json()["detail"]["code"] == "PERMISSION_DENIED"
+
+
+def test_access_control_blocks_privilege_escalation_and_owner_assignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager_user_id = uuid4()
+    manager_membership_id = uuid4()
+    manager_role_id = uuid4()
+    target_user_id, target_membership_id = _add_tenant_member_with_role(
+        role_code="VIEWER",
+        display_name="Escalation Target",
+    )
+    del target_user_id
+    with SessionLocal() as session:
+        manager_role = RoleRow(
+            id=manager_role_id,
+            tenant_id=DEFAULT_TENANT_ID,
+            code=f"ROLE_MANAGER_{uuid4().hex[:6].upper()}",
+            name="Delegated Role Manager",
+            is_system=False,
+            status="active",
+        )
+        session.add(
+            UserRow(
+                id=manager_user_id,
+                email_normalized=f"{manager_user_id.hex}@delegated-manager.test",
+                display_name="Delegated Manager",
+                identity_provider="local-bootstrap",
+                identity_subject=str(manager_user_id),
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=manager_membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=manager_user_id,
+                status="active",
+            )
+        )
+        session.add(manager_role)
+        session.flush()
+        for code in ("system.user_manage", "system.role_manage"):
+            permission = session.scalar(
+                select(PermissionRow).where(PermissionRow.code == code)
+            )
+            assert permission is not None
+            session.add(
+                RolePermissionRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    role_id=manager_role.id,
+                    permission_id=permission.id,
+                )
+            )
+        session.add(
+            MembershipRoleRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                membership_id=manager_membership_id,
+                role_id=manager_role.id,
+                assigned_by_user_id=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.commit()
+
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as manager_client:
+        manager_token = _local_access_token(manager_client, manager_user_id)
+        escalation = manager_client.post(
+            "/api/v1/access-control/roles",
+            headers={"Authorization": f"Bearer {manager_token}"},
+            json={
+                "code": f"COST_{uuid4().hex[:8].upper()}",
+                "name": "Forbidden Cost Role",
+                "permission_codes": ["product.cost.write"],
+            },
+        )
+        governance_lockout = manager_client.patch(
+            f"/api/v1/access-control/roles/{manager_role_id}",
+            headers={"Authorization": f"Bearer {manager_token}"},
+            json={"permission_codes": ["system.role_manage"]},
+        )
+    assert escalation.status_code == 403
+    assert escalation.json()["detail"]["code"] == "PRIVILEGE_ESCALATION_FORBIDDEN"
+    assert governance_lockout.status_code == 409
+    assert governance_lockout.json()["detail"]["code"] == "SELF_LOCKOUT_FORBIDDEN"
+
+    admin_user_id, _admin_membership_id = _add_tenant_member_with_role(
+        role_code="ADMIN",
+        display_name="Tenant Admin But Not Owner",
+    )
+    with TestClient(app) as admin_client:
+        admin_token = _local_access_token(admin_client, admin_user_id)
+        owner_role = next(
+            role
+            for role in admin_client.get(
+                "/api/v1/access-control/roles",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            ).json()
+            if role["code"] == "OWNER"
+        )
+        owner_escalation = admin_client.put(
+            f"/api/v1/access-control/members/{target_membership_id}/roles",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"role_ids": [owner_role["id"]]},
+        )
+    assert owner_escalation.status_code == 403
+    assert owner_escalation.json()["detail"]["code"] == "OWNER_ASSIGNMENT_FORBIDDEN"
+
+
+def test_access_control_prevents_self_lockout_and_last_owner_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _second_owner_user_id, second_owner_membership_id = _add_tenant_member_with_role(
+        role_code="OWNER",
+        display_name="Second Tenant Owner",
+    )
+    roles = {
+        role["code"]: role
+        for role in client.get("/api/v1/access-control/roles").json()
+    }
+    self_lockout = client.put(
+        f"/api/v1/access-control/members/{DEFAULT_MEMBERSHIP_ID}/roles",
+        json={"role_ids": [roles["VIEWER"]["id"]]},
+    )
+    assert self_lockout.status_code == 409
+    assert self_lockout.json()["detail"]["code"] == "SELF_LOCKOUT_FORBIDDEN"
+
+    admin_user_id, _admin_membership_id = _add_tenant_member_with_role(
+        role_code="ADMIN",
+        display_name="Owner Removal Guard Admin",
+    )
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        with TestClient(app) as admin_client:
+            admin_token = _local_access_token(admin_client, admin_user_id)
+            forbidden_owner_removal = admin_client.put(
+                f"/api/v1/access-control/members/{second_owner_membership_id}/roles",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"role_ids": [roles["ADMIN"]["id"]]},
+            )
+    assert forbidden_owner_removal.status_code == 403
+    assert (
+        forbidden_owner_removal.json()["detail"]["code"]
+        == "OWNER_ASSIGNMENT_FORBIDDEN"
+    )
+
+    downgrade_second = client.put(
+        f"/api/v1/access-control/members/{second_owner_membership_id}/roles",
+        json={"role_ids": [roles["VIEWER"]["id"]]},
+    )
+    assert downgrade_second.status_code == 200, downgrade_second.text
+
+    remove_last_owner = client.put(
+        f"/api/v1/access-control/members/{DEFAULT_MEMBERSHIP_ID}/roles",
+        json={"role_ids": [roles["ADMIN"]["id"]]},
+    )
+    assert remove_last_owner.status_code == 409
+    assert remove_last_owner.json()["detail"]["code"] == "LAST_OWNER_REQUIRED"
+
+
+def test_member_role_change_invalidates_existing_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer_user_id, viewer_membership_id = _add_tenant_member_with_role(
+        role_code="VIEWER",
+        display_name="Permission Version Viewer",
+    )
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as viewer_client, TestClient(app) as owner_client:
+        viewer_token = _local_access_token(viewer_client, viewer_user_id)
+        owner_token = _local_access_token(owner_client, DEFAULT_OWNER_USER_ID)
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        role_response = owner_client.get(
+            "/api/v1/access-control/roles", headers=owner_headers
+        )
+        assert role_response.status_code == 200, role_response.text
+        sales_role = next(
+            role
+            for role in role_response.json()
+            if role["code"] == "SALES"
+        )
+        changed = owner_client.put(
+            f"/api/v1/access-control/members/{viewer_membership_id}/roles",
+            headers=owner_headers,
+            json={"role_ids": [sales_role["id"]]},
+        )
+        assert changed.status_code == 200, changed.text
+        stale = viewer_client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+    assert stale.status_code == 401
+    assert stale.json()["detail"]["code"] == "AUTH_PERMISSION_STALE"

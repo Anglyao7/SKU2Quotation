@@ -42,13 +42,22 @@ def _login_identifier(value: str | None, *, invited_email: str) -> str:
     return identifier
 
 
-def _valid_password(value: str) -> bool:
+def _valid_password(value: str, *identity_candidates: str) -> bool:
+    normalized = value.casefold()
+    identities = {
+        candidate.strip().casefold()
+        for candidate in identity_candidates
+        if candidate.strip()
+    }
     return (
-        len(value) >= 12
-        and any(character.isupper() for character in value)
-        and any(character.islower() for character in value)
+        8 <= len(value) <= 128
+        and not any(character.isspace() for character in value)
+        and any(
+            character.isascii() and character.isalpha()
+            for character in value
+        )
         and any(character.isdigit() for character in value)
-        and any(not character.isalnum() and not character.isspace() for character in value)
+        and normalized not in identities
     )
 
 
@@ -202,10 +211,16 @@ def provision(arguments: argparse.Namespace) -> None:
         else:
             initial_password = getpass("Initial user password: ")
             confirmation = getpass("Repeat initial user password: ")
-            if initial_password != confirmation or not _valid_password(initial_password):
+            if initial_password != confirmation or not _valid_password(
+                initial_password,
+                username,
+                email,
+                email.split("@", 1)[0],
+            ):
                 raise SystemExit(
-                    "Passwords must match and contain 12+ characters with upper, lower, "
-                    "digit, and special characters."
+                    "Passwords must match and contain 8-128 characters with at "
+                    "least one letter and one digit, no whitespace, and must "
+                    "differ from the account identifier."
                 )
             create_response = _request(
                 client,

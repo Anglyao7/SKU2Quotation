@@ -180,16 +180,20 @@ for name in "${secret_values[@]}"; do
 done
 
 initial_user_password="${KEYCLOAK_INITIAL_USER_PASSWORD}"
-(( ${#initial_user_password} >= 16 )) \
-  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain at least 16 characters"
-[[ "${initial_user_password}" =~ [[:upper:]] ]] \
-  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain an uppercase letter"
-[[ "${initial_user_password}" =~ [[:lower:]] ]] \
-  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain a lowercase letter"
+(( ${#initial_user_password} >= 8 && ${#initial_user_password} <= 128 )) \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain 8-128 characters"
+[[ "${initial_user_password}" =~ [A-Za-z] ]] \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain a letter"
 [[ "${initial_user_password}" =~ [[:digit:]] ]] \
   || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain a digit"
-[[ "${initial_user_password}" =~ [^[:alnum:][:space:]] ]] \
-  || die "KEYCLOAK_INITIAL_USER_PASSWORD must contain a special character"
+[[ ! "${initial_user_password}" =~ [[:space:]] ]] \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must not contain whitespace"
+normalized_initial_password="${initial_user_password,,}"
+normalized_bootstrap_email="${OIDC_BOOTSTRAP_ADMIN_EMAIL,,}"
+[[ "${normalized_initial_password}" != "${normalized_bootstrap_email}" ]] \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must differ from the account identifier"
+[[ "${normalized_initial_password}" != "${normalized_bootstrap_email%%@*}" ]] \
+  || die "KEYCLOAK_INITIAL_USER_PASSWORD must differ from the account identifier"
 
 [[ "${ATC_BACKUP_ROOT}" == /* && "${ATC_BACKUP_ROOT}" != "/" ]] \
   || die "ATC_BACKUP_ROOT must be a dedicated absolute directory"

@@ -261,6 +261,7 @@ export function AccountSettingsPage() {
                     {rule.label}
                   </span>
                 ))}
+                <Text size="1" color="gray" className="account-password-symbol-note">符号可以使用，但不是必填项。</Text>
               </div>
             </div>
 

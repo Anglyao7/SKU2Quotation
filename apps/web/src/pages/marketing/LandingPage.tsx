@@ -16,7 +16,6 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Brand } from "../../components/Brand";
-import { ThemeToggle } from "../../components/ThemeToggle";
 import styles from "./LandingPage.module.css";
 
 function Reveal({ children, className = "" }: { children: ReactNode; className?: string }) {
@@ -132,7 +131,6 @@ export function LandingPage() {
             <a href="#merchants">商家入口</a>
           </nav>
           <div className={styles.headerActions}>
-            <span className={styles.themeControl}><ThemeToggle /></span>
             <Link className={styles.headerLogin} to="/login">登录工作台</Link>
             <button
               className={styles.menuButton}

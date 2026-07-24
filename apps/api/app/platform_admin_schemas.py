@@ -11,7 +11,7 @@ from .tenant_slugs import is_reserved_tenant_slug
 
 
 TenantStatus = Literal["active", "suspended", "archived"]
-TenantRoleCode = Literal["OWNER", "ADMIN", "SALES", "PURCHASING"]
+TenantRoleCode = Literal["OWNER", "ADMIN", "SALES", "PURCHASING", "VIEWER"]
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 

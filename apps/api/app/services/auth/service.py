@@ -262,8 +262,9 @@ def _password_policy_error() -> AuthError:
     return AuthError(
         "PASSWORD_POLICY_VIOLATION",
         (
-            "new password must be 12-128 characters and include an uppercase "
-            "letter, lowercase letter, digit, and special character"
+            "new password must be 8-128 characters, contain at least one "
+            "letter and one digit, contain no whitespace, and differ from "
+            "the current password and account identifier"
         ),
         status_code=422,
     )
@@ -276,19 +277,17 @@ def _validate_new_password(
     user: UserRow,
 ) -> None:
     if (
-        len(new_password) < 12
+        len(new_password) < 8
         or len(new_password) > 128
         or any(
             character.isspace() or ord(character) < 32
             for character in new_password
         )
-        or not any(character.isupper() for character in new_password)
-        or not any(character.islower() for character in new_password)
-        or not any(character.isdigit() for character in new_password)
         or not any(
-            not character.isalnum() and not character.isspace()
+            character.isascii() and character.isalpha()
             for character in new_password
         )
+        or not any(character.isdigit() for character in new_password)
     ):
         raise _password_policy_error()
     if hmac.compare_digest(
@@ -298,7 +297,16 @@ def _validate_new_password(
         raise _password_policy_error()
     normalized = new_password.casefold()
     email = (user.email_normalized or "").casefold()
-    if email and normalized in {email, email.split("@", 1)[0]}:
+    account_identifiers = {
+        candidate
+        for candidate in (
+            email,
+            email.split("@", 1)[0] if email else "",
+            (user.display_name or "").strip().casefold(),
+        )
+        if candidate
+    }
+    if normalized in account_identifiers:
         raise _password_policy_error()
 
 

@@ -72,6 +72,12 @@ ROLE_SEEDS = {
         "supplier.view", "supplier.manage", "inquiry.view", "quotation.view",
         "order.view", "order.manage",
     },
+    # Read-only tenant member. SALES and PURCHASING remain the two scoped
+    # editor variants so existing merchant assignments stay backward compatible.
+    "VIEWER": {
+        "product.view", "supplier.view", "customer.view", "inquiry.view",
+        "quotation.view", "catalog.view", "order.view",
+    },
 }
 
 

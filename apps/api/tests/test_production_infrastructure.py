@@ -13,6 +13,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from scripts import run_tenant_workers
+from scripts.provision_keycloak_user_interactive import _valid_password
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -513,12 +514,57 @@ def test_keycloak_initial_password_validation_matches_realm_policy() -> None:
     assert "KEYCLOAK_INITIAL_USER_PASSWORD" not in hex_secret_block
     assert "initial_user_password" in validator
     for password_class in (
-        "[[:upper:]]",
-        "[[:lower:]]",
+        "[A-Za-z]",
         "[[:digit:]]",
-        "[^[:alnum:][:space:]]",
+        "[[:space:]]",
     ):
         assert password_class in validator
+    assert ">= 8" in validator
+    assert "<= 128" in validator
+    assert "uppercase letter" not in validator
+    assert "lowercase letter" not in validator
+    assert "special character" not in validator
+
+    realm_template = json.loads(
+        (
+            REPOSITORY_ROOT
+            / "infra"
+            / "production"
+            / "keycloak"
+            / "atc-realm.json.template"
+        ).read_text(encoding="utf-8")
+    )
+    assert realm_template["passwordPolicy"] == (
+        r"length(8) and maxLength(128) and digits(1) and "
+        r"regexPattern(^(?=.*[A-Za-z])\S+$) and notUsername(undefined) "
+        r"and notEmail(undefined)"
+    )
+
+    for password in ("Simple42", "ABCDEFG1", "abcdefg1", "Abcd!234"):
+        assert _valid_password(password, "owner@example.test", "owner")
+    for password in (
+        "short1",
+        "12345678",
+        "abcdefgh",
+        "Abcd 123",
+        "A1" + "b" * 127,
+        "OWNER@EXAMPLE.TEST",
+        "OWNER",
+    ):
+        assert not _valid_password(password, "owner@example.test", "owner")
+
+    reset_script = (
+        REPOSITORY_ROOT
+        / "infra"
+        / "production"
+        / "keycloak-reset-user-password.sh"
+    ).read_text(encoding="utf-8")
+    assert ">= 8" in reset_script
+    assert "<= 128" in reset_script
+    assert "[A-Za-z]" in reset_script
+    assert "[0-9]" in reset_script
+    assert "[[:space:]]" in reset_script
+    assert "special character" not in reset_script
 
     example = (REPOSITORY_ROOT / ".env.production.example").read_text(
         encoding="utf-8"

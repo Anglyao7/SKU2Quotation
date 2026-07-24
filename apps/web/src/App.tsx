@@ -90,10 +90,10 @@ const router = createBrowserRouter([
       children: [
         { index: true, element: <CoreDashboardPage /> },
         { path: "dashboard", element: <Navigate to="/console" replace /> },
-        { path: "ai-search", element: <PermissionGate anyOf={["product.view", "inquiry.view"]}><AiSearchPage /></PermissionGate> },
-        { path: "products", element: <PermissionGate anyOf={["product.view", "product.edit", "product.review"]}><ProductsPage /></PermissionGate> },
+        { path: "ai-search", element: <PermissionGate anyOf={["product.view"]}><AiSearchPage /></PermissionGate> },
+        { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
         { path: "products/review", element: <PermissionGate anyOf={["product.review"]}><ReviewPage /></PermissionGate> },
-        { path: "suppliers", element: <PermissionGate anyOf={["supplier.view", "supplier.manage", "product.import"]}><SuppliersPage /></PermissionGate> },
+        { path: "suppliers", element: <PermissionGate anyOf={["supplier.view", "supplier.manage"]}><SuppliersPage /></PermissionGate> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },

@@ -268,8 +268,14 @@ def test_member_invitation_migration_has_database_email_race_guard() -> None:
     assert member_invitation_function.index(
         "acquire_invitation_email_lock"
     ) < member_invitation_function.index("users = list")
-    for role in ("OWNER", "ADMIN", "SALES", "PURCHASING"):
-        assert role in invitation_source
+    invitation_role_source = invitation_source + (
+        API_ROOT
+        / "migrations"
+        / "versions"
+        / "20260724_0026_add_viewer_system_role.py"
+    ).read_text(encoding="utf-8")
+    for role in ("OWNER", "ADMIN", "SALES", "PURCHASING", "VIEWER"):
+        assert role in invitation_role_source
 
 
 def test_postgres_oidc_binding_qualifies_the_tenant_loop_variable() -> None:
@@ -284,6 +290,93 @@ def test_postgres_oidc_binding_qualifies_the_tenant_loop_variable() -> None:
     assert "membership.tenant_id = v_tenant_id" in source
     assert "tenant.id = v_tenant_id" in source
     assert "membership.tenant_id = tenant_id" not in source
+
+
+def test_owner_role_changes_take_a_common_tenant_lock_before_counting() -> None:
+    repository_source = (
+        API_ROOT / "app" / "repositories" / "access_control_repository.py"
+    ).read_text(encoding="utf-8")
+    use_case_source = (
+        API_ROOT / "app" / "use_cases" / "access_control.py"
+    ).read_text(encoding="utf-8")
+    lock_function = repository_source[
+        repository_source.index("def lock_owner_role") :
+        repository_source.index("\ndef membership_role_assignments")
+    ]
+    update_function = use_case_source[
+        use_case_source.index("def update_member_roles") :
+    ]
+
+    assert ".with_for_update()" in lock_function
+    assert update_function.index("lock_owner_role") < update_function.index(
+        "active_owner_membership_ids"
+    )
+
+
+def test_viewer_migration_reconciles_all_existing_tenants_and_restores_force_rls() -> None:
+    source = (
+        API_ROOT
+        / "migrations"
+        / "versions"
+        / "20260724_0026_add_viewer_system_role.py"
+    ).read_text(encoding="utf-8")
+
+    assert "FOR v_tenant_id IN" in source
+    assert "FROM public.tenants" in source
+    assert "'VIEWER'" in source
+    assert "INSERT INTO public.role_permissions" in source
+    assert "custom VIEWER role conflicts with the managed system role" in source
+    assert "UPDATE public.role_permissions AS assignment" in source
+    assert "AND NOT EXISTS" in source
+    for table in ("tenants", "roles", "role_permissions"):
+        assert f"ALTER TABLE public.{table} NO FORCE ROW LEVEL SECURITY" in source
+        assert f"ALTER TABLE public.{table} FORCE ROW LEVEL SECURITY" in source
+
+
+def test_viewer_migration_exposes_member_directory_without_widening_user_writes() -> None:
+    source = (
+        API_ROOT
+        / "migrations"
+        / "versions"
+        / "20260724_0026_add_viewer_system_role.py"
+    ).read_text(encoding="utf-8")
+    upgrade_policy = source[
+        source.index("def _enable_tenant_member_directory_visibility") :
+        source.index("\ndef _restore_active_member_user_policy")
+    ]
+    downgrade_policy = source[
+        source.index("def _restore_active_member_user_policy") :
+        source.index("\ndef upgrade")
+    ]
+    upgrade = source[source.index("def upgrade") : source.index("\ndef downgrade")]
+    downgrade = source[source.index("def downgrade") :]
+
+    assert "FOR SELECT USING" in upgrade_policy
+    assert "membership.status IN ('active', 'invited', 'suspended')" in upgrade_policy
+    assert '"users_self_mutation"' in upgrade_policy
+    assert "FOR ALL USING ({self_only}) WITH CHECK ({self_only})" in upgrade_policy
+    assert "membership.status = 'active'" in downgrade_policy
+    assert "FOR ALL USING ({visibility}) WITH CHECK (id = {user_id})" in downgrade_policy
+    assert "_enable_tenant_member_directory_visibility()" in upgrade
+    assert "_restore_active_member_user_policy()" in downgrade
+
+
+def test_member_role_editor_preserves_owner_roles_non_owners_cannot_delegate() -> None:
+    source = (
+        REPOSITORY_ROOT
+        / "apps"
+        / "web"
+        / "src"
+        / "core"
+        / "pages"
+        / "PermissionsPage.tsx"
+    ).read_text(encoding="utf-8")
+    dialog = source[source.index("function MemberRoleDialog") :]
+
+    assert 'role.code !== "OWNER" || actorIsOwner' in dialog
+    assert "canDelegate(role) || existingIds.has(role.id)" in dialog
+    assert "existingIds.has(role.id) && !canDelegate(role)" in dialog
+    assert "disabled={locked}" in dialog
 
 
 def test_managed_runtime_fails_before_database_initialization(tmp_path: Path) -> None:

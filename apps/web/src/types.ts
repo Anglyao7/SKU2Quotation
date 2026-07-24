@@ -164,7 +164,7 @@ export interface TenantPayload {
   active: boolean;
 }
 
-export type TenantRoleCode = "OWNER" | "ADMIN" | "SALES" | "PURCHASING";
+export type TenantRoleCode = "OWNER" | "ADMIN" | "SALES" | "PURCHASING" | "VIEWER";
 
 export interface MemberInvitationPayload {
   email: string;

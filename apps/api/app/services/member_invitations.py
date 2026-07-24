@@ -13,7 +13,9 @@ from ..model_mixins import utcnow
 from .invitation_email_lock import acquire_invitation_email_lock
 
 
-APPROVED_TENANT_ROLES = frozenset({"OWNER", "ADMIN", "SALES", "PURCHASING"})
+APPROVED_TENANT_ROLES = frozenset(
+    {"OWNER", "ADMIN", "SALES", "PURCHASING", "VIEWER"}
+)
 INVITED_USER_NAMESPACE = UUID("6ce0be51-e81a-43e4-9f56-f252443ea524")
 
 

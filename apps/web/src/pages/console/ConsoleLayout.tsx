@@ -34,14 +34,14 @@ const navigationGroups = [
     label: "工作",
     items: [
       { to: "/console", label: "概览", mobileLabel: "概览", icon: ChartDonut, end: true, permissions: [], platformAdminOnly: false, mobilePrimary: true },
-      { to: "/console/ai-search", label: "AI 搜索", mobileLabel: "AI 搜索", icon: Sparkle, permissions: ["product.view", "inquiry.view"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/ai-search", label: "AI 搜索", mobileLabel: "AI 搜索", icon: Sparkle, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {
     label: "商品",
     items: [
-      { to: "/console/products", label: "SKU 商品库", mobileLabel: "SKU", icon: Cube, end: true, permissions: ["product.view", "product.edit", "product.review"], platformAdminOnly: false, mobilePrimary: true },
-      { to: "/console/suppliers", label: "供应商", mobileLabel: "供应商", icon: Buildings, permissions: ["supplier.view", "supplier.manage", "product.import"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/products", label: "SKU 商品库", mobileLabel: "SKU", icon: Cube, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: true },
+      { to: "/console/suppliers", label: "供应商", mobileLabel: "供应商", icon: Buildings, permissions: ["supplier.view", "supplier.manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/products/review", label: "待审核", mobileLabel: "审核", icon: ShieldCheck, permissions: ["product.review"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
@@ -56,6 +56,12 @@ const navigationGroups = [
     label: "平台",
     items: [
       { to: "/console/tenants", label: "商家管理", mobileLabel: "商家", icon: StoreIcon, permissions: [], platformAdminOnly: true, mobilePrimary: false },
+    ],
+  },
+  {
+    label: "设置",
+    items: [
+      { to: "/console/system/permissions", label: "成员与权限", mobileLabel: "权限", icon: Key, permissions: ["system.user_manage", "system.role_manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
 ];
@@ -77,6 +83,7 @@ export function ConsoleLayout() {
   const visibleNavigation = visibleGroups.flatMap((group) => group.items);
   const mobilePrimary = visibleNavigation.filter((item) => item.mobilePrimary);
   const mobileMore = visibleNavigation.filter((item) => !item.mobilePrimary);
+  const accessManagementVisible = visibleNavigation.some((item) => item.to === "/console/system/permissions");
   const mobileMoreActive = mobileMore.some((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
     || location.pathname.startsWith("/console/account")
     || location.pathname.startsWith("/console/system/permissions");
@@ -110,7 +117,7 @@ export function ConsoleLayout() {
             {mobileMore.map(({ to, label, icon: Icon }) => <DropdownMenu.Item asChild key={to}><Link to={to}><Icon size={17} />{label}</Link></DropdownMenu.Item>)}
             <DropdownMenu.Separator />
             <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />账户与安全</Link></DropdownMenu.Item>
-            <DropdownMenu.Item asChild><Link to="/console/system/permissions"><Key size={17} />角色与权限</Link></DropdownMenu.Item>
+            {!accessManagementVisible ? <DropdownMenu.Item asChild><Link to="/console/system/permissions"><Key size={17} />我的权限</Link></DropdownMenu.Item> : null}
             <DropdownMenu.Item asChild><Link to={storefrontPath}><StoreIcon size={17} />查看商品前台</Link></DropdownMenu.Item>
             <DropdownMenu.Separator />
             <DropdownMenu.Item color="red" onSelect={() => void logout()}><SignOut size={17} />退出登录</DropdownMenu.Item>
@@ -145,7 +152,7 @@ export function ConsoleLayout() {
             <DropdownMenu.Content align="end" className="account-menu-content">
               <DropdownMenu.Label>{displayName}</DropdownMenu.Label>
               <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />账户与安全</Link></DropdownMenu.Item>
-              <DropdownMenu.Item asChild><Link to="/console/system/permissions"><Key size={17} />角色与权限</Link></DropdownMenu.Item>
+              <DropdownMenu.Item asChild><Link to="/console/system/permissions"><Key size={17} />{accessManagementVisible ? "成员与权限" : "我的权限"}</Link></DropdownMenu.Item>
               <DropdownMenu.Item asChild><Link to={storefrontPath}><StoreIcon size={17} />查看商品前台</Link></DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item color="red" onSelect={() => void logout()}><SignOut size={17} />退出登录</DropdownMenu.Item>

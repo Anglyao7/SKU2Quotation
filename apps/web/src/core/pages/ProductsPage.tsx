@@ -62,6 +62,7 @@ function skuUpdatedDate(value: string) {
 }
 
 export function ProductsPage() {
+  const { hasPermission } = useCoreAuth();
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const [categoryId, setCategoryId] = useState("");
@@ -155,7 +156,7 @@ export function ProductsPage() {
         eyebrow="商品资料"
         title="SKU 商品库"
         description="直接按 SKU 管理对客名称、公开价格、供应来源和上下架状态。点击任一行可进入所属产品继续编辑。"
-        actions={<Button asChild variant="soft"><Link to="/console/products/review"><ShieldCheck />待审核商品</Link></Button>}
+        actions={hasPermission("product.review") ? <Button asChild variant="soft"><Link to="/console/products/review"><ShieldCheck />待审核商品</Link></Button> : undefined}
       />
       <Card className="core-sku-toolbar">
         <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="搜索 SKU、商品名称或产品编码" aria-label="搜索 SKU 商品库"><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
@@ -248,8 +249,8 @@ function ProductDetailPanel({ product, initialTab, onChanged, onClose }: { produ
 function Fact({ label, value }: { label: string; value: string }) { return <Card><Text size="1" color="gray">{label}</Text><Heading size="4">{value}</Heading></Card>; }
 
 function SkuPanel({ product, onChanged }: { product: ProductDetail; onChanged: () => Promise<void> }) {
-  const { hasAnyPermission } = useCoreAuth();
-  const canEdit = hasAnyPermission("product.edit", "product.create");
+  const { hasAnyPermission, hasPermission } = useCoreAuth();
+  const canEdit = hasPermission("product.edit");
   const canViewCatalog = hasAnyPermission("catalog.view", "catalog.publish");
   const canPublish = hasAnyPermission("catalog.publish");
   const [definitions, setDefinitions] = useState<AttributeDefinition[]>([]);
@@ -369,8 +370,8 @@ function PublicOfferEditor({ sku, offer, canPublish, onChanged }: { sku: Product
 }
 
 function PricePanel({ product, onChanged }: { product: ProductDetail; onChanged: () => Promise<void> }) {
-  const { hasAnyPermission } = useCoreAuth();
-  const canWrite = hasAnyPermission("product.cost.write", "product.edit");
+  const { hasPermission } = useCoreAuth();
+  const canWrite = hasPermission("product.cost.write");
   const [prices, setPrices] = useState<SupplierPrice[]>([]);
   const [unitPrice, setUnitPrice] = useState("");
   const [currency, setCurrency] = useState("CNY");
@@ -384,8 +385,8 @@ function PricePanel({ product, onChanged }: { product: ProductDetail; onChanged:
 }
 
 function AttributePanel({ product, onChanged }: { product: ProductDetail; onChanged: () => Promise<void> }) {
-  const { hasAnyPermission } = useCoreAuth();
-  const canEdit = hasAnyPermission("product.edit", "system.settings_manage");
+  const { hasPermission } = useCoreAuth();
+  const canEdit = hasPermission("product.edit");
   const [definitions, setDefinitions] = useState<AttributeDefinition[]>([]);
   const [key, setKey] = useState("");
   const [name, setName] = useState("");

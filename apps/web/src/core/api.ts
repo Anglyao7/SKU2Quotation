@@ -28,6 +28,9 @@ import type {
   SupplierPrice,
   SupplierProfile,
   SupplierProfileDetail,
+  TenantMember,
+  TenantPermission,
+  TenantRole,
 } from "./types";
 import { buildPasswordChangePayload } from "./accountPassword";
 import { buildPasswordLoginPayload } from "./authCredentials";
@@ -296,6 +299,122 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 export async function getPermissions(): Promise<PermissionSet> {
   const row = await request<{ membership_id: string; permission_version: number; permissions: string[] }>("/me/permissions");
   return { membershipId: row.membership_id, permissionVersion: row.permission_version, permissions: row.permissions };
+}
+
+interface ApiTenantRole {
+  id: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  is_system: boolean;
+  status: string;
+  permission_codes: string[];
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ApiTenantMember {
+  id: string;
+  user_id: string;
+  display_name: string;
+  email?: string | null;
+  job_title?: string | null;
+  status: string;
+  permission_version: number;
+  roles: Array<{ id: string; code: string; name: string; is_system: boolean }>;
+  joined_at?: string | null;
+  created_at: string;
+}
+
+function mapTenantRole(row: ApiTenantRole): TenantRole {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    description: defined(row.description),
+    isSystem: row.is_system,
+    status: row.status,
+    permissionCodes: row.permission_codes,
+    memberCount: row.member_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapTenantMember(row: ApiTenantMember): TenantMember {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    displayName: row.display_name,
+    email: defined(row.email),
+    jobTitle: defined(row.job_title),
+    status: row.status,
+    permissionVersion: row.permission_version,
+    roles: row.roles.map((role) => ({
+      id: role.id,
+      code: role.code,
+      name: role.name,
+      isSystem: role.is_system,
+    })),
+    joinedAt: defined(row.joined_at),
+    createdAt: row.created_at,
+  };
+}
+
+export async function listTenantPermissions(): Promise<TenantPermission[]> {
+  const rows = await request<Array<{ code: string; module: string; action: string; description?: string | null }>>("/access-control/permissions");
+  return rows.map((row) => ({ ...row, description: defined(row.description) }));
+}
+
+export async function listTenantRoles(): Promise<TenantRole[]> {
+  return (await request<ApiTenantRole[]>("/access-control/roles")).map(mapTenantRole);
+}
+
+export async function listTenantMembers(): Promise<TenantMember[]> {
+  return (await request<ApiTenantMember[]>("/access-control/members")).map(mapTenantMember);
+}
+
+export async function createTenantRole(input: {
+  code: string;
+  name: string;
+  description?: string;
+  permissionCodes: string[];
+}): Promise<TenantRole> {
+  const row = await request<ApiTenantRole>("/access-control/roles", {
+    method: "POST",
+    body: JSON.stringify({
+      code: input.code,
+      name: input.name,
+      description: input.description || null,
+      permission_codes: input.permissionCodes,
+    }),
+  });
+  return mapTenantRole(row);
+}
+
+export async function updateTenantRole(
+  roleId: string,
+  input: { name?: string; description?: string; permissionCodes?: string[] },
+): Promise<TenantRole> {
+  const body: Record<string, unknown> = {};
+  if (input.name !== undefined) body.name = input.name;
+  if (input.description !== undefined) body.description = input.description || null;
+  if (input.permissionCodes !== undefined) body.permission_codes = input.permissionCodes;
+  return mapTenantRole(await request<ApiTenantRole>(`/access-control/roles/${roleId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  }));
+}
+
+export async function updateTenantMemberRoles(
+  membershipId: string,
+  roleIds: string[],
+): Promise<TenantMember> {
+  return mapTenantMember(await request<ApiTenantMember>(`/access-control/members/${membershipId}/roles`, {
+    method: "PUT",
+    body: JSON.stringify({ role_ids: roleIds }),
+  }));
 }
 
 export async function logoutSession(): Promise<void> {

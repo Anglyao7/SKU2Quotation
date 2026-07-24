@@ -228,6 +228,11 @@
   color: var(--core-accent);
 }
 
+.account-password-symbol-note {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+}
+
 .account-password-actions {
   padding-top: 4px;
   display: flex;

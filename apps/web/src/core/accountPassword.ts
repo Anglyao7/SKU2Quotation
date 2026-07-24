@@ -4,7 +4,7 @@ export interface PasswordChangePayload {
 }
 
 export interface PasswordRuleResult {
-  key: "length" | "uppercase" | "lowercase" | "number" | "special" | "whitespace" | "identity";
+  key: "length" | "letter" | "number" | "whitespace" | "identity";
   label: string;
   met: boolean;
 }
@@ -24,12 +24,10 @@ export function passwordRules(password: string, identityCandidates: string[] = [
     .filter(Boolean);
 
   return [
-    { key: "length", label: "至少 12 个字符", met: password.length >= 12 },
-    { key: "uppercase", label: "包含大写字母", met: /[A-Z]/.test(password) },
-    { key: "lowercase", label: "包含小写字母", met: /[a-z]/.test(password) },
+    { key: "length", label: "长度为 8-128 个字符", met: password.length >= 8 && password.length <= 128 },
+    { key: "letter", label: "至少包含一个字母", met: /[A-Za-z]/.test(password) },
     { key: "number", label: "包含数字", met: /\d/.test(password) },
-    { key: "special", label: "包含特殊字符", met: /[^A-Za-z0-9\s]/.test(password) },
-    { key: "whitespace", label: "不包含空格", met: Boolean(password) && !/\s/.test(password) },
+    { key: "whitespace", label: "不包含空白字符", met: Boolean(password) && !/\s/.test(password) },
     {
       key: "identity",
       label: "不能与账号或邮箱相同",
@@ -41,9 +39,9 @@ export function passwordRules(password: string, identityCandidates: string[] = [
 export function passwordStrength(password: string, rules: PasswordRuleResult[]): PasswordStrength {
   if (!password) return "empty";
   const metRules = rules.filter((rule) => rule.met).length;
-  if (metRules === rules.length && password.length >= 16) return "strong";
+  if (metRules === rules.length && password.length >= 12) return "strong";
   if (metRules === rules.length) return "ready";
-  if (metRules >= 4) return "progressing";
+  if (metRules >= 3) return "progressing";
   return "weak";
 }
 
