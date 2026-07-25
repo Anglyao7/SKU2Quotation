@@ -16,7 +16,6 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Brand } from "../../components/Brand";
-import { ThemeToggle } from "../../components/ThemeToggle";
 import styles from "./LandingPage.module.css";
 
 function Reveal({ children, className = "" }: { children: ReactNode; className?: string }) {
@@ -69,6 +68,16 @@ const workflow = [
   },
 ];
 
+const configuredStorefrontSlug = String(
+  import.meta.env.VITE_PRIMARY_STOREFRONT_SLUG || "demo",
+).normalize("NFKC").trim().toLocaleLowerCase();
+const primaryStorefrontSlug = configuredStorefrontSlug
+  && [...configuredStorefrontSlug].length <= 80
+  && !/[/?#]/.test(configuredStorefrontSlug)
+  ? configuredStorefrontSlug
+  : "demo";
+const primaryStorefrontPath = `/${primaryStorefrontSlug}`;
+
 export function LandingPage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [headerElevated, setHeaderElevated] = useState(false);
@@ -76,7 +85,7 @@ export function LandingPage() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = "澄湾选品 | 万千货品，自成脉络";
+    document.title = "智贸云 | 万千货品，自成脉络";
     return () => {
       document.title = previousTitle;
     };
@@ -124,7 +133,6 @@ export function LandingPage() {
             <a href="#merchants">商家入口</a>
           </nav>
           <div className={styles.headerActions}>
-            <span className={styles.themeControl}><ThemeToggle /></span>
             <Link className={styles.headerLogin} to="/login">登录工作台</Link>
             <button
               className={styles.menuButton}
@@ -173,8 +181,8 @@ export function LandingPage() {
                 收拢散落的 SKU 资料，串起查找、选择与报价，让每一次客户回应更从容。
               </p>
               <div className={styles.heroActions}>
-                <Link className={styles.primaryButton} to="/demo">
-                  查看演示 <ArrowRight size={18} weight="bold" />
+                <Link className={styles.primaryButton} to={primaryStorefrontPath}>
+                  查看商品前台 <ArrowRight size={18} weight="bold" />
                 </Link>
                 <Link className={styles.secondaryButton} to="/login">登录工作台</Link>
               </div>
@@ -192,12 +200,12 @@ export function LandingPage() {
             <Reveal>
               <figure className={styles.productProof}>
                 <figcaption>
-                  <span>澄湾商品前台</span>
-                  <strong>yourdomain.com/demo</strong>
+                  <span>智贸云商品前台</span>
+                  <strong>{window.location.host}/{primaryStorefrontSlug}</strong>
                 </figcaption>
                 <img
                   src="/assets/marketing/storefront-preview.png"
-                  alt="澄湾选品 Demo 商品前台，包含 SKU 搜索、标签筛选和商品卡片"
+                  alt="智贸云商品前台，包含 SKU 搜索、标签筛选和商品卡片"
                   width="863"
                   height="875"
                   loading="lazy"
@@ -223,7 +231,7 @@ export function LandingPage() {
 
           <Reveal className={styles.painCopy}>
             <h2>好商品，不该失落在表格之间。</h2>
-            <p>当规格、图片、价格与供应商各自散落，每一次寻找都在重复昨天。澄湾把它们重新编入同一条脉络。</p>
+            <p>当规格、图片、价格与供应商各自散落，每一次寻找都在重复昨天。智贸云把它们重新编入同一条脉络。</p>
             <dl className={styles.painList}>
               <div>
                 <dt>资料有归处</dt>
@@ -274,7 +282,7 @@ export function LandingPage() {
               <span className={styles.capGiant} aria-hidden="true">SKU</span>
               <div>
                 <h3>每件商品，都能独立被看见</h3>
-                <p>每个 SKU 都能独立被看见，规格、价格与起订量不必藏在复杂的产品层级里。</p>
+                <p>每个 SKU 都能独立被看见，规格、价格与图片不必藏在复杂的产品层级里。</p>
               </div>
             </article>
             <article className={`${styles.capabilityCard} ${styles.capSearch}`}>
@@ -343,8 +351,8 @@ export function LandingPage() {
               <h2>先让第一批商品，走完抵达客户的路。</h2>
               <p>从一家商家、一张表格开始，完成一次真实的展示、选择与报价。</p>
             </div>
-            <Link className={styles.primaryButton} to="/demo">
-              查看演示 <ArrowRight size={18} weight="bold" />
+            <Link className={styles.primaryButton} to={primaryStorefrontPath}>
+              查看商品前台 <ArrowRight size={18} weight="bold" />
             </Link>
           </Reveal>
         </section>
@@ -356,10 +364,12 @@ export function LandingPage() {
           <nav aria-label="页脚导航">
             <a href="#product">产品</a>
             <a href="#workflow">流程</a>
-            <Link to="/demo">查看演示</Link>
+            <Link to={primaryStorefrontPath}>查看商品前台</Link>
             <Link to="/login">登录工作台</Link>
+            <Link to="/privacy">隐私政策</Link>
+            <a href="/licenses/Noto-CJK-OFL.txt">字体许可</a>
           </nav>
-          <small>© {new Date().getFullYear()} 澄湾选品</small>
+          <small>© {new Date().getFullYear()} 智贸云</small>
         </div>
       </footer>
     </div>

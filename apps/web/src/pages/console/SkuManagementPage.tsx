@@ -40,7 +40,6 @@ const emptyPayload: SkuPayload = {
   image_url: "",
   price: null,
   currency: "CNY",
-  moq: null,
   stock: null,
   active: true,
 };
@@ -124,7 +123,7 @@ export function SkuManagementPage() {
                 {skus.map((sku) => (
                   <Table.Row key={sku.id}>
                     <Table.RowHeaderCell><Text className="mono-text" size="2" weight="medium">{sku.sku_code}</Text></Table.RowHeaderCell>
-                    <Table.Cell><Text size="2" weight="medium">{sku.name}</Text><Text as="div" size="1" color="gray">MOQ {sku.moq || "-"}</Text></Table.Cell>
+                    <Table.Cell><Text size="2" weight="medium">{sku.name}</Text></Table.Cell>
                     <Table.Cell><Text as="div" size="2">{sku.category || "未分类"}</Text><Text as="div" size="1" color="gray" className="table-tags">{sku.tags.slice(0, 3).join(" / ") || "无标签"}</Text></Table.Cell>
                     <Table.Cell><Text size="2" weight="medium">{money(sku.price, sku.currency)}</Text></Table.Cell>
                     <Table.Cell><Badge color={sku.status === "inactive" ? "gray" : "jade"} variant="soft">{sku.status === "inactive" ? "已下架" : "在售"}</Badge></Table.Cell>
@@ -192,7 +191,6 @@ function SkuFormDialog({ sku, onOpenChange, onSaved }: { sku: Sku | "new" | null
       image_url: String(data.get("image_url") || "").trim(),
       price: numberOrNull("price"),
       currency: String(data.get("currency") || "CNY"),
-      moq: numberOrNull("moq"),
       stock: numberOrNull("stock"),
       active: String(data.get("status") || "active") === "active",
     };
@@ -220,7 +218,6 @@ function SkuFormDialog({ sku, onOpenChange, onSaved }: { sku: Sku | "new" | null
             <label className="field-group"><Text size="2" weight="medium">标签</Text><TextField.Root name="tags" defaultValue={current?.tags.join("，") || ""} placeholder="户外，便携，保温" /></label>
             <label className="field-group"><Text size="2" weight="medium">价格</Text><TextField.Root name="price" type="number" min="0" step="0.01" defaultValue={current?.price ?? ""} placeholder="0.00" /></label>
             <label className="field-group"><Text size="2" weight="medium">币种</Text><Select.Root name="currency" defaultValue={current?.currency || "CNY"}><Select.Trigger /><Select.Content><Select.Item value="CNY">CNY 人民币</Select.Item><Select.Item value="USD">USD 美元</Select.Item><Select.Item value="EUR">EUR 欧元</Select.Item></Select.Content></Select.Root></label>
-            <label className="field-group"><Text size="2" weight="medium">起订量</Text><TextField.Root name="moq" type="number" min="1" defaultValue={current?.moq ?? ""} placeholder="1" /></label>
             <label className="field-group"><Text size="2" weight="medium">库存</Text><TextField.Root name="stock" type="number" min="0" defaultValue={current?.stock ?? ""} placeholder="可选" /></label>
             <label className="field-group field-span-2"><Text size="2" weight="medium">图片地址</Text><TextField.Root name="image_url" type="url" defaultValue={current?.image_url || ""} placeholder="https://..." /></label>
             <label className="field-group field-span-2"><Text size="2" weight="medium">商品描述</Text><TextArea name="description" defaultValue={current?.description || ""} placeholder="材质、尺寸、包装等说明" /></label>

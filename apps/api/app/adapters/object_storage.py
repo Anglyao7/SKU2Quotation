@@ -46,6 +46,9 @@ class LocalObjectStorageAdapter:
         shutil.copyfile(source, target)
         source.unlink()
 
+    def exists(self, object_key: str) -> bool:
+        return self._path(object_key).is_file()
+
     def delete(self, object_key: str) -> None:
         self._path(object_key).unlink(missing_ok=True)
 
@@ -99,6 +102,18 @@ class S3ObjectStorageAdapter:
             CopySource={"Bucket": self.bucket, "Key": quarantine_key},
         )
         self.client.delete_object(Bucket=self.bucket, Key=quarantine_key)
+
+    def exists(self, object_key: str) -> bool:
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=_safe_key(object_key))
+        except Exception as exc:
+            response = getattr(exc, "response", {})
+            error = response.get("Error", {}) if isinstance(response, dict) else {}
+            code = str(error.get("Code", ""))
+            if code in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            raise
+        return True
 
     def delete(self, object_key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=_safe_key(object_key))

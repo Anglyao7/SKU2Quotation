@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ApplicationError
@@ -27,6 +29,22 @@ from .errors import application_http_error
 
 
 router = APIRouter(prefix="/api/v1", tags=["legacy-operations"])
+
+
+@router.get("/product-template.xlsx")
+def download_product_template() -> Response:
+    filename = "商品模版.xlsx"
+    return Response(
+        content=use_cases.build_product_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="product-template.xlsx"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "Cache-Control": "public, max-age=300",
+        },
+    )
 
 
 @router.get("/suppliers", response_model=list[Supplier])

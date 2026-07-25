@@ -21,11 +21,34 @@ from ..public_catalog_models import (
 def find_published_profile_by_slug(
     session: Session, *, slug: str
 ) -> TenantPublicProfileRow | None:
-    return session.scalar(
+    normalized = slug.casefold().strip()
+    profile = session.scalar(
         select(TenantPublicProfileRow).where(
-            TenantPublicProfileRow.slug == slug,
+            TenantPublicProfileRow.slug == normalized,
             TenantPublicProfileRow.publication_status == "PUBLISHED",
+            TenantPublicProfileRow.deleted_at.is_(None),
         )
+    )
+    if profile is not None:
+        return profile
+    profiles = session.scalars(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.publication_status == "PUBLISHED",
+            TenantPublicProfileRow.deleted_at.is_(None),
+        )
+    ).all()
+    return next(
+        (
+            row
+            for row in profiles
+            if normalized
+            in {
+                str(alias).casefold().strip()
+                for alias in (row.legacy_slugs or [])
+                if str(alias).strip()
+            }
+        ),
+        None,
     )
 
 
@@ -36,6 +59,16 @@ def find_published_profile_by_tenant(
         select(TenantPublicProfileRow).where(
             TenantPublicProfileRow.tenant_id == tenant_id,
             TenantPublicProfileRow.publication_status == "PUBLISHED",
+        )
+    )
+
+
+def find_profile_by_tenant(
+    session: Session, *, tenant_id: UUID
+) -> TenantPublicProfileRow | None:
+    return session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id,
         )
     )
 
@@ -95,8 +128,18 @@ def list_public_catalog_rows(
         )
     )
     if category:
+        normalized_category = category.casefold().strip()
+        category_path = func.lower(
+            func.coalesce(ProductCategoryRow.path, ProductCategoryRow.name)
+        )
         statement = statement.where(
-            func.lower(ProductCategoryRow.name) == category.casefold().strip()
+            or_(
+                func.lower(ProductCategoryRow.name) == normalized_category,
+                category_path == normalized_category,
+                category_path.startswith(
+                    f"{normalized_category}/", autoescape=True
+                ),
+            )
         )
     normalized = query.casefold().strip()
     if normalized:
@@ -107,6 +150,7 @@ def list_public_catalog_rows(
                 func.lower(ProductRow.name).contains(normalized),
                 func.lower(func.coalesce(ProductRow.description, "")).contains(normalized),
                 func.lower(func.coalesce(ProductCategoryRow.name, "")).contains(normalized),
+                func.lower(func.coalesce(ProductCategoryRow.path, "")).contains(normalized),
                 func.lower(cast(PublicCatalogOfferRow.tags, Text)).contains(normalized),
             )
         ).order_by(
@@ -116,11 +160,23 @@ def list_public_catalog_rows(
         )
     else:
         statement = statement.order_by(
-            ProductCategoryRow.name,
+            ProductCategoryRow.path,
             ProductRow.name,
             SkuRow.sku_code,
         )
     return list(session.execute(statement).all())
+
+
+def list_catalog_categories(
+    session: Session, *, tenant_id: UUID
+) -> list[ProductCategoryRow]:
+    return list(
+        session.scalars(
+            select(ProductCategoryRow)
+            .where(ProductCategoryRow.tenant_id == tenant_id)
+            .order_by(ProductCategoryRow.sort_order, ProductCategoryRow.name)
+        ).all()
+    )
 
 
 def list_public_catalog_rows_by_sku_ids(

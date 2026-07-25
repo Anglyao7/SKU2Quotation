@@ -32,9 +32,15 @@ export interface AuthTokenData {
 }
 
 export interface CurrentUser {
-  user: AuthUser;
-  context: AuthWorkspaceContext;
-  memberships: MembershipSummary[];
+    user: AuthUser;
+    context: AuthWorkspaceContext;
+    memberships: MembershipSummary[];
+}
+
+export interface MerchantSettings {
+  name: string;
+  slug: string;
+  storefrontPath: string;
 }
 
 export interface PermissionSet {
@@ -43,17 +49,59 @@ export interface PermissionSet {
   permissions: string[];
 }
 
+export interface TenantPermission {
+  code: string;
+  module: string;
+  action: string;
+  description?: string;
+}
+
+export interface TenantRole {
+  id: string;
+  code: string;
+  name: string;
+  description?: string;
+  isSystem: boolean;
+  status: string;
+  permissionCodes: string[];
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantMemberRole {
+  id: string;
+  code: string;
+  name: string;
+  isSystem: boolean;
+}
+
+export interface TenantMember {
+  id: string;
+  userId: string;
+  displayName: string;
+  email?: string;
+  jobTitle?: string;
+  status: string;
+  permissionVersion: number;
+  roles: TenantMemberRole[];
+  joinedAt?: string;
+  createdAt: string;
+}
+
 export type ImportJobStatus = "scanning" | "parsing" | "needs_review" | "published" | "failed";
 
 export interface ImportJob {
   id: string;
   filename: string;
   supplier: string;
+  sourceType: string;
   detectedType: string;
   status: ImportJobStatus;
   progress: number;
   products: number;
   warnings: number;
+  warningMessages: string[];
   createdAt: string;
   parser?: string;
   extensionMatches?: boolean;
@@ -110,6 +158,7 @@ export interface DashboardSnapshot {
     id: string;
     filename: string;
     supplierName: string;
+    sourceType: string;
     status: string;
     progress: number;
     productsCount: number;
@@ -131,8 +180,6 @@ export interface ProductOffer {
   supplierName: string;
   supplierSku?: string;
   skuId?: string;
-  moq?: number;
-  moqUnit?: string;
   leadTimeDays?: number;
   unitPrice?: number;
   currency?: string;
@@ -151,7 +198,6 @@ export interface CoreProduct {
   supplier: string;
   price?: number;
   currency?: string;
-  moq?: number;
   updated: string;
   imageStatus: "SOURCE" | "APPROVED" | "NONE";
   tags: string[];
@@ -168,13 +214,47 @@ export interface ProductSku {
   name?: string;
   optionValues: Record<string, string | number | boolean>;
   barcode?: string;
-  defaultMoq?: number;
-  moqUnit?: string;
   weight?: number;
   weightUnit?: string;
   status: "DRAFT" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
   version: number;
   updatedAt: string;
+}
+
+export interface SkuListItem {
+  id: string;
+  skuCode: string;
+  name: string;
+  productId: string;
+  productCode?: string;
+  productName: string;
+  category?: {
+    id: string;
+    code: string;
+    name: string;
+  };
+  tags: string[];
+  supplierSummary: {
+    count: number;
+    primarySupplierId?: string;
+    primarySupplierName?: string;
+    names: string[];
+  };
+  publicPrice?: number;
+  publicCurrency?: string;
+  publicOfferStatus?: "DRAFT" | "PUBLISHED" | "SUSPENDED";
+  status: ProductSku["status"];
+  version: number;
+  updatedAt: string;
+  imageStatus: "SOURCE" | "APPROVED" | "NONE";
+}
+
+export interface SkuListPage {
+  items: SkuListItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  pages: number;
 }
 
 export interface PublicCatalogOffer {
@@ -311,8 +391,6 @@ export interface SupplierProfileDetail extends SupplierProfile {
     productName: string;
     skuId?: string;
     supplierSku?: string;
-    moq?: number;
-    moqUnit?: string;
     leadTimeDays?: number;
     status: string;
     unitPrice?: number;
@@ -462,7 +540,6 @@ export interface PublicQuoteDraftItem {
   category?: string;
   tags: string[];
   imageUrl?: string;
-  minimumOrderQuantity: number;
   unitCode: string;
   currency: string;
   unitPrice: number;

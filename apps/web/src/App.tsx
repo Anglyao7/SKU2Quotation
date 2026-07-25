@@ -6,6 +6,7 @@ import {
   RouterProvider,
   createBrowserRouter,
   isRouteErrorResponse,
+  redirect,
   useLocation,
   useParams,
   useRouteError,
@@ -16,17 +17,18 @@ import { Brand } from "./components/Brand";
 import { ErrorState } from "./components/States";
 import { useCoreAuth } from "./core/AuthContext";
 import { AiSearchPage } from "./core/pages/AiSearchPage";
+import { AccountSettingsPage } from "./core/pages/AccountSettingsPage";
+import { CategoriesPage } from "./core/pages/CategoriesPage";
 import { CoreDashboardPage } from "./core/pages/DashboardPage";
 import { InquiryPage } from "./core/pages/InquiryPage";
 import { PermissionsPage } from "./core/pages/PermissionsPage";
 import { ProductsPage } from "./core/pages/ProductsPage";
 import { QuotesPage } from "./core/pages/QuotesPage";
-import { ReviewPage } from "./core/pages/ReviewPage";
-import { SuppliersPage } from "./core/pages/SuppliersPage";
 import { api, ApiError } from "./lib/api";
 import { LandingPage } from "./pages/marketing/LandingPage";
 import { StorePage } from "./pages/StorePage";
 import { LoginPage } from "./pages/LoginPage";
+import { PrivacyPage } from "./pages/PrivacyPage";
 import { ConsoleLayout } from "./pages/console/ConsoleLayout";
 import { TenantManagementPage } from "./pages/console/TenantManagementPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -51,10 +53,17 @@ function PlatformAdminGate({ children }: { children: ReactNode }) {
   return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">仅平台管理员可以管理商家</Heading><Text size="2" color="gray">租户创建、启停和平台级状态不属于商家成员权限。</Text><Button asChild variant="soft"><a href="/console">返回仪表盘</a></Button></Card></div>;
 }
 
-async function storefrontLoader({ params }: LoaderFunctionArgs) {
+async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
-  try { return await api.getStore(tenantSlug); }
+  try {
+    const store = await api.getStore(tenantSlug);
+    if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
+      const currentUrl = new URL(request.url);
+      return redirect(`/${encodeURIComponent(store.slug)}${currentUrl.search}${currentUrl.hash}`);
+    }
+    return store;
+  }
   catch (error) {
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
     throw error;
@@ -78,6 +87,8 @@ const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
   { path: "/store/:tenantSlug", element: <LegacyStoreRedirect /> },
   { path: "/login", element: <LoginPage /> },
+  { path: "/login/callback", element: <Navigate to="/login" replace /> },
+  { path: "/privacy", element: <PrivacyPage /> },
   {
     element: <ProtectedRoute />,
     children: [{
@@ -86,15 +97,17 @@ const router = createBrowserRouter([
       children: [
         { index: true, element: <CoreDashboardPage /> },
         { path: "dashboard", element: <Navigate to="/console" replace /> },
-        { path: "ai-search", element: <PermissionGate anyOf={["product.view", "inquiry.view"]}><AiSearchPage /></PermissionGate> },
-        { path: "products", element: <PermissionGate anyOf={["product.view", "product.edit", "product.review"]}><ProductsPage /></PermissionGate> },
-        { path: "products/review", element: <PermissionGate anyOf={["product.review"]}><ReviewPage /></PermissionGate> },
-        { path: "suppliers", element: <PermissionGate anyOf={["supplier.view", "supplier.manage", "product.import"]}><SuppliersPage /></PermissionGate> },
+        { path: "ai-search", element: <PermissionGate anyOf={["product.view"]}><AiSearchPage /></PermissionGate> },
+        { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
+        { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
+        { path: "products/review", element: <Navigate to="/console/products" replace /> },
+        { path: "suppliers", element: <Navigate to="/console/products" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
+        { path: "account", element: <AccountSettingsPage /> },
         { path: "system/permissions", element: <PermissionsPage /> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
-        { path: "review", element: <Navigate to="/console/products/review" replace /> },
+        { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },
         { path: "tenants", element: <PlatformAdminGate><TenantManagementPage /></PlatformAdminGate> },
       ],
@@ -103,10 +116,11 @@ const router = createBrowserRouter([
   { path: "/dashboard", element: <Navigate to="/console" replace /> },
   { path: "/ai-search", element: <Navigate to="/console/ai-search" replace /> },
   { path: "/products", element: <Navigate to="/console/products" replace /> },
-  { path: "/suppliers", element: <Navigate to="/console/suppliers" replace /> },
-  { path: "/review", element: <Navigate to="/console/products/review" replace /> },
+  { path: "/suppliers", element: <Navigate to="/console/products" replace /> },
+  { path: "/review", element: <Navigate to="/console/products" replace /> },
   { path: "/inquiries", element: <Navigate to="/console/inquiries" replace /> },
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },
+  { path: "/account", element: <Navigate to="/console/account" replace /> },
   { path: "/system/permissions", element: <Navigate to="/console/system/permissions" replace /> },
   {
     path: "/:tenantSlug",

@@ -8,6 +8,10 @@ from ..ports.image_intelligence import ImageIntelligenceProvider, VisionResult
 from ..services.embedding import EmbeddingIdentity
 
 
+class ImageIntelligenceUnavailable(RuntimeError):
+    """Raised when no reviewed image-intelligence provider is active."""
+
+
 class DeterministicImageFeatureAdapter:
     """Network-free contract adapter for lifecycle, RLS and ranking tests.
 
@@ -42,6 +46,12 @@ def get_image_intelligence_provider() -> ImageIntelligenceProvider:
     app_env = os.getenv("APP_ENV", "development").lower()
     if profile == "deterministic":
         if app_env in {"production", "prod"}:
-            raise RuntimeError("deterministic image intelligence is forbidden in production")
+            raise ImageIntelligenceUnavailable(
+                "deterministic image intelligence is forbidden in production"
+            )
         return DeterministicImageFeatureAdapter()
-    raise RuntimeError(f"image intelligence provider is not registered: {profile}")
+    if profile == "disabled":
+        raise ImageIntelligenceUnavailable("image intelligence is disabled")
+    raise ImageIntelligenceUnavailable(
+        f"image intelligence provider is not registered: {profile}"
+    )

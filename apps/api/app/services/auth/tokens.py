@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import os
@@ -17,6 +18,7 @@ ACCESS_TTL_SECONDS = int(os.getenv("AUTH_ACCESS_TTL_SECONDS", "600"))
 SESSION_TTL_SECONDS = int(os.getenv("AUTH_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
 REFRESH_TTL_SECONDS = int(os.getenv("AUTH_REFRESH_TTL_SECONDS", str(30 * 24 * 60 * 60)))
 REFRESH_COOKIE_NAME = "atc_refresh"
+DEFAULT_REFRESH_RETRY_GRACE_SECONDS = 5
 _EPHEMERAL_JWT_SECRET = secrets.token_urlsafe(48)
 _EPHEMERAL_TOKEN_PEPPER = secrets.token_urlsafe(48)
 
@@ -59,6 +61,50 @@ def hash_secret(value: str) -> str:
 
 def new_secret() -> str:
     return secrets.token_urlsafe(48)
+
+
+def refresh_retry_grace_seconds() -> int:
+    raw_value = os.getenv(
+        "AUTH_REFRESH_RETRY_GRACE_SECONDS",
+        str(DEFAULT_REFRESH_RETRY_GRACE_SECONDS),
+    )
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(
+            "AUTH_REFRESH_RETRY_GRACE_SECONDS must be an integer from 1 to 10"
+        ) from exc
+    if value < 1 or value > 10:
+        raise RuntimeError(
+            "AUTH_REFRESH_RETRY_GRACE_SECONDS must be an integer from 1 to 10"
+        )
+    return value
+
+
+def derive_rotation_secret(
+    *,
+    refresh_token: str,
+    token_id: UUID,
+    purpose: str,
+) -> str:
+    """Derive a retry-recoverable successor without persisting its plaintext.
+
+    Domain-separated HMAC makes the refresh and CSRF successors independent.
+    The predecessor token alone is insufficient to derive either value without
+    the server-side token pepper.
+    """
+
+    if purpose not in {"refresh", "csrf"}:
+        raise ValueError("unsupported refresh rotation secret purpose")
+    payload = (
+        f"atc-refresh-rotation:v1:{purpose}:{token_id}:{refresh_token}"
+    ).encode("utf-8")
+    digest = hmac.new(
+        token_pepper().encode("utf-8"),
+        payload,
+        hashlib.sha512,
+    ).digest()[:48]
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 def create_access_token(

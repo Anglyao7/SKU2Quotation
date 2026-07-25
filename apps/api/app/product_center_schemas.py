@@ -69,6 +69,42 @@ class SkuResponse(BaseModel):
     updated_at: datetime
 
 
+class SkuSupplierSummary(BaseModel):
+    count: int = Field(ge=0)
+    primary_supplier_id: str | None = None
+    primary_supplier_name: str | None = None
+    names: list[str] = Field(default_factory=list)
+
+
+class SkuListItem(BaseModel):
+    id: UUID
+    sku_code: str
+    name: str
+    product_id: UUID
+    product_code: str | None
+    product_name: str
+    category: ProductCategorySummary | None
+    tags: list[str]
+    supplier_summary: SkuSupplierSummary
+    default_moq: Decimal | None
+    moq_unit: str | None
+    public_price: Decimal | None
+    public_currency: str | None
+    public_offer_status: Literal["DRAFT", "PUBLISHED", "SUSPENDED"] | None
+    status: str
+    version: int
+    updated_at: datetime
+    image_status: Literal["APPROVED", "SOURCE", "NONE"]
+
+
+class SkuListPage(BaseModel):
+    items: list[SkuListItem]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total: int = Field(ge=0)
+    pages: int = Field(ge=0)
+
+
 class SkuCreateItem(BaseModel):
     sku_code: str = Field(min_length=1, max_length=160)
     name: str | None = Field(default=None, max_length=500)
@@ -190,12 +226,52 @@ class CategoryCreateRequest(BaseModel):
     def normalize_category_code(cls, value: str) -> str:
         return value.strip().upper()
 
+    @field_validator("name")
+    @classmethod
+    def normalize_category_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if "/" in normalized or "／" in normalized:
+            raise ValueError("category name must be a single hierarchy segment")
+        return normalized
+
 
 class CategoryResponse(CategoryCreateRequest):
     id: UUID
     path: str | None
     status: str
     version: int
+
+
+class CategoryUpdateRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    parent_id: UUID | None = None
+    name: str = Field(min_length=1, max_length=200)
+    sort_order: int = Field(default=0, ge=0)
+    status: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
+
+    @field_validator("name")
+    @classmethod
+    def normalize_category_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if "/" in normalized or "／" in normalized:
+            raise ValueError("category name must be a single hierarchy segment")
+        return normalized
+
+
+class CategoryReorderItem(BaseModel):
+    id: UUID
+    expected_version: int = Field(ge=1)
+
+
+class CategoryReorderRequest(BaseModel):
+    items: list[CategoryReorderItem] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_category_ids(self):
+        ids = [item.id for item in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("category ids must be unique")
+        return self
 
 
 class SupplierPriceCreateRequest(BaseModel):

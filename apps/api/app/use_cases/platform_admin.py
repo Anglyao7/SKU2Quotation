@@ -11,13 +11,19 @@ from ..database import set_request_context
 from ..domain.errors import ApplicationError
 from ..identity_models import TenantRow
 from ..platform_admin_schemas import (
+    PlatformMemberInvitation,
+    PlatformMemberInvitationCreate,
     PlatformTenantCreate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
 )
 from ..public_catalog_models import TenantPublicProfileRow
 from ..repositories import platform_admin_repository as repository
+from ..repositories.public_catalog_repository import find_published_profile_by_slug
+from ..saas_seed import ensure_tenant_rbac
 from ..services.auth.dependencies import RequestContext
+from ..services.member_invitations import invite_tenant_member as create_member_invitation
+from ..tenant_slugs import is_reserved_tenant_slug, storefront_slug_from_name
 
 
 def _require_platform_admin(context: RequestContext) -> None:
@@ -98,7 +104,17 @@ def create_tenant(
     request: PlatformTenantCreate,
 ) -> PlatformTenantSummary:
     _require_platform_admin(context)
-    slug = request.slug.lower()
+    slug = (
+        request.slug.casefold()
+        if request.slug
+        else storefront_slug_from_name(request.name)
+    )
+    if is_reserved_tenant_slug(slug):
+        raise ApplicationError(
+            "TENANT_SLUG_RESERVED",
+            "This storefront slug is reserved by the platform.",
+            kind="invalid",
+        )
     if repository.find_tenant_by_slug(session, slug) is not None:
         raise ApplicationError(
             "TENANT_SLUG_EXISTS",
@@ -126,6 +142,7 @@ def create_tenant(
                     publication_status="PUBLISHED" if request.active else "SUSPENDED",
                 )
             )
+            ensure_tenant_rbac(session, tenant_id=tenant.id)
             session.flush()
         session.commit()
     except IntegrityError as exc:
@@ -156,7 +173,24 @@ def update_tenant(
             kind="conflict",
         )
     if request.name is not None:
+        next_slug = storefront_slug_from_name(request.name)
+        slug_owner = repository.find_tenant_by_slug(session, next_slug)
+        public_owner = find_published_profile_by_slug(session, slug=next_slug)
+        if (
+            slug_owner is not None
+            and slug_owner.id != tenant.id
+        ) or (
+            public_owner is not None
+            and public_owner.tenant_id != tenant.id
+        ):
+            raise ApplicationError(
+                "TENANT_SLUG_EXISTS",
+                "This storefront path is already in use.",
+                kind="conflict",
+            )
         tenant.name = request.name
+    else:
+        next_slug = tenant.slug
     if request.active is not None:
         tenant.status = "active" if request.active else "suspended"
     with _tenant_scope(session, context=context, tenant_id=tenant.id):
@@ -168,10 +202,76 @@ def update_tenant(
                 publication_status="PUBLISHED" if tenant.status == "active" else "SUSPENDED",
             )
             session.add(profile)
+        if next_slug != tenant.slug:
+            aliases: list[str] = []
+            seen = {next_slug.casefold()}
+            for alias in [tenant.slug, profile.slug, *(profile.legacy_slugs or [])]:
+                normalized = str(alias).casefold().strip()
+                if normalized and normalized not in seen:
+                    aliases.append(normalized)
+                    seen.add(normalized)
+            profile.legacy_slugs = aliases[:20]
+            tenant.slug = next_slug
+            profile.slug = next_slug
         if "contact_email" in request.model_fields_set:
             profile.contact_email = request.contact_email or None
         if request.active is not None:
             profile.publication_status = "PUBLISHED" if request.active else "SUSPENDED"
         session.flush()
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "TENANT_SLUG_EXISTS",
+            "This storefront path is already in use.",
+            kind="conflict",
+        ) from exc
     return _summary(session, context=context, tenant=tenant)
+
+
+def invite_tenant_member(
+    session: Session,
+    identity_session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID,
+    request: PlatformMemberInvitationCreate,
+) -> PlatformMemberInvitation:
+    _require_platform_admin(context)
+    tenant = repository.get_tenant(session, tenant_id)
+    if tenant is None:
+        raise ApplicationError("TENANT_NOT_FOUND", "Tenant was not found.", kind="not_found")
+    if tenant.status != "active":
+        raise ApplicationError(
+            "TENANT_NOT_ACTIVE",
+            "Members can only be invited to an active tenant.",
+            kind="conflict",
+        )
+
+    # Older tenants may predate automatic role provisioning. Repairing the
+    # approved system catalogue is idempotent and remains tenant-scoped.
+    with _tenant_scope(session, context=context, tenant_id=tenant.id):
+        ensure_tenant_rbac(session, tenant_id=tenant.id)
+    session.commit()
+
+    result = create_member_invitation(
+        identity_session,
+        actor_user_id=context.user_id,
+        tenant_id=tenant.id,
+        email=request.email,
+        display_name=request.display_name,
+        role_code=request.role,
+    )
+    return PlatformMemberInvitation(
+        tenant_id=tenant.id,
+        user_id=result.user_id,
+        membership_id=result.membership_id,
+        email=result.email,
+        display_name=result.display_name,
+        role=result.role,  # type: ignore[arg-type]
+        membership_status=result.membership_status,  # type: ignore[arg-type]
+        created=result.created,
+        identity_already_bound=result.identity_already_bound,
+        requires_identity_provider_provisioning=not result.identity_already_bound,
+    )

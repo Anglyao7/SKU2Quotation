@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import case, exists, func, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..ai_data_models import AISourceEvidenceRow
@@ -24,6 +25,14 @@ from ..product_supplier_models import (
 )
 
 
+@dataclass(frozen=True)
+class SkuListRow:
+    sku: SkuRow
+    product: ProductRow
+    category: ProductCategoryRow | None
+    public_offer: PublicCatalogOfferRow | None
+
+
 def list_product_rows(
     session: Session,
     *,
@@ -41,7 +50,17 @@ def list_product_rows(
     else:
         statement = statement.where(ProductRow.status != "ARCHIVED")
     if category_id is not None:
-        statement = statement.where(ProductRow.category_id == category_id)
+        statement = statement.where(
+            or_(
+                ProductRow.category_id == category_id,
+                ProductRow.category_id.in_(
+                    select(ProductCategoryRow.id).where(
+                        ProductCategoryRow.tenant_id == tenant_id,
+                        ProductCategoryRow.parent_id == category_id,
+                    )
+                ),
+            )
+        )
     if supplier_id:
         statement = statement.where(
             exists(
@@ -137,6 +156,71 @@ def list_categories(session: Session, *, tenant_id: UUID) -> list[ProductCategor
     )
 
 
+def list_categories_by_ids(
+    session: Session, *, tenant_id: UUID, category_ids: list[UUID]
+) -> list[ProductCategoryRow]:
+    if not category_ids:
+        return []
+    return list(
+        session.scalars(
+            select(ProductCategoryRow).where(
+                ProductCategoryRow.tenant_id == tenant_id,
+                ProductCategoryRow.id.in_(category_ids),
+            )
+        ).all()
+    )
+
+
+def list_sibling_categories(
+    session: Session, *, tenant_id: UUID, parent_id: UUID | None
+) -> list[ProductCategoryRow]:
+    parent_condition = (
+        ProductCategoryRow.parent_id.is_(None)
+        if parent_id is None
+        else ProductCategoryRow.parent_id == parent_id
+    )
+    return list(
+        session.scalars(
+            select(ProductCategoryRow)
+            .where(
+                ProductCategoryRow.tenant_id == tenant_id,
+                parent_condition,
+            )
+            .order_by(ProductCategoryRow.sort_order, ProductCategoryRow.name)
+        ).all()
+    )
+
+
+def find_sibling_category(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    parent_id: UUID | None,
+    name: str,
+    exclude_id: UUID | None = None,
+) -> ProductCategoryRow | None:
+    conditions = [
+        ProductCategoryRow.tenant_id == tenant_id,
+        func.lower(ProductCategoryRow.name) == name.casefold().strip(),
+    ]
+    conditions.append(
+        ProductCategoryRow.parent_id.is_(None)
+        if parent_id is None
+        else ProductCategoryRow.parent_id == parent_id
+    )
+    if exclude_id is not None:
+        conditions.append(ProductCategoryRow.id != exclude_id)
+    return session.scalar(select(ProductCategoryRow).where(*conditions))
+
+
+def list_child_categories(
+    session: Session, *, tenant_id: UUID, parent_id: UUID
+) -> list[ProductCategoryRow]:
+    return list_sibling_categories(
+        session, tenant_id=tenant_id, parent_id=parent_id
+    )
+
+
 def list_attributes(
     session: Session, *, tenant_id: UUID, product_id: UUID
 ) -> list[ProductAttributeRow]:
@@ -179,6 +263,185 @@ def list_skus(session: Session, *, tenant_id: UUID, product_id: UUID) -> list[Sk
             .order_by(SkuRow.sku_code, SkuRow.id)
         ).all()
     )
+
+
+def list_sku_page_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    query: str,
+    category_id: UUID | None,
+    statuses: list[str],
+    page: int,
+    page_size: int,
+) -> tuple[list[SkuListRow], int]:
+    conditions = [
+        SkuRow.tenant_id == tenant_id,
+        SkuRow.deleted_at.is_(None),
+        ProductRow.tenant_id == tenant_id,
+        ProductRow.deleted_at.is_(None),
+        ProductRow.status != "ARCHIVED",
+    ]
+    if statuses:
+        conditions.append(SkuRow.status.in_(statuses))
+    else:
+        conditions.append(SkuRow.status != "ARCHIVED")
+    if category_id is not None:
+        conditions.append(
+            or_(
+                ProductRow.category_id == category_id,
+                ProductRow.category_id.in_(
+                    select(ProductCategoryRow.id).where(
+                        ProductCategoryRow.tenant_id == tenant_id,
+                        ProductCategoryRow.parent_id == category_id,
+                    )
+                ),
+            )
+        )
+
+    normalized = query.casefold().strip()
+    if normalized:
+        conditions.append(
+            or_(
+                func.lower(SkuRow.sku_code).contains(normalized, autoescape=True),
+                func.lower(func.coalesce(SkuRow.name, "")).contains(
+                    normalized, autoescape=True
+                ),
+                func.lower(func.coalesce(ProductRow.product_code, "")).contains(
+                    normalized, autoescape=True
+                ),
+                func.lower(ProductRow.name).contains(normalized, autoescape=True),
+            )
+        )
+
+    sku_product_join = and_(
+        ProductRow.tenant_id == SkuRow.tenant_id,
+        ProductRow.id == SkuRow.product_id,
+    )
+    total = int(
+        session.scalar(
+            select(func.count())
+            .select_from(SkuRow)
+            .join(ProductRow, sku_product_join)
+            .where(*conditions)
+        )
+        or 0
+    )
+
+    statement = (
+        select(SkuRow, ProductRow, ProductCategoryRow, PublicCatalogOfferRow)
+        .join(ProductRow, sku_product_join)
+        .outerjoin(
+            ProductCategoryRow,
+            and_(
+                ProductCategoryRow.tenant_id == tenant_id,
+                ProductCategoryRow.id == ProductRow.category_id,
+                ProductCategoryRow.deleted_at.is_(None),
+            ),
+        )
+        .outerjoin(
+            PublicCatalogOfferRow,
+            and_(
+                PublicCatalogOfferRow.tenant_id == tenant_id,
+                PublicCatalogOfferRow.sku_id == SkuRow.id,
+                PublicCatalogOfferRow.deleted_at.is_(None),
+            ),
+        )
+        .where(*conditions)
+    )
+    if normalized:
+        statement = statement.order_by(
+            case(
+                (func.lower(SkuRow.sku_code) == normalized, 0),
+                (
+                    func.lower(func.coalesce(ProductRow.product_code, ""))
+                    == normalized,
+                    1,
+                ),
+                else_=2,
+            ),
+            SkuRow.updated_at.desc(),
+            SkuRow.id,
+        )
+    else:
+        statement = statement.order_by(SkuRow.updated_at.desc(), SkuRow.id)
+    rows = session.execute(
+        statement.limit(page_size).offset((page - 1) * page_size)
+    ).all()
+    return (
+        [
+            SkuListRow(
+                sku=sku,
+                product=product,
+                category=category,
+                public_offer=public_offer,
+            )
+            for sku, product, category, public_offer in rows
+        ],
+        total,
+    )
+
+
+def list_supplier_rows_for_sku_page(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    sku_ids: set[UUID],
+    product_ids: set[UUID],
+) -> list[tuple[SupplierProductRow, SupplierRow]]:
+    if not sku_ids:
+        return []
+    return list(
+        session.execute(
+            select(SupplierProductRow, SupplierRow)
+            .join(
+                SupplierRow,
+                and_(
+                    SupplierRow.tenant_id == tenant_id,
+                    SupplierRow.id == SupplierProductRow.supplier_id,
+                    SupplierRow.deleted_at.is_(None),
+                ),
+            )
+            .where(
+                SupplierProductRow.tenant_id == tenant_id,
+                SupplierProductRow.deleted_at.is_(None),
+                or_(
+                    SupplierProductRow.sku_id.in_(sku_ids),
+                    and_(
+                        SupplierProductRow.sku_id.is_(None),
+                        SupplierProductRow.product_id.in_(product_ids),
+                    ),
+                ),
+            )
+            .order_by(
+                case((SupplierProductRow.sku_id.is_(None), 1), else_=0),
+                SupplierRow.name,
+                SupplierProductRow.id,
+            )
+        ).all()
+    )
+
+
+def list_image_statuses_for_products(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_ids: set[UUID],
+) -> list[tuple[UUID, str]]:
+    if not product_ids:
+        return []
+    return [
+        (product_id, approval_status)
+        for product_id, approval_status in session.execute(
+            select(ProductImageRow.product_id, ProductImageRow.approval_status)
+            .where(
+                ProductImageRow.tenant_id == tenant_id,
+                ProductImageRow.product_id.in_(product_ids),
+                ProductImageRow.deleted_at.is_(None),
+            )
+            .order_by(ProductImageRow.product_id, ProductImageRow.sort_order, ProductImageRow.id)
+        ).all()
+    ]
 
 
 def get_sku(session: Session, *, tenant_id: UUID, sku_id: UUID) -> SkuRow | None:

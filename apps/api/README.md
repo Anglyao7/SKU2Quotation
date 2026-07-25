@@ -1,4 +1,4 @@
-# AI Trade Cloud API
+# 智贸云 API
 
 当前数据库实施状态：**Architecture Conformance Gate ACG-001 至 ACG-010 已完成；Vision/Image Embedding 与 Inquiry → Matching → Human-confirmed Quotation 闭环已实现。**
 
@@ -36,13 +36,14 @@ python -m venv .venv
 
 API 文档：`http://127.0.0.1:8000/docs`
 
-Web 认证壳层使用内存 Access Token、HttpOnly Refresh Cookie 和 Session-scoped CSRF Token。刷新页面会旋转 Refresh Token 并恢复可信 Session；旧 LocalStorage Access Token 会被清除。开发环境登录使用 `local_fake`，Staging/Production 必须注册批准的 OIDC Provider，否则启动保持 fail-closed。
+Web 认证壳层使用内存 Access Token、HttpOnly Refresh Cookie 和 Session-scoped CSRF Token。刷新页面会旋转 Refresh Token 并恢复可信 Session；旧 LocalStorage Access Token 会被清除。所有环境统一通过账号密码接口登录：开发环境由仅限非生产的本地身份适配器校验，Staging/Production 的账号、邮箱或手机号与密码由 Keycloak 校验，否则启动保持 fail-closed。
 
 工作区认证接口：
 
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/refresh`
 - `POST /api/v1/auth/logout`
+- `PUT /api/v1/auth/password`
 - `GET /api/v1/auth/memberships`
 - `POST /api/v1/auth/tenant-context`
 - `GET /api/v1/me`
@@ -157,11 +158,35 @@ $env:RABBITMQ_URL='amqp://user:password@rabbitmq:5672/%2F'
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/refresh`
 - `POST /api/v1/auth/logout`
+- `PUT /api/v1/auth/password`
 - `POST /api/v1/auth/tenant-context`
 - `GET /api/v1/me`
 - `GET /api/v1/me/permissions`
 
-生产不保存本地密码；登录通过 OIDC Authorization Code + PKCE Provider Port。仓库中的 `local_fake` Adapter 只允许非生产 profile。Refresh Token 仅写 Secure/HttpOnly/SameSite Cookie，数据库只存 HMAC hash；Access Token 每次请求仍需回查 Session、ACTIVE Membership、Tenant 与 permission version。客户端提交的 tenant header 不作为授权根。
+生产不保存本地密码；浏览器通过同源 HTTPS 提交账号标识和密码，FastAPI 仅将凭据转交 Keycloak Direct Grant 校验，并验证返回令牌的签名、issuer、audience、subject 与已验证邮箱。自助改密还要求当前 Access Token、Session CSRF Token 和当前密码；新密码统一要求 8-128 位、至少一个英文字母和一个数字、不含空白，并且不能与当前密码或账号标识相同，符号允许但不强制。Keycloak confidential client 的 service account 仅授予 `realm-management/manage-users`，只按已验证 subject 执行用户会话注销与密码更新。成功后当前应用 Session 保留，其他应用 Session 与 Refresh Token 会被撤销。仓库中的 `local_fake` Adapter 只允许非生产 profile。Refresh Token 仅写 Secure/HttpOnly/SameSite Cookie，数据库只存 HMAC hash；Access Token 每次请求仍需回查 Session、ACTIVE Membership、Tenant 与 permission version。客户端提交的 tenant header 不作为授权根。
+
+平台管理员先在“商家管理 → 邀请成员”登记邮箱和租户角色，再由受信任运维人员在生产服务器执行：
+
+```bash
+sudo ./infra/production/keycloak-provision-user.sh \
+  owner@example.com "Merchant Owner"
+```
+
+包装脚本启动一个只加入 Keycloak 私有 `identity` 网络的一次性容器；
+公网 `/admin*` 仍然保持关闭。Keycloak 管理员密码和初始用户密码只通过
+无回显终端提示输入；脚本没有密码命令行参数，也不会把凭据交给业务 API、
+环境变量或容器配置。初始密码直接保存为永久凭据；默认仍以
+`emailVerified=false` 创建身份，并由 Keycloak SMTP 发送邮箱验证邮件。
+SMTP 发信失败时身份保持未验证并允许安全重试。只有运维人员已完成线下
+邮箱核验并留存证据时，才可显式使用 `--email-verified`。
+
+生产启动导入只创建不存在的 Realm。后续发布由
+`infra/production/keycloak-reconcile.sh` 通过私有 Admin API 对账受管 Realm
+与 confidential client 字段，并验证 client secret；管理员凭据只经 stdin
+传入一次性容器。对账还会绑定受控运营邮箱并调用 Keycloak SMTP 测试接口，
+让错误的邮件连接或认证配置在应用切换前失败。这样域名、精确回调地址和
+OIDC secret 的受控轮换不会依赖 Keycloak 对已存在 Realm 明确跳过的启动
+导入行为。
 
 `users` 是全局身份；一个 User 通过 Membership 加入多个 Tenant。Role 属于 Tenant，Permission 是平台级稳定键。关联表使用复合租户外键，防止跨租户 UUID 引用。
 

@@ -12,7 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..adapters.file_scanner import get_file_scanner
-from ..adapters.image_intelligence import get_image_intelligence_provider
+from ..adapters.image_intelligence import (
+    ImageIntelligenceUnavailable,
+    get_image_intelligence_provider,
+)
 from ..adapters.object_storage import get_object_storage
 from ..domain.errors import ApplicationError
 from ..image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
@@ -27,6 +30,17 @@ def _require(permissions: frozenset[str], code: str) -> None:
         raise ApplicationError("PERMISSION_DENIED", f"Permission is required: {code}", kind="forbidden")
 
 
+def _provider():
+    try:
+        return get_image_intelligence_provider()
+    except ImageIntelligenceUnavailable as exc:
+        raise ApplicationError(
+            "IMAGE_INTELLIGENCE_UNAVAILABLE",
+            "Image intelligence is not available.",
+            kind="unavailable",
+        ) from exc
+
+
 def _projection_response(embedding: ImageEmbeddingRow, observation: VisionObservationRow, *, idempotent: bool) -> ImageProjectionResponse:
     return ImageProjectionResponse(observation_id=observation.id, embedding_id=embedding.id, product_id=embedding.product_id, product_image_id=embedding.product_image_id, model_provider=embedding.model_provider, model_name=embedding.model_name, model_version=embedding.model_version, dimensions=embedding.dimensions, quality_score=float(embedding.quality_score), labels=observation.labels, risks=observation.risks, idempotent=idempotent)
 
@@ -39,7 +53,7 @@ def project_product_image(session: Session, *, tenant_id: UUID, permissions: fro
     image, product = pair
     if image.approval_status != "APPROVED":
         raise ApplicationError("IMAGE_NOT_APPROVED", "Only APPROVED product images can enter the active similarity corpus.", kind="conflict")
-    provider = get_image_intelligence_provider()
+    provider = _provider()
     existing = repository.get_projection(session, tenant_id=tenant_id, image_id=image.id, provider=provider.identity.provider, model=provider.identity.model_name, version=provider.identity.model_version, content_hash=image.sha256)
     if existing:
         return _projection_response(existing[0], existing[1], idempotent=True)
@@ -77,7 +91,7 @@ def search_by_image(session: Session, *, tenant_id: UUID, membership_id: UUID, p
     if not content or len(content) > int(os.getenv("IMAGE_SEARCH_MAX_BYTES", str(20 * 1024 * 1024))):
         raise ApplicationError("IMAGE_SIZE_INVALID", "Query image must be between 1 byte and 20 MB.")
     content_type = _validated_image_type(content, declared_content_type)
-    provider = get_image_intelligence_provider()
+    provider = _provider()
     now = utcnow(); storage = get_object_storage()
     for expired in repository.list_expired_searches(session, tenant_id=tenant_id, now=now):
         storage.delete(expired.query_object_key); expired.status = "EXPIRED"; expired.query_embedding = None

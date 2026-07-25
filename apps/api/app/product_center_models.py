@@ -26,6 +26,9 @@ from .database import Base
 from .model_mixins import AuditTimestampMixin, utcnow
 
 
+SKU_TEMPLATE_SOURCE_OPTION_KEY = "_sku2quotation"
+
+
 class SkuRow(AuditTimestampMixin, Base):
     __tablename__ = "skus"
     __table_args__ = (

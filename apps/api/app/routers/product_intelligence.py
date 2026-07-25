@@ -29,11 +29,16 @@ def list_product_field_candidates(
     task_id: UUID,
     session: Session = Depends(get_authenticated_session),
 ) -> list[ProductFieldCandidate]:
-    return use_cases.list_candidates(
-        session,
-        tenant_id=current_context(session).tenant_id,
-        task_id=task_id,
-    )
+    context = current_context(session)
+    try:
+        return use_cases.list_candidates(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            task_id=task_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
 
 
 @router.post(

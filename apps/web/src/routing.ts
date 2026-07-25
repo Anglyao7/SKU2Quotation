@@ -6,16 +6,18 @@ export const LEGACY_WORKSPACE_PATHS = {
   aiSearch: "/ai-search",
   inquiries: "/inquiries",
   quotations: "/quotations",
+  account: "/account",
   permissions: "/system/permissions",
 } as const;
 
 export const CONSOLE_WORKSPACE_PATHS = {
   dashboard: "/console",
   suppliers: "/console/suppliers",
-  review: "/console/products/review",
   products: "/console/products",
+  categories: "/console/products/categories",
   aiSearch: "/console/ai-search",
   inquiries: "/console/inquiries",
   quotations: "/console/quotes",
+  account: "/console/account",
   permissions: "/console/system/permissions",
 } as const;

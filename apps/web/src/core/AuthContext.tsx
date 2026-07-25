@@ -12,7 +12,7 @@ import {
   getCurrentUser,
   getPermissions,
   listMemberships,
-  loginLocalDemo,
+  loginPassword as loginPasswordRequest,
   logoutSession,
   refreshAuthSession,
   switchTenant as switchTenantRequest,
@@ -32,9 +32,10 @@ interface AuthState {
 
 export interface CoreAuthContextValue extends AuthState {
   loading: boolean;
-  loginDemo: () => Promise<void>;
+  loginPassword: (identifier: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   switchTenant: (membershipId: string) => Promise<void>;
+  reloadProfile: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
   hasAnyPermission: (...permissions: string[]) => boolean;
 }
@@ -55,8 +56,8 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(initialState);
 
   const hydrate = useCallback(async (session: AuthTokenData) => {
-    const memberships = await listMemberships();
     if (session.requiresTenantSelection || !session.context.tenantId) {
+      const memberships = await listMemberships();
       setState({ status: "selecting_tenant", session, memberships, permissions: new Set() });
       return;
     }
@@ -65,7 +66,7 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
       status: "authenticated",
       session,
       profile,
-      memberships,
+      memberships: profile.memberships,
       permissions: new Set(permissionSet.permissions),
     });
   }, []);
@@ -95,10 +96,10 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
     };
   }, [hydrate]);
 
-  const loginDemo = useCallback(async () => {
+  const loginPassword = useCallback(async (identifier: string, password: string) => {
     setState((current) => ({ ...current, status: "restoring", error: undefined }));
     try {
-      await hydrate(await loginLocalDemo());
+      await hydrate(await loginPasswordRequest(identifier, password));
     } catch (reason) {
       setState({ ...initialState, status: "anonymous", error: errorMessage(reason) });
       throw reason;
@@ -129,15 +130,38 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
     setState({ ...initialState, status: "anonymous" });
   }, []);
 
+  const reloadProfile = useCallback(async () => {
+    const [profile, memberships] = await Promise.all([
+      getCurrentUser(),
+      listMemberships(),
+    ]);
+    setState((current) => ({
+      ...current,
+      profile,
+      memberships,
+      session: current.session
+        ? {
+            ...current.session,
+            context: {
+              ...current.session.context,
+              tenantName: profile.context.tenantName,
+              tenantSlug: profile.context.tenantSlug,
+            },
+          }
+        : current.session,
+    }));
+  }, []);
+
   const value = useMemo<CoreAuthContextValue>(() => ({
     ...state,
     loading: state.status === "restoring",
-    loginDemo,
+    loginPassword,
     logout,
     switchTenant,
+    reloadProfile,
     hasPermission: (permission) => state.permissions.has(permission),
     hasAnyPermission: (...permissions) => permissions.length === 0 || permissions.some((permission) => state.permissions.has(permission)),
-  }), [loginDemo, logout, state, switchTenant]);
+  }), [loginPassword, logout, reloadProfile, state, switchTenant]);
 
   return <CoreAuthContext.Provider value={value}>{children}</CoreAuthContext.Provider>;
 }

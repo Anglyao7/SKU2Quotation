@@ -17,7 +17,7 @@ from alembic.config import Config
 from fastapi import Response
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
-from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy import MetaData, create_engine, delete, func, inspect, select
 from sqlalchemy.exc import IntegrityError
 
 
@@ -99,21 +99,33 @@ from app.services.product_intelligence.adoption import (
     dispatch_product_committed_event,
     reject_candidate_group,
 )
+from app.services.product_template_import import (
+    PRODUCT_TEMPLATE_HEADERS,
+    PRODUCT_TEMPLATE_SHEET,
+)
 from app.services.product_intelligence.normalization import normalize_product_field
 from app.services.rbac import has_permission, list_permissions
 from app.services.auth.tokens import REFRESH_COOKIE_NAME, hash_secret
+from app.services.auth.contracts import IdentityClaim, IdentityProviderError
+from app.services.auth.oidc_provider import OidcIdentityProviderAdapter
+from app.services.auth.service import AuthError, _validate_new_password
+from app.production_bootstrap import bootstrap_production_owner
+from app.tenant_slugs import RESERVED_TENANT_SLUGS, storefront_slug_from_name
 from app.model_mixins import mark_deleted, restore_deleted
 from app.adapters.file_scanner import (
     DeterministicDevelopmentScanner,
     get_file_scanner,
 )
 from app.adapters.object_storage import get_object_storage
+from app.ports.file_scanner import FileScanResult
 from app.adapters.image_intelligence import get_image_intelligence_provider
 from app.adapters.outbox_publisher import InMemoryOutboxPublisher, get_outbox_publisher
 from app.services.outbox_consumer import consume_product_committed_message
 from app.workers.file_processing import process_file_worker_job
+import app.workers.file_processing as file_processing_worker
 from app.workers.outbox_relay import relay_one_outbox_event
 from app.use_cases.product_center import list_products as list_authoritative_products
+from app.use_cases.product_center import list_skus as list_authoritative_skus
 from app.use_cases.product_center import upsert_public_offer as upsert_public_offer_use_case
 from app.product_center_schemas import PublicCatalogOfferUpsertRequest
 from app.use_cases.workspace import create_supplier as create_supplier_use_case
@@ -124,10 +136,172 @@ from app.public_catalog_models import (
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
     PublicQuoteDraftRow,
+    TenantPublicProfileRow,
 )
 
 
 client = TestClient(app)
+
+
+def _product_template_bytes(rows: list[list[object]]) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = PRODUCT_TEMPLATE_SHEET
+    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    for row in rows:
+        values = list(row)
+        if len(values) == len(PRODUCT_TEMPLATE_HEADERS) - 1:
+            values.insert(6, None)
+        sheet.append(values)
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+    return content.getvalue()
+
+
+def _cleanup_template_test_records(
+    *,
+    import_job_ids: list[str],
+    sku_codes: list[str],
+    category_names: list[str],
+) -> None:
+    object_keys: list[str] = []
+    with SessionLocal() as session:
+        sku_rows = session.scalars(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code.in_(sku_codes),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+        sku_ids = [row.id for row in sku_rows]
+        product_ids = [row.product_id for row in sku_rows]
+        if sku_ids:
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                    PublicCatalogOfferRow.sku_id.in_(sku_ids),
+                )
+            )
+        if product_ids:
+            session.execute(
+                delete(ProductImageRow).where(
+                    ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductImageRow.product_id.in_(product_ids),
+                )
+            )
+        if sku_ids:
+            session.execute(
+                delete(SkuRow).where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.id.in_(sku_ids),
+                )
+            )
+        if product_ids:
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductAuditEventRow.product_id.in_(product_ids),
+                )
+            )
+            session.execute(
+                delete(ProductRow).where(
+                    ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductRow.id.in_(product_ids),
+                )
+            )
+
+        if import_job_ids:
+            import_rows = session.scalars(
+                select(ImportJobRow)
+                .where(
+                    ImportJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    ImportJobRow.id.in_(import_job_ids),
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+            worker_rows = session.scalars(
+                select(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    WorkerJobRow.import_job_id.in_(import_job_ids),
+                )
+            ).all()
+            source_file_ids = {
+                *(row.source_file_id for row in import_rows),
+                *(row.source_file_id for row in worker_rows),
+            }
+            source_rows = (
+                session.scalars(
+                    select(SourceFileRow)
+                    .where(
+                        SourceFileRow.tenant_id == DEFAULT_TENANT_ID,
+                        SourceFileRow.id.in_(source_file_ids),
+                    )
+                    .execution_options(include_deleted=True)
+                ).all()
+                if source_file_ids
+                else []
+            )
+            media_object_ids = {
+                *(row.media_object_id for row in worker_rows if row.media_object_id),
+                *(row.media_object_id for row in source_rows if row.media_object_id),
+            }
+            media_rows = (
+                session.scalars(
+                    select(MediaObjectRow)
+                    .where(
+                        MediaObjectRow.tenant_id == DEFAULT_TENANT_ID,
+                        MediaObjectRow.id.in_(media_object_ids),
+                    )
+                    .execution_options(include_deleted=True)
+                ).all()
+                if media_object_ids
+                else []
+            )
+            object_keys = [row.object_key for row in media_rows]
+            session.execute(
+                delete(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    WorkerJobRow.import_job_id.in_(import_job_ids),
+                )
+            )
+            session.execute(
+                delete(ImportJobRow).where(
+                    ImportJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    ImportJobRow.id.in_(import_job_ids),
+                )
+            )
+            if source_file_ids:
+                session.execute(
+                    delete(SourceFileRow).where(
+                        SourceFileRow.tenant_id == DEFAULT_TENANT_ID,
+                        SourceFileRow.id.in_(source_file_ids),
+                    )
+                )
+            if media_object_ids:
+                session.execute(
+                    delete(MediaObjectRow).where(
+                        MediaObjectRow.tenant_id == DEFAULT_TENANT_ID,
+                        MediaObjectRow.id.in_(media_object_ids),
+                    )
+                )
+        if category_names:
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductCategoryRow.name.in_(category_names),
+                )
+            )
+        session.commit()
+
+    storage = get_object_storage()
+    for object_key in object_keys:
+        storage.delete(object_key)
+        if "/source/" in object_key:
+            storage.delete(object_key.replace("/source/", "/quarantine/", 1))
+        elif "/quarantine/" in object_key:
+            storage.delete(object_key.replace("/quarantine/", "/source/", 1))
 
 
 def _create_pending_product_event(tmp_path: Path, *, suffix: str) -> UUID:
@@ -246,6 +420,53 @@ def test_readiness_fails_closed_on_migration_mismatch(
     assert response.json()["dependencies"]["database"]["reason"] == "MIGRATION_HEAD_MISMATCH"
 
 
+def test_merchant_name_updates_storefront_path_and_preserves_old_link() -> None:
+    new_name = f"智贸云测试商家{uuid4().hex[:6]}"
+    with SessionLocal() as session:
+        tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert tenant is not None and profile is not None
+        original_name = tenant.name
+        original_tenant_slug = tenant.slug
+        original_profile_slug = profile.slug
+        original_aliases = list(profile.legacy_slugs or [])
+
+    try:
+        response = client.patch(
+            "/api/v1/me/merchant",
+            json={"name": new_name},
+        )
+        assert response.status_code == 200, response.text
+        updated = response.json()
+        assert updated["name"] == new_name
+        assert updated["slug"] == new_name.casefold()
+        assert updated["storefront_path"] == f"/{new_name.casefold()}"
+
+        canonical = client.get(f"/api/store/{updated['slug']}")
+        assert canonical.status_code == 200
+        assert canonical.json()["name"] == new_name
+        assert canonical.json()["slug"] == updated["slug"]
+
+        legacy = client.get(f"/api/store/{original_tenant_slug}")
+        assert legacy.status_code == 200
+        assert legacy.json()["slug"] == updated["slug"]
+
+        me = client.get("/api/v1/me")
+        assert me.status_code == 200
+        assert me.json()["context"]["tenant_name"] == new_name
+        assert me.json()["context"]["tenant_slug"] == updated["slug"]
+    finally:
+        with SessionLocal() as session:
+            tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert tenant is not None and profile is not None
+            tenant.name = original_name
+            tenant.slug = original_tenant_slug
+            profile.slug = original_profile_slug
+            profile.legacy_slugs = original_aliases
+            session.commit()
+
+
 def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
     assert client.get("/api/v1/suppliers").status_code == 401
@@ -330,6 +551,51 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     )
     assert refresh_response.status_code == 200, refresh_response.text
     rotated_data = refresh_response.json()["data"]
+    rotated_refresh = refresh_response.cookies.get(REFRESH_COOKIE_NAME)
+    assert rotated_refresh
+
+    # A second tab can already have sent the same cookie/CSRF pair before the
+    # first response updates the shared cookie jar. The row lock serializes
+    # that loser behind the first rotation; the bounded retry must return the
+    # same successor without advancing or revoking the token family.
+    with TestClient(app) as concurrent_client:
+        concurrent_client.cookies.set(
+            REFRESH_COOKIE_NAME,
+            raw_refresh,
+            path="/api/v1/auth",
+        )
+        concurrent_response = concurrent_client.post(
+            "/api/v1/auth/refresh",
+            headers={"X-CSRF-Token": csrf_token},
+        )
+    assert concurrent_response.status_code == 200, concurrent_response.text
+    assert concurrent_response.cookies.get(REFRESH_COOKIE_NAME) == rotated_refresh
+    assert concurrent_response.json()["data"]["csrf_token"] == rotated_data["csrf_token"]
+    with SessionLocal() as session:
+        auth_session = session.get(AuthSessionRow, UUID(token_data["session_id"]))
+        assert auth_session is not None
+        assert auth_session.revoked_at is None
+        assert auth_session.rotation_counter == 1
+        stored_tokens = session.scalars(
+            select(AuthRefreshTokenRow)
+            .where(AuthRefreshTokenRow.auth_session_id == auth_session.id)
+            .order_by(AuthRefreshTokenRow.sequence_number)
+        ).all()
+        assert len(stored_tokens) == 2
+        assert stored_tokens[0].rotation_request_hash
+        assert stored_tokens[0].retry_grace_expires_at
+        assert stored_tokens[1].token_hash == hash_secret(rotated_refresh)
+        assert rotated_refresh not in {
+            stored_tokens[0].token_hash,
+            stored_tokens[0].rotation_request_hash,
+            stored_tokens[1].token_hash,
+        }
+        # Move beyond the explicit grace window to model a genuine replay,
+        # without slowing the suite down.
+        stored_tokens[0].retry_grace_expires_at = datetime.now(UTC) - timedelta(
+            seconds=1
+        )
+        session.commit()
 
     with TestClient(app) as replay_client:
         replay_client.cookies.set(REFRESH_COOKIE_NAME, raw_refresh, path="/api/v1/auth")
@@ -366,6 +632,899 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     ).status_code == 401
 
 
+def test_public_auth_config_never_exposes_oidc_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local = client.get("/api/v1/auth/config")
+    assert local.status_code == 200
+    assert local.json() == {
+        "provider": "local_fake",
+        "client_id": None,
+        "authorization_endpoint": None,
+        "end_session_endpoint": None,
+        "post_logout_redirect_uri": None,
+        "scopes": [],
+        "code_challenge_method": "S256",
+    }
+    assert local.headers["cache-control"] == "no-store"
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        "app.routers.auth.public_oidc_config",
+        lambda: {
+            "provider": "enterprise_oidc",
+            "client_id": "public-web-client",
+            "authorization_endpoint": "https://identity.example.test/authorize",
+            "end_session_endpoint": "https://identity.example.test/logout",
+            "post_logout_redirect_uri": "https://app.example.test/login",
+            "scopes": ["openid", "profile", "email"],
+            "code_challenge_method": "S256",
+        },
+    )
+    configured = client.get("/api/v1/auth/config")
+    assert configured.status_code == 200
+    assert configured.json()["client_id"] == "public-web-client"
+    assert configured.json()["post_logout_redirect_uri"] == "https://app.example.test/login"
+    serialized = configured.text.lower()
+    assert "secret" not in serialized
+    assert "token_endpoint" not in serialized
+    assert "jwks" not in serialized
+
+
+def test_local_password_login_uses_the_same_browser_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_PROFILE", "local_fake")
+    monkeypatch.setenv("LOCAL_LOGIN_ACCOUNT", "owner")
+    monkeypatch.setenv("LOCAL_LOGIN_PASSWORD", "localpass123")
+
+    with TestClient(app) as password_client:
+        response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": "owner",
+                "password": "localpass123",
+                "device_label": "pytest-local-password-browser",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["context"]["membership_id"] == str(
+        DEFAULT_MEMBERSHIP_ID
+    )
+    assert "localpass123" not in response.text
+    assert "httponly" in response.headers["set-cookie"].lower()
+
+
+def test_password_login_uses_keycloak_and_reuses_hardened_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    membership_id = uuid4()
+    provider_key = f"oidc:{'c' * 32}"
+    subject = f"password-subject-{uuid4()}"
+    email = f"password-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Password User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    captured_provider: dict[str, str] = {}
+    captured_limit: dict[str, object] = {}
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        captured_provider.update(identifier=identifier, password=password)
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=email,
+            email_verified=True,
+            display_name="Password User",
+        )
+
+    def capture_limit(_request: object, **kwargs: object) -> None:
+        captured_limit.update(kwargs)
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr("app.routers.auth.enforce_rate_limit", capture_limit)
+
+    with TestClient(app) as password_client:
+        response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": "+8613800138000",
+                "password": "not-stored-password",
+                "device_label": "pytest-password-browser",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert "httponly" in response.headers["set-cookie"].lower()
+    assert "not-stored-password" not in response.text
+    assert captured_provider == {
+        "identifier": "+8613800138000",
+        "password": "not-stored-password",
+    }
+    assert captured_limit["scope"] == "auth-password-login"
+    assert captured_limit["additional_subjects"] == (
+        ("account", "+8613800138000"),
+    )
+    assert "token" not in captured_limit
+    token_data = response.json()["data"]
+    assert token_data["context"]["membership_id"] == str(membership_id)
+    with SessionLocal() as session:
+        auth_session = session.get(AuthSessionRow, UUID(token_data["session_id"]))
+        assert auth_session is not None
+        assert auth_session.user_id == user_id
+        assert auth_session.device_label == "pytest-password-browser"
+
+
+def test_password_login_returns_only_generic_authentication_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_password(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        assert identifier == "missing@example.test"
+        assert password == "wrong-password"
+        raise IdentityProviderError("upstream account does not exist")
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        reject_password,
+    )
+    with TestClient(app) as password_client:
+        response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": "missing@example.test",
+                "password": "wrong-password",
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "detail": {
+            "code": "AUTH_INVALID_CREDENTIALS",
+            "message": "authentication failed",
+        }
+    }
+    serialized = response.text.lower()
+    assert "missing@example.test" not in serialized
+    assert "wrong-password" not in serialized
+    assert "does not exist" not in serialized
+
+
+def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    membership_id = uuid4()
+    provider_key = f"oidc:{'d' * 32}"
+    subject = f"password-change-subject-{uuid4()}"
+    email = f"password-change-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Password Change User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    authenticated_passwords: list[tuple[str, str]] = []
+    changed_passwords: list[tuple[str, str]] = []
+    limits: list[dict[str, object]] = []
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        authenticated_passwords.append((identifier, password))
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=email,
+            email_verified=True,
+            display_name="Password Change User",
+        )
+
+    def update(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        subject: str,
+        new_password: str,
+    ) -> None:
+        changed_passwords.append((subject, new_password))
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "change_password",
+        update,
+    )
+    monkeypatch.setattr(
+        "app.routers.auth.enforce_rate_limit",
+        lambda _request, **kwargs: limits.append(kwargs),
+    )
+
+    with TestClient(app) as password_client:
+        current_login = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        peer_login = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        assert current_login.status_code == 200, current_login.text
+        assert peer_login.status_code == 200, peer_login.text
+        current_data = current_login.json()["data"]
+        peer_data = peer_login.json()["data"]
+        limits.clear()
+        response = password_client.put(
+            "/api/v1/auth/password",
+            headers={
+                "Authorization": f"Bearer {current_data['access_token']}",
+                "X-CSRF-Token": current_data["csrf_token"],
+            },
+            json={
+                "current_password": "InitialPass!123",
+                "new_password": "Simple42",
+            },
+        )
+
+    assert response.status_code == 204, response.text
+    assert response.content == b""
+    assert response.headers["cache-control"] == "no-store"
+    assert authenticated_passwords[-1] == (email, "InitialPass!123")
+    assert changed_passwords == [(subject, "Simple42")]
+    assert limits == [
+        {
+            "scope": "auth-password-change",
+            "limit": 5,
+            "window_seconds": 900,
+            "token": current_data["access_token"],
+        }
+    ]
+    with SessionLocal() as session:
+        current_auth_session = session.get(
+            AuthSessionRow,
+            UUID(current_data["session_id"]),
+        )
+        peer_auth_session = session.get(
+            AuthSessionRow,
+            UUID(peer_data["session_id"]),
+        )
+        assert current_auth_session is not None
+        assert current_auth_session.revoked_at is None
+        assert peer_auth_session is not None
+        assert peer_auth_session.revoked_at is not None
+        assert peer_auth_session.revocation_reason == "PASSWORD_CHANGED"
+        peer_tokens = session.scalars(
+            select(AuthRefreshTokenRow).where(
+                AuthRefreshTokenRow.auth_session_id == peer_auth_session.id
+            )
+        ).all()
+        assert peer_tokens
+        assert all(token.revoked_at is not None for token in peer_tokens)
+        current_tokens = session.scalars(
+            select(AuthRefreshTokenRow).where(
+                AuthRefreshTokenRow.auth_session_id == current_auth_session.id
+            )
+        ).all()
+        assert current_tokens
+        assert all(token.revoked_at is None for token in current_tokens)
+
+
+@pytest.mark.parametrize(
+    ("new_password", "expected_code"),
+    [
+        ("short1", "PASSWORD_POLICY_VIOLATION"),
+        ("12345678", "PASSWORD_POLICY_VIOLATION"),
+        ("abcdefgh", "PASSWORD_POLICY_VIOLATION"),
+        ("Abcd 123", "PASSWORD_POLICY_VIOLATION"),
+        ("A1" + "b" * 127, "PASSWORD_POLICY_VIOLATION"),
+        ("InitialPass!123", "PASSWORD_POLICY_VIOLATION"),
+    ],
+)
+def test_password_change_rejects_weak_or_reused_password_before_provider_update(
+    monkeypatch: pytest.MonkeyPatch,
+    new_password: str,
+    expected_code: str,
+) -> None:
+    user_id = uuid4()
+    provider_key = f"oidc:{'e' * 32}"
+    subject = f"password-policy-subject-{uuid4()}"
+    email = f"password-policy-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Password Policy User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=uuid4(),
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    provider_calls: list[str] = []
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        provider_calls.append(password)
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=email,
+            email_verified=True,
+        )
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "change_password",
+        lambda *_args, **_kwargs: pytest.fail("provider update must not run"),
+    )
+    monkeypatch.setattr("app.routers.auth.enforce_rate_limit", lambda *_args, **_kwargs: None)
+
+    with TestClient(app) as password_client:
+        login_response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        data = login_response.json()["data"]
+        provider_calls.clear()
+        response = password_client.put(
+            "/api/v1/auth/password",
+            headers={
+                "Authorization": f"Bearer {data['access_token']}",
+                "X-CSRF-Token": data["csrf_token"],
+            },
+            json={
+                "current_password": "InitialPass!123",
+                "new_password": new_password,
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == expected_code
+    assert "InitialPass!123" not in response.text
+    assert new_password not in response.text
+    assert provider_calls == []
+
+
+def test_new_password_policy_accepts_letters_digits_and_optional_symbols() -> None:
+    user = UserRow(
+        id=uuid4(),
+        email_normalized="merchant42@example.test",
+        display_name="Merchant42",
+        identity_provider=f"oidc:{'9' * 32}",
+        identity_subject=f"password-policy-unit-{uuid4()}",
+        status="active",
+    )
+
+    for password in ("Simple42", "ABCDEFG1", "abcdefg1", "Abcd!234"):
+        _validate_new_password(
+            current_password="Current1",
+            new_password=password,
+            user=user,
+        )
+
+    for password in (
+        "short1",
+        "12345678",
+        "abcdefgh",
+        "Abcd 123",
+        "A1" + "b" * 127,
+        "Current1",
+        "merchant42@example.test",
+        "merchant42",
+        "Merchant42",
+    ):
+        with pytest.raises(AuthError) as exc_info:
+            _validate_new_password(
+                current_password="Current1",
+                new_password=password,
+                user=user,
+            )
+        assert exc_info.value.code == "PASSWORD_POLICY_VIOLATION"
+
+
+def test_password_change_hides_wrong_password_and_cross_account_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    provider_key = f"oidc:{'f' * 32}"
+    subject = f"password-current-subject-{uuid4()}"
+    email = f"password-current-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Current Password User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=uuid4(),
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        if password == "InitialPass!123":
+            return IdentityClaim(
+                provider=provider_key,
+                subject=subject,
+                email_normalized=email,
+                email_verified=True,
+            )
+        if password == "CrossAccount!123":
+            return IdentityClaim(
+                provider=provider_key,
+                subject="another-keycloak-user",
+                email_normalized="another@example.test",
+                email_verified=True,
+            )
+        raise IdentityProviderError("upstream current password detail")
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "change_password",
+        lambda *_args, **_kwargs: pytest.fail("provider update must not run"),
+    )
+    monkeypatch.setattr("app.routers.auth.enforce_rate_limit", lambda *_args, **_kwargs: None)
+
+    with TestClient(app) as password_client:
+        login_response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        data = login_response.json()["data"]
+        for candidate in ("WrongCurrent!123", "CrossAccount!123"):
+            response = password_client.put(
+                "/api/v1/auth/password",
+                headers={
+                    "Authorization": f"Bearer {data['access_token']}",
+                    "X-CSRF-Token": data["csrf_token"],
+                },
+                json={
+                    "current_password": candidate,
+                    "new_password": "UpdatedPass!456",
+                },
+            )
+            assert response.status_code == 401
+            assert response.json() == {
+                "detail": {
+                    "code": "CURRENT_PASSWORD_INVALID",
+                    "message": "current password is invalid",
+                }
+            }
+            assert candidate not in response.text
+            assert "upstream" not in response.text
+
+
+def test_password_change_requires_current_session_csrf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    provider_key = f"oidc:{'1' * 32}"
+    subject = f"password-csrf-subject-{uuid4()}"
+    email = f"password-csrf-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=email,
+                display_name="Password CSRF User",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=uuid4(),
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    provider_calls: list[str] = []
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        provider_calls.append(password)
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=email,
+            email_verified=True,
+        )
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr("app.routers.auth.enforce_rate_limit", lambda *_args, **_kwargs: None)
+
+    with TestClient(app) as password_client:
+        login_response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": email,
+                "password": "InitialPass!123",
+            },
+        )
+        data = login_response.json()["data"]
+        provider_calls.clear()
+        response = password_client.put(
+            "/api/v1/auth/password",
+            headers={
+                "Authorization": f"Bearer {data['access_token']}",
+                "X-CSRF-Token": "incorrect-csrf-token",
+            },
+            json={
+                "current_password": "InitialPass!123",
+                "new_password": "UpdatedPass!456",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "AUTH_CSRF_INVALID"
+    assert provider_calls == []
+
+
+def test_enterprise_oidc_binds_only_verified_pending_invitation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email = f"verified-{uuid4().hex}@example.test"
+    invited_user_id = uuid4()
+    invited_membership_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=invited_user_id,
+                email_normalized=email,
+                display_name="Pending Owner",
+                identity_provider="pending_oidc",
+                identity_subject=f"pending:{invited_user_id}",
+                status="invited",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=invited_membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=invited_user_id,
+                status="invited",
+            )
+        )
+        session.commit()
+
+    provider_key = f"oidc:{'a' * 32}"
+
+    def verified_exchange(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        authorization_code: str,
+        code_verifier: str,
+        redirect_uri: str,
+        nonce: str | None = None,
+    ) -> IdentityClaim:
+        assert authorization_code == "one-time-code"
+        assert len(code_verifier) >= 43
+        assert redirect_uri == "https://app.example.test/login/callback"
+        assert nonce == "N" * 43
+        return IdentityClaim(
+            provider=provider_key,
+            subject="enterprise-subject-1",
+            email_normalized=email,
+            email_verified=True,
+            display_name="Verified Owner",
+        )
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "exchange_authorization_code",
+        verified_exchange,
+    )
+    with TestClient(app) as oidc_client:
+        response = oidc_client.post(
+            "/api/v1/auth/login",
+            json={
+                "provider": "enterprise_oidc",
+                "authorization_code": "one-time-code",
+                "code_verifier": "V" * 64,
+                "redirect_uri": "https://app.example.test/login/callback",
+                "nonce": "N" * 43,
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    with SessionLocal() as session:
+        user = session.get(UserRow, invited_user_id)
+        membership = session.get(MembershipRow, invited_membership_id)
+        assert user is not None and membership is not None
+        assert (user.identity_provider, user.identity_subject, user.status) == (
+            provider_key,
+            "enterprise-subject-1",
+            "active",
+        )
+        assert user.display_name == "Verified Owner"
+        assert membership.status == "active"
+        assert membership.joined_at is not None
+
+
+def test_enterprise_oidc_rejects_unverified_email_and_jit_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    unknown_email = f"unknown-{uuid4().hex}@example.test"
+
+    def claim(email_verified: bool) -> IdentityClaim:
+        return IdentityClaim(
+            provider=f"oidc:{'b' * 32}",
+            subject=f"subject-{uuid4()}",
+            email_normalized=unknown_email,
+            email_verified=email_verified,
+            display_name="Unknown User",
+        )
+
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "exchange_authorization_code",
+        lambda _self, **_kwargs: claim(False),
+    )
+    payload = {
+        "provider": "enterprise_oidc",
+        "authorization_code": "unverified",
+        "code_verifier": "V" * 64,
+        "redirect_uri": "https://app.example.test/login/callback",
+        "nonce": "N" * 43,
+    }
+    with TestClient(app) as oidc_client:
+        unverified = oidc_client.post("/api/v1/auth/login", json=payload)
+    assert unverified.status_code == 401
+
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "exchange_authorization_code",
+        lambda _self, **_kwargs: claim(True),
+    )
+    with TestClient(app) as oidc_client:
+        no_invite = oidc_client.post("/api/v1/auth/login", json=payload)
+    assert no_invite.status_code == 401
+    with SessionLocal() as session:
+        assert (
+            session.scalar(
+                select(func.count(UserRow.id)).where(
+                    UserRow.email_normalized == unknown_email
+                )
+            )
+            == 0
+        )
+
+
+def test_production_bootstrap_is_idempotent_and_leaves_owner_pending_oidc() -> None:
+    unique = uuid4().hex[:12]
+    tenant_name = f"Production Tenant {unique}"
+    parameters = {
+        "organization_code": f"ORG{unique.upper()}",
+        "organization_name": "Production Organization",
+        "tenant_slug": f"production-{unique}",
+        "tenant_name": tenant_name,
+        "owner_email": f"owner-{unique}@example.test",
+        "owner_display_name": "Production Owner",
+        "platform_admin": True,
+    }
+    with SessionLocal() as session:
+        first = bootstrap_production_owner(session, **parameters)
+        tenant = session.get(TenantRow, first.tenant_id)
+        assert tenant is not None
+        assert tenant.slug == storefront_slug_from_name(tenant_name)
+        tenant.name = "自定义商家名"
+        tenant.slug = "自定义商家名"
+        profile = session.get(TenantPublicProfileRow, tenant.id)
+        assert profile is not None
+        profile.slug = tenant.slug
+        session.commit()
+    with SessionLocal() as session:
+        second = bootstrap_production_owner(session, **parameters)
+        user = session.get(UserRow, first.user_id)
+        membership = session.get(MembershipRow, first.membership_id)
+        tenant = session.get(TenantRow, first.tenant_id)
+        profile = session.get(TenantPublicProfileRow, first.tenant_id)
+        owner_role = session.scalar(
+            select(RoleRow).where(
+                RoleRow.tenant_id == first.tenant_id,
+                RoleRow.code == "OWNER",
+            )
+        )
+        assert (
+            user is not None
+            and membership is not None
+            and owner_role is not None
+            and tenant is not None
+            and profile is not None
+        )
+        assert tenant.name == "自定义商家名"
+        assert tenant.slug == "自定义商家名"
+        assert profile.slug == "自定义商家名"
+        assert user.identity_provider == "pending_oidc"
+        assert user.status == "invited"
+        assert user.is_platform_admin is True
+        assert membership.status == "invited"
+        assert session.scalar(
+            select(func.count(MembershipRoleRow.id)).where(
+                MembershipRoleRow.tenant_id == first.tenant_id,
+                MembershipRoleRow.membership_id == first.membership_id,
+                MembershipRoleRow.role_id == owner_role.id,
+            )
+        ) == 1
+    assert first == second
+
+
+@pytest.mark.parametrize("slug", sorted(RESERVED_TENANT_SLUGS))
+def test_production_bootstrap_rejects_reserved_tenant_slug_before_writes(
+    slug: str,
+) -> None:
+    unique = uuid4().hex[:12]
+    with SessionLocal() as session:
+        organization_count = session.scalar(select(func.count(OrganizationRow.id)))
+        tenant_count = session.scalar(select(func.count(TenantRow.id)))
+        with pytest.raises(ValueError, match="reserved by the platform"):
+            bootstrap_production_owner(
+                session,
+                organization_code=f"RSV{unique.upper()}",
+                organization_name="Must Not Be Created",
+                tenant_slug=slug,
+                tenant_name="Reserved Storefront",
+                owner_email=f"reserved-{unique}@example.test",
+                owner_display_name="Reserved Owner",
+            )
+        assert session.scalar(select(func.count(OrganizationRow.id))) == organization_count
+        assert session.scalar(select(func.count(TenantRow.id))) == tenant_count
+
+
+def test_platform_admin_rejects_every_reserved_storefront_slug() -> None:
+    for slug in sorted(RESERVED_TENANT_SLUGS):
+        response = client.post(
+            "/api/admin/tenants",
+            json={"name": f"Reserved {slug}", "slug": slug},
+        )
+        assert response.status_code == 422, (slug, response.text)
+    with SessionLocal() as session:
+        assert (
+            session.scalar(
+                select(func.count(TenantRow.id)).where(
+                    TenantRow.slug.in_(RESERVED_TENANT_SLUGS)
+                )
+            )
+            == 0
+        )
+
+
 def test_platform_admin_manages_tenant_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -388,6 +1547,64 @@ def test_platform_admin_manages_tenant_lifecycle(
     assert tenant["contact_email"] == "ops@merchant.example"
     assert tenant["sku_count"] == 0 and tenant["quote_count"] == 0
     assert client.get(f"/api/store/{slug}").status_code == 200
+
+    invited_email = f"owner-{uuid4().hex}@merchant.example"
+    invitation = client.post(
+        f"/api/admin/tenants/{tenant_id}/member-invitations",
+        json={
+            "email": invited_email.upper(),
+            "display_name": "Merchant Owner",
+            "role": "owner",
+        },
+    )
+    assert invitation.status_code == 201, invitation.text
+    invitation_data = invitation.json()
+    assert invitation_data["email"] == invited_email
+    assert invitation_data["role"] == "OWNER"
+    assert invitation_data["membership_status"] == "invited"
+    assert invitation_data["requires_identity_provider_provisioning"] is True
+    with SessionLocal() as session:
+        invited_user = session.get(UserRow, UUID(invitation_data["user_id"]))
+        invited_membership = session.get(
+            MembershipRow, UUID(invitation_data["membership_id"])
+        )
+        roles = {
+            role.code: role
+            for role in session.scalars(
+                select(RoleRow).where(RoleRow.tenant_id == UUID(tenant_id))
+            ).all()
+        }
+        assert set(roles) == {"OWNER", "ADMIN", "SALES", "PURCHASING", "VIEWER"}
+        assert invited_user is not None and invited_membership is not None
+        assert invited_user.identity_provider == "pending_oidc"
+        assert invited_user.status == "invited"
+        assert invited_membership.tenant_id == UUID(tenant_id)
+        assert session.scalar(
+            select(func.count(MembershipRoleRow.id)).where(
+                MembershipRoleRow.tenant_id == UUID(tenant_id),
+                MembershipRoleRow.membership_id == invited_membership.id,
+                MembershipRoleRow.role_id == roles["OWNER"].id,
+            )
+        ) == 1
+    repeated_invitation = client.post(
+        f"/api/admin/tenants/{tenant_id}/member-invitations",
+        json={
+            "email": invited_email,
+            "display_name": "Merchant Owner",
+            "role": "OWNER",
+        },
+    )
+    assert repeated_invitation.status_code == 201
+    assert repeated_invitation.json()["created"] is False
+    rejected_role = client.post(
+        f"/api/admin/tenants/{tenant_id}/member-invitations",
+        json={
+            "email": f"custom-{uuid4().hex}@merchant.example",
+            "display_name": "Custom Role",
+            "role": "SUPERADMIN",
+        },
+    )
+    assert rejected_role.status_code == 422
 
     merchant_user_id = uuid4()
     with SessionLocal() as session:
@@ -507,6 +1724,114 @@ def test_platform_admin_routes_reject_regular_members(
         )
         assert denied.status_code == 403
         assert denied.json()["detail"]["code"] == "PLATFORM_ADMIN_REQUIRED"
+        denied_invitation = regular_client.post(
+            f"/api/admin/tenants/{DEFAULT_TENANT_ID}/member-invitations",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "email": f"denied-{uuid4().hex}@example.test",
+                "display_name": "Denied",
+                "role": "SALES",
+            },
+        )
+        assert denied_invitation.status_code == 403
+        assert denied_invitation.json()["detail"]["code"] == "PLATFORM_ADMIN_REQUIRED"
+
+
+def test_member_invitation_rejects_ambiguous_global_email() -> None:
+    email = f"ambiguous-{uuid4().hex}@example.test"
+    with SessionLocal() as session:
+        for index in range(2):
+            user_id = uuid4()
+            session.add(
+                UserRow(
+                    id=user_id,
+                    email_normalized=email,
+                    display_name=f"Ambiguous {index}",
+                    identity_provider="pending_oidc",
+                    identity_subject=f"pending:{user_id}",
+                    status="invited",
+                )
+            )
+        session.commit()
+    response = client.post(
+        f"/api/admin/tenants/{DEFAULT_TENANT_ID}/member-invitations",
+        json={"email": email, "display_name": "Ambiguous", "role": "SALES"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "MEMBER_EMAIL_AMBIGUOUS"
+
+
+def test_ai_read_projection_and_candidate_routes_enforce_rbac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    membership_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=f"{user_id.hex}@ai-rbac.test",
+                display_name="AI Route No-Permission User",
+                identity_provider="local-bootstrap",
+                identity_subject=str(user_id),
+                status="active",
+                is_platform_admin=False,
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as regular_client:
+        login_response = regular_client.post(
+            "/api/v1/auth/login",
+            json={
+                "provider": "local_fake",
+                "authorization_code": f"fake:{user_id}",
+                "code_verifier": "R" * 43,
+                "redirect_uri": "http://127.0.0.1:5173/login/callback",
+            },
+        )
+        assert login_response.status_code == 200, login_response.text
+        headers = {
+            "Authorization": f"Bearer {login_response.json()['data']['access_token']}"
+        }
+        denied_projection = regular_client.post(
+            f"/api/v1/ai/knowledge/products/{uuid4()}/project",
+            headers=headers,
+        )
+        denied_search = regular_client.post(
+            "/api/v1/ai/search/products",
+            headers=headers,
+            json={"query": "restricted product", "limit": 5},
+        )
+        denied_candidates = regular_client.get(
+            f"/api/v1/ai/product-intelligence/tasks/{uuid4()}/candidates",
+            headers=headers,
+        )
+        denied_quote_download = regular_client.get(
+            f"/api/v1/public-quote-drafts/{uuid4()}/pdf",
+            headers=headers,
+        )
+
+    for response in (
+        denied_projection,
+        denied_search,
+        denied_candidates,
+        denied_quote_download,
+    ):
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"]["code"] in {
+            "PERMISSION_DENIED",
+            "PERMISSION_REQUIRED",
+        }
 
 
 def test_refresh_cookie_is_secure_in_staging(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -593,6 +1918,17 @@ def test_multi_tenant_session_requires_server_validated_tenant_switch(
     assert switch_response.status_code == 200, switch_response.text
     switched = switch_response.json()["data"]
     assert switched["context"]["tenant_id"] == str(tenant_id)
+    assert client.get("/api/v1/me", headers=auth_header).status_code == 401
+    stale_switch = client.post(
+        "/api/v1/auth/tenant-context",
+        json={"membership_id": str(DEFAULT_MEMBERSHIP_ID)},
+        headers={
+            "Authorization": f"Bearer {access}",
+            "X-CSRF-Token": switched["csrf_token"],
+        },
+    )
+    assert stale_switch.status_code == 401
+    assert stale_switch.json()["detail"]["code"] == "AUTH_SESSION_EXPIRED"
     me_response = client.get(
         "/api/v1/me",
         headers={
@@ -602,6 +1938,13 @@ def test_multi_tenant_session_requires_server_validated_tenant_switch(
     )
     assert me_response.status_code == 200, me_response.text
     assert me_response.json()["context"]["tenant_id"] == str(tenant_id)
+    # A stale switch must fail before consuming the currently locked refresh
+    # token; the legitimate switched session can still rotate it afterwards.
+    post_stale_refresh = client.post(
+        "/api/v1/auth/refresh",
+        headers={"X-CSRF-Token": switched["csrf_token"]},
+    )
+    assert post_stale_refresh.status_code == 200, post_stale_refresh.text
 
 
 def test_phase4a1a_schema_contains_only_approved_product_intelligence_tables() -> None:
@@ -2278,6 +3621,224 @@ def test_product_query_and_image_filter() -> None:
     assert [row["model"] for row in response.json()] == ["PF-8G01"]
 
 
+def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
+    suffix = uuid4().hex[:8].upper()
+    product_id = uuid4()
+    first_sku_id = uuid4()
+    second_sku_id = uuid4()
+    other_tenant_id = uuid4()
+    with SessionLocal() as session:
+        category = ProductCategoryRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            code=f"SKU-LIST-{suffix}",
+            name=f"SKU List Category {suffix}",
+            path=f"SKU-LIST-{suffix}",
+            status="ACTIVE",
+        )
+        session.add(category)
+        session.flush()
+        product = ProductRow(
+            id=product_id,
+            tenant_id=DEFAULT_TENANT_ID,
+            product_code=f"PRODUCT-{suffix}",
+            name=f"SKU List Product {suffix}",
+            category_id=category.id,
+            status="ACTIVE",
+        )
+        session.add(product)
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=first_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"{suffix}-ACTIVE",
+                    name=f"Active SKU {suffix}",
+                    option_values={},
+                    default_moq=Decimal("12"),
+                    moq_unit="piece",
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=second_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"{suffix}-DRAFT",
+                    name=f"Draft SKU {suffix}",
+                    option_values={},
+                    default_moq=Decimal("24"),
+                    moq_unit="piece",
+                    status="DRAFT",
+                ),
+            ]
+        )
+        session.add(
+            ProductImageRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                storage_provider="TEST",
+                bucket="test",
+                object_key=f"tests/{suffix}/main.jpg",
+                content_type="image/jpeg",
+                byte_size=128,
+                sha256="c" * 64,
+                image_role="MAIN",
+                approval_status="APPROVED",
+            )
+        )
+        session.flush()
+        supplier = session.get(SupplierRow, "SUP-001")
+        assert supplier is not None
+        session.add(
+            SupplierProductRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                supplier_id=supplier.id,
+                product_id=product_id,
+                sku_id=first_sku_id,
+                supplier_sku=f"SUP-{suffix}",
+                supplier_product_name=f"Supplier SKU {suffix}",
+                moq=Decimal("12"),
+                moq_unit="piece",
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            PublicCatalogOfferRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                sku_id=first_sku_id,
+                unit_price=Decimal("123.45"),
+                currency="USD",
+                tags=["outdoor", "featured"],
+                publication_status="DRAFT",
+            )
+        )
+
+        other_category = ProductCategoryRow(
+            tenant_id=other_tenant_id,
+            code=f"OTHER-{suffix}",
+            name=f"Other Category {suffix}",
+            path=f"OTHER-{suffix}",
+            status="ACTIVE",
+        )
+        session.add(
+            TenantRow(
+                id=other_tenant_id,
+                organization_id=DEFAULT_ORGANIZATION_ID,
+                slug=f"sku-list-{uuid4().hex[:8]}",
+                name=f"Other SKU Tenant {suffix}",
+            )
+        )
+        session.flush()
+        session.add(other_category)
+        session.flush()
+        other_product = ProductRow(
+            tenant_id=other_tenant_id,
+            product_code=f"OTHER-PRODUCT-{suffix}",
+            name=f"Other SKU List Product {suffix}",
+            category_id=other_category.id,
+            status="ACTIVE",
+        )
+        session.add(other_product)
+        session.flush()
+        session.add(
+            SkuRow(
+                tenant_id=other_tenant_id,
+                product_id=other_product.id,
+                sku_code=f"{suffix}-MUST-NOT-LEAK",
+                name=f"Other Tenant SKU {suffix}",
+                option_values={},
+                status="ACTIVE",
+            )
+        )
+        session.commit()
+
+    first_page = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "page": 1, "page_size": 1},
+    )
+    assert first_page.status_code == 200, first_page.text
+    assert first_page.json()["page"] == 1
+    assert first_page.json()["page_size"] == 1
+    assert first_page.json()["total"] == 2
+    assert first_page.json()["pages"] == 2
+    assert len(first_page.json()["items"]) == 1
+
+    second_page = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "page": 2, "page_size": 1},
+    )
+    assert second_page.status_code == 200, second_page.text
+    returned_codes = {
+        first_page.json()["items"][0]["sku_code"],
+        second_page.json()["items"][0]["sku_code"],
+    }
+    assert returned_codes == {f"{suffix}-ACTIVE", f"{suffix}-DRAFT"}
+    assert f"{suffix}-MUST-NOT-LEAK" not in returned_codes
+
+    complete = client.get("/api/v1/product-center/skus", params={"q": suffix})
+    assert complete.status_code == 200, complete.text
+    assert complete.json()["page_size"] == 50
+    by_code = {item["sku_code"]: item for item in complete.json()["items"]}
+    active = by_code[f"{suffix}-ACTIVE"]
+    assert active["name"] == f"Active SKU {suffix}"
+    assert active["product_id"] == str(product_id)
+    assert active["product_code"] == f"PRODUCT-{suffix}"
+    assert active["product_name"] == f"SKU List Product {suffix}"
+    assert active["category"]["id"] == str(category.id)
+    assert active["category"]["code"] == f"SKU-LIST-{suffix}"
+    assert active["tags"] == ["outdoor", "featured"]
+    assert active["supplier_summary"]["count"] == 1
+    assert active["supplier_summary"]["primary_supplier_id"] == "SUP-001"
+    assert active["supplier_summary"]["names"] == [supplier.name]
+    assert Decimal(str(active["default_moq"])) == Decimal("12")
+    assert active["moq_unit"] == "piece"
+    assert Decimal(str(active["public_price"])) == Decimal("123.45")
+    assert active["public_currency"] == "USD"
+    assert active["public_offer_status"] == "DRAFT"
+    assert active["status"] == "ACTIVE"
+    assert active["version"] == 1
+    assert active["updated_at"]
+    assert active["image_status"] == "APPROVED"
+
+    category_filtered = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "category_id": str(category.id)},
+    )
+    assert category_filtered.status_code == 200
+    assert category_filtered.json()["total"] == 2
+
+    status_filtered = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "status": "active"},
+    )
+    assert status_filtered.status_code == 200
+    assert [item["sku_code"] for item in status_filtered.json()["items"]] == [
+        f"{suffix}-ACTIVE"
+    ]
+
+    invalid_status = client.get(
+        "/api/v1/product-center/skus",
+        params={"status": "UNKNOWN"},
+    )
+    assert invalid_status.status_code == 422
+    assert invalid_status.json()["detail"]["code"] == "SKU_STATUS_INVALID"
+
+    with SessionLocal() as session:
+        with pytest.raises(ApplicationError) as denied:
+            list_authoritative_skus(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                permissions=frozenset(),
+                query=suffix,
+                category_id=None,
+                statuses=[],
+                page=1,
+                page_size=50,
+            )
+        assert denied.value.code == "PERMISSION_REQUIRED"
+
+
 def test_upload_parse_review_and_approve_xlsx() -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -2321,6 +3882,444 @@ def test_upload_parse_review_and_approve_xlsx() -> None:
     approval = client.post(f"/api/v1/review-items/{item_id}/approve")
     assert approval.status_code == 200
     assert approval.json() == {"id": item_id, "status": "approved", "image_status": "SOURCE"}
+
+
+def test_product_template_download_matches_the_strict_import_contract() -> None:
+    response = client.get("/api/v1/product-template.xlsx")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert "filename*=UTF-8''" in response.headers["content-disposition"]
+
+    workbook = load_workbook(BytesIO(response.content), read_only=False, data_only=True)
+    try:
+        assert workbook.sheetnames == ["商品列表"]
+        sheet = workbook["商品列表"]
+        assert sheet.max_row == 1
+        assert [sheet.cell(row=1, column=index).value for index in range(1, 18)] == [
+            "商品名称",
+            "商品分类",
+            "商品型号",
+            "商品价格",
+            "商品描述",
+            "备注",
+            "标签",
+            "商品图片1",
+            "商品图片2",
+            "商品图片3",
+            "商品图片4",
+            "商品图片5",
+            "商品图片6",
+            "商品图片7",
+            "商品图片8",
+            "商品图片9",
+            "商品图片10",
+        ]
+        assert sheet.freeze_panes == "A2"
+        assert sheet.auto_filter.ref == "A1:Q1"
+        assert sheet["A1"].fill.fgColor.rgb == "0023453B"
+        assert sheet["A1"].font.bold is True
+        assert sheet["F1"].comment is not None
+        assert "商品补充说明" in sheet["F1"].comment.text
+        assert sheet["G1"].comment is not None
+        assert "逗号分隔" in sheet["G1"].comment.text
+    finally:
+        workbook.close()
+
+
+def test_fixed_product_template_imports_without_supplier_and_publishes_priced_skus(
+    request: pytest.FixtureRequest,
+) -> None:
+    created_import_job_ids: list[str] = []
+
+    def cleanup_template_products() -> None:
+        with SessionLocal() as session:
+            sku_rows = session.scalars(
+                select(SkuRow)
+                .where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.sku_code.in_(["TPL-API-001", "TPL-API-002"]),
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+            sku_ids = [row.id for row in sku_rows]
+            product_ids = [row.product_id for row in sku_rows]
+            if sku_ids:
+                session.execute(
+                    delete(PublicCatalogOfferRow).where(
+                        PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                        PublicCatalogOfferRow.sku_id.in_(sku_ids),
+                    )
+                )
+            if product_ids:
+                session.execute(
+                    delete(ProductImageRow).where(
+                        ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductImageRow.product_id.in_(product_ids),
+                    )
+                )
+            if sku_ids:
+                session.execute(
+                    delete(SkuRow).where(
+                        SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                        SkuRow.id.in_(sku_ids),
+                    )
+                )
+            if product_ids:
+                session.execute(
+                    delete(ProductAuditEventRow).where(
+                        ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductAuditEventRow.product_id.in_(product_ids),
+                    )
+                )
+                session.execute(
+                    delete(ProductRow).where(
+                        ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductRow.id.in_(product_ids),
+                    )
+                )
+            if created_import_job_ids:
+                worker_rows = session.scalars(
+                    select(WorkerJobRow).where(
+                        WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                        WorkerJobRow.import_job_id.in_(created_import_job_ids),
+                    )
+                ).all()
+                source_file_ids = [row.source_file_id for row in worker_rows]
+                media_object_ids = [row.media_object_id for row in worker_rows]
+                session.execute(
+                    delete(WorkerJobRow).where(
+                        WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                        WorkerJobRow.import_job_id.in_(created_import_job_ids),
+                    )
+                )
+                session.execute(
+                    delete(ImportJobRow).where(
+                        ImportJobRow.tenant_id == DEFAULT_TENANT_ID,
+                        ImportJobRow.id.in_(created_import_job_ids),
+                    )
+                )
+                if source_file_ids:
+                    session.execute(
+                        delete(SourceFileRow).where(
+                            SourceFileRow.tenant_id == DEFAULT_TENANT_ID,
+                            SourceFileRow.id.in_(source_file_ids),
+                        )
+                    )
+                if media_object_ids:
+                    session.execute(
+                        delete(MediaObjectRow).where(
+                            MediaObjectRow.tenant_id == DEFAULT_TENANT_ID,
+                            MediaObjectRow.id.in_(media_object_ids),
+                        )
+                    )
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductCategoryRow.name == "模版测试分类",
+                )
+            )
+            session.commit()
+
+    cleanup_template_products()
+    request.addfinalizer(cleanup_template_products)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "商品列表"
+    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    sheet.append([
+        "模版商品 A",
+        "模版测试分类",
+        "TPL-API-001",
+        "12.5",
+        "固定模版商品描述",
+        "10",
+        "新品，热卖,新品",
+        "https://img.example.com/tpl-api-001.jpg",
+        *([None] * 9),
+    ])
+    sheet.append([
+        "重复商品 A",
+        "模版测试分类",
+        "TPL-API-001",
+        99,
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    sheet.append([
+        "模版商品 B",
+        "模版测试分类",
+        "TPL-API-002",
+        "",
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    for duplicate_index in range(1003):
+        sheet.append([
+            f"额外重复商品 {duplicate_index + 1}",
+            "模版测试分类",
+            "TPL-API-001",
+            88 + duplicate_index,
+            None,
+            None,
+            None,
+            *([None] * 10),
+        ])
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+
+    assert response.status_code == 201, response.text
+    job = response.json()
+    created_import_job_ids.append(job["id"])
+    assert job["source_type"] == "PRODUCT_TEMPLATE"
+    assert job["supplier"] == "商品模版"
+    assert job["status"] == "published"
+    assert job["products"] == 2
+    assert job["warnings"] == 1005
+    assert len(job["warning_messages"]) == 1000
+    assert sum("重复" in warning for warning in job["warning_messages"]) == 999
+    assert any("第 1002 行" in warning for warning in job["warning_messages"])
+    assert "另有 1002 条提醒" in job["error_message"]
+    assert job["result_details"]["warnings_truncated"] == 5
+    assert job["result_details"]["outcome"] == "TEMPLATE_IMPORTED"
+    assert job["result_details"]["imported"] == 2
+    assert job["candidate_fields"] == 0
+
+    listed_job = next(
+        row
+        for row in client.get("/api/v1/imports", params={"limit": 500}).json()
+        if row["id"] == job["id"]
+    )
+    assert len(listed_job["warning_messages"]) == 20
+    assert len(listed_job["result_details"]["warnings"]) == 20
+    assert listed_job["result_details"]["warnings_truncated"] == 985
+    detailed_job = client.get(f"/api/v1/imports/{job['id']}").json()
+    assert len(detailed_job["warning_messages"]) == 1000
+    assert len(detailed_job["result_details"]["warnings"]) == 1000
+    assert detailed_job["result_details"]["warnings_truncated"] == 5
+
+    sku_response = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": "TPL-API", "page_size": 10},
+    )
+    assert sku_response.status_code == 200
+    assert sku_response.json()["total"] == 2
+    sku_by_code = {
+        row["sku_code"]: row for row in sku_response.json()["items"]
+    }
+    assert sku_by_code["TPL-API-001"]["default_moq"] is None
+    assert sku_by_code["TPL-API-001"]["public_price"] == "12.50"
+    assert sku_by_code["TPL-API-001"]["public_offer_status"] == "PUBLISHED"
+    assert sku_by_code["TPL-API-001"]["image_status"] == "APPROVED"
+    assert sku_by_code["TPL-API-001"]["tags"] == ["新品", "热卖"]
+    assert sku_by_code["TPL-API-002"]["public_price"] is None
+
+    # Re-importing the fixed template may refresh its note/marker, but must
+    # preserve product-center variant attributes maintained outside Excel.
+    with SessionLocal() as session:
+        sku_a = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+        )
+        assert sku_a is not None
+        sku_a_id = sku_a.id
+        sku_a_version = sku_a.version
+    sku_update = client.patch(
+        f"/api/v1/skus/{sku_a_id}",
+        json={
+            "expected_version": sku_a_version,
+            "option_values": {
+                "颜色": "红色",
+                "_sku2quotation": "客户端不能覆盖内部标记",
+            },
+        },
+    )
+    assert sku_update.status_code == 200, sku_update.text
+    assert sku_update.json()["option_values"]["颜色"] == "红色"
+    assert sku_update.json()["option_values"]["_sku2quotation"] == {
+        "source": "PRODUCT_TEMPLATE",
+        "schema": 1,
+    }
+
+    review_response = client.get(
+        "/api/v1/review-items",
+        params={"job_id": job["id"]},
+    )
+    assert review_response.status_code == 200
+    assert review_response.json() == []
+
+    repeated = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert repeated.status_code == 201, repeated.text
+    created_import_job_ids.append(repeated.json()["id"])
+    assert repeated.json()["status"] == "published"
+    assert repeated.json()["products"] == 2
+    assert "未变化 2" in repeated.json()["error_message"]
+    repeated_skus = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": "TPL-API", "page_size": 10},
+    ).json()
+    assert repeated_skus["total"] == 2
+    repeated_by_code = {
+        row["sku_code"]: row for row in repeated_skus["items"]
+    }
+    assert repeated_by_code["TPL-API-001"]["version"] == 2
+    assert repeated_by_code["TPL-API-002"]["version"] == 1
+    with SessionLocal() as session:
+        preserved_sku = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+        )
+        assert preserved_sku is not None
+        assert preserved_sku.option_values["颜色"] == "红色"
+
+    with SessionLocal() as session:
+        sku_a = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+        )
+        assert sku_a is not None
+        product_a_id = sku_a.product_id
+        offer_a = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == sku_a.id,
+            )
+        )
+        image_a = session.scalar(
+            select(ProductImageRow).where(
+                ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductImageRow.object_key
+                == "https://img.example.com/tpl-api-001.jpg",
+            )
+        )
+        assert offer_a is not None
+        assert image_a is not None
+        offer_a_id = offer_a.id
+        image_a_id = image_a.id
+
+    reduced_workbook = load_workbook(
+        BytesIO(client.get("/api/v1/product-template.xlsx").content)
+    )
+    reduced_sheet = reduced_workbook["商品列表"]
+    reduced_sheet.append([
+        "模版商品 B",
+        "模版测试分类",
+        "TPL-API-002",
+        "",
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    reduced_content = BytesIO()
+    reduced_workbook.save(reduced_content)
+    reduced_workbook.close()
+    reduced = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                reduced_content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert reduced.status_code == 201, reduced.text
+    created_import_job_ids.append(reduced.json()["id"])
+    assert "归档 1" in reduced.json()["error_message"]
+
+    with SessionLocal() as session:
+        sku_a = session.scalar(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+            .execution_options(include_deleted=True)
+        )
+        product_a = session.get(
+            ProductRow,
+            product_a_id,
+            execution_options={"include_deleted": True},
+        )
+        offer_a = session.get(
+            PublicCatalogOfferRow,
+            offer_a_id,
+            execution_options={"include_deleted": True},
+        )
+        image_a = session.get(
+            ProductImageRow,
+            image_a_id,
+            execution_options={"include_deleted": True},
+        )
+        assert sku_a is not None and sku_a.status == "ARCHIVED"
+        assert product_a is not None and product_a.status == "ARCHIVED"
+        assert offer_a is not None and offer_a.publication_status == "SUSPENDED"
+        assert image_a is not None and image_a.deleted_at is not None
+
+    restored = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert restored.status_code == 201, restored.text
+    created_import_job_ids.append(restored.json()["id"])
+    with SessionLocal() as session:
+        sku_a = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-001",
+            )
+        )
+        product_a = session.get(ProductRow, product_a_id)
+        offer_a = session.get(PublicCatalogOfferRow, offer_a_id)
+        image_a = session.get(ProductImageRow, image_a_id)
+        assert sku_a is not None and sku_a.status == "ACTIVE"
+        assert product_a is not None and product_a.status == "ACTIVE"
+        assert offer_a is not None and offer_a.publication_status == "PUBLISHED"
+        assert offer_a.unit_price == Decimal("12.50")
+        assert image_a is not None and image_a.deleted_at is None
 
 
 def test_file_security_clean_upload_promotes_object_before_parsing() -> None:
@@ -2480,6 +4479,511 @@ def test_persistent_file_worker_recovers_scanner_failure_and_expired_lease(
         assert worker_job.attempt_count == 2
         assert worker_job.lease_owner is None
         assert import_job.status == "needs_review"
+
+
+def test_product_template_worker_retry_resumes_from_promoted_source(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    monkeypatch.setenv("FILE_WORKER_INLINE", "false")
+    template_bytes = client.get("/api/v1/product-template.xlsx").content
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                template_bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert response.status_code == 201, response.text
+    import_job_id = response.json()["id"]
+
+    def cleanup_import_graph() -> None:
+        with SessionLocal() as session:
+            worker_rows = session.scalars(
+                select(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    WorkerJobRow.import_job_id == import_job_id,
+                )
+            ).all()
+            source_file_ids = [row.source_file_id for row in worker_rows]
+            media_object_ids = [row.media_object_id for row in worker_rows]
+            session.execute(
+                delete(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    WorkerJobRow.import_job_id == import_job_id,
+                )
+            )
+            session.execute(
+                delete(ImportJobRow).where(
+                    ImportJobRow.tenant_id == DEFAULT_TENANT_ID,
+                    ImportJobRow.id == import_job_id,
+                )
+            )
+            if source_file_ids:
+                session.execute(
+                    delete(SourceFileRow).where(
+                        SourceFileRow.tenant_id == DEFAULT_TENANT_ID,
+                        SourceFileRow.id.in_(source_file_ids),
+                    )
+                )
+            if media_object_ids:
+                session.execute(
+                    delete(MediaObjectRow).where(
+                        MediaObjectRow.tenant_id == DEFAULT_TENANT_ID,
+                        MediaObjectRow.id.in_(media_object_ids),
+                    )
+                )
+            session.commit()
+
+    request.addfinalizer(cleanup_import_graph)
+    with SessionLocal() as session:
+        worker_job = session.scalar(
+            select(WorkerJobRow).where(WorkerJobRow.import_job_id == import_job_id)
+        )
+        assert worker_job is not None
+        worker_job_id = worker_job.id
+
+    original_processor = file_processing_worker.process_product_template_import
+
+    def transient_import_failure(*_args: object, **_kwargs: object) -> object:
+        raise ConnectionError("temporary importer dependency failure")
+
+    monkeypatch.setattr(
+        file_processing_worker,
+        "process_product_template_import",
+        transient_import_failure,
+    )
+    first_now = datetime.now(UTC)
+    with SessionLocal() as session:
+        first = process_file_worker_job(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=worker_job_id,
+            worker_id="template-import-first-attempt",
+            scanner=DeterministicDevelopmentScanner(),
+            now=first_now,
+        )
+    assert first.status == "RETRY"
+
+    with SessionLocal() as session:
+        worker_job = session.get(WorkerJobRow, worker_job_id)
+        import_job = session.get(ImportJobRow, import_job_id)
+        assert worker_job is not None and import_job is not None
+        media = session.get(MediaObjectRow, worker_job.media_object_id)
+        source = session.get(SourceFileRow, worker_job.source_file_id)
+        assert media is not None and source is not None
+        assert worker_job.checkpoint["promoted"] is True
+        assert worker_job.checkpoint["last_error_stage"] == "IMPORT"
+        assert (media.zone, media.status, media.scan_status) == (
+            "SOURCE",
+            "AVAILABLE",
+            "CLEAN",
+        )
+        assert source.security_status == "ACCEPTED"
+        source_key = media.object_key
+
+    class MustNotRescan:
+        engine_name = "must-not-rescan"
+
+        def scan(self, _path: Path) -> object:
+            raise AssertionError("promoted source must not be scanned or promoted again")
+
+    monkeypatch.setattr(
+        file_processing_worker,
+        "process_product_template_import",
+        original_processor,
+    )
+    with SessionLocal() as session:
+        recovered = process_file_worker_job(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=worker_job_id,
+            worker_id="template-import-retry",
+            scanner=MustNotRescan(),  # type: ignore[arg-type]
+            now=first_now + timedelta(seconds=5),
+        )
+    assert recovered.status == "SUCCEEDED"
+    assert recovered.outcome == "TEMPLATE_REJECTED"
+
+    storage = get_object_storage()
+    source_path = storage.local_path(source_key)
+    quarantine_path = storage.local_path(
+        source_key.replace("/source/", "/quarantine/", 1)
+    )
+    assert source_path is not None and source_path.is_file()
+    assert quarantine_path is not None and not quarantine_path.exists()
+    import_response = client.get(f"/api/v1/imports/{import_job_id}")
+    assert import_response.status_code == 200
+    assert import_response.json()["warning_messages"] == [
+        "模版中没有可导入的有效商品。"
+    ]
+
+
+def test_older_product_template_retry_cannot_override_newer_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    import_job_ids: list[str] = []
+    sku_codes = ["SNAP-COMMON", "SNAP-OLD-ONLY", "SNAP-NEW-ONLY"]
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=sku_codes,
+            category_names=["快照顺序测试"],
+        )
+    )
+    _cleanup_template_test_records(
+        import_job_ids=import_job_ids,
+        sku_codes=sku_codes,
+        category_names=["快照顺序测试"],
+    )
+
+    old_template = _product_template_bytes([
+        [
+            "旧版共同商品",
+            "快照顺序测试",
+            "SNAP-COMMON",
+            "10",
+            None,
+            None,
+            *([None] * 10),
+        ],
+        [
+            "旧版独有商品",
+            "快照顺序测试",
+            "SNAP-OLD-ONLY",
+            "11",
+            None,
+            None,
+            *([None] * 10),
+        ],
+    ])
+    newer_template = _product_template_bytes([
+        [
+            "新版共同商品",
+            "快照顺序测试",
+            "SNAP-COMMON",
+            "20",
+            None,
+            None,
+            *([None] * 10),
+        ],
+        [
+            "新版独有商品",
+            "快照顺序测试",
+            "SNAP-NEW-ONLY",
+            "21",
+            None,
+            None,
+            *([None] * 10),
+        ],
+    ])
+
+    monkeypatch.setenv("FILE_WORKER_INLINE", "false")
+    old_response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "旧商品模版.xlsx",
+                old_template,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert old_response.status_code == 201, old_response.text
+    old_job_id = old_response.json()["id"]
+    import_job_ids.append(old_job_id)
+    with SessionLocal() as session:
+        old_worker = session.scalar(
+            select(WorkerJobRow).where(WorkerJobRow.import_job_id == old_job_id)
+        )
+        assert old_worker is not None
+        old_worker_id = old_worker.id
+
+    monkeypatch.setenv("FILE_WORKER_INLINE", "true")
+    newer_response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "新商品模版.xlsx",
+                newer_template,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert newer_response.status_code == 201, newer_response.text
+    assert newer_response.json()["status"] == "published"
+    newer_job_id = newer_response.json()["id"]
+    import_job_ids.append(newer_job_id)
+
+    # Remove clock-resolution and scheduling variance from the ordering
+    # assertion: the newer snapshot is explicitly one second later.
+    ordering_base = datetime.now(UTC) - timedelta(minutes=1)
+    with SessionLocal() as session:
+        old_job = session.get(ImportJobRow, old_job_id)
+        newer_job = session.get(ImportJobRow, newer_job_id)
+        common_before = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "SNAP-COMMON",
+            )
+        )
+        assert old_job is not None and newer_job is not None and common_before is not None
+        old_job.created_at = ordering_base
+        newer_job.created_at = ordering_base + timedelta(seconds=1)
+        common_id = common_before.id
+        common_version = common_before.version
+        common_product_id = common_before.product_id
+        common_offer = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == common_before.id,
+            )
+        )
+        assert common_offer is not None
+        common_offer_id = common_offer.id
+        newer_worker = session.scalar(
+            select(WorkerJobRow).where(WorkerJobRow.import_job_id == newer_job_id)
+        )
+        assert newer_worker is not None
+        newer_worker_id = newer_worker.id
+        session.commit()
+
+    # Simulate a failure after the template transaction has committed but
+    # before the outer worker checkpoint is durable. The applied snapshot must
+    # remain published so an older retry can still see it.
+    with SessionLocal() as session:
+        checkpoint_retry = file_processing_worker._record_retry(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=newer_worker_id,
+            error=ConnectionError("checkpoint commit interrupted"),
+            now=datetime.now(UTC),
+        )
+    assert checkpoint_retry.status == "RETRY"
+    with SessionLocal() as session:
+        newer_job = session.get(ImportJobRow, newer_job_id)
+        newer_worker = session.get(WorkerJobRow, newer_worker_id)
+        assert newer_job is not None and newer_job.status == "published"
+        assert newer_worker is not None
+        assert newer_worker.checkpoint["template_snapshot_committed"] is True
+
+    with SessionLocal() as session:
+        stale_result = process_file_worker_job(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=old_worker_id,
+            worker_id="stale-template-retry",
+            scanner=DeterministicDevelopmentScanner(),
+            now=datetime.now(UTC),
+        )
+    assert stale_result.status == "SUCCEEDED"
+    assert stale_result.outcome == "TEMPLATE_SUPERSEDED"
+
+    stale_detail = client.get(f"/api/v1/imports/{old_job_id}")
+    assert stale_detail.status_code == 200
+    assert stale_detail.json()["status"] == "failed"
+    assert stale_detail.json()["warnings"] == 1
+    assert len(stale_detail.json()["warning_messages"]) == 1
+    assert "早于已经生效的新版本" in stale_detail.json()["error_message"]
+
+    with SessionLocal() as session:
+        common_after = session.get(SkuRow, common_id)
+        common_product = session.get(ProductRow, common_product_id)
+        common_offer = session.get(PublicCatalogOfferRow, common_offer_id)
+        new_only = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "SNAP-NEW-ONLY",
+            )
+        )
+        old_only = session.scalar(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "SNAP-OLD-ONLY",
+            )
+            .execution_options(include_deleted=True)
+        )
+        assert common_after is not None and common_after.version == common_version
+        assert common_product is not None and common_product.name == "新版共同商品"
+        assert common_offer is not None and common_offer.unit_price == Decimal("20.00")
+        assert new_only is not None and new_only.status == "ACTIVE"
+        assert old_only is None
+
+
+@pytest.mark.parametrize("infected_after_recovery", [False, True])
+def test_file_worker_recovers_promotion_completed_before_checkpoint_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    infected_after_recovery: bool,
+) -> None:
+    import_job_ids: list[str] = []
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[],
+            category_names=[],
+        )
+    )
+    monkeypatch.setenv("FILE_WORKER_INLINE", "false")
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "商品模版.xlsx",
+                _product_template_bytes([]),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert response.status_code == 201, response.text
+    import_job_id = response.json()["id"]
+    import_job_ids.append(import_job_id)
+
+    crash_time = datetime.now(UTC)
+    with SessionLocal() as session:
+        worker = session.scalar(
+            select(WorkerJobRow).where(WorkerJobRow.import_job_id == import_job_id)
+        )
+        assert worker is not None
+        media = session.get(MediaObjectRow, worker.media_object_id)
+        source = session.get(SourceFileRow, worker.source_file_id)
+        import_job = session.get(ImportJobRow, import_job_id)
+        assert media is not None and source is not None and import_job is not None
+        worker_id = worker.id
+        quarantine_key = media.object_key
+        source_key = quarantine_key.replace("/quarantine/", "/source/", 1)
+        worker.status = "RUNNING"
+        worker.attempt_count = 1
+        worker.lease_owner = "worker-crashed-after-promotion"
+        worker.lease_expires_at = crash_time - timedelta(seconds=1)
+        worker.checkpoint = {}
+        media.status = "SCANNING"
+        media.scan_status = "RUNNING"
+        source.security_status = "SCANNING"
+        import_job.status = "scanning"
+        import_job.progress = 10
+        session.commit()
+
+    storage = get_object_storage()
+    storage.promote(quarantine_key=quarantine_key, source_key=source_key)
+    assert not storage.exists(quarantine_key)
+    assert storage.exists(source_key)
+    with SessionLocal() as session:
+        worker = session.get(WorkerJobRow, worker_id)
+        media = session.get(MediaObjectRow, worker.media_object_id) if worker else None
+        assert worker is not None and media is not None
+        assert worker.checkpoint == {}
+        assert media.object_key == quarantine_key
+        assert media.zone == "QUARANTINE"
+
+    recovery_promotions: list[tuple[str, str]] = []
+    expected_recovered_source_key = source_key
+    expected_quarantine_key = quarantine_key
+
+    class RecoveryStorage:
+        backend_name = storage.backend_name
+
+        def put_file(self, *args: object, **kwargs: object) -> None:
+            storage.put_file(*args, **kwargs)  # type: ignore[arg-type]
+
+        def promote(self, *, quarantine_key: str, source_key: str) -> None:
+            recovery_promotions.append((quarantine_key, source_key))
+            if not infected_after_recovery:
+                raise AssertionError("clean recovered source must not be promoted a second time")
+            assert (quarantine_key, source_key) == (
+                expected_recovered_source_key,
+                expected_quarantine_key,
+            )
+            storage.promote(quarantine_key=quarantine_key, source_key=source_key)
+
+        def exists(self, object_key: str) -> bool:
+            return storage.exists(object_key)
+
+        def delete(self, object_key: str) -> None:
+            storage.delete(object_key)
+
+        def materialize(self, object_key: str):
+            return storage.materialize(object_key)
+
+        def local_path(self, object_key: str):
+            return storage.local_path(object_key)
+
+    scanned_paths: list[Path] = []
+
+    class CountingScanner:
+        engine_name = "counting-development-scanner"
+
+        def scan(self, path: Path):
+            scanned_paths.append(path)
+            if infected_after_recovery:
+                return FileScanResult(
+                    clean=False,
+                    engine=self.engine_name,
+                    signature="RECOVERED-INFECTED-TEST",
+                    detail_code="RECOVERED_INFECTED",
+                )
+            return DeterministicDevelopmentScanner().scan(path)
+
+    with SessionLocal() as session:
+        recovered = process_file_worker_job(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=worker_id,
+            worker_id="worker-after-promotion-crash",
+            storage=RecoveryStorage(),  # type: ignore[arg-type]
+            scanner=CountingScanner(),  # type: ignore[arg-type]
+            now=crash_time,
+        )
+    assert recovered.status == "SUCCEEDED"
+    assert recovered.outcome == (
+        "QUARANTINED" if infected_after_recovery else "TEMPLATE_REJECTED"
+    )
+    assert scanned_paths == [storage.local_path(source_key)]
+
+    with SessionLocal() as session:
+        worker = session.get(WorkerJobRow, worker_id)
+        media = session.get(MediaObjectRow, worker.media_object_id) if worker else None
+        source = session.get(SourceFileRow, worker.source_file_id) if worker else None
+        assert worker is not None and media is not None and source is not None
+        assert worker.attempt_count == 2
+        assert worker.checkpoint["promotion_recovered"] is True
+        if infected_after_recovery:
+            assert not worker.checkpoint.get("promoted", False)
+            assert worker.checkpoint["outcome"] == "QUARANTINED"
+            assert (media.object_key, media.zone, media.status, media.scan_status) == (
+                quarantine_key,
+                "QUARANTINE",
+                "REJECTED",
+                "INFECTED",
+            )
+            assert source.security_status == "QUARANTINED"
+        else:
+            assert worker.checkpoint["promoted"] is True
+            assert worker.checkpoint["outcome"] == "TEMPLATE_REJECTED"
+            assert (media.object_key, media.zone, media.status, media.scan_status) == (
+                source_key,
+                "SOURCE",
+                "AVAILABLE",
+                "CLEAN",
+            )
+            assert source.security_status == "ACCEPTED"
+    if infected_after_recovery:
+        assert recovery_promotions == [(source_key, quarantine_key)]
+        assert storage.exists(quarantine_key)
+        assert not storage.exists(source_key)
+    else:
+        assert recovery_promotions == []
+        assert storage.exists(source_key)
+        assert not storage.exists(quarantine_key)
 
 
 def test_development_scanner_is_fail_closed_in_production(
@@ -3097,6 +5601,75 @@ def test_multiline_catalog_header_does_not_pollute_field_mapping(tmp_path: Path)
     }
 
 
+def test_compact_inline_database_approval_projects_and_publishes_outbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_id = _create_pending_product_event(tmp_path, suffix=uuid4().hex[:6])
+    with SessionLocal() as session:
+        event = session.get(OutboxEventRow, event_id)
+        assert event is not None and event.decision_id is not None
+        decision = session.get(ProductCandidateDecisionRow, event.decision_id)
+        assert decision is not None
+        task_id = decision.ai_task_id
+        group_key = decision.candidate_group_key
+        idempotency_key = decision.idempotency_key
+        confirmed_values = dict(decision.human_values)
+        product_id = decision.product_id
+        assert product_id is not None
+        product = session.get(ProductRow, product_id)
+        assert product is not None
+        product_name = product.name
+        assert event.status == "PENDING"
+        assert product.search_document_version == 0
+
+    monkeypatch.setenv("ATC_RUNTIME_PROFILE", "compact")
+    monkeypatch.setenv("OUTBOX_PUBLISHER_PROFILE", "inline_database")
+    response = client.post(
+        f"/api/v1/ai/product-intelligence/tasks/{task_id}/groups/{group_key}/approve",
+        json={
+            "idempotency_key": idempotency_key,
+            "confirmed_values": confirmed_values,
+            "activate": True,
+        },
+    )
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["idempotent"] is True
+    assert payload["outbox_event_id"] == str(event_id)
+    assert payload["outbox_status"] == "PUBLISHED"
+
+    with SessionLocal() as session:
+        event = session.get(OutboxEventRow, event_id)
+        product = session.get(ProductRow, product_id)
+        assert event is not None and event.status == "PUBLISHED"
+        assert event.published_at is not None
+        assert product is not None and product.search_document_version == 1
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(KnowledgeDocumentRow)
+                .where(
+                    KnowledgeDocumentRow.tenant_id == DEFAULT_TENANT_ID,
+                    KnowledgeDocumentRow.source_entity_id == product_id,
+                    KnowledgeDocumentRow.source_version == 1,
+                    KnowledgeDocumentRow.status == "ACTIVE",
+                )
+            )
+            == 1
+        )
+
+    search = client.post(
+        "/api/v1/ai/search/products",
+        json={"query": product_name, "limit": 10},
+    )
+    assert search.status_code == 200, search.text
+    assert any(
+        row["product_id"] == str(product_id)
+        for row in search.json()["results"]
+    )
+
+
 def test_outbox_relay_retry_dead_letter_expired_lease_and_metrics(
     tmp_path: Path,
 ) -> None:
@@ -3549,6 +6122,53 @@ def test_development_image_provider_is_fail_closed_in_production(monkeypatch: py
         get_image_intelligence_provider()
 
 
+def test_disabled_image_intelligence_returns_service_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IMAGE_INTELLIGENCE_PROFILE", "disabled")
+    with SessionLocal() as session:
+        product = session.scalar(
+            select(ProductRow).where(ProductRow.tenant_id == DEFAULT_TENANT_ID)
+        )
+        assert product is not None
+        image_id = uuid4()
+        session.add(
+            ProductImageRow(
+                id=image_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product.id,
+                storage_provider="local",
+                bucket="local",
+                object_key=f"disabled-provider/{image_id}.png",
+                original_filename="disabled-provider.png",
+                content_type="image/png",
+                byte_size=16,
+                sha256="0" * 64,
+                image_role="GALLERY",
+                sort_order=0,
+                approval_status="APPROVED",
+            )
+        )
+        session.commit()
+
+    projection = client.post(f"/api/v1/product-images/{image_id}/intelligence")
+    assert projection.status_code == 503
+    assert projection.json()["detail"]["code"] == "IMAGE_INTELLIGENCE_UNAVAILABLE"
+
+    search = client.post(
+        "/api/v1/image-searches",
+        files={
+            "file": (
+                "query.png",
+                b"\x89PNG\r\n\x1a\nquery",
+                "image/png",
+            )
+        },
+    )
+    assert search.status_code == 503
+    assert search.json()["detail"]["code"] == "IMAGE_INTELLIGENCE_UNAVAILABLE"
+
+
 def test_dashboard_and_supplier_profiles_use_tenant_scoped_authoritative_data() -> None:
     dashboard = client.get("/api/v1/dashboard")
     assert dashboard.status_code == 200, dashboard.text
@@ -3723,6 +6343,7 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
         assert "unit_cost" not in item
         assert "supplier_product_id" not in item
         assert "supplier_price" not in item
+        assert "moq" not in item
 
     filtered = client.get(
         "/api/store/demo/skus",
@@ -3764,6 +6385,183 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
             inactive_sku.status = "ACTIVE"
             hidden_product.status = "ACTIVE"
             session.commit()
+
+
+def test_public_category_facets_follow_managed_sort_order() -> None:
+    initial_response = client.get("/api/store/demo/skus")
+    assert initial_response.status_code == 200, initial_response.text
+    initial_categories = initial_response.json()["categories"]
+    assert len(initial_categories) > 1
+    desired_categories = list(reversed(initial_categories))
+    originals: dict[UUID, int] = {}
+
+    with SessionLocal() as session:
+        rows = list(
+            session.scalars(
+                select(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductCategoryRow.path.in_(initial_categories)
+                )
+            ).all()
+        )
+        assert len(rows) == len(initial_categories)
+        rows_by_path = {row.path: row for row in rows}
+        assert all(row.parent_id is None for row in rows)
+        originals = {row.id: row.sort_order for row in rows}
+        for position, path in enumerate(desired_categories):
+            rows_by_path[path].sort_order = position
+        session.commit()
+
+    try:
+        reordered_response = client.get("/api/store/demo/skus")
+        assert reordered_response.status_code == 200, reordered_response.text
+        assert reordered_response.json()["categories"] == desired_categories
+    finally:
+        with SessionLocal() as session:
+            rows = list(
+                session.scalars(
+                    select(ProductCategoryRow).where(
+                        ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductCategoryRow.id.in_(list(originals))
+                    )
+                ).all()
+            )
+            for row in rows:
+                row.sort_order = originals[row.id]
+            session.commit()
+
+
+def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
+    suffix = uuid4().hex[:10].upper()
+    created_ids: list[str] = []
+    try:
+        root_response = client.post(
+            "/api/v1/categories",
+            json={
+                "code": f"TEST-ROOT-{suffix}",
+                "name": f"测试一级-{suffix}",
+                "sort_order": 3,
+            },
+        )
+        assert root_response.status_code == 201, root_response.text
+        root = root_response.json()
+        created_ids.append(root["id"])
+        assert root["parent_id"] is None
+        assert root["path"] == f"测试一级-{suffix}"
+
+        child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"TEST-CHILD-{suffix}",
+                "name": "测试二级",
+                "sort_order": 1,
+            },
+        )
+        assert child_response.status_code == 201, child_response.text
+        child = child_response.json()
+        created_ids.append(child["id"])
+        assert child["path"] == f"测试一级-{suffix}/测试二级"
+
+        third_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": child["id"],
+                "code": f"TEST-THIRD-{suffix}",
+                "name": "不允许的第三级",
+                "sort_order": 0,
+            },
+        )
+        assert third_response.status_code == 409
+        assert third_response.json()["detail"]["code"] == "CATEGORY_DEPTH_EXCEEDED"
+
+        renamed_response = client.patch(
+            f"/api/v1/categories/{child['id']}",
+            json={
+                "expected_version": child["version"],
+                "parent_id": root["id"],
+                "name": "更新后的二级",
+                "sort_order": 2,
+                "status": "ACTIVE",
+            },
+        )
+        assert renamed_response.status_code == 200, renamed_response.text
+        assert (
+            renamed_response.json()["path"]
+            == f"测试一级-{suffix}/更新后的二级"
+        )
+        renamed_child = renamed_response.json()
+
+        second_child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"TEST-CHILD-2-{suffix}",
+                "name": "测试二级乙",
+                "sort_order": 3,
+            },
+        )
+        assert second_child_response.status_code == 201, second_child_response.text
+        second_child = second_child_response.json()
+        created_ids.append(second_child["id"])
+
+        third_child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"TEST-CHILD-3-{suffix}",
+                "name": "测试二级丙",
+                "sort_order": 4,
+            },
+        )
+        assert third_child_response.status_code == 201, third_child_response.text
+        third_child = third_child_response.json()
+        created_ids.append(third_child["id"])
+
+        reordered_response = client.patch(
+            "/api/v1/categories/reorder",
+            json={
+                "items": [
+                    {
+                        "id": third_child["id"],
+                        "expected_version": third_child["version"],
+                    },
+                    {
+                        "id": renamed_child["id"],
+                        "expected_version": renamed_child["version"],
+                    },
+                    {
+                        "id": second_child["id"],
+                        "expected_version": second_child["version"],
+                    },
+                ]
+            },
+        )
+        assert reordered_response.status_code == 200, reordered_response.text
+        reordered = reordered_response.json()
+        assert [row["name"] for row in reordered] == [
+            "测试二级丙",
+            "更新后的二级",
+            "测试二级乙",
+        ]
+        assert [row["sort_order"] for row in reordered] == [0, 1, 2]
+    finally:
+        if created_ids:
+            category_uuids = [UUID(value) for value in created_ids]
+            with SessionLocal() as session:
+                session.execute(
+                    delete(ProductAuditEventRow).where(
+                        ProductAuditEventRow.entity_type == "CATEGORY",
+                        ProductAuditEventRow.entity_id.in_(created_ids),
+                    )
+                )
+                for category_id in reversed(category_uuids):
+                    session.execute(
+                        delete(ProductCategoryRow).where(
+                            ProductCategoryRow.id == category_id
+                        )
+                    )
+                session.commit()
 
 
 def test_public_media_uses_tenant_scoped_relative_proxy_when_no_cdn_is_configured(
@@ -4039,18 +6837,44 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     original_name = sku_data["name"]
     original_price = Decimal(str(sku_data["price"]))
 
-    create_response = client.post(
+    rejected_without_privacy_acknowledgment = client.post(
         "/api/store/demo/quotes",
         json={
-            "customer_name": "=2+2",
-            "customer_company": "+Formula Company",
-            "customer_email": "buyer@example.test",
-            "customer_phone": "@PHONE",
-            "notes": "@SUM(A1:A2)",
-            "items": [{"sku_id": sku_data["id"], "quantity": 2}],
+            "customer_name": "No Privacy Acknowledgment",
+            "privacy_acknowledged": False,
+            "items": [{"sku_id": sku_data["id"], "quantity": 1}],
         },
     )
+    assert rejected_without_privacy_acknowledgment.status_code == 422
+
+    with SessionLocal() as session:
+        sku = session.get(SkuRow, UUID(sku_data["id"]))
+        assert sku is not None
+        original_moq = sku.default_moq
+        sku.default_moq = Decimal("500")
+        session.commit()
+    try:
+        create_response = client.post(
+            "/api/store/demo/quotes",
+            json={
+                "customer_name": "=2+2",
+                "customer_company": "+Formula Company",
+                "customer_email": "buyer@example.test",
+                "customer_phone": "@PHONE",
+                "notes": "@SUM(A1:A2)",
+                "privacy_acknowledged": True,
+                "items": [{"sku_id": sku_data["id"], "quantity": 2}],
+            },
+        )
+    finally:
+        with SessionLocal() as session:
+            sku = session.get(SkuRow, UUID(sku_data["id"]))
+            assert sku is not None
+            sku.default_moq = original_moq
+            session.commit()
     assert create_response.status_code == 201, create_response.text
+    assert create_response.headers["cache-control"] == "no-store"
+    assert create_response.headers["pragma"] == "no-cache"
     draft = create_response.json()
     assert draft["status"] == "PENDING_CONFIRMATION"
     assert draft["quote_number"].startswith("QD-")
@@ -4058,7 +6882,11 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     assert Decimal(str(draft["total"])) == original_price * 2
     raw_token = draft["download_token"]
     assert raw_token and raw_token.startswith(f"{DEFAULT_TENANT_ID}.")
+    assert "token=" not in draft["pdf_url"]
+    assert "token=" not in draft["xlsx_url"]
+    assert "minimum_order_quantity" not in draft["items"][0]
     quote_id = UUID(draft["id"])
+    download_headers = {"X-Quote-Download-Token": raw_token}
 
     with SessionLocal() as session:
         stored = session.scalar(
@@ -4079,6 +6907,8 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert snapshot_item.name_snapshot == original_name
         assert snapshot_item.unit_price_snapshot == original_price
         assert stored_draft.snapshot["status"] == "PENDING_CONFIRMATION"
+        assert stored_draft.snapshot["privacy_notice"]["acknowledged"] is True
+        assert stored_draft.snapshot["privacy_notice"]["version"] == "privacy-v1"
 
         sku = session.get(SkuRow, UUID(sku_data["id"]))
         offer = session.scalar(
@@ -4091,13 +6921,15 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         offer.unit_price = Decimal("9999.00")
         session.commit()
     try:
-        pdf_response = client.get(draft["pdf_url"])
+        pdf_response = client.get(draft["pdf_url"], headers=download_headers)
         assert pdf_response.status_code == 200, pdf_response.text
         assert pdf_response.content.startswith(b"%PDF")
         assert pdf_response.headers["x-quote-status"] == "PENDING_CONFIRMATION"
+        assert pdf_response.headers["cache-control"] == "private, no-store"
+        assert pdf_response.headers["pragma"] == "no-cache"
         assert "PENDING-CONFIRMATION.pdf" in pdf_response.headers["content-disposition"]
 
-        xlsx_response = client.get(draft["xlsx_url"])
+        xlsx_response = client.get(draft["xlsx_url"], headers=download_headers)
         assert xlsx_response.status_code == 200, xlsx_response.text
         workbook = load_workbook(BytesIO(xlsx_response.content), data_only=False)
         sheet = workbook.active
@@ -4114,12 +6946,23 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
 
         merchant_list = client.get("/api/v1/public-quote-drafts")
         assert merchant_list.status_code == 200
+        assert merchant_list.headers["cache-control"] == "no-store"
+        assert merchant_list.headers["pragma"] == "no-cache"
         assert str(quote_id) in {item["id"] for item in merchant_list.json()}
         merchant_detail = client.get(f"/api/v1/public-quote-drafts/{quote_id}")
         assert merchant_detail.status_code == 200
+        assert merchant_detail.headers["cache-control"] == "no-store"
+        assert merchant_detail.headers["pragma"] == "no-cache"
         assert merchant_detail.json()["download_token"] is None
         assert merchant_detail.json()["pdf_url"] is None
         assert merchant_detail.json()["items"][0]["name_snapshot"] == original_name
+        merchant_pdf = client.get(
+            f"/api/v1/public-quote-drafts/{quote_id}/pdf"
+        )
+        assert merchant_pdf.status_code == 200
+        assert merchant_pdf.content.startswith(b"%PDF")
+        assert merchant_pdf.headers["cache-control"] == "private, no-store"
+        assert merchant_pdf.headers["pragma"] == "no-cache"
     finally:
         with SessionLocal() as session:
             sku = session.get(SkuRow, UUID(sku_data["id"]))
@@ -4135,8 +6978,13 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
 
     forged_tenant_token = f"{uuid4()}.{raw_token.split('.', 1)[1]}"
     assert client.get(
-        f"/api/quotes/{quote_id}/pdf", params={"token": forged_tenant_token}
+        f"/api/quotes/{quote_id}/pdf",
+        headers={"X-Quote-Download-Token": forged_tenant_token},
     ).status_code == 404
+    query_only = client.get(
+        f"/api/quotes/{quote_id}/pdf", params={"token": raw_token}
+    )
+    assert query_only.status_code == 422
 
     with SessionLocal() as session:
         stored = session.scalar(
@@ -4147,7 +6995,10 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert stored is not None
         stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         session.commit()
-    expired = client.get(f"/api/quotes/{quote_id}/pdf", params={"token": raw_token})
+    expired = client.get(
+        f"/api/quotes/{quote_id}/pdf",
+        headers={"X-Quote-Download-Token": raw_token},
+    )
     assert expired.status_code == 410
     assert expired.json()["detail"]["code"] == "DOWNLOAD_EXPIRED"
 
@@ -4221,6 +7072,7 @@ def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_read
         "/api/store/demo/quotes",
         json={
             "customer_name": "Cross Tenant Attempt",
+            "privacy_acknowledged": True,
             "items": [{"sku_id": str(sku_b), "quantity": 1}],
         },
     )
@@ -4232,6 +7084,8 @@ def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_read
     assert str(draft_b) not in {item["id"] for item in merchant_list.json()}
     merchant_detail = client.get(f"/api/v1/public-quote-drafts/{draft_b}")
     assert merchant_detail.status_code == 404
+    merchant_pdf = client.get(f"/api/v1/public-quote-drafts/{draft_b}/pdf")
+    assert merchant_pdf.status_code == 404
 
 
 def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:
@@ -4258,7 +7112,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260720_0021"
+        ).scalar() == "20260725_0028"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -4268,3 +7122,549 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)
+
+
+def test_merchant_path_migration_uses_name_and_keeps_previous_slug(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "merchant-path-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+    command.upgrade(config, "20260724_0026")
+
+    migration_engine = create_engine(migration_url)
+    metadata = MetaData()
+    metadata.reflect(migration_engine)
+    organization_id = uuid4()
+    tenant_id = uuid4()
+    organization_key = organization_id.hex
+    tenant_key = tenant_id.hex
+    now = datetime.now(UTC)
+    with migration_engine.begin() as connection:
+        connection.execute(
+            metadata.tables["organizations"].insert(),
+            {
+                "id": organization_key,
+                "code": "MIGRATION",
+                "name": "Migration Organization",
+                "status": "active",
+                "created_at": now,
+                "updated_at": now,
+                "deleted_at": None,
+            },
+        )
+        connection.execute(
+            metadata.tables["tenants"].insert(),
+            {
+                "id": tenant_key,
+                "organization_id": organization_key,
+                "slug": "qingwan",
+                "name": "澄湾选品",
+                "default_locale": "zh-CN",
+                "default_currency": "CNY",
+                "timezone": "Asia/Shanghai",
+                "status": "active",
+                "created_at": now,
+                "updated_at": now,
+                "deleted_at": None,
+            },
+        )
+        connection.execute(
+            metadata.tables["tenant_public_profiles"].insert(),
+            {
+                "tenant_id": tenant_key,
+                "slug": "qingwan",
+                "description": None,
+                "logo_url": None,
+                "contact_email": None,
+                "contact_phone": None,
+                "publication_status": "PUBLISHED",
+                "created_at": now,
+                "updated_at": now,
+                "deleted_at": None,
+            },
+        )
+    migration_engine.dispose()
+
+    command.upgrade(config, "20260724_0027")
+    migrated_engine = create_engine(migration_url)
+    migrated_metadata = MetaData()
+    migrated_metadata.reflect(migrated_engine)
+    with migrated_engine.connect() as connection:
+        tenant = connection.execute(
+            select(migrated_metadata.tables["tenants"]).where(
+                migrated_metadata.tables["tenants"].c.id == tenant_key
+            )
+        ).mappings().one()
+        profile = connection.execute(
+            select(migrated_metadata.tables["tenant_public_profiles"]).where(
+                migrated_metadata.tables["tenant_public_profiles"].c.tenant_id
+                == tenant_key
+            )
+        ).mappings().one()
+        assert tenant["slug"] == "澄湾选品"
+        assert profile["slug"] == "澄湾选品"
+        assert profile["legacy_slugs"] == ["qingwan"]
+    migrated_engine.dispose()
+
+
+def _add_tenant_member_with_role(
+    *,
+    role_code: str,
+    display_name: str,
+) -> tuple[UUID, UUID]:
+    user_id = uuid4()
+    membership_id = uuid4()
+    with SessionLocal() as session:
+        role = session.scalar(
+            select(RoleRow).where(
+                RoleRow.tenant_id == DEFAULT_TENANT_ID,
+                RoleRow.code == role_code,
+            )
+        )
+        assert role is not None
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=f"{user_id.hex}@access-control.test",
+                display_name=display_name,
+                identity_provider="local-bootstrap",
+                identity_subject=str(user_id),
+                status="active",
+                is_platform_admin=False,
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.flush()
+        session.add(
+            MembershipRoleRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                membership_id=membership_id,
+                role_id=role.id,
+                assigned_by_user_id=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.commit()
+    return user_id, membership_id
+
+
+def _local_access_token(test_client: TestClient, user_id: UUID) -> str:
+    response = test_client.post(
+        "/api/v1/auth/login",
+        json={
+            "provider": "local_fake",
+            "authorization_code": f"fake:{user_id}",
+            "code_verifier": "R" * 43,
+            "redirect_uri": "http://127.0.0.1:5173/login/callback",
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    if not data["requires_tenant_selection"]:
+        return data["access_token"]
+    headers = {"Authorization": f"Bearer {data['access_token']}"}
+    memberships = test_client.get(
+        "/api/v1/auth/memberships", headers=headers
+    )
+    assert memberships.status_code == 200, memberships.text
+    membership = next(
+        row
+        for row in memberships.json()
+        if row["tenant_id"] == str(DEFAULT_TENANT_ID)
+    )
+    switched = test_client.post(
+        "/api/v1/auth/tenant-context",
+        headers={**headers, "X-CSRF-Token": data["csrf_token"]},
+        json={"membership_id": membership["id"]},
+    )
+    assert switched.status_code == 200, switched.text
+    return switched.json()["data"]["access_token"]
+
+
+def test_product_template_import_requires_edit_and_publish_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sales_user_id, _ = _add_tenant_member_with_role(
+        role_code="SALES",
+        display_name="Template Import Sales Guard",
+    )
+    purchasing_user_id, _ = _add_tenant_member_with_role(
+        role_code="PURCHASING",
+        display_name="Template Import Purchasing Guard",
+    )
+    template_bytes = client.get("/api/v1/product-template.xlsx").content
+    with SessionLocal() as session:
+        before_count = session.scalar(select(func.count()).select_from(ImportJobRow))
+
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as scoped_client:
+        cases = (
+            (sales_user_id, "product.edit"),
+            (purchasing_user_id, "catalog.publish"),
+        )
+        for user_id, missing_permission in cases:
+            token = _local_access_token(scoped_client, user_id)
+            response = scoped_client.post(
+                "/api/v1/imports",
+                headers={"Authorization": f"Bearer {token}"},
+                files={
+                    "file": (
+                        "商品模版.xlsx",
+                        template_bytes,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+                data={"source_type": "PRODUCT_TEMPLATE"},
+            )
+            assert response.status_code == 403, response.text
+            assert response.json()["detail"] == {
+                "code": "PERMISSION_DENIED",
+                "message": f"Permission is required: {missing_permission}",
+            }
+
+    with SessionLocal() as session:
+        assert session.scalar(select(func.count()).select_from(ImportJobRow)) == before_count
+
+
+def test_tenant_access_control_manages_custom_roles_and_isolates_members() -> None:
+    _user_id, membership_id = _add_tenant_member_with_role(
+        role_code="VIEWER",
+        display_name="Access Control Target",
+    )
+    role_code = f"AUDITOR_{uuid4().hex[:8].upper()}"
+    created = client.post(
+        "/api/v1/access-control/roles",
+        json={
+            "code": role_code,
+            "name": "报价审阅",
+            "description": "只读报价与图册",
+            "permission_codes": ["quotation.view"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    custom_role = created.json()
+    assert custom_role["is_system"] is False
+    assert custom_role["permission_codes"] == ["quotation.view"]
+
+    updated = client.patch(
+        f"/api/v1/access-control/roles/{custom_role['id']}",
+        json={"permission_codes": ["quotation.view", "catalog.view"]},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["permission_codes"] == ["catalog.view", "quotation.view"]
+
+    before = next(
+        row
+        for row in client.get("/api/v1/access-control/members").json()
+        if row["id"] == str(membership_id)
+    )
+    assigned = client.put(
+        f"/api/v1/access-control/members/{membership_id}/roles",
+        json={"role_ids": [custom_role["id"]]},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert [role["code"] for role in assigned.json()["roles"]] == [role_code]
+    assert assigned.json()["permission_version"] == before["permission_version"] + 1
+
+    owner_role = next(
+        role
+        for role in client.get("/api/v1/access-control/roles").json()
+        if role["code"] == "OWNER"
+    )
+    immutable = client.patch(
+        f"/api/v1/access-control/roles/{owner_role['id']}",
+        json={"name": "Mutable Owner"},
+    )
+    assert immutable.status_code == 409
+    assert immutable.json()["detail"]["code"] == "SYSTEM_ROLE_IMMUTABLE"
+
+    organization_id = uuid4()
+    other_tenant_id = uuid4()
+    other_user_id = uuid4()
+    other_membership_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            OrganizationRow(
+                id=organization_id,
+                code=f"ACL-{organization_id.hex[:8]}",
+                name="Cross Tenant ACL",
+            )
+        )
+        session.add(
+            UserRow(
+                id=other_user_id,
+                email_normalized=f"{other_user_id.hex}@cross-acl.test",
+                display_name="Cross Tenant Member",
+                identity_provider="local-bootstrap",
+                identity_subject=str(other_user_id),
+                status="active",
+            )
+        )
+        session.flush()
+        session.add(
+            TenantRow(
+                id=other_tenant_id,
+                organization_id=organization_id,
+                slug=f"acl-{other_tenant_id.hex[:10]}",
+                name="Cross Tenant ACL",
+            )
+        )
+        session.flush()
+        session.add(
+            MembershipRow(
+                id=other_membership_id,
+                tenant_id=other_tenant_id,
+                user_id=other_user_id,
+                status="active",
+            )
+        )
+        session.commit()
+
+    cross_tenant = client.put(
+        f"/api/v1/access-control/members/{other_membership_id}/roles",
+        json={"role_ids": [custom_role["id"]]},
+    )
+    assert cross_tenant.status_code == 404
+    assert cross_tenant.json()["detail"]["code"] == "MEMBERSHIP_NOT_FOUND"
+
+
+def test_viewer_cannot_write_or_manage_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer_user_id, _membership_id = _add_tenant_member_with_role(
+        role_code="VIEWER",
+        display_name="Read Only Viewer",
+    )
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as viewer_client:
+        token = _local_access_token(viewer_client, viewer_user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        assert (
+            viewer_client.get(
+                "/api/v1/product-center/skus", headers=headers
+            ).status_code
+            == 200
+        )
+        denied_supplier = viewer_client.post(
+            "/api/v1/supplier-profiles",
+            headers=headers,
+            json={
+                "supplier_code": f"NO-{uuid4().hex[:8]}",
+                "name": "Viewer Cannot Create",
+                "category": "test",
+                "country_code": "CN",
+            },
+        )
+        denied_role = viewer_client.post(
+            "/api/v1/access-control/roles",
+            headers=headers,
+            json={
+                "code": f"NO_{uuid4().hex[:8].upper()}",
+                "name": "No escalation",
+                "permission_codes": ["product.view"],
+            },
+        )
+    assert denied_supplier.status_code == 403
+    assert denied_role.status_code == 403
+    assert denied_role.json()["detail"]["code"] == "PERMISSION_DENIED"
+
+
+def test_access_control_blocks_privilege_escalation_and_owner_assignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager_user_id = uuid4()
+    manager_membership_id = uuid4()
+    manager_role_id = uuid4()
+    target_user_id, target_membership_id = _add_tenant_member_with_role(
+        role_code="VIEWER",
+        display_name="Escalation Target",
+    )
+    del target_user_id
+    with SessionLocal() as session:
+        manager_role = RoleRow(
+            id=manager_role_id,
+            tenant_id=DEFAULT_TENANT_ID,
+            code=f"ROLE_MANAGER_{uuid4().hex[:6].upper()}",
+            name="Delegated Role Manager",
+            is_system=False,
+            status="active",
+        )
+        session.add(
+            UserRow(
+                id=manager_user_id,
+                email_normalized=f"{manager_user_id.hex}@delegated-manager.test",
+                display_name="Delegated Manager",
+                identity_provider="local-bootstrap",
+                identity_subject=str(manager_user_id),
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=manager_membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=manager_user_id,
+                status="active",
+            )
+        )
+        session.add(manager_role)
+        session.flush()
+        for code in ("system.user_manage", "system.role_manage"):
+            permission = session.scalar(
+                select(PermissionRow).where(PermissionRow.code == code)
+            )
+            assert permission is not None
+            session.add(
+                RolePermissionRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    role_id=manager_role.id,
+                    permission_id=permission.id,
+                )
+            )
+        session.add(
+            MembershipRoleRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                membership_id=manager_membership_id,
+                role_id=manager_role.id,
+                assigned_by_user_id=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.commit()
+
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as manager_client:
+        manager_token = _local_access_token(manager_client, manager_user_id)
+        escalation = manager_client.post(
+            "/api/v1/access-control/roles",
+            headers={"Authorization": f"Bearer {manager_token}"},
+            json={
+                "code": f"COST_{uuid4().hex[:8].upper()}",
+                "name": "Forbidden Cost Role",
+                "permission_codes": ["product.cost.write"],
+            },
+        )
+        governance_lockout = manager_client.patch(
+            f"/api/v1/access-control/roles/{manager_role_id}",
+            headers={"Authorization": f"Bearer {manager_token}"},
+            json={"permission_codes": ["system.role_manage"]},
+        )
+    assert escalation.status_code == 403
+    assert escalation.json()["detail"]["code"] == "PRIVILEGE_ESCALATION_FORBIDDEN"
+    assert governance_lockout.status_code == 409
+    assert governance_lockout.json()["detail"]["code"] == "SELF_LOCKOUT_FORBIDDEN"
+
+    admin_user_id, _admin_membership_id = _add_tenant_member_with_role(
+        role_code="ADMIN",
+        display_name="Tenant Admin But Not Owner",
+    )
+    with TestClient(app) as admin_client:
+        admin_token = _local_access_token(admin_client, admin_user_id)
+        owner_role = next(
+            role
+            for role in admin_client.get(
+                "/api/v1/access-control/roles",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            ).json()
+            if role["code"] == "OWNER"
+        )
+        owner_escalation = admin_client.put(
+            f"/api/v1/access-control/members/{target_membership_id}/roles",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"role_ids": [owner_role["id"]]},
+        )
+    assert owner_escalation.status_code == 403
+    assert owner_escalation.json()["detail"]["code"] == "OWNER_ASSIGNMENT_FORBIDDEN"
+
+
+def test_access_control_prevents_self_lockout_and_last_owner_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _second_owner_user_id, second_owner_membership_id = _add_tenant_member_with_role(
+        role_code="OWNER",
+        display_name="Second Tenant Owner",
+    )
+    roles = {
+        role["code"]: role
+        for role in client.get("/api/v1/access-control/roles").json()
+    }
+    self_lockout = client.put(
+        f"/api/v1/access-control/members/{DEFAULT_MEMBERSHIP_ID}/roles",
+        json={"role_ids": [roles["VIEWER"]["id"]]},
+    )
+    assert self_lockout.status_code == 409
+    assert self_lockout.json()["detail"]["code"] == "SELF_LOCKOUT_FORBIDDEN"
+
+    admin_user_id, _admin_membership_id = _add_tenant_member_with_role(
+        role_code="ADMIN",
+        display_name="Owner Removal Guard Admin",
+    )
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        with TestClient(app) as admin_client:
+            admin_token = _local_access_token(admin_client, admin_user_id)
+            forbidden_owner_removal = admin_client.put(
+                f"/api/v1/access-control/members/{second_owner_membership_id}/roles",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"role_ids": [roles["ADMIN"]["id"]]},
+            )
+    assert forbidden_owner_removal.status_code == 403
+    assert (
+        forbidden_owner_removal.json()["detail"]["code"]
+        == "OWNER_ASSIGNMENT_FORBIDDEN"
+    )
+
+    downgrade_second = client.put(
+        f"/api/v1/access-control/members/{second_owner_membership_id}/roles",
+        json={"role_ids": [roles["VIEWER"]["id"]]},
+    )
+    assert downgrade_second.status_code == 200, downgrade_second.text
+
+    remove_last_owner = client.put(
+        f"/api/v1/access-control/members/{DEFAULT_MEMBERSHIP_ID}/roles",
+        json={"role_ids": [roles["ADMIN"]["id"]]},
+    )
+    assert remove_last_owner.status_code == 409
+    assert remove_last_owner.json()["detail"]["code"] == "LAST_OWNER_REQUIRED"
+
+
+def test_member_role_change_invalidates_existing_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer_user_id, viewer_membership_id = _add_tenant_member_with_role(
+        role_code="VIEWER",
+        display_name="Permission Version Viewer",
+    )
+    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
+    with TestClient(app) as viewer_client, TestClient(app) as owner_client:
+        viewer_token = _local_access_token(viewer_client, viewer_user_id)
+        owner_token = _local_access_token(owner_client, DEFAULT_OWNER_USER_ID)
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        role_response = owner_client.get(
+            "/api/v1/access-control/roles", headers=owner_headers
+        )
+        assert role_response.status_code == 200, role_response.text
+        sales_role = next(
+            role
+            for role in role_response.json()
+            if role["code"] == "SALES"
+        )
+        changed = owner_client.put(
+            f"/api/v1/access-control/members/{viewer_membership_id}/roles",
+            headers=owner_headers,
+            json={"role_ids": [sales_role["id"]]},
+        )
+        assert changed.status_code == 200, changed.text
+        stale = viewer_client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+    assert stale.status_code == 401
+    assert stale.json()["detail"]["code"] == "AUTH_PERMISSION_STALE"

@@ -7,7 +7,7 @@ import os
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -24,6 +24,7 @@ from ..public_catalog_models import (
 from ..public_catalog_schemas import (
     PUBLIC_DRAFT_DISCLAIMER,
     PUBLIC_DRAFT_DISCLAIMER_VERSION,
+    PUBLIC_PRIVACY_NOTICE_VERSION,
     PublicQuoteDocument,
     PublicQuoteDraftCreate,
     PublicQuoteDraftItemResponse,
@@ -79,6 +80,50 @@ def _public_image_url(image: object | None, *, slug: str) -> str | None:
     return f"/api/store/{quote(slug, safe='')}/media/{image.id}"
 
 
+def _category_path(category: object | None) -> str:
+    if category is None:
+        return ""
+    path = str(getattr(category, "path", "") or "").strip()
+    name = str(getattr(category, "name", "") or "").strip()
+    code = str(getattr(category, "code", "") or "").strip()
+    if path and code and path.casefold() == code.casefold():
+        return name
+    return path or name
+
+
+def _ordered_category_paths(
+    rows: list[object], *, all_categories: list[object]
+) -> list[str]:
+    categories_by_id = {
+        getattr(category, "id"): category
+        for category in all_categories
+        if getattr(category, "id", None) is not None
+    }
+    visible_by_id = {
+        getattr(row[3], "id"): row[3]
+        for row in rows
+        if row[3] is not None and _category_path(row[3])
+    }
+
+    def sort_key(category: object):
+        parent = categories_by_id.get(getattr(category, "parent_id", None))
+        root = parent or category
+        return (
+            int(getattr(root, "sort_order", 0) or 0),
+            str(getattr(root, "name", "") or "").casefold(),
+            1 if parent is not None else 0,
+            int(getattr(category, "sort_order", 0) or 0),
+            str(getattr(category, "name", "") or "").casefold(),
+        )
+
+    return list(
+        dict.fromkeys(
+            _category_path(category)
+            for category in sorted(visible_by_id.values(), key=sort_key)
+        )
+    )
+
+
 def get_public_media(
     session: Session, *, slug: str, image_id: UUID
 ) -> tuple[bytes, str]:
@@ -116,7 +161,7 @@ def _resolve_store(session: Session, *, slug: str):
         raise ApplicationError("STORE_NOT_FOUND", "Store was not found.", kind="not_found")
     set_public_tenant_context(session, tenant_id=profile.tenant_id)
     tenant = repository.get_active_tenant(
-        session, tenant_id=profile.tenant_id, slug=normalized
+        session, tenant_id=profile.tenant_id
     )
     if tenant is None:
         raise ApplicationError("STORE_NOT_FOUND", "Store was not found.", kind="not_found")
@@ -140,9 +185,6 @@ def get_store(session: Session, *, slug: str) -> PublicStoreResponse:
 
 def _sku_response(row: object, *, image: object | None, slug: str) -> PublicSkuResponse:
     offer, sku, product, category = row
-    moq = Decimal(sku.default_moq or 1)
-    if moq <= 0:
-        moq = Decimal("1")
     tags = [str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()]
     return PublicSkuResponse(
         id=sku.id,
@@ -150,12 +192,11 @@ def _sku_response(row: object, *, image: object | None, slug: str) -> PublicSkuR
         sku_code=sku.sku_code,
         name=sku.name or product.name,
         description=product.description,
-        category=category.name if category is not None else None,
+        category=_category_path(category) or None,
         tags=list(dict.fromkeys(tags)),
         price=_money(Decimal(offer.unit_price)),
         currency=offer.currency,
-        moq=moq,
-        unit_code=sku.moq_unit or product.default_unit or "piece",
+        unit_code=product.default_unit or "piece",
         image_url=_public_image_url(image, slug=slug),
         product_version=product.current_version,
         sku_version=sku.version,
@@ -195,7 +236,7 @@ def list_public_skus(
             sku_name = str(sku.name or "").casefold()
             product_name = str(product.name).casefold()
             description = str(product.description or "").casefold()
-            category_name = str(row_category.name if row_category else "").casefold()
+            category_name = _category_path(row_category).casefold()
             tag_values = [str(tag).casefold() for tag in (offer.tags or [])]
             fields = [sku_code, sku_name, product_name, description, category_name, *tag_values]
             score = 100 if sku_code == normalized_query else 0
@@ -222,8 +263,11 @@ def list_public_skus(
             )
             if score > 0
         ]
-    categories = sorted(
-        {row[3].name for row in rows if row[3] is not None}, key=str.casefold
+    categories = _ordered_category_paths(
+        rows,
+        all_categories=repository.list_catalog_categories(
+            session, tenant_id=tenant.id
+        ),
     )
     facet_tags = sorted(
         {
@@ -277,7 +321,6 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
         category_snapshot=row.category_snapshot,
         tags_snapshot=row.tags_snapshot,
         image_url_snapshot=row.image_url_snapshot,
-        minimum_order_quantity=row.minimum_order_quantity,
         unit_code_snapshot=row.unit_code_snapshot,
         currency_snapshot=row.currency_snapshot,
         unit_price_snapshot=row.unit_price_snapshot,
@@ -296,8 +339,6 @@ def _draft_response(
 ) -> PublicQuoteDraftResponse:
     base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
     document_base = f"{base}/api/quotes/{draft.id}" if base else f"/api/quotes/{draft.id}"
-    query = urlencode({"token": raw_token}) if raw_token else ""
-    suffix = f"?{query}" if query else ""
     return PublicQuoteDraftResponse(
         id=draft.id,
         tenant_id=draft.tenant_id,
@@ -320,8 +361,8 @@ def _draft_response(
         items=[_item_response(item) for item in items],
         download_token=raw_token,
         download_expires_at=token_expires_at,
-        pdf_url=f"{document_base}/pdf{suffix}" if raw_token else None,
-        xlsx_url=f"{document_base}/xlsx{suffix}" if raw_token else None,
+        pdf_url=f"{document_base}/pdf" if raw_token else None,
+        xlsx_url=f"{document_base}/xlsx" if raw_token else None,
     )
 
 
@@ -362,15 +403,7 @@ def create_public_quote_draft(
     subtotal = Decimal("0")
     for position, cart_item in enumerate(request.items, 1):
         offer, sku, product, category = row_by_sku[cart_item.sku_id]
-        minimum = Decimal(sku.default_moq or 1)
-        if minimum <= 0:
-            minimum = Decimal("1")
         quantity = Decimal(cart_item.quantity)
-        if quantity < minimum:
-            raise ApplicationError(
-                "PUBLIC_CART_BELOW_MOQ",
-                f"Quantity for {sku.sku_code} must be at least {minimum}.",
-            )
         unit_price = _money(Decimal(offer.unit_price))
         line_total = _money(unit_price * quantity)
         subtotal += line_total
@@ -388,11 +421,11 @@ def create_public_quote_draft(
             sku_code_snapshot=sku.sku_code,
             name_snapshot=sku.name or product.name,
             description_snapshot=product.description,
-            category_snapshot=category.name if category is not None else None,
+            category_snapshot=_category_path(category) or None,
             tags_snapshot=list(dict.fromkeys(tags)),
             image_url_snapshot=image_url,
-            minimum_order_quantity=minimum,
-            unit_code_snapshot=sku.moq_unit or product.default_unit or "piece",
+            minimum_order_quantity=Decimal("1"),
+            unit_code_snapshot=product.default_unit or "piece",
             currency_snapshot=currency,
             unit_price_snapshot=unit_price,
             line_total=line_total,
@@ -411,7 +444,6 @@ def create_public_quote_draft(
                 "tags": item_row.tags_snapshot,
                 "image_url": image_url,
                 "quantity": str(quantity),
-                "minimum_order_quantity": str(minimum),
                 "unit_code": item_row.unit_code_snapshot,
                 "currency": currency,
                 "unit_price": str(unit_price),
@@ -435,6 +467,11 @@ def create_public_quote_draft(
             "phone": request.customer_phone,
         },
         "notes": request.notes,
+        "privacy_notice": {
+            "acknowledged": request.privacy_acknowledged,
+            "version": PUBLIC_PRIVACY_NOTICE_VERSION,
+            "acknowledged_at": now.isoformat(),
+        },
         "currency": currency,
         "subtotal_amount": str(subtotal),
         "estimated_total": str(subtotal),
@@ -612,3 +649,33 @@ def get_tenant_quote_draft(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
     )
     return _draft_response(draft, items)
+
+
+def get_tenant_quote_document(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+) -> PublicQuoteDocument:
+    _require(permissions, "quotation.view")
+    tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
+    draft = repository.get_quote_draft(
+        session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
+    )
+    if tenant is None or draft is None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    profile = repository.find_profile_by_tenant(session, tenant_id=tenant_id)
+    items = repository.list_quote_draft_items(
+        session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
+    )
+    return PublicQuoteDocument(
+        tenant_name=tenant.name,
+        contact_email=profile.contact_email if profile else None,
+        contact_phone=profile.contact_phone if profile else None,
+        quote=_draft_response(draft, items),
+    )

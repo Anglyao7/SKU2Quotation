@@ -10,13 +10,16 @@ from ..product_center_schemas import (
     AttributeDefinitionCreateRequest,
     AttributeDefinitionResponse,
     CategoryCreateRequest,
+    CategoryReorderRequest,
     CategoryResponse,
+    CategoryUpdateRequest,
     ProductCard,
     ProductDetail,
     ProductReviewQueueItem,
     PublicCatalogOfferResponse,
     PublicCatalogOfferUpsertRequest,
     SkuBatchCreateRequest,
+    SkuListPage,
     SkuResponse,
     SkuUpdateRequest,
     SupplierPriceCreateRequest,
@@ -56,6 +59,31 @@ def list_products(
             statuses=product_status,
             approved_images_only=approved_images_only,
             limit=limit,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get("/product-center/skus", response_model=SkuListPage)
+def list_skus(
+    q: str = Query(default="", max_length=200),
+    category_id: UUID | None = None,
+    sku_status: list[str] = Query(default=[], alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    session: Session = Depends(get_authenticated_session),
+) -> SkuListPage:
+    context = _context(session)
+    try:
+        return use_cases.list_skus(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            query=q,
+            category_id=category_id,
+            statuses=sku_status,
+            page=page,
+            page_size=page_size,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -194,6 +222,44 @@ def create_category(
             tenant_id=context.tenant_id,
             membership_id=context.membership_id,
             permissions=context.permissions,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/categories/reorder", response_model=list[CategoryResponse])
+def reorder_categories(
+    request: CategoryReorderRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> list[CategoryResponse]:
+    context = _context(session)
+    try:
+        return use_cases.reorder_categories(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/categories/{category_id}", response_model=CategoryResponse)
+def update_category(
+    category_id: UUID,
+    request: CategoryUpdateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> CategoryResponse:
+    context = _context(session)
+    try:
+        return use_cases.update_category(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            category_id=category_id,
             request=request,
         )
     except ApplicationError as exc:

@@ -1,4 +1,4 @@
-"""AI Trade Cloud API composition root.
+"""智贸云 API composition root.
 
 Business orchestration belongs to ``use_cases``; persistence belongs to
 ``repositories``; this module only initializes infrastructure and composes
@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import SessionLocal, init_database
 from .routers.auth import router as auth_router
+from .routers.access_control import router as access_control_router
 from .routers.health import router as health_router
 from .routers.image_intelligence import router as image_intelligence_router
 from .routers.knowledge_search import router as knowledge_search_router
@@ -39,7 +40,7 @@ def _initialize_runtime() -> None:
 
 def create_app() -> FastAPI:
     application = FastAPI(
-        title="AI Trade Cloud API",
+        title="智贸云 API",
         version="0.3.0",
         description="AI 原生外贸平台 API：可信租户上下文、供应商导入、产品审核与知识检索。",
     )
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     for router in (
         health_router,
         auth_router,
+        access_control_router,
         legacy_operations_router,
         product_intelligence_router,
         product_center_router,

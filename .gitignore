@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !**/.env.example
+!.env.production.example
 
 # Python
 __pycache__/
@@ -36,9 +37,12 @@ apps/api/generated/
 apps/api/uploads/
 uploads/
 generated/
+outputs/
 logs/
 tmp/
 temp/
+.runtime/
+.deployments/
 test-results/
 playwright-report/
 

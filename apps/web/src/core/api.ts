@@ -10,6 +10,7 @@ import type {
   InquiryMatch,
   InquiryRecord,
   MembershipSummary,
+  MerchantSettings,
   PermissionSet,
   ProductActivity,
   ProductAttribute,
@@ -23,10 +24,17 @@ import type {
   QuotationRecord,
   QuotationSummary,
   ReviewItem,
+  SkuListItem,
+  SkuListPage,
   SupplierPrice,
   SupplierProfile,
   SupplierProfileDetail,
+  TenantMember,
+  TenantPermission,
+  TenantRole,
 } from "./types";
+import { buildPasswordChangePayload } from "./accountPassword";
+import { buildPasswordLoginPayload } from "./authCredentials";
 
 const CSRF_STORAGE_KEY = "atc.csrfToken";
 let accessToken: string | undefined;
@@ -41,6 +49,7 @@ function resolveApiBase() {
 }
 
 const API_BASE = resolveApiBase();
+export const PRODUCT_TEMPLATE_DOWNLOAD_URL = `${API_BASE}/product-template.xlsx`;
 
 export class CoreApiError extends Error {
   status: number;
@@ -191,23 +200,41 @@ async function request<T>(path: string, init: RequestInit = {}, retrySession = t
   return payload as T;
 }
 
-export async function loginLocalDemo(): Promise<AuthTokenData> {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  const verifier = btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
   const payload = await request<{ data: ApiAuthTokenData }>("/auth/login", {
     method: "POST",
-    body: JSON.stringify({
-      provider: "local_fake",
-      authorization_code: "fake:00000000-0000-0000-0000-000000000003",
-      code_verifier: verifier,
-      redirect_uri: `${window.location.origin}/login/callback`,
-      device_label: "AI Trade Cloud Web",
-    }),
+    body: JSON.stringify(buildPasswordLoginPayload(identifier, password)),
   }, false);
   return acceptAuthData(payload.data);
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const submit = async () => {
+    const csrfToken = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
+    if (!csrfToken) throw new CoreApiError("会话校验信息已失效，请重新登录。", 419);
+    await request<void>("/auth/password", {
+      method: "PUT",
+      headers: { "X-CSRF-Token": csrfToken },
+      body: JSON.stringify(buildPasswordChangePayload(currentPassword, newPassword)),
+    }, false);
+  };
+
+  try {
+    await submit();
+  } catch (caught) {
+    const detail = caught instanceof CoreApiError && caught.details && typeof caught.details === "object"
+      ? (caught.details as { detail?: { code?: string } }).detail
+      : undefined;
+    if (!(caught instanceof CoreApiError) || caught.status !== 401 || detail?.code === "CURRENT_PASSWORD_INVALID") {
+      throw caught;
+    }
+    const restored = await refreshAuthSession();
+    if (!restored) {
+      window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+      throw new CoreApiError("会话已失效，请重新登录。", 419);
+    }
+    await submit();
+  }
 }
 
 export async function listMemberships() {
@@ -249,7 +276,138 @@ export async function getPermissions(): Promise<PermissionSet> {
   return { membershipId: row.membership_id, permissionVersion: row.permission_version, permissions: row.permissions };
 }
 
-export async function logoutSession() {
+export async function updateMerchantSettings(name: string): Promise<MerchantSettings> {
+  const row = await request<{ name: string; slug: string; storefront_path: string }>(
+    "/me/merchant",
+    {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    },
+  );
+  return {
+    name: row.name,
+    slug: row.slug,
+    storefrontPath: row.storefront_path,
+  };
+}
+
+interface ApiTenantRole {
+  id: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  is_system: boolean;
+  status: string;
+  permission_codes: string[];
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ApiTenantMember {
+  id: string;
+  user_id: string;
+  display_name: string;
+  email?: string | null;
+  job_title?: string | null;
+  status: string;
+  permission_version: number;
+  roles: Array<{ id: string; code: string; name: string; is_system: boolean }>;
+  joined_at?: string | null;
+  created_at: string;
+}
+
+function mapTenantRole(row: ApiTenantRole): TenantRole {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    description: defined(row.description),
+    isSystem: row.is_system,
+    status: row.status,
+    permissionCodes: row.permission_codes,
+    memberCount: row.member_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapTenantMember(row: ApiTenantMember): TenantMember {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    displayName: row.display_name,
+    email: defined(row.email),
+    jobTitle: defined(row.job_title),
+    status: row.status,
+    permissionVersion: row.permission_version,
+    roles: row.roles.map((role) => ({
+      id: role.id,
+      code: role.code,
+      name: role.name,
+      isSystem: role.is_system,
+    })),
+    joinedAt: defined(row.joined_at),
+    createdAt: row.created_at,
+  };
+}
+
+export async function listTenantPermissions(): Promise<TenantPermission[]> {
+  const rows = await request<Array<{ code: string; module: string; action: string; description?: string | null }>>("/access-control/permissions");
+  return rows.map((row) => ({ ...row, description: defined(row.description) }));
+}
+
+export async function listTenantRoles(): Promise<TenantRole[]> {
+  return (await request<ApiTenantRole[]>("/access-control/roles")).map(mapTenantRole);
+}
+
+export async function listTenantMembers(): Promise<TenantMember[]> {
+  return (await request<ApiTenantMember[]>("/access-control/members")).map(mapTenantMember);
+}
+
+export async function createTenantRole(input: {
+  code: string;
+  name: string;
+  description?: string;
+  permissionCodes: string[];
+}): Promise<TenantRole> {
+  const row = await request<ApiTenantRole>("/access-control/roles", {
+    method: "POST",
+    body: JSON.stringify({
+      code: input.code,
+      name: input.name,
+      description: input.description || null,
+      permission_codes: input.permissionCodes,
+    }),
+  });
+  return mapTenantRole(row);
+}
+
+export async function updateTenantRole(
+  roleId: string,
+  input: { name?: string; description?: string; permissionCodes?: string[] },
+): Promise<TenantRole> {
+  const body: Record<string, unknown> = {};
+  if (input.name !== undefined) body.name = input.name;
+  if (input.description !== undefined) body.description = input.description || null;
+  if (input.permissionCodes !== undefined) body.permission_codes = input.permissionCodes;
+  return mapTenantRole(await request<ApiTenantRole>(`/access-control/roles/${roleId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  }));
+}
+
+export async function updateTenantMemberRoles(
+  membershipId: string,
+  roleIds: string[],
+): Promise<TenantMember> {
+  return mapTenantMember(await request<ApiTenantMember>(`/access-control/members/${membershipId}/roles`, {
+    method: "PUT",
+    body: JSON.stringify({ role_ids: roleIds }),
+  }));
+}
+
+export async function logoutSession(): Promise<void> {
   try {
     await request<void>("/auth/logout", { method: "POST" }, false);
   } finally {
@@ -261,11 +419,13 @@ interface ApiImportJob {
   id: string;
   filename: string;
   supplier: string;
+  source_type: string;
   detected_type: string;
   status: ImportJob["status"];
   progress: number;
   products: number;
   warnings: number;
+  warning_messages: string[];
   created_at: string;
   parser: string;
   extension_matches: boolean;
@@ -277,11 +437,13 @@ function mapImport(row: ApiImportJob): ImportJob {
     id: row.id,
     filename: row.filename,
     supplier: row.supplier,
+    sourceType: row.source_type,
     detectedType: row.detected_type,
     status: row.status,
     progress: row.progress,
     products: row.products,
     warnings: row.warnings,
+    warningMessages: row.warning_messages ?? [],
     createdAt: row.created_at,
     parser: row.parser,
     extensionMatches: row.extension_matches,
@@ -340,11 +502,22 @@ export async function listImports() {
   return (await request<ApiImportJob[]>("/imports")).map(mapImport);
 }
 
+export async function getImport(jobId: string) {
+  return mapImport(await request<ApiImportJob>(`/imports/${encodeURIComponent(jobId)}`));
+}
+
 export async function createImport(file: File, supplierId?: string) {
   const body = new FormData();
   body.append("file", file);
   body.append("source_type", "SUPPLIER_CATALOG");
   if (supplierId) body.append("supplier_id", supplierId);
+  return mapImport(await request<ApiImportJob>("/imports", { method: "POST", body }));
+}
+
+export async function createProductTemplateImport(file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("source_type", "PRODUCT_TEMPLATE");
   return mapImport(await request<ApiImportJob>("/imports", { method: "POST", body }));
 }
 
@@ -422,8 +595,6 @@ interface ApiOffer {
   supplier_name: string;
   supplier_sku?: string | null;
   sku_id?: string | null;
-  moq?: number | null;
-  moq_unit?: string | null;
   lead_time_days?: number | null;
   unit_price?: number | null;
   currency?: string | null;
@@ -447,7 +618,6 @@ interface ApiProduct {
   supplier: string;
   price?: number | null;
   currency?: string | null;
-  moq?: number | null;
   tags: string[];
 }
 
@@ -458,13 +628,43 @@ interface ApiSku {
   name?: string | null;
   option_values: Record<string, string | number | boolean>;
   barcode?: string | null;
-  default_moq?: number | null;
-  moq_unit?: string | null;
   weight?: number | null;
   weight_unit?: string | null;
   status: ProductSku["status"];
   version: number;
   updated_at: string;
+}
+
+interface ApiSkuListItem {
+  id: string;
+  sku_code: string;
+  name: string;
+  product_id: string;
+  product_code?: string | null;
+  product_name: string;
+  category?: { id: string; code: string; name: string } | null;
+  tags: string[];
+  supplier_summary: {
+    count: number;
+    primary_supplier_id?: string | null;
+    primary_supplier_name?: string | null;
+    names: string[];
+  };
+  public_price?: number | string | null;
+  public_currency?: string | null;
+  public_offer_status?: SkuListItem["publicOfferStatus"] | null;
+  status: SkuListItem["status"];
+  version: number;
+  updated_at: string;
+  image_status: SkuListItem["imageStatus"];
+}
+
+interface ApiSkuListPage {
+  items: ApiSkuListItem[];
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
 }
 
 interface ApiProductDetail extends ApiProduct {
@@ -483,8 +683,6 @@ function mapOffer(row: ApiOffer): ProductOffer {
     supplierName: row.supplier_name,
     supplierSku: defined(row.supplier_sku),
     skuId: defined(row.sku_id),
-    moq: row.moq == null ? undefined : Number(row.moq),
-    moqUnit: defined(row.moq_unit),
     leadTimeDays: defined(row.lead_time_days),
     unitPrice: row.unit_price == null ? undefined : Number(row.unit_price),
     currency: defined(row.currency),
@@ -505,7 +703,6 @@ function mapProduct(row: ApiProduct): CoreProduct {
     supplier: row.supplier,
     price: row.price == null ? undefined : Number(row.price),
     currency: defined(row.currency),
-    moq: row.moq == null ? undefined : Number(row.moq),
     updated: row.updated_at,
     imageStatus: row.image_status,
     tags: row.tags ?? [],
@@ -524,13 +721,37 @@ function mapSku(row: ApiSku): ProductSku {
     name: defined(row.name),
     optionValues: row.option_values,
     barcode: defined(row.barcode),
-    defaultMoq: defined(row.default_moq),
-    moqUnit: defined(row.moq_unit),
     weight: defined(row.weight),
     weightUnit: defined(row.weight_unit),
     status: row.status,
     version: row.version,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapSkuListItem(row: ApiSkuListItem): SkuListItem {
+  return {
+    id: row.id,
+    skuCode: row.sku_code,
+    name: row.name,
+    productId: row.product_id,
+    productCode: defined(row.product_code),
+    productName: row.product_name,
+    category: row.category ?? undefined,
+    tags: row.tags ?? [],
+    supplierSummary: {
+      count: row.supplier_summary.count,
+      primarySupplierId: defined(row.supplier_summary.primary_supplier_id),
+      primarySupplierName: defined(row.supplier_summary.primary_supplier_name),
+      names: row.supplier_summary.names ?? [],
+    },
+    publicPrice: row.public_price == null ? undefined : Number(row.public_price),
+    publicCurrency: defined(row.public_currency),
+    publicOfferStatus: defined(row.public_offer_status),
+    status: row.status,
+    version: row.version,
+    updatedAt: row.updated_at,
+    imageStatus: row.image_status,
   };
 }
 
@@ -550,15 +771,38 @@ export async function listProducts(params: { q?: string; categoryId?: string; ap
   return (await request<ApiProduct[]>(`/products${query.size ? `?${query}` : ""}`)).map(mapProduct);
 }
 
+export async function listSkus(params: {
+  q?: string;
+  categoryId?: string;
+  statuses?: ProductSku["status"][];
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<SkuListPage> {
+  const query = new URLSearchParams();
+  if (params.q) query.set("q", params.q);
+  if (params.categoryId) query.set("category_id", params.categoryId);
+  for (const status of params.statuses ?? []) query.append("status", status);
+  query.set("page", String(params.page ?? 1));
+  query.set("page_size", String(params.pageSize ?? 50));
+  const row = await request<ApiSkuListPage>(`/product-center/skus?${query}`);
+  return {
+    items: row.items.map(mapSkuListItem),
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    pages: row.pages,
+  };
+}
+
 export async function getProduct(productId: string): Promise<ProductDetail> {
   const row = await request<ApiProductDetail>(`/products/${encodeURIComponent(productId)}`);
   return { ...mapProduct(row), description: defined(row.description), defaultUnit: defined(row.default_unit), attributes: row.attributes.map(mapAttribute), skus: row.skus.map(mapSku), sources: row.sources.map(mapOffer), activity: row.activity.map(mapActivity) };
 }
 
-export async function createSkus(productId: string, items: Array<{ skuCode: string; name?: string; optionValues: Record<string, string>; defaultMoq?: number; moqUnit?: string; status?: ProductSku["status"] }>) {
+export async function createSkus(productId: string, items: Array<{ skuCode: string; name?: string; optionValues: Record<string, string>; status?: ProductSku["status"] }>) {
   const rows = await request<ApiSku[]>(`/products/${encodeURIComponent(productId)}/skus`, {
     method: "POST",
-    body: JSON.stringify({ items: items.map((item) => ({ sku_code: item.skuCode, name: item.name, option_values: item.optionValues, default_moq: item.defaultMoq, moq_unit: item.moqUnit, status: item.status ?? "DRAFT" })) }),
+    body: JSON.stringify({ items: items.map((item) => ({ sku_code: item.skuCode, name: item.name, option_values: item.optionValues, status: item.status ?? "DRAFT" })) }),
   });
   return rows.map(mapSku);
 }
@@ -566,7 +810,7 @@ export async function createSkus(productId: string, items: Array<{ skuCode: stri
 export async function updateSku(skuId: string, input: Partial<Omit<ProductSku, "id" | "productId" | "skuCode" | "version" | "updatedAt">> & { expectedVersion: number }) {
   return mapSku(await request<ApiSku>(`/skus/${encodeURIComponent(skuId)}`, {
     method: "PATCH",
-    body: JSON.stringify({ expected_version: input.expectedVersion, name: input.name, option_values: input.optionValues, barcode: input.barcode, default_moq: input.defaultMoq, moq_unit: input.moqUnit, weight: input.weight, weight_unit: input.weightUnit, status: input.status }),
+    body: JSON.stringify({ expected_version: input.expectedVersion, name: input.name, option_values: input.optionValues, barcode: input.barcode, weight: input.weight, weight_unit: input.weightUnit, status: input.status }),
   }));
 }
 
@@ -632,7 +876,49 @@ interface ApiCategory { id: string; parent_id?: string | null; code: string; nam
 interface ApiAttributeDefinition { id: string; category_id?: string | null; attribute_key: string; display_name: string; data_type: AttributeDefinition["dataType"]; unit_code?: string | null; enum_values?: string[] | null; is_required: boolean; is_variant: boolean; is_filterable: boolean; is_matchable: boolean; status: string; version: number }
 
 export async function listCategories(): Promise<ProductCategory[]> {
-  return (await request<ApiCategory[]>("/categories")).map((row) => ({ id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), status: row.status, sortOrder: row.sort_order, version: row.version }));
+  return (await request<ApiCategory[]>("/categories")).map(mapCategory);
+}
+
+function mapCategory(row: ApiCategory): ProductCategory {
+  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), status: row.status, sortOrder: row.sort_order, version: row.version };
+}
+
+export async function createCategory(input: { name: string; parentId?: string; sortOrder?: number }): Promise<ProductCategory> {
+  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 24).toUpperCase();
+  return mapCategory(await request<ApiCategory>("/categories", {
+    method: "POST",
+    body: JSON.stringify({
+      parent_id: input.parentId,
+      code: `MAN-${suffix}`,
+      name: input.name,
+      sort_order: input.sortOrder ?? 0,
+    }),
+  }));
+}
+
+export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE" }): Promise<ProductCategory> {
+  return mapCategory(await request<ApiCategory>(`/categories/${encodeURIComponent(input.id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      expected_version: input.expectedVersion,
+      parent_id: input.parentId,
+      name: input.name,
+      sort_order: input.sortOrder,
+      status: input.status,
+    }),
+  }));
+}
+
+export async function reorderCategories(categories: ProductCategory[]): Promise<ProductCategory[]> {
+  return (await request<ApiCategory[]>("/categories/reorder", {
+    method: "PATCH",
+    body: JSON.stringify({
+      items: categories.map((category) => ({
+        id: category.id,
+        expected_version: category.version,
+      })),
+    }),
+  })).map(mapCategory);
 }
 
 export async function listAttributeDefinitions(categoryId?: string): Promise<AttributeDefinition[]> {
@@ -665,15 +951,15 @@ export async function createPrice(input: { supplierProductId: string; skuId?: st
   }));
 }
 
-interface ApiDashboard { generated_at: string; data_scope: "TENANT" | "SELF"; metrics: Array<{ key: string; label: string; value: number; unit?: string | null; status: string; destination: string }>; recent_imports: Array<{ id: string; filename: string; supplier_name: string; status: string; progress: number; products_count: number; warnings_count: number; created_at: string }>; data_health?: { score: number; active_products: number; approved_image_coverage: number; supplier_source_coverage: number; valid_price_coverage: number } | null }
+interface ApiDashboard { generated_at: string; data_scope: "TENANT" | "SELF"; metrics: Array<{ key: string; label: string; value: number; unit?: string | null; status: string; destination: string }>; recent_imports: Array<{ id: string; filename: string; supplier_name: string; source_type: string; status: string; progress: number; products_count: number; warnings_count: number; created_at: string }>; data_health?: { score: number; active_products: number; approved_image_coverage: number; supplier_source_coverage: number; valid_price_coverage: number } | null }
 
 export async function getDashboard(): Promise<DashboardSnapshot> {
   const row = await request<ApiDashboard>("/dashboard");
-  return { generatedAt: row.generated_at, dataScope: row.data_scope, metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })), dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined };
+  return { generatedAt: row.generated_at, dataScope: row.data_scope, metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, sourceType: item.source_type, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })), dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined };
 }
 
 interface ApiSupplierProfile { id: string; supplier_code: string; name: string; category: string; category_summary?: string | null; country_code?: string | null; website?: string | null; status: string; risk_level: string; health: string; version: number; active_products: number; active_skus: number; pending_reviews: number; valid_prices: number; expired_prices: number; latest_import_at?: string | null; updated_at: string; latest_score?: { overall_score?: number | string | null; quality_score?: number | string | null; price_score?: number | string | null; delivery_score?: number | string | null; response_score?: number | string | null; risk_score?: number | string | null; sample_size: number; method_version: string; calculated_at: string } | null }
-interface ApiSupplierDetail extends ApiSupplierProfile { sources: Array<{ supplier_product_id: string; product_id: string; product_code: string; product_name: string; sku_id?: string | null; supplier_sku?: string | null; moq?: number | string | null; moq_unit?: string | null; lead_time_days?: number | null; status: string; unit_price?: number | string | null; currency?: string | null; price_valid_to?: string | null; price_validity: string }>; recent_imports: Array<{ id: string; filename: string; status: string; products_count: number; warnings_count: number; created_at: string }> }
+interface ApiSupplierDetail extends ApiSupplierProfile { sources: Array<{ supplier_product_id: string; product_id: string; product_code: string; product_name: string; sku_id?: string | null; supplier_sku?: string | null; lead_time_days?: number | null; status: string; unit_price?: number | string | null; currency?: string | null; price_valid_to?: string | null; price_validity: string }>; recent_imports: Array<{ id: string; filename: string; status: string; products_count: number; warnings_count: number; created_at: string }> }
 
 function mapSupplier(row: ApiSupplierProfile): SupplierProfile {
   const numeric = (value: number | string | null | undefined) => value == null ? undefined : Number(value);
@@ -706,7 +992,7 @@ export async function createSupplierProfile(input: {
 
 export async function getSupplierProfile(supplierId: string): Promise<SupplierProfileDetail> {
   const row = await request<ApiSupplierDetail>(`/supplier-profiles/${encodeURIComponent(supplierId)}`);
-  return { ...mapSupplier(row), sources: row.sources.map((source) => ({ supplierProductId: source.supplier_product_id, productId: source.product_id, productCode: source.product_code, productName: source.product_name, skuId: defined(source.sku_id), supplierSku: defined(source.supplier_sku), moq: source.moq == null ? undefined : Number(source.moq), moqUnit: defined(source.moq_unit), leadTimeDays: defined(source.lead_time_days), status: source.status, unitPrice: source.unit_price == null ? undefined : Number(source.unit_price), currency: defined(source.currency), priceValidTo: defined(source.price_valid_to), priceValidity: source.price_validity })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, status: item.status, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })) };
+  return { ...mapSupplier(row), sources: row.sources.map((source) => ({ supplierProductId: source.supplier_product_id, productId: source.product_id, productCode: source.product_code, productName: source.product_name, skuId: defined(source.sku_id), supplierSku: defined(source.supplier_sku), leadTimeDays: defined(source.lead_time_days), status: source.status, unitPrice: source.unit_price == null ? undefined : Number(source.unit_price), currency: defined(source.currency), priceValidTo: defined(source.price_valid_to), priceValidity: source.price_validity })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, status: item.status, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })) };
 }
 
 export async function searchImage(file: File) {
@@ -784,7 +1070,7 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
   return rows.map((row) => ({ id: row.id, quotationNumber: row.quotation_number, customerName: row.customer_name, currency: row.currency, status: row.status, currentVersion: row.current_version, totalAmount: Number(row.total_amount), updatedAt: row.updated_at }));
 }
 
-interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; minimum_order_quantity: number | string; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
+interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
 interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; currency: string; total_amount: number | string; valid_until: string; created_at: string }
 
@@ -807,7 +1093,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     contentHash: row.content_hash,
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
-    items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, position: item.position, quantity: Number(item.quantity), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), minimumOrderQuantity: Number(item.minimum_order_quantity), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
+    items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, position: item.position, quantity: Number(item.quantity), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
   };
 }
 

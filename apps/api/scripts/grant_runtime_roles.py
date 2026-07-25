@@ -15,7 +15,7 @@ from .bootstrap_postgres_roles import _psycopg_url, validated_role_name
 AUTH_SECRET_TABLES = {"auth_refresh_tokens", "auth_sessions"}
 MIGRATION_METADATA_TABLES = {"alembic_version"}
 AUTH_TABLE_GRANTS: dict[str, tuple[str, ...]] = {
-    "users": ("SELECT", "UPDATE"),
+    "users": ("SELECT",),
     "tenants": ("SELECT",),
     "memberships": ("SELECT",),
     "auth_sessions": ("SELECT", "INSERT", "UPDATE", "DELETE"),
@@ -80,6 +80,7 @@ def grant_runtime_roles() -> dict[str, object]:
     app_role = _role("ATC_APP_DB_ROLE", "atc_app")
     auth_role = _role("ATC_AUTH_DB_ROLE", "atc_auth")
     worker_role = _role("ATC_WORKER_DB_ROLE", "atc_worker")
+    scheduler_role = _role("ATC_SCHEDULER_DB_ROLE", "atc_scheduler")
 
     with psycopg.connect(_psycopg_url(owner_url), autocommit=True) as connection:
         with connection.cursor() as cursor:
@@ -95,7 +96,7 @@ def grant_runtime_roles() -> dict[str, object]:
                     f"auth={sorted(missing_auth)}, worker={sorted(missing_worker)}"
                 )
 
-            for role_name in (app_role, auth_role, worker_role):
+            for role_name in (app_role, auth_role, worker_role, scheduler_role):
                 cursor.execute(
                     sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {}").format(
                         sql.Identifier(role_name)
@@ -103,6 +104,11 @@ def grant_runtime_roles() -> dict[str, object]:
                 )
                 cursor.execute(
                     sql.SQL("REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {}").format(
+                        sql.Identifier(role_name)
+                    )
+                )
+                cursor.execute(
+                    sql.SQL("REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM {}").format(
                         sql.Identifier(role_name)
                     )
                 )
@@ -129,7 +135,43 @@ def grant_runtime_roles() -> dict[str, object]:
                     tables=(table_name,),
                     privileges=privileges,
                 )
+            cursor.execute(
+                sql.SQL(
+                    "GRANT EXECUTE ON FUNCTION "
+                    "public.atc_lock_invitation_email(text) TO {}"
+                ).format(sql.Identifier(auth_role))
+            )
+            cursor.execute(
+                sql.SQL(
+                    "GRANT EXECUTE ON FUNCTION "
+                    "public.atc_bind_oidc_invitation("
+                    "uuid, text, text, text, text, uuid[]) TO {}"
+                ).format(sql.Identifier(auth_role))
+            )
+            cursor.execute(
+                sql.SQL(
+                    "GRANT EXECUTE ON FUNCTION "
+                    "public.atc_touch_user_login(uuid, text, text) TO {}"
+                ).format(sql.Identifier(auth_role))
+            )
+            cursor.execute(
+                sql.SQL(
+                    "GRANT EXECUTE ON FUNCTION "
+                    "public.atc_invite_tenant_member("
+                    "uuid, uuid, uuid, uuid, text, text, text, boolean) TO {}"
+                ).format(sql.Identifier(auth_role))
+            )
             _grant_tables(cursor, role_name=worker_role, tables=WORKER_TABLES)
+            # The BYPASSRLS scheduler can read only the three columns needed to
+            # discover active IDs; it cannot inspect tenant profile data.
+            # Business work still uses the NOBYPASSRLS worker connection after
+            # binding one explicit tenant context.
+            cursor.execute(
+                sql.SQL(
+                    "GRANT SELECT (id, status, deleted_at) "
+                    "ON TABLE public.tenants TO {}"
+                ).format(sql.Identifier(scheduler_role))
+            )
 
     return {
         "status": "completed",
@@ -140,6 +182,11 @@ def grant_runtime_roles() -> dict[str, object]:
             "business_table_access": "revoked",
         },
         "worker": {"role": worker_role, "table_count": len(WORKER_TABLES)},
+        "scheduler": {
+            "role": scheduler_role,
+            "table_count": 1,
+            "access": "tenants_id_status_deleted_at_select_only",
+        },
     }
 
 

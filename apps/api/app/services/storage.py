@@ -12,6 +12,9 @@ from ..ports.object_storage import ObjectStoragePort
 
 
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+COMPACT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
 class UploadTooLargeError(ValueError):
     pass
 
@@ -38,6 +41,11 @@ async def store_upload(
     storage: ObjectStoragePort | None = None,
 ) -> StoredUpload:
     storage = storage or get_object_storage()
+    max_upload_bytes = (
+        COMPACT_MAX_UPLOAD_BYTES
+        if os.getenv("ATC_RUNTIME_PROFILE", "standard").lower() == "compact"
+        else MAX_UPLOAD_BYTES
+    )
     stored_filename = f"{source_id}{safe_suffix(upload.filename or '')}"
     object_key = f"tenants/{tenant_id}/quarantine/{stored_filename}"
     staging_root = Path(os.getenv("OBJECT_STORAGE_STAGING_DIR", tempfile.gettempdir()))
@@ -52,8 +60,10 @@ async def store_upload(
         with target.open("wb") as output:
             while chunk := await upload.read(1024 * 1024):
                 size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise UploadTooLargeError(f"文件超过 {MAX_UPLOAD_BYTES // 1024 // 1024} MB 上限")
+                if size > max_upload_bytes:
+                    raise UploadTooLargeError(
+                        f"文件超过 {max_upload_bytes // 1024 // 1024} MB 上限"
+                    )
                 digest.update(chunk)
                 output.write(chunk)
         storage.put_file(

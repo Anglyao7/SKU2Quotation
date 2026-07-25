@@ -1,42 +1,187 @@
-import { Button, Callout, Card, Heading, Text } from "@radix-ui/themes";
-import { ArrowRight, Buildings, LockKey, ShieldCheck, WarningCircle } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { Button, Callout, Card, Heading, Text, TextField } from "@radix-ui/themes";
+import {
+  ArrowRight,
+  Buildings,
+  Eye,
+  EyeSlash,
+  LockKey,
+  WarningCircle,
+} from "@phosphor-icons/react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Brand } from "../components/Brand";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useCoreAuth } from "../core/AuthContext";
 
 export function LoginPage() {
-  const { status, loginDemo, memberships, switchTenant, error: authError } = useCoreAuth();
+  const {
+    status,
+    loginPassword,
+    memberships,
+    switchTenant,
+    error: authError,
+  } = useCoreAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const destination = (location.state as { from?: string } | null)?.from || "/console";
+  const visibleError = error || authError;
 
-  useEffect(() => { if (status === "authenticated") navigate(destination, { replace: true }); }, [destination, navigate, status]);
+  useEffect(() => {
+    if (status === "authenticated") {
+      navigate(destination, { replace: true });
+    }
+  }, [destination, navigate, status]);
 
-  const login = async () => {
-    setSubmitting(true); setError("");
-    try { await loginDemo(); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "演示身份登录失败"); }
-    finally { setSubmitting(false); }
+  const submitPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting || status === "restoring") return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await loginPassword(identifier, password);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "账号或密码错误");
+    } finally {
+      setSubmitting(false);
+    }
   };
+
   const chooseTenant = async (membershipId: string) => {
-    setSubmitting(true); setError("");
-    try { await switchTenant(membershipId); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "工作区切换失败"); }
-    finally { setSubmitting(false); }
+    setSubmitting(true);
+    setError("");
+    try {
+      await switchTenant(membershipId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "工作区切换失败");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  return <main className="login-page">
-    <div className="login-topbar"><Brand /><ThemeToggle /></div>
-    <div className="login-layout">
-      <section className="login-story"><Text size="2" color="gray">AI Trade Cloud · 商家运营控制台</Text><Heading size="9" as="h1">让产品、供应、询盘和报价成为一条可信链路。</Heading><Text size="4" color="gray">从供应商文件到正式报价，每一步都有租户边界、来源证据和人工确认。</Text><div className="login-feature-list"><div><strong>产品唯一事实来源</strong><span>SKU、价格和供应商证据统一关联</span></div><div><strong>租户权限隔离</strong><span>服务端会话决定成员与工作区</span></div><div><strong>报价人工门禁</strong><span>版本化规则计算，批准后才可对客</span></div></div></section>
-      <Card className="login-card" variant="surface"><div className="login-card-heading"><span className="login-lock"><LockKey size={24} weight="duotone" /></span><div><Heading size="6">{status === "selecting_tenant" ? "选择工作区" : "进入开发演示"}</Heading><Text size="2" color="gray">{status === "selecting_tenant" ? "此身份属于多个租户，请确认本次上下文" : "使用后端 local_fake 身份验证流程"}</Text></div></div>
-        {status === "selecting_tenant" ? <div className="login-form">{memberships.map((membership) => <Button key={membership.id} size="3" variant="soft" disabled={submitting || membership.status.toUpperCase() !== "ACTIVE"} onClick={() => void chooseTenant(membership.id)}><Buildings />{membership.tenantName}<ArrowRight /></Button>)}{!memberships.length ? <Text size="2" color="gray">当前身份没有可用成员关系。</Text> : null}</div> : <div className="login-form"><Callout.Root color="green"><Callout.Icon><ShieldCheck /></Callout.Icon><Callout.Text>Access Token 仅保存在内存；刷新依赖 HttpOnly Cookie 与 sessionStorage 中的 CSRF 信息。</Callout.Text></Callout.Root><Button size="3" loading={submitting || status === "restoring"} onClick={() => void login()}>使用开发演示身份进入<ArrowRight /></Button></div>}
-        {(error || authError) ? <Callout.Root color="red" mt="4"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error || authError}</Callout.Text></Callout.Root> : null}
-      </Card>
-    </div><Link to="/" className="login-back-link">返回官网</Link>
-  </main>;
+  return (
+    <main className="login-page">
+      <div className="login-topbar"><Brand /><ThemeToggle /></div>
+      <div className="login-layout">
+        <section className="login-story">
+          <Text size="2" color="gray">智贸云 · 商家运营控制台</Text>
+          <Heading size="9" as="h1">让商品、询盘和报价成为一条可信链路。</Heading>
+          <Text size="4" color="gray">从商品模版到正式报价，每一步都有租户边界、来源记录和人工确认。</Text>
+          <div className="login-feature-list">
+            <div><strong>商品唯一事实来源</strong><span>SKU、价格、规格与图片统一归档</span></div>
+            <div><strong>租户权限隔离</strong><span>服务端会话决定成员与工作区</span></div>
+            <div><strong>报价人工门禁</strong><span>版本化规则计算，批准后才可对客</span></div>
+          </div>
+        </section>
+
+        <Card className="login-card" variant="surface">
+          <div className="login-card-heading">
+            <span className="login-lock"><LockKey size={24} weight="duotone" /></span>
+            <div>
+              <Heading size="6">{status === "selecting_tenant" ? "选择工作区" : "登录商家工作台"}</Heading>
+              <Text size="2" color="gray">{status === "selecting_tenant" ? "确认本次使用的商家空间" : "使用账号、邮箱或手机号登录"}</Text>
+            </div>
+          </div>
+
+          {status === "selecting_tenant" ? (
+            <div className="login-form">
+              {memberships.map((membership) => (
+                <Button
+                  key={membership.id}
+                  size="3"
+                  variant="soft"
+                  disabled={submitting || membership.status.toUpperCase() !== "ACTIVE"}
+                  onClick={() => void chooseTenant(membership.id)}
+                >
+                  <Buildings />
+                  {membership.tenantName}
+                  <ArrowRight />
+                </Button>
+              ))}
+              {!memberships.length ? <Text size="2" color="gray">当前账号没有可用的商家空间。</Text> : null}
+            </div>
+          ) : (
+            <form className="login-form login-credentials-form" autoComplete="on" onSubmit={submitPassword}>
+              <label className="field-group" htmlFor="login-identifier">
+                <Text size="2" weight="medium">账号</Text>
+                <TextField.Root
+                  id="login-identifier"
+                  name="identifier"
+                  size="3"
+                  value={identifier}
+                  onChange={(event) => {
+                    setIdentifier(event.target.value);
+                    if (error) setError("");
+                  }}
+                  placeholder="账号、邮箱或手机号"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  maxLength={320}
+                  required
+                  aria-invalid={Boolean(visibleError)}
+                  aria-describedby={visibleError ? "login-error" : "login-identifier-help"}
+                />
+                <Text id="login-identifier-help" size="1" color="gray">可使用商家账号、登录邮箱或绑定手机号</Text>
+              </label>
+
+              <label className="field-group" htmlFor="login-password">
+                <Text size="2" weight="medium">密码</Text>
+                <TextField.Root
+                  id="login-password"
+                  name="password"
+                  size="3"
+                  type={passwordVisible ? "text" : "password"}
+                  value={password}
+                  onChange={(event) => {
+                    setPassword(event.target.value);
+                    if (error) setError("");
+                  }}
+                  placeholder="请输入密码"
+                  autoComplete="current-password"
+                  maxLength={256}
+                  required
+                  aria-invalid={Boolean(visibleError)}
+                  aria-describedby={visibleError ? "login-error" : undefined}
+                >
+                  <TextField.Slot side="right">
+                    <button
+                      type="button"
+                      className="login-password-toggle"
+                      aria-label={passwordVisible ? "隐藏密码" : "显示密码"}
+                      aria-pressed={passwordVisible}
+                      onClick={() => setPasswordVisible((current) => !current)}
+                    >
+                      {passwordVisible ? <EyeSlash size={18} /> : <Eye size={18} />}
+                    </button>
+                  </TextField.Slot>
+                </TextField.Root>
+              </label>
+
+              <Button
+                type="submit"
+                size="3"
+                loading={submitting || status === "restoring"}
+              >
+                登录工作台
+                <ArrowRight />
+              </Button>
+            </form>
+          )}
+
+          {visibleError ? (
+            <Callout.Root id="login-error" color="red" mt="4" role="alert">
+              <Callout.Icon><WarningCircle /></Callout.Icon>
+              <Callout.Text>{visibleError}</Callout.Text>
+            </Callout.Root>
+          ) : null}
+        </Card>
+      </div>
+      <Link to="/" className="login-back-link">返回官网</Link>
+    </main>
+  );
 }

@@ -1,0 +1,9 @@
+services:
+  caddy:
+    networks:
+      legacy-www:
+
+networks:
+  legacy-www:
+    external: true
+    name: ${ATC_LEGACY_WWW_NETWORK:?ATC_LEGACY_WWW_NETWORK is required when legacy www is enabled}

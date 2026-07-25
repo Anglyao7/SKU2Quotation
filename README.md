@@ -1,6 +1,7 @@
+
 # 智贸云 · AI Trade Cloud
 
-一个面向外贸团队的多租户产品、供应商、询盘与报价平台。公开端提供品牌首页和租户商品前台，企业工作台覆盖产品导入与人工复核、供应商资料、AI 搜索、询盘匹配以及经人工确认的版本化报价。
+一个面向外贸团队的多租户商品、询盘与报价平台。公开端提供品牌首页和租户商品前台，企业工作台以固定 Excel 商品模版维护 SKU 商品库，并覆盖 AI 搜索、询盘匹配以及经人工确认的版本化报价。供应商资料作为独立能力保留，不再是商品导入的前置条件。
 
 ## 项目结构
 
@@ -10,6 +11,7 @@ apps/
   web/    React、TypeScript、Vite 与 Nginx
 infra/
   images/minio/   固定版本的本地 MinIO 镜像
+  production/     公网 Compose、Caddy、部署/回滚与备份恢复
 docker-compose.yml
 ```
 
@@ -38,13 +40,13 @@ npm ci
 VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ```
 
-访问 <http://127.0.0.1:5173/>。本地登录页使用 `local_fake` 身份适配器，点击“使用开发演示身份进入”即可，无需密码：
+访问 <http://127.0.0.1:5173/>。本地与正式环境使用同一个账号密码登录界面，不再提供单独的开发演示入口。默认本地凭据为：
 
-| 本地角色 | 演示身份 | 租户 |
-|---|---|---|
-| Company Owner / Platform Admin | `owner@local.aitradecloud.invalid` | `Local Demo Company`（slug：`demo`） |
+| 本地角色 | 账号 / 邮箱 | 密码 | 租户 |
+|---|---|---|---|
+| Company Owner / Platform Admin | `owner` / `owner@local.aitradecloud.invalid` | `zhimaoyun123` | `Local Demo Company`（slug：`demo`） |
 
-该身份和本地密钥只用于开发，不能用于 Staging 或 Production。
+可以通过 `.env` 中的 `LOCAL_LOGIN_ACCOUNT`、`LOCAL_LOGIN_EMAIL`、`LOCAL_LOGIN_PHONE` 和 `LOCAL_LOGIN_PASSWORD` 调整本地凭据。该身份和本地密钥只用于开发，不能用于 Staging 或 Production。
 
 ## 完整 Docker Compose
 
@@ -70,6 +72,10 @@ docker compose ps
 
 所有宿主机端口只绑定 `127.0.0.1`。PostgreSQL、Redis、RabbitMQ、MinIO 与 ClamAV 位于内部数据网络；本配置仅用于 Local/CI，不是生产部署方案。
 
+公网正式环境不要直接修改本地 Compose。域名、HTTPS、自托管 OIDC、
+最小暴露面、不可变提交部署、回滚和灾备步骤见
+[DEPLOYMENT.md](./DEPLOYMENT.md)。
+
 停止并保留数据：
 
 ```bash
@@ -87,18 +93,18 @@ docker compose down --volumes
 主要 Web 路由：
 
 - `/`：品牌首页
-- `/login`：本地或企业登录入口
+- `/login`：统一账号密码登录入口
 - `/:tenantSlug`：租户商品前台，例如 `/demo`
 - `/console/tenants`：平台管理员的商家创建、查看与启停
 - `/console/dashboard`：企业仪表盘
-- `/console/products`、`/console/products/review`：产品中心与人工复核
-- `/console/suppliers`：供应商中心
+- `/console/products`：SKU 商品库与固定 Excel 模版导入
+- `/console/products/categories`：一级、二级商品分类管理
 - `/console/ai-search`：AI 产品搜索
 - `/console/inquiries`：询盘匹配工作台
 - `/console/quotes`：报价列表、详情、修订与审批
 - `/console/system/permissions`：权限查看
 
-当前 Demo 的商品闭环为：新增供应商 → 选择供应商并上传资料 → 人工审核并采用产品 → 创建或激活 SKU → 单独填写客户公开售价与标签 → 发布到商家前台。公开售价与供应商采购成本是两套独立数据，系统不会自动把采购成本暴露到客户目录。
+当前 Demo 的商品闭环为：下载固定商品模版 → 填写全部 SKU → 在商品库上传 XLSX → 系统按商品型号更新 SKU、公开价和图片 → 有价格的 SKU 发布到商家前台 → 选购后生成报价草稿。模版导入不需要选择供应商；缺少价格的 SKU 只进入后台商品库，不会出现在前台。供应商采购成本仍是独立数据，系统不会自动把采购成本暴露到客户目录。
 
 平台管理员创建的新商家会立即获得独立租户和空商品前台，但不会自动伪造商家成员。商家成员邀请与首次 Owner 分配属于后续账号开通流程；在完成该流程前，平台管理员仍可从 `/console/tenants` 管理商家状态。
 
@@ -107,8 +113,8 @@ docker compose down --volumes
 - `GET /api/store/{tenant_slug}`
 - `GET /api/store/{tenant_slug}/skus`
 - `POST /api/store/{tenant_slug}/quotes`
-- `GET /api/quotes/{quote_id}/pdf?token=...`
-- `GET /api/quotes/{quote_id}/xlsx?token=...`
+- `GET /api/quotes/{quote_id}/pdf`（下载凭证放在 `X-Quote-Download-Token` 请求头）
+- `GET /api/quotes/{quote_id}/xlsx`（下载凭证放在 `X-Quote-Download-Token` 请求头）
 
 报价、价格、产品发布和对客图片均保留人工确认点；兼容商品前台创建的是待确认报价草稿，不会绕过审批。
 

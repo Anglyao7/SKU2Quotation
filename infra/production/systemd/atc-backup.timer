@@ -1,0 +1,11 @@
+[Unit]
+Description=Run 智贸云 backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=atc-backup.service
+
+[Install]
+WantedBy=timers.target

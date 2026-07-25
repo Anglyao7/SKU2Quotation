@@ -12,6 +12,7 @@ HTTP_STATUS_BY_ERROR_KIND = {
     "expired": 410,
     "internal": 500,
     "unauthorized": 401,
+    "unavailable": 503,
 }
 
 

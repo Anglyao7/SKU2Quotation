@@ -5,9 +5,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from ..database import get_session
+from ..database import get_auth_session, get_session
 from ..domain.errors import ApplicationError
 from ..platform_admin_schemas import (
+    PlatformMemberInvitation,
+    PlatformMemberInvitationCreate,
     PlatformTenantCreate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
@@ -57,6 +59,30 @@ def update_tenant_endpoint(
     try:
         return use_cases.update_tenant(
             session,
+            context=context,
+            tenant_id=tenant_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/tenants/{tenant_id}/member-invitations",
+    response_model=PlatformMemberInvitation,
+    status_code=status.HTTP_201_CREATED,
+)
+def invite_tenant_member_endpoint(
+    tenant_id: UUID,
+    request: PlatformMemberInvitationCreate,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+    identity_session: Session = Depends(get_auth_session),
+) -> PlatformMemberInvitation:
+    try:
+        return use_cases.invite_tenant_member(
+            session,
+            identity_session,
             context=context,
             tenant_id=tenant_id,
             request=request,
