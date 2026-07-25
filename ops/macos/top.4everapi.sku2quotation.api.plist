@@ -11,6 +11,8 @@
         <string>-m</string>
         <string>uvicorn</string>
         <string>app.main:app</string>
+        <string>--env-file</string>
+        <string>/Users/ricardo/SKU2Quotation/.env</string>
         <string>--host</string>
         <string>127.0.0.1</string>
         <string>--port</string>

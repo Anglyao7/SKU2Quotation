@@ -16,11 +16,13 @@ import {
   type PointerEvent,
 } from "react";
 import { createCategory, reorderCategories, updateCategory } from "../api";
+import { useLocale } from "../LocaleContext";
+import { automaticTagColor, TAG_COLOR_PALETTE, tagGlassStyle } from "../../lib/tagColors";
 import type { ProductCategory } from "../types";
 
 type Draft =
-  | { mode: "create"; parentId?: string; name: string; sortOrder: number; status: "ACTIVE" }
-  | { mode: "edit"; id: string; parentId?: string; name: string; sortOrder: number; status: "ACTIVE" | "INACTIVE"; version: number };
+  | { mode: "create"; parentId?: string; name: string; sortOrder: number; displayColor?: string; status: "ACTIVE" }
+  | { mode: "edit"; id: string; parentId?: string; name: string; sortOrder: number; displayColor?: string; status: "ACTIVE" | "INACTIVE"; version: number };
 
 type DropPlacement = "before" | "after";
 
@@ -51,6 +53,7 @@ export function CategoryManager({
   categories,
   onChanged,
 }: CategoryManagerProps) {
+  const { locale, t } = useLocale();
   const [displayCategories, setDisplayCategories] = useState(categories);
   const [draft, setDraft] = useState<Draft>({ mode: "create", name: "", sortOrder: 0, status: "ACTIVE" });
   const [saving, setSaving] = useState(false);
@@ -67,7 +70,7 @@ export function CategoryManager({
       if (current.mode !== "edit") return current;
       const latest = categories.find((category) => category.id === current.id);
       return latest
-        ? { ...current, version: latest.version, sortOrder: latest.sortOrder }
+        ? { ...current, version: latest.version, sortOrder: latest.sortOrder, displayColor: latest.displayColor }
         : current;
     });
   }, [categories]);
@@ -75,8 +78,8 @@ export function CategoryManager({
   const roots = useMemo(
     () => displayCategories
       .filter((item) => !item.parentId)
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh-CN")),
-    [displayCategories],
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale)),
+    [displayCategories, locale],
   );
   const childrenByParent = useMemo(() => {
     const result = new Map<string, ProductCategory[]>();
@@ -85,9 +88,9 @@ export function CategoryManager({
       rows.push(item);
       result.set(item.parentId!, rows);
     });
-    result.forEach((rows) => rows.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh-CN")));
+    result.forEach((rows) => rows.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale)));
     return result;
-  }, [displayCategories]);
+  }, [displayCategories, locale]);
 
   const updateDragState = (next: DragState | null) => {
     dragStateRef.current = next;
@@ -96,7 +99,7 @@ export function CategoryManager({
 
   const beginRoot = () => {
     setError("");
-    setDraft({ mode: "create", name: "", sortOrder: roots.length, status: "ACTIVE" });
+    setDraft({ mode: "create", name: "", sortOrder: roots.length, displayColor: undefined, status: "ACTIVE" });
   };
 
   const beginChild = (parentId: string) => {
@@ -106,6 +109,7 @@ export function CategoryManager({
       parentId,
       name: "",
       sortOrder: childrenByParent.get(parentId)?.length ?? 0,
+      displayColor: undefined,
       status: "ACTIVE",
     });
   };
@@ -118,6 +122,7 @@ export function CategoryManager({
       parentId: category.parentId,
       name: category.name,
       sortOrder: category.sortOrder,
+      displayColor: category.displayColor,
       status: category.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
       version: category.version,
     });
@@ -125,18 +130,26 @@ export function CategoryManager({
 
   const selectedChildren = draft.mode === "edit" ? childrenByParent.get(draft.id) ?? [] : [];
   const parentLocked = selectedChildren.length > 0;
+  const selectedParent = draft.parentId ? roots.find((root) => root.id === draft.parentId) : undefined;
+  const colorPreviewName = draft.name.trim() || t("一级分类");
+  const activeCategoryColor = draft.displayColor || automaticTagColor(colorPreviewName);
 
   const save = async () => {
     const name = draft.name.trim();
     if (!name) {
-      setError("请填写分类名称。");
+      setError(t("请填写分类名称。"));
       return;
     }
     setSaving(true);
     setError("");
     try {
       if (draft.mode === "create") {
-        const created = await createCategory({ name, parentId: draft.parentId, sortOrder: draft.sortOrder });
+        const created = await createCategory({
+          name,
+          parentId: draft.parentId,
+          sortOrder: draft.sortOrder,
+          displayColor: draft.parentId ? undefined : draft.displayColor,
+        });
         await onChanged();
         beginEdit(created);
       } else {
@@ -147,12 +160,13 @@ export function CategoryManager({
           parentId: draft.parentId,
           sortOrder: draft.sortOrder,
           status: draft.status,
+          displayColor: draft.parentId ? null : draft.displayColor ?? null,
         });
         await onChanged();
         beginEdit(updated);
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "分类保存失败。");
+      setError(reason instanceof Error ? reason.message : t("分类保存失败。"));
     } finally {
       setSaving(false);
     }
@@ -192,7 +206,7 @@ export function CategoryManager({
       await onChanged();
     } catch (reason) {
       setDisplayCategories(categories);
-      setReorderError(reason instanceof Error ? reason.message : "分类顺序保存失败，请刷新后重试。");
+      setReorderError(reason instanceof Error ? reason.message : t("分类顺序保存失败，请刷新后重试。"));
       await onChanged().catch(() => undefined);
     } finally {
       reorderingRef.current = false;
@@ -282,7 +296,7 @@ export function CategoryManager({
     <button
       type="button"
       className="core-category-drag-handle"
-      aria-label={`拖动调整${category.name}顺序`}
+      aria-label={t("拖动调整 {name} 顺序", { name: category.name })}
       aria-describedby="category-reorder-help"
       disabled={reordering}
       onPointerDown={(event) => startDragging(event, category)}
@@ -304,19 +318,22 @@ export function CategoryManager({
 
   return (
     <div className="core-category-manager-layout">
-      <section className="core-category-tree-panel" aria-label="分类树">
+      <section className="core-category-tree-panel" aria-label={t("分类树")}>
         <div className="core-category-panel-heading">
           <span>
             <TreeStructure />
-            <strong>分类结构</strong>
+            <strong>{t("分类结构")}</strong>
             <small id="category-reorder-help">
-              {roots.length} 个一级 · {displayCategories.length - roots.length} 个二级 · 拖动手柄调整同级顺序
+              {t("{primary} 个一级 · {secondary} 个二级 · 拖动手柄调整同级顺序", {
+                primary: roots.length,
+                secondary: displayCategories.length - roots.length,
+              })}
             </small>
           </span>
-          <Button size="1" variant="soft" disabled={reordering} onClick={beginRoot}><Plus />一级分类</Button>
+          <Button size="1" variant="soft" disabled={reordering} onClick={beginRoot}><Plus />{t("一级分类")}</Button>
         </div>
         <div className="core-category-reorder-status" aria-live="polite">
-          {reordering ? "正在保存分类顺序…" : reorderError}
+          {reordering ? t("正在保存分类顺序…") : reorderError}
         </div>
         <div className="core-category-tree">
           {roots.length ? roots.map((root) => {
@@ -330,12 +347,14 @@ export function CategoryManager({
                 >
                   {dragHandle(root, roots)}
                   <button className="core-category-node-main" type="button" onClick={() => beginEdit(root)}>
-                    <FolderOpen weight="duotone" />
-                    <span><strong>{root.name}</strong><small>{children.length ? `${children.length} 个二级分类` : "暂无二级分类"}</small></span>
+                    <span className="core-category-color-mark" style={tagGlassStyle(root.name, root.displayColor)}>
+                      <FolderOpen weight="duotone" />
+                    </span>
+                    <span><strong>{root.name}</strong><small>{children.length ? t("{count} 个二级分类", { count: children.length }) : t("暂无二级分类")}</small></span>
                   </button>
-                  {root.status !== "ACTIVE" ? <Badge color="gray">停用</Badge> : null}
-                  <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(root)} aria-label={`编辑${root.name}`}><PencilSimple /></Button>
-                  <Button size="1" variant="ghost" disabled={reordering} onClick={() => beginChild(root.id)} aria-label={`在${root.name}下新增二级分类`}><Plus /></Button>
+                  {root.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
+                  <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(root)} aria-label={t("编辑 {name}", { name: root.name })}><PencilSimple /></Button>
+                  <Button size="1" variant="ghost" disabled={reordering} onClick={() => beginChild(root.id)} aria-label={t("在 {name} 下新增二级分类", { name: root.name })}><Plus /></Button>
                 </div>
                 {children.map((child) => (
                   <div
@@ -349,8 +368,8 @@ export function CategoryManager({
                       <Folder weight="duotone" />
                       <span><strong>{child.name}</strong><small>{root.name} / {child.name}</small></span>
                     </button>
-                    {child.status !== "ACTIVE" ? <Badge color="gray">停用</Badge> : null}
-                    <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(child)} aria-label={`编辑${child.name}`}><PencilSimple /></Button>
+                    {child.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
+                    <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(child)} aria-label={t("编辑 {name}", { name: child.name })}><PencilSimple /></Button>
                   </div>
                 ))}
               </div>
@@ -358,58 +377,115 @@ export function CategoryManager({
           }) : (
             <div className="core-category-tree-empty">
               <TreeStructure size={28} />
-              <strong>还没有分类</strong>
-              <Text size="2" color="gray">新建一级分类，或导入带有分类的商品模版。</Text>
+              <strong>{t("还没有分类")}</strong>
+              <Text size="2" color="gray">{t("新建一级分类，或导入带有分类的商品模版。")}</Text>
             </div>
           )}
         </div>
       </section>
 
-      <section className="core-category-editor" aria-label="分类编辑器">
+      <section className="core-category-editor" aria-label={t("分类编辑器")}>
         <div>
-          <Text size="1" color="gray">{draft.mode === "create" ? "创建分类" : "编辑分类"}</Text>
-          <h3>{draft.mode === "create" ? (draft.parentId ? "新增二级分类" : "新增一级分类") : draft.name}</h3>
+          <Text size="1" color="gray">{t(draft.mode === "create" ? "创建分类" : "编辑分类")}</Text>
+          <h3>{draft.mode === "create" ? t(draft.parentId ? "新增二级分类" : "新增一级分类") : draft.name}</h3>
         </div>
         <label>
-          <Text size="2" weight="medium">分类名称</Text>
-          <TextField.Root value={draft.name} maxLength={200} placeholder="例如：办公用品" onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+          <Text size="2" weight="medium">{t("分类名称")}</Text>
+          <TextField.Root value={draft.name} maxLength={200} placeholder={t("例如：办公用品")} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
         </label>
         <label>
-          <Text size="2" weight="medium">上级分类</Text>
+          <Text size="2" weight="medium">{t("上级分类")}</Text>
           <Select.Root
             value={draft.parentId ?? "root"}
             disabled={parentLocked || reordering}
             onValueChange={(value) => setDraft({ ...draft, parentId: value === "root" ? undefined : value })}
           >
-            <Select.Trigger aria-label="选择上级分类" />
+            <Select.Trigger aria-label={t("选择上级分类")} />
             <Select.Content>
-              <Select.Item value="root">无（一级分类）</Select.Item>
+              <Select.Item value="root">{t("无（一级分类）")}</Select.Item>
               {roots.filter((root) => draft.mode !== "edit" || root.id !== draft.id).map((root) => (
                 <Select.Item value={root.id} key={root.id}>{root.name}</Select.Item>
               ))}
             </Select.Content>
           </Select.Root>
-          <Text size="1" color="gray">{parentLocked ? "该分类包含二级分类，需先移走子分类才能改变层级。" : "选择一级分类后，本分类会成为二级分类。"}</Text>
+          <Text size="1" color="gray">{t(parentLocked ? "该分类包含二级分类，需先移走子分类才能改变层级。" : "选择一级分类后，本分类会成为二级分类。")}</Text>
         </label>
+        {draft.parentId ? (
+          <div className="core-category-color-inheritance">
+            <span
+              className="core-category-color-mark"
+              style={tagGlassStyle(selectedParent?.name ?? colorPreviewName, selectedParent?.displayColor)}
+            >
+              <FolderOpen weight="duotone" />
+            </span>
+            <span>
+              <Text size="2" weight="medium">{t("继承一级分类颜色")}</Text>
+              <Text size="1" color="gray">{t("二级分类沿用“{name}”的颜色。", { name: selectedParent?.name ?? t("所属一级分类") })}</Text>
+            </span>
+          </div>
+        ) : (
+          <div className="core-category-color-field">
+            <Text size="2" weight="medium">{t("一级分类颜色")}</Text>
+            <div className="core-tag-color-control">
+              <span className="core-tag-glass-preview" style={tagGlassStyle(colorPreviewName, draft.displayColor)}>
+                <FolderOpen weight="fill" />{colorPreviewName}
+              </span>
+              <div className="core-tag-color-presets" role="group" aria-label={t("一级分类颜色")}>
+                {TAG_COLOR_PALETTE.map((color) => (
+                  <button
+                    type="button"
+                    className={draft.displayColor === color ? "is-active" : ""}
+                    style={{ background: color }}
+                    aria-label={`${t("一级分类颜色")} ${color}`}
+                    aria-pressed={draft.displayColor === color}
+                    disabled={saving || reordering}
+                    onClick={() => setDraft({ ...draft, displayColor: color })}
+                    key={color}
+                  />
+                ))}
+                <label className="core-tag-custom-color" title={t("自定义颜色")}>
+                  <input
+                    type="color"
+                    value={activeCategoryColor}
+                    aria-label={t("自定义颜色")}
+                    disabled={saving || reordering}
+                    onChange={(event) => setDraft({ ...draft, displayColor: event.target.value.toUpperCase() })}
+                  />
+                  <span>{t("自定义")}</span>
+                </label>
+              </div>
+              <Button
+                size="1"
+                variant="ghost"
+                color="gray"
+                disabled={!draft.displayColor || saving || reordering}
+                onClick={() => setDraft({ ...draft, displayColor: undefined })}
+              >
+                {t("自动配色")}
+              </Button>
+            </div>
+            <Text size="1" color="gray">{t("前台商品角标会沿用这个颜色；自动配色会根据分类名称保持稳定。")}</Text>
+          </div>
+        )}
         <div className="core-category-editor-row">
           <label>
-            <Text size="2" weight="medium">排序</Text>
+            <Text size="2" weight="medium">{t("排序")}</Text>
             <TextField.Root type="number" min="0" value={String(draft.sortOrder)} onChange={(event) => setDraft({ ...draft, sortOrder: Math.max(0, Number(event.target.value) || 0) })} />
           </label>
           {draft.mode === "edit" ? (
             <label>
-              <Text size="2" weight="medium">状态</Text>
+              <Text size="2" weight="medium">{t("状态")}</Text>
               <Select.Root value={draft.status} disabled={reordering} onValueChange={(value) => setDraft({ ...draft, status: value as "ACTIVE" | "INACTIVE" })}>
-                <Select.Trigger aria-label="分类状态" />
-                <Select.Content><Select.Item value="ACTIVE">启用</Select.Item><Select.Item value="INACTIVE">停用</Select.Item></Select.Content>
+                <Select.Trigger aria-label={t("分类状态")} />
+                <Select.Content><Select.Item value="ACTIVE">{t("启用")}</Select.Item><Select.Item value="INACTIVE">{t("停用")}</Select.Item></Select.Content>
               </Select.Root>
             </label>
           ) : null}
         </div>
         {error ? <Text size="2" color="red">{error}</Text> : null}
         <div className="core-category-editor-actions">
-          <Button variant="soft" color="gray" disabled={reordering} onClick={draft.parentId ? () => beginChild(draft.parentId!) : beginRoot}>重置</Button>
-          <Button loading={saving} disabled={reordering} onClick={() => void save()}>{draft.mode === "create" ? "创建分类" : "保存修改"}</Button>
+          <Button variant="soft" color="gray" disabled={reordering} onClick={draft.parentId ? () => beginChild(draft.parentId!) : beginRoot}>{t("重置")}</Button>
+          <Button loading={saving} disabled={reordering} onClick={() => void save()}>{t(draft.mode === "create" ? "创建分类" : "保存修改")}</Button>
         </div>
       </section>
     </div>

@@ -4,7 +4,6 @@ import hashlib
 import json
 import math
 import os
-import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import quote
@@ -36,6 +35,8 @@ from ..public_catalog_schemas import (
 )
 from ..repositories import public_catalog_repository as repository
 from ..services.auth.tokens import hash_secret, new_secret
+from ..services.embedding import EmbeddingProviderError
+from ..services.hybrid_search import _retrieval_tokens, hybrid_product_search
 
 
 MONEY = Decimal("0.01")
@@ -183,7 +184,13 @@ def get_store(session: Session, *, slug: str) -> PublicStoreResponse:
     )
 
 
-def _sku_response(row: object, *, image: object | None, slug: str) -> PublicSkuResponse:
+def _sku_response(
+    row: object,
+    *,
+    image: object | None,
+    slug: str,
+    category_color: str | None,
+) -> PublicSkuResponse:
     offer, sku, product, category = row
     tags = [str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()]
     return PublicSkuResponse(
@@ -193,13 +200,103 @@ def _sku_response(row: object, *, image: object | None, slug: str) -> PublicSkuR
         name=sku.name or product.name,
         description=product.description,
         category=_category_path(category) or None,
+        category_color=category_color,
         tags=list(dict.fromkeys(tags)),
+        tag_color=offer.tag_color,
         price=_money(Decimal(offer.unit_price)),
         currency=offer.currency,
         unit_code=product.default_unit or "piece",
         image_url=_public_image_url(image, slug=slug),
         product_version=product.current_version,
         sku_version=sku.version,
+    )
+
+
+def _lexical_semantic_rows(rows: list[object], *, query: str) -> list[object]:
+    normalized_query = query.casefold().strip()
+    query_tokens = _retrieval_tokens(query, query=True)
+
+    def relevance(row: object) -> float:
+        offer, sku, product, row_category = row
+        sku_code = str(sku.sku_code).casefold()
+        sku_name = str(sku.name or "").casefold()
+        product_name = str(product.name).casefold()
+        description = str(product.description or "").casefold()
+        category_name = _category_path(row_category).casefold()
+        tag_values = [str(tag).casefold() for tag in (offer.tags or [])]
+        fields = [
+            sku_code,
+            sku_name,
+            product_name,
+            description,
+            category_name,
+            *tag_values,
+        ]
+        searchable_tokens = _retrieval_tokens(" ".join(fields))
+        coverage = (
+            len(query_tokens & searchable_tokens) / len(query_tokens)
+            if query_tokens
+            else 0.0
+        )
+        score = coverage
+        if sku_code == normalized_query:
+            score += 2.0
+        elif normalized_query in sku_code:
+            score += 0.8
+        if normalized_query in sku_name or normalized_query in product_name:
+            score += 0.6
+        if any(normalized_query in tag for tag in tag_values):
+            score += 0.5
+        return score
+
+    scored = [(relevance(row), row) for row in rows]
+    best_score = max((score for score, _row in scored), default=0.0)
+    score_floor = max(0.12, best_score * 0.50)
+    return [
+        row
+        for score, row in sorted(
+            scored,
+            key=lambda item: (
+                -item[0],
+                str(item[1][2].name).casefold(),
+                str(item[1][1].sku_code).casefold(),
+            ),
+        )
+        if score >= score_floor
+    ]
+
+
+def _vector_semantic_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    rows: list[object],
+    query: str,
+) -> list[object]:
+    product_ids = list(dict.fromkeys(row[2].id for row in rows))
+    result = hybrid_product_search(
+        session,
+        tenant_id=tenant_id,
+        query=query,
+        limit=min(len(product_ids), 200),
+        product_ids=product_ids,
+    )
+    if not result["results"] or "semantic" in result["degraded_channels"]:
+        return _lexical_semantic_rows(rows, query=query)
+    rank_by_product_id = {
+        item["product_id"]: index
+        for index, item in enumerate(result["results"])
+    }
+    return sorted(
+        (
+            row
+            for row in rows
+            if row[2].id in rank_by_product_id
+        ),
+        key=lambda row: (
+            rank_by_product_id[row[2].id],
+            str(row[1].sku_code).casefold(),
+        ),
     )
 
 
@@ -223,52 +320,33 @@ def list_public_skus(
         category=category,
     )
     if semantic and query.strip():
-        normalized_query = query.casefold().strip()
-        tokens = [
-            token
-            for token in re.split(r"[\s,，/|]+", normalized_query)
-            if token
-        ]
-
-        def relevance(row: object) -> int:
-            offer, sku, product, row_category = row
-            sku_code = str(sku.sku_code).casefold()
-            sku_name = str(sku.name or "").casefold()
-            product_name = str(product.name).casefold()
-            description = str(product.description or "").casefold()
-            category_name = _category_path(row_category).casefold()
-            tag_values = [str(tag).casefold() for tag in (offer.tags or [])]
-            fields = [sku_code, sku_name, product_name, description, category_name, *tag_values]
-            score = 100 if sku_code == normalized_query else 0
-            score += 50 if normalized_query in sku_code else 0
-            score += 40 if normalized_query in sku_name or normalized_query in product_name else 0
-            score += 35 if any(normalized_query in tag for tag in tag_values) else 0
-            for token in tokens:
-                score += 12 if token in sku_code else 0
-                score += 8 if token in sku_name or token in product_name else 0
-                score += 7 if any(token in tag for tag in tag_values) else 0
-                score += 3 if token in description or token in category_name else 0
-            return score if all(any(token in field for field in fields) for token in tokens) else 0
-
-        scored = [(relevance(row), row) for row in rows]
-        rows = [
-            row
-            for score, row in sorted(
-                scored,
-                key=lambda item: (
-                    -item[0],
-                    str(item[1][2].name).casefold(),
-                    str(item[1][1].sku_code).casefold(),
-                ),
+        try:
+            rows = _vector_semantic_rows(
+                session,
+                tenant_id=tenant.id,
+                rows=rows,
+                query=query,
             )
-            if score > 0
-        ]
+        except EmbeddingProviderError:
+            rows = _lexical_semantic_rows(rows, query=query)
+    all_categories = repository.list_catalog_categories(
+        session, tenant_id=tenant.id
+    )
     categories = _ordered_category_paths(
         rows,
-        all_categories=repository.list_catalog_categories(
-            session, tenant_id=tenant.id
-        ),
+        all_categories=all_categories,
     )
+    category_rows_by_id = {row.id: row for row in all_categories}
+    category_colors_by_id = {
+        row.id: (
+            row.display_color
+            if row.parent_id is None
+            else category_rows_by_id.get(row.parent_id).display_color
+            if category_rows_by_id.get(row.parent_id) is not None
+            else None
+        )
+        for row in all_categories
+    }
     facet_tags = sorted(
         {
             str(tag).strip()
@@ -297,7 +375,16 @@ def list_public_skus(
     )
     return PublicSkuPage(
         items=[
-            _sku_response(row, image=images.get(row[2].id), slug=tenant.slug)
+            _sku_response(
+                row,
+                image=images.get(row[2].id),
+                slug=tenant.slug,
+                category_color=(
+                    category_colors_by_id.get(row[3].id)
+                    if row[3] is not None
+                    else None
+                ),
+            )
             for row in selected
         ],
         total=total,

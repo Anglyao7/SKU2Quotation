@@ -53,6 +53,7 @@ class ProductCategoryRow(AuditTimestampMixin, Base):
     code: Mapped[str] = mapped_column(String(80), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    display_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)

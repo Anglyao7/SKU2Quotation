@@ -19,6 +19,7 @@ RESERVED_TENANT_SLUGS: Final[frozenset[str]] = frozenset(
         "console",
         "dashboard",
         "inquiries",
+        "inventory",
         "login",
         "privacy",
         "products",

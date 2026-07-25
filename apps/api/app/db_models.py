@@ -250,3 +250,15 @@ from .public_catalog_models import (  # noqa: E402,F401
     PublicQuoteDraftRow,
     TenantPublicProfileRow,
 )
+
+from .inventory_models import (  # noqa: E402,F401
+    InventoryBalanceRow,
+    InventoryDocumentItemRow,
+    InventoryDocumentRow,
+    InventoryMovementRow,
+    PurchaseOrderItemRow,
+    PurchaseOrderRow,
+    SalesOrderItemRow,
+    SalesOrderRow,
+    WarehouseRow,
+)

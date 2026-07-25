@@ -9,8 +9,8 @@ import {
 } from "react";
 import {
   clearCoreAuthSession,
+  getAuthBootstrap,
   getCurrentUser,
-  getPermissions,
   listMemberships,
   loginPassword as loginPasswordRequest,
   logoutSession,
@@ -61,7 +61,8 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
       setState({ status: "selecting_tenant", session, memberships, permissions: new Set() });
       return;
     }
-    const [profile, permissionSet] = await Promise.all([getCurrentUser(), getPermissions()]);
+    const bootstrap = await getAuthBootstrap();
+    const { profile, permissions: permissionSet } = bootstrap;
     setState({
       status: "authenticated",
       session,
@@ -142,10 +143,13 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
       session: current.session
         ? {
             ...current.session,
+            user: profile.user,
             context: {
               ...current.session.context,
               tenantName: profile.context.tenantName,
               tenantSlug: profile.context.tenantSlug,
+              businessMode: profile.context.businessMode,
+              defaultCurrency: profile.context.defaultCurrency,
             },
           }
         : current.session,

@@ -719,6 +719,7 @@ def process_product_template_import(
         created = 0
         updated = 0
         unchanged = 0
+        dirty_product_ids: set[UUID] = set()
         runtime_warnings = list(parsed.warnings)
         for template_row in parsed.rows:
             changed = False
@@ -952,6 +953,9 @@ def process_product_template_import(
                 updated += 1
             else:
                 unchanged += 1
+            if changed and product.status == "ACTIVE":
+                product.search_document_version = 0
+                dirty_product_ids.add(product.id)
 
         # PRODUCT_TEMPLATE is a full snapshot, but only records explicitly
         # adopted by this importer are managed. Manual/non-template SKUs remain
@@ -1000,9 +1004,15 @@ def process_product_template_import(
 
         imported = created + updated + unchanged
         warning_summary = "；".join(runtime_warnings[:3])
+        index_summary = (
+            f"，待更新智能索引 {len(dirty_product_ids)}"
+            if dirty_product_ids
+            else ""
+        )
         result_summary = (
             f"商品模版导入完成：新建 {created}，更新 {updated}，"
-            f"未变化 {unchanged}，归档 {archived}，跳过 {parsed.skipped_rows}。"
+            f"未变化 {unchanged}，归档 {archived}，跳过 {parsed.skipped_rows}"
+            f"{index_summary}。"
         )
         job.products_count = imported
         job.warnings_count = len(runtime_warnings)

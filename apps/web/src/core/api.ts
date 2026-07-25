@@ -9,6 +9,13 @@ import type {
   ImportJob,
   InquiryMatch,
   InquiryRecord,
+  InventoryDocument,
+  InventoryMovement,
+  InventoryMovementPage,
+  InventoryOverview,
+  InventoryStockItem,
+  InventoryStockPage,
+  KnowledgeIndexStatus,
   MembershipSummary,
   MerchantSettings,
   PermissionSet,
@@ -18,12 +25,16 @@ import type {
   ProductDetail,
   ProductOffer,
   ProductSku,
+  PurchaseOrder,
+  PurchaseOrderSummary,
   PublicCatalogOffer,
   PublicQuoteDraft,
   PublicQuoteDraftSummary,
   QuotationRecord,
   QuotationSummary,
   ReviewItem,
+  SalesOrder,
+  SalesOrderSummary,
   SkuListItem,
   SkuListPage,
   SupplierPrice,
@@ -32,6 +43,8 @@ import type {
   TenantMember,
   TenantPermission,
   TenantRole,
+  UiLocale,
+  Warehouse,
 } from "./types";
 import { buildPasswordChangePayload } from "./accountPassword";
 import { buildPasswordLoginPayload } from "./authCredentials";
@@ -39,6 +52,8 @@ import { buildPasswordLoginPayload } from "./authCredentials";
 const CSRF_STORAGE_KEY = "atc.csrfToken";
 let accessToken: string | undefined;
 let refreshInFlight: Promise<AuthTokenData | undefined> | undefined;
+let authGeneration = 0;
+const getRequestsInFlight = new Map<string, Promise<unknown>>();
 
 function resolveApiBase() {
   const configured = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
@@ -90,12 +105,14 @@ interface ApiAuthTokenData {
   csrf_token: string;
   session_id: string;
   requires_tenant_selection: boolean;
-  user: { id: string; display_name: string; email?: string | null; is_platform_admin: boolean };
+  user: { id: string; display_name: string; email?: string | null; is_platform_admin: boolean; locale: UiLocale };
   context: {
     tenant_id?: string | null;
     membership_id?: string | null;
     tenant_name?: string | null;
     tenant_slug?: string | null;
+    business_mode?: "DOMESTIC" | "EXPORT" | null;
+    default_currency?: string | null;
     default_workspace?: string | null;
   };
 }
@@ -121,12 +138,14 @@ function mapAuthData(row: ApiAuthTokenData): AuthTokenData {
     csrfToken: row.csrf_token,
     sessionId: row.session_id,
     requiresTenantSelection: row.requires_tenant_selection,
-    user: { id: row.user.id, displayName: row.user.display_name, email: defined(row.user.email), isPlatformAdmin: row.user.is_platform_admin },
+    user: { id: row.user.id, displayName: row.user.display_name, email: defined(row.user.email), isPlatformAdmin: row.user.is_platform_admin, locale: row.user.locale },
     context: {
       tenantId: defined(row.context.tenant_id),
       membershipId: defined(row.context.membership_id),
       tenantName: defined(row.context.tenant_name),
       tenantSlug: defined(row.context.tenant_slug),
+      businessMode: defined(row.context.business_mode),
+      defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
     },
   };
@@ -135,6 +154,8 @@ function mapAuthData(row: ApiAuthTokenData): AuthTokenData {
 function acceptAuthData(row: ApiAuthTokenData) {
   const mapped = mapAuthData(row);
   accessToken = mapped.accessToken;
+  authGeneration += 1;
+  getRequestsInFlight.clear();
   window.sessionStorage.setItem(CSRF_STORAGE_KEY, mapped.csrfToken);
   window.localStorage.removeItem("qingwan.accessToken");
   window.localStorage.removeItem("atc_access_token");
@@ -147,6 +168,8 @@ export function getCoreAccessToken() {
 
 export function clearCoreAuthSession() {
   accessToken = undefined;
+  authGeneration += 1;
+  getRequestsInFlight.clear();
   window.sessionStorage.removeItem(CSRF_STORAGE_KEY);
   window.localStorage.removeItem("qingwan.accessToken");
   window.localStorage.removeItem("atc_access_token");
@@ -177,7 +200,7 @@ export async function refreshAuthSession(): Promise<AuthTokenData | undefined> {
   return refreshInFlight;
 }
 
-async function request<T>(path: string, init: RequestInit = {}, retrySession = true): Promise<T> {
+async function performRequest<T>(path: string, init: RequestInit, retrySession: boolean): Promise<T> {
   const headers = new Headers(init.headers);
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
@@ -198,6 +221,23 @@ async function request<T>(path: string, init: RequestInit = {}, retrySession = t
     throw new CoreApiError(messageFromPayload(payload, `请求失败（${response.status}）`), response.status, payload);
   }
   return payload as T;
+}
+
+async function request<T>(path: string, init: RequestInit = {}, retrySession = true): Promise<T> {
+  const method = (init.method || "GET").toUpperCase();
+  if (method !== "GET" || init.signal) {
+    return performRequest<T>(path, init, retrySession);
+  }
+  const key = `${authGeneration}:${path}`;
+  const existing = getRequestsInFlight.get(key);
+  if (existing) return existing as Promise<T>;
+  const pending = performRequest<T>(path, init, retrySession);
+  getRequestsInFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (getRequestsInFlight.get(key) === pending) getRequestsInFlight.delete(key);
+  }
 }
 
 export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
@@ -252,23 +292,30 @@ export async function switchTenant(membershipId: string) {
   return acceptAuthData(payload.data);
 }
 
-export async function getCurrentUser(): Promise<CurrentUser> {
-  const row = await request<{
-    user: ApiAuthTokenData["user"];
-    context: ApiAuthTokenData["context"];
-    memberships: ApiMembershipSummary[];
-  }>("/me");
+interface ApiCurrentUserResponse {
+  user: ApiAuthTokenData["user"];
+  context: ApiAuthTokenData["context"];
+  memberships: ApiMembershipSummary[];
+}
+
+function mapCurrentUser(row: ApiCurrentUserResponse): CurrentUser {
   return {
-    user: { id: row.user.id, displayName: row.user.display_name, email: defined(row.user.email), isPlatformAdmin: row.user.is_platform_admin },
+    user: { id: row.user.id, displayName: row.user.display_name, email: defined(row.user.email), isPlatformAdmin: row.user.is_platform_admin, locale: row.user.locale },
     context: {
       tenantId: defined(row.context.tenant_id),
       membershipId: defined(row.context.membership_id),
       tenantName: defined(row.context.tenant_name),
       tenantSlug: defined(row.context.tenant_slug),
+      businessMode: defined(row.context.business_mode),
+      defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
     },
     memberships: row.memberships.map(mapMembership),
   };
+}
+
+export async function getCurrentUser(): Promise<CurrentUser> {
+  return mapCurrentUser(await request<ApiCurrentUserResponse>("/me"));
 }
 
 export async function getPermissions(): Promise<PermissionSet> {
@@ -276,19 +323,56 @@ export async function getPermissions(): Promise<PermissionSet> {
   return { membershipId: row.membership_id, permissionVersion: row.permission_version, permissions: row.permissions };
 }
 
-export async function updateMerchantSettings(name: string): Promise<MerchantSettings> {
-  const row = await request<{ name: string; slug: string; storefront_path: string }>(
+export async function getAuthBootstrap(): Promise<{ profile: CurrentUser; permissions: PermissionSet }> {
+  const row = await request<{
+    profile: ApiCurrentUserResponse;
+    permissions: { membership_id: string; permission_version: number; permissions: string[] };
+  }>("/auth/bootstrap");
+  return {
+    profile: mapCurrentUser(row.profile),
+    permissions: {
+      membershipId: row.permissions.membership_id,
+      permissionVersion: row.permissions.permission_version,
+      permissions: row.permissions.permissions,
+    },
+  };
+}
+
+export async function updateMerchantSettings(input: {
+  name?: string;
+  businessMode?: "DOMESTIC" | "EXPORT";
+}): Promise<MerchantSettings> {
+  const row = await request<{
+    name: string;
+    slug: string;
+    storefront_path: string;
+    business_mode: "DOMESTIC" | "EXPORT";
+    default_currency: string;
+  }>(
     "/me/merchant",
     {
       method: "PATCH",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({
+        name: input.name,
+        business_mode: input.businessMode,
+      }),
     },
   );
   return {
     name: row.name,
     slug: row.slug,
     storefrontPath: row.storefront_path,
+    businessMode: row.business_mode,
+    defaultCurrency: row.default_currency,
   };
+}
+
+export async function updateUserPreferences(locale: UiLocale): Promise<UiLocale> {
+  const row = await request<{ locale: UiLocale }>("/me/preferences", {
+    method: "PATCH",
+    body: JSON.stringify({ locale }),
+  });
+  return row.locale;
 }
 
 interface ApiTenantRole {
@@ -784,6 +868,7 @@ export async function listSkus(params: {
   for (const status of params.statuses ?? []) query.append("status", status);
   query.set("page", String(params.page ?? 1));
   query.set("page_size", String(params.pageSize ?? 50));
+  query.set("include_supplier_summary", "false");
   const row = await request<ApiSkuListPage>(`/product-center/skus?${query}`);
   return {
     items: row.items.map(mapSkuListItem),
@@ -792,6 +877,57 @@ export async function listSkus(params: {
     total: row.total,
     pages: row.pages,
   };
+}
+
+interface ApiKnowledgeIndexStatus {
+  total_products: number;
+  indexed_products: number;
+  pending_products: number;
+  model_provider: string;
+  model_name: string;
+  model_version: string;
+  dimensions: number;
+  mode?: "INCREMENTAL" | "FULL_REBUILD";
+  processed_products?: number;
+  embeddings?: number;
+}
+
+function mapKnowledgeIndexStatus(row: ApiKnowledgeIndexStatus): KnowledgeIndexStatus {
+  return {
+    totalProducts: row.total_products,
+    indexedProducts: row.indexed_products,
+    pendingProducts: row.pending_products,
+    modelProvider: row.model_provider,
+    modelName: row.model_name,
+    modelVersion: row.model_version,
+    dimensions: row.dimensions,
+    mode: row.mode,
+    processedProducts: row.processed_products,
+    embeddings: row.embeddings,
+  };
+}
+
+export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
+  return mapKnowledgeIndexStatus(
+    await request<ApiKnowledgeIndexStatus>("/ai/knowledge/index"),
+  );
+}
+
+export async function updateKnowledgeIndex(): Promise<KnowledgeIndexStatus> {
+  return mapKnowledgeIndexStatus(
+    await request<ApiKnowledgeIndexStatus>("/ai/knowledge/index/update", {
+      method: "POST",
+    }),
+  );
+}
+
+export async function rebuildKnowledgeIndex(): Promise<KnowledgeIndexStatus> {
+  return mapKnowledgeIndexStatus(
+    await request<ApiKnowledgeIndexStatus>("/ai/knowledge/index/rebuild", {
+      method: "POST",
+      body: JSON.stringify({ confirm_full_rebuild: true }),
+    }),
+  );
 }
 
 export async function getProduct(productId: string): Promise<ProductDetail> {
@@ -820,6 +956,7 @@ interface ApiPublicCatalogOffer {
   unit_price: number | string;
   currency: string;
   tags: string[];
+  tag_color?: string | null;
   publication_status: PublicCatalogOffer["publicationStatus"];
   published_at?: string | null;
   valid_from?: string | null;
@@ -835,6 +972,7 @@ function mapPublicCatalogOffer(row: ApiPublicCatalogOffer): PublicCatalogOffer {
     unitPrice: Number(row.unit_price),
     currency: row.currency,
     tags: row.tags ?? [],
+    tagColor: defined(row.tag_color),
     publicationStatus: row.publication_status,
     publishedAt: defined(row.published_at),
     validFrom: defined(row.valid_from),
@@ -854,6 +992,7 @@ export async function upsertPublicCatalogOffer(
     unitPrice: number;
     currency: string;
     tags: string[];
+    tagColor?: string;
     publicationStatus: PublicCatalogOffer["publicationStatus"];
     validFrom?: string;
     validTo?: string;
@@ -865,6 +1004,7 @@ export async function upsertPublicCatalogOffer(
       unit_price: input.unitPrice,
       currency: input.currency,
       tags: input.tags,
+      tag_color: input.tagColor ?? null,
       publication_status: input.publicationStatus,
       valid_from: input.validFrom,
       valid_to: input.validTo,
@@ -872,7 +1012,7 @@ export async function upsertPublicCatalogOffer(
   }));
 }
 
-interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; status: string; sort_order: number; version: number }
+interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; display_color?: string | null; status: string; sort_order: number; version: number }
 interface ApiAttributeDefinition { id: string; category_id?: string | null; attribute_key: string; display_name: string; data_type: AttributeDefinition["dataType"]; unit_code?: string | null; enum_values?: string[] | null; is_required: boolean; is_variant: boolean; is_filterable: boolean; is_matchable: boolean; status: string; version: number }
 
 export async function listCategories(): Promise<ProductCategory[]> {
@@ -880,10 +1020,10 @@ export async function listCategories(): Promise<ProductCategory[]> {
 }
 
 function mapCategory(row: ApiCategory): ProductCategory {
-  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), status: row.status, sortOrder: row.sort_order, version: row.version };
+  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), displayColor: defined(row.display_color), status: row.status, sortOrder: row.sort_order, version: row.version };
 }
 
-export async function createCategory(input: { name: string; parentId?: string; sortOrder?: number }): Promise<ProductCategory> {
+export async function createCategory(input: { name: string; parentId?: string; sortOrder?: number; displayColor?: string }): Promise<ProductCategory> {
   const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 24).toUpperCase();
   return mapCategory(await request<ApiCategory>("/categories", {
     method: "POST",
@@ -892,11 +1032,12 @@ export async function createCategory(input: { name: string; parentId?: string; s
       code: `MAN-${suffix}`,
       name: input.name,
       sort_order: input.sortOrder ?? 0,
+      display_color: input.displayColor,
     }),
   }));
 }
 
-export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE" }): Promise<ProductCategory> {
+export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE"; displayColor?: string | null }): Promise<ProductCategory> {
   return mapCategory(await request<ApiCategory>(`/categories/${encodeURIComponent(input.id)}`, {
     method: "PATCH",
     body: JSON.stringify({
@@ -905,6 +1046,7 @@ export async function updateCategory(input: { id: string; expectedVersion: numbe
       name: input.name,
       sort_order: input.sortOrder,
       status: input.status,
+      display_color: input.displayColor,
     }),
   }));
 }
@@ -1104,4 +1246,682 @@ export async function listPublicQuoteDrafts(): Promise<PublicQuoteDraftSummary[]
 
 export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(`/public-quote-drafts/${encodeURIComponent(draftId)}`));
+}
+
+interface ApiWarehouse {
+  id: string;
+  code: string;
+  name: string;
+  address?: string | null;
+  currency: string;
+  status: "ACTIVE" | "INACTIVE";
+  is_default: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ApiInventoryStockItem {
+  balance_id?: string | null;
+  warehouse_id: string;
+  warehouse_name: string;
+  currency: string;
+  sku_id: string;
+  sku_code: string;
+  sku_name: string;
+  product_id: string;
+  product_name: string;
+  on_hand_quantity: number | string;
+  reserved_quantity: number | string;
+  available_quantity: number | string;
+  average_cost: number | string;
+  inventory_value: number | string;
+  reorder_point: number | string;
+  low_stock: boolean;
+  version: number;
+  updated_at?: string | null;
+}
+
+interface ApiInventoryOverview {
+  warehouse_id: string;
+  warehouse_name: string;
+  currency: string;
+  total_skus: number;
+  stocked_skus: number;
+  on_hand_quantity: number | string;
+  reserved_quantity: number | string;
+  available_quantity: number | string;
+  inventory_value: number | string;
+  low_stock_count: number;
+  open_purchase_orders: number;
+  open_sales_orders: number;
+  low_stock_items: ApiInventoryStockItem[];
+}
+
+interface ApiInventoryMovement {
+  id: string;
+  document_id: string;
+  document_number: string;
+  document_type: string;
+  source_number?: string | null;
+  warehouse_id: string;
+  warehouse_name: string;
+  currency: string;
+  sku_id: string;
+  sku_code: string;
+  sku_name: string;
+  movement_type: string;
+  on_hand_delta: number | string;
+  reserved_delta: number | string;
+  on_hand_after: number | string;
+  reserved_after: number | string;
+  unit_cost: number | string;
+  total_cost: number | string;
+  average_cost_after: number | string;
+  notes?: string | null;
+  occurred_at: string;
+}
+
+interface ApiInventoryDocument {
+  id: string;
+  document_number: string;
+  document_type: string;
+  warehouse_id: string;
+  counterparty_warehouse_id?: string | null;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_number?: string | null;
+  notes?: string | null;
+  occurred_at: string;
+  items: Array<{
+    id: string;
+    sku_id: string;
+    sku_code: string;
+    sku_name: string;
+    quantity: number | string;
+    unit_cost?: number | string | null;
+  }>;
+}
+
+interface ApiPurchaseOrderSummary {
+  id: string;
+  order_number: string;
+  supplier_name: string;
+  warehouse_id: string;
+  warehouse_name: string;
+  currency: string;
+  status: string;
+  total_amount: number | string;
+  expected_at?: string | null;
+  version: number;
+  updated_at: string;
+}
+
+interface ApiPurchaseOrder extends ApiPurchaseOrderSummary {
+  notes?: string | null;
+  confirmed_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  items: Array<{
+    id: string;
+    sku_id: string;
+    sku_code: string;
+    sku_name: string;
+    quantity: number | string;
+    received_quantity: number | string;
+    remaining_quantity: number | string;
+    unit_cost: number | string;
+    line_total: number | string;
+    notes?: string | null;
+  }>;
+}
+
+interface ApiSalesOrderSummary {
+  id: string;
+  order_number: string;
+  customer_name: string;
+  warehouse_id: string;
+  warehouse_name: string;
+  currency: string;
+  status: string;
+  total_amount: number | string;
+  version: number;
+  updated_at: string;
+}
+
+interface ApiSalesOrder extends ApiSalesOrderSummary {
+  customer_id?: string | null;
+  source_quotation_id?: string | null;
+  notes?: string | null;
+  confirmed_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  items: Array<{
+    id: string;
+    sku_id: string;
+    sku_code: string;
+    sku_name: string;
+    quantity: number | string;
+    reserved_quantity: number | string;
+    shipped_quantity: number | string;
+    remaining_quantity: number | string;
+    unit_price: number | string;
+    line_total: number | string;
+    cost_amount: number | string;
+    notes?: string | null;
+  }>;
+}
+
+const inventoryNumber = (value: number | string) => Number(value);
+
+function mapWarehouse(row: ApiWarehouse): Warehouse {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    address: defined(row.address),
+    currency: row.currency,
+    status: row.status,
+    isDefault: row.is_default,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapInventoryStock(row: ApiInventoryStockItem): InventoryStockItem {
+  return {
+    balanceId: defined(row.balance_id),
+    warehouseId: row.warehouse_id,
+    warehouseName: row.warehouse_name,
+    currency: row.currency,
+    skuId: row.sku_id,
+    skuCode: row.sku_code,
+    skuName: row.sku_name,
+    productId: row.product_id,
+    productName: row.product_name,
+    onHandQuantity: inventoryNumber(row.on_hand_quantity),
+    reservedQuantity: inventoryNumber(row.reserved_quantity),
+    availableQuantity: inventoryNumber(row.available_quantity),
+    averageCost: inventoryNumber(row.average_cost),
+    inventoryValue: inventoryNumber(row.inventory_value),
+    reorderPoint: inventoryNumber(row.reorder_point),
+    lowStock: row.low_stock,
+    version: row.version,
+    updatedAt: defined(row.updated_at),
+  };
+}
+
+function mapInventoryDocument(row: ApiInventoryDocument): InventoryDocument {
+  return {
+    id: row.id,
+    documentNumber: row.document_number,
+    documentType: row.document_type,
+    warehouseId: row.warehouse_id,
+    counterpartyWarehouseId: defined(row.counterparty_warehouse_id),
+    sourceType: defined(row.source_type),
+    sourceId: defined(row.source_id),
+    sourceNumber: defined(row.source_number),
+    notes: defined(row.notes),
+    occurredAt: row.occurred_at,
+    items: row.items.map((item) => ({
+      id: item.id,
+      skuId: item.sku_id,
+      skuCode: item.sku_code,
+      skuName: item.sku_name,
+      quantity: inventoryNumber(item.quantity),
+      unitCost: item.unit_cost == null ? undefined : inventoryNumber(item.unit_cost),
+    })),
+  };
+}
+
+function mapPurchaseSummary(row: ApiPurchaseOrderSummary): PurchaseOrderSummary {
+  return {
+    id: row.id,
+    orderNumber: row.order_number,
+    supplierName: row.supplier_name,
+    warehouseId: row.warehouse_id,
+    warehouseName: row.warehouse_name,
+    currency: row.currency,
+    status: row.status,
+    totalAmount: inventoryNumber(row.total_amount),
+    expectedAt: defined(row.expected_at),
+    version: row.version,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapPurchaseOrder(row: ApiPurchaseOrder): PurchaseOrder {
+  return {
+    ...mapPurchaseSummary(row),
+    notes: defined(row.notes),
+    confirmedAt: defined(row.confirmed_at),
+    completedAt: defined(row.completed_at),
+    createdAt: row.created_at,
+    items: row.items.map((item) => ({
+      id: item.id,
+      skuId: item.sku_id,
+      skuCode: item.sku_code,
+      skuName: item.sku_name,
+      quantity: inventoryNumber(item.quantity),
+      receivedQuantity: inventoryNumber(item.received_quantity),
+      remainingQuantity: inventoryNumber(item.remaining_quantity),
+      unitCost: inventoryNumber(item.unit_cost),
+      lineTotal: inventoryNumber(item.line_total),
+      notes: defined(item.notes),
+    })),
+  };
+}
+
+function mapSalesSummary(row: ApiSalesOrderSummary): SalesOrderSummary {
+  return {
+    id: row.id,
+    orderNumber: row.order_number,
+    customerName: row.customer_name,
+    warehouseId: row.warehouse_id,
+    warehouseName: row.warehouse_name,
+    currency: row.currency,
+    status: row.status,
+    totalAmount: inventoryNumber(row.total_amount),
+    version: row.version,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapSalesOrder(row: ApiSalesOrder): SalesOrder {
+  return {
+    ...mapSalesSummary(row),
+    customerId: defined(row.customer_id),
+    sourceQuotationId: defined(row.source_quotation_id),
+    notes: defined(row.notes),
+    confirmedAt: defined(row.confirmed_at),
+    completedAt: defined(row.completed_at),
+    createdAt: row.created_at,
+    items: row.items.map((item) => ({
+      id: item.id,
+      skuId: item.sku_id,
+      skuCode: item.sku_code,
+      skuName: item.sku_name,
+      quantity: inventoryNumber(item.quantity),
+      reservedQuantity: inventoryNumber(item.reserved_quantity),
+      shippedQuantity: inventoryNumber(item.shipped_quantity),
+      remainingQuantity: inventoryNumber(item.remaining_quantity),
+      unitPrice: inventoryNumber(item.unit_price),
+      lineTotal: inventoryNumber(item.line_total),
+      costAmount: inventoryNumber(item.cost_amount),
+      notes: defined(item.notes),
+    })),
+  };
+}
+
+export async function listWarehouses(): Promise<Warehouse[]> {
+  return (await request<ApiWarehouse[]>("/inventory/warehouses")).map(mapWarehouse);
+}
+
+export async function createWarehouse(input: {
+  code: string;
+  name: string;
+  address?: string;
+  currency: string;
+  isDefault?: boolean;
+}): Promise<Warehouse> {
+  return mapWarehouse(await request<ApiWarehouse>("/inventory/warehouses", {
+    method: "POST",
+    body: JSON.stringify({
+      code: input.code,
+      name: input.name,
+      address: input.address || null,
+      currency: input.currency,
+      is_default: input.isDefault ?? false,
+    }),
+  }));
+}
+
+export async function updateWarehouse(
+  warehouseId: string,
+  input: {
+    expectedVersion: number;
+    name?: string;
+    address?: string;
+    status?: "ACTIVE" | "INACTIVE";
+    isDefault?: boolean;
+  },
+): Promise<Warehouse> {
+  return mapWarehouse(await request<ApiWarehouse>(
+    `/inventory/warehouses/${encodeURIComponent(warehouseId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        expected_version: input.expectedVersion,
+        name: input.name,
+        address: input.address,
+        status: input.status,
+        is_default: input.isDefault,
+      }),
+    },
+  ));
+}
+
+export async function getInventoryOverview(warehouseId?: string): Promise<InventoryOverview> {
+  const query = warehouseId ? `?warehouse_id=${encodeURIComponent(warehouseId)}` : "";
+  const row = await request<ApiInventoryOverview>(`/inventory/overview${query}`);
+  return {
+    warehouseId: row.warehouse_id,
+    warehouseName: row.warehouse_name,
+    currency: row.currency,
+    totalSkus: row.total_skus,
+    stockedSkus: row.stocked_skus,
+    onHandQuantity: inventoryNumber(row.on_hand_quantity),
+    reservedQuantity: inventoryNumber(row.reserved_quantity),
+    availableQuantity: inventoryNumber(row.available_quantity),
+    inventoryValue: inventoryNumber(row.inventory_value),
+    lowStockCount: row.low_stock_count,
+    openPurchaseOrders: row.open_purchase_orders,
+    openSalesOrders: row.open_sales_orders,
+    lowStockItems: row.low_stock_items.map(mapInventoryStock),
+  };
+}
+
+export async function listInventoryStocks(input: {
+  warehouseId?: string;
+  q?: string;
+  lowStockOnly?: boolean;
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<InventoryStockPage> {
+  const query = new URLSearchParams();
+  if (input.warehouseId) query.set("warehouse_id", input.warehouseId);
+  if (input.q) query.set("q", input.q);
+  if (input.lowStockOnly) query.set("low_stock_only", "true");
+  query.set("page", String(input.page ?? 1));
+  query.set("page_size", String(input.pageSize ?? 50));
+  const row = await request<{
+    items: ApiInventoryStockItem[];
+    page: number;
+    page_size: number;
+    total: number;
+    pages: number;
+  }>(`/inventory/stocks?${query}`);
+  return {
+    items: row.items.map(mapInventoryStock),
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    pages: row.pages,
+  };
+}
+
+export async function updateStockPolicy(
+  warehouseId: string,
+  skuId: string,
+  expectedVersion: number,
+  reorderPoint: number,
+): Promise<InventoryStockItem> {
+  return mapInventoryStock(await request<ApiInventoryStockItem>(
+    `/inventory/stocks/${encodeURIComponent(warehouseId)}/${encodeURIComponent(skuId)}/policy`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        expected_version: expectedVersion,
+        reorder_point: reorderPoint,
+      }),
+    },
+  ));
+}
+
+export async function listInventoryMovements(input: {
+  warehouseId?: string;
+  q?: string;
+  movementType?: string;
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<InventoryMovementPage> {
+  const query = new URLSearchParams();
+  if (input.warehouseId) query.set("warehouse_id", input.warehouseId);
+  if (input.q) query.set("q", input.q);
+  if (input.movementType) query.set("movement_type", input.movementType);
+  query.set("page", String(input.page ?? 1));
+  query.set("page_size", String(input.pageSize ?? 50));
+  const row = await request<{
+    items: ApiInventoryMovement[];
+    page: number;
+    page_size: number;
+    total: number;
+    pages: number;
+  }>(`/inventory/movements?${query}`);
+  const mapMovement = (item: ApiInventoryMovement): InventoryMovement => ({
+    id: item.id,
+    documentId: item.document_id,
+    documentNumber: item.document_number,
+    documentType: item.document_type,
+    sourceNumber: defined(item.source_number),
+    warehouseId: item.warehouse_id,
+    warehouseName: item.warehouse_name,
+    currency: item.currency,
+    skuId: item.sku_id,
+    skuCode: item.sku_code,
+    skuName: item.sku_name,
+    movementType: item.movement_type,
+    onHandDelta: inventoryNumber(item.on_hand_delta),
+    reservedDelta: inventoryNumber(item.reserved_delta),
+    onHandAfter: inventoryNumber(item.on_hand_after),
+    reservedAfter: inventoryNumber(item.reserved_after),
+    unitCost: inventoryNumber(item.unit_cost),
+    totalCost: inventoryNumber(item.total_cost),
+    averageCostAfter: inventoryNumber(item.average_cost_after),
+    notes: defined(item.notes),
+    occurredAt: item.occurred_at,
+  });
+  return {
+    items: row.items.map(mapMovement),
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    pages: row.pages,
+  };
+}
+
+export async function adjustInventory(input: {
+  warehouseId?: string;
+  reason: string;
+  items: Array<{ skuId: string; quantityDelta: number; unitCost?: number }>;
+}): Promise<InventoryDocument> {
+  return mapInventoryDocument(await request<ApiInventoryDocument>("/inventory/adjustments", {
+    method: "POST",
+    body: JSON.stringify({
+      warehouse_id: input.warehouseId,
+      reason: input.reason,
+      idempotency_key: `web-adjust-${crypto.randomUUID()}`,
+      items: input.items.map((item) => ({
+        sku_id: item.skuId,
+        quantity_delta: item.quantityDelta,
+        unit_cost: item.unitCost,
+      })),
+    }),
+  }));
+}
+
+export async function transferInventory(input: {
+  fromWarehouseId: string;
+  toWarehouseId: string;
+  reason: string;
+  items: Array<{ skuId: string; quantity: number }>;
+}): Promise<InventoryDocument> {
+  return mapInventoryDocument(await request<ApiInventoryDocument>("/inventory/transfers", {
+    method: "POST",
+    body: JSON.stringify({
+      from_warehouse_id: input.fromWarehouseId,
+      to_warehouse_id: input.toWarehouseId,
+      reason: input.reason,
+      idempotency_key: `web-transfer-${crypto.randomUUID()}`,
+      items: input.items.map((item) => ({
+        sku_id: item.skuId,
+        quantity: item.quantity,
+      })),
+    }),
+  }));
+}
+
+export async function listPurchaseOrders(status?: string): Promise<PurchaseOrderSummary[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return (await request<ApiPurchaseOrderSummary[]>(`/purchases${query}`)).map(mapPurchaseSummary);
+}
+
+export async function getPurchaseOrder(orderId: string): Promise<PurchaseOrder> {
+  return mapPurchaseOrder(await request<ApiPurchaseOrder>(`/purchases/${encodeURIComponent(orderId)}`));
+}
+
+export async function createPurchaseOrder(input: {
+  supplierName: string;
+  warehouseId?: string;
+  currency?: string;
+  expectedAt?: string;
+  notes?: string;
+  items: Array<{ skuId: string; quantity: number; unitCost: number }>;
+}): Promise<PurchaseOrder> {
+  return mapPurchaseOrder(await request<ApiPurchaseOrder>("/purchases", {
+    method: "POST",
+    body: JSON.stringify({
+      supplier_name: input.supplierName,
+      warehouse_id: input.warehouseId,
+      currency: input.currency,
+      expected_at: input.expectedAt || null,
+      notes: input.notes || null,
+      items: input.items.map((item) => ({
+        sku_id: item.skuId,
+        quantity: item.quantity,
+        unit_cost: item.unitCost,
+      })),
+    }),
+  }));
+}
+
+export async function confirmPurchaseOrder(order: Pick<PurchaseOrder, "id" | "version">): Promise<PurchaseOrder> {
+  return mapPurchaseOrder(await request<ApiPurchaseOrder>(
+    `/purchases/${encodeURIComponent(order.id)}/confirm`,
+    {
+      method: "POST",
+      body: JSON.stringify({ expected_version: order.version }),
+    },
+  ));
+}
+
+export async function receivePurchaseOrder(
+  order: Pick<PurchaseOrder, "id" | "version">,
+  items: Array<{ orderItemId: string; quantity: number }>,
+  notes?: string,
+): Promise<PurchaseOrder> {
+  return mapPurchaseOrder(await request<ApiPurchaseOrder>(
+    `/purchases/${encodeURIComponent(order.id)}/receive`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        expected_version: order.version,
+        idempotency_key: `web-receipt-${crypto.randomUUID()}`,
+        notes: notes || null,
+        items: items.map((item) => ({
+          order_item_id: item.orderItemId,
+          quantity: item.quantity,
+        })),
+      }),
+    },
+  ));
+}
+
+export async function cancelPurchaseOrder(
+  order: Pick<PurchaseOrder, "id" | "version">,
+  reason?: string,
+): Promise<PurchaseOrder> {
+  return mapPurchaseOrder(await request<ApiPurchaseOrder>(
+    `/purchases/${encodeURIComponent(order.id)}/cancel`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        expected_version: order.version,
+        reason: reason || null,
+      }),
+    },
+  ));
+}
+
+export async function listSalesOrders(status?: string): Promise<SalesOrderSummary[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return (await request<ApiSalesOrderSummary[]>(`/sales-orders${query}`)).map(mapSalesSummary);
+}
+
+export async function getSalesOrder(orderId: string): Promise<SalesOrder> {
+  return mapSalesOrder(await request<ApiSalesOrder>(`/sales-orders/${encodeURIComponent(orderId)}`));
+}
+
+export async function createSalesOrder(input: {
+  customerName: string;
+  warehouseId?: string;
+  currency: string;
+  sourceQuotationId?: string;
+  notes?: string;
+  items: Array<{ skuId: string; quantity: number; unitPrice: number }>;
+}): Promise<SalesOrder> {
+  return mapSalesOrder(await request<ApiSalesOrder>("/sales-orders", {
+    method: "POST",
+    body: JSON.stringify({
+      customer_name: input.customerName,
+      warehouse_id: input.warehouseId,
+      currency: input.currency,
+      source_quotation_id: input.sourceQuotationId || null,
+      notes: input.notes || null,
+      items: input.items.map((item) => ({
+        sku_id: item.skuId,
+        quantity: item.quantity,
+        unit_price: item.unitPrice,
+      })),
+    }),
+  }));
+}
+
+export async function confirmSalesOrder(order: Pick<SalesOrder, "id" | "version">): Promise<SalesOrder> {
+  return mapSalesOrder(await request<ApiSalesOrder>(
+    `/sales-orders/${encodeURIComponent(order.id)}/confirm`,
+    {
+      method: "POST",
+      body: JSON.stringify({ expected_version: order.version }),
+    },
+  ));
+}
+
+export async function shipSalesOrder(
+  order: Pick<SalesOrder, "id" | "version">,
+  items: Array<{ orderItemId: string; quantity: number }>,
+  notes?: string,
+): Promise<SalesOrder> {
+  return mapSalesOrder(await request<ApiSalesOrder>(
+    `/sales-orders/${encodeURIComponent(order.id)}/ship`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        expected_version: order.version,
+        idempotency_key: `web-shipment-${crypto.randomUUID()}`,
+        notes: notes || null,
+        items: items.map((item) => ({
+          order_item_id: item.orderItemId,
+          quantity: item.quantity,
+        })),
+      }),
+    },
+  ));
+}
+
+export async function cancelSalesOrder(
+  order: Pick<SalesOrder, "id" | "version">,
+  reason?: string,
+): Promise<SalesOrder> {
+  return mapSalesOrder(await request<ApiSalesOrder>(
+    `/sales-orders/${encodeURIComponent(order.id)}/cancel`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        expected_version: order.version,
+        reason: reason || null,
+      }),
+    },
+  ));
 }

@@ -44,6 +44,7 @@ from app.identity_models import (
     TenantRow,
     UserRow,
 )
+from app.inventory_models import WarehouseRow
 from app.ai_data_models import AIProviderRouteRow, AISourceEvidenceRow, AITaskRow
 from app.knowledge_embedding_models import EmbeddingRow, KnowledgeChunkRow, KnowledgeDocumentRow
 from app.image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
@@ -83,8 +84,12 @@ from app.saas_seed import (
 )
 from app.services.file_detection import OLE_SIGNATURE, detect_file_path, detect_file_type
 from app.services.embedding import validate_vectors
-from app.services.hybrid_search import hybrid_product_search
-from app.services.knowledge import project_product_knowledge
+from app.services.hybrid_search import (
+    _retrieval_tokens,
+    _score_tag_relevance,
+    hybrid_product_search,
+)
+from app.services.knowledge import build_product_chunks, project_product_knowledge
 from app.services.parsers import parse_document
 from app.services.pricing import calculate_price
 from app.services.product_intelligence.fake_parser import FakeProductParserAdapter
@@ -467,6 +472,104 @@ def test_merchant_name_updates_storefront_path_and_preserves_old_link() -> None:
             session.commit()
 
 
+def test_merchant_business_mode_switches_default_currency_safely() -> None:
+    with SessionLocal() as session:
+        tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+        assert tenant is not None
+        original_currency = tenant.default_currency
+        original_warehouses = {
+            row.id: (row.is_default, row.version)
+            for row in session.scalars(
+                select(WarehouseRow).where(
+                    WarehouseRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            ).all()
+        }
+
+    try:
+        export_response = client.patch(
+            "/api/v1/me/merchant",
+            json={"business_mode": "EXPORT"},
+        )
+        assert export_response.status_code == 200, export_response.text
+        assert export_response.json()["business_mode"] == "EXPORT"
+        assert export_response.json()["default_currency"] == "USD"
+
+        with SessionLocal() as session:
+            tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+            assert tenant is not None and tenant.default_currency == "USD"
+            defaults = session.scalars(
+                select(WarehouseRow).where(
+                    WarehouseRow.tenant_id == DEFAULT_TENANT_ID,
+                    WarehouseRow.is_default.is_(True),
+                )
+            ).all()
+            assert len(defaults) == 1
+            assert defaults[0].currency == "USD"
+
+        me_response = client.get("/api/v1/me")
+        assert me_response.status_code == 200
+        assert me_response.json()["context"]["business_mode"] == "EXPORT"
+        assert me_response.json()["context"]["default_currency"] == "USD"
+
+        domestic_response = client.patch(
+            "/api/v1/me/merchant",
+            json={"business_mode": "DOMESTIC"},
+        )
+        assert domestic_response.status_code == 200, domestic_response.text
+        assert domestic_response.json()["business_mode"] == "DOMESTIC"
+        assert domestic_response.json()["default_currency"] == "CNY"
+    finally:
+        with SessionLocal() as session:
+            tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+            assert tenant is not None
+            tenant.default_currency = original_currency
+            current = session.scalars(
+                select(WarehouseRow).where(
+                    WarehouseRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            ).all()
+            for warehouse in current:
+                warehouse.is_default = False
+            session.flush()
+            for warehouse in current:
+                if warehouse.id in original_warehouses:
+                    is_default, version = original_warehouses[warehouse.id]
+                    warehouse.is_default = is_default
+                    warehouse.version = version
+                else:
+                    session.delete(warehouse)
+            session.commit()
+
+
+def test_user_can_persist_console_locale_preference() -> None:
+    with SessionLocal() as session:
+        user = session.get(UserRow, DEFAULT_OWNER_USER_ID)
+        assert user is not None
+        original_locale = user.locale
+    try:
+        response = client.patch(
+            "/api/v1/me/preferences",
+            json={"locale": "en-US"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"locale": "en-US"}
+        me_response = client.get("/api/v1/me")
+        assert me_response.status_code == 200
+        assert me_response.json()["user"]["locale"] == "en-US"
+        invalid = client.patch(
+            "/api/v1/me/preferences",
+            json={"locale": "fr-FR"},
+        )
+        assert invalid.status_code == 422
+    finally:
+        with SessionLocal() as session:
+            user = session.get(UserRow, DEFAULT_OWNER_USER_ID)
+            assert user is not None
+            user.locale = original_locale
+            session.commit()
+
+
 def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
     assert client.get("/api/v1/suppliers").status_code == 401
@@ -518,6 +621,14 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     )
     assert permissions_response.status_code == 200
     assert "product.view" in permissions_response.json()["permissions"]
+    bootstrap_response = client.get(
+        "/api/v1/auth/bootstrap", headers=bearer_headers
+    )
+    assert bootstrap_response.status_code == 200
+    bootstrap = bootstrap_response.json()
+    assert bootstrap["profile"] == me_response.json()
+    assert bootstrap["permissions"] == permissions_response.json()
+    assert bootstrap_response.headers["cache-control"] == "no-store"
     memberships_response = client.get(
         "/api/v1/auth/memberships", headers=bearer_headers
     )
@@ -2830,6 +2941,40 @@ def test_phase3b_product_projection_is_filtered_idempotent_and_versioned() -> No
         assert all(embedding.status == "STALE" for embedding in embeddings)
 
 
+def test_chinese_rag_tokens_and_tag_signal_avoid_single_character_noise() -> None:
+    query = "支持APP的6L智能宠物喂食器"
+    query_tokens = _retrieval_tokens(query)
+
+    assert "智能" in query_tokens
+    assert "宠物" in query_tokens
+    assert "喂食" in query_tokens
+    assert "的" not in query_tokens
+    assert _score_tag_relevance(query, query_tokens, ["智能喂食", "ABS"]) >= 0.80
+    assert _score_tag_relevance(query, query_tokens, ["唇彩"]) < 0.50
+
+
+def test_product_knowledge_promotes_sku_tags_into_rag_overview() -> None:
+    chunks = build_product_chunks({
+        "product": {
+            "code": "TAG-RAG-001",
+            "name": "便携旅行化妆套装",
+            "description": "适合旅行与礼赠场景",
+        },
+        "category": {"name": "彩妆套装"},
+        "attributes": [],
+        "suppliers": [],
+        "skus": [
+            {"code": "TAG-RAG-001-A", "tags": ["旅行装", "防水", "礼赠"]},
+            {"code": "TAG-RAG-001-B", "tags": ["旅行装", "轻量"]},
+        ],
+    })
+
+    overview = next(chunk for chunk in chunks if chunk["chunk_type"] == "OVERVIEW")
+    assert "Search tags / 商品标签: 旅行装, 防水, 礼赠, 轻量" in overview["content"]
+    assert overview["metadata"]["search_tags"] == ["旅行装", "防水", "礼赠", "轻量"]
+    assert overview["metadata"]["field_policy_version"] == 2
+
+
 def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     waterproof_id = uuid4()
     bowl_id = uuid4()
@@ -2891,7 +3036,7 @@ def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["ranking_version"] == "hybrid-product-v1"
+    assert payload["ranking_version"] == "hybrid-product-v2"
     assert payload["model"] == {
         "provider": "local",
         "name": "atc-feature-hash",
@@ -2900,14 +3045,15 @@ def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     }
     assert payload["results"][0]["product_id"] == str(waterproof_id)
     assert set(payload["results"][0]["score_breakdown"]) == {
-        "keyword", "semantic", "attribute", "supplier"
+        "keyword", "semantic", "attribute", "tag", "supplier"
     }
     breakdown = payload["results"][0]["score_breakdown"]
     expected_score = (
-        0.35 * breakdown["keyword"]
-        + 0.35 * breakdown["semantic"]
-        + 0.20 * breakdown["attribute"]
-        + 0.10 * breakdown["supplier"]
+        0.32 * breakdown["keyword"]
+        + 0.45 * breakdown["semantic"]
+        + 0.06 * breakdown["attribute"]
+        + 0.12 * breakdown["tag"]
+        + 0.05 * breakdown["supplier"]
     )
     assert payload["results"][0]["score"] == pytest.approx(expected_score, abs=0.000002)
     assert payload["results"][0]["evidence"]
@@ -2920,6 +3066,96 @@ def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     assert exact.status_code == 200
     assert exact.json()["results"][0]["product_id"] == str(waterproof_id)
     assert exact.json()["results"][0]["score_breakdown"]["keyword"] == 1.0
+
+
+def test_manual_knowledge_index_update_and_full_rebuild() -> None:
+    product_id = uuid4()
+    with SessionLocal() as session:
+        existing_document_ids = set(
+            session.scalars(
+                select(KnowledgeDocumentRow.id).where(
+                    KnowledgeDocumentRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            ).all()
+        )
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"MANUAL-INDEX-{product_id.hex[:8]}",
+                name="Manual index control product",
+                description="Only indexed after the merchant explicitly starts the task.",
+                status="ACTIVE",
+                search_document_version=0,
+            )
+        )
+        session.commit()
+
+    status_before = client.get("/api/v1/ai/knowledge/index")
+    assert status_before.status_code == 200
+    assert status_before.json()["pending_products"] >= 1
+
+    updated = client.post("/api/v1/ai/knowledge/index/update")
+    assert updated.status_code == 200
+    assert updated.json()["mode"] == "INCREMENTAL"
+    assert updated.json()["processed_products"] >= 1
+    assert updated.json()["pending_products"] == 0
+
+    with SessionLocal() as session:
+        product = session.get(ProductRow, product_id)
+        assert product is not None
+        assert product.search_document_version == product.current_version
+
+    rejected = client.post(
+        "/api/v1/ai/knowledge/index/rebuild",
+        json={"confirm_full_rebuild": False},
+    )
+    assert rejected.status_code == 422
+
+    rebuilt = client.post(
+        "/api/v1/ai/knowledge/index/rebuild",
+        json={"confirm_full_rebuild": True},
+    )
+    assert rebuilt.status_code == 200
+    assert rebuilt.json()["mode"] == "FULL_REBUILD"
+    assert rebuilt.json()["processed_products"] == rebuilt.json()["total_products"]
+    assert rebuilt.json()["pending_products"] == 0
+
+    with SessionLocal() as session:
+        created_document_ids = set(
+            session.scalars(
+                select(KnowledgeDocumentRow.id).where(
+                    KnowledgeDocumentRow.tenant_id == DEFAULT_TENANT_ID,
+                    KnowledgeDocumentRow.id.not_in(existing_document_ids),
+                )
+            ).all()
+        )
+        created_chunk_ids = set(
+            session.scalars(
+                select(KnowledgeChunkRow.id).where(
+                    KnowledgeChunkRow.document_id.in_(created_document_ids)
+                )
+            ).all()
+        )
+        if created_chunk_ids:
+            session.execute(
+                delete(EmbeddingRow).where(
+                    EmbeddingRow.entity_id.in_(created_chunk_ids)
+                )
+            )
+        if created_document_ids:
+            session.execute(
+                delete(KnowledgeChunkRow).where(
+                    KnowledgeChunkRow.document_id.in_(created_document_ids)
+                )
+            )
+            session.execute(
+                delete(KnowledgeDocumentRow).where(
+                    KnowledgeDocumentRow.id.in_(created_document_ids)
+                )
+            )
+        session.execute(delete(ProductRow).where(ProductRow.id == product_id))
+        session.commit()
 
 
 def test_phase3b_tenant_boundaries_apply_to_links_and_retrieval() -> None:
@@ -3800,6 +4036,24 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
     assert active["version"] == 1
     assert active["updated_at"]
     assert active["image_status"] == "APPROVED"
+
+    without_suppliers = client.get(
+        "/api/v1/product-center/skus",
+        params={
+            "q": suffix,
+            "include_supplier_summary": "false",
+        },
+    )
+    assert without_suppliers.status_code == 200
+    without_supplier_by_code = {
+        item["sku_code"]: item for item in without_suppliers.json()["items"]
+    }
+    assert without_supplier_by_code[f"{suffix}-ACTIVE"]["supplier_summary"] == {
+        "count": 0,
+        "primary_supplier_id": None,
+        "primary_supplier_name": None,
+        "names": [],
+    }
 
     category_filtered = client.get(
         "/api/v1/product-center/skus",
@@ -6362,6 +6616,18 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
     assert expanded.status_code == 200
     assert [item["sku_code"] for item in expanded.json()["items"]] == ["PF-8G01"]
 
+    for natural_query, expected_sku in (
+        ("不锈钢无线宠物饮水机", "AQ-320S"),
+        ("支持APP的6L智能宠物喂食器", "SF-6L20"),
+        ("可折叠带门宠物围栏", "PF-8G01"),
+    ):
+        natural = client.get(
+            "/api/store/demo/skus",
+            params={"q": natural_query, "semantic": "true"},
+        )
+        assert natural.status_code == 200
+        assert [item["sku_code"] for item in natural.json()["items"]] == [expected_sku]
+
     with SessionLocal() as session:
         inactive_sku = session.scalar(select(SkuRow).where(SkuRow.sku_code == "SF-6L20"))
         hidden_product = session.scalar(
@@ -6441,6 +6707,7 @@ def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
                 "code": f"TEST-ROOT-{suffix}",
                 "name": f"测试一级-{suffix}",
                 "sort_order": 3,
+                "display_color": "#287d6e",
             },
         )
         assert root_response.status_code == 201, root_response.text
@@ -6448,6 +6715,18 @@ def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
         created_ids.append(root["id"])
         assert root["parent_id"] is None
         assert root["path"] == f"测试一级-{suffix}"
+        assert root["display_color"] == "#287D6E"
+
+        invalid_color_response = client.post(
+            "/api/v1/categories",
+            json={
+                "code": f"TEST-INVALID-COLOR-{suffix}",
+                "name": f"无效颜色-{suffix}",
+                "sort_order": 4,
+                "display_color": "green",
+            },
+        )
+        assert invalid_color_response.status_code == 422
 
         child_response = client.post(
             "/api/v1/categories",
@@ -6462,6 +6741,7 @@ def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
         child = child_response.json()
         created_ids.append(child["id"])
         assert child["path"] == f"测试一级-{suffix}/测试二级"
+        assert child["display_color"] is None
 
         third_response = client.post(
             "/api/v1/categories",
@@ -6545,6 +6825,20 @@ def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
             "测试二级乙",
         ]
         assert [row["sort_order"] for row in reordered] == [0, 1, 2]
+
+        recolored_response = client.patch(
+            f"/api/v1/categories/{root['id']}",
+            json={
+                "expected_version": root["version"],
+                "parent_id": None,
+                "name": root["name"],
+                "sort_order": root["sort_order"],
+                "status": "ACTIVE",
+                "display_color": "#a45f3e",
+            },
+        )
+        assert recolored_response.status_code == 200, recolored_response.text
+        assert recolored_response.json()["display_color"] == "#A45F3E"
     finally:
         if created_ids:
             category_uuids = [UUID(value) for value in created_ids]
@@ -6580,6 +6874,8 @@ def test_public_media_uses_tenant_scoped_relative_proxy_when_no_cdn_is_configure
 
 
 def test_merchant_publication_requires_active_sku_and_explicit_public_price() -> None:
+    root_category_id = uuid4()
+    category_id = uuid4()
     product_id = uuid4()
     sku_id = uuid4()
     sku_code = f"PUB-{uuid4().hex[:10].upper()}"
@@ -6593,11 +6889,36 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
         )
         assert supplier is not None
         session.add(
+            ProductCategoryRow(
+                id=root_category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                code=f"PUB-CATEGORY-{uuid4().hex[:10].upper()}",
+                name="公开测试分类",
+                path="公开测试分类",
+                display_color="#3F6F9C",
+                status="ACTIVE",
+            )
+        )
+        session.flush()
+        session.add(
+            ProductCategoryRow(
+                id=category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                parent_id=root_category_id,
+                code=f"PUB-SUBCATEGORY-{uuid4().hex[:10].upper()}",
+                name="公开测试子分类",
+                path="公开测试分类/公开测试子分类",
+                status="ACTIVE",
+            )
+        )
+        session.flush()
+        session.add(
             ProductRow(
                 id=product_id,
                 tenant_id=DEFAULT_TENANT_ID,
                 product_code=sku_code,
                 name="Explicit Public Price Product",
+                category_id=category_id,
                 status="ACTIVE",
                 default_unit="piece",
             )
@@ -6666,6 +6987,18 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
     )
     assert missing_price.status_code == 422
 
+    invalid_tag_color = client.put(
+        f"/api/v1/skus/{sku_id}/public-offer",
+        json={
+            "unit_price": "88.00",
+            "currency": "CNY",
+            "tags": ["公开标签"],
+            "tag_color": "orange",
+            "publication_status": "DRAFT",
+        },
+    )
+    assert invalid_tag_color.status_code == 422
+
     inactive = client.put(
         f"/api/v1/skus/{sku_id}/public-offer",
         json={
@@ -6690,17 +7023,20 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
             "unit_price": "88.00",
             "currency": "cny",
             "tags": ["公开标签", "新品"],
+            "tag_color": "#b65a3a",
             "publication_status": "PUBLISHED",
         },
     )
     assert published.status_code == 200, published.text
     assert Decimal(str(published.json()["unit_price"])) == Decimal("88.00")
     assert published.json()["currency"] == "CNY"
+    assert published.json()["tag_color"] == "#B65A3A"
     assert published.json()["publication_status"] == "PUBLISHED"
 
     offers = client.get(f"/api/v1/products/{product_id}/public-offers")
     assert offers.status_code == 200
     assert len(offers.json()) == 1
+    assert offers.json()[0]["tag_color"] == "#B65A3A"
     assert "supplier_product_id" not in offers.json()[0]
     assert "unit_cost" not in offers.json()[0]
 
@@ -6708,6 +7044,8 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
     assert public_listing.status_code == 200
     public_item = public_listing.json()["items"][0]
     assert Decimal(str(public_item["price"])) == Decimal("88.00")
+    assert public_item["tag_color"] == "#B65A3A"
+    assert public_item["category_color"] == "#3F6F9C"
     assert Decimal(str(public_item["price"])) != Decimal("12.34")
     assert "supplier_product_id" not in public_item
 
@@ -6717,6 +7055,7 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
             "unit_price": "88.00",
             "currency": "CNY",
             "tags": ["公开标签", "新品"],
+            "tag_color": "#B65A3A",
             "publication_status": "SUSPENDED",
         },
     )
@@ -7112,7 +7451,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260725_0028"
+        ).scalar() == "20260726_0032"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -7122,6 +7461,68 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)
+
+
+def test_catalog_tag_color_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:
+    database_path = tmp_path / "catalog-tag-color-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+
+    command.upgrade(config, "20260726_0030")
+    before_engine = create_engine(migration_url)
+    assert "tag_color" not in {
+        column["name"]
+        for column in inspect(before_engine).get_columns("public_catalog_offers")
+    }
+    before_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    assert "tag_color" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_catalog_offers")
+    }
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260726_0030")
+    downgraded_engine = create_engine(migration_url)
+    assert "tag_color" not in {
+        column["name"]
+        for column in inspect(downgraded_engine).get_columns("public_catalog_offers")
+    }
+    downgraded_engine.dispose()
+
+
+def test_category_display_color_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:
+    database_path = tmp_path / "category-display-color-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+
+    command.upgrade(config, "20260726_0031")
+    before_engine = create_engine(migration_url)
+    assert "display_color" not in {
+        column["name"]
+        for column in inspect(before_engine).get_columns("product_categories")
+    }
+    before_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    assert "display_color" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("product_categories")
+    }
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260726_0031")
+    downgraded_engine = create_engine(migration_url)
+    assert "display_color" not in {
+        column["name"]
+        for column in inspect(downgraded_engine).get_columns("product_categories")
+    }
+    downgraded_engine.dispose()
 
 
 def test_merchant_path_migration_uses_name_and_keeps_previous_slug(
@@ -7668,3 +8069,262 @@ def test_member_role_change_invalidates_existing_access_token(
         )
     assert stale.status_code == 401
     assert stale.json()["detail"]["code"] == "AUTH_PERMISSION_STALE"
+
+
+def test_inventory_purchase_sales_and_transfer_flow() -> None:
+    warehouses_response = client.get("/api/v1/inventory/warehouses")
+    assert warehouses_response.status_code == 200, warehouses_response.text
+    default_warehouse = warehouses_response.json()[0]
+    assert default_warehouse["is_default"] is True
+
+    stock_response = client.get(
+        "/api/v1/inventory/stocks",
+        params={"warehouse_id": default_warehouse["id"], "q": "AQ-320S"},
+    )
+    assert stock_response.status_code == 200, stock_response.text
+    initial_stock = stock_response.json()["items"][0]
+    sku_id = initial_stock["sku_id"]
+    initial_on_hand = Decimal(str(initial_stock["on_hand_quantity"]))
+    initial_average_cost = Decimal(str(initial_stock["average_cost"]))
+
+    adjustment_key = f"adjust-{uuid4()}"
+    adjusted = client.post(
+        "/api/v1/inventory/adjustments",
+        json={
+            "warehouse_id": default_warehouse["id"],
+            "reason": "期初库存盘点",
+            "idempotency_key": adjustment_key,
+            "items": [
+                {
+                    "sku_id": sku_id,
+                    "quantity_delta": 10,
+                    "unit_cost": 5,
+                }
+            ],
+        },
+    )
+    assert adjusted.status_code == 201, adjusted.text
+    duplicate_adjustment = client.post(
+        "/api/v1/inventory/adjustments",
+        json={
+            "warehouse_id": default_warehouse["id"],
+            "reason": "重复请求不得再次入账",
+            "idempotency_key": adjustment_key,
+            "items": [
+                {
+                    "sku_id": sku_id,
+                    "quantity_delta": 10,
+                    "unit_cost": 5,
+                }
+            ],
+        },
+    )
+    assert duplicate_adjustment.status_code == 201, duplicate_adjustment.text
+    assert duplicate_adjustment.json()["id"] == adjusted.json()["id"]
+
+    sales = client.post(
+        "/api/v1/sales-orders",
+        json={
+            "customer_name": "库存流程测试客户",
+            "warehouse_id": default_warehouse["id"],
+            "currency": "CNY",
+            "items": [{"sku_id": sku_id, "quantity": 4, "unit_price": 8}],
+        },
+    )
+    assert sales.status_code == 201, sales.text
+    sales_order = sales.json()
+    assert sales_order["status"] == "DRAFT"
+
+    confirmed_sale = client.post(
+        f"/api/v1/sales-orders/{sales_order['id']}/confirm",
+        json={"expected_version": sales_order["version"]},
+    )
+    assert confirmed_sale.status_code == 200, confirmed_sale.text
+    confirmed_sales_order = confirmed_sale.json()
+    assert confirmed_sales_order["status"] == "CONFIRMED"
+
+    reserved_stock = client.get(
+        "/api/v1/inventory/stocks",
+        params={"warehouse_id": default_warehouse["id"], "q": "AQ-320S"},
+    ).json()["items"][0]
+    assert Decimal(str(reserved_stock["on_hand_quantity"])) == initial_on_hand + 10
+    assert Decimal(str(reserved_stock["reserved_quantity"])) == 4
+
+    sales_item = confirmed_sales_order["items"][0]
+    shipment_key = f"shipment-{uuid4()}"
+    shipped = client.post(
+        f"/api/v1/sales-orders/{sales_order['id']}/ship",
+        json={
+            "expected_version": confirmed_sales_order["version"],
+            "idempotency_key": shipment_key,
+            "items": [{"order_item_id": sales_item["id"], "quantity": 2}],
+        },
+    )
+    assert shipped.status_code == 200, shipped.text
+    shipped_order = shipped.json()
+    assert shipped_order["status"] == "PARTIALLY_SHIPPED"
+    assert Decimal(str(shipped_order["items"][0]["shipped_quantity"])) == 2
+    assert Decimal(str(shipped_order["items"][0]["reserved_quantity"])) == 2
+
+    duplicate_shipment = client.post(
+        f"/api/v1/sales-orders/{sales_order['id']}/ship",
+        json={
+            "expected_version": confirmed_sales_order["version"],
+            "idempotency_key": shipment_key,
+            "items": [{"order_item_id": sales_item["id"], "quantity": 2}],
+        },
+    )
+    assert duplicate_shipment.status_code == 200, duplicate_shipment.text
+    assert Decimal(
+        str(duplicate_shipment.json()["items"][0]["shipped_quantity"])
+    ) == 2
+
+    cancelled_sale = client.post(
+        f"/api/v1/sales-orders/{sales_order['id']}/cancel",
+        json={
+            "expected_version": shipped_order["version"],
+            "reason": "客户取消未发数量",
+        },
+    )
+    assert cancelled_sale.status_code == 200, cancelled_sale.text
+    assert cancelled_sale.json()["status"] == "CANCELLED"
+
+    after_sale_stock = client.get(
+        "/api/v1/inventory/stocks",
+        params={"warehouse_id": default_warehouse["id"], "q": "AQ-320S"},
+    ).json()["items"][0]
+    on_hand_after_sale = initial_on_hand + 8
+    assert Decimal(str(after_sale_stock["on_hand_quantity"])) == on_hand_after_sale
+    assert Decimal(str(after_sale_stock["reserved_quantity"])) == 0
+
+    purchase = client.post(
+        "/api/v1/purchases",
+        json={
+            "supplier_name": "库存流程测试供应商",
+            "warehouse_id": default_warehouse["id"],
+            "currency": "CNY",
+            "items": [{"sku_id": sku_id, "quantity": 5, "unit_cost": 6}],
+        },
+    )
+    assert purchase.status_code == 201, purchase.text
+    purchase_order = purchase.json()
+    confirmed_purchase = client.post(
+        f"/api/v1/purchases/{purchase_order['id']}/confirm",
+        json={"expected_version": purchase_order["version"]},
+    )
+    assert confirmed_purchase.status_code == 200, confirmed_purchase.text
+    purchase_order = confirmed_purchase.json()
+    purchase_item = purchase_order["items"][0]
+
+    first_receipt_key = f"receipt-{uuid4()}"
+    first_receipt = client.post(
+        f"/api/v1/purchases/{purchase_order['id']}/receive",
+        json={
+            "expected_version": purchase_order["version"],
+            "idempotency_key": first_receipt_key,
+            "items": [{"order_item_id": purchase_item["id"], "quantity": 2}],
+        },
+    )
+    assert first_receipt.status_code == 200, first_receipt.text
+    partially_received = first_receipt.json()
+    assert partially_received["status"] == "PARTIALLY_RECEIVED"
+
+    duplicate_receipt = client.post(
+        f"/api/v1/purchases/{purchase_order['id']}/receive",
+        json={
+            "expected_version": purchase_order["version"],
+            "idempotency_key": first_receipt_key,
+            "items": [{"order_item_id": purchase_item["id"], "quantity": 2}],
+        },
+    )
+    assert duplicate_receipt.status_code == 200, duplicate_receipt.text
+    assert Decimal(
+        str(duplicate_receipt.json()["items"][0]["received_quantity"])
+    ) == 2
+
+    final_receipt = client.post(
+        f"/api/v1/purchases/{purchase_order['id']}/receive",
+        json={
+            "expected_version": partially_received["version"],
+            "idempotency_key": f"receipt-{uuid4()}",
+            "items": [{"order_item_id": purchase_item["id"], "quantity": 3}],
+        },
+    )
+    assert final_receipt.status_code == 200, final_receipt.text
+    assert final_receipt.json()["status"] == "RECEIVED"
+
+    after_purchase_stock = client.get(
+        "/api/v1/inventory/stocks",
+        params={"warehouse_id": default_warehouse["id"], "q": "AQ-320S"},
+    ).json()["items"][0]
+    expected_on_hand = on_hand_after_sale + 5
+    assert Decimal(str(after_purchase_stock["on_hand_quantity"])) == expected_on_hand
+    adjusted_cost = (
+        initial_on_hand * initial_average_cost + Decimal("10") * Decimal("5")
+    ) / (initial_on_hand + 10)
+    expected_average_cost = (
+        on_hand_after_sale * adjusted_cost + Decimal("5") * Decimal("6")
+    ) / expected_on_hand
+    assert Decimal(str(after_purchase_stock["average_cost"])) == expected_average_cost.quantize(
+        Decimal("0.000001")
+    )
+
+    second_warehouse = client.post(
+        "/api/v1/inventory/warehouses",
+        json={
+            "code": f"T{uuid4().hex[:7]}",
+            "name": "库存流程测试分仓",
+            "currency": "CNY",
+        },
+    )
+    assert second_warehouse.status_code == 201, second_warehouse.text
+    destination = second_warehouse.json()
+
+    transfer = client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "from_warehouse_id": default_warehouse["id"],
+            "to_warehouse_id": destination["id"],
+            "reason": "补充分仓库存",
+            "idempotency_key": f"transfer-{uuid4()}",
+            "items": [{"sku_id": sku_id, "quantity": 3}],
+        },
+    )
+    assert transfer.status_code == 201, transfer.text
+    assert transfer.json()["document_type"] == "STOCK_TRANSFER"
+
+    destination_stock = client.get(
+        "/api/v1/inventory/stocks",
+        params={"warehouse_id": destination["id"], "q": "AQ-320S"},
+    ).json()["items"][0]
+    assert Decimal(str(destination_stock["on_hand_quantity"])) == 3
+
+    excessive_adjustment = client.post(
+        "/api/v1/inventory/adjustments",
+        json={
+            "warehouse_id": destination["id"],
+            "reason": "测试库存不可为负",
+            "items": [{"sku_id": sku_id, "quantity_delta": -4}],
+        },
+    )
+    assert excessive_adjustment.status_code == 409
+    assert (
+        excessive_adjustment.json()["detail"]["code"]
+        == "INSUFFICIENT_AVAILABLE_STOCK"
+    )
+
+    movements = client.get(
+        "/api/v1/inventory/movements",
+        params={"q": "AQ-320S", "page_size": 100},
+    )
+    assert movements.status_code == 200, movements.text
+    movement_types = {row["movement_type"] for row in movements.json()["items"]}
+    assert {
+        "MANUAL_ADJUSTMENT",
+        "SALES_RESERVATION",
+        "SALES_SHIPMENT",
+        "SALES_RELEASE",
+        "PURCHASE_RECEIPT",
+        "TRANSFER_OUT",
+        "TRANSFER_IN",
+    }.issubset(movement_types)

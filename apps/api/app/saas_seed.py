@@ -22,6 +22,7 @@ from .identity_models import (
     UserRow,
 )
 from .model_mixins import restore_deleted
+from .inventory_seed import ensure_default_warehouse
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,17 @@ PERMISSION_SEEDS = (
     PermissionSeed("catalog.publish", "catalog", "publish", "Publish catalogs"),
     PermissionSeed("order.view", "order", "view", "View orders"),
     PermissionSeed("order.manage", "order", "manage", "Manage orders"),
+    PermissionSeed("inventory.view", "inventory", "view", "View inventory and stock movements"),
+    PermissionSeed("inventory.adjust", "inventory", "adjust", "Post inventory adjustments"),
+    PermissionSeed("inventory.purchase", "inventory", "purchase", "Manage purchase orders and receipts"),
+    PermissionSeed("inventory.sale", "inventory", "sale", "Manage sales orders and shipments"),
+    PermissionSeed("inventory.transfer", "inventory", "transfer", "Transfer stock between warehouses"),
+    PermissionSeed(
+        "inventory.warehouse_manage",
+        "inventory",
+        "warehouse_manage",
+        "Manage warehouses",
+    ),
     PermissionSeed("system.user_manage", "system", "user_manage", "Manage tenant members"),
     PermissionSeed("system.role_manage", "system", "role_manage", "Manage tenant roles"),
     PermissionSeed("system.settings_manage", "system", "settings_manage", "Manage tenant settings"),
@@ -65,18 +77,20 @@ ROLE_SEEDS = {
         "product.view", "product.import", "supplier.view", "customer.view", "customer.manage",
         "inquiry.view", "inquiry.manage", "quotation.view", "quotation.create",
         "catalog.view", "catalog.publish", "order.view",
+        "inventory.view", "inventory.sale",
     },
     "PURCHASING": {
         "product.view", "product.create", "product.edit", "product.import", "product.review",
         "product.cost.read", "product.cost.write",
         "supplier.view", "supplier.manage", "inquiry.view", "quotation.view",
         "order.view", "order.manage",
+        "inventory.view", "inventory.adjust", "inventory.purchase", "inventory.transfer",
     },
     # Read-only tenant member. SALES and PURCHASING remain the two scoped
     # editor variants so existing merchant assignments stay backward compatible.
     "VIEWER": {
         "product.view", "supplier.view", "customer.view", "inquiry.view",
-        "quotation.view", "catalog.view", "order.view",
+        "quotation.view", "catalog.view", "order.view", "inventory.view",
     },
 }
 
@@ -242,6 +256,11 @@ def seed_saas_foundation(session: Session) -> None:
         membership.status = "active"
 
     roles = ensure_tenant_rbac(session, tenant_id=DEFAULT_TENANT_ID)
+    ensure_default_warehouse(
+        session,
+        tenant_id=DEFAULT_TENANT_ID,
+        created_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+    )
 
     owner_role = roles["OWNER"]
     owner_assignment = session.scalar(

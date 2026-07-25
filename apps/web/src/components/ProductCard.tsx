@@ -1,7 +1,8 @@
 import { Button, Card, IconButton, Text } from "@radix-ui/themes";
 import { Check, Image as ImageIcon, Minus, Plus, Trash } from "@phosphor-icons/react";
 import { useState } from "react";
-import { imageFallback, money } from "../lib/format";
+import { imageFallback, money, primaryCategoryLabel } from "../lib/format";
+import { tagGlassStyle } from "../lib/tagColors";
 import type { Sku } from "../types";
 
 export function ProductCard({
@@ -18,6 +19,7 @@ export function ProductCard({
   const fallback = imageFallback(sku.sku_code);
   const [imageSrc, setImageSrc] = useState(sku.image_url || fallback);
   const [imageFailed, setImageFailed] = useState(false);
+  const displayTag = primaryCategoryLabel(sku.tags[0]);
 
   return (
     <Card className={`sku-card${quantity > 0 ? " is-selected" : ""}`} variant="surface">
@@ -36,9 +38,13 @@ export function ProductCard({
         ) : (
           <div className="image-unavailable"><ImageIcon size={30} /><span>暂无图片</span></div>
         )}
-        {sku.tags.length > 0 && (
-          <span className="sku-glass-tag" title={sku.tags.join("、")}>
-            <span>{sku.tags[0]}</span>
+        {displayTag && (
+          <span
+            className="sku-glass-tag"
+            style={tagGlassStyle(displayTag, sku.tag_color ?? sku.category_color)}
+            title={sku.tags.join("、")}
+          >
+            <span>{displayTag}</span>
             {sku.tags.length > 1 && <small>+{sku.tags.length - 1}</small>}
           </span>
         )}

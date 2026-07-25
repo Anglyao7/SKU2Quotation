@@ -47,6 +47,7 @@ class SkuRow(AuditTimestampMixin, Base):
             ondelete="CASCADE",
         ),
         Index("ix_skus_tenant_product_status", "tenant_id", "product_id", "status"),
+        Index("ix_skus_tenant_status_updated", "tenant_id", "status", "updated_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

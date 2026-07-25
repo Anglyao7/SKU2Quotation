@@ -71,6 +71,7 @@ def list_skus(
     sku_status: list[str] = Query(default=[], alias="status"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
+    include_supplier_summary: bool = Query(default=True),
     session: Session = Depends(get_authenticated_session),
 ) -> SkuListPage:
     context = _context(session)
@@ -84,6 +85,7 @@ def list_skus(
             statuses=sku_status,
             page=page,
             page_size=page_size,
+            include_supplier_summary=include_supplier_summary,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
