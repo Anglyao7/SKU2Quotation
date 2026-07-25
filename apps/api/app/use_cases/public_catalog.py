@@ -80,6 +80,50 @@ def _public_image_url(image: object | None, *, slug: str) -> str | None:
     return f"/api/store/{quote(slug, safe='')}/media/{image.id}"
 
 
+def _category_path(category: object | None) -> str:
+    if category is None:
+        return ""
+    path = str(getattr(category, "path", "") or "").strip()
+    name = str(getattr(category, "name", "") or "").strip()
+    code = str(getattr(category, "code", "") or "").strip()
+    if path and code and path.casefold() == code.casefold():
+        return name
+    return path or name
+
+
+def _ordered_category_paths(
+    rows: list[object], *, all_categories: list[object]
+) -> list[str]:
+    categories_by_id = {
+        getattr(category, "id"): category
+        for category in all_categories
+        if getattr(category, "id", None) is not None
+    }
+    visible_by_id = {
+        getattr(row[3], "id"): row[3]
+        for row in rows
+        if row[3] is not None and _category_path(row[3])
+    }
+
+    def sort_key(category: object):
+        parent = categories_by_id.get(getattr(category, "parent_id", None))
+        root = parent or category
+        return (
+            int(getattr(root, "sort_order", 0) or 0),
+            str(getattr(root, "name", "") or "").casefold(),
+            1 if parent is not None else 0,
+            int(getattr(category, "sort_order", 0) or 0),
+            str(getattr(category, "name", "") or "").casefold(),
+        )
+
+    return list(
+        dict.fromkeys(
+            _category_path(category)
+            for category in sorted(visible_by_id.values(), key=sort_key)
+        )
+    )
+
+
 def get_public_media(
     session: Session, *, slug: str, image_id: UUID
 ) -> tuple[bytes, str]:
@@ -148,7 +192,7 @@ def _sku_response(row: object, *, image: object | None, slug: str) -> PublicSkuR
         sku_code=sku.sku_code,
         name=sku.name or product.name,
         description=product.description,
-        category=category.name if category is not None else None,
+        category=_category_path(category) or None,
         tags=list(dict.fromkeys(tags)),
         price=_money(Decimal(offer.unit_price)),
         currency=offer.currency,
@@ -192,7 +236,7 @@ def list_public_skus(
             sku_name = str(sku.name or "").casefold()
             product_name = str(product.name).casefold()
             description = str(product.description or "").casefold()
-            category_name = str(row_category.name if row_category else "").casefold()
+            category_name = _category_path(row_category).casefold()
             tag_values = [str(tag).casefold() for tag in (offer.tags or [])]
             fields = [sku_code, sku_name, product_name, description, category_name, *tag_values]
             score = 100 if sku_code == normalized_query else 0
@@ -219,8 +263,11 @@ def list_public_skus(
             )
             if score > 0
         ]
-    categories = sorted(
-        {row[3].name for row in rows if row[3] is not None}, key=str.casefold
+    categories = _ordered_category_paths(
+        rows,
+        all_categories=repository.list_catalog_categories(
+            session, tenant_id=tenant.id
+        ),
     )
     facet_tags = sorted(
         {
@@ -374,7 +421,7 @@ def create_public_quote_draft(
             sku_code_snapshot=sku.sku_code,
             name_snapshot=sku.name or product.name,
             description_snapshot=product.description,
-            category_snapshot=category.name if category is not None else None,
+            category_snapshot=_category_path(category) or None,
             tags_snapshot=list(dict.fromkeys(tags)),
             image_url_snapshot=image_url,
             minimum_order_quantity=Decimal("1"),

@@ -34,3 +34,33 @@ def test_local_fake_redirect_host_remains_deny_by_default(
             code_verifier="A" * 43,
             redirect_uri="http://100.111.4.117:5173/login/callback",
         )
+
+
+def test_local_identity_adapter_uses_the_shared_password_login_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_PROFILE", "local_fake")
+    monkeypatch.setenv("LOCAL_LOGIN_ACCOUNT", "merchant-owner")
+    monkeypatch.setenv("LOCAL_LOGIN_EMAIL", "owner@local.aitradecloud.invalid")
+    monkeypatch.setenv("LOCAL_LOGIN_PHONE", "13800138000")
+    monkeypatch.setenv("LOCAL_LOGIN_PASSWORD", "merchant123")
+    adapter = FakeIdentityProviderAdapter()
+
+    for identifier in (
+        "merchant-owner",
+        "OWNER@LOCAL.AITRADECLOUD.INVALID",
+        "13800138000",
+    ):
+        claim = adapter.authenticate_password(
+            identifier=identifier,
+            password="merchant123",
+        )
+        assert claim.provider == "local-bootstrap"
+        assert claim.email_verified is True
+
+    with pytest.raises(IdentityProviderError, match="authentication failed"):
+        adapter.authenticate_password(
+            identifier="merchant-owner",
+            password="wrong-password",
+        )

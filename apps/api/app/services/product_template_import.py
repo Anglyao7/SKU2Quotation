@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
@@ -32,6 +33,7 @@ PRODUCT_TEMPLATE_HEADERS = (
     "商品价格",
     "商品描述",
     "备注",
+    "标签",
     "商品图片1",
     "商品图片2",
     "商品图片3",
@@ -48,6 +50,9 @@ MAX_ARCHIVE_ENTRIES = 5_000
 MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
 PRICE_QUANTUM = Decimal("0.01")
 MAX_UNIT_PRICE = Decimal("999999999999999999.99")
+MAX_TAGS = 20
+MAX_TAG_LENGTH = 80
+MAX_CATEGORY_NAME_LENGTH = 200
 TEMPLATE_SOURCE_KEY = SKU_TEMPLATE_SOURCE_OPTION_KEY
 TEMPLATE_SOURCE_VALUE = "PRODUCT_TEMPLATE"
 TEMPLATE_IMAGE_BUCKET = "product-template"
@@ -66,6 +71,7 @@ class ProductTemplateRow:
     unit_price: Decimal | None
     description: str | None
     note: str | None
+    tags: tuple[str, ...]
     default_moq: Decimal | None
     image_urls: tuple[str, ...]
 
@@ -144,6 +150,59 @@ def _normalize_sku_code(value: object) -> str:
     return _cell_text(value).strip().upper()
 
 
+def _normalize_tags(value: object, *, row_number: int) -> tuple[str, ...]:
+    text = _cell_text(value)
+    if not text:
+        return ()
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in re.split(r"[,，;；、|\r\n]+", text):
+        tag = raw_tag.strip()
+        if not tag:
+            continue
+        if len(tag) > MAX_TAG_LENGTH:
+            raise ProductTemplateValidationError(
+                f"第 {row_number} 行的标签“{tag[:12]}…”超过 {MAX_TAG_LENGTH} 个字符，"
+                "未执行本次全量同步。"
+            )
+        normalized = tag.casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        tags.append(tag)
+        if len(tags) > MAX_TAGS:
+            raise ProductTemplateValidationError(
+                f"第 {row_number} 行最多填写 {MAX_TAGS} 个标签，"
+                "未执行本次全量同步。"
+            )
+    return tuple(tags)
+
+
+def _normalize_category_path(value: object, *, row_number: int) -> tuple[str, ...]:
+    """Normalize the template's human-readable category path.
+
+    A single segment creates a level-one category. ``A/B`` creates level one
+    ``A`` and level two ``B``. Deeper or empty paths are rejected so imported
+    data can never silently create an unsupported hierarchy.
+    """
+
+    text = _cell_text(value).replace("／", "/")
+    parts = tuple(part.strip() for part in text.split("/"))
+    if not text or any(not part for part in parts):
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的商品分类格式无效；请填写“一级分类”或“一级分类/二级分类”。"
+        )
+    if len(parts) > 2:
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的商品分类超过两级；最多填写“一级分类/二级分类”。"
+        )
+    if any(len(part) > MAX_CATEGORY_NAME_LENGTH for part in parts):
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的分类名称超过 {MAX_CATEGORY_NAME_LENGTH} 个字符。"
+        )
+    return parts
+
+
 def _valid_image_url(value: object) -> str | None:
     url = _cell_text(value)
     if not url:
@@ -188,16 +247,17 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
             _cell_text(sheet.cell(row=1, column=index).value)
             for index in range(1, len(PRODUCT_TEMPLATE_HEADERS) + 1)
         )
+        max_column = sheet.max_column or len(PRODUCT_TEMPLATE_HEADERS)
         extra_headers = [
             _cell_text(sheet.cell(row=1, column=index).value)
-            for index in range(len(PRODUCT_TEMPLATE_HEADERS) + 1, sheet.max_column + 1)
+            for index in range(len(PRODUCT_TEMPLATE_HEADERS) + 1, max_column + 1)
             if _cell_text(sheet.cell(row=1, column=index).value)
         ]
         if received_headers != PRODUCT_TEMPLATE_HEADERS or extra_headers:
             raise ProductTemplateValidationError(
                 "表头与固定商品模版不一致，请使用“商品模版.xlsx”的原始列名和顺序。"
             )
-        if max(0, sheet.max_row - 1) > MAX_TEMPLATE_ROWS:
+        if sheet.max_row is not None and max(0, sheet.max_row - 1) > MAX_TEMPLATE_ROWS:
             raise ProductTemplateValidationError(
                 f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
             )
@@ -214,6 +274,10 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
             ),
             start=2,
         ):
+            if row_number > MAX_TEMPLATE_ROWS + 1:
+                raise ProductTemplateValidationError(
+                    f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
+                )
             if not any(_cell_text(value) for value in values):
                 continue
             if any(isinstance(value, str) and value.lstrip().startswith("=") for value in values):
@@ -222,13 +286,13 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                 )
 
             name = _cell_text(values[0])
-            category = _cell_text(values[1])
+            category_text = _cell_text(values[1])
             sku_code = _normalize_sku_code(values[2])
             missing = [
                 label
                 for label, value in (
                     ("商品名称", name),
-                    ("商品分类", category),
+                    ("商品分类", category_text),
                     ("商品型号", sku_code),
                 )
                 if not value
@@ -237,7 +301,11 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                 raise ProductTemplateValidationError(
                     f"第 {row_number} 行缺少{'、'.join(missing)}，未执行本次全量同步。"
                 )
-            if len(name) > 500 or len(category) > 200 or len(sku_code) > 160:
+            category_parts = _normalize_category_path(
+                category_text, row_number=row_number
+            )
+            category = "/".join(category_parts)
+            if len(name) > 500 or len(category) > 401 or len(sku_code) > 160:
                 raise ProductTemplateValidationError(
                     f"第 {row_number} 行文本超过字段长度限制，未执行本次全量同步。"
                 )
@@ -263,9 +331,10 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                 )
 
             note = _cell_text(values[5]) or None
+            tags = _normalize_tags(values[6], row_number=row_number)
 
             image_urls: list[str] = []
-            for image_index, value in enumerate(values[6:], start=1):
+            for image_index, value in enumerate(values[7:], start=1):
                 if not _cell_text(value):
                     continue
                 image_url = _valid_image_url(value)
@@ -287,6 +356,7 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                     unit_price=unit_price,
                     description=_cell_text(values[4]) or None,
                     note=note,
+                    tags=tags,
                     default_moq=None,
                     image_urls=tuple(image_urls),
                 )
@@ -652,29 +722,32 @@ def process_product_template_import(
         runtime_warnings = list(parsed.warnings)
         for template_row in parsed.rows:
             changed = False
-            category_code = _category_code(template_row.category)
-            category = categories.get(category_code)
-            if category is None:
-                category = ProductCategoryRow(
-                    id=uuid4(),
-                    tenant_id=tenant_id,
-                    code=category_code,
-                    name=template_row.category,
-                    path=template_row.category,
-                    status="ACTIVE",
-                )
-                session.add(category)
-                categories[category_code] = category
-                session.flush()
-                changed = True
-            else:
+            category_parts = tuple(template_row.category.split("/"))
+            parent: ProductCategoryRow | None = None
+            category: ProductCategoryRow | None = None
+            for depth, category_name in enumerate(category_parts, start=1):
+                category_path = "/".join(category_parts[:depth])
+                category_code = _category_code(category_path)
+                category = categories.get(category_code)
                 category_values = {
-                    "name": template_row.category,
-                    "path": template_row.category,
+                    "parent_id": parent.id if parent is not None else None,
+                    "name": category_name,
+                    "path": category_path,
                     "status": "ACTIVE",
                     "deleted_at": None,
                 }
-                if any(
+                if category is None:
+                    category = ProductCategoryRow(
+                        id=uuid4(),
+                        tenant_id=tenant_id,
+                        code=category_code,
+                        **category_values,
+                    )
+                    session.add(category)
+                    categories[category_code] = category
+                    session.flush()
+                    changed = True
+                elif any(
                     getattr(category, key) != value
                     for key, value in category_values.items()
                 ):
@@ -682,6 +755,8 @@ def process_product_template_import(
                         setattr(category, key, value)
                     category.version += 1
                     changed = True
+                parent = category
+            assert category is not None
 
             sku = skus.get(template_row.sku_code)
             product = planned_product_by_sku[template_row.sku_code]
@@ -777,7 +852,7 @@ def process_product_template_import(
                     sku_rows_by_product[product.id].append(sku)
 
             offer = offers.get(sku.id)
-            offer_tags = [template_row.category]
+            offer_tags = list(template_row.tags)
             if offer is None and template_row.unit_price is not None:
                 offer = PublicCatalogOfferRow(
                     id=uuid4(),

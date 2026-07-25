@@ -36,7 +36,7 @@ python -m venv .venv
 
 API 文档：`http://127.0.0.1:8000/docs`
 
-Web 认证壳层使用内存 Access Token、HttpOnly Refresh Cookie 和 Session-scoped CSRF Token。刷新页面会旋转 Refresh Token 并恢复可信 Session；旧 LocalStorage Access Token 会被清除。开发环境登录使用 `local_fake`；Staging/Production 的账号、邮箱或手机号与密码由 Keycloak 校验，否则启动保持 fail-closed。
+Web 认证壳层使用内存 Access Token、HttpOnly Refresh Cookie 和 Session-scoped CSRF Token。刷新页面会旋转 Refresh Token 并恢复可信 Session；旧 LocalStorage Access Token 会被清除。所有环境统一通过账号密码接口登录：开发环境由仅限非生产的本地身份适配器校验，Staging/Production 的账号、邮箱或手机号与密码由 Keycloak 校验，否则启动保持 fail-closed。
 
 工作区认证接口：
 

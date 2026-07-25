@@ -36,7 +36,7 @@ import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import type { TenantMember, TenantPermission, TenantRole } from "../types";
 
 const groups = [
-  { name: "产品中心", keys: ["product.view", "product.create", "product.edit", "product.import", "product.review", "product.cost.read", "product.cost.write"] },
+  { name: "产品中心", keys: ["product.view", "product.create", "product.edit", "product.import", "product.cost.read", "product.cost.write"] },
   { name: "供应商中心", keys: ["supplier.view", "supplier.manage"] },
   { name: "销售工作流", keys: ["customer.view", "customer.manage", "inquiry.view", "inquiry.manage", "quotation.view", "quotation.create", "quotation.approve"] },
   { name: "产品图册与订单", keys: ["catalog.view", "catalog.publish", "order.view", "order.manage"] },
@@ -44,7 +44,7 @@ const groups = [
 ];
 
 const labels: Record<string, string> = {
-  "product.view": "查看产品", "product.create": "创建产品", "product.edit": "编辑产品", "product.import": "导入产品", "product.review": "审核产品", "product.cost.read": "查看产品成本", "product.cost.write": "维护产品成本",
+  "product.view": "查看产品", "product.create": "创建产品", "product.edit": "编辑产品", "product.import": "导入产品", "product.cost.read": "查看产品成本", "product.cost.write": "维护产品成本",
   "supplier.view": "查看供应商", "supplier.manage": "管理供应商", "customer.view": "查看客户", "customer.manage": "管理客户", "inquiry.view": "查看询盘", "inquiry.manage": "管理询盘", "quotation.view": "查看报价", "quotation.create": "创建报价", "quotation.approve": "批准报价",
   "catalog.view": "查看产品图册", "catalog.publish": "发布产品图册", "order.view": "查看订单", "order.manage": "管理订单", "system.user_manage": "管理用户", "system.role_manage": "管理角色", "system.settings_manage": "管理系统设置",
 };
@@ -169,7 +169,7 @@ export function PermissionsPage() {
 
     {roleEditor !== undefined ? <RoleEditorDialog
       role={roleEditor}
-      permissions={catalog.filter((permission) => permissions.has(permission.code))}
+      permissions={catalog.filter((permission) => permission.code !== "product.review" && permissions.has(permission.code))}
       onClose={() => setRoleEditor(undefined)}
       onSaved={async () => { setRoleEditor(undefined); await load(); }}
     /> : null}

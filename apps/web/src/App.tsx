@@ -18,12 +18,12 @@ import { ErrorState } from "./components/States";
 import { useCoreAuth } from "./core/AuthContext";
 import { AiSearchPage } from "./core/pages/AiSearchPage";
 import { AccountSettingsPage } from "./core/pages/AccountSettingsPage";
+import { CategoriesPage } from "./core/pages/CategoriesPage";
 import { CoreDashboardPage } from "./core/pages/DashboardPage";
 import { InquiryPage } from "./core/pages/InquiryPage";
 import { PermissionsPage } from "./core/pages/PermissionsPage";
 import { ProductsPage } from "./core/pages/ProductsPage";
 import { QuotesPage } from "./core/pages/QuotesPage";
-import { ReviewPage } from "./core/pages/ReviewPage";
 import { api, ApiError } from "./lib/api";
 import { LandingPage } from "./pages/marketing/LandingPage";
 import { StorePage } from "./pages/StorePage";
@@ -99,14 +99,15 @@ const router = createBrowserRouter([
         { path: "dashboard", element: <Navigate to="/console" replace /> },
         { path: "ai-search", element: <PermissionGate anyOf={["product.view"]}><AiSearchPage /></PermissionGate> },
         { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
-        { path: "products/review", element: <PermissionGate anyOf={["product.review"]}><ReviewPage /></PermissionGate> },
+        { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
+        { path: "products/review", element: <Navigate to="/console/products" replace /> },
         { path: "suppliers", element: <Navigate to="/console/products" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "system/permissions", element: <PermissionsPage /> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
-        { path: "review", element: <Navigate to="/console/products/review" replace /> },
+        { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },
         { path: "tenants", element: <PlatformAdminGate><TenantManagementPage /></PlatformAdminGate> },
       ],
@@ -116,7 +117,7 @@ const router = createBrowserRouter([
   { path: "/ai-search", element: <Navigate to="/console/ai-search" replace /> },
   { path: "/products", element: <Navigate to="/console/products" replace /> },
   { path: "/suppliers", element: <Navigate to="/console/products" replace /> },
-  { path: "/review", element: <Navigate to="/console/products/review" replace /> },
+  { path: "/review", element: <Navigate to="/console/products" replace /> },
   { path: "/inquiries", element: <Navigate to="/console/inquiries" replace /> },
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },
   { path: "/account", element: <Navigate to="/console/account" replace /> },

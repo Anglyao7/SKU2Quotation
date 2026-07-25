@@ -149,7 +149,10 @@ def _product_template_bytes(rows: list[list[object]]) -> bytes:
     sheet.title = PRODUCT_TEMPLATE_SHEET
     sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
     for row in rows:
-        sheet.append(row)
+        values = list(row)
+        if len(values) == len(PRODUCT_TEMPLATE_HEADERS) - 1:
+            values.insert(6, None)
+        sheet.append(values)
     content = BytesIO()
     workbook.save(content)
     workbook.close()
@@ -666,6 +669,33 @@ def test_public_auth_config_never_exposes_oidc_secrets(
     assert "secret" not in serialized
     assert "token_endpoint" not in serialized
     assert "jwks" not in serialized
+
+
+def test_local_password_login_uses_the_same_browser_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_PROFILE", "local_fake")
+    monkeypatch.setenv("LOCAL_LOGIN_ACCOUNT", "owner")
+    monkeypatch.setenv("LOCAL_LOGIN_PASSWORD", "localpass123")
+
+    with TestClient(app) as password_client:
+        response = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": "owner",
+                "password": "localpass123",
+                "device_label": "pytest-local-password-browser",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["context"]["membership_id"] == str(
+        DEFAULT_MEMBERSHIP_ID
+    )
+    assert "localpass123" not in response.text
+    assert "httponly" in response.headers["set-cookie"].lower()
 
 
 def test_password_login_uses_keycloak_and_reuses_hardened_session(
@@ -3867,13 +3897,14 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         assert workbook.sheetnames == ["商品列表"]
         sheet = workbook["商品列表"]
         assert sheet.max_row == 1
-        assert [sheet.cell(row=1, column=index).value for index in range(1, 17)] == [
+        assert [sheet.cell(row=1, column=index).value for index in range(1, 18)] == [
             "商品名称",
             "商品分类",
             "商品型号",
             "商品价格",
             "商品描述",
             "备注",
+            "标签",
             "商品图片1",
             "商品图片2",
             "商品图片3",
@@ -3886,11 +3917,13 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
             "商品图片10",
         ]
         assert sheet.freeze_panes == "A2"
-        assert sheet.auto_filter.ref == "A1:P1"
+        assert sheet.auto_filter.ref == "A1:Q1"
         assert sheet["A1"].fill.fgColor.rgb == "0023453B"
         assert sheet["A1"].font.bold is True
         assert sheet["F1"].comment is not None
         assert "商品补充说明" in sheet["F1"].comment.text
+        assert sheet["G1"].comment is not None
+        assert "逗号分隔" in sheet["G1"].comment.text
     finally:
         workbook.close()
 
@@ -3994,24 +4027,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "商品列表"
-    sheet.append([
-        "商品名称",
-        "商品分类",
-        "商品型号",
-        "商品价格",
-        "商品描述",
-        "备注",
-        "商品图片1",
-        "商品图片2",
-        "商品图片3",
-        "商品图片4",
-        "商品图片5",
-        "商品图片6",
-        "商品图片7",
-        "商品图片8",
-        "商品图片9",
-        "商品图片10",
-    ])
+    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
     sheet.append([
         "模版商品 A",
         "模版测试分类",
@@ -4019,6 +4035,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
         "12.5",
         "固定模版商品描述",
         "10",
+        "新品，热卖,新品",
         "https://img.example.com/tpl-api-001.jpg",
         *([None] * 9),
     ])
@@ -4027,6 +4044,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
         "模版测试分类",
         "TPL-API-001",
         99,
+        None,
         None,
         None,
         *([None] * 10),
@@ -4038,6 +4056,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
         "",
         None,
         None,
+        None,
         *([None] * 10),
     ])
     for duplicate_index in range(1003):
@@ -4046,6 +4065,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
             "模版测试分类",
             "TPL-API-001",
             88 + duplicate_index,
+            None,
             None,
             None,
             *([None] * 10),
@@ -4109,6 +4129,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
     assert sku_by_code["TPL-API-001"]["public_price"] == "12.50"
     assert sku_by_code["TPL-API-001"]["public_offer_status"] == "PUBLISHED"
     assert sku_by_code["TPL-API-001"]["image_status"] == "APPROVED"
+    assert sku_by_code["TPL-API-001"]["tags"] == ["新品", "热卖"]
     assert sku_by_code["TPL-API-002"]["public_price"] is None
 
     # Re-importing the fixed template may refresh its note/marker, but must
@@ -4219,6 +4240,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
         "模版测试分类",
         "TPL-API-002",
         "",
+        None,
         None,
         None,
         *([None] * 10),
@@ -6365,6 +6387,183 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
             session.commit()
 
 
+def test_public_category_facets_follow_managed_sort_order() -> None:
+    initial_response = client.get("/api/store/demo/skus")
+    assert initial_response.status_code == 200, initial_response.text
+    initial_categories = initial_response.json()["categories"]
+    assert len(initial_categories) > 1
+    desired_categories = list(reversed(initial_categories))
+    originals: dict[UUID, int] = {}
+
+    with SessionLocal() as session:
+        rows = list(
+            session.scalars(
+                select(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductCategoryRow.path.in_(initial_categories)
+                )
+            ).all()
+        )
+        assert len(rows) == len(initial_categories)
+        rows_by_path = {row.path: row for row in rows}
+        assert all(row.parent_id is None for row in rows)
+        originals = {row.id: row.sort_order for row in rows}
+        for position, path in enumerate(desired_categories):
+            rows_by_path[path].sort_order = position
+        session.commit()
+
+    try:
+        reordered_response = client.get("/api/store/demo/skus")
+        assert reordered_response.status_code == 200, reordered_response.text
+        assert reordered_response.json()["categories"] == desired_categories
+    finally:
+        with SessionLocal() as session:
+            rows = list(
+                session.scalars(
+                    select(ProductCategoryRow).where(
+                        ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductCategoryRow.id.in_(list(originals))
+                    )
+                ).all()
+            )
+            for row in rows:
+                row.sort_order = originals[row.id]
+            session.commit()
+
+
+def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
+    suffix = uuid4().hex[:10].upper()
+    created_ids: list[str] = []
+    try:
+        root_response = client.post(
+            "/api/v1/categories",
+            json={
+                "code": f"TEST-ROOT-{suffix}",
+                "name": f"测试一级-{suffix}",
+                "sort_order": 3,
+            },
+        )
+        assert root_response.status_code == 201, root_response.text
+        root = root_response.json()
+        created_ids.append(root["id"])
+        assert root["parent_id"] is None
+        assert root["path"] == f"测试一级-{suffix}"
+
+        child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"TEST-CHILD-{suffix}",
+                "name": "测试二级",
+                "sort_order": 1,
+            },
+        )
+        assert child_response.status_code == 201, child_response.text
+        child = child_response.json()
+        created_ids.append(child["id"])
+        assert child["path"] == f"测试一级-{suffix}/测试二级"
+
+        third_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": child["id"],
+                "code": f"TEST-THIRD-{suffix}",
+                "name": "不允许的第三级",
+                "sort_order": 0,
+            },
+        )
+        assert third_response.status_code == 409
+        assert third_response.json()["detail"]["code"] == "CATEGORY_DEPTH_EXCEEDED"
+
+        renamed_response = client.patch(
+            f"/api/v1/categories/{child['id']}",
+            json={
+                "expected_version": child["version"],
+                "parent_id": root["id"],
+                "name": "更新后的二级",
+                "sort_order": 2,
+                "status": "ACTIVE",
+            },
+        )
+        assert renamed_response.status_code == 200, renamed_response.text
+        assert (
+            renamed_response.json()["path"]
+            == f"测试一级-{suffix}/更新后的二级"
+        )
+        renamed_child = renamed_response.json()
+
+        second_child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"TEST-CHILD-2-{suffix}",
+                "name": "测试二级乙",
+                "sort_order": 3,
+            },
+        )
+        assert second_child_response.status_code == 201, second_child_response.text
+        second_child = second_child_response.json()
+        created_ids.append(second_child["id"])
+
+        third_child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"TEST-CHILD-3-{suffix}",
+                "name": "测试二级丙",
+                "sort_order": 4,
+            },
+        )
+        assert third_child_response.status_code == 201, third_child_response.text
+        third_child = third_child_response.json()
+        created_ids.append(third_child["id"])
+
+        reordered_response = client.patch(
+            "/api/v1/categories/reorder",
+            json={
+                "items": [
+                    {
+                        "id": third_child["id"],
+                        "expected_version": third_child["version"],
+                    },
+                    {
+                        "id": renamed_child["id"],
+                        "expected_version": renamed_child["version"],
+                    },
+                    {
+                        "id": second_child["id"],
+                        "expected_version": second_child["version"],
+                    },
+                ]
+            },
+        )
+        assert reordered_response.status_code == 200, reordered_response.text
+        reordered = reordered_response.json()
+        assert [row["name"] for row in reordered] == [
+            "测试二级丙",
+            "更新后的二级",
+            "测试二级乙",
+        ]
+        assert [row["sort_order"] for row in reordered] == [0, 1, 2]
+    finally:
+        if created_ids:
+            category_uuids = [UUID(value) for value in created_ids]
+            with SessionLocal() as session:
+                session.execute(
+                    delete(ProductAuditEventRow).where(
+                        ProductAuditEventRow.entity_type == "CATEGORY",
+                        ProductAuditEventRow.entity_id.in_(created_ids),
+                    )
+                )
+                for category_id in reversed(category_uuids):
+                    session.execute(
+                        delete(ProductCategoryRow).where(
+                            ProductCategoryRow.id == category_id
+                        )
+                    )
+                session.commit()
+
+
 def test_public_media_uses_tenant_scoped_relative_proxy_when_no_cdn_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6913,7 +7112,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260724_0027"
+        ).scalar() == "20260725_0028"
     upgraded_engine.dispose()
     command.check(config)
 

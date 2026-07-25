@@ -12,7 +12,6 @@ import {
   getCurrentUser,
   getPermissions,
   listMemberships,
-  loginLocalDemo,
   loginPassword as loginPasswordRequest,
   logoutSession,
   refreshAuthSession,
@@ -33,7 +32,6 @@ interface AuthState {
 
 export interface CoreAuthContextValue extends AuthState {
   loading: boolean;
-  loginDemo: () => Promise<void>;
   loginPassword: (identifier: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   switchTenant: (membershipId: string) => Promise<void>;
@@ -58,8 +56,8 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(initialState);
 
   const hydrate = useCallback(async (session: AuthTokenData) => {
-    const memberships = await listMemberships();
     if (session.requiresTenantSelection || !session.context.tenantId) {
+      const memberships = await listMemberships();
       setState({ status: "selecting_tenant", session, memberships, permissions: new Set() });
       return;
     }
@@ -68,7 +66,7 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
       status: "authenticated",
       session,
       profile,
-      memberships,
+      memberships: profile.memberships,
       permissions: new Set(permissionSet.permissions),
     });
   }, []);
@@ -96,16 +94,6 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
       active = false;
       window.removeEventListener("atc:auth-expired", expire);
     };
-  }, [hydrate]);
-
-  const loginDemo = useCallback(async () => {
-    setState((current) => ({ ...current, status: "restoring", error: undefined }));
-    try {
-      await hydrate(await loginLocalDemo());
-    } catch (reason) {
-      setState({ ...initialState, status: "anonymous", error: errorMessage(reason) });
-      throw reason;
-    }
   }, [hydrate]);
 
   const loginPassword = useCallback(async (identifier: string, password: string) => {
@@ -167,14 +155,13 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<CoreAuthContextValue>(() => ({
     ...state,
     loading: state.status === "restoring",
-    loginDemo,
     loginPassword,
     logout,
     switchTenant,
     reloadProfile,
     hasPermission: (permission) => state.permissions.has(permission),
     hasAnyPermission: (...permissions) => permissions.length === 0 || permissions.some((permission) => state.permissions.has(permission)),
-  }), [loginDemo, loginPassword, logout, reloadProfile, state, switchTenant]);
+  }), [loginPassword, logout, reloadProfile, state, switchTenant]);
 
   return <CoreAuthContext.Provider value={value}>{children}</CoreAuthContext.Provider>;
 }

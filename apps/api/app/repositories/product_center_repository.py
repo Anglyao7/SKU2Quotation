@@ -50,7 +50,17 @@ def list_product_rows(
     else:
         statement = statement.where(ProductRow.status != "ARCHIVED")
     if category_id is not None:
-        statement = statement.where(ProductRow.category_id == category_id)
+        statement = statement.where(
+            or_(
+                ProductRow.category_id == category_id,
+                ProductRow.category_id.in_(
+                    select(ProductCategoryRow.id).where(
+                        ProductCategoryRow.tenant_id == tenant_id,
+                        ProductCategoryRow.parent_id == category_id,
+                    )
+                ),
+            )
+        )
     if supplier_id:
         statement = statement.where(
             exists(
@@ -146,6 +156,71 @@ def list_categories(session: Session, *, tenant_id: UUID) -> list[ProductCategor
     )
 
 
+def list_categories_by_ids(
+    session: Session, *, tenant_id: UUID, category_ids: list[UUID]
+) -> list[ProductCategoryRow]:
+    if not category_ids:
+        return []
+    return list(
+        session.scalars(
+            select(ProductCategoryRow).where(
+                ProductCategoryRow.tenant_id == tenant_id,
+                ProductCategoryRow.id.in_(category_ids),
+            )
+        ).all()
+    )
+
+
+def list_sibling_categories(
+    session: Session, *, tenant_id: UUID, parent_id: UUID | None
+) -> list[ProductCategoryRow]:
+    parent_condition = (
+        ProductCategoryRow.parent_id.is_(None)
+        if parent_id is None
+        else ProductCategoryRow.parent_id == parent_id
+    )
+    return list(
+        session.scalars(
+            select(ProductCategoryRow)
+            .where(
+                ProductCategoryRow.tenant_id == tenant_id,
+                parent_condition,
+            )
+            .order_by(ProductCategoryRow.sort_order, ProductCategoryRow.name)
+        ).all()
+    )
+
+
+def find_sibling_category(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    parent_id: UUID | None,
+    name: str,
+    exclude_id: UUID | None = None,
+) -> ProductCategoryRow | None:
+    conditions = [
+        ProductCategoryRow.tenant_id == tenant_id,
+        func.lower(ProductCategoryRow.name) == name.casefold().strip(),
+    ]
+    conditions.append(
+        ProductCategoryRow.parent_id.is_(None)
+        if parent_id is None
+        else ProductCategoryRow.parent_id == parent_id
+    )
+    if exclude_id is not None:
+        conditions.append(ProductCategoryRow.id != exclude_id)
+    return session.scalar(select(ProductCategoryRow).where(*conditions))
+
+
+def list_child_categories(
+    session: Session, *, tenant_id: UUID, parent_id: UUID
+) -> list[ProductCategoryRow]:
+    return list_sibling_categories(
+        session, tenant_id=tenant_id, parent_id=parent_id
+    )
+
+
 def list_attributes(
     session: Session, *, tenant_id: UUID, product_id: UUID
 ) -> list[ProductAttributeRow]:
@@ -212,7 +287,17 @@ def list_sku_page_rows(
     else:
         conditions.append(SkuRow.status != "ARCHIVED")
     if category_id is not None:
-        conditions.append(ProductRow.category_id == category_id)
+        conditions.append(
+            or_(
+                ProductRow.category_id == category_id,
+                ProductRow.category_id.in_(
+                    select(ProductCategoryRow.id).where(
+                        ProductCategoryRow.tenant_id == tenant_id,
+                        ProductCategoryRow.parent_id == category_id,
+                    )
+                ),
+            )
+        )
 
     normalized = query.casefold().strip()
     if normalized:

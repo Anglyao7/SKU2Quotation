@@ -100,11 +100,13 @@ def seed_product_center_demo(session: Session) -> None:
                 tenant_id=DEFAULT_TENANT_ID,
                 code=category_code,
                 name=category_name,
-                path=category_code,
+                path=category_name,
                 status="ACTIVE",
             )
             session.add(category)
             session.flush()
+        elif category.path == category.code:
+            category.path = category.name
         category_by_code[category_code] = category
         for key, label, variant in (
             ("color", "颜色", True),

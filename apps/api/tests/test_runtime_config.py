@@ -45,7 +45,7 @@ def _managed_environment(**overrides: str) -> dict[str, str]:
         "ATC_CORS_ORIGINS": "https://staging.aitradecloud.example",
         "ATC_RELEASE": "r1.2.0-rc.1",
         "ATC_COMMIT_SHA": "a" * 40,
-        "ATC_MIGRATION_HEAD": "20260724_0027",
+        "ATC_MIGRATION_HEAD": "20260725_0028",
         "ATC_IMAGE_DIGEST": "sha256:" + "b" * 64,
         "ATC_CONFIG_VERSION": "staging-v1",
         "BOOTSTRAP_TENANT_SLUG": "primary",

@@ -128,8 +128,18 @@ def list_public_catalog_rows(
         )
     )
     if category:
+        normalized_category = category.casefold().strip()
+        category_path = func.lower(
+            func.coalesce(ProductCategoryRow.path, ProductCategoryRow.name)
+        )
         statement = statement.where(
-            func.lower(ProductCategoryRow.name) == category.casefold().strip()
+            or_(
+                func.lower(ProductCategoryRow.name) == normalized_category,
+                category_path == normalized_category,
+                category_path.startswith(
+                    f"{normalized_category}/", autoescape=True
+                ),
+            )
         )
     normalized = query.casefold().strip()
     if normalized:
@@ -140,6 +150,7 @@ def list_public_catalog_rows(
                 func.lower(ProductRow.name).contains(normalized),
                 func.lower(func.coalesce(ProductRow.description, "")).contains(normalized),
                 func.lower(func.coalesce(ProductCategoryRow.name, "")).contains(normalized),
+                func.lower(func.coalesce(ProductCategoryRow.path, "")).contains(normalized),
                 func.lower(cast(PublicCatalogOfferRow.tags, Text)).contains(normalized),
             )
         ).order_by(
@@ -149,11 +160,23 @@ def list_public_catalog_rows(
         )
     else:
         statement = statement.order_by(
-            ProductCategoryRow.name,
+            ProductCategoryRow.path,
             ProductRow.name,
             SkuRow.sku_code,
         )
     return list(session.execute(statement).all())
+
+
+def list_catalog_categories(
+    session: Session, *, tenant_id: UUID
+) -> list[ProductCategoryRow]:
+    return list(
+        session.scalars(
+            select(ProductCategoryRow)
+            .where(ProductCategoryRow.tenant_id == tenant_id)
+            .order_by(ProductCategoryRow.sort_order, ProductCategoryRow.name)
+        ).all()
+    )
 
 
 def list_public_catalog_rows_by_sku_ids(

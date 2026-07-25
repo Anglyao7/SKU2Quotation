@@ -287,14 +287,15 @@ def build_product_template_workbook() -> bytes:
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     instructions = {
         "商品名称": "必填。面向客户展示的商品名称。",
-        "商品分类": "必填。分类不存在时系统会自动创建。",
+        "商品分类": "必填。填写“一级分类”或“一级分类/二级分类”，最多两级；不存在时系统会自动创建。",
         "商品型号": "必填，作为 SKU 唯一标识；重复型号只保留首次出现的行。",
         "商品价格": "选填。填写有效数字后自动发布报价；留空时只进入后台商品库。",
         "商品描述": "选填。商品详情说明。",
         "备注": "选填，仅作为商品补充说明。",
+        "标签": "选填。多个标签使用中文或英文逗号分隔，最多 20 个。",
     }
     image_instruction = "选填。填写可公开访问的 HTTP(S) 商品图片地址。"
-    widths = (28, 18, 22, 14, 44, 24, *([38] * 10))
+    widths = (28, 18, 22, 14, 44, 24, 24, *([38] * 10))
 
     for index, (header, width) in enumerate(
         zip(PRODUCT_TEMPLATE_HEADERS, widths, strict=True),

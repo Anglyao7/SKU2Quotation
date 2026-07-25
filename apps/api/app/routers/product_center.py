@@ -10,7 +10,9 @@ from ..product_center_schemas import (
     AttributeDefinitionCreateRequest,
     AttributeDefinitionResponse,
     CategoryCreateRequest,
+    CategoryReorderRequest,
     CategoryResponse,
+    CategoryUpdateRequest,
     ProductCard,
     ProductDetail,
     ProductReviewQueueItem,
@@ -220,6 +222,44 @@ def create_category(
             tenant_id=context.tenant_id,
             membership_id=context.membership_id,
             permissions=context.permissions,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/categories/reorder", response_model=list[CategoryResponse])
+def reorder_categories(
+    request: CategoryReorderRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> list[CategoryResponse]:
+    context = _context(session)
+    try:
+        return use_cases.reorder_categories(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/categories/{category_id}", response_model=CategoryResponse)
+def update_category(
+    category_id: UUID,
+    request: CategoryUpdateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> CategoryResponse:
+    context = _context(session)
+    try:
+        return use_cases.update_category(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            category_id=category_id,
             request=request,
         )
     except ApplicationError as exc:

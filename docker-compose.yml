@@ -6,7 +6,7 @@ x-image-build: &image-build
   args:
     ATC_RELEASE: local-compose
     ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:-local}
-    ATC_MIGRATION_HEAD: "20260724_0027"
+    ATC_MIGRATION_HEAD: "20260725_0028"
     ATC_CONFIG_VERSION: local-compose-v1
 
 x-runtime-environment: &runtime-environment
@@ -20,6 +20,10 @@ x-runtime-environment: &runtime-environment
   AUTH_PROFILE: local_fake
   AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-atc-local-jwt-secret-not-for-staging}
   AUTH_TOKEN_PEPPER: ${AUTH_TOKEN_PEPPER:-atc-local-token-pepper-not-for-staging}
+  LOCAL_LOGIN_ACCOUNT: ${LOCAL_LOGIN_ACCOUNT:-owner}
+  LOCAL_LOGIN_EMAIL: ${LOCAL_LOGIN_EMAIL:-owner@local.aitradecloud.invalid}
+  LOCAL_LOGIN_PASSWORD: ${LOCAL_LOGIN_PASSWORD:-zhimaoyun123}
+  LOCAL_LOGIN_PHONE: ${LOCAL_LOGIN_PHONE:-}
   PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8000}
   PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
   OBJECT_STORAGE_BACKEND: s3

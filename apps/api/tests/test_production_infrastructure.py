@@ -743,7 +743,7 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     web_build = _compose()["services"]["web"]["build"]["args"]
     assert (
         web_build["VITE_PRIMARY_STOREFRONT_SLUG"]
-        == "${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}"
+        == "${BOOTSTRAP_TENANT_NAME:?BOOTSTRAP_TENANT_NAME is required}"
     )
     assert (
         web_build["VITE_LEGAL_OPERATOR_NAME"]

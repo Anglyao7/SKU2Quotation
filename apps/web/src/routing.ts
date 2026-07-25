@@ -13,8 +13,8 @@ export const LEGACY_WORKSPACE_PATHS = {
 export const CONSOLE_WORKSPACE_PATHS = {
   dashboard: "/console",
   suppliers: "/console/suppliers",
-  review: "/console/products/review",
   products: "/console/products",
+  categories: "/console/products/categories",
   aiSearch: "/console/ai-search",
   inquiries: "/console/inquiries",
   quotations: "/console/quotes",

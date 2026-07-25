@@ -22,7 +22,6 @@ const metricNames: Record<string, string> = {
   inquiries_today: "今日询盘",
   open_inquiries: "进行中询盘",
   pending_quotations: "待确认报价",
-  pending_product_reviews: "待审核产品",
 };
 
 const destination: Record<string, string> = {
@@ -31,7 +30,6 @@ const destination: Record<string, string> = {
   inquiries_today: "/console/inquiries",
   open_inquiries: "/console/inquiries",
   pending_quotations: "/console/quotes",
-  pending_product_reviews: "/console/products/review",
 };
 
 const metricIcons: Record<string, typeof Cube> = {
@@ -40,11 +38,9 @@ const metricIcons: Record<string, typeof Cube> = {
   inquiries_today: ChatCircleDots,
   open_inquiries: ChatCircleDots,
   pending_quotations: FileText,
-  pending_product_reviews: Package,
 };
 
 const priorityKeys = [
-  "pending_product_reviews",
   "pending_quotations",
   "open_inquiries",
   "today_inquiries",
@@ -77,7 +73,9 @@ export function CoreDashboardPage() {
   useEffect(() => { void load(); }, [load]);
 
   const metrics = useMemo(
-    () => (data?.metrics ?? []).filter((metric) => metric.key !== "active_suppliers").slice(0, 4),
+    () => (data?.metrics ?? [])
+      .filter((metric) => metric.key !== "active_suppliers" && metric.key !== "pending_product_reviews")
+      .slice(0, 4),
     [data],
   );
   const priorities = useMemo(
@@ -116,7 +114,7 @@ export function CoreDashboardPage() {
           ) : (
             <div className="core-clear-state">
               <span><CheckCircle size={24} weight="duotone" /></span>
-              <div><Text weight="medium" as="div">待审核、待确认与进行中事项均已清空</Text><Text size="2" color="gray">可以继续补充商品资料，或从客户需求开始一次新的匹配。</Text></div>
+              <div><Text weight="medium" as="div">待确认与进行中事项均已清空</Text><Text size="2" color="gray">可以继续补充商品资料，或从客户需求开始一次新的匹配。</Text></div>
             </div>
           )}
           <div className="core-quick-actions" aria-label="常用操作">

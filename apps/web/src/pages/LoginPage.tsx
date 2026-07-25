@@ -12,12 +12,10 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Brand } from "../components/Brand";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useCoreAuth } from "../core/AuthContext";
-import { getAuthConfig, type AuthPublicConfig } from "../core/api";
 
 export function LoginPage() {
   const {
     status,
-    loginDemo,
     loginPassword,
     memberships,
     switchTenant,
@@ -29,21 +27,9 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [configLoading, setConfigLoading] = useState(true);
   const [error, setError] = useState("");
-  const [config, setConfig] = useState<AuthPublicConfig>();
   const destination = (location.state as { from?: string } | null)?.from || "/console";
   const visibleError = error || authError;
-  const isDemo = config?.provider === "local_fake";
-
-  useEffect(() => {
-    void getAuthConfig()
-      .then(setConfig)
-      .catch((caught) => {
-        setError(caught instanceof Error ? caught.message : "认证服务配置不可用");
-      })
-      .finally(() => setConfigLoading(false));
-  }, []);
 
   useEffect(() => {
     if (status === "authenticated") {
@@ -60,18 +46,6 @@ export function LoginPage() {
       await loginPassword(identifier, password);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "账号或密码错误");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const enterDemo = async () => {
-    setSubmitting(true);
-    setError("");
-    try {
-      await loginDemo();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "开发演示登录失败");
     } finally {
       setSubmitting(false);
     }
@@ -108,8 +82,8 @@ export function LoginPage() {
           <div className="login-card-heading">
             <span className="login-lock"><LockKey size={24} weight="duotone" /></span>
             <div>
-              <Heading size="6">{status === "selecting_tenant" ? "选择工作区" : isDemo ? "进入开发演示" : "登录商家工作台"}</Heading>
-              <Text size="2" color="gray">{status === "selecting_tenant" ? "确认本次使用的商家空间" : isDemo ? "当前为本地开发身份验证流程" : "使用商家账号和密码登录"}</Text>
+              <Heading size="6">{status === "selecting_tenant" ? "选择工作区" : "登录商家工作台"}</Heading>
+              <Text size="2" color="gray">{status === "selecting_tenant" ? "确认本次使用的商家空间" : "使用账号、邮箱或手机号登录"}</Text>
             </div>
           </div>
 
@@ -129,17 +103,6 @@ export function LoginPage() {
                 </Button>
               ))}
               {!memberships.length ? <Text size="2" color="gray">当前账号没有可用的商家空间。</Text> : null}
-            </div>
-          ) : isDemo ? (
-            <div className="login-form">
-              <Button
-                size="3"
-                loading={submitting || status === "restoring"}
-                onClick={() => void enterDemo()}
-              >
-                使用开发演示身份进入
-                <ArrowRight />
-              </Button>
             </div>
           ) : (
             <form className="login-form login-credentials-form" autoComplete="on" onSubmit={submitPassword}>
@@ -203,7 +166,6 @@ export function LoginPage() {
                 type="submit"
                 size="3"
                 loading={submitting || status === "restoring"}
-                disabled={configLoading}
               >
                 登录工作台
                 <ArrowRight />

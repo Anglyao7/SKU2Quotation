@@ -39,13 +39,13 @@ npm ci
 VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ```
 
-访问 <http://127.0.0.1:5173/>。本地登录页使用 `local_fake` 身份适配器，点击“使用开发演示身份进入”即可，无需密码：
+访问 <http://127.0.0.1:5173/>。本地与正式环境使用同一个账号密码登录界面，不再提供单独的开发演示入口。默认本地凭据为：
 
-| 本地角色 | 演示身份 | 租户 |
-|---|---|---|
-| Company Owner / Platform Admin | `owner@local.aitradecloud.invalid` | `Local Demo Company`（slug：`demo`） |
+| 本地角色 | 账号 / 邮箱 | 密码 | 租户 |
+|---|---|---|---|
+| Company Owner / Platform Admin | `owner` / `owner@local.aitradecloud.invalid` | `zhimaoyun123` | `Local Demo Company`（slug：`demo`） |
 
-该身份和本地密钥只用于开发，不能用于 Staging 或 Production。
+可以通过 `.env` 中的 `LOCAL_LOGIN_ACCOUNT`、`LOCAL_LOGIN_EMAIL`、`LOCAL_LOGIN_PHONE` 和 `LOCAL_LOGIN_PASSWORD` 调整本地凭据。该身份和本地密钥只用于开发，不能用于 Staging 或 Production。
 
 ## 完整 Docker Compose
 
@@ -92,12 +92,12 @@ docker compose down --volumes
 主要 Web 路由：
 
 - `/`：品牌首页
-- `/login`：本地或企业登录入口
+- `/login`：统一账号密码登录入口
 - `/:tenantSlug`：租户商品前台，例如 `/demo`
 - `/console/tenants`：平台管理员的商家创建、查看与启停
 - `/console/dashboard`：企业仪表盘
 - `/console/products`：SKU 商品库与固定 Excel 模版导入
-- `/console/products/review`：历史资料导入的人工复核兼容页面
+- `/console/products/categories`：一级、二级商品分类管理
 - `/console/ai-search`：AI 产品搜索
 - `/console/inquiries`：询盘匹配工作台
 - `/console/quotes`：报价列表、详情、修订与审批

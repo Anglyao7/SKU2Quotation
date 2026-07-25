@@ -142,7 +142,7 @@ def test_oidc_password_grant_validates_tokens_without_exposing_credentials(
         authorization_endpoint=f"{issuer}/authorize",
         token_endpoint=f"{issuer}/token",
         jwks_uri=f"{issuer}/jwks",
-        userinfo_endpoint=None,
+        userinfo_endpoint=f"{issuer}/userinfo",
         end_session_endpoint=f"{issuer}/logout",
         signing_algorithms=("RS256",),
     )
@@ -176,6 +176,11 @@ def test_oidc_password_grant_validates_tokens_without_exposing_credentials(
             request=httpx.Request("POST", url),
         )
 
+    def unexpected_userinfo_request(*_args: object, **_kwargs: object) -> httpx.Response:
+        raise AssertionError(
+            "verified ID-token claims should not trigger a UserInfo round trip"
+        )
+
     monkeypatch.setattr(
         "app.services.auth.oidc_provider.load_oidc_settings",
         lambda: settings,
@@ -191,6 +196,10 @@ def test_oidc_password_grant_validates_tokens_without_exposing_credentials(
     monkeypatch.setattr(
         "app.services.auth.oidc_provider.httpx.post",
         token_request,
+    )
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.httpx.get",
+        unexpected_userinfo_request,
     )
 
     claim = OidcIdentityProviderAdapter().authenticate_password(

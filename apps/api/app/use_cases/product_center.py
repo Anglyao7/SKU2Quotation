@@ -21,7 +21,9 @@ from ..product_center_schemas import (
     AttributeDefinitionCreateRequest,
     AttributeDefinitionResponse,
     CategoryCreateRequest,
+    CategoryReorderRequest,
     CategoryResponse,
+    CategoryUpdateRequest,
     ProductAttributeResponse,
     ProductAuditEventResponse,
     ProductCard,
@@ -80,6 +82,13 @@ def _commit(session: Session, *, conflict_code: str, conflict_message: str) -> N
 
 def _decimal(value: Decimal | None) -> Decimal | None:
     return value
+
+
+def _category_display_name(category: ProductCategoryRow) -> str:
+    path = (category.path or "").strip()
+    if not path or path.casefold() == category.code.casefold():
+        return category.name
+    return path
 
 
 def _price_validity(price: SupplierPriceRow | None, *, now: datetime | None = None) -> str:
@@ -235,7 +244,11 @@ def _card(
         name=product.name,
         status=product.status,
         category=(
-            ProductCategorySummary(id=category.id, code=category.code, name=category.name)
+            ProductCategorySummary(
+                id=category.id,
+                code=category.code,
+                name=_category_display_name(category),
+            )
             if category
             else None
         ),
@@ -376,7 +389,7 @@ def list_skus(
                     ProductCategorySummary(
                         id=row.category.id,
                         code=row.category.code,
-                        name=row.category.name,
+                        name=_category_display_name(row.category),
                     )
                     if row.category
                     else None
@@ -696,6 +709,19 @@ def list_categories(
     ]
 
 
+def _category_response(row: ProductCategoryRow) -> CategoryResponse:
+    return CategoryResponse(
+        id=row.id,
+        parent_id=row.parent_id,
+        code=row.code,
+        name=row.name,
+        sort_order=row.sort_order,
+        path=row.path,
+        status=row.status,
+        version=row.version,
+    )
+
+
 def create_category(
     session: Session,
     *,
@@ -710,7 +736,24 @@ def create_category(
     )
     if request.parent_id is not None and parent is None:
         raise ApplicationError("CATEGORY_PARENT_NOT_FOUND", "Parent category was not found.")
-    path = f"{parent.path or parent.code}/{request.code}" if parent else request.code
+    if parent is not None and parent.parent_id is not None:
+        raise ApplicationError(
+            "CATEGORY_DEPTH_EXCEEDED",
+            "分类最多两级，不能在二级分类下继续新增。",
+            kind="conflict",
+        )
+    if repository.find_sibling_category(
+        session,
+        tenant_id=tenant_id,
+        parent_id=request.parent_id,
+        name=request.name,
+    ):
+        raise ApplicationError(
+            "CATEGORY_NAME_CONFLICT",
+            "同一级下已经存在同名分类。",
+            kind="conflict",
+        )
+    path = f"{parent.name}/{request.name}" if parent else request.name
     row = ProductCategoryRow(
         tenant_id=tenant_id,
         parent_id=request.parent_id,
@@ -739,16 +782,176 @@ def create_category(
         conflict_code="CATEGORY_CODE_CONFLICT",
         conflict_message="Category code already exists.",
     )
-    return CategoryResponse(
-        id=row.id,
-        parent_id=row.parent_id,
-        code=row.code,
-        name=row.name,
-        sort_order=row.sort_order,
-        path=row.path,
-        status=row.status,
-        version=row.version,
+    return _category_response(row)
+
+
+def reorder_categories(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    request: CategoryReorderRequest,
+) -> list[CategoryResponse]:
+    _require(permissions, "product.edit")
+    requested_ids = [item.id for item in request.items]
+    rows = repository.list_categories_by_ids(
+        session, tenant_id=tenant_id, category_ids=requested_ids
     )
+    if len(rows) != len(requested_ids):
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND",
+            "部分分类不存在，请刷新后重试。",
+            kind="not_found",
+        )
+    rows_by_id = {row.id: row for row in rows}
+    parent_ids = {row.parent_id for row in rows}
+    if len(parent_ids) != 1:
+        raise ApplicationError(
+            "CATEGORY_REORDER_LEVEL_MISMATCH",
+            "只能调整同一层级、同一上级下的分类顺序。",
+            kind="conflict",
+        )
+    parent_id = next(iter(parent_ids))
+    siblings = repository.list_sibling_categories(
+        session, tenant_id=tenant_id, parent_id=parent_id
+    )
+    if {row.id for row in siblings} != set(requested_ids):
+        raise ApplicationError(
+            "CATEGORY_REORDER_STALE",
+            "分类列表已发生变化，请刷新后重新排序。",
+            kind="conflict",
+        )
+    for item in request.items:
+        if rows_by_id[item.id].version != item.expected_version:
+            raise ApplicationError(
+                "CATEGORY_VERSION_CONFLICT",
+                "分类已被其他人修改，请刷新后重试。",
+                kind="conflict",
+            )
+
+    for position, item in enumerate(request.items):
+        row = rows_by_id[item.id]
+        if row.sort_order == position:
+            continue
+        before = _category_response(row).model_dump(mode="json")
+        row.sort_order = position
+        row.version += 1
+        after = _category_response(row).model_dump(mode="json")
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=None,
+                entity_type="CATEGORY",
+                entity_id=str(row.id),
+                action="category.reordered",
+                before=before,
+                after=after,
+                actor_membership_id=membership_id,
+            )
+        )
+    session.flush()
+    _commit(
+        session,
+        conflict_code="CATEGORY_REORDER_CONFLICT",
+        conflict_message="分类顺序保存失败，请刷新后重试。",
+    )
+    return [_category_response(rows_by_id[item.id]) for item in request.items]
+
+
+def update_category(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    category_id: UUID,
+    request: CategoryUpdateRequest,
+) -> CategoryResponse:
+    _require(permissions, "product.edit")
+    row = repository.get_category(
+        session, tenant_id=tenant_id, category_id=category_id
+    )
+    if row is None:
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND", "分类不存在。", kind="not_found"
+        )
+    if row.version != request.expected_version:
+        raise ApplicationError(
+            "CATEGORY_VERSION_CONFLICT",
+            "分类已被其他人修改，请刷新后重试。",
+            kind="conflict",
+        )
+    if request.parent_id == row.id:
+        raise ApplicationError(
+            "CATEGORY_PARENT_INVALID", "分类不能作为自己的上级。", kind="conflict"
+        )
+    parent = repository.get_category(
+        session, tenant_id=tenant_id, category_id=request.parent_id
+    )
+    if request.parent_id is not None and parent is None:
+        raise ApplicationError(
+            "CATEGORY_PARENT_NOT_FOUND", "上级分类不存在。", kind="not_found"
+        )
+    if parent is not None and parent.parent_id is not None:
+        raise ApplicationError(
+            "CATEGORY_DEPTH_EXCEEDED",
+            "分类最多两级，只能选择一级分类作为上级。",
+            kind="conflict",
+        )
+    children = repository.list_child_categories(
+        session, tenant_id=tenant_id, parent_id=row.id
+    )
+    if parent is not None and children:
+        raise ApplicationError(
+            "CATEGORY_DEPTH_EXCEEDED",
+            "该一级分类仍有二级分类，不能移动到另一个分类下面。",
+            kind="conflict",
+        )
+    if repository.find_sibling_category(
+        session,
+        tenant_id=tenant_id,
+        parent_id=request.parent_id,
+        name=request.name,
+        exclude_id=row.id,
+    ):
+        raise ApplicationError(
+            "CATEGORY_NAME_CONFLICT",
+            "同一级下已经存在同名分类。",
+            kind="conflict",
+        )
+
+    before = _category_response(row).model_dump(mode="json")
+    row.parent_id = request.parent_id
+    row.name = request.name
+    row.path = f"{parent.name}/{request.name}" if parent else request.name
+    row.sort_order = request.sort_order
+    row.status = request.status
+    row.version += 1
+    if children:
+        for child in children:
+            child.path = f"{request.name}/{child.name}"
+            child.version += 1
+    session.flush()
+    after = _category_response(row).model_dump(mode="json")
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=None,
+            entity_type="CATEGORY",
+            entity_id=str(row.id),
+            action="category.updated",
+            before=before,
+            after=after,
+            actor_membership_id=membership_id,
+        )
+    )
+    _commit(
+        session,
+        conflict_code="CATEGORY_UPDATE_CONFLICT",
+        conflict_message="分类保存失败，请刷新后重试。",
+    )
+    return _category_response(row)
 
 
 def list_attribute_definitions(

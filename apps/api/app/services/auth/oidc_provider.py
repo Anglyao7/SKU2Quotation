@@ -433,10 +433,21 @@ class OidcIdentityProviderAdapter:
             settings=settings,
             discovery=discovery,
         )
-        userinfo = cls._userinfo(
-            endpoint=discovery.userinfo_endpoint,
-            access_token=access_token,
-            timeout=settings.timeout_seconds,
+        id_token_has_verified_email = (
+            isinstance(claims.get("email"), str)
+            and claims.get("email_verified") is True
+        )
+        # A signed ID token already gives us the trusted identity attributes we
+        # need. Avoid a second identity-provider round trip unless those claims
+        # are absent and must be completed from UserInfo.
+        userinfo = (
+            None
+            if id_token_has_verified_email
+            else cls._userinfo(
+                endpoint=discovery.userinfo_endpoint,
+                access_token=access_token,
+                timeout=settings.timeout_seconds,
+            )
         )
         if userinfo and userinfo.get("sub") != claims.get("sub"):
             raise IdentityProviderError("OIDC userinfo subject mismatch")

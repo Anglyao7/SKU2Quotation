@@ -8,10 +8,10 @@ import {
   DotsThreeOutline,
   FileText,
   Key,
-  ShieldCheck,
   SignOut,
   Sparkle,
   Storefront as StoreIcon,
+  TreeStructure,
   UserGear,
 } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
@@ -40,7 +40,7 @@ const navigationGroups = [
     label: "商品",
     items: [
       { to: "/console/products", label: "SKU 商品库", mobileLabel: "SKU", icon: Cube, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: true },
-      { to: "/console/products/review", label: "待审核", mobileLabel: "审核", icon: ShieldCheck, permissions: ["product.review"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/products/categories", label: "分类管理", mobileLabel: "分类", icon: TreeStructure, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {

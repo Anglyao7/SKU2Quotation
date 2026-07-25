@@ -37,6 +37,7 @@ apps/api/generated/
 apps/api/uploads/
 uploads/
 generated/
+outputs/
 logs/
 tmp/
 temp/

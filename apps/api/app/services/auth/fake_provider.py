@@ -1,7 +1,13 @@
+import hmac
 import os
 from urllib.parse import urlparse
 
+from ...constants import DEFAULT_OWNER_USER_ID
 from .contracts import IdentityClaim, IdentityProviderError
+
+
+LOCAL_OWNER_EMAIL = "owner@local.aitradecloud.invalid"
+LOCAL_OWNER_PASSWORD = "zhimaoyun123"
 
 
 def _allowed_redirect_hosts() -> set[str]:
@@ -14,7 +20,7 @@ def _allowed_redirect_hosts() -> set[str]:
 
 
 class FakeIdentityProviderAdapter:
-    """Non-production authorization-code adapter for local and automated tests."""
+    """Non-production identity adapter for local and automated tests."""
 
     provider_name = "local_fake"
 
@@ -56,9 +62,44 @@ class FakeIdentityProviderAdapter:
         identifier: str,
         password: str,
     ) -> IdentityClaim:
-        del identifier, password
-        raise IdentityProviderError(
-            "password authentication is unavailable for the fake provider"
+        app_env = os.getenv("APP_ENV", "development").lower()
+        profile = os.getenv("AUTH_PROFILE", "local_fake").lower()
+        if app_env in {"staging", "production", "prod"} or profile != "local_fake":
+            raise IdentityProviderError("local identity provider is disabled")
+
+        email = os.getenv("LOCAL_LOGIN_EMAIL", LOCAL_OWNER_EMAIL).strip().lower()
+        account = os.getenv("LOCAL_LOGIN_ACCOUNT", "owner").strip().casefold()
+        phone = os.getenv("LOCAL_LOGIN_PHONE", "").strip().casefold()
+        submitted_identifier = identifier.strip().casefold()
+        allowed_identifiers = tuple(
+            candidate
+            for candidate in (account, email.casefold(), phone)
+            if candidate
+        )
+        identifier_matches = any(
+            hmac.compare_digest(
+                submitted_identifier.encode("utf-8"),
+                candidate.encode("utf-8"),
+            )
+            for candidate in allowed_identifiers
+        )
+        expected_password = os.getenv(
+            "LOCAL_LOGIN_PASSWORD",
+            LOCAL_OWNER_PASSWORD,
+        )
+        password_matches = hmac.compare_digest(
+            password.encode("utf-8"),
+            expected_password.encode("utf-8"),
+        )
+        if not identifier_matches or not password_matches:
+            raise IdentityProviderError("password authentication failed")
+
+        return IdentityClaim(
+            provider="local-bootstrap",
+            subject=str(DEFAULT_OWNER_USER_ID),
+            email_normalized=email,
+            email_verified=True,
+            display_name="Local Owner",
         )
 
     def change_password(

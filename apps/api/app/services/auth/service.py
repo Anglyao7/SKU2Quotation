@@ -237,7 +237,14 @@ def password_login(
     user_agent: str | None,
     ip_address: str | None,
 ) -> IssuedSession:
-    adapter = _identity_adapter("enterprise_oidc")
+    configured_provider = os.getenv("AUTH_PROFILE", "local_fake").lower()
+    if configured_provider not in {"local_fake", "enterprise_oidc"}:
+        raise AuthError(
+            "AUTH_PROVIDER_UNAVAILABLE",
+            "approved identity provider is not configured",
+            status_code=503,
+        )
+    adapter = _identity_adapter(configured_provider)
     password = request.password.get_secret_value()
     if not password or len(password) > 1024:
         raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
@@ -251,7 +258,7 @@ def password_login(
     return _issue_authenticated_session(
         session,
         claim=claim,
-        provider="enterprise_oidc",
+        provider=configured_provider,
         device_label=request.device_label,
         user_agent=user_agent,
         ip_address=ip_address,

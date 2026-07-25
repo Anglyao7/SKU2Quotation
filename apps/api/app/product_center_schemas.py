@@ -226,12 +226,52 @@ class CategoryCreateRequest(BaseModel):
     def normalize_category_code(cls, value: str) -> str:
         return value.strip().upper()
 
+    @field_validator("name")
+    @classmethod
+    def normalize_category_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if "/" in normalized or "／" in normalized:
+            raise ValueError("category name must be a single hierarchy segment")
+        return normalized
+
 
 class CategoryResponse(CategoryCreateRequest):
     id: UUID
     path: str | None
     status: str
     version: int
+
+
+class CategoryUpdateRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    parent_id: UUID | None = None
+    name: str = Field(min_length=1, max_length=200)
+    sort_order: int = Field(default=0, ge=0)
+    status: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
+
+    @field_validator("name")
+    @classmethod
+    def normalize_category_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if "/" in normalized or "／" in normalized:
+            raise ValueError("category name must be a single hierarchy segment")
+        return normalized
+
+
+class CategoryReorderItem(BaseModel):
+    id: UUID
+    expected_version: int = Field(ge=1)
+
+
+class CategoryReorderRequest(BaseModel):
+    items: list[CategoryReorderItem] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_category_ids(self):
+        ids = [item.id for item in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("category ids must be unique")
+        return self
 
 
 class SupplierPriceCreateRequest(BaseModel):

@@ -51,10 +51,6 @@ function resolveApiBase() {
 const API_BASE = resolveApiBase();
 export const PRODUCT_TEMPLATE_DOWNLOAD_URL = `${API_BASE}/product-template.xlsx`;
 
-export interface AuthPublicConfig {
-  provider: "local_fake" | "enterprise_oidc";
-}
-
 export class CoreApiError extends Error {
   status: number;
   details?: unknown;
@@ -202,29 +198,6 @@ async function request<T>(path: string, init: RequestInit = {}, retrySession = t
     throw new CoreApiError(messageFromPayload(payload, `请求失败（${response.status}）`), response.status, payload);
   }
   return payload as T;
-}
-
-export async function loginLocalDemo(): Promise<AuthTokenData> {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  const verifier = btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-  const payload = await request<{ data: ApiAuthTokenData }>("/auth/login", {
-    method: "POST",
-    body: JSON.stringify({
-      provider: "local_fake",
-      authorization_code: "fake:00000000-0000-0000-0000-000000000003",
-      code_verifier: verifier,
-      redirect_uri: `${window.location.origin}/login/callback`,
-      device_label: "智贸云 Web",
-    }),
-  }, false);
-  return acceptAuthData(payload.data);
-}
-
-export async function getAuthConfig(): Promise<AuthPublicConfig> {
-  return request<AuthPublicConfig>("/auth/config", {}, false);
 }
 
 export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
@@ -903,7 +876,49 @@ interface ApiCategory { id: string; parent_id?: string | null; code: string; nam
 interface ApiAttributeDefinition { id: string; category_id?: string | null; attribute_key: string; display_name: string; data_type: AttributeDefinition["dataType"]; unit_code?: string | null; enum_values?: string[] | null; is_required: boolean; is_variant: boolean; is_filterable: boolean; is_matchable: boolean; status: string; version: number }
 
 export async function listCategories(): Promise<ProductCategory[]> {
-  return (await request<ApiCategory[]>("/categories")).map((row) => ({ id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), status: row.status, sortOrder: row.sort_order, version: row.version }));
+  return (await request<ApiCategory[]>("/categories")).map(mapCategory);
+}
+
+function mapCategory(row: ApiCategory): ProductCategory {
+  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), status: row.status, sortOrder: row.sort_order, version: row.version };
+}
+
+export async function createCategory(input: { name: string; parentId?: string; sortOrder?: number }): Promise<ProductCategory> {
+  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 24).toUpperCase();
+  return mapCategory(await request<ApiCategory>("/categories", {
+    method: "POST",
+    body: JSON.stringify({
+      parent_id: input.parentId,
+      code: `MAN-${suffix}`,
+      name: input.name,
+      sort_order: input.sortOrder ?? 0,
+    }),
+  }));
+}
+
+export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE" }): Promise<ProductCategory> {
+  return mapCategory(await request<ApiCategory>(`/categories/${encodeURIComponent(input.id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      expected_version: input.expectedVersion,
+      parent_id: input.parentId,
+      name: input.name,
+      sort_order: input.sortOrder,
+      status: input.status,
+    }),
+  }));
+}
+
+export async function reorderCategories(categories: ProductCategory[]): Promise<ProductCategory[]> {
+  return (await request<ApiCategory[]>("/categories/reorder", {
+    method: "PATCH",
+    body: JSON.stringify({
+      items: categories.map((category) => ({
+        id: category.id,
+        expected_version: category.version,
+      })),
+    }),
+  })).map(mapCategory);
 }
 
 export async function listAttributeDefinitions(categoryId?: string): Promise<AttributeDefinition[]> {

@@ -33,6 +33,7 @@ def test_fixed_template_keeps_note_without_creating_a_moq(tmp_path: Path) -> Non
             "20",
             "轻盈柔雾质地",
             "12",
+            "新品，热卖, 新品",
             "https://img.example.com/sku-001.jpg",
             *([None] * 9),
         ]],
@@ -44,6 +45,7 @@ def test_fixed_template_keeps_note_without_creating_a_moq(tmp_path: Path) -> Non
     assert result.rows[0].sku_code == "SKU-001"
     assert str(result.rows[0].unit_price) == "20.00"
     assert result.rows[0].note == "12"
+    assert result.rows[0].tags == ("新品", "热卖")
     assert result.rows[0].default_moq is None
     assert result.rows[0].image_urls == ("https://img.example.com/sku-001.jpg",)
     assert result.warnings == ()
@@ -54,8 +56,8 @@ def test_duplicate_sku_is_case_and_whitespace_insensitive(tmp_path: Path) -> Non
     _write_workbook(
         path,
         [
-            ["商品 A", "分类", " sku-dup ", 10, None, 1, *([None] * 10)],
-            ["商品 B", "分类", "SkU-DuP", 12, None, 1, *([None] * 10)],
+            ["商品 A", "分类", " sku-dup ", 10, None, 1, None, *([None] * 10)],
+            ["商品 B", "分类", "SkU-DuP", 12, None, 1, None, *([None] * 10)],
         ],
     )
 
@@ -68,13 +70,39 @@ def test_duplicate_sku_is_case_and_whitespace_insensitive(tmp_path: Path) -> Non
     assert "第 2 行" in result.warnings[0]
 
 
+def test_category_path_normalizes_two_levels(tmp_path: Path) -> None:
+    path = tmp_path / "商品模版.xlsx"
+    _write_workbook(
+        path,
+        [["商品 A", " 办公用品 ／ 纸品 ", "SKU-CATEGORY", 10, None, None, None, *([None] * 10)]],
+    )
+
+    result = parse_product_template(path)
+
+    assert result.rows[0].category == "办公用品/纸品"
+
+
+@pytest.mark.parametrize("category", ["办公用品/纸品/A4", "/纸品", "办公用品/"])
+def test_category_path_rejects_empty_or_third_level(
+    tmp_path: Path, category: str
+) -> None:
+    path = tmp_path / "商品模版.xlsx"
+    _write_workbook(
+        path,
+        [["商品 A", category, "SKU-BAD-CATEGORY", 10, None, None, None, *([None] * 10)]],
+    )
+
+    with pytest.raises(ProductTemplateValidationError, match="商品分类|两级"):
+        parse_product_template(path)
+
+
 def test_price_is_half_up_quantized_to_two_decimal_places(tmp_path: Path) -> None:
     path = tmp_path / "商品模版.xlsx"
     _write_workbook(
         path,
         [
-            ["商品 A", "分类", "price-a", "12.344", None, None, *([None] * 10)],
-            ["商品 B", "分类", "price-b", "12.345", None, None, *([None] * 10)],
+            ["商品 A", "分类", "price-a", "12.344", None, None, None, *([None] * 10)],
+            ["商品 B", "分类", "price-b", "12.345", None, None, None, *([None] * 10)],
         ],
     )
 
@@ -97,6 +125,7 @@ def test_price_respects_numeric_20_2_boundary(tmp_path: Path) -> None:
                 "999999999999999999.99",
                 None,
                 None,
+                None,
                 *([None] * 10),
             ],
             [
@@ -104,6 +133,7 @@ def test_price_respects_numeric_20_2_boundary(tmp_path: Path) -> None:
                 "分类",
                 "OVERFLOW-PRICE",
                 "999999999999999999.995",
+                None,
                 None,
                 None,
                 *([None] * 10),
@@ -119,19 +149,19 @@ def test_price_respects_numeric_20_2_boundary(tmp_path: Path) -> None:
     "row, message",
     [
         (
-            ["", "分类", "INVALID-NAME", 10, None, None, *([None] * 10)],
+            ["", "分类", "INVALID-NAME", 10, None, None, None, *([None] * 10)],
             "缺少商品名称",
         ),
         (
-            ["商品", "分类", "INVALID-PRICE", "not-a-price", None, None, *([None] * 10)],
+            ["商品", "分类", "INVALID-PRICE", "not-a-price", None, None, None, *([None] * 10)],
             "商品价格不是有效数字",
         ),
         (
-            ["商品", "分类", "INVALID-IMAGE", 10, None, None, "javascript:alert(1)", *([None] * 9)],
+            ["商品", "分类", "INVALID-IMAGE", 10, None, None, None, "javascript:alert(1)", *([None] * 9)],
             "商品图片1不是有效",
         ),
         (
-            ["商品", "分类", "FORMULA", "=1+1", None, None, *([None] * 10)],
+            ["商品", "分类", "FORMULA", "=1+1", None, None, None, *([None] * 10)],
             "包含公式",
         ),
     ],
