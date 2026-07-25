@@ -1,7 +1,7 @@
 import { Badge, Button, Card, Dialog, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowsClockwise, CaretRight, CheckCircle, ClockCounterClockwise, DownloadSimple, FileArrowUp, FileXls, ImageSquare, MagnifyingGlass, Plus, Tag, Warning, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, CaretRight, CheckCircle, ClockCounterClockwise, DownloadSimple, FileArrowUp, FileXls, ImageSquare, MagnifyingGlass, Plus, Sparkle, Tag, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   createAttributeDefinition,
   createProductTemplateImport,
@@ -20,6 +20,9 @@ import {
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
+import { useLocale } from "../LocaleContext";
+import { primaryCategoryLabel } from "../../lib/format";
+import { automaticTagColor, TAG_COLOR_PALETTE, tagGlassStyle } from "../../lib/tagColors";
 import type { AttributeDefinition, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductSku, PublicCatalogOffer, SkuListItem, SkuListPage } from "../types";
 
 const splitValues = (value: string) => value.split(/[,，;；、|\n]/).map((item) => item.trim()).filter(Boolean);
@@ -60,13 +63,13 @@ function skuStatusColor(status: ProductSku["status"]): "jade" | "amber" | "gray"
 
 function skuPrice(row: SkuListItem) {
   if (row.publicPrice === undefined) return "未设置";
-  return `${row.publicCurrency ?? ""} ${row.publicPrice.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
+  return `${row.publicCurrency ?? ""} ${row.publicPrice.toLocaleString(document.documentElement.lang || "zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
 }
 
 function skuUpdatedDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(document.documentElement.lang || "zh-CN", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -75,12 +78,14 @@ function skuUpdatedDate(value: string) {
 
 export function ProductsPage() {
   const { hasPermission } = useCoreAuth();
+  const { locale, t } = useLocale();
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
     && hasPermission("catalog.publish");
   const [params, setParams] = useSearchParams();
   const importInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [primaryCategoryId, setPrimaryCategoryId] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [status, setStatus] = useState<"" | ProductSku["status"]>("");
@@ -111,7 +116,7 @@ export function ProductsPage() {
     setError("");
     try {
       const next = await listSkus({
-        q: query.trim() || undefined,
+        q: debouncedQuery.trim() || undefined,
         categoryId: categoryId || primaryCategoryId || undefined,
         statuses: status ? [status] : undefined,
         page,
@@ -120,18 +125,22 @@ export function ProductsPage() {
       if (sequence === loadSequence.current) setResult(next);
     } catch (reason) {
       if (sequence === loadSequence.current) {
-        setError(reason instanceof Error ? reason.message : "SKU 商品库加载失败");
+        setError(reason instanceof Error ? reason.message : t("SKU 商品库加载失败"));
       }
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [categoryId, page, primaryCategoryId, query, status]);
+  }, [categoryId, debouncedQuery, page, primaryCategoryId, status, t]);
 
   const loadCategories = useCallback(async () => {
     setCategories(await listCategories());
   }, []);
   useEffect(() => { void loadCategories().catch(() => setCategories([])); }, [loadCategories]);
-  useEffect(() => { const timer = window.setTimeout(() => void load(), 240); return () => window.clearTimeout(timer); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 240);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+  useEffect(() => { void load(); }, [load]);
 
   const loadTemplateImports = useCallback(async () => {
     if (!canImport) return;
@@ -145,13 +154,15 @@ export function ProductsPage() {
       setImportJobs([]);
       return;
     }
+    if (!importOpen) return;
     void loadTemplateImports().catch((reason) => {
       setImportJobs([]);
-      setImportPollingError(reason instanceof Error ? `导入记录刷新失败：${reason.message}` : "导入记录暂时无法刷新。");
+      setImportPollingError(reason instanceof Error ? t("导入记录刷新失败：{message}", { message: reason.message }) : t("导入记录暂时无法刷新。"));
     });
-  }, [loadTemplateImports]);
+  }, [canImport, importOpen, loadTemplateImports, t]);
 
   useEffect(() => {
+    if (!importOpen) return;
     if (!importJobs.some((job) => job.status === "scanning" || job.status === "parsing")) return;
     let cancelled = false;
     let timer = 0;
@@ -159,7 +170,7 @@ export function ProductsPage() {
       timer = window.setTimeout(() => {
         void loadTemplateImports()
           .catch((reason) => {
-            setImportPollingError(reason instanceof Error ? `状态刷新失败，系统将继续重试：${reason.message}` : "状态刷新失败，系统将继续重试。");
+            setImportPollingError(reason instanceof Error ? t("状态刷新失败，系统将继续重试：{message}", { message: reason.message }) : t("状态刷新失败，系统将继续重试。"));
           })
           .finally(() => {
             if (!cancelled) poll();
@@ -171,7 +182,7 @@ export function ProductsPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [importJobs, loadTemplateImports]);
+  }, [importJobs, importOpen, loadTemplateImports, t]);
 
   useEffect(() => {
     const requested = params.get("import") === "1";
@@ -227,7 +238,7 @@ export function ProductsPage() {
     setPendingFile(file);
     if (!file.name.toLowerCase().endsWith(".xlsx")) {
       setDetection(undefined);
-      setImportError("这里只接受固定格式的 .xlsx 商品模版。");
+      setImportError(t("这里只接受固定格式的 .xlsx 商品模版。"));
       if (importInputRef.current) importInputRef.current.value = "";
       return;
     }
@@ -239,11 +250,11 @@ export function ProductsPage() {
         nextDetection.detected_type !== "OOXML / XLSX"
         || !nextDetection.extension_matches
       ) {
-        setImportError("文件签名与 XLSX 商品模版不一致，请重新选择。");
+        setImportError(t("文件签名与 XLSX 商品模版不一致，请重新选择。"));
       }
     } catch (reason) {
       setDetection(undefined);
-      setImportError(reason instanceof Error ? reason.message : "文件检测失败");
+      setImportError(reason instanceof Error ? reason.message : t("文件检测失败"));
     } finally {
       setImportBusy(false);
       if (importInputRef.current) importInputRef.current.value = "";
@@ -252,7 +263,7 @@ export function ProductsPage() {
 
   const importTemplate = async () => {
     if (!canImport) {
-      setImportError("当前账号没有导入商品的权限。");
+      setImportError(t("当前账号没有导入商品的权限。"));
       return;
     }
     if (!pendingFile || !detection || importError) return;
@@ -270,7 +281,7 @@ export function ProductsPage() {
         setCategories(await listCategories());
       }
     } catch (reason) {
-      setImportError(reason instanceof Error ? reason.message : "商品模版导入失败");
+      setImportError(reason instanceof Error ? reason.message : t("商品模版导入失败"));
     } finally {
       setImportBusy(false);
     }
@@ -290,7 +301,7 @@ export function ProductsPage() {
         return next;
       }, { replace: true });
     }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "产品详情加载失败"); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : t("产品详情加载失败")); }
     finally { setDetailLoading(false); }
   }, [setParams]);
 
@@ -315,6 +326,7 @@ export function ProductsPage() {
   const refreshSelected = async () => { if (selected) setSelected(await getProduct(selected.id)); };
   const resetFilters = () => {
     setQuery("");
+    setDebouncedQuery("");
     setPrimaryCategoryId("");
     setCategoryId("");
     setStatus("");
@@ -331,61 +343,60 @@ export function ProductsPage() {
     [categories, primaryCategoryId],
   );
   const hasActiveFilters = Boolean(query.trim() || primaryCategoryId || categoryId || status);
-
   return (
     <div className="core-workspace">
       <CorePageHeading
-        eyebrow="商品资料"
-        title="SKU 商品库"
-        description="所有商品从固定 Excel 模版进入这里，并直接按 SKU 管理名称、分类、价格、图片与上下架状态。"
+        eyebrow={t("商品资料")}
+        title={t("SKU 商品库")}
+        description={t("所有商品从固定 Excel 模版进入这里，并直接按 SKU 管理名称、分类、价格、图片与上下架状态。")}
         actions={<>
-          {canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />导入商品模版</Button> : null}
+          {canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品模版")}</Button> : null}
         </>}
       />
       <Card className="core-sku-toolbar">
-        <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="搜索 SKU、商品名称或产品编码" aria-label="搜索 SKU 商品库"><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
-        <select value={primaryCategoryId} onChange={(event) => { setPrimaryCategoryId(event.target.value); setCategoryId(""); setPage(1); }} aria-label="按一级分类筛选"><option value="">全部一级分类</option>{rootCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
-        <select value={categoryId} disabled={!primaryCategoryId || !secondaryCategories.length} onChange={(event) => { setCategoryId(event.target.value); setPage(1); }} aria-label="按二级分类筛选"><option value="">{primaryCategoryId ? "全部二级分类" : "请先选择一级分类"}</option>{secondaryCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
-        <select value={status} onChange={(event) => { setStatus(event.target.value as "" | ProductSku["status"]); setPage(1); }} aria-label="按 SKU 状态筛选">
-          <option value="">全部状态</option>
-          <option value="ACTIVE">在售</option>
-          <option value="DRAFT">草稿</option>
-          <option value="INACTIVE">已下架</option>
-          <option value="ARCHIVED">已归档</option>
+        <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={t("搜索 SKU、商品名称或产品编码")} aria-label={t("搜索 SKU 商品库")}><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
+        <select value={primaryCategoryId} onChange={(event) => { setPrimaryCategoryId(event.target.value); setCategoryId(""); setPage(1); }} aria-label={t("按一级分类筛选")}><option value="">{t("全部一级分类")}</option>{rootCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+        <select value={categoryId} disabled={!primaryCategoryId || !secondaryCategories.length} onChange={(event) => { setCategoryId(event.target.value); setPage(1); }} aria-label={t("按二级分类筛选")}><option value="">{t(primaryCategoryId ? "全部二级分类" : "请先选择一级分类")}</option>{secondaryCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+        <select value={status} onChange={(event) => { setStatus(event.target.value as "" | ProductSku["status"]); setPage(1); }} aria-label={t("按 SKU 状态筛选")}>
+          <option value="">{t("全部状态")}</option>
+          <option value="ACTIVE">{t("在售")}</option>
+          <option value="DRAFT">{t("草稿")}</option>
+          <option value="INACTIVE">{t("已下架")}</option>
+          <option value="ARCHIVED">{t("已归档")}</option>
         </select>
-        <Button variant="soft" color="gray" disabled={loading} onClick={() => void load()}><ArrowsClockwise />刷新</Button>
+        <Button variant="soft" color="gray" disabled={loading} onClick={() => void load()}><ArrowsClockwise />{t("刷新")}</Button>
       </Card>
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
-      {loading && !result.items.length ? <CoreLoading label="正在读取 SKU 商品库" /> : null}
+      {loading && !result.items.length ? <CoreLoading label={t("正在读取 SKU 商品库")} /> : null}
       {!loading && !result.items.length && !error ? (
         hasActiveFilters
-          ? <CoreEmpty title="没有符合条件的 SKU" description="尝试更换关键词、分类或状态。" action={<Button variant="soft" onClick={resetFilters}>清除筛选</Button>} />
+          ? <CoreEmpty title={t("没有符合条件的 SKU")} description={t("尝试更换关键词、分类或状态。")} action={<Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button>} />
           : <CoreEmpty
-              title="商品库还是空的"
-              description="下载固定模版并填写商品资料，导入后即可按 SKU 管理和发布。"
-              action={canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />导入商品模版</Button> : undefined}
+              title={t("商品库还是空的")}
+              description={t("下载固定模版并填写商品资料，导入后即可按 SKU 管理和发布。")}
+              action={canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品模版")}</Button> : undefined}
             />
       ) : null}
       {result.items.length ? (
         <>
           <div className="core-sku-list-meta" aria-live="polite">
-            <Text size="2" color="gray">共 <strong>{result.total.toLocaleString("zh-CN")}</strong> 个 SKU · 当前显示 {rangeStart}–{rangeEnd}</Text>
-            {loading ? <Text size="1" color="gray">正在更新结果…</Text> : <Text size="1" color="gray">每页 {result.pageSize} 条</Text>}
+            <Text size="2" color="gray">{t("共 {total} 个 SKU · 当前显示 {start}–{end}", { total: result.total.toLocaleString(locale), start: rangeStart, end: rangeEnd })}</Text>
+            {loading ? <Text size="1" color="gray">{t("正在更新结果…")}</Text> : <Text size="1" color="gray">{t("每页 {count} 条", { count: result.pageSize })}</Text>}
           </div>
           <Card className="core-sku-table-card">
-            <div className="core-sku-table" role="table" aria-label="SKU 商品列表">
+            <div className="core-sku-table" role="table" aria-label={t("SKU 商品列表")}>
               <div className="core-sku-table-head" role="row">
-                <span>SKU / 商品</span><span>分类与标签</span><span>公开价</span><span>状态</span><span>更新时间</span><span aria-hidden="true" />
+                <span>{t("SKU / 商品")}</span><span>{t("分类与标签")}</span><span>{t("公开价")}</span><span>{t("状态")}</span><span>{t("更新时间")}</span><span aria-hidden="true" />
               </div>
               {result.items.map((sku) => (
-                <button type="button" className="core-sku-table-row" role="row" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={`打开 SKU ${sku.skuCode} 的编辑详情`}>
+                <button type="button" className="core-sku-table-row" role="row" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}>
                   <span className="core-sku-name-cell">
-                    <span className={`core-sku-image-state ${sku.imageStatus.toLowerCase()}`} title={sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片"}><ImageSquare /></span>
+                    <span className={`core-sku-image-state ${sku.imageStatus.toLowerCase()}`} title={t(sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片")}><ImageSquare /></span>
                     <span><strong className="core-tabular">{sku.skuCode}</strong><small>{sku.name || sku.productName}</small></span>
                   </span>
-                  <span className="core-sku-category-cell"><strong>{sku.category?.name ?? "未分类"}</strong><span className="core-chip-row">{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span></span>
-                  <span className="core-tabular"><strong>{skuPrice(sku)}</strong><small>{sku.publicOfferStatus ? offerStatusLabel[sku.publicOfferStatus] : "尚无公开报价"}</small></span>
-                  <Badge color={skuStatusColor(sku.status)}>{skuStatusLabel[sku.status]}</Badge>
+                  <span className="core-sku-category-cell"><strong>{primaryCategoryLabel(sku.category?.name) || t("未分类")}</strong><span className="core-chip-row">{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span></span>
+                  <span className="core-tabular"><strong>{t(skuPrice(sku))}</strong><small>{t(sku.publicOfferStatus ? offerStatusLabel[sku.publicOfferStatus] : "尚无公开报价")}</small></span>
+                  <Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge>
                   <span><strong>{skuUpdatedDate(sku.updatedAt)}</strong><small>v{sku.version}</small></span>
                   <CaretRight aria-hidden="true" />
                 </button>
@@ -394,19 +405,19 @@ export function ProductsPage() {
           </Card>
           <div className="core-sku-mobile-list">
             {result.items.map((sku) => (
-              <button type="button" className="core-sku-mobile-card" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={`打开 SKU ${sku.skuCode} 的编辑详情`}>
-                <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><Badge color={skuStatusColor(sku.status)}>{skuStatusLabel[sku.status]}</Badge></span>
-                <span className="core-sku-mobile-facts"><span><small>公开价</small><strong className="core-tabular">{skuPrice(sku)}</strong></span><span><small>图片</small><strong>{imageStatusLabel(sku.imageStatus)}</strong></span></span>
-                <span className="core-chip-row"><Badge color="gray">{sku.category?.name ?? "未分类"}</Badge>{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
-                <span className="core-sku-mobile-footer"><small>更新于 {skuUpdatedDate(sku.updatedAt)}</small><span>SKU 详情<CaretRight /></span></span>
+              <button type="button" className="core-sku-mobile-card" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}>
+                <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge></span>
+                <span className="core-sku-mobile-facts"><span><small>{t("公开价")}</small><strong className="core-tabular">{t(skuPrice(sku))}</strong></span><span><small>{t("图片")}</small><strong>{t(imageStatusLabel(sku.imageStatus))}</strong></span></span>
+                <span className="core-chip-row"><Badge color="gray">{primaryCategoryLabel(sku.category?.name) || t("未分类")}</Badge>{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
+                <span className="core-sku-mobile-footer"><small>{t("更新于 {date}", { date: skuUpdatedDate(sku.updatedAt) })}</small><span>{t("SKU 详情")}<CaretRight /></span></span>
               </button>
             ))}
           </div>
           {result.pages > 1 ? (
-            <nav className="core-sku-pagination" aria-label="SKU 列表分页">
-              <Button variant="soft" color="gray" disabled={loading || result.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>上一页</Button>
-              <Text size="2" color="gray">第 <strong>{result.page}</strong> / {result.pages} 页</Text>
-              <Button variant="soft" color="gray" disabled={loading || result.page >= result.pages} onClick={() => setPage((current) => Math.min(result.pages, current + 1))}>下一页</Button>
+            <nav className="core-sku-pagination" aria-label={t("SKU 列表分页")}>
+              <Button variant="soft" color="gray" disabled={loading || result.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>{t("上一页")}</Button>
+              <Text size="2" color="gray">{t("第 {page} / {pages} 页", { page: result.page, pages: result.pages })}</Text>
+              <Button variant="soft" color="gray" disabled={loading || result.page >= result.pages} onClick={() => setPage((current) => Math.min(result.pages, current + 1))}>{t("下一页")}</Button>
             </nav>
           ) : null}
         </>
@@ -416,24 +427,24 @@ export function ProductsPage() {
         <Dialog.Content className="core-template-dialog">
           <div className="core-dialog-heading">
             <div>
-              <Text size="1" color="gray">固定商品资料入口</Text>
-              <Dialog.Title>导入商品模版</Dialog.Title>
-              <Dialog.Description>选择按约定填写的 XLSX；不需要选择供应商，也不会按供应商拆分商品。</Dialog.Description>
+              <Text size="1" color="gray">{t("固定商品资料入口")}</Text>
+              <Dialog.Title>{t("导入商品模版")}</Dialog.Title>
+              <Dialog.Description>{t("选择按约定填写的 XLSX；不需要选择供应商，也不会按供应商拆分商品。")}</Dialog.Description>
             </div>
-            <Button variant="ghost" color="gray" onClick={() => setImportDialogOpen(false)} aria-label="关闭"><X /></Button>
+            <Button variant="ghost" color="gray" onClick={() => setImportDialogOpen(false)} aria-label={t("关闭")}><X /></Button>
           </div>
 
           <Card className="core-template-contract">
             <span className="core-row-icon"><FileXls /></span>
             <div>
-              <Text weight="bold" as="div">当前固定模版：商品模版.xlsx</Text>
-              <Text size="2" color="gray">“商品型号”作为唯一 SKU；分类填写“A”或“A/B”，最多两级；标签支持中英文逗号分隔；图片列读取图床链接。</Text>
-              <div className="core-chip-row" aria-label="固定模版字段">
-                {["商品名称", "商品分类", "商品型号", "商品价格", "商品描述", "备注", "标签", "商品图片1–10"].map((field) => <Badge color="gray" key={field}>{field}</Badge>)}
+              <Text weight="bold" as="div">{t("当前固定模版：商品模版.xlsx")}</Text>
+              <Text size="2" color="gray">{t("“商品型号”作为唯一 SKU；分类填写“A”或“A/B”，最多两级；标签支持中英文逗号分隔；图片列读取图床链接。")}</Text>
+              <div className="core-chip-row" aria-label={t("固定模版字段")}>
+                {["商品名称", "商品分类", "商品型号", "商品价格", "商品描述", "备注", "标签", "商品图片1–10"].map((field) => <Badge color="gray" key={field}>{t(field)}</Badge>)}
               </div>
               <div>
                 <Button asChild size="1" variant="soft" color="gray">
-                  <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />下载空白模版</a>
+                  <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载空白模版")}</a>
                 </Button>
               </div>
             </div>
@@ -442,8 +453,8 @@ export function ProductsPage() {
           <Card className="core-notice">
             <Warning size={22} />
             <div>
-              <Text weight="bold" as="div">这份模版代表当前完整商品库</Text>
-              <Text size="2" color="gray">重复型号保留第一条；缺价商品只进入后台；标签会同步到客户前台；从下一份文件移除的 SKU 会自动下架。</Text>
+              <Text weight="bold" as="div">{t("这份模版代表当前完整商品库")}</Text>
+              <Text size="2" color="gray">{t("重复型号保留第一条；缺价商品只进入后台；标签会同步到客户前台并作为 AI 搜索线索；从下一份文件移除的 SKU 会自动下架。")}</Text>
             </div>
           </Card>
 
@@ -462,13 +473,13 @@ export function ProductsPage() {
                 <Text weight="bold" as="div">{pendingFile.name}</Text>
                 <Text size="2" color="gray">{(pendingFile.size / 1024).toFixed(1)} KB · {detection.detected_type} · {detection.parser}</Text>
               </div>
-              <Badge color={detection.extension_matches ? "jade" : "amber"}>{detection.extension_matches ? "格式已确认" : "格式不一致"}</Badge>
+              <Badge color={detection.extension_matches ? "jade" : "amber"}>{t(detection.extension_matches ? "格式已确认" : "格式不一致")}</Badge>
             </Card>
           ) : (
             <button className="core-template-dropzone" type="button" disabled={importBusy} onClick={() => importInputRef.current?.click()}>
               <FileArrowUp size={30} />
-              <strong>选择商品模版</strong>
-              <span>仅支持固定列名和列顺序的 XLSX 文件</span>
+              <strong>{t("选择商品模版")}</strong>
+              <span>{t("仅支持固定列名和列顺序的 XLSX 文件")}</span>
             </button>
           )}
 
@@ -477,8 +488,8 @@ export function ProductsPage() {
             <Card className={`core-template-result ${lastImport.status}`}>
               {lastImport.status === "published" ? <CheckCircle size={24} /> : lastImport.status === "failed" ? <Warning size={24} /> : <ArrowsClockwise size={24} />}
               <div>
-                <Text weight="bold" as="div">{importStatusLabel[lastImport.status]} · {lastImport.filename}</Text>
-                <Text size="2" color="gray">{lastImport.products} 个 SKU 已处理 · {lastImport.warnings} 条提醒</Text>
+                <Text weight="bold" as="div">{t(importStatusLabel[lastImport.status])} · {lastImport.filename}</Text>
+                <Text size="2" color="gray">{t("{products} 个 SKU 已处理 · {warnings} 条提醒", { products: lastImport.products, warnings: lastImport.warnings })}</Text>
                 {lastImport.errorMessage ? <Text size="1" color="gray">{lastImport.errorMessage.split("；", 1)[0]}</Text> : null}
                 {lastImport.warnings > 0 ? (
                   <details
@@ -506,32 +517,44 @@ export function ProductsPage() {
                     </summary>
                     {lastImport.warningMessages.length
                       ? <ol>{lastImport.warningMessages.map((message, index) => <li key={`${index}:${message}`}>{message}</li>)}</ol>
-                      : <Text size="1" color="gray">展开后读取提醒详情。</Text>}
+                      : <Text size="1" color="gray">{t("展开后读取提醒详情。")}</Text>}
                   </details>
+                ) : null}
+                {lastImport.status === "published" ? (
+                  <div className="core-index-reminder">
+                    <Sparkle aria-hidden="true" />
+                    <div>
+                      <Text size="2" weight="medium" as="div">{t("商品资料已更新，智能索引尚未同步")}</Text>
+                      <Text size="1" color="gray">{t("需要使用新商品参与 AI 搜索时，请前往 AI 搜索管理执行增量更新。")}</Text>
+                    </div>
+                    <Button asChild size="1" variant="soft">
+                      <Link to="/console/ai-search/manage">{t("前往 AI 搜索管理")}</Link>
+                    </Button>
+                  </div>
                 ) : null}
               </div>
             </Card>
           ) : null}
 
           <div className="core-dialog-actions">
-            {detection ? <Button variant="soft" color="gray" disabled={importBusy} onClick={() => importInputRef.current?.click()}>重新选择</Button> : null}
+            {detection ? <Button variant="soft" color="gray" disabled={importBusy} onClick={() => importInputRef.current?.click()}>{t("重新选择")}</Button> : null}
             <Button
               disabled={!pendingFile || !detection || Boolean(importError) || importBusy}
               onClick={() => void importTemplate()}
             >
-              <FileArrowUp />{importBusy ? "正在处理…" : "确认导入商品库"}
+              <FileArrowUp />{t(importBusy ? "正在处理…" : "确认导入商品库")}
             </Button>
           </div>
 
           {importJobs.length ? (
             <div className="core-template-history">
-              <Text size="1" color="gray">最近模版导入</Text>
+              <Text size="1" color="gray">{t("最近模版导入")}</Text>
               {importJobs.slice(0, 4).map((job) => (
                 <div className="core-template-history-row" key={job.id}>
                   <FileXls />
-                  <span><strong>{job.filename}</strong><small>{job.products} 个 SKU · {job.warnings} 条提醒</small></span>
+                  <span><strong>{job.filename}</strong><small>{t("{products} 个 SKU · {warnings} 条提醒", { products: job.products, warnings: job.warnings })}</small></span>
                   {job.status === "scanning" || job.status === "parsing" ? <Progress value={job.progress} /> : null}
-                  <Badge color={job.status === "failed" ? "red" : job.status === "published" ? "jade" : "amber"}>{importStatusLabel[job.status]}</Badge>
+                  <Badge color={job.status === "failed" ? "red" : job.status === "published" ? "jade" : "amber"}>{t(importStatusLabel[job.status])}</Badge>
                 </div>
               ))}
             </div>
@@ -541,7 +564,7 @@ export function ProductsPage() {
 
       <Dialog.Root open={Boolean(selected || detailLoading)} onOpenChange={(open) => { if (!open) close(); }}>
         <Dialog.Content className="core-detail-dialog">
-          {detailLoading || !selected ? <CoreLoading label="正在读取产品聚合视图" /> : <ProductDetailPanel product={selected} initialTab={detailInitialTab} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
+          {detailLoading || !selected ? <CoreLoading label={t("正在读取产品聚合视图")} /> : <ProductDetailPanel product={selected} initialTab={detailInitialTab} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
         </Dialog.Content>
       </Dialog.Root>
     </div>
@@ -549,15 +572,16 @@ export function ProductsPage() {
 }
 
 function ProductDetailPanel({ product, initialTab, onChanged, onClose }: { product: ProductDetail; initialTab: "overview" | "skus"; onChanged: () => Promise<void>; onClose: () => void }) {
+  const { t } = useLocale();
   return (
     <>
-      <div className="core-dialog-heading"><div><Text size="1" color="gray">权威产品记录 · v{product.currentVersion}</Text><Dialog.Title>{product.name}</Dialog.Title><Dialog.Description>{product.productCode ?? "产品"} · {product.category}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label="关闭"><X /></Button></div>
+      <div className="core-dialog-heading"><div><Text size="1" color="gray">{t("权威产品记录")} · v{product.currentVersion}</Text><Dialog.Title>{product.name}</Dialog.Title><Dialog.Description>{product.productCode ?? t("产品")} · {primaryCategoryLabel(product.category) || t("未分类")}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}><X /></Button></div>
       <Tabs.Root key={`${product.id}:${initialTab}`} defaultValue={initialTab}>
-        <Tabs.List><Tabs.Trigger value="overview">主数据</Tabs.Trigger><Tabs.Trigger value="skus">SKU ({product.skus.length})</Tabs.Trigger><Tabs.Trigger value="attributes">分类属性</Tabs.Trigger><Tabs.Trigger value="activity">活动</Tabs.Trigger></Tabs.List>
-        <Tabs.Content value="overview"><div className="core-master-grid"><Fact label="状态" value={product.status} /><Fact label="产品版本" value={`v${product.currentVersion}`} /><Fact label="图片状态" value={product.imageStatus} /><Fact label="SKU" value={String(product.skuCount)} /><section><Text size="1" color="gray">标准描述</Text><p>{product.description || "尚未维护标准描述。"}</p></section><section><Text size="1" color="gray">商品模版映射</Text><p>型号作为 SKU 编码；价格进入对客公开价；标签用于前台展示与筛选；图床链接作为商品图片。</p></section></div></Tabs.Content>
+        <Tabs.List><Tabs.Trigger value="overview">{t("主数据")}</Tabs.Trigger><Tabs.Trigger value="skus">SKU ({product.skus.length})</Tabs.Trigger><Tabs.Trigger value="attributes">{t("分类属性")}</Tabs.Trigger><Tabs.Trigger value="activity">{t("活动")}</Tabs.Trigger></Tabs.List>
+        <Tabs.Content value="overview"><div className="core-master-grid"><Fact label={t("状态")} value={t(product.status)} /><Fact label={t("产品版本")} value={`v${product.currentVersion}`} /><Fact label={t("图片状态")} value={t(product.imageStatus)} /><Fact label="SKU" value={String(product.skuCount)} /><section><Text size="1" color="gray">{t("标准描述")}</Text><p>{product.description || t("尚未维护标准描述。")}</p></section><section><Text size="1" color="gray">{t("商品模版映射")}</Text><p>{t("型号作为 SKU 编码；价格进入对客公开价；标签用于商品展示与 AI 搜索召回；图床链接作为商品图片。")}</p></section></div></Tabs.Content>
         <Tabs.Content value="skus"><SkuPanel product={product} onChanged={onChanged} /></Tabs.Content>
         <Tabs.Content value="attributes"><AttributePanel product={product} onChanged={onChanged} /></Tabs.Content>
-        <Tabs.Content value="activity"><div className="core-list">{product.activity.map((row) => <div className="core-list-row" key={row.id}><ClockCounterClockwise /><div><Text weight="medium" as="div">{row.action}</Text><Text size="1" color="gray">{row.entityType} · {coreDate(row.occurredAt)}</Text></div></div>)}{!product.activity.length ? <CoreEmpty title="暂无活动记录" description="重要修改将在此处形成审计时间线。" /> : null}</div></Tabs.Content>
+        <Tabs.Content value="activity"><div className="core-list">{product.activity.map((row) => <div className="core-list-row" key={row.id}><ClockCounterClockwise /><div><Text weight="medium" as="div">{t(row.action)}</Text><Text size="1" color="gray">{t(row.entityType)} · {coreDate(row.occurredAt)}</Text></div></div>)}{!product.activity.length ? <CoreEmpty title={t("暂无活动记录")} description={t("重要修改将在此处形成审计时间线。")} /> : null}</div></Tabs.Content>
       </Tabs.Root>
     </>
   );
@@ -567,6 +591,7 @@ function Fact({ label, value }: { label: string; value: string }) { return <Card
 
 function SkuPanel({ product, onChanged }: { product: ProductDetail; onChanged: () => Promise<void> }) {
   const { hasAnyPermission, hasPermission } = useCoreAuth();
+  const { t } = useLocale();
   const canEdit = hasPermission("product.edit");
   const canViewCatalog = hasAnyPermission("catalog.view", "catalog.publish");
   const canPublish = hasAnyPermission("catalog.publish");
@@ -604,86 +629,133 @@ function SkuPanel({ product, onChanged }: { product: ProductDetail; onChanged: (
       }]);
       await onChanged();
       setSkuCode(`${product.productCode ?? "SKU"}-${product.skus.length + 2}`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "SKU 创建失败"); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : t("SKU 创建失败")); }
     finally { setBusy(false); }
   };
   const createVariants = async () => {
     setBusy(true); setError("");
     try { await createSkus(product.id, matrix); await onChanged(); setFirstValues(""); setSecondValues(""); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "SKU 创建失败"); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : t("SKU 创建失败")); }
     finally { setBusy(false); }
   };
   const changeStatus = async (sku: ProductSku, status: ProductSku["status"]) => {
     setBusy(true); setError("");
     try { await updateSku(sku.id, { expectedVersion: sku.version, status }); await onChanged(); await loadOffers(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "SKU 状态更新失败"); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : t("SKU 状态更新失败")); }
     finally { setBusy(false); }
   };
   return <div className="core-tab-panel">
     {canEdit ? <Card className="core-form-grid">
-      <div><Text weight="bold" as="div">新增基础 SKU</Text><Text size="1" color="gray">不需要先配置变体属性；新建后先保存为草稿。</Text></div>
-      <label>SKU 编码<TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} /></label>
-      <label>前台名称<TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
-      <Button disabled={!skuCode.trim() || busy} onClick={() => void createSingle()}><Plus />创建草稿 SKU</Button>
-    </Card> : <Text size="2" color="gray">当前角色只有查看权限。</Text>}
+      <div><Text weight="bold" as="div">{t("新增基础 SKU")}</Text><Text size="1" color="gray">{t("不需要先配置变体属性；新建后先保存为草稿。")}</Text></div>
+      <label>{t("SKU 编码")}<TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} /></label>
+      <label>{t("前台名称")}<TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
+      <Button disabled={!skuCode.trim() || busy} onClick={() => void createSingle()}><Plus />{t("创建草稿 SKU")}</Button>
+    </Card> : <Text size="2" color="gray">{t("当前角色只有查看权限。")}</Text>}
     {canEdit && definitions.length ? <Card className="core-form-grid">
-      <div><Text weight="bold" as="div">按变体批量创建</Text><Text size="1" color="gray">已读取当前类目的变体定义。</Text></div>
-      <label>SKU 前缀<TextField.Root value={prefix} onChange={(event) => setPrefix(event.target.value)} /></label>
-      {definitions.slice(0, 2).map((definition, index) => <label key={definition.id}>{definition.displayName}<TextArea value={index ? secondValues : firstValues} onChange={(event) => index ? setSecondValues(event.target.value) : setFirstValues(event.target.value)} placeholder="逗号分隔" /></label>)}
-      <Button disabled={!matrix.length || busy} onClick={() => void createVariants()}><Plus />创建 {matrix.length} 个草稿 SKU</Button>
+      <div><Text weight="bold" as="div">{t("按变体批量创建")}</Text><Text size="1" color="gray">{t("已读取当前类目的变体定义。")}</Text></div>
+      <label>{t("SKU 前缀")}<TextField.Root value={prefix} onChange={(event) => setPrefix(event.target.value)} /></label>
+      {definitions.slice(0, 2).map((definition, index) => <label key={definition.id}>{definition.displayName}<TextArea value={index ? secondValues : firstValues} onChange={(event) => index ? setSecondValues(event.target.value) : setFirstValues(event.target.value)} placeholder={t("逗号分隔")} /></label>)}
+      <Button disabled={!matrix.length || busy} onClick={() => void createVariants()}><Plus />{t("创建 {count} 个草稿 SKU", { count: matrix.length })}</Button>
     </Card> : null}
     {error ? <CoreError message={error} /> : null}
     <div className="core-list">{product.skus.map((sku) => {
       const offer = offers.find((item) => item.skuId === sku.id);
       return <Card key={sku.id}>
-        <div className="core-list-row"><Tag /><div><Text weight="medium" as="div">{sku.skuCode}</Text><Text size="1" color="gray">{sku.name || Object.values(sku.optionValues).join(" · ") || "基础款"}</Text></div><Badge color={sku.status === "ACTIVE" ? "jade" : "gray"}>{sku.status}</Badge><Text size="1">v{sku.version}</Text>{canEdit && sku.status !== "ACTIVE" ? <Button size="1" disabled={busy} onClick={() => void changeStatus(sku, "ACTIVE")}>激活 SKU</Button> : null}{canEdit && sku.status === "ACTIVE" ? <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => void changeStatus(sku, "INACTIVE")}>下架 SKU</Button> : null}</div>
+        <div className="core-list-row"><Tag /><div><Text weight="medium" as="div">{sku.skuCode}</Text><Text size="1" color="gray">{sku.name || Object.values(sku.optionValues).join(" · ") || t("基础款")}</Text></div><Badge color={sku.status === "ACTIVE" ? "jade" : "gray"}>{t(skuStatusLabel[sku.status])}</Badge><Text size="1">v{sku.version}</Text>{canEdit && sku.status !== "ACTIVE" ? <Button size="1" disabled={busy} onClick={() => void changeStatus(sku, "ACTIVE")}>{t("激活 SKU")}</Button> : null}{canEdit && sku.status === "ACTIVE" ? <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => void changeStatus(sku, "INACTIVE")}>{t("下架 SKU")}</Button> : null}</div>
         {canViewCatalog ? <PublicOfferEditor sku={sku} offer={offer} canPublish={canPublish} onChanged={async () => { await loadOffers(); await onChanged(); }} /> : null}
       </Card>;
-    })}{!product.skus.length ? <CoreEmpty title="还没有 SKU" description="先创建一个基础 SKU；不必预先建立类目变体定义。" /> : null}</div>
+    })}{!product.skus.length ? <CoreEmpty title={t("还没有 SKU")} description={t("先创建一个基础 SKU；不必预先建立类目变体定义。")} /> : null}</div>
   </div>;
 }
 
 function PublicOfferEditor({ sku, offer, canPublish, onChanged }: { sku: ProductSku; offer?: PublicCatalogOffer; canPublish: boolean; onChanged: () => Promise<void> }) {
+  const { profile } = useCoreAuth();
+  const { t } = useLocale();
+  const defaultCurrency = profile?.context.defaultCurrency ?? "CNY";
   const [price, setPrice] = useState(offer ? String(offer.unitPrice) : "");
-  const [currency, setCurrency] = useState(offer?.currency ?? "CNY");
+  const [currency, setCurrency] = useState(offer?.currency ?? defaultCurrency);
   const [tags, setTags] = useState(offer?.tags.join("，") ?? "");
+  const [tagColor, setTagColor] = useState(offer?.tagColor ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { setPrice(offer ? String(offer.unitPrice) : ""); setCurrency(offer?.currency ?? "CNY"); setTags(offer?.tags.join("，") ?? ""); }, [offer]);
+  useEffect(() => {
+    setPrice(offer ? String(offer.unitPrice) : "");
+    setCurrency(offer?.currency ?? defaultCurrency);
+    setTags(offer?.tags.join("，") ?? "");
+    setTagColor(offer?.tagColor ?? "");
+  }, [defaultCurrency, offer]);
+  const previewTag = splitValues(tags)[0] ?? t("标签预览");
+  const activeTagColor = tagColor || automaticTagColor(previewTag);
   const save = async (publicationStatus: PublicCatalogOffer["publicationStatus"]) => {
     const numericPrice = Number(price);
-    if (!Number.isFinite(numericPrice) || numericPrice < 0) { setError("请填写有效的公开售价。"); return; }
+    if (!Number.isFinite(numericPrice) || numericPrice < 0) { setError(t("请填写有效的公开售价。")); return; }
     setBusy(true); setError("");
     try {
       await upsertPublicCatalogOffer(sku.id, {
         unitPrice: numericPrice,
         currency,
         tags: splitValues(tags),
+        tagColor: tagColor || undefined,
         publicationStatus,
         validFrom: offer?.validFrom,
         validTo: offer?.validTo,
       });
       await onChanged();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "公开目录保存失败"); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : t("公开目录保存失败")); }
     finally { setBusy(false); }
   };
   return <div className="core-tab-panel">
-    <div><Text weight="bold">客户公开目录</Text> <Badge color={offer?.publicationStatus === "PUBLISHED" ? "jade" : offer?.publicationStatus === "SUSPENDED" ? "amber" : "gray"}>{offer?.publicationStatus ?? "未配置"}</Badge></div>
-    <Text size="1" color="gray">模版中的商品价格和标签会同步到前台；也可以在这里单独修改，下一次导入时以模版内容为准。</Text>
-    {canPublish ? <div className="core-inline-form">
-      <TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="公开售价" />
-      <select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option></select>
-      <label><Text size="1" color="gray">商品标签</Text><TextField.Root value={tags} onChange={(event) => setTags(event.target.value)} placeholder="新品，热卖，现货" /></label>
-      <Button variant="soft" color="gray" disabled={busy || !price} onClick={() => void save("DRAFT")}>保存草稿</Button>
-      <Button disabled={busy || !price || sku.status !== "ACTIVE"} onClick={() => void save("PUBLISHED")}>{sku.status === "ACTIVE" ? "发布到前台" : "请先激活 SKU"}</Button>
-      {offer?.publicationStatus === "PUBLISHED" ? <Button variant="soft" color="amber" disabled={busy} onClick={() => void save("SUSPENDED")}>暂停公开</Button> : null}
-    </div> : <Text size="1" color="gray">当前角色没有目录发布权限。</Text>}
+    <div><Text weight="bold">{t("客户公开目录")}</Text> <Badge color={offer?.publicationStatus === "PUBLISHED" ? "jade" : offer?.publicationStatus === "SUSPENDED" ? "amber" : "gray"}>{offer ? t(offerStatusLabel[offer.publicationStatus]) : t("未配置")}</Badge></div>
+    <Text size="1" color="gray">{t("模版中的商品价格和标签会同步到前台；后续导入会更新价格与标签，但会保留自定义标签颜色。")}</Text>
+    {canPublish ? <div className="core-inline-form core-public-offer-form">
+      <label><Text size="1" color="gray">{t("公开售价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} placeholder={t("公开售价")} /></label>
+      <label><Text size="1" color="gray">{t("计价币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option></select></label>
+      <div className="core-offer-tag-field">
+        <Text size="1" color="gray">{t("商品标签")}</Text>
+        <TextField.Root value={tags} onChange={(event) => setTags(event.target.value)} placeholder={t("新品，热卖，现货")} />
+        <div className="core-tag-color-control">
+          <span className="core-tag-glass-preview" style={tagGlassStyle(previewTag, tagColor)}>
+            <Tag weight="fill" />{previewTag}
+          </span>
+          <div className="core-tag-color-presets" role="group" aria-label={t("标签颜色")}>
+            {TAG_COLOR_PALETTE.map((color) => (
+              <button
+                type="button"
+                className={tagColor === color ? "is-active" : ""}
+                style={{ background: color }}
+                aria-label={`${t("标签颜色")} ${color}`}
+                aria-pressed={tagColor === color}
+                onClick={() => setTagColor(color)}
+                key={color}
+              />
+            ))}
+            <label className="core-tag-custom-color" title={t("自定义颜色")}>
+              <input
+                type="color"
+                value={activeTagColor}
+                aria-label={t("自定义颜色")}
+                onChange={(event) => setTagColor(event.target.value.toUpperCase())}
+              />
+              <span>{t("自定义")}</span>
+            </label>
+          </div>
+          <Button size="1" variant="ghost" color="gray" disabled={!tagColor} onClick={() => setTagColor("")}>{t("自动配色")}</Button>
+        </div>
+        <Text size="1" color="gray">{t(tagColor ? "当前使用自定义颜色。" : "系统会根据首个标签自动生成稳定颜色。")}</Text>
+      </div>
+      <div className="core-offer-actions">
+        <Button variant="soft" color="gray" disabled={busy || !price} onClick={() => void save("DRAFT")}>{t("保存草稿")}</Button>
+        <Button disabled={busy || !price || sku.status !== "ACTIVE"} onClick={() => void save("PUBLISHED")}>{t(sku.status === "ACTIVE" ? "发布到前台" : "请先激活 SKU")}</Button>
+        {offer?.publicationStatus === "PUBLISHED" ? <Button variant="soft" color="amber" disabled={busy} onClick={() => void save("SUSPENDED")}>{t("暂停公开")}</Button> : null}
+      </div>
+    </div> : <Text size="1" color="gray">{t("当前角色没有目录发布权限。")}</Text>}
     {error ? <CoreError message={error} /> : null}
   </div>;
 }
 
 function AttributePanel({ product, onChanged }: { product: ProductDetail; onChanged: () => Promise<void> }) {
   const { hasPermission } = useCoreAuth();
+  const { t } = useLocale();
   const canEdit = hasPermission("product.edit");
   const [definitions, setDefinitions] = useState<AttributeDefinition[]>([]);
   const [key, setKey] = useState("");
@@ -692,6 +764,6 @@ function AttributePanel({ product, onChanged }: { product: ProductDetail; onChan
   const [error, setError] = useState("");
   const load = useCallback(() => listAttributeDefinitions(product.categoryId).then(setDefinitions), [product.categoryId]);
   useEffect(() => { void load().catch(() => setDefinitions([])); }, [load]);
-  const add = async () => { setError(""); try { await createAttributeDefinition({ categoryId: product.categoryId, attributeKey: key, displayName: name, dataType: "TEXT", isRequired: false, isVariant: variant, isFilterable: true, isMatchable: true }); await load(); await onChanged(); setKey(""); setName(""); } catch (reason) { setError(reason instanceof Error ? reason.message : "属性创建失败"); } };
-  return <div className="core-tab-panel">{canEdit ? <Card className="core-inline-form"><TextField.Root value={key} onChange={(event) => setKey(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} placeholder="属性键" /><TextField.Root value={name} onChange={(event) => setName(event.target.value)} placeholder="显示名称" /><label className="core-check"><input type="checkbox" checked={variant} onChange={(event) => setVariant(event.target.checked)} />SKU 变体</label><Button disabled={!key || !name} onClick={() => void add()}><Plus />新增定义</Button></Card> : null}{error ? <CoreError message={error} /> : null}<div className="core-definition-grid">{definitions.map((definition) => <Card key={definition.id}><Tag /><Text weight="bold" as="div">{definition.displayName}</Text><code>{definition.attributeKey}</code><Badge color="gray">{definition.isVariant ? "变体" : definition.dataType}</Badge></Card>)}</div><Heading size="3">当前产品值</Heading><div className="core-chip-row">{product.attributes.map((attribute) => <Badge color="gray" key={attribute.id}>{attribute.key}: {String(attribute.value ?? "—")}</Badge>)}</div></div>;
+  const add = async () => { setError(""); try { await createAttributeDefinition({ categoryId: product.categoryId, attributeKey: key, displayName: name, dataType: "TEXT", isRequired: false, isVariant: variant, isFilterable: true, isMatchable: true }); await load(); await onChanged(); setKey(""); setName(""); } catch (reason) { setError(reason instanceof Error ? reason.message : t("属性创建失败")); } };
+  return <div className="core-tab-panel">{canEdit ? <Card className="core-inline-form"><TextField.Root value={key} onChange={(event) => setKey(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} placeholder={t("属性键")} /><TextField.Root value={name} onChange={(event) => setName(event.target.value)} placeholder={t("显示名称")} /><label className="core-check"><input type="checkbox" checked={variant} onChange={(event) => setVariant(event.target.checked)} />{t("SKU 变体")}</label><Button disabled={!key || !name} onClick={() => void add()}><Plus />{t("新增定义")}</Button></Card> : null}{error ? <CoreError message={error} /> : null}<div className="core-definition-grid">{definitions.map((definition) => <Card key={definition.id}><Tag /><Text weight="bold" as="div">{definition.displayName}</Text><code>{definition.attributeKey}</code><Badge color="gray">{definition.isVariant ? t("变体") : definition.dataType}</Badge></Card>)}</div><Heading size="3">{t("当前产品值")}</Heading><div className="core-chip-row">{product.attributes.map((attribute) => <Badge color="gray" key={attribute.id}>{attribute.key}: {String(attribute.value ?? "—")}</Badge>)}</div></div>;
 }

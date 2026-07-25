@@ -25,6 +25,7 @@ import {
   type PasswordChangeValidation,
 } from "../accountPassword";
 import { CorePageHeading } from "../CoreUi";
+import { useLocale } from "../LocaleContext";
 import { initials } from "../../lib/format";
 import "./AccountSettingsPage.css";
 
@@ -49,6 +50,7 @@ export function AccountSettingsPage() {
     hasPermission,
     reloadProfile,
   } = useCoreAuth();
+  const { t } = useLocale();
   const [merchantName, setMerchantName] = useState("");
   const [merchantSlug, setMerchantSlug] = useState("");
   const [merchantError, setMerchantError] = useState("");
@@ -78,7 +80,7 @@ export function AccountSettingsPage() {
   );
   const strength = strengthCopy[passwordStrength(newPassword, rules)];
   const activeMembership = memberships.find((membership) => membership.id === profile?.context.membershipId);
-  const displayName = user?.displayName || user?.email || "当前成员";
+  const displayName = user?.displayName || user?.email || t("当前成员");
   const canManageMerchant = hasPermission("system.settings_manage");
   const storefrontUrl = merchantSlug
     ? `${window.location.origin}/${encodeURIComponent(merchantSlug)}`
@@ -127,20 +129,20 @@ export function AccountSettingsPage() {
       setConfirmation("");
       setVisible({ current: false, next: false, confirmation: false });
       setFieldErrors({});
-      setSuccess("密码已更新。当前设备保持登录，其他设备需要使用新密码重新登录。");
+      setSuccess(t("密码已更新。当前设备保持登录，其他设备需要使用新密码重新登录。"));
     } catch (caught) {
       if (caught instanceof CoreApiError && caught.status === 401) {
-        setFieldErrors({ currentPassword: "当前密码不正确，请重新输入" });
+        setFieldErrors({ currentPassword: t("当前密码不正确，请重新输入") });
       } else if (caught instanceof CoreApiError && caught.status === 422) {
-        setFieldErrors({ newPassword: "新密码未满足安全策略，请按下方要求重新设置" });
+        setFieldErrors({ newPassword: t("新密码未满足安全策略，请按下方要求重新设置") });
       } else if (caught instanceof CoreApiError && caught.status === 409) {
-        setRequestError("当前账户暂不支持自助修改密码，请联系管理员。");
+        setRequestError(t("当前账户暂不支持自助修改密码，请联系管理员。"));
       } else if (caught instanceof CoreApiError && caught.status === 429) {
-        setRequestError("操作过于频繁，请稍后再试。");
+        setRequestError(t("操作过于频繁，请稍后再试。"));
       } else if (caught instanceof CoreApiError && caught.status === 419) {
-        setRequestError("登录状态已失效，请重新登录后再修改密码。");
+        setRequestError(t("登录状态已失效，请重新登录后再修改密码。"));
       } else {
-        setRequestError("密码修改失败，请稍后重试。");
+        setRequestError(t("密码修改失败，请稍后重试。"));
       }
     } finally {
       setSubmitting(false);
@@ -155,18 +157,18 @@ export function AccountSettingsPage() {
     setMerchantError("");
     setMerchantSuccess("");
     try {
-      const updated = await updateMerchantSettings(normalized);
+      const updated = await updateMerchantSettings({ name: normalized });
       setMerchantName(updated.name);
       setMerchantSlug(updated.slug);
       await reloadProfile();
-      setMerchantSuccess("商家名称和前台地址已更新，旧地址会自动跳转到新地址。");
+      setMerchantSuccess(t("商家名称和前台地址已更新，旧地址会自动跳转到新地址。"));
     } catch (caught) {
       if (caught instanceof CoreApiError && caught.status === 409) {
-        setMerchantError("该商家名称对应的前台地址已被使用，请换一个名称。");
+        setMerchantError(t("该商家名称对应的前台地址已被使用，请换一个名称。"));
       } else if (caught instanceof CoreApiError && caught.status === 403) {
-        setMerchantError("当前成员没有修改商家资料的权限。");
+        setMerchantError(t("当前成员没有修改商家资料的权限。"));
       } else {
-        setMerchantError("商家资料保存失败，请稍后重试。");
+        setMerchantError(t("商家资料保存失败，请稍后重试。"));
       }
     } finally {
       setMerchantSubmitting(false);
@@ -176,41 +178,41 @@ export function AccountSettingsPage() {
   return (
     <div className="core-workspace account-settings-page">
       <CorePageHeading
-        eyebrow="账户与安全"
-        title="账户与商家资料"
-        description="管理当前商家名称、公开前台地址与登录密码。"
+        eyebrow={t("账户与安全")}
+        title={t("账户与商家资料")}
+        description={t("管理当前商家名称、公开前台地址与登录密码。")}
       />
 
       <div className="account-settings-grid">
-        <aside className="account-summary" aria-label="账户资料摘要">
+        <aside className="account-summary" aria-label={t("账户资料摘要")}>
           <Card className="account-profile-card">
             <div className="account-profile-heading">
               <Avatar fallback={initials(displayName)} size="5" radius="large" color="jade" />
               <div>
-                <Text size="1" color="gray">当前登录账户</Text>
+                <Text size="1" color="gray">{t("当前登录账户")}</Text>
                 <Heading size="4">{displayName}</Heading>
                 <Badge color={user?.isPlatformAdmin ? "amber" : "gray"}>
-                  {user?.isPlatformAdmin ? "平台管理员" : "商家成员"}
+                  {t(user?.isPlatformAdmin ? "平台管理员" : "商家成员")}
                 </Badge>
               </div>
             </div>
 
             <dl className="account-detail-list">
               <div>
-                <dt>登录邮箱</dt>
-                <dd>{user?.email || "未提供"}</dd>
+                <dt>{t("登录邮箱")}</dt>
+                <dd>{user?.email || t("未提供")}</dd>
               </div>
               <div>
-                <dt>当前工作区</dt>
-                <dd>{profile?.context.tenantName || "未选择"}</dd>
+                <dt>{t("当前工作区")}</dt>
+                <dd>{profile?.context.tenantName || t("未选择")}</dd>
               </div>
               <div>
-                <dt>成员状态</dt>
-                <dd>{activeMembership?.status.toUpperCase() === "ACTIVE" ? "正常" : activeMembership?.status || "正常"}</dd>
+                <dt>{t("成员状态")}</dt>
+                <dd>{activeMembership?.status.toUpperCase() === "ACTIVE" ? t("正常") : activeMembership?.status || t("正常")}</dd>
               </div>
               <div>
-                <dt>可访问工作区</dt>
-                <dd>{memberships.filter((membership) => membership.status.toUpperCase() === "ACTIVE").length} 个</dd>
+                <dt>{t("可访问工作区")}</dt>
+                <dd>{t("{count} 个", { count: memberships.filter((membership) => membership.status.toUpperCase() === "ACTIVE").length })}</dd>
               </div>
             </dl>
           </Card>
@@ -218,9 +220,9 @@ export function AccountSettingsPage() {
           <Card className="account-security-note">
             <ShieldCheck size={24} aria-hidden="true" />
             <div>
-              <Heading size="3">账户资料</Heading>
+              <Heading size="3">{t("账户资料")}</Heading>
               <Text size="2" color="gray">
-                登录邮箱和成员名称由管理员统一维护。已配置的账号或手机号也可以用于登录。
+                {t("登录邮箱和成员名称由管理员统一维护。已配置的账号或手机号也可以用于登录。")}
               </Text>
             </div>
           </Card>
@@ -231,14 +233,14 @@ export function AccountSettingsPage() {
             <div className="account-section-heading">
               <span className="account-section-icon"><Buildings size={22} aria-hidden="true" /></span>
               <div>
-                <Heading size="5">商家资料</Heading>
-                <Text size="2" color="gray">商家名称会同步成为商品前台地址。</Text>
+                <Heading size="5">{t("商家资料")}</Heading>
+                <Text size="2" color="gray">{t("商家名称会同步成为商品前台地址。")}</Text>
               </div>
             </div>
 
             <form className="account-merchant-form" onSubmit={submitMerchant}>
               <div className="account-field">
-                <label htmlFor="account-merchant-name">商家名称</label>
+                <label htmlFor="account-merchant-name">{t("商家名称")}</label>
                 <TextField.Root
                   id="account-merchant-name"
                   size="3"
@@ -251,22 +253,22 @@ export function AccountSettingsPage() {
                   maxLength={200}
                   required
                   disabled={!canManageMerchant}
-                  placeholder="请输入对外展示的商家名称"
+                  placeholder={t("请输入对外展示的商家名称")}
                 />
                 <Text size="1" color="gray">
-                  中文可直接用于路径；空格和标点会自动整理。修改后已有链接仍然有效。
+                  {t("中文可直接用于路径；空格和标点会自动整理。修改后已有链接仍然有效。")}
                 </Text>
               </div>
 
               {storefrontUrl ? (
                 <div className="account-storefront-preview">
                   <div>
-                    <Text size="1" color="gray">当前商品前台</Text>
+                    <Text size="1" color="gray">{t("当前商品前台")}</Text>
                     <Text size="2" weight="medium">{storefrontUrl}</Text>
                   </div>
                   <Button asChild size="2" variant="soft">
                     <a href={storefrontUrl} target="_blank" rel="noreferrer">
-                      查看前台<ArrowSquareOut size={16} />
+                      {t("查看前台")}<ArrowSquareOut size={16} />
                     </a>
                   </Button>
                 </div>
@@ -287,7 +289,7 @@ export function AccountSettingsPage() {
 
               <div className="account-merchant-actions">
                 {!canManageMerchant ? (
-                  <Text size="1" color="gray">仅商家所有者或管理员可以修改。</Text>
+                  <Text size="1" color="gray">{t("仅商家所有者或管理员可以修改。")}</Text>
                 ) : <span />}
                 <Button
                   type="submit"
@@ -300,7 +302,7 @@ export function AccountSettingsPage() {
                     || merchantName.trim() === profile?.context.tenantName
                   }
                 >
-                  保存商家资料
+                  {t("保存商家资料")}
                 </Button>
               </div>
             </form>
@@ -310,14 +312,14 @@ export function AccountSettingsPage() {
           <div className="account-section-heading">
             <span className="account-section-icon"><LockKey size={22} aria-hidden="true" /></span>
             <div>
-              <Heading size="5">修改登录密码</Heading>
-              <Text size="2" color="gray">更新后，其他设备上的登录状态将失效。</Text>
+              <Heading size="5">{t("修改登录密码")}</Heading>
+              <Text size="2" color="gray">{t("更新后，其他设备上的登录状态将失效。")}</Text>
             </div>
           </div>
 
           <form className="account-password-form" onSubmit={submit} noValidate>
             <div className="account-field">
-              <label htmlFor="account-current-password">当前密码</label>
+              <label htmlFor="account-current-password">{t("当前密码")}</label>
               <TextField.Root
                 id="account-current-password"
                 name="current-password"
@@ -338,7 +340,7 @@ export function AccountSettingsPage() {
                   <button
                     type="button"
                     className="account-password-toggle"
-                    aria-label={visible.current ? "隐藏当前密码" : "显示当前密码"}
+                    aria-label={t(visible.current ? "隐藏当前密码" : "显示当前密码")}
                     aria-pressed={visible.current}
                     onClick={() => toggleVisible("current")}
                   >
@@ -346,14 +348,14 @@ export function AccountSettingsPage() {
                   </button>
                 </TextField.Slot>
               </TextField.Root>
-              <Text id="account-current-password-help" size="1" color="gray">用于确认是你本人在操作</Text>
-              {fieldErrors.currentPassword ? <Text id="account-current-password-error" size="1" color="red" role="alert">{fieldErrors.currentPassword}</Text> : null}
+              <Text id="account-current-password-help" size="1" color="gray">{t("用于确认是你本人在操作")}</Text>
+              {fieldErrors.currentPassword ? <Text id="account-current-password-error" size="1" color="red" role="alert">{t(fieldErrors.currentPassword)}</Text> : null}
             </div>
 
             <div className="account-field">
               <div className="account-field-label-row">
-                <label htmlFor="account-new-password">新密码</label>
-                <Badge color={strength.color}>{strength.label}</Badge>
+                <label htmlFor="account-new-password">{t("新密码")}</label>
+                <Badge color={strength.color}>{t(strength.label)}</Badge>
               </div>
               <TextField.Root
                 id="account-new-password"
@@ -375,7 +377,7 @@ export function AccountSettingsPage() {
                   <button
                     type="button"
                     className="account-password-toggle"
-                    aria-label={visible.next ? "隐藏新密码" : "显示新密码"}
+                    aria-label={t(visible.next ? "隐藏新密码" : "显示新密码")}
                     aria-pressed={visible.next}
                     onClick={() => toggleVisible("next")}
                   >
@@ -383,21 +385,21 @@ export function AccountSettingsPage() {
                   </button>
                 </TextField.Slot>
               </TextField.Root>
-              {fieldErrors.newPassword ? <Text id="account-new-password-error" size="1" color="red" role="alert">{fieldErrors.newPassword}</Text> : null}
+              {fieldErrors.newPassword ? <Text id="account-new-password-error" size="1" color="red" role="alert">{t(fieldErrors.newPassword)}</Text> : null}
 
-              <div id="account-password-rules" className="account-password-rules" aria-label="新密码安全要求">
+              <div id="account-password-rules" className="account-password-rules" aria-label={t("新密码安全要求")}>
                 {rules.map((rule) => (
                   <span className={rule.met ? "met" : ""} key={rule.key}>
                     {rule.met ? <CheckCircle weight="fill" aria-hidden="true" /> : <Circle aria-hidden="true" />}
-                    {rule.label}
+                    {t(rule.label)}
                   </span>
                 ))}
-                <Text size="1" color="gray" className="account-password-symbol-note">符号可以使用，但不是必填项。</Text>
+                <Text size="1" color="gray" className="account-password-symbol-note">{t("符号可以使用，但不是必填项。")}</Text>
               </div>
             </div>
 
             <div className="account-field">
-              <label htmlFor="account-confirm-password">确认新密码</label>
+              <label htmlFor="account-confirm-password">{t("确认新密码")}</label>
               <TextField.Root
                 id="account-confirm-password"
                 name="confirm-password"
@@ -418,7 +420,7 @@ export function AccountSettingsPage() {
                   <button
                     type="button"
                     className="account-password-toggle"
-                    aria-label={visible.confirmation ? "隐藏确认密码" : "显示确认密码"}
+                    aria-label={t(visible.confirmation ? "隐藏确认密码" : "显示确认密码")}
                     aria-pressed={visible.confirmation}
                     onClick={() => toggleVisible("confirmation")}
                   >
@@ -426,7 +428,7 @@ export function AccountSettingsPage() {
                   </button>
                 </TextField.Slot>
               </TextField.Root>
-              {fieldErrors.confirmation ? <Text id="account-confirm-password-error" size="1" color="red" role="alert">{fieldErrors.confirmation}</Text> : null}
+              {fieldErrors.confirmation ? <Text id="account-confirm-password-error" size="1" color="red" role="alert">{t(fieldErrors.confirmation)}</Text> : null}
             </div>
 
             {requestError ? (
@@ -446,10 +448,10 @@ export function AccountSettingsPage() {
             <div className="account-password-actions">
               <div className="account-session-note">
                 <Info size={17} aria-hidden="true" />
-                <Text size="1" color="gray">当前设备会保持登录，不会中断正在处理的工作。</Text>
+                <Text size="1" color="gray">{t("当前设备会保持登录，不会中断正在处理的工作。")}</Text>
               </div>
               <Button type="submit" size="3" loading={submitting} disabled={submitting}>
-                保存新密码
+                {t("保存新密码")}
               </Button>
             </div>
           </form>

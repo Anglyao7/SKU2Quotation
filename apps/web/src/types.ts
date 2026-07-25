@@ -46,7 +46,9 @@ export interface Sku {
   sku_code: string;
   name: string;
   category?: string | null;
+  category_color?: string | null;
   tags: string[];
+  tag_color?: string | null;
   description?: string | null;
   specifications?: Record<string, string | number> | null;
   image_url?: string | null;

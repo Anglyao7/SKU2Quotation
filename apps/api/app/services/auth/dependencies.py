@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from threading import Lock
+from time import monotonic
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -23,6 +25,16 @@ from .tokens import AccessTokenError, decode_access_token
 
 
 bearer = HTTPBearer(auto_error=False)
+_permission_cache_lock = Lock()
+
+
+@dataclass(frozen=True)
+class _PermissionCacheEntry:
+    expires_at: float
+    permissions: frozenset[str]
+
+
+_permission_cache: dict[tuple[UUID, UUID, int], _PermissionCacheEntry] = {}
 
 
 @dataclass(frozen=True)
@@ -35,6 +47,55 @@ class RequestContext:
     permission_version: int
     permissions: frozenset[str]
     is_platform_admin: bool
+
+
+def _permission_cache_ttl_seconds() -> float:
+    if os.getenv("APP_ENV", "development").lower() == "test":
+        return 0.0
+    raw_value = os.getenv("AUTH_PERMISSION_CACHE_TTL_SECONDS", "15")
+    try:
+        return max(0.0, min(float(raw_value), 300.0))
+    except ValueError:
+        return 15.0
+
+
+def _permissions_for_context(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    permission_version: int,
+) -> frozenset[str]:
+    ttl_seconds = _permission_cache_ttl_seconds()
+    if ttl_seconds <= 0:
+        return frozenset(
+            list_permissions(session, tenant_id=tenant_id, user_id=user_id)
+        )
+    key = (tenant_id, user_id, permission_version)
+    now = monotonic()
+    with _permission_cache_lock:
+        cached = _permission_cache.get(key)
+        if cached is not None and cached.expires_at > now:
+            return cached.permissions
+        if len(_permission_cache) >= 2048:
+            expired = [
+                cache_key
+                for cache_key, entry in _permission_cache.items()
+                if entry.expires_at <= now
+            ]
+            for cache_key in expired:
+                _permission_cache.pop(cache_key, None)
+            if len(_permission_cache) >= 2048:
+                _permission_cache.clear()
+    permissions = frozenset(
+        list_permissions(session, tenant_id=tenant_id, user_id=user_id)
+    )
+    with _permission_cache_lock:
+        _permission_cache[key] = _PermissionCacheEntry(
+            expires_at=now + ttl_seconds,
+            permissions=permissions,
+        )
+    return permissions
 
 
 def _test_bypass(session: Session) -> RequestContext | None:
@@ -144,8 +205,11 @@ def require_request_context(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "AUTH_SESSION_EXPIRED", "message": "session is expired or revoked"},
         )
-    permissions = frozenset(
-        list_permissions(session, tenant_id=tenant.id, user_id=user.id)
+    permissions = _permissions_for_context(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        permission_version=membership.permission_version,
     )
     context = RequestContext(
         user_id=user.id,

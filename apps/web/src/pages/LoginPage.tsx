@@ -5,6 +5,7 @@ import {
   Eye,
   EyeSlash,
   LockKey,
+  Translate,
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useState, type FormEvent } from "react";
@@ -12,8 +13,10 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Brand } from "../components/Brand";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useCoreAuth } from "../core/AuthContext";
+import { useLocale } from "../core/LocaleContext";
 
 export function LoginPage() {
+  const { locale, setLocale, t } = useLocale();
   const {
     status,
     loginPassword,
@@ -45,7 +48,7 @@ export function LoginPage() {
     try {
       await loginPassword(identifier, password);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "账号或密码错误");
+      setError(caught instanceof Error ? caught.message : t("账号或密码错误"));
     } finally {
       setSubmitting(false);
     }
@@ -57,7 +60,7 @@ export function LoginPage() {
     try {
       await switchTenant(membershipId);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "工作区切换失败");
+      setError(caught instanceof Error ? caught.message : t("工作区切换失败"));
     } finally {
       setSubmitting(false);
     }
@@ -65,16 +68,16 @@ export function LoginPage() {
 
   return (
     <main className="login-page">
-      <div className="login-topbar"><Brand /><ThemeToggle /></div>
+      <div className="login-topbar"><Brand /><div className="login-topbar-actions"><Button variant="ghost" color="gray" onClick={() => void setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")} aria-label={t("切换语言")}><Translate />{locale === "zh-CN" ? "EN" : "中文"}</Button><ThemeToggle /></div></div>
       <div className="login-layout">
         <section className="login-story">
-          <Text size="2" color="gray">智贸云 · 商家运营控制台</Text>
-          <Heading size="9" as="h1">让商品、询盘和报价成为一条可信链路。</Heading>
-          <Text size="4" color="gray">从商品模版到正式报价，每一步都有租户边界、来源记录和人工确认。</Text>
+          <Text size="2" color="gray">{t("智贸云 · 商家运营控制台")}</Text>
+          <Heading size="9" as="h1">{t("让商品、询盘和报价成为一条可信链路。")}</Heading>
+          <Text size="4" color="gray">{t("从商品模版到正式报价，每一步都有租户边界、来源记录和人工确认。")}</Text>
           <div className="login-feature-list">
-            <div><strong>商品唯一事实来源</strong><span>SKU、价格、规格与图片统一归档</span></div>
-            <div><strong>租户权限隔离</strong><span>服务端会话决定成员与工作区</span></div>
-            <div><strong>报价人工门禁</strong><span>版本化规则计算，批准后才可对客</span></div>
+            <div><strong>{t("商品唯一事实来源")}</strong><span>{t("SKU、价格、规格与图片统一归档")}</span></div>
+            <div><strong>{t("租户权限隔离")}</strong><span>{t("服务端会话决定成员与工作区")}</span></div>
+            <div><strong>{t("报价人工门禁")}</strong><span>{t("版本化规则计算，批准后才可对客")}</span></div>
           </div>
         </section>
 
@@ -82,8 +85,8 @@ export function LoginPage() {
           <div className="login-card-heading">
             <span className="login-lock"><LockKey size={24} weight="duotone" /></span>
             <div>
-              <Heading size="6">{status === "selecting_tenant" ? "选择工作区" : "登录商家工作台"}</Heading>
-              <Text size="2" color="gray">{status === "selecting_tenant" ? "确认本次使用的商家空间" : "使用账号、邮箱或手机号登录"}</Text>
+              <Heading size="6">{t(status === "selecting_tenant" ? "选择工作区" : "登录商家工作台")}</Heading>
+              <Text size="2" color="gray">{t(status === "selecting_tenant" ? "确认本次使用的商家空间" : "使用账号、邮箱或手机号登录")}</Text>
             </div>
           </div>
 
@@ -102,12 +105,12 @@ export function LoginPage() {
                   <ArrowRight />
                 </Button>
               ))}
-              {!memberships.length ? <Text size="2" color="gray">当前账号没有可用的商家空间。</Text> : null}
+              {!memberships.length ? <Text size="2" color="gray">{t("当前账号没有可用的商家空间。")}</Text> : null}
             </div>
           ) : (
             <form className="login-form login-credentials-form" autoComplete="on" onSubmit={submitPassword}>
               <label className="field-group" htmlFor="login-identifier">
-                <Text size="2" weight="medium">账号</Text>
+                <Text size="2" weight="medium">{t("账号")}</Text>
                 <TextField.Root
                   id="login-identifier"
                   name="identifier"
@@ -117,7 +120,7 @@ export function LoginPage() {
                     setIdentifier(event.target.value);
                     if (error) setError("");
                   }}
-                  placeholder="账号、邮箱或手机号"
+                  placeholder={t("账号、邮箱或手机号")}
                   autoComplete="username"
                   autoCapitalize="none"
                   spellCheck={false}
@@ -126,11 +129,11 @@ export function LoginPage() {
                   aria-invalid={Boolean(visibleError)}
                   aria-describedby={visibleError ? "login-error" : "login-identifier-help"}
                 />
-                <Text id="login-identifier-help" size="1" color="gray">可使用商家账号、登录邮箱或绑定手机号</Text>
+                <Text id="login-identifier-help" size="1" color="gray">{t("可使用商家账号、登录邮箱或绑定手机号")}</Text>
               </label>
 
               <label className="field-group" htmlFor="login-password">
-                <Text size="2" weight="medium">密码</Text>
+                <Text size="2" weight="medium">{t("密码")}</Text>
                 <TextField.Root
                   id="login-password"
                   name="password"
@@ -141,7 +144,7 @@ export function LoginPage() {
                     setPassword(event.target.value);
                     if (error) setError("");
                   }}
-                  placeholder="请输入密码"
+                  placeholder={t("请输入密码")}
                   autoComplete="current-password"
                   maxLength={256}
                   required
@@ -152,7 +155,7 @@ export function LoginPage() {
                     <button
                       type="button"
                       className="login-password-toggle"
-                      aria-label={passwordVisible ? "隐藏密码" : "显示密码"}
+                      aria-label={t(passwordVisible ? "隐藏密码" : "显示密码")}
                       aria-pressed={passwordVisible}
                       onClick={() => setPasswordVisible((current) => !current)}
                     >
@@ -167,7 +170,7 @@ export function LoginPage() {
                 size="3"
                 loading={submitting || status === "restoring"}
               >
-                登录工作台
+                {t("登录工作台")}
                 <ArrowRight />
               </Button>
             </form>
@@ -181,7 +184,7 @@ export function LoginPage() {
           ) : null}
         </Card>
       </div>
-      <Link to="/" className="login-back-link">返回官网</Link>
+      <Link to="/" className="login-back-link">{t("返回官网")}</Link>
     </main>
   );
 }

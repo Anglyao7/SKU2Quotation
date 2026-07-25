@@ -20,6 +20,7 @@ from .identity_models import (
 )
 from .public_catalog_models import TenantPublicProfileRow
 from .saas_seed import PERMISSION_SEEDS, ROLE_SEEDS
+from .inventory_seed import ensure_default_warehouse
 from .tenant_slugs import is_reserved_tenant_slug, storefront_slug_from_name
 
 
@@ -259,6 +260,11 @@ def bootstrap_production_owner(
                 publication_status="PUBLISHED",
             )
         )
+    ensure_default_warehouse(
+        session,
+        tenant_id=tenant.id,
+        created_by_membership_id=membership.id,
+    )
     session.commit()
     return ProductionBootstrapResult(
         organization_id=organization.id,

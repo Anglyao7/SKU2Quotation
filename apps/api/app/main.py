@@ -13,6 +13,7 @@ from .routers.auth import router as auth_router
 from .routers.access_control import router as access_control_router
 from .routers.health import router as health_router
 from .routers.image_intelligence import router as image_intelligence_router
+from .routers.inventory import router as inventory_router
 from .routers.knowledge_search import router as knowledge_search_router
 from .routers.legacy_operations import router as legacy_operations_router
 from .routers.product_intelligence import router as product_intelligence_router
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
         legacy_operations_router,
         product_intelligence_router,
         product_center_router,
+        inventory_router,
         platform_admin_router,
         image_intelligence_router,
         trade_flow_router,

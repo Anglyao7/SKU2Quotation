@@ -151,6 +151,7 @@ class PublicCatalogOfferUpsertRequest(BaseModel):
     unit_price: Decimal = Field(ge=0)
     currency: str = Field(pattern=r"^[A-Za-z]{3}$")
     tags: list[str] = Field(default_factory=list, max_length=20)
+    tag_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     publication_status: Literal["DRAFT", "PUBLISHED", "SUSPENDED"] = "DRAFT"
     valid_from: datetime | None = None
     valid_to: datetime | None = None
@@ -159,6 +160,14 @@ class PublicCatalogOfferUpsertRequest(BaseModel):
     @classmethod
     def normalize_public_currency(cls, value: str) -> str:
         return value.upper()
+
+    @field_validator("tag_color", mode="before")
+    @classmethod
+    def normalize_tag_color(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized.upper() if normalized else None
 
     @field_validator("tags")
     @classmethod
@@ -220,6 +229,7 @@ class CategoryCreateRequest(BaseModel):
     code: str = Field(min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=200)
     sort_order: int = Field(default=0, ge=0)
+    display_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
 
     @field_validator("code")
     @classmethod
@@ -233,6 +243,14 @@ class CategoryCreateRequest(BaseModel):
         if "/" in normalized or "／" in normalized:
             raise ValueError("category name must be a single hierarchy segment")
         return normalized
+
+    @field_validator("display_color", mode="before")
+    @classmethod
+    def normalize_display_color(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized.upper() if normalized else None
 
 
 class CategoryResponse(CategoryCreateRequest):
@@ -248,6 +266,7 @@ class CategoryUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     sort_order: int = Field(default=0, ge=0)
     status: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
+    display_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
 
     @field_validator("name")
     @classmethod
@@ -256,6 +275,14 @@ class CategoryUpdateRequest(BaseModel):
         if "/" in normalized or "／" in normalized:
             raise ValueError("category name must be a single hierarchy segment")
         return normalized
+
+    @field_validator("display_color", mode="before")
+    @classmethod
+    def normalize_display_color(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized.upper() if normalized else None
 
 
 class CategoryReorderItem(BaseModel):

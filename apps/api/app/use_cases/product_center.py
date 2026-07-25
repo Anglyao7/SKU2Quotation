@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -43,7 +44,7 @@ from ..product_center_schemas import (
     SupplierPriceCreateRequest,
     SupplierPriceResponse,
 )
-from ..product_supplier_models import ProductCategoryRow
+from ..product_supplier_models import ProductCategoryRow, ProductRow
 from ..public_catalog_models import PublicCatalogOfferRow
 from ..repositories import product_center_repository as repository
 
@@ -132,6 +133,7 @@ def _public_offer_response(row: PublicCatalogOfferRow) -> PublicCatalogOfferResp
         unit_price=row.unit_price,
         currency=row.currency,
         tags=row.tags,
+        tag_color=row.tag_color,
         publication_status=row.publication_status,
         published_at=row.published_at,
         valid_from=row.valid_from,
@@ -309,6 +311,7 @@ def list_skus(
     statuses: list[str],
     page: int,
     page_size: int,
+    include_supplier_summary: bool = True,
 ) -> SkuListPage:
     _require(permissions, "product.view")
     normalized_statuses = sorted(
@@ -335,18 +338,19 @@ def list_skus(
 
     suppliers_by_sku: dict[UUID, list[tuple[Any, Any]]] = {}
     suppliers_by_product: dict[UUID, list[tuple[Any, Any]]] = {}
-    for source, supplier in repository.list_supplier_rows_for_sku_page(
-        session,
-        tenant_id=tenant_id,
-        sku_ids=sku_ids,
-        product_ids=product_ids,
-    ):
-        target = (
-            suppliers_by_sku.setdefault(source.sku_id, [])
-            if source.sku_id is not None
-            else suppliers_by_product.setdefault(source.product_id, [])
-        )
-        target.append((source, supplier))
+    if include_supplier_summary:
+        for source, supplier in repository.list_supplier_rows_for_sku_page(
+            session,
+            tenant_id=tenant_id,
+            sku_ids=sku_ids,
+            product_ids=product_ids,
+        ):
+            target = (
+                suppliers_by_sku.setdefault(source.sku_id, [])
+                if source.sku_id is not None
+                else suppliers_by_product.setdefault(source.product_id, [])
+            )
+            target.append((source, supplier))
 
     image_statuses_by_product: dict[UUID, set[str]] = {}
     for product_id, approval_status in repository.list_image_statuses_for_products(
@@ -544,6 +548,7 @@ def create_skus(
             )
         )
         rows.append(row)
+    product.search_document_version = 0
     _commit(session, conflict_code="SKU_CODE_CONFLICT", conflict_message="SKU code already exists.")
     return [_sku_response(row) for row in rows]
 
@@ -587,6 +592,13 @@ def update_sku(
         setattr(row, field, value)
     row.version += 1
     row.updated_by_user_id = user_id
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=row.product_id,
+    )
+    if product is not None:
+        product.search_document_version = 0
     session.add(
         ProductAuditEventRow(
             tenant_id=tenant_id,
@@ -666,6 +678,7 @@ def upsert_public_offer(
         row.published_at = now
     elif request.publication_status == "DRAFT":
         row.published_at = None
+    product.search_document_version = 0
     session.flush()
     after = _public_offer_response(row).model_dump(mode="json")
     session.add(
@@ -701,6 +714,7 @@ def list_categories(
             code=row.code,
             name=row.name,
             sort_order=row.sort_order,
+            display_color=row.display_color,
             path=row.path,
             status=row.status,
             version=row.version,
@@ -716,6 +730,7 @@ def _category_response(row: ProductCategoryRow) -> CategoryResponse:
         code=row.code,
         name=row.name,
         sort_order=row.sort_order,
+        display_color=row.display_color,
         path=row.path,
         status=row.status,
         version=row.version,
@@ -761,6 +776,7 @@ def create_category(
         name=request.name,
         path=path,
         sort_order=request.sort_order,
+        display_color=request.display_color if parent is None else None,
         status="ACTIVE",
     )
     session.add(row)
@@ -927,11 +943,25 @@ def update_category(
     row.path = f"{parent.name}/{request.name}" if parent else request.name
     row.sort_order = request.sort_order
     row.status = request.status
+    if parent is not None:
+        row.display_color = None
+    elif "display_color" in request.model_fields_set:
+        row.display_color = request.display_color
     row.version += 1
     if children:
         for child in children:
             child.path = f"{request.name}/{child.name}"
             child.version += 1
+    affected_category_ids = [row.id, *(child.id for child in children)]
+    session.execute(
+        update(ProductRow)
+        .where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.category_id.in_(affected_category_ids),
+            ProductRow.status == "ACTIVE",
+        )
+        .values(search_document_version=0)
+    )
     session.flush()
     after = _category_response(row).model_dump(mode="json")
     session.add(

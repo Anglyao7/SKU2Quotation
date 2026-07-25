@@ -1,6 +1,7 @@
 import { Button, Card, Heading, Spinner, Text } from "@radix-ui/themes";
 import { ArrowClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
+import { useLocale } from "./LocaleContext";
 
 export function CorePageHeading({ eyebrow, title, description, actions }: {
   eyebrow: string;
@@ -21,15 +22,17 @@ export function CorePageHeading({ eyebrow, title, description, actions }: {
 }
 
 export function CoreLoading({ label = "正在加载" }: { label?: string }) {
-  return <Card className="core-state"><Spinner size="3" /><Text size="2" color="gray">{label}</Text></Card>;
+  const { t } = useLocale();
+  return <Card className="core-state"><Spinner size="3" /><Text size="2" color="gray">{t(label)}</Text></Card>;
 }
 
 export function CoreError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const { t } = useLocale();
   return (
     <Card className="core-state core-error">
       <WarningCircle size={28} />
-      <div><Text weight="bold" as="div">暂时无法完成请求</Text><Text size="2" color="gray">{message}</Text></div>
-      {onRetry ? <Button variant="soft" color="gray" onClick={onRetry}><ArrowClockwise />重试</Button> : null}
+      <div><Text weight="bold" as="div">{t("暂时无法完成请求")}</Text><Text size="2" color="gray">{t(message)}</Text></div>
+      {onRetry ? <Button variant="soft" color="gray" onClick={onRetry}><ArrowClockwise />{t("重试")}</Button> : null}
     </Card>
   );
 }
@@ -45,5 +48,5 @@ export function percent(value: number) {
 export function coreDate(value?: string) {
   if (!value) return "—";
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString(document.documentElement.lang || "zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..auth_schemas import (
     AuthContext,
+    AuthBootstrapResponse,
     AuthLoginRequest,
     AuthPublicConfig,
     AuthTokenData,
@@ -21,6 +22,8 @@ from ..auth_schemas import (
     PasswordLoginRequest,
     PermissionResponse,
     TenantContextRequest,
+    UserPreferencesResponse,
+    UserPreferencesUpdate,
 )
 from ..database import get_auth_session, get_session
 from ..services.auth.dependencies import RequestContext, bearer, require_request_context
@@ -41,8 +44,9 @@ from ..services.auth.contracts import IdentityProviderError
 from ..services.auth.oidc_provider import public_oidc_config
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..domain.errors import ApplicationError
+from ..localization import normalize_ui_locale
 from ..use_cases.authentication import get_current_user
-from ..use_cases import tenant_settings
+from ..use_cases import tenant_settings, user_preferences
 from .errors import application_http_error
 
 
@@ -78,12 +82,26 @@ def _token_response(result: IssuedSession) -> AuthTokenResponse:
                 display_name=result.user.display_name,
                 email=_masked_email(result.user.email_normalized),
                 is_platform_admin=bool(result.user.is_platform_admin),
+                locale=normalize_ui_locale(result.user.locale),
             ),
             context=AuthContext(
                 tenant_id=result.tenant.id if result.tenant else None,
                 membership_id=result.membership.id if result.membership else None,
                 tenant_name=result.tenant.name if result.tenant else None,
                 tenant_slug=result.tenant.slug if result.tenant else None,
+                business_mode=(
+                    "EXPORT"
+                    if result.tenant
+                    and result.tenant.default_currency.upper() == "USD"
+                    else "DOMESTIC"
+                    if result.tenant
+                    else None
+                ),
+                default_currency=(
+                    result.tenant.default_currency.upper()
+                    if result.tenant
+                    else None
+                ),
                 default_workspace="dashboard" if result.tenant else None,
             ),
         )
@@ -360,6 +378,27 @@ def me_endpoint(
         raise application_http_error(exc) from exc
 
 
+@router.get("/auth/bootstrap", response_model=AuthBootstrapResponse)
+def bootstrap_endpoint(
+    response: Response,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> AuthBootstrapResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    try:
+        profile = get_current_user(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return AuthBootstrapResponse(
+        profile=profile,
+        permissions=PermissionResponse(
+            membership_id=context.membership_id,
+            permission_version=context.permission_version,
+            permissions=sorted(context.permissions),
+        ),
+    )
+
+
 @router.get("/me/permissions", response_model=PermissionResponse)
 def permissions_endpoint(
     context: RequestContext = Depends(require_request_context),
@@ -390,6 +429,22 @@ def update_merchant_settings_endpoint(
 ) -> MerchantSettingsResponse:
     try:
         return tenant_settings.update_merchant_settings(
+            session,
+            context=context,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/me/preferences", response_model=UserPreferencesResponse)
+def update_user_preferences_endpoint(
+    payload: UserPreferencesUpdate,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> UserPreferencesResponse:
+    try:
+        return user_preferences.update_user_preferences(
             session,
             context=context,
             request=payload,

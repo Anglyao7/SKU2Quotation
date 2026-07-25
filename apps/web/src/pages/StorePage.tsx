@@ -4,7 +4,6 @@ import {
   Container,
   Heading,
   IconButton,
-  Select,
   Separator,
   Switch,
   Text,
@@ -12,13 +11,15 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowCounterClockwise,
+  CaretLeft,
+  CaretRight,
   MagnifyingGlass,
-  SlidersHorizontal,
   Sparkle,
   Storefront as StoreIcon,
   X,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useLoaderData } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
@@ -27,6 +28,108 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import type { Sku, Storefront } from "../types";
 
+type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
+
+function paginationItems(currentPage: number, pageCount: number): PaginationItem[] {
+  if (pageCount <= 7) {
+    return Array.from({ length: pageCount }, (_, index) => index + 1);
+  }
+  if (currentPage <= 4) {
+    return [1, 2, 3, 4, 5, "end-ellipsis", pageCount];
+  }
+  if (currentPage >= pageCount - 3) {
+    return [1, "start-ellipsis", pageCount - 4, pageCount - 3, pageCount - 2, pageCount - 1, pageCount];
+  }
+  return [1, "start-ellipsis", currentPage - 1, currentPage, currentPage + 1, "end-ellipsis", pageCount];
+}
+
+function hidePaginationItemOnMobile(index: number, currentPage: number, pageCount: number) {
+  if (pageCount <= 7) return false;
+  if (currentPage <= 4) return index === 3 || index === 4;
+  if (currentPage >= pageCount - 3) return index === 2 || index === 3;
+  return index === 2 || index === 4;
+}
+
+function CategoryScrollTrack({
+  ariaLabel,
+  contentKey,
+  children,
+}: {
+  ariaLabel: string;
+  contentKey: string;
+  children: ReactNode;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [scrollState, setScrollState] = useState({ left: false, right: false });
+
+  const updateScrollState = useCallback(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    const maxScrollLeft = Math.max(0, track.scrollWidth - track.clientWidth);
+    const next = {
+      left: track.scrollLeft > 2,
+      right: track.scrollLeft < maxScrollLeft - 2,
+    };
+    setScrollState((current) => (
+      current.left === next.left && current.right === next.right ? current : next
+    ));
+  }, []);
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    track.scrollTo({ left: 0 });
+    const frame = window.requestAnimationFrame(updateScrollState);
+    track.addEventListener("scroll", updateScrollState, { passive: true });
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(updateScrollState);
+    resizeObserver?.observe(track);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      track.removeEventListener("scroll", updateScrollState);
+      resizeObserver?.disconnect();
+    };
+  }, [contentKey, updateScrollState]);
+
+  const scrollByPage = (direction: -1 | 1) => {
+    const track = trackRef.current;
+    if (!track) return;
+    track.scrollBy({
+      left: direction * Math.max(220, track.clientWidth * 0.72),
+      behavior: "smooth",
+    });
+  };
+
+  return (
+    <div className="category-browser-track-shell">
+      {scrollState.left && (
+        <button
+          type="button"
+          className="category-browser-scroll-button is-left"
+          aria-label={`向左查看更多${ariaLabel}`}
+          onClick={() => scrollByPage(-1)}
+        >
+          <CaretLeft weight="bold" />
+        </button>
+      )}
+      <div className="category-browser-track" role="group" aria-label={ariaLabel} ref={trackRef}>
+        {children}
+      </div>
+      {scrollState.right && (
+        <button
+          type="button"
+          className="category-browser-scroll-button is-right"
+          aria-label={`向右查看更多${ariaLabel}`}
+          onClick={() => scrollByPage(1)}
+        >
+          <CaretRight weight="bold" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function StorePage() {
   const loadedStore = useLoaderData() as Storefront;
   const tenantSlug = loadedStore.slug;
@@ -34,17 +137,17 @@ export function StorePage() {
   const [skus, setSkus] = useState<Sku[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(0);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [deferredSearch, setDeferredSearch] = useState("");
   const [primaryCategory, setPrimaryCategory] = useState("");
   const [secondaryCategory, setSecondaryCategory] = useState("");
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [semantic, setSemantic] = useState(true);
   const [cart, setCart] = useState<Record<string, CartLine>>({});
   const requestId = useRef(0);
+  const resultsHeaderRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setDeferredSearch(search.trim()), 280);
@@ -57,8 +160,9 @@ export function StorePage() {
     setDeferredSearch("");
     setPrimaryCategory("");
     setSecondaryCategory("");
-    setSelectedTags([]);
     setCart({});
+    setPage(1);
+    setPages(0);
   }, [loadedStore]);
 
   const category = secondaryCategory || primaryCategory;
@@ -71,23 +175,23 @@ export function StorePage() {
     };
   }, [loadedStore.name]);
 
-  const loadSkus = useCallback(async (targetPage = 1, append = false) => {
+  const loadSkus = useCallback(async (targetPage = 1) => {
     const currentRequest = ++requestId.current;
-    if (append) setLoadingMore(true);
-    else setLoading(true);
+    setPage(targetPage);
+    setLoading(true);
     setError("");
     try {
       const data = await api.getStoreSkus(tenantSlug, {
         q: deferredSearch,
         category: category || undefined,
-        tags: selectedTags,
         semantic: Boolean(deferredSearch) && semantic,
         page: targetPage,
       });
       if (currentRequest !== requestId.current) return;
-      setSkus((current) => append ? [...current, ...data.items] : data.items);
+      setSkus(data.items);
       setTotal(data.total);
-      setPage(targetPage);
+      setPage(data.page ?? targetPage);
+      setPages(data.pages ?? Math.ceil(data.total / 24));
       setStore((current) => current ? {
         ...current,
         categories: current.categories?.length ? current.categories : data.categories,
@@ -96,16 +200,15 @@ export function StorePage() {
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
       setError(caught instanceof Error ? caught.message : "商品加载失败。");
-      if (!append) setSkus([]);
+      setSkus([]);
     } finally {
       if (currentRequest === requestId.current) {
         setLoading(false);
-        setLoadingMore(false);
       }
     }
-  }, [tenantSlug, deferredSearch, category, selectedTags, semantic]);
+  }, [tenantSlug, deferredSearch, category, semantic]);
 
-  useEffect(() => { setPage(1); void loadSkus(1, false); }, [loadSkus]);
+  useEffect(() => { void loadSkus(1); }, [loadSkus]);
 
   const categories = useMemo(() => {
     if (store?.categories?.length) return store.categories;
@@ -128,22 +231,33 @@ export function StorePage() {
     () => categoryTree.find((node) => node.path === primaryCategory)?.children ?? [],
     [categoryTree, primaryCategory],
   );
-  const tags = useMemo(() => {
-    if (store?.tags?.length) return store.tags.slice(0, 10);
-    return Array.from(new Set(skus.flatMap((sku) => sku.tags))).slice(0, 10);
-  }, [store?.tags, skus]);
-  const hasFilters = Boolean(search || category || selectedTags.length);
+  const visibleSecondaryOptions = useMemo(
+    () => {
+      if (primaryCategory) {
+        const parent = categoryTree.find((node) => node.path === primaryCategory);
+        return (parent?.children ?? []).map((child) => ({
+          ...child,
+          parentName: parent?.name ?? "",
+          parentPath: parent?.path ?? "",
+        }));
+      }
+      return categoryTree.flatMap((parent) => parent.children.map((child) => ({
+        ...child,
+        parentName: parent.name,
+        parentPath: parent.path,
+      })));
+    },
+    [categoryTree, primaryCategory],
+  );
+  const hasFilters = Boolean(search || category);
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const cartSkuCount = cartLines.length;
+  const visiblePaginationItems = useMemo(() => paginationItems(page, pages), [page, pages]);
 
-  const toggleTag = (tag: string) => {
-    setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]);
-  };
   const resetFilters = () => {
     setSearch("");
     setPrimaryCategory("");
     setSecondaryCategory("");
-    setSelectedTags([]);
   };
   const addToCart = (sku: Sku) => {
     setCart((current) => ({
@@ -158,6 +272,15 @@ export function StorePage() {
       else next[skuId] = { ...next[skuId], quantity };
       return next;
     });
+  };
+  const goToPage = (targetPage: number) => {
+    if (loading || targetPage === page || targetPage < 1 || targetPage > pages) return;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    resultsHeaderRef.current?.scrollIntoView({
+      behavior: reducedMotion ? "auto" : "smooth",
+      block: "start",
+    });
+    void loadSkus(targetPage);
   };
 
   return (
@@ -201,7 +324,7 @@ export function StorePage() {
               <div className="filter-panel-heading">
                 <div>
                   <Text size="2" weight="medium">查找商品</Text>
-                  <Text size="1" color="gray">可按 SKU、名称、规格、类目或标签组合筛选</Text>
+                  <Text size="1" color="gray">输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找</Text>
                 </div>
                 {hasFilters && (
                   <Button size="1" variant="ghost" color="gray" onClick={resetFilters}>
@@ -234,53 +357,86 @@ export function StorePage() {
                     </TextField.Slot>
                   )}
                 </TextField.Root>
-                <div className="category-cascade" aria-label="按两级分类筛选">
-                  <Select.Root
-                    value={primaryCategory || "all-primary"}
-                    onValueChange={(value) => {
-                      setPrimaryCategory(value === "all-primary" ? "" : value);
-                      setSecondaryCategory("");
-                    }}
-                  >
-                    <Select.Trigger className="category-select" aria-label="选择一级分类" />
-                    <Select.Content>
-                      <Select.Item value="all-primary">全部一级分类</Select.Item>
-                      {categoryTree.map((item) => <Select.Item value={item.path} key={item.path}>{item.name}</Select.Item>)}
-                    </Select.Content>
-                  </Select.Root>
-                  <Select.Root
-                    value={secondaryCategory || "all-secondary"}
-                    disabled={!primaryCategory || !secondaryOptions.length}
-                    onValueChange={(value) => setSecondaryCategory(value === "all-secondary" ? "" : value)}
-                  >
-                    <Select.Trigger className="category-select" aria-label="选择二级分类" />
-                    <Select.Content>
-                      <Select.Item value="all-secondary">{!primaryCategory ? "请先选择一级分类" : secondaryOptions.length ? "全部二级分类" : "该分类没有二级"}</Select.Item>
-                      {secondaryOptions.map((item) => <Select.Item value={item.path} key={item.path}>{item.name}</Select.Item>)}
-                    </Select.Content>
-                  </Select.Root>
-                </div>
                 <label className="semantic-toggle">
                   <Switch checked={Boolean(search.trim()) && semantic} onCheckedChange={setSemantic} disabled={!search.trim()} />
                   <span className="semantic-icon"><Sparkle size={17} /></span>
-                  <span className="semantic-copy"><Text size="2" weight="medium">智能扩展</Text><Text size="1" color="gray">补充相关标签</Text></span>
+                  <span className="semantic-copy"><Text size="2" weight="medium">AI 语义搜索</Text><Text size="1" color="gray">结合标签理解需求</Text></span>
                 </label>
               </div>
-              {tags.length > 0 && (
-                <div className="tag-filter-row">
-                  <span className="filter-label"><SlidersHorizontal size={17} /><Text size="2" color="gray">快捷标签</Text></span>
-                  <div className="filter-tags">
-                    {tags.map((tag) => (
-                      <Button key={tag} title={tag} size="1" variant={selectedTags.includes(tag) ? "solid" : "soft"} color={selectedTags.includes(tag) ? "jade" : "gray"} onClick={() => toggleTag(tag)}>
-                        {tag}
-                      </Button>
+              <nav className="category-browser" aria-label="按两级分类筛选">
+                <div className="category-browser-row">
+                  <span className="category-browser-label">一级分类</span>
+                  <CategoryScrollTrack
+                    ariaLabel="一级分类"
+                    contentKey={categoryTree.map((item) => item.path).join("|")}
+                  >
+                    <button
+                      type="button"
+                      className={`category-browser-option${!primaryCategory ? " is-active" : ""}`}
+                      aria-pressed={!primaryCategory}
+                      onClick={() => {
+                        setPrimaryCategory("");
+                        setSecondaryCategory("");
+                      }}
+                    >
+                      全部商品
+                    </button>
+                    {categoryTree.map((item) => (
+                      <button
+                        type="button"
+                        className={`category-browser-option${primaryCategory === item.path ? " is-active" : ""}`}
+                        aria-pressed={primaryCategory === item.path}
+                        onClick={() => {
+                          setPrimaryCategory(item.path);
+                          setSecondaryCategory("");
+                        }}
+                        key={item.path}
+                      >
+                        {item.name}
+                      </button>
                     ))}
-                  </div>
+                  </CategoryScrollTrack>
                 </div>
-              )}
+                <div className="category-browser-row">
+                  <span className="category-browser-label">二级分类</span>
+                  <CategoryScrollTrack
+                    ariaLabel="二级分类"
+                    contentKey={`${primaryCategory}|${visibleSecondaryOptions.map((item) => item.path).join("|")}`}
+                  >
+                    <button
+                      type="button"
+                      className={`category-browser-option${!secondaryCategory ? " is-active" : ""}`}
+                      aria-pressed={!secondaryCategory}
+                      onClick={() => setSecondaryCategory("")}
+                    >
+                      全部二级
+                    </button>
+                    {visibleSecondaryOptions.map((item) => (
+                      <button
+                        type="button"
+                        className={`category-browser-option${secondaryCategory === item.path ? " is-active" : ""}`}
+                        aria-pressed={secondaryCategory === item.path}
+                        title={primaryCategory ? item.name : `${item.parentName} / ${item.name}`}
+                        onClick={() => {
+                          setPrimaryCategory(item.parentPath);
+                          setSecondaryCategory(item.path);
+                        }}
+                        key={item.path}
+                      >
+                        {primaryCategory ? item.name : `${item.parentName} · ${item.name}`}
+                      </button>
+                    ))}
+                    {!visibleSecondaryOptions.length && (
+                      <span className="category-browser-empty">
+                        {primaryCategory && !secondaryOptions.length ? "该分类暂无二级分类" : "暂无二级分类"}
+                      </span>
+                    )}
+                  </CategoryScrollTrack>
+                </div>
+              </nav>
             </div>
 
-            <div className="results-header">
+            <div className="results-header" ref={resultsHeaderRef}>
               <div>
                 <Heading as="h2" size="5">{hasFilters ? "筛选结果" : "全部 SKU"}</Heading>
                 <Text size="2" color="gray">在商品卡片上直接加入清单或调整数量。</Text>
@@ -295,11 +451,11 @@ export function StorePage() {
               {loading ? (
                 <ProductGridSkeleton />
               ) : error ? (
-                <ErrorState message={error} onRetry={() => void loadSkus(1, false)} />
+                <ErrorState message={error} onRetry={() => void loadSkus(page)} />
               ) : skus.length === 0 ? (
                 <EmptyState
                   title="没有匹配的 SKU"
-                  description="换一个关键词或减少筛选标签，再试一次。"
+                  description="换一个关键词、使用场景或分类，再试一次。"
                   action={hasFilters ? <Button variant="soft" onClick={resetFilters}>清除筛选</Button> : undefined}
                 />
               ) : (
@@ -315,14 +471,55 @@ export function StorePage() {
                   ))}
                 </div>
               )}
-              {!loading && !error && skus.length > 0 && skus.length < total && (
-                <div className="load-more-row">
-                  <progress max={total} value={skus.length} aria-label={`已显示 ${skus.length} 个，共 ${total} 个 SKU`} />
-                  <Button variant="soft" size="3" loading={loadingMore} onClick={() => void loadSkus(page + 1, true)}>
-                    继续加载
+              {!loading && !error && skus.length > 0 && pages > 1 && (
+                <nav className="store-pagination" aria-label="商品分页">
+                  <Button
+                    type="button"
+                    size="2"
+                    variant="soft"
+                    color="gray"
+                    disabled={page <= 1}
+                    aria-label="上一页"
+                    onClick={() => goToPage(page - 1)}
+                  >
+                    <CaretLeft weight="bold" />
+                    <span className="store-pagination-button-label">上一页</span>
                   </Button>
-                  <Text size="1" color="gray">已显示 {skus.length.toLocaleString("zh-CN")} / {total.toLocaleString("zh-CN")}</Text>
-                </div>
+                  <div className="store-pagination-pages">
+                    {visiblePaginationItems.map((item, index) => (
+                      typeof item === "number" ? (
+                        <button
+                          type="button"
+                          className={`store-pagination-page${item === page ? " is-active" : ""}${hidePaginationItemOnMobile(index, page, pages) ? " is-mobile-hidden" : ""}`}
+                          aria-label={`第 ${item} 页`}
+                          aria-current={item === page ? "page" : undefined}
+                          disabled={loading}
+                          onClick={() => goToPage(item)}
+                          key={item}
+                        >
+                          {item}
+                        </button>
+                      ) : (
+                        <span className="store-pagination-ellipsis" aria-hidden="true" key={item}>…</span>
+                      )
+                    ))}
+                  </div>
+                  <Button
+                    type="button"
+                    size="2"
+                    variant="soft"
+                    color="gray"
+                    disabled={page >= pages}
+                    aria-label="下一页"
+                    onClick={() => goToPage(page + 1)}
+                  >
+                    <span className="store-pagination-button-label">下一页</span>
+                    <CaretRight weight="bold" />
+                  </Button>
+                  <Text className="store-pagination-status" size="1" color="gray" aria-live="polite">
+                    第 {page.toLocaleString("zh-CN")} / {pages.toLocaleString("zh-CN")} 页
+                  </Text>
+                </nav>
               )}
             </div>
           </Container>

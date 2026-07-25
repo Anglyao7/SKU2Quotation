@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from ..auth_schemas import AuthContext, AuthUser, MeResponse, MembershipSummary
 from ..domain.errors import ApplicationError
+from ..localization import normalize_ui_locale
 from ..repositories.identity_repository import get_membership, get_tenant
 from ..services.auth.dependencies import RequestContext
 
@@ -31,12 +32,19 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
             display_name=user.display_name,
             email=_masked_email(user.email_normalized),
             is_platform_admin=bool(user.is_platform_admin),
+            locale=normalize_ui_locale(user.locale),
         ),
         context=AuthContext(
             tenant_id=tenant.id,
             membership_id=membership.id,
             tenant_name=tenant.name,
             tenant_slug=tenant.slug,
+            business_mode=(
+                "EXPORT"
+                if tenant.default_currency.upper() == "USD"
+                else "DOMESTIC"
+            ),
+            default_currency=tenant.default_currency.upper(),
             default_workspace="dashboard",
         ),
         memberships=[

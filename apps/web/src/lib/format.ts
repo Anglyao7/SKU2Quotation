@@ -1,9 +1,12 @@
 export function money(value?: number | string | null, currency = "CNY") {
-  if (value === null || value === undefined || value === "") return "价格面议";
+  const locale = document.documentElement.lang || "zh-CN";
+  if (value === null || value === undefined || value === "") {
+    return locale.startsWith("en") ? "Price on request" : "价格面议";
+  }
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return String(value);
   try {
-    return new Intl.NumberFormat("zh-CN", {
+    return new Intl.NumberFormat(locale, {
       style: "currency",
       currency,
       maximumFractionDigits: 2,
@@ -17,7 +20,7 @@ export function dateTime(value?: string) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(document.documentElement.lang || "zh-CN", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -38,4 +41,8 @@ export function imageFallback(skuCode: string) {
 export function initials(name?: string) {
   const source = name?.trim() || "智贸云";
   return source.slice(0, 2).toUpperCase();
+}
+
+export function primaryCategoryLabel(value?: string | null) {
+  return value?.replace("／", "/").split("/", 1)[0]?.trim() || "";
 }

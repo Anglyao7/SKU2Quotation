@@ -100,6 +100,7 @@ class PublicCatalogOfferRow(AuditTimestampMixin, Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     tags: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    tag_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     publication_status: Mapped[str] = mapped_column(
         String(20), default="DRAFT", nullable=False
     )

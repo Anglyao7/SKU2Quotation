@@ -5,12 +5,13 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, distinct, func, select, update
 from sqlalchemy.orm import Session
 
 from ..db_models import SupplierRow
 from ..knowledge_embedding_models import EmbeddingRow, KnowledgeChunkRow, KnowledgeDocumentRow
 from ..model_mixins import utcnow
+from ..product_center_models import SkuRow
 from ..product_supplier_models import (
     ProductAttributeRow,
     ProductCategoryRow,
@@ -18,11 +19,17 @@ from ..product_supplier_models import (
     SupplierProductRow,
     SupplierScoreRow,
 )
-from .embedding import DeterministicFeatureHashEmbedding, EmbeddingProvider, validate_vectors
+from ..public_catalog_models import PublicCatalogOfferRow
+from .embedding import (
+    EmbeddingProvider,
+    configured_text_embedding_provider,
+    precompute_embeddings,
+    validate_vectors,
+)
 
 
-SCHEMA_VERSION = 1
-FIELD_POLICY_VERSION = 1
+SCHEMA_VERSION = 2
+FIELD_POLICY_VERSION = 2
 LOCALE = "und"
 FEATURE_MARKERS = ("feature", "use", "application", "cert", "特点", "用途", "认证")
 MARKET_MARKERS = ("market", "country", "region", "市场", "国家", "地区")
@@ -44,6 +51,31 @@ class KnowledgeProjectionResult:
     model_version: str
     dimensions: int
     idempotent: bool
+
+
+@dataclass(frozen=True)
+class KnowledgeIndexStatus:
+    total_products: int
+    indexed_products: int
+    pending_products: int
+    model_provider: str
+    model_name: str
+    model_version: str
+    dimensions: int
+
+
+@dataclass(frozen=True)
+class KnowledgeIndexUpdateResult:
+    mode: str
+    processed_products: int
+    total_products: int
+    indexed_products: int
+    pending_products: int
+    embeddings: int
+    model_provider: str
+    model_name: str
+    model_version: str
+    dimensions: int
 
 
 def _json_value(value: Any) -> Any:
@@ -153,6 +185,22 @@ def build_product_payload(
     latest_scores = _latest_supplier_scores(
         session, tenant_id=tenant_id, supplier_ids=supplier_ids
     )
+    sku_rows = session.execute(
+        select(SkuRow, PublicCatalogOfferRow)
+        .outerjoin(
+            PublicCatalogOfferRow,
+            (PublicCatalogOfferRow.tenant_id == SkuRow.tenant_id)
+            & (PublicCatalogOfferRow.sku_id == SkuRow.id)
+            & (PublicCatalogOfferRow.deleted_at.is_(None)),
+        )
+        .where(
+            SkuRow.tenant_id == tenant_id,
+            SkuRow.product_id == product.id,
+            SkuRow.status == "ACTIVE",
+            SkuRow.deleted_at.is_(None),
+        )
+        .order_by(SkuRow.sku_code, SkuRow.id)
+    ).all()
 
     payload = {
         "entity": {
@@ -179,6 +227,22 @@ def build_product_payload(
         "attributes": [
             {"key": attribute.attribute_key, "value": _attribute_value(attribute)}
             for attribute in attributes
+        ],
+        "skus": [
+            {
+                "code": sku.sku_code,
+                "name": sku.name,
+                "options": _json_value(sku.option_values),
+                "barcode": sku.barcode,
+                "default_moq": _json_value(sku.default_moq),
+                "moq_unit": sku.moq_unit,
+                "tags": [
+                    str(tag).strip()
+                    for tag in (offer.tags if offer is not None else [])
+                    if str(tag).strip()
+                ],
+            }
+            for sku, offer in sku_rows
         ],
         "suppliers": [
             {
@@ -214,19 +278,41 @@ def _render_value(value: Any) -> str:
 def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
     product = payload["product"]
     category = payload.get("category") or {}
+    search_tags = list(dict.fromkeys(
+        str(tag).strip()
+        for sku in payload.get("skus", [])
+        for tag in sku.get("tags", [])
+        if str(tag).strip()
+    ))
     overview_lines = [
         f"Product code: {product.get('code') or ''}",
         f"Product name: {product.get('name') or ''}",
         f"Category: {category.get('name') or ''}",
         f"Description: {product.get('description') or ''}",
+        f"Search tags / 商品标签: {_render_value(search_tags)}" if search_tags else "",
     ]
     sections: dict[str, list[str]] = {
-        "OVERVIEW": [line for line in overview_lines if not line.endswith(": ")],
+        "OVERVIEW": [line for line in overview_lines if line and not line.endswith(": ")],
         "SPECIFICATIONS": [],
         "FEATURES": [],
         "MARKETS": [],
         "SUPPLY": [],
     }
+    for sku in payload.get("skus", []):
+        details = [f"SKU: {sku['code']}"]
+        if sku.get("name"):
+            details.append(f"name={sku['name']}")
+        if sku.get("options"):
+            details.append(f"options={_render_value(sku['options'])}")
+        if sku.get("barcode"):
+            details.append(f"barcode={sku['barcode']}")
+        if sku.get("tags"):
+            details.append(f"tags={_render_value(sku['tags'])}")
+        if sku.get("default_moq") is not None:
+            details.append(
+                f"moq={sku['default_moq']} {sku.get('moq_unit') or ''}".strip()
+            )
+        sections["SPECIFICATIONS"].append("; ".join(details))
     for attribute in payload.get("attributes", []):
         key = str(attribute["key"])
         line = f"{key}: {_render_value(attribute['value'])}"
@@ -256,6 +342,12 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not lines:
             continue
         content = "\n".join(lines)
+        metadata: dict[str, Any] = {
+            "source": "Product Center",
+            "field_policy_version": FIELD_POLICY_VERSION,
+        }
+        if chunk_type == "OVERVIEW" and search_tags:
+            metadata["search_tags"] = search_tags
         chunks.append(
             {
                 "chunk_index": len(chunks),
@@ -264,7 +356,7 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "content": content,
                 "content_hash": _sha256(content),
                 "token_count": len(content.split()),
-                "metadata": {"source": "Product Center", "field_policy_version": FIELD_POLICY_VERSION},
+                "metadata": metadata,
             }
         )
     return chunks
@@ -276,8 +368,9 @@ def project_product_knowledge(
     tenant_id: UUID,
     product_id: UUID,
     embedder: EmbeddingProvider | None = None,
+    force_reembed: bool = False,
 ) -> KnowledgeProjectionResult:
-    embedder = embedder or DeterministicFeatureHashEmbedding()
+    embedder = embedder or configured_text_embedding_provider()
     product, payload = build_product_payload(session, tenant_id=tenant_id, product_id=product_id)
     content_hash = _sha256(_stable_json(payload))
     existing = session.scalar(
@@ -294,35 +387,89 @@ def project_product_knowledge(
         )
     )
     if existing is not None:
-        chunk_ids = session.scalars(
-            select(KnowledgeChunkRow.id).where(
+        chunks = session.scalars(
+            select(KnowledgeChunkRow).where(
                 KnowledgeChunkRow.tenant_id == tenant_id,
                 KnowledgeChunkRow.document_id == existing.id,
                 KnowledgeChunkRow.status == "ACTIVE",
             )
         ).all()
-        embedding_count = 0
-        if chunk_ids:
-            embedding_count = session.scalar(
-                select(func.count())
-                .select_from(EmbeddingRow)
+        existing_embeddings = []
+        if chunks:
+            existing_embeddings = session.scalars(
+                select(EmbeddingRow)
                 .where(
                     EmbeddingRow.tenant_id == tenant_id,
-                    EmbeddingRow.entity_id.in_(chunk_ids),
+                    EmbeddingRow.entity_id.in_([chunk.id for chunk in chunks]),
+                    EmbeddingRow.model_provider == embedder.identity.provider,
+                    EmbeddingRow.model_name == embedder.identity.model_name,
+                    EmbeddingRow.model_version == embedder.identity.model_version,
+                    EmbeddingRow.dimensions == embedder.identity.dimensions,
                     EmbeddingRow.status == "ACTIVE",
                 )
-            ) or 0
+            ).all()
+        embeddings_by_chunk_id = {
+            row.entity_id: row for row in existing_embeddings
+        }
+        target_chunks = (
+            list(chunks)
+            if force_reembed
+            else [
+                chunk
+                for chunk in chunks
+                if chunk.id not in embeddings_by_chunk_id
+            ]
+        )
+        if target_chunks:
+            vectors = embedder.embed([chunk.content for chunk in target_chunks])
+            validate_vectors(
+                vectors,
+                expected_count=len(target_chunks),
+                dimensions=embedder.identity.dimensions,
+            )
+            for chunk, vector in zip(target_chunks, vectors, strict=True):
+                embedding = embeddings_by_chunk_id.get(chunk.id)
+                if embedding is None:
+                    embedding = EmbeddingRow(
+                        tenant_id=tenant_id,
+                        entity_type="KNOWLEDGE_CHUNK",
+                        entity_id=chunk.id,
+                        entity_version=chunk.record_version,
+                        embedding_type="KNOWLEDGE_CHUNK",
+                        model_provider=embedder.identity.provider,
+                        model_name=embedder.identity.model_name,
+                        model_version=embedder.identity.model_version,
+                        dimensions=embedder.identity.dimensions,
+                        distance_metric=embedder.identity.distance_metric,
+                        content_hash=chunk.content_hash,
+                        embedding=vector,
+                        permission_scope=chunk.permission_scope,
+                        status="ACTIVE",
+                    )
+                    session.add(embedding)
+                    embeddings_by_chunk_id[chunk.id] = embedding
+                else:
+                    embedding.embedding = vector
+                    embedding.content_hash = chunk.content_hash
+                    embedding.entity_version = chunk.record_version
+                    embedding.permission_scope = chunk.permission_scope
+                    embedding.activated_at = utcnow()
+                    embedding.superseded_at = None
+                    embedding.status = "ACTIVE"
+            session.flush()
+        product.search_document_version = product.current_version
+        session.flush()
         return KnowledgeProjectionResult(
             document_id=existing.id,
             product_id=product.id,
             source_version=product.current_version,
-            chunks=len(chunk_ids),
-            embeddings=int(embedding_count),
+            chunks=len(chunks),
+            embeddings=len(embeddings_by_chunk_id),
             model_provider=embedder.identity.provider,
             model_name=embedder.identity.model_name,
             model_version=embedder.identity.model_version,
             dimensions=embedder.identity.dimensions,
-            idempotent=True,
+            idempotent=not target_chunks,
         )
 
     now = utcnow()
@@ -450,4 +597,200 @@ def project_product_knowledge(
         model_version=embedder.identity.model_version,
         dimensions=embedder.identity.dimensions,
         idempotent=False,
+    )
+
+
+def project_products_knowledge(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_ids: list[UUID],
+    embedder: EmbeddingProvider | None = None,
+    embedding_batch_size: int = 128,
+    force_reembed: bool = False,
+) -> list[KnowledgeProjectionResult]:
+    """Project a bounded group while batching remote embedding requests."""
+
+    if not product_ids:
+        return []
+    embedder = embedder or configured_text_embedding_provider()
+    ordered_product_ids = list(dict.fromkeys(product_ids))
+    texts: list[str] = []
+    for product_id in ordered_product_ids:
+        _product, payload = build_product_payload(
+            session,
+            tenant_id=tenant_id,
+            product_id=product_id,
+        )
+        texts.extend(
+            chunk["content"]
+            for chunk in build_product_chunks(payload)
+        )
+    cached_embedder = precompute_embeddings(
+        embedder,
+        texts,
+        batch_size=embedding_batch_size,
+    )
+    return [
+        project_product_knowledge(
+            session,
+            tenant_id=tenant_id,
+            product_id=product_id,
+            embedder=cached_embedder,
+            force_reembed=force_reembed,
+        )
+        for product_id in ordered_product_ids
+    ]
+
+
+def indexed_product_ids(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    embedder: EmbeddingProvider | None = None,
+) -> set[UUID]:
+    embedder = embedder or configured_text_embedding_provider()
+    rows = session.scalars(
+        select(KnowledgeDocumentRow.source_entity_id)
+        .join(
+            ProductRow,
+            (ProductRow.tenant_id == KnowledgeDocumentRow.tenant_id)
+            & (ProductRow.id == KnowledgeDocumentRow.source_entity_id),
+        )
+        .join(
+            KnowledgeChunkRow,
+            (KnowledgeChunkRow.tenant_id == KnowledgeDocumentRow.tenant_id)
+            & (KnowledgeChunkRow.document_id == KnowledgeDocumentRow.id)
+            & (KnowledgeChunkRow.status == "ACTIVE"),
+        )
+        .outerjoin(
+            EmbeddingRow,
+            and_(
+                EmbeddingRow.tenant_id == KnowledgeChunkRow.tenant_id,
+                EmbeddingRow.entity_id == KnowledgeChunkRow.id,
+                EmbeddingRow.model_provider == embedder.identity.provider,
+                EmbeddingRow.model_name == embedder.identity.model_name,
+                EmbeddingRow.model_version == embedder.identity.model_version,
+                EmbeddingRow.dimensions == embedder.identity.dimensions,
+                EmbeddingRow.status == "ACTIVE",
+                EmbeddingRow.deleted_at.is_(None),
+            ),
+        )
+        .where(
+            KnowledgeDocumentRow.tenant_id == tenant_id,
+            KnowledgeDocumentRow.source_entity_type == "PRODUCT",
+            KnowledgeDocumentRow.schema_version == SCHEMA_VERSION,
+            KnowledgeDocumentRow.field_policy_version == FIELD_POLICY_VERSION,
+            KnowledgeDocumentRow.locale == LOCALE,
+            KnowledgeDocumentRow.status == "ACTIVE",
+            ProductRow.status == "ACTIVE",
+            ProductRow.search_document_version == ProductRow.current_version,
+            KnowledgeDocumentRow.source_version == ProductRow.current_version,
+        )
+        .group_by(KnowledgeDocumentRow.source_entity_id)
+        .having(
+            func.count(distinct(KnowledgeChunkRow.id))
+            == func.count(distinct(EmbeddingRow.entity_id))
+        )
+    ).all()
+    return set(rows)
+
+
+def knowledge_index_status(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    embedder: EmbeddingProvider | None = None,
+) -> KnowledgeIndexStatus:
+    embedder = embedder or configured_text_embedding_provider()
+    total_products = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProductRow)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.status == "ACTIVE",
+            )
+        )
+        or 0
+    )
+    indexed_products = len(
+        indexed_product_ids(
+            session,
+            tenant_id=tenant_id,
+            embedder=embedder,
+        )
+    )
+    return KnowledgeIndexStatus(
+        total_products=total_products,
+        indexed_products=indexed_products,
+        pending_products=max(0, total_products - indexed_products),
+        model_provider=embedder.identity.provider,
+        model_name=embedder.identity.model_name,
+        model_version=embedder.identity.model_version,
+        dimensions=embedder.identity.dimensions,
+    )
+
+
+def update_knowledge_index(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    full_rebuild: bool,
+    batch_size: int = 64,
+    embedder: EmbeddingProvider | None = None,
+) -> KnowledgeIndexUpdateResult:
+    embedder = embedder or configured_text_embedding_provider()
+    all_product_ids = list(
+        session.scalars(
+            select(ProductRow.id)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.status == "ACTIVE",
+            )
+            .order_by(ProductRow.id)
+        ).all()
+    )
+    if full_rebuild:
+        target_product_ids = all_product_ids
+    else:
+        current_indexed_ids = indexed_product_ids(
+            session,
+            tenant_id=tenant_id,
+            embedder=embedder,
+        )
+        target_product_ids = [
+            product_id
+            for product_id in all_product_ids
+            if product_id not in current_indexed_ids
+        ]
+
+    embedding_count = 0
+    for start in range(0, len(target_product_ids), batch_size):
+        results = project_products_knowledge(
+            session,
+            tenant_id=tenant_id,
+            product_ids=target_product_ids[start : start + batch_size],
+            embedder=embedder,
+            force_reembed=full_rebuild,
+        )
+        embedding_count += sum(result.embeddings for result in results)
+        session.commit()
+
+    status = knowledge_index_status(
+        session,
+        tenant_id=tenant_id,
+        embedder=embedder,
+    )
+    return KnowledgeIndexUpdateResult(
+        mode="FULL_REBUILD" if full_rebuild else "INCREMENTAL",
+        processed_products=len(target_product_ids),
+        total_products=status.total_products,
+        indexed_products=status.indexed_products,
+        pending_products=status.pending_products,
+        embeddings=embedding_count,
+        model_provider=status.model_provider,
+        model_name=status.model_name,
+        model_version=status.model_version,
+        dimensions=status.dimensions,
     )

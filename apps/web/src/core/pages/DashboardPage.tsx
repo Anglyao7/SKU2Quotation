@@ -14,6 +14,7 @@ import { Link } from "react-router-dom";
 import { getDashboard } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
+import { useLocale } from "../LocaleContext";
 import type { DashboardMetric, DashboardSnapshot } from "../types";
 
 const metricNames: Record<string, string> = {
@@ -57,6 +58,7 @@ const importStatusLabel: Record<string, string> = {
 
 export function CoreDashboardPage() {
   const { hasPermission } = useCoreAuth();
+  const { locale, t } = useLocale();
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
     && hasPermission("catalog.publish");
@@ -67,9 +69,9 @@ export function CoreDashboardPage() {
     setLoading(true);
     setError("");
     try { setData(await getDashboard()); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "经营概览加载失败"); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : t("经营概览加载失败")); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
   useEffect(() => { void load(); }, [load]);
 
   const metrics = useMemo(
@@ -89,23 +91,23 @@ export function CoreDashboardPage() {
     () => (data?.recentImports ?? []).filter((job) => job.sourceType === "PRODUCT_TEMPLATE"),
     [data],
   );
-  if (loading && !data) return <div className="core-workspace"><CoreLoading label="正在读取实时经营数据" /></div>;
+  if (loading && !data) return <div className="core-workspace"><CoreLoading label={t("正在读取实时经营数据")} /></div>;
 
   return (
     <div className="core-workspace">
       <CorePageHeading
-        eyebrow={data?.dataScope === "SELF" ? "我的工作台" : "当前商家 · 实时数据"}
-        title="工作台"
-        description="先处理需要确认的业务，再继续整理 SKU 商品库与报价。"
-        actions={<><Button asChild variant="soft"><Link to="/console/ai-search"><Sparkle />AI 查找</Link></Button><Button asChild><Link to="/console/products"><Cube />管理 SKU</Link></Button></>}
+        eyebrow={t(data?.dataScope === "SELF" ? "我的工作台" : "当前商家 · 实时数据")}
+        title={t("工作台")}
+        description={t("先处理需要确认的业务，再继续整理 SKU 商品库与报价。")}
+        actions={<><Button asChild variant="soft"><Link to="/console/ai-search"><Sparkle />{t("AI 查找")}</Link></Button><Button asChild><Link to="/console/products"><Cube />{t("管理 SKU")}</Link></Button></>}
       />
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
 
       <section className="core-dashboard-focus">
         <Card className="core-focus-card">
           <div className="core-panel-heading">
-            <div><Text size="1" color="gray">今日待办</Text><Heading size="5">{priorities.length ? "需要你确认的事项" : "当前没有紧急事项"}</Heading></div>
-            <Badge color={priorities.length ? "amber" : "jade"}>{priorities.length ? `${priorities.length} 类待处理` : "状态正常"}</Badge>
+            <div><Text size="1" color="gray">{t("今日待办")}</Text><Heading size="5">{t(priorities.length ? "需要你确认的事项" : "当前没有紧急事项")}</Heading></div>
+            <Badge color={priorities.length ? "amber" : "jade"}>{priorities.length ? t("{count} 类待处理", { count: priorities.length }) : t("状态正常")}</Badge>
           </div>
           {priorities.length ? (
             <div className="core-priority-list">
@@ -114,55 +116,55 @@ export function CoreDashboardPage() {
           ) : (
             <div className="core-clear-state">
               <span><CheckCircle size={24} weight="duotone" /></span>
-              <div><Text weight="medium" as="div">待确认与进行中事项均已清空</Text><Text size="2" color="gray">可以继续补充商品资料，或从客户需求开始一次新的匹配。</Text></div>
+              <div><Text weight="medium" as="div">{t("待确认与进行中事项均已清空")}</Text><Text size="2" color="gray">{t("可以继续补充商品资料，或从客户需求开始一次新的匹配。")}</Text></div>
             </div>
           )}
-          <div className="core-quick-actions" aria-label="常用操作">
-            {canImport ? <Button asChild variant="soft" color="gray"><Link to="/console/products?import=1"><FileArrowUp />导入商品模版</Link></Button> : null}
-            <Button asChild variant="soft" color="gray"><Link to="/console/inquiries"><ChatCircleDots />新建询盘</Link></Button>
-            <Button asChild variant="soft" color="gray"><Link to="/console/quotes"><FileText />查看报价</Link></Button>
+          <div className="core-quick-actions" aria-label={t("常用操作")}>
+            {canImport ? <Button asChild variant="soft" color="gray"><Link to="/console/products?import=1"><FileArrowUp />{t("导入商品模版")}</Link></Button> : null}
+            <Button asChild variant="soft" color="gray"><Link to="/console/inquiries"><ChatCircleDots />{t("新建询盘")}</Link></Button>
+            <Button asChild variant="soft" color="gray"><Link to="/console/quotes"><FileText />{t("查看报价")}</Link></Button>
           </div>
         </Card>
 
         <Card className="core-panel core-health-panel">
-          <div className="core-panel-heading"><div><Text size="1" color="gray">商品资料完整度</Text><Heading size="5">{data?.dataHealth ? `${data.dataHealth.score} / 100` : "暂不可见"}</Heading></div><Package size={23} /></div>
+          <div className="core-panel-heading"><div><Text size="1" color="gray">{t("商品资料完整度")}</Text><Heading size="5">{data?.dataHealth ? `${data.dataHealth.score} / 100` : t("暂不可见")}</Heading></div><Package size={23} /></div>
           {data?.dataHealth ? (
             <div className="core-health">
-              <Health label="已批准图片" value={data.dataHealth.approvedImageCoverage} />
-              <Health label="有效价格" value={data.dataHealth.validPriceCoverage} />
-              <Button asChild variant="ghost" size="1"><Link to="/console/products">完善商品资料<ArrowRight /></Link></Button>
+              <Health label={t("已批准图片")} value={data.dataHealth.approvedImageCoverage} />
+              <Health label={t("有效价格")} value={data.dataHealth.validPriceCoverage} />
+              <Button asChild variant="ghost" size="1"><Link to="/console/products">{t("完善商品资料")}<ArrowRight /></Link></Button>
             </div>
-          ) : <Text size="2" color="gray">当前角色无法查看资料完整度。</Text>}
+          ) : <Text size="2" color="gray">{t("当前角色无法查看资料完整度。")}</Text>}
         </Card>
       </section>
 
-      <section className="core-metric-grid" aria-label="经营指标">
+      <section className="core-metric-grid" aria-label={t("经营指标")}>
         {metrics.map((metric, index) => (
           <Card asChild key={metric.key} className="core-metric-card">
             <Link to={destination[metric.key] ?? metric.destination ?? "/console"}>
               <MetricIcon metric={metric} fallbackIndex={index} />
               <span className="core-metric-copy">
-                <Text size="2" color="gray">{metricNames[metric.key] ?? metric.label}</Text>
-                <strong>{metric.value.toLocaleString("zh-CN")}{metric.unit ?? ""}</strong>
+                <Text size="2" color="gray">{t(metricNames[metric.key] ?? metric.label)}</Text>
+                <strong>{metric.value.toLocaleString(locale)}{metric.unit ?? ""}</strong>
               </span>
-              <span className="core-metric-foot"><Text size="1" color="gray">{metric.status === "AVAILABLE" ? "实时更新" : "部分数据暂不可用"}</Text><ArrowRight /></span>
+              <span className="core-metric-foot"><Text size="1" color="gray">{t(metric.status === "AVAILABLE" ? "实时更新" : "部分数据暂不可用")}</Text><ArrowRight /></span>
             </Link>
           </Card>
         ))}
       </section>
 
       <Card className="core-panel">
-        <div className="core-panel-heading"><div><Text size="1" color="gray">最近导入</Text><Heading size="4">商品模版处理记录</Heading></div>{canImport ? <Button asChild size="1" variant="ghost"><Link to="/console/products?import=1">查看全部</Link></Button> : null}</div>
+        <div className="core-panel-heading"><div><Text size="1" color="gray">{t("最近导入")}</Text><Heading size="4">{t("商品模版处理记录")}</Heading></div>{canImport ? <Button asChild size="1" variant="ghost"><Link to="/console/products?import=1">{t("查看全部")}</Link></Button> : null}</div>
         {templateImports.length ? <div className="core-list">
           {templateImports.slice(0, 6).map((job) => (
             <div className="core-list-row" key={job.id}>
               <span className="core-row-icon"><FileText /></span>
-              <div><Text weight="medium" as="div">{job.filename}</Text><Text size="1" color="gray">{job.productsCount} 个 SKU · {job.warningsCount} 条提醒</Text></div>
-              <Badge color={job.status === "failed" ? "red" : job.status === "published" ? "jade" : "amber"}>{importStatusLabel[job.status] ?? job.status}</Badge>
+              <div><Text weight="medium" as="div">{job.filename}</Text><Text size="1" color="gray">{t("{products} 个 SKU · {warnings} 条提醒", { products: job.productsCount, warnings: job.warningsCount })}</Text></div>
+              <Badge color={job.status === "failed" ? "red" : job.status === "published" ? "jade" : "amber"}>{t(importStatusLabel[job.status] ?? job.status)}</Badge>
               <Text size="1" color="gray">{coreDate(job.createdAt)}</Text>
             </div>
           ))}
-        </div> : <CoreEmpty title="还没有导入记录" description="使用固定的商品模版.xlsx，一次导入当前商家的全部商品。" action={canImport ? <Button asChild variant="soft"><Link to="/console/products?import=1"><FileArrowUp />导入商品模版</Link></Button> : undefined} />}
+        </div> : <CoreEmpty title={t("还没有导入记录")} description={t("使用固定的商品模版.xlsx，一次导入当前商家的全部商品。")} action={canImport ? <Button asChild variant="soft"><Link to="/console/products?import=1"><FileArrowUp />{t("导入商品模版")}</Link></Button> : undefined} />}
       </Card>
     </div>
   );
@@ -174,12 +176,13 @@ function MetricIcon({ metric, fallbackIndex }: { metric: DashboardMetric; fallba
 }
 
 function PriorityRow({ metric }: { metric: DashboardMetric }) {
+  const { locale, t } = useLocale();
   const Icon = metricIcons[metric.key] ?? FileText;
   return (
     <Link className="core-priority-row" to={destination[metric.key] ?? metric.destination ?? "/console"}>
       <span className="core-row-icon"><Icon /></span>
-      <span><Text weight="medium" as="div">{metricNames[metric.key] ?? metric.label}</Text><Text size="1" color="gray">打开工作区处理并确认</Text></span>
-      <strong>{metric.value.toLocaleString("zh-CN")}</strong>
+      <span><Text weight="medium" as="div">{t(metricNames[metric.key] ?? metric.label)}</Text><Text size="1" color="gray">{t("打开工作区处理并确认")}</Text></span>
+      <strong>{metric.value.toLocaleString(locale)}</strong>
       <ArrowRight />
     </Link>
   );

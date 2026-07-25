@@ -21,6 +21,7 @@ from ..public_catalog_models import TenantPublicProfileRow
 from ..repositories import platform_admin_repository as repository
 from ..repositories.public_catalog_repository import find_published_profile_by_slug
 from ..saas_seed import ensure_tenant_rbac
+from ..inventory_seed import ensure_default_warehouse
 from ..services.auth.dependencies import RequestContext
 from ..services.member_invitations import invite_tenant_member as create_member_invitation
 from ..tenant_slugs import is_reserved_tenant_slug, storefront_slug_from_name
@@ -143,6 +144,7 @@ def create_tenant(
                 )
             )
             ensure_tenant_rbac(session, tenant_id=tenant.id)
+            ensure_default_warehouse(session, tenant_id=tenant.id)
             session.flush()
         session.commit()
     except IntegrityError as exc:
