@@ -12,6 +12,7 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftResponse,
     PublicQuoteDraftSummary,
     PublicSkuPage,
+    PublicSkuResponse,
     PublicStoreResponse,
 )
 from ..services.auth.dependencies import current_context, get_authenticated_session
@@ -72,6 +73,25 @@ def list_public_skus(
             semantic=semantic,
             page=page,
             page_size=page_size,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/store/{tenant_slug}/skus/{sku_id}",
+    response_model=PublicSkuResponse,
+)
+def get_public_sku(
+    tenant_slug: str,
+    sku_id: UUID,
+    session: Session = Depends(get_session),
+) -> PublicSkuResponse:
+    try:
+        return use_cases.get_public_sku(
+            session,
+            slug=tenant_slug,
+            sku_id=sku_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

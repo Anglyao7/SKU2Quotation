@@ -36,6 +36,9 @@ from ..product_center_schemas import (
     ProductReviewQueueItem,
     ReviewQueueField,
     SkuBatchCreateRequest,
+    SkuBatchDeleteRequest,
+    SkuBatchUpdateStatusRequest,
+    SkuBatchOperationResponse,
     SkuListItem,
     SkuListPage,
     SkuResponse,
@@ -133,6 +136,7 @@ def _public_offer_response(row: PublicCatalogOfferRow) -> PublicCatalogOfferResp
         unit_price=row.unit_price,
         currency=row.currency,
         tags=row.tags,
+        display_tag=row.display_tag,
         tag_color=row.tag_color,
         publication_status=row.publication_status,
         published_at=row.published_at,
@@ -335,6 +339,18 @@ def list_skus(
     )
     sku_ids = {row.sku.id for row in rows}
     product_ids = {row.product.id for row in rows}
+    direct_suppliers = {
+        supplier.id: supplier
+        for supplier in repository.list_suppliers_by_ids(
+            session,
+            tenant_id=tenant_id,
+            supplier_ids={
+                row.sku.supplier_id
+                for row in rows
+                if row.sku.supplier_id is not None
+            },
+        )
+    }
 
     suppliers_by_sku: dict[UUID, list[tuple[Any, Any]]] = {}
     suppliers_by_product: dict[UUID, list[tuple[Any, Any]]] = {}
@@ -368,6 +384,10 @@ def list_skus(
         ]
         unique_suppliers: list[Any] = []
         seen_supplier_ids: set[str] = set()
+        direct_supplier = direct_suppliers.get(row.sku.supplier_id)
+        if direct_supplier is not None:
+            seen_supplier_ids.add(direct_supplier.id)
+            unique_suppliers.append(direct_supplier)
         for _source, supplier in supplier_rows:
             if supplier.id in seen_supplier_ids:
                 continue
@@ -1242,3 +1262,129 @@ def list_review_queue(
             )
         )
     return result
+
+
+def batch_delete_skus(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    sku_ids: list[UUID],
+) -> dict[str, Any]:
+    """批量删除 SKU"""
+    _require(permissions, "product_center.write")
+
+    success_count = 0
+    failed_count = 0
+    failed_items: list[dict[str, Any]] = []
+
+    for sku_id in sku_ids:
+        try:
+            sku = session.query(SkuRow).filter(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.id == sku_id,
+            ).first()
+
+            if not sku:
+                failed_count += 1
+                failed_items.append({
+                    "sku_id": str(sku_id),
+                    "reason": "SKU not found"
+                })
+                continue
+
+            session.delete(sku)
+            success_count += 1
+        except Exception as exc:
+            failed_count += 1
+            failed_items.append({
+                "sku_id": str(sku_id),
+                "reason": str(exc)
+            })
+
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "BATCH_DELETE_FAILED",
+            "批量删除失败，可能存在关联数据",
+            kind="conflict"
+        ) from exc
+
+    return {
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "total_count": len(sku_ids),
+        "failed_items": failed_items,
+    }
+
+
+def batch_update_sku_status(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    sku_ids: list[UUID],
+    status: str,
+) -> dict[str, Any]:
+    """批量更新 SKU 状态"""
+    _require(permissions, "product_center.write")
+
+    if status not in SKU_STATUSES:
+        raise ApplicationError(
+            "INVALID_STATUS",
+            f"Invalid status: {status}",
+            kind="validation_failed"
+        )
+
+    success_count = 0
+    failed_count = 0
+    failed_items: list[dict[str, Any]] = []
+    now = utcnow()
+
+    for sku_id in sku_ids:
+        try:
+            sku = session.query(SkuRow).filter(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.id == sku_id,
+            ).first()
+
+            if not sku:
+                failed_count += 1
+                failed_items.append({
+                    "sku_id": str(sku_id),
+                    "reason": "SKU not found"
+                })
+                continue
+
+            sku.status = status
+            sku.updated_at = now
+            sku.updated_by_user_id = membership_id
+            sku.version += 1
+            success_count += 1
+        except Exception as exc:
+            failed_count += 1
+            failed_items.append({
+                "sku_id": str(sku_id),
+                "reason": str(exc)
+            })
+
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "BATCH_UPDATE_FAILED",
+            "批量更新失败",
+            kind="conflict"
+        ) from exc
+
+    return {
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "total_count": len(sku_ids),
+        "failed_items": failed_items,
+    }

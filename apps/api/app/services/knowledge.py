@@ -1,5 +1,6 @@
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -22,10 +23,10 @@ from ..product_supplier_models import (
 from ..public_catalog_models import PublicCatalogOfferRow
 from .embedding import (
     EmbeddingProvider,
-    configured_text_embedding_provider,
     precompute_embeddings,
     validate_vectors,
 )
+from .embedding_configuration import resolved_text_embedding_provider
 
 
 SCHEMA_VERSION = 2
@@ -370,7 +371,7 @@ def project_product_knowledge(
     embedder: EmbeddingProvider | None = None,
     force_reembed: bool = False,
 ) -> KnowledgeProjectionResult:
-    embedder = embedder or configured_text_embedding_provider()
+    embedder = embedder or resolved_text_embedding_provider(session)
     product, payload = build_product_payload(session, tenant_id=tenant_id, product_id=product_id)
     content_hash = _sha256(_stable_json(payload))
     existing = session.scalar(
@@ -613,7 +614,7 @@ def project_products_knowledge(
 
     if not product_ids:
         return []
-    embedder = embedder or configured_text_embedding_provider()
+    embedder = embedder or resolved_text_embedding_provider(session)
     ordered_product_ids = list(dict.fromkeys(product_ids))
     texts: list[str] = []
     for product_id in ordered_product_ids:
@@ -649,7 +650,7 @@ def indexed_product_ids(
     tenant_id: UUID,
     embedder: EmbeddingProvider | None = None,
 ) -> set[UUID]:
-    embedder = embedder or configured_text_embedding_provider()
+    embedder = embedder or resolved_text_embedding_provider(session)
     rows = session.scalars(
         select(KnowledgeDocumentRow.source_entity_id)
         .join(
@@ -702,7 +703,7 @@ def knowledge_index_status(
     tenant_id: UUID,
     embedder: EmbeddingProvider | None = None,
 ) -> KnowledgeIndexStatus:
-    embedder = embedder or configured_text_embedding_provider()
+    embedder = embedder or resolved_text_embedding_provider(session)
     total_products = int(
         session.scalar(
             select(func.count())
@@ -737,13 +738,16 @@ def update_knowledge_index(
     *,
     tenant_id: UUID,
     full_rebuild: bool,
-    batch_size: int = 64,
+    batch_size: int = 16,
     embedder: EmbeddingProvider | None = None,
+    progress_callback: (
+        Callable[[int, int, int, UUID | None, str | None], None] | None
+    ) = None,
 ) -> KnowledgeIndexUpdateResult:
-    embedder = embedder or configured_text_embedding_provider()
-    all_product_ids = list(
-        session.scalars(
-            select(ProductRow.id)
+    embedder = embedder or resolved_text_embedding_provider(session)
+    all_products = list(
+        session.execute(
+            select(ProductRow.id, ProductRow.name)
             .where(
                 ProductRow.tenant_id == tenant_id,
                 ProductRow.status == "ACTIVE",
@@ -752,29 +756,49 @@ def update_knowledge_index(
         ).all()
     )
     if full_rebuild:
-        target_product_ids = all_product_ids
+        target_products = all_products
     else:
         current_indexed_ids = indexed_product_ids(
             session,
             tenant_id=tenant_id,
             embedder=embedder,
         )
-        target_product_ids = [
-            product_id
-            for product_id in all_product_ids
+        target_products = [
+            (product_id, product_name)
+            for product_id, product_name in all_products
             if product_id not in current_indexed_ids
         ]
 
+    total_targets = len(target_products)
     embedding_count = 0
-    for start in range(0, len(target_product_ids), batch_size):
+    if progress_callback is not None:
+        first = target_products[0] if target_products else (None, None)
+        progress_callback(0, total_targets, 0, first[0], first[1])
+        session.commit()
+    for start in range(0, total_targets, batch_size):
+        batch = target_products[start : start + batch_size]
         results = project_products_knowledge(
             session,
             tenant_id=tenant_id,
-            product_ids=target_product_ids[start : start + batch_size],
+            product_ids=[product_id for product_id, _name in batch],
             embedder=embedder,
             force_reembed=full_rebuild,
         )
         embedding_count += sum(result.embeddings for result in results)
+        processed = min(start + len(batch), total_targets)
+        next_product = (
+            target_products[processed]
+            if processed < total_targets
+            else (None, None)
+        )
+        if progress_callback is not None:
+            progress_callback(
+                processed,
+                total_targets,
+                embedding_count,
+                next_product[0],
+                next_product[1],
+            )
         session.commit()
 
     status = knowledge_index_status(
@@ -784,7 +808,7 @@ def update_knowledge_index(
     )
     return KnowledgeIndexUpdateResult(
         mode="FULL_REBUILD" if full_rebuild else "INCREMENTAL",
-        processed_products=len(target_product_ids),
+        processed_products=total_targets,
         total_products=status.total_products,
         indexed_products=status.indexed_products,
         pending_products=status.pending_products,

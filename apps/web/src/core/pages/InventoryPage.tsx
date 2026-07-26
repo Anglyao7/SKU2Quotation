@@ -744,7 +744,10 @@ function StockTable({
               </span>
               <span>
                 <strong>{row.skuName}</strong>
-                <small>{row.skuCode}</small>
+                <small>
+                  {row.skuCode}
+                  {row.supplierName ? ` · ${t("供应商")}：${row.supplierName}` : ""}
+                </small>
               </span>
             </span>
             <strong data-mobile-label={t("现存")}>{quantity(row.onHandQuantity)}</strong>

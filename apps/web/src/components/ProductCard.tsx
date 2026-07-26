@@ -1,29 +1,40 @@
 import { Button, Card, IconButton, Text } from "@radix-ui/themes";
 import { Check, Image as ImageIcon, Minus, Plus, Trash } from "@phosphor-icons/react";
 import { useState } from "react";
-import { imageFallback, money, primaryCategoryLabel } from "../lib/format";
+import { Link } from "react-router-dom";
+import { imageFallback, money } from "../lib/format";
 import { tagGlassStyle } from "../lib/tagColors";
 import type { Sku } from "../types";
 
 export function ProductCard({
   sku,
+  detailsHref,
   quantity,
   onAdd,
   onDecrease,
+  onOpenDetails,
 }: {
   sku: Sku;
+  detailsHref: string;
   quantity: number;
   onAdd: () => void;
   onDecrease: () => void;
+  onOpenDetails: () => void;
 }) {
   const fallback = imageFallback(sku.sku_code);
   const [imageSrc, setImageSrc] = useState(sku.image_url || fallback);
   const [imageFailed, setImageFailed] = useState(false);
-  const displayTag = primaryCategoryLabel(sku.tags[0]);
+  const displayTag = sku.display_tag || sku.tags[0];
 
   return (
     <Card className={`sku-card${quantity > 0 ? " is-selected" : ""}`} variant="surface">
-      <div className="sku-image-wrap">
+      <Link
+        to={detailsHref}
+        state={{ fromStorefrontCatalog: true }}
+        className="sku-image-wrap sku-detail-link"
+        aria-label={`查看 ${sku.name} 商品详情`}
+        onClick={onOpenDetails}
+      >
         {!imageFailed ? (
           <img
             className="sku-image"
@@ -41,17 +52,24 @@ export function ProductCard({
         {displayTag && (
           <span
             className="sku-glass-tag"
-            style={tagGlassStyle(displayTag, sku.tag_color ?? sku.category_color)}
-            title={sku.tags.join("、")}
+            style={tagGlassStyle(displayTag, sku.tag_color)}
+            title={displayTag}
           >
             <span>{displayTag}</span>
-            {sku.tags.length > 1 && <small>+{sku.tags.length - 1}</small>}
           </span>
         )}
         {quantity > 0 && <span className="cart-count-badge"><Check size={13} weight="bold" />已选 {quantity}</span>}
-      </div>
+      </Link>
       <div className="sku-card-body">
-        <Text as="div" size="3" weight="medium" className="sku-name">{sku.name}</Text>
+        <Text as="div" size="3" weight="medium" className="sku-name">
+          <Link
+            to={detailsHref}
+            state={{ fromStorefrontCatalog: true }}
+            onClick={onOpenDetails}
+          >
+            {sku.name}
+          </Link>
+        </Text>
         <div className="sku-card-footer">
           <div className="sku-price-block">
             <Text as="div" size="1" color="gray">参考单价</Text>

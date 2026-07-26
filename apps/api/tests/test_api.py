@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
+from time import monotonic, sleep
 from uuid import UUID, uuid4
 
 import pytest
@@ -47,6 +48,10 @@ from app.identity_models import (
 from app.inventory_models import WarehouseRow
 from app.ai_data_models import AIProviderRouteRow, AISourceEvidenceRow, AITaskRow
 from app.knowledge_embedding_models import EmbeddingRow, KnowledgeChunkRow, KnowledgeDocumentRow
+from app.embedding_management_models import (
+    EmbeddingProviderSettingsRow,
+    KnowledgeIndexJobRow,
+)
 from app.image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
 from app.db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
 from app.file_security_models import MediaObjectRow, WorkerJobRow
@@ -84,6 +89,7 @@ from app.saas_seed import (
 )
 from app.services.file_detection import OLE_SIGNATURE, detect_file_path, detect_file_type
 from app.services.embedding import validate_vectors
+from app.services.embedding_configuration import decrypt_api_key
 from app.services.hybrid_search import (
     _retrieval_tokens,
     _score_tag_relevance,
@@ -155,8 +161,11 @@ def _product_template_bytes(rows: list[list[object]]) -> bytes:
     sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
     for row in rows:
         values = list(row)
-        if len(values) == len(PRODUCT_TEMPLATE_HEADERS) - 1:
+        if len(values) == len(PRODUCT_TEMPLATE_HEADERS) - 2:
             values.insert(6, None)
+            values.insert(3, None)
+        elif len(values) == len(PRODUCT_TEMPLATE_HEADERS) - 1:
+            values.insert(3, None)
         sheet.append(values)
     content = BytesIO()
     workbook.save(content)
@@ -1846,6 +1855,15 @@ def test_platform_admin_routes_reject_regular_members(
         )
         assert denied_invitation.status_code == 403
         assert denied_invitation.json()["detail"]["code"] == "PLATFORM_ADMIN_REQUIRED"
+        denied_embedding_settings = regular_client.get(
+            "/api/v1/ai/embedding/settings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_embedding_settings.status_code == 403
+        assert (
+            denied_embedding_settings.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
 
 
 def test_member_invitation_rejects_ambiguous_global_email() -> None:
@@ -3158,6 +3176,126 @@ def test_manual_knowledge_index_update_and_full_rebuild() -> None:
         session.commit()
 
 
+def test_observable_knowledge_index_job_reports_determinate_progress() -> None:
+    product_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"JOB-INDEX-{product_id.hex[:8]}",
+                name="Observable indexing job product",
+                description="A product used to verify persisted indexing progress.",
+                status="ACTIVE",
+                search_document_version=0,
+            )
+        )
+        session.commit()
+
+    started = client.post(
+        "/api/v1/ai/knowledge/index/jobs",
+        json={"mode": "INCREMENTAL"},
+    )
+    assert started.status_code == 202
+    started_payload = started.json()
+    assert started_payload["status"] == "QUEUED"
+    assert started_payload["processed_products"] == 0
+    assert started_payload["total_products"] >= 1
+    assert started_payload["progress_percent"] == 0
+
+    latest = client.get("/api/v1/ai/knowledge/index/jobs/latest")
+    assert latest.status_code == 200
+    assert latest.json()["id"] == started_payload["id"]
+
+    deadline = monotonic() + 10
+    final_payload = started_payload
+    while monotonic() < deadline:
+        progress = client.get(
+            f"/api/v1/ai/knowledge/index/jobs/{started_payload['id']}"
+        )
+        assert progress.status_code == 200
+        final_payload = progress.json()
+        if final_payload["status"] in {"SUCCEEDED", "FAILED"}:
+            break
+        sleep(0.05)
+
+    assert final_payload["status"] == "SUCCEEDED"
+    assert final_payload["processed_products"] == final_payload["total_products"]
+    assert final_payload["progress_percent"] == 100
+    assert final_payload["completed_at"]
+
+    with SessionLocal() as session:
+        session.execute(delete(ProductRow).where(ProductRow.id == product_id))
+        session.execute(
+            delete(KnowledgeIndexJobRow).where(
+                KnowledgeIndexJobRow.id == UUID(started_payload["id"])
+            )
+        )
+        session.commit()
+
+
+def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
+    raw_api_key = "sk-test-only-never-return-this-9876"
+    with SessionLocal() as session:
+        session.execute(delete(EmbeddingProviderSettingsRow))
+        session.commit()
+
+    try:
+        initial = client.get("/api/v1/ai/embedding/settings")
+        assert initial.status_code == 200
+        assert "api_key" not in initial.json()
+
+        saved = client.put(
+            "/api/v1/ai/embedding/settings",
+            json={
+                "base_url": "https://embedding.example.test/v1",
+                "api_key": raw_api_key,
+                "model_name": "text-embedding-test",
+                "dimensions": 1024,
+                "timeout_seconds": 25,
+            },
+        )
+        assert saved.status_code == 200
+        payload = saved.json()
+        assert payload["source"] == "database"
+        assert payload["api_key_configured"] is True
+        assert payload["api_key_hint"] == "••••9876"
+        assert raw_api_key not in saved.text
+        assert "api_key_ciphertext" not in payload
+
+        with SessionLocal() as session:
+            row = session.get(
+                EmbeddingProviderSettingsRow,
+                "TEXT_EMBEDDING",
+            )
+            assert row is not None
+            assert raw_api_key not in row.api_key_ciphertext
+            assert decrypt_api_key(row.api_key_ciphertext) == raw_api_key
+            original_ciphertext = row.api_key_ciphertext
+
+        retained = client.put(
+            "/api/v1/ai/embedding/settings",
+            json={
+                "base_url": "https://embedding.example.test/v1",
+                "model_name": "text-embedding-test-v2",
+                "dimensions": 1024,
+                "timeout_seconds": 25,
+            },
+        )
+        assert retained.status_code == 200
+        with SessionLocal() as session:
+            row = session.get(
+                EmbeddingProviderSettingsRow,
+                "TEXT_EMBEDDING",
+            )
+            assert row is not None
+            assert row.api_key_ciphertext == original_ciphertext
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(EmbeddingProviderSettingsRow))
+            session.commit()
+
+
 def test_phase3b_tenant_boundaries_apply_to_links_and_retrieval() -> None:
     organization_id = uuid4()
     tenant_b = uuid4()
@@ -3454,6 +3592,7 @@ def test_postgresql_offline_migration_contains_forced_rls_policies() -> None:
         "knowledge_documents",
         "knowledge_chunks",
         "embeddings",
+        "knowledge_index_jobs",
         "ai_runs",
         "ai_task_steps",
         "product_field_candidates",
@@ -4151,10 +4290,11 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         assert workbook.sheetnames == ["商品列表"]
         sheet = workbook["商品列表"]
         assert sheet.max_row == 1
-        assert [sheet.cell(row=1, column=index).value for index in range(1, 18)] == [
+        assert [sheet.cell(row=1, column=index).value for index in range(1, 19)] == [
             "商品名称",
             "商品分类",
             "商品型号",
+            "供应商",
             "商品价格",
             "商品描述",
             "备注",
@@ -4171,18 +4311,20 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
             "商品图片10",
         ]
         assert sheet.freeze_panes == "A2"
-        assert sheet.auto_filter.ref == "A1:Q1"
+        assert sheet.auto_filter.ref == "A1:R1"
         assert sheet["A1"].fill.fgColor.rgb == "0023453B"
         assert sheet["A1"].font.bold is True
-        assert sheet["F1"].comment is not None
-        assert "商品补充说明" in sheet["F1"].comment.text
+        assert sheet["D1"].comment is not None
+        assert "进销存" in sheet["D1"].comment.text
         assert sheet["G1"].comment is not None
-        assert "逗号分隔" in sheet["G1"].comment.text
+        assert "商品补充说明" in sheet["G1"].comment.text
+        assert sheet["H1"].comment is not None
+        assert "逗号分隔" in sheet["H1"].comment.text
     finally:
         workbook.close()
 
 
-def test_fixed_product_template_imports_without_supplier_and_publishes_priced_skus(
+def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_prices_as_zero(
     request: pytest.FixtureRequest,
 ) -> None:
     created_import_job_ids: list[str] = []
@@ -4274,6 +4416,12 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
                     ProductCategoryRow.name == "模版测试分类",
                 )
             )
+            session.execute(
+                delete(SupplierRow).where(
+                    SupplierRow.tenant_id == DEFAULT_TENANT_ID,
+                    SupplierRow.name == "模版供应商 A",
+                )
+            )
             session.commit()
 
     cleanup_template_products()
@@ -4286,6 +4434,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
         "模版商品 A",
         "模版测试分类",
         "TPL-API-001",
+        "模版供应商 A",
         "12.5",
         "固定模版商品描述",
         "10",
@@ -4297,6 +4446,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
         "重复商品 A",
         "模版测试分类",
         "TPL-API-001",
+        "模版供应商 A",
         99,
         None,
         None,
@@ -4307,6 +4457,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
         "模版商品 B",
         "模版测试分类",
         "TPL-API-002",
+        None,
         "",
         None,
         None,
@@ -4318,6 +4469,7 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
             f"额外重复商品 {duplicate_index + 1}",
             "模版测试分类",
             "TPL-API-001",
+            "模版供应商 A",
             88 + duplicate_index,
             None,
             None,
@@ -4347,12 +4499,12 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
     assert job["supplier"] == "商品模版"
     assert job["status"] == "published"
     assert job["products"] == 2
-    assert job["warnings"] == 1005
+    assert job["warnings"] == 1004
     assert len(job["warning_messages"]) == 1000
-    assert sum("重复" in warning for warning in job["warning_messages"]) == 999
+    assert sum("重复" in warning for warning in job["warning_messages"]) == 1000
     assert any("第 1002 行" in warning for warning in job["warning_messages"])
-    assert "另有 1002 条提醒" in job["error_message"]
-    assert job["result_details"]["warnings_truncated"] == 5
+    assert "另有 1001 条提醒" in job["error_message"]
+    assert job["result_details"]["warnings_truncated"] == 4
     assert job["result_details"]["outcome"] == "TEMPLATE_IMPORTED"
     assert job["result_details"]["imported"] == 2
     assert job["candidate_fields"] == 0
@@ -4364,11 +4516,11 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
     )
     assert len(listed_job["warning_messages"]) == 20
     assert len(listed_job["result_details"]["warnings"]) == 20
-    assert listed_job["result_details"]["warnings_truncated"] == 985
+    assert listed_job["result_details"]["warnings_truncated"] == 984
     detailed_job = client.get(f"/api/v1/imports/{job['id']}").json()
     assert len(detailed_job["warning_messages"]) == 1000
     assert len(detailed_job["result_details"]["warnings"]) == 1000
-    assert detailed_job["result_details"]["warnings_truncated"] == 5
+    assert detailed_job["result_details"]["warnings_truncated"] == 4
 
     sku_response = client.get(
         "/api/v1/product-center/skus",
@@ -4384,7 +4536,17 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
     assert sku_by_code["TPL-API-001"]["public_offer_status"] == "PUBLISHED"
     assert sku_by_code["TPL-API-001"]["image_status"] == "APPROVED"
     assert sku_by_code["TPL-API-001"]["tags"] == ["新品", "热卖"]
-    assert sku_by_code["TPL-API-002"]["public_price"] is None
+    assert sku_by_code["TPL-API-002"]["public_price"] == "0.00"
+    assert sku_by_code["TPL-API-002"]["public_offer_status"] == "PUBLISHED"
+
+    inventory_response = client.get(
+        "/api/v1/inventory/stocks",
+        params={"q": "TPL-API-001", "page_size": 10},
+    )
+    assert inventory_response.status_code == 200, inventory_response.text
+    inventory_item = inventory_response.json()["items"][0]
+    assert inventory_item["supplier_name"] == "模版供应商 A"
+    assert inventory_item["supplier_id"]
 
     # Re-importing the fixed template may refresh its note/marker, but must
     # preserve product-center variant attributes maintained outside Excel.
@@ -4396,8 +4558,36 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
             )
         )
         assert sku_a is not None
+        supplier_a = session.scalar(
+            select(SupplierRow).where(
+                SupplierRow.tenant_id == DEFAULT_TENANT_ID,
+                SupplierRow.name == "模版供应商 A",
+            )
+        )
+        assert supplier_a is not None
+        assert sku_a.supplier_id == supplier_a.id
+        assert supplier_a.active_skus == 1
+        sku_b = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-002",
+            )
+        )
+        assert sku_b is not None
+        assert sku_b.supplier_id is None
         sku_a_id = sku_a.id
         sku_a_version = sku_a.version
+        offer_a = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == sku_a.id,
+            )
+        )
+        assert offer_a is not None
+        assert offer_a.display_tag == "新品"
+        offer_a.display_tag = "热卖"
+        offer_a.tag_color = "#725B9B"
+        session.commit()
     sku_update = client.patch(
         f"/api/v1/skus/{sku_a_id}",
         json={
@@ -4457,6 +4647,15 @@ def test_fixed_product_template_imports_without_supplier_and_publishes_priced_sk
         )
         assert preserved_sku is not None
         assert preserved_sku.option_values["颜色"] == "红色"
+        preserved_offer = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == preserved_sku.id,
+            )
+        )
+        assert preserved_offer is not None
+        assert preserved_offer.display_tag == "热卖"
+        assert preserved_offer.tag_color == "#725B9B"
 
     with SessionLocal() as session:
         sku_a = session.scalar(
@@ -6599,6 +6798,18 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
         assert "supplier_price" not in item
         assert "moq" not in item
 
+    detail_response = client.get(
+        f"/api/store/demo/skus/{by_code['PF-8G01']['id']}"
+    )
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()
+    assert detail["sku_code"] == "PF-8G01"
+    assert detail["description"] == by_code["PF-8G01"]["description"]
+    assert detail["display_tag"] == by_code["PF-8G01"]["display_tag"]
+    assert "supplier_id" not in detail
+    assert "supplier_name" not in detail
+    assert client.get(f"/api/store/demo/skus/{uuid4()}").status_code == 404
+
     filtered = client.get(
         "/api/store/demo/skus",
         params={"category": "围栏与玩具", "tags": "宠物围栏"},
@@ -6641,6 +6852,12 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
         active_only = client.get("/api/store/demo/skus")
         assert active_only.status_code == 200
         assert [item["sku_code"] for item in active_only.json()["items"]] == ["PF-8G01"]
+        assert (
+            client.get(
+                f"/api/store/demo/skus/{by_code['SF-6L20']['id']}"
+            ).status_code
+            == 404
+        )
     finally:
         with SessionLocal() as session:
             inactive_sku = session.scalar(select(SkuRow).where(SkuRow.sku_code == "SF-6L20"))
@@ -6873,7 +7090,7 @@ def test_public_media_uses_tenant_scoped_relative_proxy_when_no_cdn_is_configure
     assert client.get(f"/api/store/demo/media/{uuid4()}").status_code == 404
 
 
-def test_merchant_publication_requires_active_sku_and_explicit_public_price() -> None:
+def test_merchant_publication_requires_active_sku_and_defaults_missing_price_to_zero() -> None:
     root_category_id = uuid4()
     category_id = uuid4()
     product_id = uuid4()
@@ -6985,7 +7202,8 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
         f"/api/v1/skus/{sku_id}/public-offer",
         json={"currency": "CNY", "tags": ["公开标签"], "publication_status": "PUBLISHED"},
     )
-    assert missing_price.status_code == 422
+    assert missing_price.status_code == 409
+    assert missing_price.json()["detail"]["code"] == "PUBLIC_SKU_NOT_ACTIVE"
 
     invalid_tag_color = client.put(
         f"/api/v1/skus/{sku_id}/public-offer",
@@ -6998,6 +7216,18 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
         },
     )
     assert invalid_tag_color.status_code == 422
+
+    invalid_display_tag = client.put(
+        f"/api/v1/skus/{sku_id}/public-offer",
+        json={
+            "unit_price": "88.00",
+            "currency": "CNY",
+            "tags": ["公开标签"],
+            "display_tag": "不存在的标签",
+            "publication_status": "DRAFT",
+        },
+    )
+    assert invalid_display_tag.status_code == 422
 
     inactive = client.put(
         f"/api/v1/skus/{sku_id}/public-offer",
@@ -7017,12 +7247,25 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
     )
     assert activated.status_code == 200, activated.text
 
+    zero_price = client.put(
+        f"/api/v1/skus/{sku_id}/public-offer",
+        json={
+            "currency": "CNY",
+            "tags": ["公开标签"],
+            "publication_status": "PUBLISHED",
+        },
+    )
+    assert zero_price.status_code == 200, zero_price.text
+    assert Decimal(str(zero_price.json()["unit_price"])) == Decimal("0")
+    assert zero_price.json()["publication_status"] == "PUBLISHED"
+
     published = client.put(
         f"/api/v1/skus/{sku_id}/public-offer",
         json={
             "unit_price": "88.00",
             "currency": "cny",
             "tags": ["公开标签", "新品"],
+            "display_tag": "新品",
             "tag_color": "#b65a3a",
             "publication_status": "PUBLISHED",
         },
@@ -7030,12 +7273,14 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
     assert published.status_code == 200, published.text
     assert Decimal(str(published.json()["unit_price"])) == Decimal("88.00")
     assert published.json()["currency"] == "CNY"
+    assert published.json()["display_tag"] == "新品"
     assert published.json()["tag_color"] == "#B65A3A"
     assert published.json()["publication_status"] == "PUBLISHED"
 
     offers = client.get(f"/api/v1/products/{product_id}/public-offers")
     assert offers.status_code == 200
     assert len(offers.json()) == 1
+    assert offers.json()[0]["display_tag"] == "新品"
     assert offers.json()[0]["tag_color"] == "#B65A3A"
     assert "supplier_product_id" not in offers.json()[0]
     assert "unit_cost" not in offers.json()[0]
@@ -7044,6 +7289,7 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
     assert public_listing.status_code == 200
     public_item = public_listing.json()["items"][0]
     assert Decimal(str(public_item["price"])) == Decimal("88.00")
+    assert public_item["display_tag"] == "新品"
     assert public_item["tag_color"] == "#B65A3A"
     assert public_item["category_color"] == "#3F6F9C"
     assert Decimal(str(public_item["price"])) != Decimal("12.34")
@@ -7055,6 +7301,7 @@ def test_merchant_publication_requires_active_sku_and_explicit_public_price() ->
             "unit_price": "88.00",
             "currency": "CNY",
             "tags": ["公开标签", "新品"],
+            "display_tag": "新品",
             "tag_color": "#B65A3A",
             "publication_status": "SUSPENDED",
         },
@@ -7451,7 +7698,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260726_0032"
+        ).scalar() == "20260726_0036"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -7494,6 +7741,39 @@ def test_catalog_tag_color_migration_is_reversible_on_sqlite(tmp_path: Path) -> 
     downgraded_engine.dispose()
 
 
+def test_catalog_display_tag_migration_is_reversible_on_sqlite(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "catalog-display-tag-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+
+    command.upgrade(config, "20260726_0034")
+    before_engine = create_engine(migration_url)
+    assert "display_tag" not in {
+        column["name"]
+        for column in inspect(before_engine).get_columns("public_catalog_offers")
+    }
+    before_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    assert "display_tag" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_catalog_offers")
+    }
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260726_0034")
+    downgraded_engine = create_engine(migration_url)
+    assert "display_tag" not in {
+        column["name"]
+        for column in inspect(downgraded_engine).get_columns("public_catalog_offers")
+    }
+    downgraded_engine.dispose()
+
+
 def test_category_display_color_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:
     database_path = tmp_path / "category-display-color-migration.db"
     migration_url = f"sqlite:///{database_path.as_posix()}"
@@ -7523,6 +7803,149 @@ def test_category_display_color_migration_is_reversible_on_sqlite(tmp_path: Path
         for column in inspect(downgraded_engine).get_columns("product_categories")
     }
     downgraded_engine.dispose()
+
+
+def test_product_tags_migration_is_reversible_and_uuid_compatible_on_sqlite(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "product-tags-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+
+    command.upgrade(config, "20260726_0032")
+    before_engine = create_engine(migration_url)
+    assert "product_tags" not in inspect(before_engine).get_table_names()
+    before_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    assert "product_tags" in inspect(upgraded_engine).get_table_names()
+    columns = {
+        column["name"]: str(column["type"]).upper()
+        for column in inspect(upgraded_engine).get_columns("product_tags")
+    }
+    assert columns["id"] == "CHAR(32)"
+    assert columns["tenant_id"] == "CHAR(32)"
+
+    organization_id = uuid4().hex
+    tenant_id = uuid4().hex
+    tag_id = uuid4().hex
+    with upgraded_engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        connection.exec_driver_sql(
+            """
+            INSERT INTO organizations
+                (id, code, name, status, created_at, updated_at)
+            VALUES (?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (organization_id, f"TAG-{organization_id[:8]}", "Tag migration organization"),
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO tenants
+                (id, organization_id, slug, name, default_locale,
+                 default_currency, timezone, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'zh-CN', 'CNY', 'Asia/Shanghai',
+                    'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (
+                tenant_id,
+                organization_id,
+                f"tag-{tenant_id[:8]}",
+                "Tag migration tenant",
+            ),
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO product_tags
+                (id, tenant_id, name, normalized_name, usage_count,
+                 created_at, updated_at)
+            VALUES (?, ?, '防水', '防水', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (tag_id, tenant_id),
+        )
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM product_tags WHERE tenant_id = ?",
+            (tenant_id,),
+        ).scalar_one() == 1
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260726_0032")
+    downgraded_engine = create_engine(migration_url)
+    assert "product_tags" not in inspect(downgraded_engine).get_table_names()
+    downgraded_engine.dispose()
+
+
+def test_embedding_management_migration_is_reversible_on_sqlite(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "embedding-management-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+    tables = {"embedding_provider_settings", "knowledge_index_jobs"}
+
+    command.upgrade(config, "20260726_0033")
+    before_engine = create_engine(migration_url)
+    assert tables.isdisjoint(inspect(before_engine).get_table_names())
+    before_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    assert tables.issubset(inspect(upgraded_engine).get_table_names())
+    job_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("knowledge_index_jobs")
+    }
+    assert {
+        "total_products",
+        "processed_products",
+        "failed_products",
+        "current_product_name",
+        "error_message",
+    }.issubset(job_columns)
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260726_0033")
+    downgraded_engine = create_engine(migration_url)
+    assert tables.isdisjoint(inspect(downgraded_engine).get_table_names())
+    downgraded_engine.dispose()
+
+
+def test_product_tags_api_supports_crud() -> None:
+    tag_name = f"Tag-{uuid4().hex[:10]}"
+    created = client.post(
+        "/api/tags",
+        json={
+            "name": tag_name,
+            "description": "Temporary tag description",
+            "category": "特性",
+        },
+    )
+    assert created.status_code == 201
+    created_tag = created.json()
+    assert created_tag["name"] == tag_name
+    assert created_tag["description"] == "Temporary tag description"
+    assert created_tag["category"] == "特性"
+
+    listed = client.get("/api/tags", params={"category": "特性"})
+    assert listed.status_code == 200
+    assert created_tag["id"] in {row["id"] for row in listed.json()["tags"]}
+
+    updated = client.patch(
+        f"/api/tags/{created_tag['id']}",
+        json={"description": None, "category": None},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["description"] is None
+    assert updated.json()["category"] is None
+
+    deleted = client.delete(f"/api/tags/{created_tag['id']}")
+    assert deleted.status_code == 204
+    assert created_tag["id"] not in {
+        row["id"] for row in client.get("/api/tags").json()["tags"]
+    }
 
 
 def test_merchant_path_migration_uses_name_and_keeps_previous_slug(

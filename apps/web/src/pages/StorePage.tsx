@@ -11,9 +11,12 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowCounterClockwise,
+  CaretDown,
   CaretLeft,
   CaretRight,
+  Columns,
   MagnifyingGlass,
+  Rows,
   Sparkle,
   Storefront as StoreIcon,
   X,
@@ -26,6 +29,8 @@ import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
+import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import { readStorefrontViewState, writeStorefrontViewState } from "../lib/storefrontViewState";
 import type { Sku, Storefront } from "../types";
 
 type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
@@ -92,11 +97,28 @@ function CategoryScrollTrack({
     };
   }, [contentKey, updateScrollState]);
 
-  const scrollByPage = (direction: -1 | 1) => {
+  const scrollByItem = (direction: -1 | 1) => {
     const track = trackRef.current;
     if (!track) return;
-    track.scrollBy({
-      left: direction * Math.max(220, track.clientWidth * 0.72),
+    const options = Array.from(
+      track.querySelectorAll<HTMLElement>(".category-browser-option"),
+    );
+    const leadingInset = options[0]?.offsetLeft ?? 0;
+    const currentLeadingEdge = track.scrollLeft + leadingInset;
+    const target = direction > 0
+      ? options.find((option) => option.offsetLeft > currentLeadingEdge + 4)
+      : [...options].reverse().find((option) => option.offsetLeft < currentLeadingEdge - 4);
+    const maxScrollLeft = Math.max(0, track.scrollWidth - track.clientWidth);
+    const fallbackStep = Math.min(140, Math.max(72, track.clientWidth * 0.32));
+    const targetLeft = target
+      ? target.offsetLeft - leadingInset
+      : track.scrollLeft + direction * fallbackStep;
+    const maxStep = Math.min(120, Math.max(72, track.clientWidth * 0.3));
+    const targetDelta = targetLeft - track.scrollLeft;
+    const nextLeft = track.scrollLeft
+      + Math.sign(targetDelta) * Math.min(Math.abs(targetDelta), maxStep);
+    track.scrollTo({
+      left: Math.max(0, Math.min(maxScrollLeft, nextLeft)),
       behavior: "smooth",
     });
   };
@@ -108,7 +130,7 @@ function CategoryScrollTrack({
           type="button"
           className="category-browser-scroll-button is-left"
           aria-label={`向左查看更多${ariaLabel}`}
-          onClick={() => scrollByPage(-1)}
+          onClick={() => scrollByItem(-1)}
         >
           <CaretLeft weight="bold" />
         </button>
@@ -121,7 +143,7 @@ function CategoryScrollTrack({
           type="button"
           className="category-browser-scroll-button is-right"
           aria-label={`向右查看更多${ariaLabel}`}
-          onClick={() => scrollByPage(1)}
+          onClick={() => scrollByItem(1)}
         >
           <CaretRight weight="bold" />
         </button>
@@ -133,21 +155,34 @@ function CategoryScrollTrack({
 export function StorePage() {
   const loadedStore = useLoaderData() as Storefront;
   const tenantSlug = loadedStore.slug;
+  const [initialView] = useState(() => readStorefrontViewState(loadedStore.slug));
   const [store, setStore] = useState<Storefront>(loadedStore);
   const [skus, setSkus] = useState<Sku[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(initialView?.page ?? 1);
   const [pages, setPages] = useState(0);
   const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
-  const [deferredSearch, setDeferredSearch] = useState("");
-  const [primaryCategory, setPrimaryCategory] = useState("");
-  const [secondaryCategory, setSecondaryCategory] = useState("");
-  const [semantic, setSemantic] = useState(true);
-  const [cart, setCart] = useState<Record<string, CartLine>>({});
+  const [search, setSearch] = useState(initialView?.search ?? "");
+  const [deferredSearch, setDeferredSearch] = useState(initialView?.search.trim() ?? "");
+  const [primaryCategory, setPrimaryCategory] = useState(initialView?.primaryCategory ?? "");
+  const [secondaryCategory, setSecondaryCategory] = useState(initialView?.secondaryCategory ?? "");
+  const [semantic, setSemantic] = useState(initialView?.semantic ?? true);
+  const [categoryLayout, setCategoryLayout] = useState<"horizontal" | "vertical">(
+    initialView?.categoryLayout ?? "horizontal",
+  );
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
+    () => new Set(initialView?.expandedCategories ?? []),
+  );
+  const [cart, setCart] = useState<Record<string, CartLine>>(
+    () => readStoreCart(loadedStore.slug),
+  );
+  const [cartTenant, setCartTenant] = useState(loadedStore.slug);
   const requestId = useRef(0);
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
+  const activeTenantRef = useRef(loadedStore.slug);
+  const initialLoadPageRef = useRef<number | null>(initialView?.page ?? 1);
+  const pendingScrollRestoreRef = useRef<number | null>(initialView?.scrollY ?? null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setDeferredSearch(search.trim()), 280);
@@ -156,14 +191,27 @@ export function StorePage() {
 
   useEffect(() => {
     setStore(loadedStore);
-    setSearch("");
-    setDeferredSearch("");
-    setPrimaryCategory("");
-    setSecondaryCategory("");
-    setCart({});
-    setPage(1);
+    if (activeTenantRef.current === loadedStore.slug) return;
+    activeTenantRef.current = loadedStore.slug;
+    const nextView = readStorefrontViewState(loadedStore.slug);
+    setSearch(nextView?.search ?? "");
+    setDeferredSearch(nextView?.search.trim() ?? "");
+    setPrimaryCategory(nextView?.primaryCategory ?? "");
+    setSecondaryCategory(nextView?.secondaryCategory ?? "");
+    setSemantic(nextView?.semantic ?? true);
+    setCategoryLayout(nextView?.categoryLayout ?? "horizontal");
+    setExpandedCategories(new Set(nextView?.expandedCategories ?? []));
+    setCart(readStoreCart(loadedStore.slug));
+    setCartTenant(loadedStore.slug);
+    initialLoadPageRef.current = nextView?.page ?? 1;
+    pendingScrollRestoreRef.current = nextView?.scrollY ?? null;
+    setPage(nextView?.page ?? 1);
     setPages(0);
   }, [loadedStore]);
+
+  useEffect(() => {
+    if (cartTenant === tenantSlug) writeStoreCart(tenantSlug, cart);
+  }, [cart, cartTenant, tenantSlug]);
 
   const category = secondaryCategory || primaryCategory;
 
@@ -208,7 +256,30 @@ export function StorePage() {
     }
   }, [tenantSlug, deferredSearch, category, semantic]);
 
-  useEffect(() => { void loadSkus(1); }, [loadSkus]);
+  useEffect(() => {
+    const targetPage = initialLoadPageRef.current ?? 1;
+    void loadSkus(targetPage);
+  }, [loadSkus]);
+
+  useEffect(() => {
+    if (!loading) initialLoadPageRef.current = null;
+  }, [loading]);
+
+  useEffect(() => {
+    if (loading || pendingScrollRestoreRef.current === null) return;
+    const targetScrollY = pendingScrollRestoreRef.current;
+    pendingScrollRestoreRef.current = null;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        window.scrollTo({ top: targetScrollY, left: 0, behavior: "auto" });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [loading, page, skus.length]);
 
   const categories = useMemo(() => {
     if (store?.categories?.length) return store.categories;
@@ -259,6 +330,17 @@ export function StorePage() {
     setPrimaryCategory("");
     setSecondaryCategory("");
   };
+  const toggleCategoryExpansion = (categoryPath: string) => {
+    setExpandedCategories((current) => {
+      const next = new Set(current);
+      if (next.has(categoryPath)) {
+        next.delete(categoryPath);
+      } else {
+        next.add(categoryPath);
+      }
+      return next;
+    });
+  };
   const addToCart = (sku: Sku) => {
     setCart((current) => ({
       ...current,
@@ -271,6 +353,18 @@ export function StorePage() {
       if (quantity < 1) delete next[skuId];
       else next[skuId] = { ...next[skuId], quantity };
       return next;
+    });
+  };
+  const rememberCatalogPosition = () => {
+    writeStorefrontViewState(tenantSlug, {
+      page,
+      scrollY: window.scrollY,
+      search,
+      primaryCategory,
+      secondaryCategory,
+      semantic,
+      categoryLayout,
+      expandedCategories: Array.from(expandedCategories),
     });
   };
   const goToPage = (targetPage: number) => {
@@ -326,11 +420,25 @@ export function StorePage() {
                   <Text size="2" weight="medium">查找商品</Text>
                   <Text size="1" color="gray">输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找</Text>
                 </div>
-                {hasFilters && (
-                  <Button size="1" variant="ghost" color="gray" onClick={resetFilters}>
-                    <ArrowCounterClockwise size={15} />清除筛选
+                <div className="filter-panel-actions">
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    color="gray"
+                    aria-label={categoryLayout === "horizontal" ? "切换到左侧分类" : "切换到顶部分类"}
+                    title={categoryLayout === "horizontal" ? "切换到左侧分类" : "切换到顶部分类"}
+                    onClick={() => setCategoryLayout(categoryLayout === "horizontal" ? "vertical" : "horizontal")}
+                  >
+                    {categoryLayout === "horizontal" ? <Columns size={15} weight="duotone" /> : <Rows size={15} weight="duotone" />}
+                    {categoryLayout === "horizontal" ? "左侧分类" : "顶部分类"}
                   </Button>
-                )}
+                  {hasFilters && (
+                    <Button className="filter-reset-button" size="1" variant="ghost" color="gray" onClick={resetFilters}>
+                      <ArrowCounterClockwise size={15} />清除筛选
+                    </Button>
+                  )}
+                </div>
               </div>
               <div className="search-row">
                 <TextField.Root
@@ -364,78 +472,146 @@ export function StorePage() {
                 </label>
               </div>
               <nav className="category-browser" aria-label="按两级分类筛选">
-                <div className="category-browser-row">
-                  <span className="category-browser-label">一级分类</span>
-                  <CategoryScrollTrack
-                    ariaLabel="一级分类"
-                    contentKey={categoryTree.map((item) => item.path).join("|")}
-                  >
+                {categoryLayout === "horizontal" ? (
+                  <>
+                    <div className="category-browser-row">
+                      <span className="category-browser-label">一级分类</span>
+                      <CategoryScrollTrack
+                        ariaLabel="一级分类"
+                        contentKey={categoryTree.map((item) => item.path).join("|")}
+                      >
+                        <button
+                          type="button"
+                          className={`category-browser-option${!primaryCategory ? " is-active" : ""}`}
+                          aria-pressed={!primaryCategory}
+                          onClick={() => {
+                            setPrimaryCategory("");
+                            setSecondaryCategory("");
+                          }}
+                        >
+                          全部商品
+                        </button>
+                        {categoryTree.map((item) => (
+                          <button
+                            type="button"
+                            className={`category-browser-option${primaryCategory === item.path ? " is-active" : ""}`}
+                            aria-pressed={primaryCategory === item.path}
+                            onClick={() => {
+                              setPrimaryCategory(item.path);
+                              setSecondaryCategory("");
+                            }}
+                            key={item.path}
+                          >
+                            {item.name}
+                          </button>
+                        ))}
+                      </CategoryScrollTrack>
+                    </div>
+                    <div className="category-browser-row">
+                      <span className="category-browser-label">二级分类</span>
+                      <CategoryScrollTrack
+                        ariaLabel="二级分类"
+                        contentKey={`${primaryCategory}|${visibleSecondaryOptions.map((item) => item.path).join("|")}`}
+                      >
+                        <button
+                          type="button"
+                          className={`category-browser-option${!secondaryCategory ? " is-active" : ""}`}
+                          aria-pressed={!secondaryCategory}
+                          onClick={() => setSecondaryCategory("")}
+                        >
+                          全部二级
+                        </button>
+                        {visibleSecondaryOptions.map((item) => (
+                          <button
+                            type="button"
+                            className={`category-browser-option${secondaryCategory === item.path ? " is-active" : ""}`}
+                            aria-pressed={secondaryCategory === item.path}
+                            title={primaryCategory ? item.name : `${item.parentName} / ${item.name}`}
+                            onClick={() => {
+                              setPrimaryCategory(item.parentPath);
+                              setSecondaryCategory(item.path);
+                            }}
+                            key={item.path}
+                          >
+                            {primaryCategory ? item.name : `${item.parentName} · ${item.name}`}
+                          </button>
+                        ))}
+                        {!visibleSecondaryOptions.length && (
+                          <span className="category-browser-empty">
+                            {primaryCategory && !secondaryOptions.length ? "该分类暂无二级分类" : "暂无二级分类"}
+                          </span>
+                        )}
+                      </CategoryScrollTrack>
+                    </div>
+                  </>
+                ) : null}
+              </nav>
+            </div>
+
+            <div className={`results-container${categoryLayout === "vertical" ? " has-sidebar" : ""}`}>
+              {categoryLayout === "vertical" && (
+                <aside className="category-sidebar">
+                  <div className="category-sidebar-header">
+                    <Text size="2" weight="medium">商品分类</Text>
+                  </div>
+                  <nav className="category-sidebar-nav">
                     <button
                       type="button"
-                      className={`category-browser-option${!primaryCategory ? " is-active" : ""}`}
-                      aria-pressed={!primaryCategory}
+                      className={`category-sidebar-item is-all${!primaryCategory && !secondaryCategory ? " is-active" : ""}`}
                       onClick={() => {
                         setPrimaryCategory("");
                         setSecondaryCategory("");
                       }}
                     >
-                      全部商品
+                      <span>全部商品</span>
                     </button>
-                    {categoryTree.map((item) => (
-                      <button
-                        type="button"
-                        className={`category-browser-option${primaryCategory === item.path ? " is-active" : ""}`}
-                        aria-pressed={primaryCategory === item.path}
-                        onClick={() => {
-                          setPrimaryCategory(item.path);
-                          setSecondaryCategory("");
-                        }}
-                        key={item.path}
-                      >
-                        {item.name}
-                      </button>
+                    {categoryTree.map((node) => (
+                      <div key={node.path} className="category-sidebar-group">
+                        <button
+                          type="button"
+                          className={`category-sidebar-item is-primary${primaryCategory === node.path && !secondaryCategory ? " is-active" : ""}${node.children.length > 0 ? " has-children" : ""}`}
+                          title={node.name}
+                          onClick={() => {
+                            if (node.children.length > 0) {
+                              toggleCategoryExpansion(node.path);
+                            }
+                            setPrimaryCategory(node.path);
+                            setSecondaryCategory("");
+                          }}
+                        >
+                          <span>{node.name}</span>
+                          {node.children.length > 0 && (
+                            <CaretDown
+                              size={14}
+                              weight="bold"
+                              className={expandedCategories.has(node.path) ? "is-expanded" : ""}
+                            />
+                          )}
+                        </button>
+                        {node.children.length > 0 && expandedCategories.has(node.path) && (
+                          <div className="category-sidebar-children">
+                            {node.children.map((child) => (
+                              <button
+                                type="button"
+                                key={child.path}
+                                className={`category-sidebar-item is-secondary${secondaryCategory === child.path ? " is-active" : ""}`}
+                                title={child.name}
+                                onClick={() => {
+                                  setPrimaryCategory(node.path);
+                                  setSecondaryCategory(child.path);
+                                }}
+                              >
+                                <span>{child.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     ))}
-                  </CategoryScrollTrack>
-                </div>
-                <div className="category-browser-row">
-                  <span className="category-browser-label">二级分类</span>
-                  <CategoryScrollTrack
-                    ariaLabel="二级分类"
-                    contentKey={`${primaryCategory}|${visibleSecondaryOptions.map((item) => item.path).join("|")}`}
-                  >
-                    <button
-                      type="button"
-                      className={`category-browser-option${!secondaryCategory ? " is-active" : ""}`}
-                      aria-pressed={!secondaryCategory}
-                      onClick={() => setSecondaryCategory("")}
-                    >
-                      全部二级
-                    </button>
-                    {visibleSecondaryOptions.map((item) => (
-                      <button
-                        type="button"
-                        className={`category-browser-option${secondaryCategory === item.path ? " is-active" : ""}`}
-                        aria-pressed={secondaryCategory === item.path}
-                        title={primaryCategory ? item.name : `${item.parentName} / ${item.name}`}
-                        onClick={() => {
-                          setPrimaryCategory(item.parentPath);
-                          setSecondaryCategory(item.path);
-                        }}
-                        key={item.path}
-                      >
-                        {primaryCategory ? item.name : `${item.parentName} · ${item.name}`}
-                      </button>
-                    ))}
-                    {!visibleSecondaryOptions.length && (
-                      <span className="category-browser-empty">
-                        {primaryCategory && !secondaryOptions.length ? "该分类暂无二级分类" : "暂无二级分类"}
-                      </span>
-                    )}
-                  </CategoryScrollTrack>
-                </div>
-              </nav>
-            </div>
-
+                  </nav>
+                </aside>
+              )}
+              <div className="results-main">
             <div className="results-header" ref={resultsHeaderRef}>
               <div>
                 <Heading as="h2" size="5">{hasFilters ? "筛选结果" : "全部 SKU"}</Heading>
@@ -464,9 +640,11 @@ export function StorePage() {
                     <ProductCard
                       key={sku.id}
                       sku={sku}
+                      detailsHref={`/${encodeURIComponent(tenantSlug)}/skus/${encodeURIComponent(sku.id)}`}
                       quantity={cart[sku.id]?.quantity || 0}
                       onAdd={() => addToCart(sku)}
                       onDecrease={() => updateQuantity(sku.id, (cart[sku.id]?.quantity || 0) - 1)}
+                      onOpenDetails={rememberCatalogPosition}
                     />
                   ))}
                 </div>
@@ -521,6 +699,8 @@ export function StorePage() {
                   </Text>
                 </nav>
               )}
+            </div>
+              </div>
             </div>
           </Container>
         </section>

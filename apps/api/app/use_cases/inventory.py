@@ -261,6 +261,7 @@ def _stock_response(
     warehouse: WarehouseRow,
     sku: object,
     product: object,
+    supplier: object | None,
     balance: InventoryBalanceRow | None,
 ) -> InventoryStockItem:
     on_hand = balance.on_hand_quantity if balance is not None else ZERO
@@ -278,6 +279,8 @@ def _stock_response(
         sku_name=sku.name or product.name,
         product_id=product.id,
         product_name=product.name,
+        supplier_id=supplier.id if supplier is not None else None,
+        supplier_name=supplier.name if supplier is not None else None,
         on_hand_quantity=on_hand,
         reserved_quantity=reserved,
         available_quantity=available,
@@ -324,6 +327,7 @@ def list_stock(
                 warehouse=warehouse,
                 sku=row.sku,
                 product=row.product,
+                supplier=row.supplier,
                 balance=row.balance,
             )
             for row in rows
@@ -382,6 +386,7 @@ def inventory_overview(
                 warehouse=warehouse,
                 sku=row.sku,
                 product=row.product,
+                supplier=row.supplier,
                 balance=row.balance,
             )
             for row in low_rows
@@ -464,8 +469,17 @@ def update_stock_policy(
     balance.version += 1
     session.commit()
     sku, product = sku_pair
+    supplier = repository.get_supplier(
+        session,
+        tenant_id=tenant_id,
+        supplier_id=sku.supplier_id,
+    )
     return _stock_response(
-        warehouse=warehouse, sku=sku, product=product, balance=balance
+        warehouse=warehouse,
+        sku=sku,
+        product=product,
+        supplier=supplier,
+        balance=balance,
     )
 
 

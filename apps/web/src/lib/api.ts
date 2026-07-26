@@ -4,6 +4,9 @@ import type {
   DashboardData,
   MemberInvitation,
   MemberInvitationPayload,
+  ProductTag,
+  ProductTagList,
+  ProductTagPayload,
   Quote,
   Sku,
   SkuList,
@@ -172,6 +175,13 @@ export const api = {
   me: () => request<User>("/api/auth/me", {}, true),
 
   getStore: (slug: string) => request<Storefront>(`/api/store/${encodeURIComponent(slug)}`),
+  async getStoreSku(slug: string, skuId: string): Promise<Sku> {
+    return normalizeSku(
+      await request<Sku>(
+        `/api/store/${encodeURIComponent(slug)}/skus/${encodeURIComponent(skuId)}`,
+      ),
+    );
+  },
   async getStoreSkus(
     slug: string,
     filters: { q?: string; category?: string; tags?: string[]; semantic?: boolean; page?: number } = {},
@@ -238,6 +248,32 @@ export const api = {
     body.append("file", file);
     return request<SkuImportResult>(consolePath("/api/console/skus/import"), { method: "POST", body }, true);
   },
+  getProductTags(category = "", limit = 200, offset = 0) {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (category) params.set("category", category);
+    return request<ProductTagList>(`/api/tags?${params.toString()}`, {}, true);
+  },
+  createProductTag: (payload: ProductTagPayload) =>
+    request<ProductTag>(
+      "/api/tags",
+      { method: "POST", body: JSON.stringify(payload) },
+      true,
+    ),
+  updateProductTag: (id: string, payload: Partial<ProductTagPayload>) =>
+    request<ProductTag>(
+      `/api/tags/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify(payload) },
+      true,
+    ),
+  deleteProductTag: (id: string) =>
+    request<void>(
+      `/api/tags/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+      true,
+    ),
   async getQuotes(): Promise<Quote[]> {
     const raw = await request<unknown>("/api/v1/public-quote-drafts", {}, true);
     return normalizeList<Quote>(raw).items.map(normalizeQuote);

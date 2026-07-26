@@ -22,6 +22,7 @@ import { LoginPage } from "./pages/LoginPage";
 
 const LandingPage = lazy(() => import("./pages/marketing/LandingPage").then((module) => ({ default: module.LandingPage })));
 const StorePage = lazy(() => import("./pages/StorePage").then((module) => ({ default: module.StorePage })));
+const SkuDetailPage = lazy(() => import("./pages/SkuDetailPage").then((module) => ({ default: module.SkuDetailPage })));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage").then((module) => ({ default: module.PrivacyPage })));
 const ConsoleLayout = lazy(() => import("./pages/console/ConsoleLayout").then((module) => ({ default: module.ConsoleLayout })));
 const TenantManagementPage = lazy(() => import("./pages/console/TenantManagementPage").then((module) => ({ default: module.TenantManagementPage })));
@@ -36,6 +37,7 @@ const InventoryPage = lazy(() => import("./core/pages/InventoryPage").then((modu
 const PermissionsPage = lazy(() => import("./core/pages/PermissionsPage").then((module) => ({ default: module.PermissionsPage })));
 const ProductsPage = lazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = lazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
+const TagManagementPage = lazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
 
 function ProtectedRoute() {
   const { status } = useCoreAuth();
@@ -77,6 +79,26 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   }
 }
 
+async function storefrontSkuLoader({ params }: LoaderFunctionArgs) {
+  const tenantSlug = params.tenantSlug;
+  const skuId = params.skuId;
+  if (!tenantSlug || !skuId) throw new Response("Not found", { status: 404 });
+  try {
+    const store = await api.getStore(tenantSlug);
+    const sku = await api.getStoreSku(store.slug, skuId);
+    if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
+      return redirect(
+        `/${encodeURIComponent(store.slug)}/skus/${encodeURIComponent(sku.id)}`,
+      );
+    }
+    return { store, sku };
+  }
+  catch (error) {
+    if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
+    throw error;
+  }
+}
+
 function LegacyStoreRedirect() {
   const { tenantSlug } = useParams();
   const location = useLocation();
@@ -108,6 +130,7 @@ const router = createBrowserRouter([
         { path: "ai-search/manage", element: <PermissionGate anyOf={["product.view"]}><AiSearchManagementPage /></PermissionGate> },
         { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
+        { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
         { path: "suppliers", element: <Navigate to="/console/products" replace /> },
@@ -132,6 +155,12 @@ const router = createBrowserRouter([
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },
   { path: "/account", element: <Navigate to="/console/account" replace /> },
   { path: "/system/permissions", element: <Navigate to="/console/system/permissions" replace /> },
+  {
+    path: "/:tenantSlug/skus/:skuId",
+    loader: storefrontSkuLoader,
+    element: <SkuDetailPage />,
+    errorElement: <StorefrontRouteError />,
+  },
   {
     path: "/:tenantSlug",
     loader: storefrontLoader,

@@ -262,3 +262,10 @@ from .inventory_models import (  # noqa: E402,F401
     SalesOrderRow,
     WarehouseRow,
 )
+
+from .tag_models import ProductTagRow  # noqa: E402,F401
+
+from .embedding_management_models import (  # noqa: E402,F401
+    EmbeddingProviderSettingsRow,
+    KnowledgeIndexJobRow,
+)

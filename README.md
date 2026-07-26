@@ -104,7 +104,7 @@ docker compose down --volumes
 - `/console/quotes`：报价列表、详情、修订与审批
 - `/console/system/permissions`：权限查看
 
-当前 Demo 的商品闭环为：下载固定商品模版 → 填写全部 SKU → 在商品库上传 XLSX → 系统按商品型号更新 SKU、公开价和图片 → 有价格的 SKU 发布到商家前台 → 选购后生成报价草稿。模版导入不需要选择供应商；缺少价格的 SKU 只进入后台商品库，不会出现在前台。供应商采购成本仍是独立数据，系统不会自动把采购成本暴露到客户目录。
+当前 Demo 的商品闭环为：下载固定商品模版 → 填写全部 SKU → 在商品库上传 XLSX → 系统按商品型号更新 SKU、公开价、描述、图片及可选供应商 → 商品发布到商家前台 → 选购后生成报价草稿。供应商列可以留空；填写时会按名称复用或创建供应商，并将 SKU 关联到进销存。商品价格可以留空，系统会按 `0.00` 保存并正常发布。供应商及采购成本不会暴露到客户目录。
 
 平台管理员创建的新商家会立即获得独立租户和空商品前台，但不会自动伪造商家成员。商家成员邀请与首次 Owner 分配属于后续账号开通流程；在完成该流程前，平台管理员仍可从 `/console/tenants` 管理商家状态。
 
@@ -112,6 +112,7 @@ docker compose down --volumes
 
 - `GET /api/store/{tenant_slug}`
 - `GET /api/store/{tenant_slug}/skus`
+- `GET /api/store/{tenant_slug}/skus/{sku_id}`
 - `POST /api/store/{tenant_slug}/quotes`
 - `GET /api/quotes/{quote_id}/pdf`（下载凭证放在 `X-Quote-Download-Token` 请求头）
 - `GET /api/quotes/{quote_id}/xlsx`（下载凭证放在 `X-Quote-Download-Token` 请求头）

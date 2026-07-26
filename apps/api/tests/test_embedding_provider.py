@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from app.services import embedding as embedding_service
 from app.services.embedding import (
     DeterministicFeatureHashEmbedding,
     EmbeddingProviderError,
@@ -16,6 +17,59 @@ def test_embedding_configuration_defaults_to_network_free_provider() -> None:
 
     assert isinstance(provider, DeterministicFeatureHashEmbedding)
     assert provider.identity.dimensions == 384
+
+
+def test_embedding_configuration_builds_openai_compatible_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    configured_provider = object()
+
+    def build_provider(
+        *,
+        api_key: str,
+        base_url: str,
+        model_name: str,
+        dimensions: int,
+        model_version: str,
+        timeout_seconds: float,
+    ) -> object:
+        captured.update(
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+            dimensions=dimensions,
+            model_version=model_version,
+            timeout_seconds=timeout_seconds,
+        )
+        return configured_provider
+
+    monkeypatch.setattr(
+        embedding_service,
+        "openai_compatible_embedding_provider",
+        build_provider,
+    )
+    provider = configured_text_embedding_provider(
+        {
+            "TEXT_EMBEDDING_PROFILE": "openai_compatible",
+            "TEXT_EMBEDDING_API_KEY": "test-secret",
+            "TEXT_EMBEDDING_BASE_URL": "https://embedding.example",
+            "TEXT_EMBEDDING_MODEL": "text-embedding-3-large",
+            "TEXT_EMBEDDING_MODEL_VERSION": "test-d1024",
+            "TEXT_EMBEDDING_DIMENSIONS": "1024",
+            "TEXT_EMBEDDING_TIMEOUT_SECONDS": "20",
+        }
+    )
+
+    assert provider is configured_provider
+    assert captured == {
+        "api_key": "test-secret",
+        "base_url": "https://embedding.example",
+        "model_name": "text-embedding-3-large",
+        "dimensions": 1024,
+        "model_version": "test-d1024",
+        "timeout_seconds": 20.0,
+    }
 
 
 def test_openai_compatible_embedding_uses_embeddings_endpoint_and_dimensions() -> None:

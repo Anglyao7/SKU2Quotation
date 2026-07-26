@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ def test_fixed_template_keeps_note_without_creating_a_moq(tmp_path: Path) -> Non
             "柔雾唇釉",
             "唇彩",
             "SKU-001",
+            " 青湾 供应链 ",
             "20",
             "轻盈柔雾质地",
             "12",
@@ -43,6 +45,7 @@ def test_fixed_template_keeps_note_without_creating_a_moq(tmp_path: Path) -> Non
 
     assert len(result.rows) == 1
     assert result.rows[0].sku_code == "SKU-001"
+    assert result.rows[0].supplier_name == "青湾 供应链"
     assert str(result.rows[0].unit_price) == "20.00"
     assert result.rows[0].note == "12"
     assert result.rows[0].tags == ("新品", "热卖")
@@ -56,8 +59,8 @@ def test_duplicate_sku_is_case_and_whitespace_insensitive(tmp_path: Path) -> Non
     _write_workbook(
         path,
         [
-            ["商品 A", "分类", " sku-dup ", 10, None, 1, None, *([None] * 10)],
-            ["商品 B", "分类", "SkU-DuP", 12, None, 1, None, *([None] * 10)],
+            ["商品 A", "分类", " sku-dup ", None, 10, None, 1, None, *([None] * 10)],
+            ["商品 B", "分类", "SkU-DuP", None, 12, None, 1, None, *([None] * 10)],
         ],
     )
 
@@ -74,7 +77,7 @@ def test_category_path_normalizes_two_levels(tmp_path: Path) -> None:
     path = tmp_path / "商品模版.xlsx"
     _write_workbook(
         path,
-        [["商品 A", " 办公用品 ／ 纸品 ", "SKU-CATEGORY", 10, None, None, None, *([None] * 10)]],
+        [["商品 A", " 办公用品 ／ 纸品 ", "SKU-CATEGORY", None, 10, None, None, None, *([None] * 10)]],
     )
 
     result = parse_product_template(path)
@@ -89,7 +92,7 @@ def test_category_path_rejects_empty_or_third_level(
     path = tmp_path / "商品模版.xlsx"
     _write_workbook(
         path,
-        [["商品 A", category, "SKU-BAD-CATEGORY", 10, None, None, None, *([None] * 10)]],
+        [["商品 A", category, "SKU-BAD-CATEGORY", None, 10, None, None, None, *([None] * 10)]],
     )
 
     with pytest.raises(ProductTemplateValidationError, match="商品分类|两级"):
@@ -101,8 +104,8 @@ def test_price_is_half_up_quantized_to_two_decimal_places(tmp_path: Path) -> Non
     _write_workbook(
         path,
         [
-            ["商品 A", "分类", "price-a", "12.344", None, None, None, *([None] * 10)],
-            ["商品 B", "分类", "price-b", "12.345", None, None, None, *([None] * 10)],
+            ["商品 A", "分类", "price-a", None, "12.344", None, None, None, *([None] * 10)],
+            ["商品 B", "分类", "price-b", None, "12.345", None, None, None, *([None] * 10)],
         ],
     )
 
@@ -122,6 +125,7 @@ def test_price_respects_numeric_20_2_boundary(tmp_path: Path) -> None:
                 "最大价格",
                 "分类",
                 "MAX-PRICE",
+                None,
                 "999999999999999999.99",
                 None,
                 None,
@@ -132,6 +136,7 @@ def test_price_respects_numeric_20_2_boundary(tmp_path: Path) -> None:
                 "溢出价格",
                 "分类",
                 "OVERFLOW-PRICE",
+                None,
                 "999999999999999999.995",
                 None,
                 None,
@@ -149,19 +154,19 @@ def test_price_respects_numeric_20_2_boundary(tmp_path: Path) -> None:
     "row, message",
     [
         (
-            ["", "分类", "INVALID-NAME", 10, None, None, None, *([None] * 10)],
+            ["", "分类", "INVALID-NAME", None, 10, None, None, None, *([None] * 10)],
             "缺少商品名称",
         ),
         (
-            ["商品", "分类", "INVALID-PRICE", "not-a-price", None, None, None, *([None] * 10)],
+            ["商品", "分类", "INVALID-PRICE", None, "not-a-price", None, None, None, *([None] * 10)],
             "商品价格不是有效数字",
         ),
         (
-            ["商品", "分类", "INVALID-IMAGE", 10, None, None, None, "javascript:alert(1)", *([None] * 9)],
+            ["商品", "分类", "INVALID-IMAGE", None, 10, None, None, None, "javascript:alert(1)", *([None] * 9)],
             "商品图片1不是有效",
         ),
         (
-            ["商品", "分类", "FORMULA", "=1+1", None, None, None, *([None] * 10)],
+            ["商品", "分类", "FORMULA", None, "=1+1", None, None, None, *([None] * 10)],
             "包含公式",
         ),
     ],
@@ -197,5 +202,6 @@ def test_current_root_template_matches_contract() -> None:
 
     assert len(result.rows) == 600
     assert result.skipped_rows == 8
-    assert sum(row.unit_price is None for row in result.rows) == 103
+    assert sum(row.unit_price == Decimal("0.00") for row in result.rows) == 103
+    assert len(result.warnings) == 8
     assert sum("重复" in warning for warning in result.warnings) == 8

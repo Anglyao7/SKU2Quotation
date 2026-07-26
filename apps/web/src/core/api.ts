@@ -4,6 +4,7 @@ import type {
   CoreProduct,
   CurrentUser,
   DashboardSnapshot,
+  EmbeddingSettings,
   FileDetection,
   HybridSearchResponse,
   ImportJob,
@@ -16,6 +17,7 @@ import type {
   InventoryStockItem,
   InventoryStockPage,
   KnowledgeIndexStatus,
+  KnowledgeIndexJob,
   MembershipSummary,
   MerchantSettings,
   PermissionSet,
@@ -930,6 +932,133 @@ export async function rebuildKnowledgeIndex(): Promise<KnowledgeIndexStatus> {
   );
 }
 
+interface ApiKnowledgeIndexJob {
+  id: string;
+  mode: "INCREMENTAL" | "FULL_REBUILD";
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  total_products: number;
+  processed_products: number;
+  failed_products: number;
+  embeddings: number;
+  progress_percent: number;
+  current_product_id?: string | null;
+  current_product_name?: string | null;
+  model_provider: string;
+  model_name: string;
+  model_version: string;
+  dimensions: number;
+  error_message?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+function mapKnowledgeIndexJob(row: ApiKnowledgeIndexJob): KnowledgeIndexJob {
+  return {
+    id: row.id,
+    mode: row.mode,
+    status: row.status,
+    totalProducts: row.total_products,
+    processedProducts: row.processed_products,
+    failedProducts: row.failed_products,
+    embeddings: row.embeddings,
+    progressPercent: row.progress_percent,
+    currentProductId: defined(row.current_product_id),
+    currentProductName: defined(row.current_product_name),
+    modelProvider: row.model_provider,
+    modelName: row.model_name,
+    modelVersion: row.model_version,
+    dimensions: row.dimensions,
+    errorMessage: defined(row.error_message),
+    createdAt: row.created_at,
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+  };
+}
+
+export async function startKnowledgeIndexJob(
+  fullRebuild = false,
+): Promise<KnowledgeIndexJob> {
+  const row = await request<ApiKnowledgeIndexJob>("/ai/knowledge/index/jobs", {
+    method: "POST",
+    body: JSON.stringify({
+      mode: fullRebuild ? "FULL_REBUILD" : "INCREMENTAL",
+      confirm_full_rebuild: fullRebuild,
+    }),
+  });
+  return mapKnowledgeIndexJob(row);
+}
+
+export async function getLatestKnowledgeIndexJob(): Promise<KnowledgeIndexJob | undefined> {
+  const row = await request<ApiKnowledgeIndexJob | null>(
+    "/ai/knowledge/index/jobs/latest",
+  );
+  return row ? mapKnowledgeIndexJob(row) : undefined;
+}
+
+export async function getKnowledgeIndexJob(jobId: string): Promise<KnowledgeIndexJob> {
+  return mapKnowledgeIndexJob(
+    await request<ApiKnowledgeIndexJob>(
+      `/ai/knowledge/index/jobs/${encodeURIComponent(jobId)}`,
+    ),
+  );
+}
+
+interface ApiEmbeddingSettings {
+  source: "database" | "environment" | "deterministic";
+  provider: string;
+  base_url?: string | null;
+  model_name: string;
+  model_version: string;
+  dimensions: number;
+  timeout_seconds: number;
+  api_key_configured: boolean;
+  api_key_hint?: string | null;
+  updated_at?: string | null;
+}
+
+function mapEmbeddingSettings(row: ApiEmbeddingSettings): EmbeddingSettings {
+  return {
+    source: row.source,
+    provider: row.provider,
+    baseUrl: defined(row.base_url),
+    modelName: row.model_name,
+    modelVersion: row.model_version,
+    dimensions: row.dimensions,
+    timeoutSeconds: row.timeout_seconds,
+    apiKeyConfigured: row.api_key_configured,
+    apiKeyHint: defined(row.api_key_hint),
+    updatedAt: defined(row.updated_at),
+  };
+}
+
+export async function getEmbeddingSettings(): Promise<EmbeddingSettings> {
+  return mapEmbeddingSettings(
+    await request<ApiEmbeddingSettings>("/ai/embedding/settings"),
+  );
+}
+
+export async function updateEmbeddingSettings(input: {
+  baseUrl: string;
+  apiKey?: string;
+  modelName: string;
+  dimensions: number;
+  timeoutSeconds: number;
+}): Promise<EmbeddingSettings> {
+  return mapEmbeddingSettings(
+    await request<ApiEmbeddingSettings>("/ai/embedding/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        base_url: input.baseUrl,
+        api_key: input.apiKey || undefined,
+        model_name: input.modelName,
+        dimensions: input.dimensions,
+        timeout_seconds: input.timeoutSeconds,
+      }),
+    }),
+  );
+}
+
 export async function getProduct(productId: string): Promise<ProductDetail> {
   const row = await request<ApiProductDetail>(`/products/${encodeURIComponent(productId)}`);
   return { ...mapProduct(row), description: defined(row.description), defaultUnit: defined(row.default_unit), attributes: row.attributes.map(mapAttribute), skus: row.skus.map(mapSku), sources: row.sources.map(mapOffer), activity: row.activity.map(mapActivity) };
@@ -956,6 +1085,7 @@ interface ApiPublicCatalogOffer {
   unit_price: number | string;
   currency: string;
   tags: string[];
+  display_tag?: string | null;
   tag_color?: string | null;
   publication_status: PublicCatalogOffer["publicationStatus"];
   published_at?: string | null;
@@ -972,6 +1102,7 @@ function mapPublicCatalogOffer(row: ApiPublicCatalogOffer): PublicCatalogOffer {
     unitPrice: Number(row.unit_price),
     currency: row.currency,
     tags: row.tags ?? [],
+    displayTag: defined(row.display_tag),
     tagColor: defined(row.tag_color),
     publicationStatus: row.publication_status,
     publishedAt: defined(row.published_at),
@@ -992,6 +1123,7 @@ export async function upsertPublicCatalogOffer(
     unitPrice: number;
     currency: string;
     tags: string[];
+    displayTag?: string;
     tagColor?: string;
     publicationStatus: PublicCatalogOffer["publicationStatus"];
     validFrom?: string;
@@ -1004,6 +1136,7 @@ export async function upsertPublicCatalogOffer(
       unit_price: input.unitPrice,
       currency: input.currency,
       tags: input.tags,
+      display_tag: input.displayTag ?? null,
       tag_color: input.tagColor ?? null,
       publication_status: input.publicationStatus,
       valid_from: input.validFrom,
@@ -1271,6 +1404,8 @@ interface ApiInventoryStockItem {
   sku_name: string;
   product_id: string;
   product_name: string;
+  supplier_id?: string | null;
+  supplier_name?: string | null;
   on_hand_quantity: number | string;
   reserved_quantity: number | string;
   available_quantity: number | string;
@@ -1440,6 +1575,8 @@ function mapInventoryStock(row: ApiInventoryStockItem): InventoryStockItem {
     skuName: row.sku_name,
     productId: row.product_id,
     productName: row.product_name,
+    supplierId: defined(row.supplier_id),
+    supplierName: defined(row.supplier_name),
     onHandQuantity: inventoryNumber(row.on_hand_quantity),
     reservedQuantity: inventoryNumber(row.reserved_quantity),
     availableQuantity: inventoryNumber(row.available_quantity),

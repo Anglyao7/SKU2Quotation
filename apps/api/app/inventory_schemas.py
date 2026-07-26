@@ -62,6 +62,8 @@ class InventoryStockItem(BaseModel):
     sku_name: str
     product_id: UUID
     product_name: str
+    supplier_id: str | None
+    supplier_name: str | None
     on_hand_quantity: Decimal
     reserved_quantity: Decimal
     available_quantity: Decimal

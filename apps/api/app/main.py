@@ -20,6 +20,7 @@ from .routers.product_intelligence import router as product_intelligence_router
 from .routers.product_center import router as product_center_router
 from .routers.platform_admin import router as platform_admin_router
 from .routers.system import router as system_router
+from .routers.tags import router as tags_router
 from .routers.trade_flow import router as trade_flow_router
 from .routers.public_catalog import router as public_catalog_router
 from .routers.workspace import router as workspace_router
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
         workspace_router,
         knowledge_search_router,
         system_router,
+        tags_router,
     ):
         application.include_router(router)
     return application

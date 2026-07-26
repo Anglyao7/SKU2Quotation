@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
+from ..db_models import SupplierRow
 from ..inventory_models import (
     InventoryBalanceRow,
     InventoryDocumentItemRow,
@@ -26,6 +27,7 @@ from ..trade_flow_models import CustomerRow, QuotationRow
 class StockQueryRow:
     sku: SkuRow
     product: ProductRow
+    supplier: SupplierRow | None
     balance: InventoryBalanceRow | None
 
 
@@ -136,6 +138,20 @@ def get_skus(
     return {sku.id: (sku, product) for sku, product in rows}
 
 
+def get_supplier(
+    session: Session, *, tenant_id: UUID, supplier_id: str | None
+) -> SupplierRow | None:
+    if supplier_id is None:
+        return None
+    return session.scalar(
+        select(SupplierRow).where(
+            SupplierRow.tenant_id == tenant_id,
+            SupplierRow.id == supplier_id,
+            SupplierRow.deleted_at.is_(None),
+        )
+    )
+
+
 def get_customer(
     session: Session, *, tenant_id: UUID, customer_id: UUID
 ) -> CustomerRow | None:
@@ -204,6 +220,11 @@ def list_stock_rows(
         & (InventoryBalanceRow.warehouse_id == warehouse_id)
         & InventoryBalanceRow.deleted_at.is_(None)
     )
+    supplier_join = (
+        (SupplierRow.tenant_id == SkuRow.tenant_id)
+        & (SupplierRow.id == SkuRow.supplier_id)
+        & SupplierRow.deleted_at.is_(None)
+    )
     conditions = [
         SkuRow.tenant_id == tenant_id,
         SkuRow.status != "ARCHIVED",
@@ -218,6 +239,7 @@ def list_stock_rows(
                 func.lower(func.coalesce(SkuRow.name, "")).contains(normalized),
                 func.lower(ProductRow.name).contains(normalized),
                 func.lower(func.coalesce(ProductRow.product_code, "")).contains(normalized),
+                func.lower(func.coalesce(SupplierRow.name, "")).contains(normalized),
             )
         )
     reorder_point = func.coalesce(InventoryBalanceRow.reorder_point, 0)
@@ -228,12 +250,13 @@ def list_stock_rows(
         conditions.extend((reorder_point > 0, available <= reorder_point))
 
     base = (
-        select(SkuRow, ProductRow, InventoryBalanceRow)
+        select(SkuRow, ProductRow, SupplierRow, InventoryBalanceRow)
         .join(
             ProductRow,
             (ProductRow.tenant_id == SkuRow.tenant_id)
             & (ProductRow.id == SkuRow.product_id),
         )
+        .outerjoin(SupplierRow, supplier_join)
         .outerjoin(InventoryBalanceRow, balance_join)
         .where(*conditions)
     )
@@ -245,6 +268,7 @@ def list_stock_rows(
             (ProductRow.tenant_id == SkuRow.tenant_id)
             & (ProductRow.id == SkuRow.product_id),
         )
+        .outerjoin(SupplierRow, supplier_join)
         .outerjoin(InventoryBalanceRow, balance_join)
         .where(*conditions)
     )
@@ -258,7 +282,15 @@ def list_stock_rows(
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
-    return [StockQueryRow(sku=sku, product=product, balance=balance) for sku, product, balance in rows], total
+    return [
+        StockQueryRow(
+            sku=sku,
+            product=product,
+            supplier=supplier,
+            balance=balance,
+        )
+        for sku, product, supplier, balance in rows
+    ], total
 
 
 def inventory_aggregates(
