@@ -394,7 +394,11 @@ export function ProductsPage() {
                     <span className={`core-sku-image-state ${sku.imageStatus.toLowerCase()}`} title={t(sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片")}><ImageSquare /></span>
                     <span><strong className="core-tabular">{sku.skuCode}</strong><small>{sku.name || sku.productName}</small></span>
                   </span>
-                  <span className="core-sku-category-cell"><strong>{primaryCategoryLabel(sku.category?.name) || t("未分类")}</strong><span className="core-chip-row">{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span></span>
+                  <span className="core-sku-category-cell">
+                    <strong>{primaryCategoryLabel(sku.category?.name) || t("未分类")}</strong>
+                    {sku.supplierSummary.primarySupplierName ? <small>{t("供应商")}：{sku.supplierSummary.primarySupplierName}</small> : null}
+                    <span className="core-chip-row">{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
+                  </span>
                   <span className="core-tabular"><strong>{t(skuPrice(sku))}</strong><small>{t(sku.publicOfferStatus ? offerStatusLabel[sku.publicOfferStatus] : "尚无公开报价")}</small></span>
                   <Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge>
                   <span><strong>{skuUpdatedDate(sku.updatedAt)}</strong><small>v{sku.version}</small></span>
@@ -407,7 +411,11 @@ export function ProductsPage() {
             {result.items.map((sku) => (
               <button type="button" className="core-sku-mobile-card" key={sku.id} onClick={() => void openProduct(sku.productId, "skus")} aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}>
                 <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge></span>
-                <span className="core-sku-mobile-facts"><span><small>{t("公开价")}</small><strong className="core-tabular">{t(skuPrice(sku))}</strong></span><span><small>{t("图片")}</small><strong>{t(imageStatusLabel(sku.imageStatus))}</strong></span></span>
+                <span className="core-sku-mobile-facts">
+                  <span><small>{t("公开价")}</small><strong className="core-tabular">{t(skuPrice(sku))}</strong></span>
+                  <span><small>{t("图片")}</small><strong>{t(imageStatusLabel(sku.imageStatus))}</strong></span>
+                  <span><small>{t("供应商")}</small><strong>{sku.supplierSummary.primarySupplierName || t("未关联")}</strong></span>
+                </span>
                 <span className="core-chip-row"><Badge color="gray">{primaryCategoryLabel(sku.category?.name) || t("未分类")}</Badge>{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
                 <span className="core-sku-mobile-footer"><small>{t("更新于 {date}", { date: skuUpdatedDate(sku.updatedAt) })}</small><span>{t("SKU 详情")}<CaretRight /></span></span>
               </button>
@@ -429,7 +437,7 @@ export function ProductsPage() {
             <div>
               <Text size="1" color="gray">{t("固定商品资料入口")}</Text>
               <Dialog.Title>{t("导入商品模版")}</Dialog.Title>
-              <Dialog.Description>{t("选择按约定填写的 XLSX；不需要选择供应商，也不会按供应商拆分商品。")}</Dialog.Description>
+              <Dialog.Description>{t("选择按约定填写的 XLSX；供应商可以留空，填写后会关联到进销存。")}</Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" onClick={() => setImportDialogOpen(false)} aria-label={t("关闭")}><X /></Button>
           </div>
@@ -438,9 +446,9 @@ export function ProductsPage() {
             <span className="core-row-icon"><FileXls /></span>
             <div>
               <Text weight="bold" as="div">{t("当前固定模版：商品模版.xlsx")}</Text>
-              <Text size="2" color="gray">{t("“商品型号”作为唯一 SKU；分类填写“A”或“A/B”，最多两级；标签支持中英文逗号分隔；图片列读取图床链接。")}</Text>
+              <Text size="2" color="gray">{t("“商品型号”作为唯一 SKU；供应商可空并按名称关联；分类最多两级；图片列读取图床链接。")}</Text>
               <div className="core-chip-row" aria-label={t("固定模版字段")}>
-                {["商品名称", "商品分类", "商品型号", "商品价格", "商品描述", "备注", "标签", "商品图片1–10"].map((field) => <Badge color="gray" key={field}>{t(field)}</Badge>)}
+                {["商品名称", "商品分类", "商品型号", "供应商", "商品价格", "商品描述", "备注", "标签", "商品图片1–10"].map((field) => <Badge color="gray" key={field}>{t(field)}</Badge>)}
               </div>
               <div>
                 <Button asChild size="1" variant="soft" color="gray">
@@ -454,7 +462,7 @@ export function ProductsPage() {
             <Warning size={22} />
             <div>
               <Text weight="bold" as="div">{t("这份模版代表当前完整商品库")}</Text>
-              <Text size="2" color="gray">{t("重复型号保留第一条；缺价商品只进入后台；标签会同步到客户前台并作为 AI 搜索线索；从下一份文件移除的 SKU 会自动下架。")}</Text>
+              <Text size="2" color="gray">{t("重复型号保留第一条；价格留空按 0 处理；供应商按名称复用或创建；从下一份文件移除的 SKU 会自动下架。")}</Text>
             </div>
           </Card>
 
@@ -675,6 +683,7 @@ function PublicOfferEditor({ sku, offer, canPublish, onChanged }: { sku: Product
   const [price, setPrice] = useState(offer ? String(offer.unitPrice) : "");
   const [currency, setCurrency] = useState(offer?.currency ?? defaultCurrency);
   const [tags, setTags] = useState(offer?.tags.join("，") ?? "");
+  const [displayTag, setDisplayTag] = useState(offer?.displayTag ?? offer?.tags[0] ?? "");
   const [tagColor, setTagColor] = useState(offer?.tagColor ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -682,9 +691,21 @@ function PublicOfferEditor({ sku, offer, canPublish, onChanged }: { sku: Product
     setPrice(offer ? String(offer.unitPrice) : "");
     setCurrency(offer?.currency ?? defaultCurrency);
     setTags(offer?.tags.join("，") ?? "");
+    setDisplayTag(offer?.displayTag ?? offer?.tags[0] ?? "");
     setTagColor(offer?.tagColor ?? "");
   }, [defaultCurrency, offer]);
-  const previewTag = splitValues(tags)[0] ?? t("标签预览");
+  const availableTags = useMemo(() => {
+    const unique = new Map<string, string>();
+    splitValues(tags).forEach((tag) => {
+      const normalized = tag.toLocaleLowerCase();
+      if (!unique.has(normalized)) unique.set(normalized, tag);
+    });
+    return Array.from(unique.values());
+  }, [tags]);
+  const selectedDisplayTag = availableTags.find(
+    (tag) => tag.toLocaleLowerCase() === displayTag.toLocaleLowerCase(),
+  ) ?? availableTags[0] ?? "";
+  const previewTag = selectedDisplayTag || t("标签预览");
   const activeTagColor = tagColor || automaticTagColor(previewTag);
   const save = async (publicationStatus: PublicCatalogOffer["publicationStatus"]) => {
     const numericPrice = Number(price);
@@ -694,7 +715,8 @@ function PublicOfferEditor({ sku, offer, canPublish, onChanged }: { sku: Product
       await upsertPublicCatalogOffer(sku.id, {
         unitPrice: numericPrice,
         currency,
-        tags: splitValues(tags),
+        tags: availableTags,
+        displayTag: selectedDisplayTag || undefined,
         tagColor: tagColor || undefined,
         publicationStatus,
         validFrom: offer?.validFrom,
@@ -706,17 +728,30 @@ function PublicOfferEditor({ sku, offer, canPublish, onChanged }: { sku: Product
   };
   return <div className="core-tab-panel">
     <div><Text weight="bold">{t("客户公开目录")}</Text> <Badge color={offer?.publicationStatus === "PUBLISHED" ? "jade" : offer?.publicationStatus === "SUSPENDED" ? "amber" : "gray"}>{offer ? t(offerStatusLabel[offer.publicationStatus]) : t("未配置")}</Badge></div>
-    <Text size="1" color="gray">{t("模版中的商品价格和标签会同步到前台；后续导入会更新价格与标签，但会保留自定义标签颜色。")}</Text>
+    <Text size="1" color="gray">{t("模版中的价格和标签会同步到前台；每个商品只展示一个选定标签，后续导入会尽量保留该选择与颜色。")}</Text>
     {canPublish ? <div className="core-inline-form core-public-offer-form">
       <label><Text size="1" color="gray">{t("公开售价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} placeholder={t("公开售价")} /></label>
       <label><Text size="1" color="gray">{t("计价币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option></select></label>
       <div className="core-offer-tag-field">
         <Text size="1" color="gray">{t("商品标签")}</Text>
         <TextField.Root value={tags} onChange={(event) => setTags(event.target.value)} placeholder={t("新品，热卖，现货")} />
-        <div className="core-tag-color-control">
+        <div className="core-tag-display-row">
+          <label>
+            <Text size="1" color="gray">{t("前台展示标签")}</Text>
+            <select
+              value={selectedDisplayTag}
+              disabled={!availableTags.length}
+              onChange={(event) => setDisplayTag(event.target.value)}
+            >
+              {!availableTags.length ? <option value="">{t("暂无可选标签")}</option> : null}
+              {availableTags.map((tag) => <option value={tag} key={tag}>{tag}</option>)}
+            </select>
+          </label>
           <span className="core-tag-glass-preview" style={tagGlassStyle(previewTag, tagColor)}>
             <Tag weight="fill" />{previewTag}
           </span>
+        </div>
+        <div className="core-tag-color-control">
           <div className="core-tag-color-presets" role="group" aria-label={t("标签颜色")}>
             {TAG_COLOR_PALETTE.map((color) => (
               <button
@@ -741,7 +776,7 @@ function PublicOfferEditor({ sku, offer, canPublish, onChanged }: { sku: Product
           </div>
           <Button size="1" variant="ghost" color="gray" disabled={!tagColor} onClick={() => setTagColor("")}>{t("自动配色")}</Button>
         </div>
-        <Text size="1" color="gray">{t(tagColor ? "当前使用自定义颜色。" : "系统会根据首个标签自动生成稳定颜色。")}</Text>
+        <Text size="1" color="gray">{t(tagColor ? "当前使用自定义颜色。" : "系统会根据展示标签自动生成稳定颜色。")}</Text>
       </div>
       <div className="core-offer-actions">
         <Button variant="soft" color="gray" disabled={busy || !price} onClick={() => void save("DRAFT")}>{t("保存草稿")}</Button>

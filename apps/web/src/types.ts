@@ -48,6 +48,7 @@ export interface Sku {
   category?: string | null;
   category_color?: string | null;
   tags: string[];
+  display_tag?: string | null;
   tag_color?: string | null;
   description?: string | null;
   specifications?: Record<string, string | number> | null;
@@ -68,6 +69,29 @@ export interface SkuList {
   pages?: number;
   categories?: string[];
   tags?: string[];
+}
+
+export interface ProductTag {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  usage_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductTagList {
+  tags: ProductTag[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ProductTagPayload {
+  name: string;
+  description: string | null;
+  category: string | null;
 }
 
 export interface QuoteItemInput {

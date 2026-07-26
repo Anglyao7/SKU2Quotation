@@ -422,6 +422,25 @@ def list_supplier_rows_for_sku_page(
     )
 
 
+def list_suppliers_by_ids(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    supplier_ids: set[str],
+) -> list[SupplierRow]:
+    if not supplier_ids:
+        return []
+    return list(
+        session.scalars(
+            select(SupplierRow).where(
+                SupplierRow.tenant_id == tenant_id,
+                SupplierRow.id.in_(supplier_ids),
+                SupplierRow.deleted_at.is_(None),
+            )
+        ).all()
+    )
+
+
 def list_image_statuses_for_products(
     session: Session,
     *,

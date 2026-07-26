@@ -202,6 +202,13 @@ def _sku_response(
         category=_category_path(category) or None,
         category_color=category_color,
         tags=list(dict.fromkeys(tags)),
+        display_tag=(
+            offer.display_tag
+            if offer.display_tag
+            and offer.display_tag.casefold()
+            in {tag.casefold() for tag in tags}
+            else tags[0] if tags else None
+        ),
         tag_color=offer.tag_color,
         price=_money(Decimal(offer.unit_price)),
         currency=offer.currency,
@@ -393,6 +400,51 @@ def list_public_skus(
         pages=math.ceil(total / page_size) if total else 0,
         categories=categories,
         tags=facet_tags,
+    )
+
+
+def get_public_sku(
+    session: Session,
+    *,
+    slug: str,
+    sku_id: UUID,
+) -> PublicSkuResponse:
+    tenant, _profile = _resolve_store(session, slug=slug)
+    rows = repository.list_public_catalog_rows_by_sku_ids(
+        session,
+        tenant_id=tenant.id,
+        sku_ids=[sku_id],
+        now=utcnow(),
+    )
+    if not rows:
+        raise ApplicationError(
+            "PUBLIC_SKU_NOT_FOUND",
+            "Public SKU was not found.",
+            kind="not_found",
+        )
+    row = rows[0]
+    categories = repository.list_catalog_categories(
+        session, tenant_id=tenant.id
+    )
+    categories_by_id = {category.id: category for category in categories}
+    category = row[3]
+    root_category = (
+        categories_by_id.get(category.parent_id)
+        if category is not None and category.parent_id is not None
+        else category
+    )
+    images = repository.approved_image_map(
+        session,
+        tenant_id=tenant.id,
+        product_ids={row[2].id},
+    )
+    return _sku_response(
+        row,
+        image=images.get(row[2].id),
+        slug=tenant.slug,
+        category_color=(
+            root_category.display_color if root_category is not None else None
+        ),
     )
 
 

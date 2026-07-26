@@ -400,11 +400,11 @@ const english: Record<string, string> = {
   "SKU 列表分页": "SKU pagination",
   "第 {page} / {pages} 页": "Page {page} of {pages}",
   "固定商品资料入口": "Standard product data import",
-  "选择按约定填写的 XLSX；不需要选择供应商，也不会按供应商拆分商品。":
-    "Choose a completed standard XLSX template. Products are not split by supplier.",
+  "选择按约定填写的 XLSX；供应商可以留空，填写后会关联到进销存。":
+    "Choose a completed standard XLSX template. Supplier is optional and links the SKU to inventory when provided.",
   "当前固定模版：商品模版.xlsx": "Current template: 商品模版.xlsx",
-  "“商品型号”作为唯一 SKU；分类填写“A”或“A/B”，最多两级；标签支持中英文逗号分隔；图片列读取图床链接。":
-    "Product model is the unique SKU. Categories support A or A/B with two levels. Tags accept Chinese or English commas, and image columns use hosted URLs.",
+  "“商品型号”作为唯一 SKU；供应商可空并按名称关联；分类最多两级；图片列读取图床链接。":
+    "Product model is the unique SKU. Supplier is optional and linked by name. Categories support two levels, and image columns use hosted URLs.",
   "固定模版字段": "Template columns",
   "商品名称": "Product name",
   "商品分类": "Product category",
@@ -416,8 +416,8 @@ const english: Record<string, string> = {
   "商品图片1–10": "Product images 1–10",
   "下载空白模版": "Download blank template",
   "这份模版代表当前完整商品库": "This template represents the complete catalog",
-  "重复型号保留第一条；缺价商品只进入后台；标签会同步到客户前台并作为 AI 搜索线索；从下一份文件移除的 SKU 会自动下架。":
-    "The first duplicate model is kept. Products without prices remain internal. Tags appear in the storefront and improve AI search. SKUs omitted from the next import are deactivated.",
+  "重复型号保留第一条；价格留空按 0 处理；供应商按名称复用或创建；从下一份文件移除的 SKU 会自动下架。":
+    "The first duplicate model is kept. Blank prices become zero. Suppliers are reused or created by name. SKUs omitted from the next import are deactivated.",
   "格式已确认": "Format verified",
   "格式不一致": "Format mismatch",
   "选择商品模版": "Choose product template",
@@ -485,9 +485,13 @@ const english: Record<string, string> = {
   "未配置": "Not configured",
   "模版中的商品价格和标签会同步到前台；后续导入会更新价格与标签，但会保留自定义标签颜色。":
     "Template prices and tags sync to the storefront. Later imports update both while preserving your custom tag color.",
+  "模版中的价格和标签会同步到前台；每个商品只展示一个选定标签，后续导入会尽量保留该选择与颜色。":
+    "Template prices and tags sync to the storefront. Each product shows one selected tag, and later imports preserve that selection and color whenever possible.",
   "公开售价": "Public price",
   "计价币种": "Currency",
   "商品标签": "Product tags",
+  "前台展示标签": "Storefront display tag",
+  "暂无可选标签": "No tags available",
   "新品，热卖，现货": "New, bestseller, in stock",
   "标签预览": "Tag preview",
   "标签颜色": "Tag color",
@@ -496,6 +500,8 @@ const english: Record<string, string> = {
   "当前使用自定义颜色。": "A custom color is currently applied.",
   "系统会根据首个标签自动生成稳定颜色。":
     "The system assigns a stable automatic color from the first tag.",
+  "系统会根据展示标签自动生成稳定颜色。":
+    "The system assigns a stable automatic color from the selected display tag.",
   "保存草稿": "Save draft",
   "发布到前台": "Publish to storefront",
   "请先激活 SKU": "Activate SKU first",
@@ -535,11 +541,26 @@ const english: Record<string, string> = {
     "You can view index status, but product edit permission is required to run updates.",
   "索引任务正在执行，请保持当前页面打开。":
     "The indexing job is running. Keep this page open.",
+  "正在处理 {done} / {total} 个商品":
+    "Processing {done} / {total} products",
+  "任务执行中": "Job running",
+  "全量重建任务": "Full rebuild job",
+  "增量更新任务": "Incremental update job",
+  "QUEUED": "Queued",
+  "RUNNING": "Running",
+  "SUCCEEDED": "Completed",
+  "FAILED": "Failed",
+  "完成 {percent}%": "{percent}% complete",
+  "已生成 {count} 条向量": "{count} vectors generated",
+  "当前批次：{name}": "Current batch: {name}",
+  "任务在后台继续执行，离开本页不会中断。":
+    "The job continues in the background and will not stop if you leave this page.",
   "建议操作": "Recommended action",
   "通常只需增量更新": "Incremental updates are usually enough",
   "导入新商品，或修改商品名称、描述、分类与标签后，使用“更新智能索引”即可。系统只处理发生变化的商品。":
     "After importing products or changing names, descriptions, categories, or tags, run an incremental update. Only changed products are processed.",
   "模型配置": "Model configuration",
+  "当前生效模型": "Active model",
   "模型": "Model",
   "向量维度": "Vector dimensions",
   "提供方": "Provider",
@@ -548,6 +569,25 @@ const english: Record<string, string> = {
   "系统会使用当前的 {model}，重新向量化当前商家的全部 {count} 个商品。通常仅在更换模型或索引异常时使用。":
     "The current {model} will re-embed all {count} products for this merchant. Use this only after changing models or when the index is inconsistent.",
   "确认全量重建": "Confirm full rebuild",
+  "Embedding 配置读取失败": "Could not load the embedding configuration",
+  "Embedding 配置保存失败": "Could not save the embedding configuration",
+  "Embedding 模型配置已保存；请执行全量重建以使用新模型。":
+    "Embedding settings saved. Run a full rebuild to use the new model.",
+  "平台级配置": "Platform configuration",
+  "Embedding 模型": "Embedding model",
+  "仅平台管理员可以修改；配置对所有商家生效。":
+    "Only platform administrators can edit this configuration. It applies to every merchant.",
+  "后台配置": "Managed configuration",
+  "环境变量": "Environment variables",
+  "本地测试模型": "Local test model",
+  "API Key": "API key",
+  "已配置 {hint}，留空则保持不变":
+    "{hint} is configured; leave blank to keep it",
+  "请输入 API Key": "Enter an API key",
+  "超时（秒）": "Timeout (seconds)",
+  "保存模型配置": "Save model settings",
+  "密钥加密保存，保存后不会显示明文。":
+    "The key is encrypted at rest and is never shown in plaintext after saving.",
   "适合巴西市场的小型防水狗玩具":
     "Small waterproof dog toys suitable for the Brazilian market",
   "食品级硅胶水瓶，目标价低于 20 元":
@@ -558,6 +598,7 @@ const english: Record<string, string> = {
   "语义": "Semantic",
   "属性": "Attributes",
   "供应商": "Supplier",
+  "未关联": "Not linked",
   "AI Search 暂不可用": "AI Search is temporarily unavailable",
   "AI 产品搜索": "AI product search",
   "说出需求，获得可追溯的匹配":

@@ -38,6 +38,7 @@ class PublicSkuResponse(BaseModel):
     category: str | None
     category_color: str | None = None
     tags: list[str]
+    display_tag: str | None = None
     tag_color: str | None = None
     price: Decimal
     currency: str

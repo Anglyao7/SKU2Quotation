@@ -17,10 +17,10 @@ from ..product_supplier_models import ProductAttributeRow, ProductRow, SupplierP
 from ..public_catalog_models import PublicCatalogOfferRow
 from .embedding import (
     EmbeddingProvider,
-    configured_text_embedding_provider,
     cosine_similarity,
     normalize_text,
 )
+from .embedding_configuration import resolved_text_embedding_provider
 
 
 RANKING_VERSION = "hybrid-product-v2"
@@ -312,7 +312,7 @@ def hybrid_product_search(
     product_ids: Collection[UUID] | None = None,
     embedder: EmbeddingProvider | None = None,
 ) -> dict[str, Any]:
-    embedder = embedder or configured_text_embedding_provider()
+    embedder = embedder or resolved_text_embedding_provider(session)
     normalized_query = normalize_text(query)
     if not normalized_query:
         raise ValueError("search query must contain searchable characters")

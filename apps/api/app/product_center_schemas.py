@@ -148,9 +148,10 @@ class SkuUpdateRequest(BaseModel):
 class PublicCatalogOfferUpsertRequest(BaseModel):
     """Merchant-owned public selling facts, intentionally separate from supplier cost."""
 
-    unit_price: Decimal = Field(ge=0)
+    unit_price: Decimal = Field(default=Decimal("0"), ge=0)
     currency: str = Field(pattern=r"^[A-Za-z]{3}$")
     tags: list[str] = Field(default_factory=list, max_length=20)
+    display_tag: str | None = Field(default=None, max_length=80)
     tag_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     publication_status: Literal["DRAFT", "PUBLISHED", "SUSPENDED"] = "DRAFT"
     valid_from: datetime | None = None
@@ -168,6 +169,14 @@ class PublicCatalogOfferUpsertRequest(BaseModel):
             return None
         normalized = str(value).strip()
         return normalized.upper() if normalized else None
+
+    @field_validator("display_tag", mode="before")
+    @classmethod
+    def normalize_display_tag(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @field_validator("tags")
     @classmethod
@@ -188,6 +197,23 @@ class PublicCatalogOfferUpsertRequest(BaseModel):
     def validate_public_validity(self) -> "PublicCatalogOfferUpsertRequest":
         if self.valid_to is not None and self.valid_from is not None and self.valid_to < self.valid_from:
             raise ValueError("valid_to must not precede valid_from")
+        if not self.tags:
+            self.display_tag = None
+            return self
+        if self.display_tag is None:
+            self.display_tag = self.tags[0]
+            return self
+        selected = next(
+            (
+                tag
+                for tag in self.tags
+                if tag.casefold() == self.display_tag.casefold()
+            ),
+            None,
+        )
+        if selected is None:
+            raise ValueError("display_tag must be one of the public offer tags")
+        self.display_tag = selected
         return self
 
 
@@ -392,4 +418,20 @@ class ProductReviewQueueItem(BaseModel):
     image_status: Literal["SOURCE"] = "SOURCE"
     fields: list[ReviewQueueField]
     applied_product_id: UUID | None = None
+
+
+class SkuBatchDeleteRequest(BaseModel):
+    sku_ids: list[UUID] = Field(min_length=1, max_length=500)
+
+
+class SkuBatchUpdateStatusRequest(BaseModel):
+    sku_ids: list[UUID] = Field(min_length=1, max_length=500)
+    status: Literal["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"]
+
+
+class SkuBatchOperationResponse(BaseModel):
+    success_count: int
+    failed_count: int
+    total_count: int
+    failed_items: list[dict[str, Any]] = Field(default_factory=list)
     applied_product_version: int | None = None

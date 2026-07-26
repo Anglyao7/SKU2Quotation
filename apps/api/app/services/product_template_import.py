@@ -12,11 +12,11 @@ from uuid import UUID, uuid4
 from zipfile import BadZipFile, ZipFile
 
 from openpyxl import load_workbook
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from ..database import SessionLocal, set_request_context
-from ..db_models import ImportJobRow
+from ..db_models import ImportJobRow, SupplierRow
 from ..file_security_models import MediaObjectRow
 from ..identity_models import TenantRow
 from ..model_mixins import utcnow
@@ -30,6 +30,7 @@ PRODUCT_TEMPLATE_HEADERS = (
     "商品名称",
     "商品分类",
     "商品型号",
+    "供应商",
     "商品价格",
     "商品描述",
     "备注",
@@ -53,6 +54,7 @@ MAX_UNIT_PRICE = Decimal("999999999999999999.99")
 MAX_TAGS = 20
 MAX_TAG_LENGTH = 80
 MAX_CATEGORY_NAME_LENGTH = 200
+MAX_SUPPLIER_NAME_LENGTH = 300
 TEMPLATE_SOURCE_KEY = SKU_TEMPLATE_SOURCE_OPTION_KEY
 TEMPLATE_SOURCE_VALUE = "PRODUCT_TEMPLATE"
 TEMPLATE_IMAGE_BUCKET = "product-template"
@@ -68,7 +70,8 @@ class ProductTemplateRow:
     name: str
     category: str
     sku_code: str
-    unit_price: Decimal | None
+    supplier_name: str | None
+    unit_price: Decimal
     description: str | None
     note: str | None
     tags: tuple[str, ...]
@@ -150,19 +153,31 @@ def _normalize_sku_code(value: object) -> str:
     return _cell_text(value).strip().upper()
 
 
+def _normalize_supplier_name(value: object, *, row_number: int) -> str | None:
+    name = " ".join(_cell_text(value).split())
+    if not name:
+        return None
+    if len(name) > MAX_SUPPLIER_NAME_LENGTH:
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的供应商名称超过 {MAX_SUPPLIER_NAME_LENGTH} 个字符，"
+            "未执行本次全量同步。"
+        )
+    return name
+
+
 def _normalize_tags(value: object, *, row_number: int) -> tuple[str, ...]:
     text = _cell_text(value)
     if not text:
         return ()
     tags: list[str] = []
     seen: set[str] = set()
-    for raw_tag in re.split(r"[,，;；、|\r\n]+", text):
+    for raw_tag in re.split(r"[,，;；、|/\r\n]+", text):
         tag = raw_tag.strip()
         if not tag:
             continue
         if len(tag) > MAX_TAG_LENGTH:
             raise ProductTemplateValidationError(
-                f"第 {row_number} 行的标签“{tag[:12]}…”超过 {MAX_TAG_LENGTH} 个字符，"
+                f"第 {row_number} 行的标签\"{tag[:12]}…\"超过 {MAX_TAG_LENGTH} 个字符，"
                 "未执行本次全量同步。"
             )
         normalized = tag.casefold()
@@ -288,6 +303,9 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
             name = _cell_text(values[0])
             category_text = _cell_text(values[1])
             sku_code = _normalize_sku_code(values[2])
+            supplier_name = _normalize_supplier_name(
+                values[3], row_number=row_number
+            )
             missing = [
                 label
                 for label, value in (
@@ -317,24 +335,20 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                 skipped_rows += 1
                 continue
 
-            unit_price: Decimal | None = None
-            if _cell_text(values[3]):
+            unit_price = Decimal("0.00")
+            if _cell_text(values[4]):
                 try:
-                    unit_price = _decimal(values[3], field="商品价格", row_number=row_number)
+                    unit_price = _decimal(values[4], field="商品价格", row_number=row_number)
                 except ProductTemplateValidationError as exc:
                     raise ProductTemplateValidationError(
                         f"{exc}未执行本次全量同步。"
                     ) from exc
-            else:
-                warnings.append(
-                    f"第 {row_number} 行缺少商品价格，商品会进入商品库但暂不发布到前台。"
-                )
 
-            note = _cell_text(values[5]) or None
-            tags = _normalize_tags(values[6], row_number=row_number)
+            note = _cell_text(values[6]) or None
+            tags = _normalize_tags(values[7], row_number=row_number)
 
             image_urls: list[str] = []
-            for image_index, value in enumerate(values[7:], start=1):
+            for image_index, value in enumerate(values[8:], start=1):
                 if not _cell_text(value):
                     continue
                 image_url = _valid_image_url(value)
@@ -353,8 +367,9 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                     name=name,
                     category=category,
                     sku_code=sku_code,
+                    supplier_name=supplier_name,
                     unit_price=unit_price,
-                    description=_cell_text(values[4]) or None,
+                    description=_cell_text(values[5]) or None,
                     note=note,
                     tags=tags,
                     default_moq=None,
@@ -387,6 +402,11 @@ def _product_code(sku_code: str) -> str:
 def _alternate_product_code(sku_code: str) -> str:
     digest = hashlib.sha256(f"PRODUCT_TEMPLATE:{sku_code}".encode("utf-8")).hexdigest()
     return f"TPLX-{digest[:48].upper()}"
+
+
+def _supplier_identity(name: str) -> tuple[str, str]:
+    digest = hashlib.sha256(name.casefold().encode("utf-8")).hexdigest().upper()
+    return f"SUP-TPL-{digest[:24]}", f"TPL-{digest[:24]}"
 
 
 def _template_option_values(
@@ -626,6 +646,68 @@ def process_product_template_import(
             for code, rows in sku_groups.items()
             if len(rows) == 1
         }
+        supplier_rows = session.scalars(
+            select(SupplierRow)
+            .where(SupplierRow.tenant_id == tenant_id)
+            .execution_options(include_deleted=True)
+        ).all()
+        suppliers_by_name: dict[str, list[SupplierRow]] = defaultdict(list)
+        suppliers_by_id = {row.id: row for row in supplier_rows}
+        suppliers_by_code = {row.supplier_code: row for row in supplier_rows}
+        for supplier_row in supplier_rows:
+            suppliers_by_name[
+                " ".join(supplier_row.name.split()).casefold()
+            ].append(supplier_row)
+
+        requested_supplier_names: dict[str, str] = {}
+        for template_row in parsed.rows:
+            if template_row.supplier_name:
+                requested_supplier_names.setdefault(
+                    template_row.supplier_name.casefold(),
+                    template_row.supplier_name,
+                )
+
+        supplier_plan: dict[str, tuple[str, SupplierRow | None]] = {}
+        for normalized_name, display_name in requested_supplier_names.items():
+            matches = suppliers_by_name.get(normalized_name, [])
+            live_matches = [row for row in matches if row.deleted_at is None]
+            if len(live_matches) > 1 or (not live_matches and len(matches) > 1):
+                return _fail_import(
+                    session,
+                    job=job,
+                    message=(
+                        f"供应商“{display_name}”在当前商家下存在多个同名记录，"
+                        "请先合并供应商后再导入。"
+                    ),
+                )
+            existing_supplier = (
+                live_matches[0]
+                if live_matches
+                else matches[0] if matches else None
+            )
+            if existing_supplier is None:
+                supplier_id, supplier_code = _supplier_identity(display_name)
+                id_collision = suppliers_by_id.get(supplier_id)
+                code_collision = suppliers_by_code.get(supplier_code)
+                if (
+                    id_collision is not None
+                    and " ".join(id_collision.name.split()).casefold()
+                    != normalized_name
+                ) or (
+                    code_collision is not None
+                    and " ".join(code_collision.name.split()).casefold()
+                    != normalized_name
+                ):
+                    return _fail_import(
+                        session,
+                        job=job,
+                        message=(
+                            f"供应商“{display_name}”的自动编码与现有供应商冲突，"
+                            "请先在供应商管理中创建该供应商。"
+                        ),
+                    )
+            supplier_plan[normalized_name] = (display_name, existing_supplier)
+
         sku_rows_by_product: dict[UUID, list[SkuRow]] = defaultdict(list)
         for sku_row in sku_rows:
             sku_rows_by_product[sku_row.product_id].append(sku_row)
@@ -716,13 +798,52 @@ def process_product_template_import(
             planned_product_by_sku[template_row.sku_code] = selected_product
             planned_product_code_by_sku[template_row.sku_code] = selected_code
 
+        suppliers_for_template: dict[str, SupplierRow] = {}
+        new_supplier_ids: set[str] = set()
+        for normalized_name, (display_name, existing_supplier) in supplier_plan.items():
+            supplier = existing_supplier
+            if supplier is None:
+                supplier_id, supplier_code = _supplier_identity(display_name)
+                supplier = SupplierRow(
+                    id=supplier_id,
+                    tenant_id=tenant_id,
+                    supplier_code=supplier_code,
+                    name=display_name,
+                    category="商品模版",
+                    category_summary="由商品模版自动创建",
+                    status="ACTIVE",
+                    risk_level="UNKNOWN",
+                    active_skus=0,
+                    health="good",
+                )
+                session.add(supplier)
+                supplier_rows.append(supplier)
+                suppliers_by_id[supplier.id] = supplier
+                suppliers_by_code[supplier.supplier_code] = supplier
+                new_supplier_ids.add(supplier.id)
+            elif supplier.deleted_at is not None:
+                supplier.deleted_at = None
+                supplier.status = "ACTIVE"
+                supplier.version += 1
+            suppliers_for_template[normalized_name] = supplier
+        if suppliers_for_template:
+            # Establish auto-created suppliers before inserting SKU rows that
+            # reference them through the tenant-scoped composite foreign key.
+            session.flush()
+
         created = 0
         updated = 0
         unchanged = 0
         dirty_product_ids: set[UUID] = set()
+        touched_supplier_ids: set[str] = set()
         runtime_warnings = list(parsed.warnings)
         for template_row in parsed.rows:
             changed = False
+            supplier = (
+                suppliers_for_template.get(template_row.supplier_name.casefold())
+                if template_row.supplier_name
+                else None
+            )
             category_parts = tuple(template_row.category.split("/"))
             parent: ProductCategoryRow | None = None
             category: ProductCategoryRow | None = None
@@ -760,6 +881,8 @@ def process_product_template_import(
             assert category is not None
 
             sku = skus.get(template_row.sku_code)
+            if sku is not None and sku.supplier_id is not None:
+                touched_supplier_ids.add(sku.supplier_id)
             product = planned_product_by_sku[template_row.sku_code]
             product_code = planned_product_code_by_sku[template_row.sku_code]
             is_new = sku is None
@@ -806,6 +929,7 @@ def process_product_template_import(
                     id=uuid4(),
                     tenant_id=tenant_id,
                     product_id=product.id,
+                    supplier_id=supplier.id if supplier is not None else None,
                     sku_code=template_row.sku_code,
                     name=template_row.name,
                     option_values=_template_option_values(template_row.note),
@@ -827,6 +951,7 @@ def process_product_template_import(
                 old_product_id = sku.product_id
                 sku_values = {
                     "product_id": product.id,
+                    "supplier_id": supplier.id if supplier is not None else None,
                     "sku_code": template_row.sku_code,
                     "name": template_row.name,
                     "option_values": _template_option_values(
@@ -851,10 +976,12 @@ def process_product_template_import(
                         if row.id != sku.id
                     ]
                     sku_rows_by_product[product.id].append(sku)
+            if supplier is not None:
+                touched_supplier_ids.add(supplier.id)
 
             offer = offers.get(sku.id)
             offer_tags = list(template_row.tags)
-            if offer is None and template_row.unit_price is not None:
+            if offer is None:
                 offer = PublicCatalogOfferRow(
                     id=uuid4(),
                     tenant_id=tenant_id,
@@ -862,17 +989,25 @@ def process_product_template_import(
                     unit_price=template_row.unit_price,
                     currency=currency,
                     tags=offer_tags,
+                    display_tag=offer_tags[0] if offer_tags else None,
                     publication_status="PUBLISHED",
                     published_at=now,
                 )
                 session.add(offer)
                 offers[sku.id] = offer
                 changed = True
-            elif offer is not None and template_row.unit_price is not None:
+            else:
                 offer_values = {
                     "unit_price": template_row.unit_price,
                     "currency": currency,
                     "tags": offer_tags,
+                    "display_tag": (
+                        offer.display_tag
+                        if offer.display_tag
+                        and offer.display_tag.casefold()
+                        in {tag.casefold() for tag in offer_tags}
+                        else offer_tags[0] if offer_tags else None
+                    ),
                     "publication_status": "PUBLISHED",
                     "deleted_at": None,
                 }
@@ -881,9 +1016,6 @@ def process_product_template_import(
                         setattr(offer, key, value)
                     offer.published_at = now
                     changed = True
-            elif offer is not None and offer.publication_status != "SUSPENDED":
-                offer.publication_status = "SUSPENDED"
-                changed = True
 
             desired_image_urls = set(template_row.image_urls)
             for old_image in template_images_by_product.get(product.id, ()):
@@ -968,6 +1100,8 @@ def process_product_template_import(
             ):
                 continue
 
+            if sku.supplier_id is not None:
+                touched_supplier_ids.add(sku.supplier_id)
             sku_was_active = sku.status != "ARCHIVED" or sku.deleted_at is not None
             if sku_was_active:
                 sku.status = "ARCHIVED"
@@ -1001,6 +1135,28 @@ def process_product_template_import(
                 product.archived_at = now
                 product.current_version += 1
                 product.updated_by = user_id
+
+        if touched_supplier_ids:
+            session.flush()
+            for supplier_id in touched_supplier_ids:
+                supplier = suppliers_by_id.get(supplier_id)
+                if supplier is None:
+                    continue
+                active_skus = int(
+                    session.scalar(
+                        select(func.count(SkuRow.id)).where(
+                            SkuRow.tenant_id == tenant_id,
+                            SkuRow.supplier_id == supplier_id,
+                            SkuRow.status == "ACTIVE",
+                            SkuRow.deleted_at.is_(None),
+                        )
+                    )
+                    or 0
+                )
+                if supplier.active_skus != active_skus:
+                    supplier.active_skus = active_skus
+                    if supplier.id not in new_supplier_ids:
+                        supplier.version += 1
 
         imported = created + updated + unchanged
         warning_summary = "；".join(runtime_warnings[:3])

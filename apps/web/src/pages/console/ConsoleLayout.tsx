@@ -14,6 +14,7 @@ import {
   SignOut,
   Sparkle,
   Storefront as StoreIcon,
+  Tag,
   Translate,
   TreeStructure,
   UserGear,
@@ -50,6 +51,7 @@ const navigationGroups = [
     items: [
       { to: "/console/products", label: "SKU 商品库", mobileLabel: "SKU", icon: Cube, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/products/categories", label: "分类管理", mobileLabel: "分类", icon: TreeStructure, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/products/tags", label: "标签管理", mobileLabel: "标签", icon: Tag, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {

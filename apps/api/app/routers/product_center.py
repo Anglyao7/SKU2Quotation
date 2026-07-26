@@ -19,6 +19,9 @@ from ..product_center_schemas import (
     PublicCatalogOfferResponse,
     PublicCatalogOfferUpsertRequest,
     SkuBatchCreateRequest,
+    SkuBatchDeleteRequest,
+    SkuBatchUpdateStatusRequest,
+    SkuBatchOperationResponse,
     SkuListPage,
     SkuResponse,
     SkuUpdateRequest,
@@ -62,7 +65,6 @@ def list_products(
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
-
 
 @router.get("/product-center/skus", response_model=SkuListPage)
 def list_skus(
@@ -359,5 +361,46 @@ def list_product_review_items(
             permissions=context.permissions,
             limit=limit,
         )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post("/skus/batch-delete", response_model=SkuBatchOperationResponse, status_code=status.HTTP_200_OK)
+def batch_delete_skus(
+    request: SkuBatchDeleteRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SkuBatchOperationResponse:
+    """批量删除 SKU"""
+    context = _context(session)
+    try:
+        result = use_cases.batch_delete_skus(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            sku_ids=request.sku_ids,
+        )
+        return SkuBatchOperationResponse(**result)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post("/skus/batch-update-status", response_model=SkuBatchOperationResponse, status_code=status.HTTP_200_OK)
+def batch_update_sku_status(
+    request: SkuBatchUpdateStatusRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SkuBatchOperationResponse:
+    """批量更新 SKU 状态"""
+    context = _context(session)
+    try:
+        result = use_cases.batch_update_sku_status(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            sku_ids=request.sku_ids,
+            status=request.status,
+        )
+        return SkuBatchOperationResponse(**result)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

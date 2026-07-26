@@ -271,6 +271,7 @@ export interface PublicCatalogOffer {
   unitPrice: number;
   currency: string;
   tags: string[];
+  displayTag?: string;
   tagColor?: string;
   publicationStatus: "DRAFT" | "PUBLISHED" | "SUSPENDED";
   publishedAt?: string;
@@ -461,6 +462,42 @@ export interface KnowledgeIndexStatus {
   embeddings?: number;
 }
 
+export type KnowledgeIndexJobStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+
+export interface KnowledgeIndexJob {
+  id: string;
+  mode: "INCREMENTAL" | "FULL_REBUILD";
+  status: KnowledgeIndexJobStatus;
+  totalProducts: number;
+  processedProducts: number;
+  failedProducts: number;
+  embeddings: number;
+  progressPercent: number;
+  currentProductId?: string;
+  currentProductName?: string;
+  modelProvider: string;
+  modelName: string;
+  modelVersion: string;
+  dimensions: number;
+  errorMessage?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface EmbeddingSettings {
+  source: "database" | "environment" | "deterministic";
+  provider: string;
+  baseUrl?: string;
+  modelName: string;
+  modelVersion: string;
+  dimensions: number;
+  timeoutSeconds: number;
+  apiKeyConfigured: boolean;
+  apiKeyHint?: string;
+  updatedAt?: string;
+}
+
 export interface InquiryItem {
   id: string;
   lineNumber: number;
@@ -627,6 +664,8 @@ export interface InventoryStockItem {
   skuName: string;
   productId: string;
   productName: string;
+  supplierId?: string;
+  supplierName?: string;
   onHandQuantity: number;
   reservedQuantity: number;
   availableQuantity: number;

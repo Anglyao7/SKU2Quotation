@@ -30,6 +30,9 @@ POSTGRESQL_MIGRATION_MANAGED_INDEXES = {
     "ix_image_embeddings_hnsw_384",
     "ix_knowledge_chunks_content_fts",
 }
+POSTGRESQL_MIGRATION_MANAGED_FOREIGN_KEYS = {
+    "fk_skus_tenant_supplier",
+}
 
 
 def include_object(
@@ -44,6 +47,12 @@ def include_object(
         and reflected
         and compare_to is None
         and name in POSTGRESQL_MIGRATION_MANAGED_INDEXES
+    ):
+        return False
+    if (
+        type_ == "foreign_key_constraint"
+        and name in POSTGRESQL_MIGRATION_MANAGED_FOREIGN_KEYS
+        and context.get_context().dialect.name == "sqlite"
     ):
         return False
     return True

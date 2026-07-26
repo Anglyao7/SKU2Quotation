@@ -233,13 +233,16 @@ def configured_text_embedding_provider(
         raise EmbeddingProviderError(
             "text embedding dimensions or timeout is invalid"
         ) from exc
-    return _configured_openai_compatible_provider(
-        values.get("TEXT_EMBEDDING_API_KEY", ""),
-        values.get("TEXT_EMBEDDING_BASE_URL", ""),
-        values.get("TEXT_EMBEDDING_MODEL", ""),
-        dimensions,
-        values.get("TEXT_EMBEDDING_MODEL_VERSION", f"1-d{dimensions}"),
-        timeout_seconds,
+    return openai_compatible_embedding_provider(
+        api_key=values.get("TEXT_EMBEDDING_API_KEY", ""),
+        base_url=values.get("TEXT_EMBEDDING_BASE_URL", ""),
+        model_name=values.get("TEXT_EMBEDDING_MODEL", ""),
+        dimensions=dimensions,
+        model_version=values.get(
+            "TEXT_EMBEDDING_MODEL_VERSION",
+            f"1-d{dimensions}",
+        ),
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -259,6 +262,27 @@ def _configured_openai_compatible_provider(
         dimensions=dimensions,
         model_version=model_version,
         timeout_seconds=timeout_seconds,
+    )
+
+
+def openai_compatible_embedding_provider(
+    *,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    dimensions: int,
+    model_version: str,
+    timeout_seconds: float,
+) -> OpenAICompatibleEmbedding:
+    """Reuse clients for identical credential and model configurations."""
+
+    return _configured_openai_compatible_provider(
+        api_key,
+        base_url,
+        model_name,
+        dimensions,
+        model_version,
+        timeout_seconds,
     )
 
 
