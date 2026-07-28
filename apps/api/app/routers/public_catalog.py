@@ -53,6 +53,7 @@ def list_public_skus(
     category: str | None = Query(default=None, max_length=200),
     tags: list[str] = Query(default=[]),
     semantic: bool = Query(default=False),
+    include_facets: bool = Query(default=True),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=24, ge=1, le=100),
     session: Session = Depends(get_session),
@@ -76,6 +77,7 @@ def list_public_skus(
             category=category,
             tags=tags,
             semantic=semantic,
+            include_facets=include_facets,
             page=page,
             page_size=page_size,
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Text, case, cast, func, or_, select
+from sqlalchemy import Text, case, cast, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..identity_models import TenantRow
@@ -85,8 +85,7 @@ def get_active_tenant(
     return session.scalar(statement)
 
 
-def list_public_catalog_rows(
-    session: Session,
+def _public_catalog_statement(
     *,
     tenant_id: UUID,
     now: datetime,
@@ -153,18 +152,195 @@ def list_public_catalog_rows(
                 func.lower(func.coalesce(ProductCategoryRow.path, "")).contains(normalized),
                 func.lower(cast(PublicCatalogOfferRow.tags, Text)).contains(normalized),
             )
-        ).order_by(
+        )
+    return statement
+
+
+def _with_catalog_tag_filters(
+    session: Session,
+    statement,
+    *,
+    tags: set[str],
+):
+    """Apply exact, case-insensitive JSON-array tag filters in both supported DBs."""
+
+    dialect = session.get_bind().dialect.name
+    for index, tag in enumerate(sorted(tags)):
+        if dialect == "postgresql":
+            tag_values = func.jsonb_array_elements_text(
+                PublicCatalogOfferRow.tags
+            ).table_valued("value").alias(f"catalog_tag_{index}")
+        else:
+            tag_values = func.json_each(
+                PublicCatalogOfferRow.tags
+            ).table_valued("key", "value").alias(f"catalog_tag_{index}")
+        statement = statement.where(
+            exists(
+                select(1)
+                .select_from(tag_values)
+                .where(func.lower(cast(tag_values.c.value, Text)) == tag)
+            )
+        )
+    return statement
+
+
+def _ordered_public_catalog_statement(statement, *, query: str):
+    normalized = query.casefold().strip()
+    if normalized:
+        return statement.order_by(
             case((func.lower(SkuRow.sku_code) == normalized, 0), else_=1),
             ProductRow.name,
             SkuRow.sku_code,
+            SkuRow.id,
         )
-    else:
-        statement = statement.order_by(
-            ProductCategoryRow.path,
-            ProductRow.name,
-            SkuRow.sku_code,
+    return statement.order_by(
+        ProductCategoryRow.path,
+        ProductRow.name,
+        SkuRow.sku_code,
+        SkuRow.id,
+    )
+
+
+def list_public_catalog_lexical_candidates(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    terms: list[str],
+    category: str | None,
+    limit: int,
+):
+    """Return a bounded OR-match corpus for degraded semantic search."""
+
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query="",
+        category=category,
+    )
+    searchable_fields = (
+        func.lower(SkuRow.sku_code),
+        func.lower(func.coalesce(SkuRow.name, "")),
+        func.lower(ProductRow.name),
+        func.lower(func.coalesce(ProductRow.description, "")),
+        func.lower(func.coalesce(ProductCategoryRow.name, "")),
+        func.lower(func.coalesce(ProductCategoryRow.path, "")),
+        func.lower(cast(PublicCatalogOfferRow.tags, Text)),
+    )
+    matches = [
+        field.contains(term)
+        for term in terms
+        if term
+        for field in searchable_fields
+    ]
+    if not matches:
+        return []
+    statement = statement.where(or_(*matches))
+    statement = _ordered_public_catalog_statement(statement, query=query)
+    return list(session.execute(statement.limit(limit)).all())
+
+
+def list_public_catalog_page(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    category: str | None,
+    tags: set[str],
+    page: int,
+    page_size: int,
+):
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        category=category,
+    )
+    statement = _with_catalog_tag_filters(session, statement, tags=tags)
+    statement = _ordered_public_catalog_statement(statement, query=query)
+    return list(
+        session.execute(
+            statement.offset((page - 1) * page_size).limit(page_size)
+        ).all()
+    )
+
+
+def count_public_catalog_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    category: str | None,
+    tags: set[str],
+) -> int:
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        category=category,
+    )
+    statement = _with_catalog_tag_filters(session, statement, tags=tags)
+    matching_ids = (
+        statement.with_only_columns(PublicCatalogOfferRow.id)
+        .order_by(None)
+        .subquery()
+    )
+    return int(
+        session.scalar(select(func.count()).select_from(matching_ids)) or 0
+    )
+
+
+def list_public_catalog_category_ids(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    category: str | None,
+) -> set[UUID]:
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        category=category,
+    )
+    statement = (
+        statement.with_only_columns(ProductRow.category_id)
+        .where(ProductRow.category_id.is_not(None))
+        .order_by(None)
+        .distinct()
+    )
+    return set(session.scalars(statement).all())
+
+
+def list_public_catalog_tags(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    category: str | None,
+) -> list[str]:
+    """Read one small JSON column at a time instead of hydrating every catalog row."""
+
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        category=category,
+    ).with_only_columns(PublicCatalogOfferRow.tags).order_by(None)
+    values: set[str] = set()
+    result = session.scalars(statement).yield_per(500)
+    for raw_tags in result:
+        values.update(
+            str(tag).strip()
+            for tag in (raw_tags or [])
+            if str(tag).strip()
         )
-    return list(session.execute(statement).all())
+    return sorted(values, key=str.casefold)
 
 
 def list_catalog_categories(
@@ -225,6 +401,25 @@ def list_public_catalog_rows_by_sku_ids(
             )
         ).all()
     )
+
+
+def list_public_catalog_rows_by_product_ids(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_ids: list[UUID],
+    now: datetime,
+    category: str | None,
+):
+    if not product_ids:
+        return []
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query="",
+        category=category,
+    ).where(ProductRow.id.in_(product_ids))
+    return list(session.execute(statement).all())
 
 
 def approved_image_map(

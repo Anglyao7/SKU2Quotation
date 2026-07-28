@@ -8,7 +8,7 @@ import unicodedata
 from uuid import UUID
 
 from pgvector.sqlalchemy import VECTOR
-from sqlalchemy import cast, func, or_, select
+from sqlalchemy import Text, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..knowledge_embedding_models import EmbeddingRow, KnowledgeChunkRow, KnowledgeDocumentRow
@@ -361,6 +361,170 @@ def hybrid_product_search(
         document_statement = document_statement.where(
             ProductRow.id.in_(allowed_product_ids)
         )
+    else:
+        allowed_product_ids = None
+
+    query_vector: list[float] | None = None
+    preselected_semantic_by_chunk: dict[UUID, float] | None = None
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        # PostgreSQL can rank vectors before ORM hydration. Keeping this candidate
+        # set bounded prevents a large catalog search from materializing every
+        # document, chunk, attribute, tag and supplier row in the API process.
+        query_vector = embedder.embed([query])[0]
+        candidate_limit = min(2_000, max(96, limit * 8))
+        vector_candidate_limit = max(64, candidate_limit * 3 // 4)
+        vector_expression = cast(
+            EmbeddingRow.embedding,
+            VECTOR(embedder.identity.dimensions),
+        )
+        distance = vector_expression.cosine_distance(query_vector).label("distance")
+        semantic_statement = (
+            select(
+                KnowledgeDocumentRow.source_entity_id,
+                KnowledgeChunkRow.id,
+                distance,
+            )
+            .select_from(EmbeddingRow)
+            .join(
+                KnowledgeChunkRow,
+                (KnowledgeChunkRow.tenant_id == EmbeddingRow.tenant_id)
+                & (KnowledgeChunkRow.id == EmbeddingRow.entity_id),
+            )
+            .join(
+                KnowledgeDocumentRow,
+                (KnowledgeDocumentRow.tenant_id == KnowledgeChunkRow.tenant_id)
+                & (KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id),
+            )
+            .join(
+                ProductRow,
+                (ProductRow.tenant_id == KnowledgeDocumentRow.tenant_id)
+                & (ProductRow.id == KnowledgeDocumentRow.source_entity_id),
+            )
+            .outerjoin(
+                ProductCategoryRow,
+                (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+                & (ProductCategoryRow.id == ProductRow.category_id)
+                & (ProductCategoryRow.status == "ACTIVE"),
+            )
+            .where(
+                EmbeddingRow.tenant_id == tenant_id,
+                EmbeddingRow.model_provider == embedder.identity.provider,
+                EmbeddingRow.model_name == embedder.identity.model_name,
+                EmbeddingRow.model_version == embedder.identity.model_version,
+                EmbeddingRow.dimensions == embedder.identity.dimensions,
+                EmbeddingRow.status == "ACTIVE",
+                KnowledgeChunkRow.status == "ACTIVE",
+                KnowledgeDocumentRow.status == "ACTIVE",
+                KnowledgeDocumentRow.source_entity_type == "PRODUCT",
+                ProductRow.status == "ACTIVE",
+                or_(
+                    ProductCategoryRow.id.is_(None),
+                    func.trim(ProductCategoryRow.name)
+                    != UNCATEGORIZED_CATEGORY_NAME,
+                ),
+            )
+            .order_by(distance)
+            .limit(vector_candidate_limit)
+        )
+        if allowed_product_ids is not None:
+            semantic_statement = semantic_statement.where(
+                ProductRow.id.in_(allowed_product_ids)
+            )
+        semantic_rows = session.execute(semantic_statement).all()
+        candidate_product_ids = set(
+            dict.fromkeys(
+                product_id
+                for product_id, _chunk_id, _distance in semantic_rows
+            )
+        )
+        preselected_semantic_by_chunk = {
+            chunk_id: max(0.0, min(1.0, 1.0 - float(value)))
+            for _product_id, chunk_id, value in semantic_rows
+        }
+
+        # Blend exact/keyword candidates with vector candidates so codes, names,
+        # descriptions and tags remain discoverable even when their vector rank
+        # falls outside the bounded semantic window.
+        query_text = unicodedata.normalize("NFKC", query).casefold().strip()
+        lexical_tokens = sorted(
+            (
+                token
+                for token in query_tokens
+                if len(token) >= 2 or token.isascii()
+            ),
+            key=lambda token: (-len(token), token),
+        )[:8]
+        lexical_needles = list(
+            dict.fromkeys([query_text, *lexical_tokens])
+        )
+        lexical_fields = (
+            func.lower(func.coalesce(ProductRow.product_code, "")),
+            func.lower(ProductRow.name),
+            func.lower(func.coalesce(ProductRow.description, "")),
+            func.lower(KnowledgeDocumentRow.title),
+            func.lower(KnowledgeChunkRow.content),
+            func.lower(cast(PublicCatalogOfferRow.tags, Text)),
+        )
+        lexical_matches = [
+            field.contains(needle)
+            for needle in lexical_needles
+            if needle
+            for field in lexical_fields
+        ]
+        if lexical_matches:
+            lexical_statement = (
+                document_statement.join(
+                    KnowledgeChunkRow,
+                    (
+                        KnowledgeChunkRow.tenant_id
+                        == KnowledgeDocumentRow.tenant_id
+                    )
+                    & (
+                        KnowledgeChunkRow.document_id
+                        == KnowledgeDocumentRow.id
+                    )
+                    & (KnowledgeChunkRow.status == "ACTIVE"),
+                )
+                .outerjoin(
+                    SkuRow,
+                    (SkuRow.tenant_id == ProductRow.tenant_id)
+                    & (SkuRow.product_id == ProductRow.id),
+                )
+                .outerjoin(
+                    PublicCatalogOfferRow,
+                    (
+                        PublicCatalogOfferRow.tenant_id
+                        == SkuRow.tenant_id
+                    )
+                    & (PublicCatalogOfferRow.sku_id == SkuRow.id),
+                )
+                .with_only_columns(ProductRow.id)
+                .where(or_(*lexical_matches))
+                .order_by(None)
+                .distinct()
+                .limit(candidate_limit)
+            )
+            for product_id in session.scalars(lexical_statement).all():
+                if len(candidate_product_ids) >= candidate_limit:
+                    break
+                candidate_product_ids.add(product_id)
+        if (
+            allowed_product_ids is not None
+            and len(allowed_product_ids) <= candidate_limit
+        ):
+            candidate_product_ids.update(allowed_product_ids)
+        if not candidate_product_ids:
+            return {
+                "query": query,
+                "ranking_version": RANKING_VERSION,
+                "model": _model_payload(embedder),
+                "degraded_channels": ["semantic"],
+                "results": [],
+            }
+        document_statement = document_statement.where(
+            ProductRow.id.in_(candidate_product_ids)
+        )
+
     document_rows = session.execute(document_statement).all()
     if not document_rows:
         return {
@@ -396,14 +560,19 @@ def hybrid_product_search(
         for tokens in searchable_tokens_by_document.values()
         for token in tokens
     )
-    query_vector = embedder.embed([query])[0]
-    semantic_by_chunk = _semantic_scores(
-        session,
-        tenant_id=tenant_id,
-        chunk_ids=[chunk.id for chunk in chunks],
-        query_vector=query_vector,
-        embedder=embedder,
-        candidate_limit=min(len(chunks), max(96, limit * 12)),
+    if query_vector is None:
+        query_vector = embedder.embed([query])[0]
+    semantic_by_chunk = (
+        preselected_semantic_by_chunk
+        if preselected_semantic_by_chunk is not None
+        else _semantic_scores(
+            session,
+            tenant_id=tenant_id,
+            chunk_ids=[chunk.id for chunk in chunks],
+            query_vector=query_vector,
+            embedder=embedder,
+            candidate_limit=min(len(chunks), max(96, limit * 12)),
+        )
     )
     product_ids = [product.id for _, product in document_rows]
     attribute_text = _attribute_texts(session, tenant_id=tenant_id, product_ids=product_ids)

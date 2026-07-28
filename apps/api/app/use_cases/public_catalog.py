@@ -143,7 +143,7 @@ def _category_path(category: object | None) -> str:
 
 
 def _ordered_category_paths(
-    rows: list[object], *, all_categories: list[object]
+    visible_category_ids: set[UUID], *, all_categories: list[object]
 ) -> list[str]:
     categories_by_id = {
         getattr(category, "id"): category
@@ -151,9 +151,10 @@ def _ordered_category_paths(
         if getattr(category, "id", None) is not None
     }
     visible_by_id = {
-        getattr(row[3], "id"): row[3]
-        for row in rows
-        if row[3] is not None and _category_path(row[3])
+        category_id: categories_by_id[category_id]
+        for category_id in visible_category_ids
+        if category_id in categories_by_id
+        and _category_path(categories_by_id[category_id])
     }
 
     def sort_key(category: object):
@@ -323,23 +324,77 @@ def _lexical_semantic_rows(rows: list[object], *, query: str) -> list[object]:
     ]
 
 
+def _bounded_public_lexical_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    query: str,
+    now: datetime,
+    category: str | None,
+) -> list[object]:
+    normalized_query = query.casefold().strip()
+    tokens = sorted(
+        (
+            token
+            for token in _retrieval_tokens(query, query=True)
+            if len(token) >= 2 or token.isascii()
+        ),
+        key=lambda token: (-len(token), token),
+    )
+    terms = list(dict.fromkeys([normalized_query, *tokens]))[:16]
+    rows = repository.list_public_catalog_lexical_candidates(
+        session,
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        terms=terms,
+        category=category,
+        limit=_positive_int_environment(
+            "PUBLIC_LEXICAL_CANDIDATE_LIMIT",
+            1_000,
+            maximum=5_000,
+        ),
+    )
+    return _lexical_semantic_rows(rows, query=query)
+
+
 def _vector_semantic_rows(
     session: Session,
     *,
     tenant_id: UUID,
-    rows: list[object],
     query: str,
+    now: datetime,
+    category: str | None,
 ) -> list[object]:
-    product_ids = list(dict.fromkeys(row[2].id for row in rows))
+    result_limit = _positive_int_environment(
+        "PUBLIC_SEMANTIC_RESULT_LIMIT",
+        200,
+        maximum=500,
+    )
     result = hybrid_product_search(
         session,
         tenant_id=tenant_id,
         query=query,
-        limit=min(len(product_ids), 200),
-        product_ids=product_ids,
+        limit=result_limit,
     )
-    if not result["results"] or "semantic" in result["degraded_channels"]:
-        return _lexical_semantic_rows(rows, query=query)
+    product_ids = [
+        item["product_id"] for item in result["results"]
+    ]
+    rows = repository.list_public_catalog_rows_by_product_ids(
+        session,
+        tenant_id=tenant_id,
+        product_ids=product_ids,
+        now=now,
+        category=category,
+    )
+    if not result["results"]:
+        return _bounded_public_lexical_rows(
+            session,
+            tenant_id=tenant_id,
+            query=query,
+            now=now,
+            category=category,
+        )
     rank_by_product_id = {
         item["product_id"]: index
         for index, item in enumerate(result["results"])
@@ -365,32 +420,89 @@ def list_public_skus(
     category: str | None,
     tags: list[str],
     semantic: bool,
+    include_facets: bool,
     page: int,
     page_size: int,
 ) -> PublicSkuPage:
     tenant, _profile = _resolve_store(session, slug=slug)
-    rows = repository.list_public_catalog_rows(
-        session,
-        tenant_id=tenant.id,
-        now=utcnow(),
-        query="" if semantic and query.strip() else query,
-        category=category,
+    now = utcnow()
+    wanted_tags = _normalize_tags(tags)
+    all_categories = repository.list_catalog_categories(
+        session, tenant_id=tenant.id
     )
+
     if semantic and query.strip():
         try:
             rows = _vector_semantic_rows(
                 session,
                 tenant_id=tenant.id,
-                rows=rows,
                 query=query,
+                now=now,
+                category=category,
             )
         except EmbeddingProviderError:
-            rows = _lexical_semantic_rows(rows, query=query)
-    all_categories = repository.list_catalog_categories(
-        session, tenant_id=tenant.id
-    )
+            rows = _bounded_public_lexical_rows(
+                session,
+                tenant_id=tenant.id,
+                query=query,
+                now=now,
+                category=category,
+            )
+        if wanted_tags:
+            rows = [
+                row
+                for row in rows
+                if wanted_tags.issubset(
+                    {
+                        str(tag).strip().casefold()
+                        for tag in (row[0].tags or [])
+                    }
+                )
+            ]
+        total = len(rows)
+        start = (page - 1) * page_size
+        selected = rows[start : start + page_size]
+    else:
+        total = repository.count_public_catalog_rows(
+            session,
+            tenant_id=tenant.id,
+            now=now,
+            query=query,
+            category=category,
+            tags=wanted_tags,
+        )
+        selected = repository.list_public_catalog_page(
+            session,
+            tenant_id=tenant.id,
+            now=now,
+            query=query,
+            category=category,
+            tags=wanted_tags,
+            page=page,
+            page_size=page_size,
+        )
+
+    if include_facets:
+        visible_category_ids = repository.list_public_catalog_category_ids(
+            session,
+            tenant_id=tenant.id,
+            now=now,
+            query="",
+            category=None,
+        )
+        facet_tags = repository.list_public_catalog_tags(
+            session,
+            tenant_id=tenant.id,
+            now=now,
+            query="",
+            category=None,
+        )
+    else:
+        visible_category_ids = set()
+        facet_tags = []
+
     categories = _ordered_category_paths(
-        rows,
+        visible_category_ids,
         all_categories=all_categories,
     )
     category_rows_by_id = {row.id: row for row in all_categories}
@@ -404,27 +516,6 @@ def list_public_skus(
         )
         for row in all_categories
     }
-    facet_tags = sorted(
-        {
-            str(tag).strip()
-            for row in rows
-            for tag in (row[0].tags or [])
-            if str(tag).strip()
-        },
-        key=str.casefold,
-    )
-    wanted_tags = _normalize_tags(tags)
-    if wanted_tags:
-        rows = [
-            row
-            for row in rows
-            if wanted_tags.issubset(
-                {str(tag).strip().casefold() for tag in (row[0].tags or [])}
-            )
-        ]
-    total = len(rows)
-    start = (page - 1) * page_size
-    selected = rows[start : start + page_size]
     images = repository.approved_image_map(
         session,
         tenant_id=tenant.id,

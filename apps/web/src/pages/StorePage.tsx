@@ -181,6 +181,7 @@ export function StorePage() {
   const requestId = useRef(0);
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
   const activeTenantRef = useRef(loadedStore.slug);
+  const facetsLoadedRef = useRef(Boolean(loadedStore.categories?.length));
   const initialLoadPageRef = useRef<number | null>(initialView?.page ?? 1);
   const pendingScrollRestoreRef = useRef<number | null>(initialView?.scrollY ?? null);
 
@@ -193,6 +194,7 @@ export function StorePage() {
     setStore(loadedStore);
     if (activeTenantRef.current === loadedStore.slug) return;
     activeTenantRef.current = loadedStore.slug;
+    facetsLoadedRef.current = Boolean(loadedStore.categories?.length);
     const nextView = readStorefrontViewState(loadedStore.slug);
     setSearch(nextView?.search ?? "");
     setDeferredSearch(nextView?.search.trim() ?? "");
@@ -225,6 +227,7 @@ export function StorePage() {
 
   const loadSkus = useCallback(async (targetPage = 1) => {
     const currentRequest = ++requestId.current;
+    const includeFacets = !facetsLoadedRef.current;
     setPage(targetPage);
     setLoading(true);
     setError("");
@@ -233,17 +236,19 @@ export function StorePage() {
         q: deferredSearch,
         category: category || undefined,
         semantic: Boolean(deferredSearch) && semantic,
+        includeFacets,
         page: targetPage,
       });
       if (currentRequest !== requestId.current) return;
+      if (includeFacets) facetsLoadedRef.current = true;
       setSkus(data.items);
       setTotal(data.total);
       setPage(data.page ?? targetPage);
       setPages(data.pages ?? Math.ceil(data.total / 24));
       setStore((current) => current ? {
         ...current,
-        categories: current.categories?.length ? current.categories : data.categories,
-        tags: current.tags?.length ? current.tags : data.tags,
+        categories: data.categories?.length ? data.categories : current.categories,
+        tags: data.tags?.length ? data.tags : current.tags,
       } : current);
     } catch (caught) {
       if (currentRequest !== requestId.current) return;

@@ -19,6 +19,7 @@ from fastapi import Response
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from sqlalchemy import MetaData, create_engine, delete, func, inspect, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 
@@ -79,6 +80,7 @@ from app.product_supplier_models import (
     SupplierScoreRow,
 )
 from app.models import PriceCalculationRequest
+from app.repositories import public_catalog_repository
 from app.saas_seed import (
     DEFAULT_MEMBERSHIP_ID,
     DEFAULT_ORGANIZATION_ID,
@@ -88,7 +90,7 @@ from app.saas_seed import (
     seed_saas_foundation,
 )
 from app.services.file_detection import OLE_SIGNATURE, detect_file_path, detect_file_type
-from app.services.embedding import validate_vectors
+from app.services.embedding import DeterministicFeatureHashEmbedding, validate_vectors
 from app.services.embedding_configuration import decrypt_api_key
 from app.services.hybrid_search import (
     _retrieval_tokens,
@@ -7281,6 +7283,107 @@ def test_public_category_facets_follow_managed_sort_order() -> None:
             for row in rows:
                 row.sort_order = originals[row.id]
             session.commit()
+
+
+def test_public_catalog_paginates_in_database_and_can_skip_facets() -> None:
+    first = client.get(
+        "/api/store/demo/skus",
+        params={
+            "page": 1,
+            "page_size": 1,
+            "include_facets": "false",
+        },
+    )
+    second = client.get(
+        "/api/store/demo/skus",
+        params={
+            "page": 2,
+            "page_size": 1,
+            "include_facets": "false",
+        },
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["total"] == second.json()["total"] == 3
+    assert first.json()["pages"] == second.json()["pages"] == 3
+    assert first.json()["categories"] == []
+    assert first.json()["tags"] == []
+    assert first.json()["items"][0]["id"] != second.json()["items"][0]["id"]
+
+
+class _EmptyCompileResult:
+    def all(self):
+        return []
+
+
+class _PostgresCompileBind:
+    dialect = type("_DialectName", (), {"name": "postgresql"})()
+
+
+class _CompileOnlyPostgresSession:
+    bind = _PostgresCompileBind()
+
+    def __init__(self) -> None:
+        self.statements = []
+
+    def get_bind(self):
+        return self.bind
+
+    def execute(self, statement):
+        statement.compile(dialect=postgresql.dialect())
+        self.statements.append(statement)
+        return _EmptyCompileResult()
+
+    def scalars(self, statement):
+        statement.compile(dialect=postgresql.dialect())
+        self.statements.append(statement)
+        return _EmptyCompileResult()
+
+
+def test_public_catalog_page_query_has_database_limit_and_offset() -> None:
+    session = _CompileOnlyPostgresSession()
+
+    public_catalog_repository.list_public_catalog_page(
+        session,
+        tenant_id=uuid4(),
+        now=datetime.now(UTC),
+        query="",
+        category=None,
+        tags={"宠物"},
+        page=400,
+        page_size=24,
+    )
+
+    assert len(session.statements) == 1
+    sql = str(
+        session.statements[0].compile(dialect=postgresql.dialect())
+    ).upper()
+    assert " LIMIT " in sql
+    assert " OFFSET " in sql
+    assert "JSONB_ARRAY_ELEMENTS_TEXT" in sql
+
+
+def test_postgres_hybrid_search_bounds_candidates_before_orm_hydration() -> None:
+    session = _CompileOnlyPostgresSession()
+
+    result = hybrid_product_search(
+        session,
+        tenant_id=uuid4(),
+        query="无线宠物饮水机",
+        limit=24,
+        embedder=DeterministicFeatureHashEmbedding(),
+    )
+
+    assert result["results"] == []
+    assert len(session.statements) == 2
+    semantic_sql, lexical_sql = (
+        str(statement.compile(dialect=postgresql.dialect())).upper()
+        for statement in session.statements
+    )
+    assert "FROM EMBEDDINGS" in semantic_sql
+    assert " LIMIT " in semantic_sql
+    assert " LIMIT " in lexical_sql
 
 
 def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:

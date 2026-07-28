@@ -186,13 +186,21 @@ export const api = {
   },
   async getStoreSkus(
     slug: string,
-    filters: { q?: string; category?: string; tags?: string[]; semantic?: boolean; page?: number } = {},
+    filters: {
+      q?: string;
+      category?: string;
+      tags?: string[];
+      semantic?: boolean;
+      includeFacets?: boolean;
+      page?: number;
+    } = {},
   ): Promise<SkuList> {
     const params = new URLSearchParams();
     if (filters.q) params.set("q", filters.q);
     if (filters.category) params.set("category", filters.category);
     if (filters.tags?.length) params.set("tags", filters.tags.join(","));
     if (filters.semantic) params.set("semantic", "true");
+    if (filters.includeFacets === false) params.set("include_facets", "false");
     params.set("page", String(filters.page || 1));
     params.set("page_size", "24");
     const query = params.toString();
