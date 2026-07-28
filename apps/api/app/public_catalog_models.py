@@ -136,6 +136,18 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
             "status",
             "created_at",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "submitted_by_membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_public_quote_drafts_tenant_submitter",
+            ondelete="SET NULL",
+        ),
+        Index(
+            "ix_public_quote_drafts_tenant_submitter_created",
+            "tenant_id",
+            "submitted_by_membership_id",
+            "created_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -146,6 +158,7 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
     status: Mapped[str] = mapped_column(
         String(30), default="PENDING_CONFIRMATION", nullable=False
     )
+    submitted_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
     customer_name: Mapped[str] = mapped_column(String(160), nullable=False)
     customer_company: Mapped[str | None] = mapped_column(String(200), nullable=True)
     customer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)

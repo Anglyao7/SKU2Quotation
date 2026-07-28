@@ -112,3 +112,16 @@ class FakeIdentityProviderAdapter:
         raise IdentityProviderError(
             "password changes are unavailable for the fake provider"
         )
+
+    def provision_password_user(
+        self,
+        *,
+        identifier: str,
+        password: str,
+        display_name: str,
+        email: str | None = None,
+    ) -> IdentityClaim:
+        del identifier, password, display_name, email
+        raise IdentityProviderError(
+            "local customer accounts are provisioned by the application"
+        )

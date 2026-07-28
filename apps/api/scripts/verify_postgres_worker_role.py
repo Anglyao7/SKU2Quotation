@@ -109,7 +109,7 @@ def verify_postgres_worker_role(owner_url: str, worker_url: str) -> dict[str, An
 
         try:
             with worker_engine.connect() as connection:
-                connection.execute(text("SELECT count(*) FROM auth_refresh_tokens"))
+                connection.execute(text("SELECT count(*) FROM local_account_credentials"))
         except DBAPIError as exc:
             assert "permission denied" in str(exc).lower()
         else:

@@ -37,6 +37,15 @@ class IdentityProviderPort(Protocol):
         new_password: str,
     ) -> None: ...
 
+    def provision_password_user(
+        self,
+        *,
+        identifier: str,
+        password: str,
+        display_name: str,
+        email: str | None = None,
+    ) -> IdentityClaim: ...
+
 
 class IdentityProviderError(ValueError):
     pass

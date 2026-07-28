@@ -68,6 +68,30 @@ PERMISSION_SEEDS = (
     PermissionSeed("system.user_manage", "system", "user_manage", "Manage tenant members"),
     PermissionSeed("system.role_manage", "system", "role_manage", "Manage tenant roles"),
     PermissionSeed("system.settings_manage", "system", "settings_manage", "Manage tenant settings"),
+    PermissionSeed(
+        "customer_portal.subaccount_manage",
+        "customer_portal",
+        "subaccount_manage",
+        "Create, suspend, and review customer subaccounts",
+    ),
+    PermissionSeed(
+        "customer_portal.access",
+        "customer_portal",
+        "access",
+        "Access the customer ordering portal",
+    ),
+    PermissionSeed(
+        "customer_portal.order_create",
+        "customer_portal",
+        "order_create",
+        "Create a customer order request from the catalog",
+    ),
+    PermissionSeed(
+        "customer_portal.order_view_self",
+        "customer_portal",
+        "order_view_self",
+        "View own customer order requests",
+    ),
 )
 
 ROLE_SEEDS = {
@@ -91,6 +115,11 @@ ROLE_SEEDS = {
     "VIEWER": {
         "product.view", "supplier.view", "customer.view", "inquiry.view",
         "quotation.view", "catalog.view", "order.view", "inventory.view",
+    },
+    "CUSTOMER_SUBACCOUNT": {
+        "customer_portal.access",
+        "customer_portal.order_create",
+        "customer_portal.order_view_self",
     },
 }
 

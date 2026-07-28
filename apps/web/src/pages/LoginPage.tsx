@@ -19,6 +19,7 @@ export function LoginPage() {
   const { locale, setLocale, t } = useLocale();
   const {
     status,
+    session,
     loginPassword,
     memberships,
     switchTenant,
@@ -31,7 +32,10 @@ export function LoginPage() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const destination = (location.state as { from?: string } | null)?.from || "/console";
+  const requestedDestination = (location.state as { from?: string } | null)?.from || "/console";
+  const destination = requestedDestination === "/console" && session?.context.defaultWorkspace === "customer_portal"
+    ? "/portal"
+    : requestedDestination;
   const visibleError = error || authError;
 
   useEffect(() => {

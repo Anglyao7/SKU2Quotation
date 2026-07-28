@@ -21,7 +21,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 
-EXPECTED_HEAD = "20260726_0036"
+EXPECTED_HEAD = "20260728_0037"
 EXPECTED_POSTGRES_MAJOR = 16
 EXPECTED_INDEXES = {
     "ix_embeddings_phase3b_hnsw_384",
@@ -168,7 +168,8 @@ def verify_postgres_rls(owner_url: str, app_url: str) -> dict[str, Any]:
             )
             connection.execute(
                 text(
-                    f"REVOKE ALL PRIVILEGES ON TABLE auth_sessions, auth_refresh_tokens "
+                    f"REVOKE ALL PRIVILEGES ON TABLE auth_sessions, auth_refresh_tokens, "
+                    f"local_account_credentials "
                     f"FROM {quoted_app_role}"
                 )
             )
@@ -324,7 +325,7 @@ def verify_postgres_rls(owner_url: str, app_url: str) -> dict[str, Any]:
 
         try:
             with app_engine.connect() as connection:
-                connection.execute(text("SELECT count(*) FROM auth_refresh_tokens"))
+                connection.execute(text("SELECT count(*) FROM local_account_credentials"))
         except DBAPIError as exc:
             assert "permission denied" in str(exc).lower()
             auth_secret_tables = "blocked"

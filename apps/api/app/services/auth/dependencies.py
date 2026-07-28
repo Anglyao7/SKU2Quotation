@@ -47,6 +47,7 @@ class RequestContext:
     permission_version: int
     permissions: frozenset[str]
     is_platform_admin: bool
+    account_scope: str = "STAFF"
 
 
 def _permission_cache_ttl_seconds() -> float:
@@ -127,6 +128,7 @@ def _test_bypass(session: Session) -> RequestContext | None:
         permission_version=1,
         permissions=permissions,
         is_platform_admin=True,
+        account_scope="STAFF",
     )
     session.info["request_context"] = context
     return context
@@ -220,6 +222,7 @@ def require_request_context(
         permission_version=membership.permission_version,
         permissions=permissions,
         is_platform_admin=bool(user.is_platform_admin),
+        account_scope=membership.account_scope,
     )
     session.info["request_context"] = context
     return context

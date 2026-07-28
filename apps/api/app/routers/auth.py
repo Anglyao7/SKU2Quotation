@@ -102,7 +102,17 @@ def _token_response(result: IssuedSession) -> AuthTokenResponse:
                     if result.tenant
                     else None
                 ),
-                default_workspace="dashboard" if result.tenant else None,
+                default_workspace=(
+                    "customer_portal"
+                    if result.membership
+                    and result.membership.account_scope == "CUSTOMER_SUBACCOUNT"
+                    else "dashboard"
+                    if result.tenant
+                    else None
+                ),
+                account_scope=(
+                    result.membership.account_scope if result.membership else None
+                ),
             ),
         )
     )

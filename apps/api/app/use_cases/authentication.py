@@ -45,7 +45,12 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
                 else "DOMESTIC"
             ),
             default_currency=tenant.default_currency.upper(),
-            default_workspace="dashboard",
+            default_workspace=(
+                "customer_portal"
+                if membership.account_scope == "CUSTOMER_SUBACCOUNT"
+                else "dashboard"
+            ),
+            account_scope=membership.account_scope,
         ),
         memberships=[
             MembershipSummary(

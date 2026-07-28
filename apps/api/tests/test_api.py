@@ -7686,25 +7686,36 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "public_quote_draft_items",
         "public_quote_download_tokens",
     }
+    customer_account_tables = {
+        "local_account_credentials",
+        "customer_account_access_events",
+    }
 
     command.upgrade(config, "20260718_0019")
     before_engine = create_engine(migration_url)
     assert public_tables.isdisjoint(inspect(before_engine).get_table_names())
+    assert customer_account_tables.isdisjoint(inspect(before_engine).get_table_names())
     before_engine.dispose()
 
     command.upgrade(config, "head")
     upgraded_engine = create_engine(migration_url)
     assert public_tables.issubset(inspect(upgraded_engine).get_table_names())
+    assert customer_account_tables.issubset(inspect(upgraded_engine).get_table_names())
+    assert "submitted_by_membership_id" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
+    }
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260726_0036"
+        ).scalar() == "20260728_0037"
     upgraded_engine.dispose()
     command.check(config)
 
     command.downgrade(config, "20260718_0019")
     downgraded_engine = create_engine(migration_url)
     assert public_tables.isdisjoint(inspect(downgraded_engine).get_table_names())
+    assert customer_account_tables.isdisjoint(inspect(downgraded_engine).get_table_names())
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)
@@ -8111,6 +8122,88 @@ def _local_access_token(test_client: TestClient, user_id: UUID) -> str:
     )
     assert switched.status_code == 200, switched.text
     return switched.json()["data"]["access_token"]
+
+
+def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An owner creates a child; the child sees only its portal and own order trail."""
+
+    suffix = uuid4().hex[:10]
+    created = client.post(
+        "/api/v1/customer-accounts",
+        json={
+            "display_name": f"Downstream Customer {suffix}",
+            "login_identifier": f"customer-{suffix}",
+            "password": f"Customer{suffix}9",
+            "email": f"customer-{suffix}@subaccount.test",
+        },
+    )
+    assert created.status_code == 201, created.text
+    account = created.json()
+    assert account["status"] == "active"
+    assert account["login_count_30d"] == 0
+
+    listing = client.get("/api/store/demo/skus", params={"page_size": 1})
+    assert listing.status_code == 200, listing.text
+    sku_id = listing.json()["items"][0]["id"]
+
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        with TestClient(app) as child_client:
+            login = child_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": f"customer-{suffix}",
+                    "password": f"Customer{suffix}9",
+                },
+            )
+            assert login.status_code == 200, login.text
+            token = login.json()["data"]["access_token"]
+            assert login.json()["data"]["context"]["account_scope"] == "CUSTOMER_SUBACCOUNT"
+            headers = {"Authorization": f"Bearer {token}"}
+
+            portal = child_client.get("/api/v1/customer-portal/overview", headers=headers)
+            assert portal.status_code == 200, portal.text
+            assert portal.json()["display_name"] == f"Downstream Customer {suffix}"
+            assert child_client.get("/api/v1/customer-accounts", headers=headers).status_code == 403
+
+            submitted = child_client.post(
+                "/api/store/demo/quotes",
+                headers=headers,
+                json={
+                    "customer_name": f"Downstream Customer {suffix}",
+                    "privacy_acknowledged": True,
+                    "items": [{"sku_id": sku_id, "quantity": 1}],
+                },
+            )
+            assert submitted.status_code == 201, submitted.text
+            quote_id = submitted.json()["id"]
+            own_orders = child_client.get("/api/v1/customer-portal/orders", headers=headers)
+            assert own_orders.status_code == 200, own_orders.text
+            assert [row["id"] for row in own_orders.json()] == [quote_id]
+
+    owner_dashboard = client.get("/api/v1/customer-accounts")
+    assert owner_dashboard.status_code == 200, owner_dashboard.text
+    owner_account = next(
+        row for row in owner_dashboard.json()["accounts"] if row["id"] == account["id"]
+    )
+    assert owner_account["login_count_30d"] >= 1
+    assert owner_account["order_count"] == 1
+    owner_orders = client.get(
+        "/api/v1/customer-accounts/orders", params={"page": 1, "page_size": 100}
+    )
+    assert owner_orders.status_code == 200, owner_orders.text
+    assert owner_orders.json()["total"] >= 1
+    assert quote_id in {row["id"] for row in owner_orders.json()["items"]}
+
+    suspended = client.patch(
+        f"/api/v1/customer-accounts/{account['id']}/status",
+        json={"status": "suspended"},
+    )
+    assert suspended.status_code == 200, suspended.text
+    assert suspended.json()["status"] == "suspended"
 
 
 def test_product_template_import_requires_edit_and_publish_permissions(

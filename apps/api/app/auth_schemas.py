@@ -101,6 +101,7 @@ class AuthContext(BaseModel):
     business_mode: Literal["DOMESTIC", "EXPORT"] | None
     default_currency: str | None
     default_workspace: str | None
+    account_scope: Literal["STAFF", "CUSTOMER_SUBACCOUNT"] | None = None
 
 
 class MembershipSummary(BaseModel):
