@@ -16,6 +16,8 @@ from ...auth_schemas import LoginRequest, PasswordChangeRequest, PasswordLoginRe
 from ...identity_models import (
     AuthRefreshTokenRow,
     AuthSessionRow,
+    CustomerAccountAccessEventRow,
+    LocalAccountCredentialRow,
     MembershipRow,
     TenantRow,
     UserRow,
@@ -28,6 +30,7 @@ from .contracts import (
     IdentityProviderPort,
 )
 from .fake_provider import FakeIdentityProviderAdapter
+from .local_credentials import normalize_local_identifier, verify_local_password
 from .oidc_provider import OidcIdentityProviderAdapter
 from .tokens import (
     ACCESS_TTL_SECONDS,
@@ -244,17 +247,25 @@ def password_login(
             "approved identity provider is not configured",
             status_code=503,
         )
-    adapter = _identity_adapter(configured_provider)
     password = request.password.get_secret_value()
     if not password or len(password) > 1024:
         raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
-    try:
-        claim = adapter.authenticate_password(
+    claim = None
+    if configured_provider == "local_fake":
+        claim = _local_customer_password_claim(
+            session,
             identifier=request.identifier,
             password=password,
         )
-    except IdentityProviderError as exc:
-        raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed") from exc
+    if claim is None:
+        adapter = _identity_adapter(configured_provider)
+        try:
+            claim = adapter.authenticate_password(
+                identifier=request.identifier,
+                password=password,
+            )
+        except IdentityProviderError as exc:
+            raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed") from exc
     return _issue_authenticated_session(
         session,
         claim=claim,
@@ -262,6 +273,44 @@ def password_login(
         device_label=request.device_label,
         user_agent=user_agent,
         ip_address=ip_address,
+    )
+
+
+def _local_customer_password_claim(
+    session: Session,
+    *,
+    identifier: str,
+    password: str,
+) -> IdentityClaim | None:
+    """Authenticate a child account in the local demo without touching env secrets."""
+
+    normalized_identifier = normalize_local_identifier(identifier)
+    credential = session.scalar(
+        select(LocalAccountCredentialRow).where(
+            LocalAccountCredentialRow.identifier_normalized == normalized_identifier
+        )
+    )
+    if credential is None:
+        return None
+    if not verify_local_password(
+        password=password,
+        salt=credential.password_salt,
+        password_hash=credential.password_hash,
+    ):
+        raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
+    user = session.get(UserRow, credential.user_id)
+    if (
+        user is None
+        or user.status != "active"
+        or user.identity_provider != "local-subaccount"
+    ):
+        raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
+    return IdentityClaim(
+        provider=user.identity_provider,
+        subject=user.identity_subject,
+        email_normalized=user.email_normalized,
+        email_verified=bool(user.email_normalized),
+        display_name=user.display_name,
     )
 
 
@@ -416,11 +465,6 @@ def _issue_authenticated_session(
     user_agent: str | None,
     ip_address: str | None,
 ) -> IssuedSession:
-    if provider == "enterprise_oidc" and (
-        not claim.email_verified or not claim.email_normalized
-    ):
-        raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
-
     user = session.scalar(
         select(UserRow).where(
             UserRow.identity_provider == claim.provider,
@@ -428,9 +472,29 @@ def _issue_authenticated_session(
         )
     )
     if user is None and provider == "enterprise_oidc":
+        # Unrecognised enterprise identities must still pass the invitation
+        # contract. Customer subaccounts are pre-provisioned and can use an
+        # account or phone-style identifier without a verified email claim.
+        if not claim.email_verified or not claim.email_normalized:
+            raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
         user = _activate_verified_invitation(session, claim=claim)
     if user is None or user.status != "active":
         raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
+    if provider == "enterprise_oidc" and (
+        not claim.email_verified or not claim.email_normalized
+    ):
+        # Keep the verified-email requirement for the normal workforce login
+        # path. Only a pre-provisioned restricted customer subaccount is
+        # intentionally allowed to authenticate by an account/phone identity.
+        customer_membership = session.scalar(
+            select(MembershipRow.id).where(
+                MembershipRow.user_id == user.id,
+                MembershipRow.status == "active",
+                MembershipRow.account_scope == "CUSTOMER_SUBACCOUNT",
+            )
+        )
+        if customer_membership is None:
+            raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
 
     memberships = _active_memberships(session, user.id)
     if not memberships:
@@ -487,6 +551,15 @@ def _issue_authenticated_session(
             raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
     else:
         user.last_login_at = now
+    if membership is not None and membership.account_scope == "CUSTOMER_SUBACCOUNT":
+        session.add(
+            CustomerAccountAccessEventRow(
+                tenant_id=membership.tenant_id,
+                membership_id=membership.id,
+                event_type="LOGIN",
+                occurred_at=now,
+            )
+        )
     access_token, _ = create_access_token(
         user_id=user.id,
         session_id=auth_session.id,

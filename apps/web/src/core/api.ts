@@ -2,6 +2,12 @@ import type {
   AttributeDefinition,
   AuthTokenData,
   CoreProduct,
+  CustomerPortalOrder,
+  CustomerPortalOverview,
+  CustomerSubaccount,
+  CustomerSubaccountDashboard,
+  CustomerSubaccountOrder,
+  CustomerSubaccountOrderPage,
   CurrentUser,
   DashboardSnapshot,
   EmbeddingSettings,
@@ -116,6 +122,7 @@ interface ApiAuthTokenData {
     business_mode?: "DOMESTIC" | "EXPORT" | null;
     default_currency?: string | null;
     default_workspace?: string | null;
+    account_scope?: "STAFF" | "CUSTOMER_SUBACCOUNT" | null;
   };
 }
 
@@ -149,6 +156,7 @@ function mapAuthData(row: ApiAuthTokenData): AuthTokenData {
       businessMode: defined(row.context.business_mode),
       defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
+      accountScope: defined(row.context.account_scope),
     },
   };
 }
@@ -311,6 +319,7 @@ function mapCurrentUser(row: ApiCurrentUserResponse): CurrentUser {
       businessMode: defined(row.context.business_mode),
       defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
+      accountScope: defined(row.context.account_scope),
     },
     memberships: row.memberships.map(mapMembership),
   };
@@ -490,6 +499,172 @@ export async function updateTenantMemberRoles(
   return mapTenantMember(await request<ApiTenantMember>(`/access-control/members/${membershipId}/roles`, {
     method: "PUT",
     body: JSON.stringify({ role_ids: roleIds }),
+  }));
+}
+
+interface ApiCustomerSubaccount {
+  id: string;
+  user_id: string;
+  display_name: string;
+  login_identifier: string;
+  email?: string | null;
+  status: string;
+  created_at: string;
+  last_login_at?: string | null;
+  login_count_30d: number;
+  order_count: number;
+  last_order_at?: string | null;
+}
+
+interface ApiCustomerSubaccountOrder {
+  id: string;
+  quote_number: string;
+  status: string;
+  submitted_by_membership_id: string;
+  submitted_by_name: string;
+  customer_name: string;
+  customer_company?: string | null;
+  currency: string;
+  total_amount: number;
+  created_at: string;
+  valid_until: string;
+}
+
+function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    displayName: row.display_name,
+    loginIdentifier: row.login_identifier,
+    email: defined(row.email),
+    status: row.status,
+    createdAt: row.created_at,
+    lastLoginAt: defined(row.last_login_at),
+    loginCount30d: Number(row.login_count_30d || 0),
+    orderCount: Number(row.order_count || 0),
+    lastOrderAt: defined(row.last_order_at),
+  };
+}
+
+function mapCustomerSubaccountOrder(row: ApiCustomerSubaccountOrder): CustomerSubaccountOrder {
+  return {
+    id: row.id,
+    quoteNumber: row.quote_number,
+    status: row.status,
+    submittedByMembershipId: row.submitted_by_membership_id,
+    submittedByName: row.submitted_by_name,
+    customerName: row.customer_name,
+    customerCompany: defined(row.customer_company),
+    currency: row.currency,
+    totalAmount: Number(row.total_amount),
+    createdAt: row.created_at,
+    validUntil: row.valid_until,
+  };
+}
+
+export async function getCustomerSubaccountDashboard(): Promise<CustomerSubaccountDashboard> {
+  const row = await request<{
+    accounts: ApiCustomerSubaccount[];
+    active_count: number;
+    suspended_count: number;
+    order_count: number;
+  }>("/customer-accounts");
+  return {
+    accounts: row.accounts.map(mapCustomerSubaccount),
+    activeCount: Number(row.active_count || 0),
+    suspendedCount: Number(row.suspended_count || 0),
+    orderCount: Number(row.order_count || 0),
+  };
+}
+
+export async function listCustomerSubaccountOrders(
+  page = 1,
+  pageSize = 20,
+): Promise<CustomerSubaccountOrderPage> {
+  const row = await request<{
+    items: ApiCustomerSubaccountOrder[];
+    total: number;
+    page: number;
+    page_size: number;
+  }>(`/customer-accounts/orders?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`);
+  return {
+    items: row.items.map(mapCustomerSubaccountOrder),
+    total: Number(row.total || 0),
+    page: Number(row.page || page),
+    pageSize: Number(row.page_size || pageSize),
+  };
+}
+
+export async function createCustomerSubaccount(input: {
+  displayName: string;
+  loginIdentifier: string;
+  password: string;
+  email?: string;
+}): Promise<CustomerSubaccount> {
+  const row = await request<ApiCustomerSubaccount>("/customer-accounts", {
+    method: "POST",
+    body: JSON.stringify({
+      display_name: input.displayName,
+      login_identifier: input.loginIdentifier,
+      password: input.password,
+      email: input.email || null,
+    }),
+  });
+  return mapCustomerSubaccount(row);
+}
+
+export async function updateCustomerSubaccountStatus(
+  membershipId: string,
+  status: "active" | "suspended",
+): Promise<CustomerSubaccount> {
+  const row = await request<ApiCustomerSubaccount>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/status`,
+    { method: "PATCH", body: JSON.stringify({ status }) },
+  );
+  return mapCustomerSubaccount(row);
+}
+
+export async function getCustomerPortalOverview(): Promise<CustomerPortalOverview> {
+  const row = await request<{
+    display_name: string;
+    tenant_name: string;
+    tenant_slug: string;
+    account_status: string;
+    order_count: number;
+    last_order_at?: string | null;
+  }>("/customer-portal/overview");
+  return {
+    displayName: row.display_name,
+    tenantName: row.tenant_name,
+    tenantSlug: row.tenant_slug,
+    accountStatus: row.account_status,
+    orderCount: Number(row.order_count || 0),
+    lastOrderAt: defined(row.last_order_at),
+  };
+}
+
+export async function listCustomerPortalOrders(): Promise<CustomerPortalOrder[]> {
+  const rows = await request<Array<{
+    id: string;
+    quote_number: string;
+    status: string;
+    customer_name: string;
+    customer_company?: string | null;
+    currency: string;
+    total_amount: number;
+    created_at: string;
+    valid_until: string;
+  }>>("/customer-portal/orders");
+  return rows.map((row) => ({
+    id: row.id,
+    quoteNumber: row.quote_number,
+    status: row.status,
+    customerName: row.customer_name,
+    customerCompany: defined(row.customer_company),
+    currency: row.currency,
+    totalAmount: Number(row.total_amount),
+    createdAt: row.created_at,
+    validUntil: row.valid_until,
   }));
 }
 

@@ -12,7 +12,11 @@ from psycopg import sql
 from .bootstrap_postgres_roles import _psycopg_url, validated_role_name
 
 
-AUTH_SECRET_TABLES = {"auth_refresh_tokens", "auth_sessions"}
+AUTH_SECRET_TABLES = {
+    "auth_refresh_tokens",
+    "auth_sessions",
+    "local_account_credentials",
+}
 MIGRATION_METADATA_TABLES = {"alembic_version"}
 AUTH_TABLE_GRANTS: dict[str, tuple[str, ...]] = {
     "users": ("SELECT",),
@@ -20,6 +24,9 @@ AUTH_TABLE_GRANTS: dict[str, tuple[str, ...]] = {
     "memberships": ("SELECT",),
     "auth_sessions": ("SELECT", "INSERT", "UPDATE", "DELETE"),
     "auth_refresh_tokens": ("SELECT", "INSERT", "UPDATE", "DELETE"),
+    # Development-only credential hashes stay on the identity connection and
+    # are never readable by the business application role.
+    "local_account_credentials": ("SELECT", "INSERT", "UPDATE", "DELETE"),
 }
 WORKER_TABLES = {
     "worker_jobs",

@@ -38,6 +38,8 @@ const PermissionsPage = lazy(() => import("./core/pages/PermissionsPage").then((
 const ProductsPage = lazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = lazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
 const TagManagementPage = lazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
+const CustomerAccountsPage = lazy(() => import("./core/pages/CustomerAccountsPage").then((module) => ({ default: module.CustomerAccountsPage })));
+const CustomerPortalPage = lazy(() => import("./pages/CustomerPortalPage").then((module) => ({ default: module.CustomerPortalPage })));
 
 function ProtectedRoute() {
   const { status } = useCoreAuth();
@@ -45,6 +47,22 @@ function ProtectedRoute() {
   const location = useLocation();
   if (status === "restoring") return <div className="route-loading"><Spinner size="3" /><span>{t("正在恢复安全会话")}</span></div>;
   if (status !== "authenticated") return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  return <Outlet />;
+}
+
+function StaffConsoleRoute() {
+  const { profile } = useCoreAuth();
+  if (profile?.context.accountScope === "CUSTOMER_SUBACCOUNT") {
+    return <Navigate to="/portal" replace />;
+  }
+  return <Outlet />;
+}
+
+function CustomerPortalRoute() {
+  const { profile } = useCoreAuth();
+  if (profile?.context.accountScope !== "CUSTOMER_SUBACCOUNT") {
+    return <Navigate to="/console" replace />;
+  }
   return <Outlet />;
 }
 
@@ -121,6 +139,8 @@ const router = createBrowserRouter([
   {
     element: <ProtectedRoute />,
     children: [{
+      element: <StaffConsoleRoute />,
+      children: [{
       path: "/console",
       element: <ConsoleLayout />,
       children: [
@@ -136,6 +156,7 @@ const router = createBrowserRouter([
         { path: "suppliers", element: <Navigate to="/console/products" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
+        { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "system/permissions", element: <PermissionsPage /> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
@@ -143,6 +164,10 @@ const router = createBrowserRouter([
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },
         { path: "tenants", element: <PlatformAdminGate><TenantManagementPage /></PlatformAdminGate> },
       ],
+      }],
+    }, {
+      element: <CustomerPortalRoute />,
+      children: [{ path: "/portal", element: <CustomerPortalPage /> }],
     }],
   },
   { path: "/dashboard", element: <Navigate to="/console" replace /> },

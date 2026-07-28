@@ -150,6 +150,8 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
               tenantSlug: profile.context.tenantSlug,
               businessMode: profile.context.businessMode,
               defaultCurrency: profile.context.defaultCurrency,
+              defaultWorkspace: profile.context.defaultWorkspace,
+              accountScope: profile.context.accountScope,
             },
           }
         : current.session,

@@ -27,7 +27,11 @@ def list_roles(session: Session, *, tenant_id: UUID) -> list[RoleRow]:
     return list(
         session.scalars(
             select(RoleRow)
-            .where(RoleRow.tenant_id == tenant_id, RoleRow.status == "active")
+            .where(
+                RoleRow.tenant_id == tenant_id,
+                RoleRow.status == "active",
+                RoleRow.code != "CUSTOMER_SUBACCOUNT",
+            )
             .order_by(RoleRow.is_system.desc(), RoleRow.code)
         ).all()
     )
@@ -86,6 +90,7 @@ def role_member_counts(
         .where(
             MembershipRoleRow.tenant_id == tenant_id,
             MembershipRow.status.in_(("active", "invited")),
+            MembershipRow.account_scope == "STAFF",
         )
         .group_by(MembershipRoleRow.role_id)
     ).all()
@@ -102,6 +107,7 @@ def list_members(
             .where(
                 MembershipRow.tenant_id == tenant_id,
                 MembershipRow.status.in_(("active", "invited", "suspended")),
+                MembershipRow.account_scope == "STAFF",
             )
             .order_by(MembershipRow.status, UserRow.display_name, MembershipRow.id)
         ).all()
@@ -117,6 +123,7 @@ def get_member(
         .where(
             MembershipRow.tenant_id == tenant_id,
             MembershipRow.id == membership_id,
+            MembershipRow.account_scope == "STAFF",
         )
     ).one_or_none()
 
@@ -155,6 +162,7 @@ def get_membership_for_update(
             MembershipRow.tenant_id == tenant_id,
             MembershipRow.id == membership_id,
             MembershipRow.status.in_(("active", "invited")),
+            MembershipRow.account_scope == "STAFF",
         )
         .with_for_update()
     )
@@ -171,6 +179,7 @@ def get_roles_by_ids(
                 RoleRow.tenant_id == tenant_id,
                 RoleRow.id.in_(role_ids),
                 RoleRow.status == "active",
+                RoleRow.code != "CUSTOMER_SUBACCOUNT",
             )
         ).all()
     )

@@ -18,6 +18,7 @@ import {
   Translate,
   TreeStructure,
   UserGear,
+  UsersThree,
   Warehouse,
 } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
@@ -76,6 +77,7 @@ const navigationGroups = [
   {
     label: "设置",
     items: [
+      { to: "/console/customer-accounts", label: "子账号管理", mobileLabel: "子账号", icon: UsersThree, permissions: ["customer_portal.subaccount_manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/system/permissions", label: "成员与权限", mobileLabel: "权限", icon: Key, permissions: ["system.user_manage", "system.role_manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },

@@ -17,6 +17,7 @@ export interface AuthWorkspaceContext {
   businessMode?: BusinessMode;
   defaultCurrency?: string;
   defaultWorkspace?: string;
+  accountScope?: "STAFF" | "CUSTOMER_SUBACCOUNT";
 }
 
 export interface MembershipSummary {
@@ -95,6 +96,69 @@ export interface TenantMember {
   roles: TenantMemberRole[];
   joinedAt?: string;
   createdAt: string;
+}
+
+export interface CustomerSubaccount {
+  id: string;
+  userId: string;
+  displayName: string;
+  loginIdentifier: string;
+  email?: string;
+  status: "active" | "suspended" | string;
+  createdAt: string;
+  lastLoginAt?: string;
+  loginCount30d: number;
+  orderCount: number;
+  lastOrderAt?: string;
+}
+
+export interface CustomerSubaccountOrder {
+  id: string;
+  quoteNumber: string;
+  status: string;
+  submittedByMembershipId: string;
+  submittedByName: string;
+  customerName: string;
+  customerCompany?: string;
+  currency: string;
+  totalAmount: number;
+  createdAt: string;
+  validUntil: string;
+}
+
+export interface CustomerSubaccountDashboard {
+  accounts: CustomerSubaccount[];
+  activeCount: number;
+  suspendedCount: number;
+  orderCount: number;
+}
+
+export interface CustomerSubaccountOrderPage {
+  items: CustomerSubaccountOrder[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface CustomerPortalOverview {
+  displayName: string;
+  tenantName: string;
+  tenantSlug: string;
+  accountStatus: string;
+  orderCount: number;
+  lastOrderAt?: string;
+}
+
+export interface CustomerPortalOrder {
+  id: string;
+  quoteNumber: string;
+  status: string;
+  customerName: string;
+  customerCompany?: string;
+  currency: string;
+  totalAmount: number;
+  createdAt: string;
+  validUntil: string;
 }
 
 export type ImportJobStatus = "scanning" | "parsing" | "needs_review" | "published" | "failed";

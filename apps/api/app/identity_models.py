@@ -79,15 +79,41 @@ class MembershipRow(AuditTimestampMixin, Base):
     __tablename__ = "memberships"
     __table_args__ = (
         CheckConstraint("status IN ('invited', 'active', 'suspended', 'removed')", name="status_allowed"),
+        CheckConstraint(
+            "account_scope IN ('STAFF', 'CUSTOMER_SUBACCOUNT')",
+            name="account_scope_allowed",
+        ),
         UniqueConstraint("tenant_id", "user_id", name="tenant_user"),
         UniqueConstraint("tenant_id", "id", name="uq_memberships_tenant_identity"),
+        UniqueConstraint(
+            "tenant_id",
+            "login_identifier",
+            name="uq_memberships_tenant_login_identifier",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "parent_membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_memberships_tenant_parent_membership",
+            ondelete="RESTRICT",
+        ),
         Index("ix_memberships_tenant_status", "tenant_id", "status"),
+        Index(
+            "ix_memberships_tenant_parent_scope",
+            "tenant_id",
+            "parent_membership_id",
+            "account_scope",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     job_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    account_scope: Mapped[str] = mapped_column(
+        String(30), default="STAFF", nullable=False, index=True
+    )
+    parent_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    login_identifier: Mapped[str | None] = mapped_column(String(320), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="invited", nullable=False)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     permission_version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
@@ -99,6 +125,61 @@ class MembershipRow(AuditTimestampMixin, Base):
     )
     auth_sessions: Mapped[list["AuthSessionRow"]] = relationship(
         back_populates="active_membership"
+    )
+
+
+class LocalAccountCredentialRow(AuditTimestampMixin, Base):
+    """Locally managed password material used only by the development profile.
+
+    Production credentials remain in the configured identity provider.  Keeping
+    this small local-only table lets created customer subaccounts work in the
+    demo without weakening the fixed local owner account.
+    """
+
+    __tablename__ = "local_account_credentials"
+    __table_args__ = (
+        UniqueConstraint("identifier_normalized", name="uq_local_account_credentials_identifier"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    identifier_normalized: Mapped[str] = mapped_column(String(320), nullable=False)
+    password_salt: Mapped[str] = mapped_column(String(128), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+
+
+class CustomerAccountAccessEventRow(Base):
+    """Append-only activity facts for customer portal subaccounts."""
+
+    __tablename__ = "customer_account_access_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('LOGIN', 'ORDER_SUBMITTED')",
+            name="event_type_allowed",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_customer_account_access_events_tenant_membership",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_customer_account_access_events_tenant_membership_occurred",
+            "tenant_id",
+            "membership_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    membership_id: Mapped[UUID] = mapped_column(nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
     )
 
 

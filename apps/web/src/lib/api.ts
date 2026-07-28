@@ -212,7 +212,7 @@ export const api = {
     normalizeQuote(await request<Quote>(`/api/store/${encodeURIComponent(slug)}/quotes`, {
       method: "POST",
       body: JSON.stringify(payload),
-    })),
+    }, Boolean(getCoreAccessToken()))),
   downloadStoreQuote: (quoteId: string, type: "pdf" | "xlsx", token?: string | null) =>
     download(
       `/api/quotes/${encodeURIComponent(quoteId)}/${type}`,

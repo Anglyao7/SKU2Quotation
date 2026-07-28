@@ -48,6 +48,9 @@ Web 认证壳层使用内存 Access Token、HttpOnly Refresh Cookie 和 Session-
 - `POST /api/v1/auth/tenant-context`
 - `GET /api/v1/me`
 - `GET /api/v1/me/permissions`
+- `GET|POST|PATCH /api/v1/customer-accounts...`（商家主账号管理下游客户子账号）
+- `GET /api/v1/customer-portal/overview`
+- `GET /api/v1/customer-portal/orders`
 
 本地默认使用 `var/mercator.db`。SQLite 在启动时自动执行 Alembic migration，并创建幂等 local demo tenant、Owner/RBAC 和原有 demo suppliers。
 
@@ -164,6 +167,8 @@ $env:RABBITMQ_URL='amqp://user:password@rabbitmq:5672/%2F'
 - `GET /api/v1/me/permissions`
 
 生产不保存本地密码；浏览器通过同源 HTTPS 提交账号标识和密码，FastAPI 仅将凭据转交 Keycloak Direct Grant 校验，并验证返回令牌的签名、issuer、audience、subject 与已验证邮箱。自助改密还要求当前 Access Token、Session CSRF Token 和当前密码；新密码统一要求 8-128 位、至少一个英文字母和一个数字、不含空白，并且不能与当前密码或账号标识相同，符号允许但不强制。Keycloak confidential client 的 service account 仅授予 `realm-management/manage-users`，只按已验证 subject 执行用户会话注销与密码更新。成功后当前应用 Session 保留，其他应用 Session 与 Refresh Token 会被撤销。仓库中的 `local_fake` Adapter 只允许非生产 profile。Refresh Token 仅写 Secure/HttpOnly/SameSite Cookie，数据库只存 HMAC hash；Access Token 每次请求仍需回查 Session、ACTIVE Membership、Tenant 与 permission version。客户端提交的 tenant header 不作为授权根。
+
+商家主账号可在“子账号管理”开通自己的下游客户账号。生产环境由同一个 Keycloak service account 创建密码身份；这类身份可使用账号、邮箱或手机号登录，不会获得商家控制台权限，只能进入客户门户、浏览商品并提交自己的报价订单申请。主账号只能读取其直接子账号的访问统计和订单，不能编辑订单内容；订单仍以提交账号自动归属。由于子账号可能没有经过邮箱验证，服务端仅对已预先绑定 `CUSTOMER_SUBACCOUNT` 受限成员关系的身份放行此登录路径，普通商家成员仍必须满足已验证邮箱的既有规则。
 
 平台管理员先在“商家管理 → 邀请成员”登记邮箱和租户角色，再由受信任运维人员在生产服务器执行：
 

@@ -23,6 +23,7 @@ from .routers.system import router as system_router
 from .routers.tags import router as tags_router
 from .routers.trade_flow import router as trade_flow_router
 from .routers.public_catalog import router as public_catalog_router
+from .routers.customer_accounts import router as customer_accounts_router
 from .routers.workspace import router as workspace_router
 from .runtime_config import cors_origins, validate_startup_configuration
 from .saas_seed import demo_seed_enabled, seed_saas_foundation
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
         image_intelligence_router,
         trade_flow_router,
         public_catalog_router,
+        customer_accounts_router,
         workspace_router,
         knowledge_search_router,
         system_router,

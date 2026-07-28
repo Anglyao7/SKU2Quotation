@@ -454,22 +454,27 @@ class OidcIdentityProviderAdapter:
         effective = {**claims, **(userinfo or {})}
         email = effective.get("email")
         email_verified = effective.get("email_verified") is True
-        if not isinstance(email, str) or not email_verified:
-            raise IdentityProviderError("OIDC verified email is required")
-        normalized_email = email.strip().lower()
-        if not normalized_email or len(normalized_email) > 320 or "@" not in normalized_email:
-            raise IdentityProviderError("OIDC email claim is invalid")
+        normalized_email: str | None = None
+        if isinstance(email, str) and email_verified:
+            candidate_email = email.strip().lower()
+            if not candidate_email or len(candidate_email) > 320 or "@" not in candidate_email:
+                raise IdentityProviderError("OIDC email claim is invalid")
+            normalized_email = candidate_email
         subject = claims.get("sub")
         if not isinstance(subject, str) or not subject or len(subject) > 255:
             raise IdentityProviderError("OIDC subject is invalid")
         display_name = effective.get("name")
         if not isinstance(display_name, str) or not display_name.strip():
-            display_name = normalized_email.split("@", 1)[0]
+            display_name = (
+                normalized_email.split("@", 1)[0]
+                if normalized_email
+                else subject
+            )
         return IdentityClaim(
             provider=oidc_provider_key(settings.issuer),
             subject=subject,
             email_normalized=normalized_email,
-            email_verified=True,
+            email_verified=email_verified and normalized_email is not None,
             display_name=display_name.strip()[:120],
         )
 
@@ -713,6 +718,97 @@ class OidcIdentityProviderAdapter:
             raise
         except httpx.HTTPError as exc:
             raise IdentityProviderError("password change failed") from exc
+
+    def provision_password_user(
+        self,
+        *,
+        identifier: str,
+        password: str,
+        display_name: str,
+        email: str | None = None,
+    ) -> IdentityClaim:
+        """Create a password identity through Keycloak's admin API.
+
+        This is intentionally separate from invitation activation: these
+        identities are created by a tenant's authorised main account and are
+        already bound to a restricted customer-portal membership.
+        """
+
+        normalized_identifier = identifier.strip()
+        normalized_display_name = display_name.strip()
+        normalized_email = email.strip().lower() if email else None
+        if (
+            not normalized_identifier
+            or len(normalized_identifier) > 320
+            or not normalized_display_name
+            or len(normalized_display_name) > 120
+            or not password
+            or len(password) > 128
+        ):
+            raise IdentityProviderError("customer account provisioning failed")
+        if normalized_email and (
+            len(normalized_email) > 320 or "@" not in normalized_email
+        ):
+            raise IdentityProviderError("customer account provisioning failed")
+        settings = load_oidc_settings()
+        discovery = get_oidc_discovery(
+            settings.issuer,
+            settings.timeout_seconds,
+            settings.allowed_endpoint_hosts,
+        )
+        admin_realm_url = self._keycloak_admin_realm_url(settings)
+        access_token = self._service_access_token(
+            settings=settings,
+            discovery=discovery,
+        )
+        payload: dict[str, object] = {
+            "username": normalized_identifier,
+            "enabled": True,
+            "firstName": normalized_display_name,
+            "requiredActions": [],
+            "credentials": [
+                {
+                    "type": "password",
+                    "temporary": False,
+                    "value": password,
+                }
+            ],
+        }
+        if normalized_email:
+            payload["email"] = normalized_email
+            # The primary account may record a contact email, but ownership
+            # verification remains an identity-provider concern.
+            payload["emailVerified"] = False
+        try:
+            response = httpx.post(
+                f"{admin_realm_url}/users",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                },
+                json=payload,
+                timeout=settings.timeout_seconds,
+                follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            raise IdentityProviderError("customer account provisioning failed") from exc
+        if response.status_code == 409:
+            raise IdentityProviderError("customer account identifier is already in use")
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise IdentityProviderError("customer account provisioning failed") from exc
+        location = response.headers.get("Location", "")
+        subject = location.rstrip("/").rsplit("/", 1)[-1]
+        if not subject or len(subject) > 255 or "/" in subject:
+            raise IdentityProviderError("customer account provisioning failed")
+        return IdentityClaim(
+            provider=oidc_provider_key(settings.issuer),
+            subject=subject,
+            email_normalized=normalized_email,
+            email_verified=False,
+            display_name=normalized_display_name,
+        )
 
     @staticmethod
     def _verify_id_token(

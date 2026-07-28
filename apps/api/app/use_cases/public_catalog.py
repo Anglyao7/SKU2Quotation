@@ -12,8 +12,9 @@ from uuid import UUID, uuid4
 from sqlalchemy.orm import Session
 
 from ..adapters.object_storage import get_object_storage
-from ..database import set_public_tenant_context
+from ..database import set_public_tenant_context, set_request_context
 from ..domain.errors import ApplicationError
+from ..identity_models import CustomerAccountAccessEventRow
 from ..model_mixins import utcnow
 from ..public_catalog_models import (
     PublicQuoteDownloadTokenRow,
@@ -506,9 +507,31 @@ def _draft_response(
 
 
 def create_public_quote_draft(
-    session: Session, *, slug: str, request: PublicQuoteDraftCreate
+    session: Session,
+    *,
+    slug: str,
+    request: PublicQuoteDraftCreate,
+    submitted_by_membership_id: UUID | None = None,
+    submitted_by_tenant_id: UUID | None = None,
+    submitted_by_user_id: UUID | None = None,
 ) -> PublicQuoteDraftResponse:
     tenant, _profile = _resolve_store(session, slug=slug)
+    if submitted_by_membership_id is not None:
+        if (
+            submitted_by_tenant_id != tenant.id
+            or submitted_by_user_id is None
+        ):
+            raise ApplicationError(
+                "PUBLIC_CUSTOMER_ACCOUNT_CONTEXT_INVALID",
+                "Customer account context is invalid.",
+                kind="forbidden",
+            )
+        set_request_context(
+            session,
+            organization_id=tenant.organization_id,
+            tenant_id=tenant.id,
+            user_id=submitted_by_user_id,
+        )
     now = utcnow()
     draft_id = uuid4()
     sku_ids = [item.sku_id for item in request.items]
@@ -628,6 +651,7 @@ def create_public_quote_draft(
         tenant_id=tenant.id,
         request_number=request_number,
         status="PENDING_CONFIRMATION",
+        submitted_by_membership_id=submitted_by_membership_id,
         customer_name=request.customer_name,
         customer_company=request.customer_company,
         customer_email=request.customer_email,
@@ -661,6 +685,15 @@ def create_public_quote_draft(
     repository.add_quote_draft(
         session, draft=draft, items=item_rows, token=token_row
     )
+    if submitted_by_membership_id is not None:
+        session.add(
+            CustomerAccountAccessEventRow(
+                tenant_id=tenant.id,
+                membership_id=submitted_by_membership_id,
+                event_type="ORDER_SUBMITTED",
+                occurred_at=now,
+            )
+        )
     response = _draft_response(
         draft,
         item_rows,

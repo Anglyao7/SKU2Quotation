@@ -22,6 +22,8 @@ from .database import Base
 from .identity_models import (  # noqa: F401
     AuthRefreshTokenRow,
     AuthSessionRow,
+    CustomerAccountAccessEventRow,
+    LocalAccountCredentialRow,
     MembershipRoleRow,
     MembershipRow,
     OrganizationRow,

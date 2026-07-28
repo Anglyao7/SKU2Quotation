@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from ..database import get_session
+from ..database import get_auth_session, get_session
 from ..domain.errors import ApplicationError
+from ..identity_models import MembershipRow
 from ..public_catalog_schemas import (
     PublicQuoteDraftCreate,
     PublicQuoteDraftResponse,
@@ -15,7 +18,13 @@ from ..public_catalog_schemas import (
     PublicSkuResponse,
     PublicStoreResponse,
 )
-from ..services.auth.dependencies import current_context, get_authenticated_session
+from ..services.auth.dependencies import (
+    bearer,
+    current_context,
+    get_authenticated_session,
+)
+from ..services.auth.service import AuthError, session_from_access_token
+from ..services.rbac import list_permissions
 from ..services.public_quote_documents import (
     render_public_quote_draft_pdf,
     render_public_quote_draft_xlsx,
@@ -27,6 +36,55 @@ from .errors import application_http_error
 
 router = APIRouter(tags=["public-catalog"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+@dataclass(frozen=True)
+class _CustomerQuoteSubmitter:
+    membership_id: UUID
+    tenant_id: UUID
+    user_id: UUID
+
+
+def _optional_customer_quote_submitter(
+    credentials: HTTPAuthorizationCredentials | None,
+    identity_session: Session,
+) -> _CustomerQuoteSubmitter | None:
+    """Associate a public cart request only when a valid child account is present.
+
+    The catalog remains public. An expired or staff token therefore never
+    blocks checkout; it simply produces an unassociated guest request.
+    """
+
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+    try:
+        auth_session, user, _claims = session_from_access_token(
+            identity_session,
+            credentials.credentials,
+            context_required=True,
+        )
+    except AuthError:
+        return None
+    if auth_session.active_membership_id is None:
+        return None
+    membership = identity_session.get(MembershipRow, auth_session.active_membership_id)
+    if (
+        membership is None
+        or membership.status != "active"
+        or membership.account_scope != "CUSTOMER_SUBACCOUNT"
+    ):
+        return None
+    if "customer_portal.order_create" not in list_permissions(
+        identity_session,
+        tenant_id=membership.tenant_id,
+        user_id=user.id,
+    ):
+        return None
+    return _CustomerQuoteSubmitter(
+        membership_id=membership.id,
+        tenant_id=membership.tenant_id,
+        user_id=user.id,
+    )
 
 
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
@@ -130,6 +188,8 @@ def submit_public_quote_draft(
     request: Request,
     response: Response,
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicQuoteDraftResponse:
     response.headers.update(NO_STORE_HEADERS)
     enforce_rate_limit(
@@ -140,9 +200,15 @@ def submit_public_quote_draft(
             "RATE_LIMIT_PUBLIC_QUOTE_WINDOW_SECONDS", 3_600, maximum=86_400
         ),
     )
+    submitter = _optional_customer_quote_submitter(credentials, identity_session)
     try:
         return use_cases.create_public_quote_draft(
-            session, slug=tenant_slug, request=payload
+            session,
+            slug=tenant_slug,
+            request=payload,
+            submitted_by_membership_id=(submitter.membership_id if submitter else None),
+            submitted_by_tenant_id=(submitter.tenant_id if submitter else None),
+            submitted_by_user_id=(submitter.user_id if submitter else None),
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
