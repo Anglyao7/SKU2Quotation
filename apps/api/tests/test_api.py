@@ -1694,7 +1694,14 @@ def test_platform_admin_manages_tenant_lifecycle(
                 select(RoleRow).where(RoleRow.tenant_id == UUID(tenant_id))
             ).all()
         }
-        assert set(roles) == {"OWNER", "ADMIN", "SALES", "PURCHASING", "VIEWER"}
+        assert set(roles) == {
+            "OWNER",
+            "ADMIN",
+            "SALES",
+            "PURCHASING",
+            "VIEWER",
+            "CUSTOMER_SUBACCOUNT",
+        }
         assert invited_user is not None and invited_membership is not None
         assert invited_user.identity_provider == "pending_oidc"
         assert invited_user.status == "invited"

@@ -110,7 +110,7 @@ class MembershipRow(AuditTimestampMixin, Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     job_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
     account_scope: Mapped[str] = mapped_column(
-        String(30), default="STAFF", nullable=False, index=True
+        String(30), default="STAFF", nullable=False
     )
     parent_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
     login_identifier: Mapped[str | None] = mapped_column(String(320), nullable=True)

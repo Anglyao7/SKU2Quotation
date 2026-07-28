@@ -57,26 +57,30 @@ def _audit() -> list[sa.Column]:
 def _add_membership_columns() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
-        # SQLite cannot add a composite self foreign key without rebuilding
+        # SQLite cannot add the composite self foreign key without rebuilding
         # the tenant-wide membership table.  The application enforces the
-        # same-tenant parent rule locally; PostgreSQL receives the FK below.
-        op.add_column(
-            "memberships",
-            sa.Column("account_scope", sa.String(30), nullable=False, server_default="STAFF"),
-        )
-        op.add_column("memberships", sa.Column("parent_membership_id", U(), nullable=True))
-        op.add_column("memberships", sa.Column("login_identifier", sa.String(320), nullable=True))
-        op.create_index(
-            "ix_memberships_tenant_parent_scope",
-            "memberships",
-            ["tenant_id", "parent_membership_id", "account_scope"],
-        )
-        op.create_index(
-            "uq_memberships_tenant_login_identifier",
-            "memberships",
-            ["tenant_id", "login_identifier"],
-            unique=True,
-        )
+        # same-tenant parent rule locally; preserve the named unique
+        # constraint through a batch rebuild so SQLAlchemy metadata remains
+        # identical to the PostgreSQL shape used in production.
+        with op.batch_alter_table("memberships") as batch:
+            batch.add_column(
+                sa.Column(
+                    "account_scope",
+                    sa.String(30),
+                    nullable=False,
+                    server_default="STAFF",
+                )
+            )
+            batch.add_column(sa.Column("parent_membership_id", U(), nullable=True))
+            batch.add_column(sa.Column("login_identifier", sa.String(320), nullable=True))
+            batch.create_unique_constraint(
+                "uq_memberships_tenant_login_identifier",
+                ["tenant_id", "login_identifier"],
+            )
+            batch.create_index(
+                "ix_memberships_tenant_parent_scope",
+                ["tenant_id", "parent_membership_id", "account_scope"],
+            )
         return
 
     with op.batch_alter_table("memberships") as batch:
@@ -318,11 +322,14 @@ def downgrade() -> None:
     op.drop_table("customer_account_access_events")
     op.drop_table("local_account_credentials")
     if op.get_bind().dialect.name == "sqlite":
-        op.drop_index("uq_memberships_tenant_login_identifier", table_name="memberships")
-        op.drop_index("ix_memberships_tenant_parent_scope", table_name="memberships")
-        op.drop_column("memberships", "login_identifier")
-        op.drop_column("memberships", "parent_membership_id")
-        op.drop_column("memberships", "account_scope")
+        with op.batch_alter_table("memberships") as batch:
+            batch.drop_index("ix_memberships_tenant_parent_scope")
+            batch.drop_constraint(
+                "uq_memberships_tenant_login_identifier", type_="unique"
+            )
+            batch.drop_column("login_identifier")
+            batch.drop_column("parent_membership_id")
+            batch.drop_column("account_scope")
         return
     with op.batch_alter_table("memberships") as batch:
         batch.drop_index("ix_memberships_tenant_parent_scope")

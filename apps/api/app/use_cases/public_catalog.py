@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import quote
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from ..adapters.object_storage import get_object_storage
 from ..database import set_public_tenant_context, set_request_context
 from ..domain.errors import ApplicationError
-from ..identity_models import CustomerAccountAccessEventRow
+from ..identity_models import CustomerAccountAccessEventRow, MembershipRow
 from ..model_mixins import utcnow
 from ..public_catalog_models import (
     PublicQuoteDownloadTokenRow,
@@ -36,12 +37,60 @@ from ..public_catalog_schemas import (
 )
 from ..repositories import public_catalog_repository as repository
 from ..services.auth.tokens import hash_secret, new_secret
+from ..services.auth.service import AuthError, session_from_access_token
 from ..services.embedding import EmbeddingProviderError
 from ..services.hybrid_search import _retrieval_tokens, hybrid_product_search
+from ..services.rbac import list_permissions
 
 
 MONEY = Decimal("0.01")
 PUBLIC_TOKEN_SEPARATOR = "."
+
+
+@dataclass(frozen=True)
+class CustomerQuoteSubmitter:
+    membership_id: UUID
+    tenant_id: UUID
+    user_id: UUID
+
+
+def optional_customer_quote_submitter(
+    identity_session: Session,
+    *,
+    access_token: str | None,
+) -> CustomerQuoteSubmitter | None:
+    """Return an active child-account context for an otherwise public quote."""
+
+    if not access_token:
+        return None
+    try:
+        auth_session, user, _claims = session_from_access_token(
+            identity_session,
+            access_token,
+            context_required=True,
+        )
+    except AuthError:
+        return None
+    if auth_session.active_membership_id is None:
+        return None
+    membership = identity_session.get(MembershipRow, auth_session.active_membership_id)
+    if (
+        membership is None
+        or membership.status != "active"
+        or membership.account_scope != "CUSTOMER_SUBACCOUNT"
+    ):
+        return None
+    if "customer_portal.order_create" not in list_permissions(
+        identity_session,
+        tenant_id=membership.tenant_id,
+        user_id=user.id,
+    ):
+        return None
+    return CustomerQuoteSubmitter(
+        membership_id=membership.id,
+        tenant_id=membership.tenant_id,
+        user_id=user.id,
+    )
 
 
 def _money(value: Decimal) -> Decimal:
