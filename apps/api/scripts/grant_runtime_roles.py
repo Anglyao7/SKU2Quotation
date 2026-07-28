@@ -168,6 +168,13 @@ def grant_runtime_roles() -> dict[str, object]:
                     "uuid, uuid, uuid, uuid, text, text, text, boolean) TO {}"
                 ).format(sql.Identifier(auth_role))
             )
+            cursor.execute(
+                sql.SQL(
+                    "GRANT EXECUTE ON FUNCTION "
+                    "public.atc_provision_tenant_owner("
+                    "uuid, uuid, uuid, uuid, text, text, text, text, text) TO {}"
+                ).format(sql.Identifier(auth_role))
+            )
             _grant_tables(cursor, role_name=worker_role, tables=WORKER_TABLES)
             # The BYPASSRLS scheduler can read only the three columns needed to
             # discover active IDs; it cannot inspect tenant profile data.

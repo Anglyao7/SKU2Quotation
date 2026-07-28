@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from collections.abc import Iterator
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from ..database import set_request_context
@@ -311,13 +311,11 @@ def provision_merchant_owner(
             kind="invalid",
         )
 
-    set_request_context(
-        identity_session,
-        organization_id=context.organization_id,
-        tenant_id=tenant.id,
-        user_id=context.user_id,
-    )
-    existing_owner = repository.get_tenant_owner_account(identity_session, tenant.id)
+    # The application connection has tenant-scoped access to memberships and
+    # roles; the identity connection intentionally does not.  Reading the
+    # owner here keeps the identity role from crossing that privilege boundary.
+    with _tenant_scope(session, context=context, tenant_id=tenant.id):
+        existing_owner = repository.get_tenant_owner_account(session, tenant.id)
     if existing_owner is not None:
         existing_membership, _existing_user = existing_owner
         if existing_membership.status in {"active", "suspended"}:
@@ -326,17 +324,15 @@ def provision_merchant_owner(
                 "This merchant already has a main account.",
                 kind="conflict",
             )
-        # A legacy pending invitation cannot sign in with a password. Retire
-        # that membership before replacing it with a direct-login owner.
-        existing_membership.status = "removed"
 
     normalized_identifier = request.login_identifier.casefold()
-    identifier_in_use = identity_session.scalar(
-        select(MembershipRow.id).where(
-            MembershipRow.tenant_id == tenant.id,
-            MembershipRow.login_identifier == normalized_identifier,
+    with _tenant_scope(session, context=context, tenant_id=tenant.id):
+        identifier_in_use = session.scalar(
+            select(MembershipRow.id).where(
+                MembershipRow.tenant_id == tenant.id,
+                MembershipRow.login_identifier == normalized_identifier,
+            )
         )
-    )
     if identifier_in_use is not None:
         raise ApplicationError(
             "MERCHANT_OWNER_IDENTIFIER_CONFLICT",
@@ -344,14 +340,6 @@ def provision_merchant_owner(
             kind="conflict",
         )
 
-    roles = ensure_tenant_rbac(identity_session, tenant_id=tenant.id)
-    owner_role = roles.get("OWNER")
-    if owner_role is None:
-        raise ApplicationError(
-            "MERCHANT_OWNER_ROLE_UNAVAILABLE",
-            "The merchant owner role is unavailable.",
-            kind="conflict",
-        )
     try:
         provisioned = provision_password_identity(
             identity_session,
@@ -379,6 +367,82 @@ def provision_merchant_owner(
             kind="conflict",
         ) from exc
 
+    # PostgreSQL production uses the constrained function below: `atc_auth`
+    # can create an identity only through a narrowly audited owner-provisioning
+    # path, while SQLite keeps the direct local-demo implementation.
+    if identity_session.bind is not None and identity_session.bind.dialect.name == "postgresql":
+        try:
+            row = identity_session.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM public.atc_provision_tenant_owner(
+                        :actor_user_id,
+                        :tenant_id,
+                        :user_id,
+                        :membership_id,
+                        :email,
+                        :display_name,
+                        :identity_provider,
+                        :identity_subject,
+                        :login_identifier
+                    )
+                    """
+                ),
+                {
+                    "actor_user_id": context.user_id,
+                    "tenant_id": tenant.id,
+                    "user_id": provisioned.user.id,
+                    "membership_id": uuid4(),
+                    "email": provisioned.user.email_normalized,
+                    "display_name": provisioned.user.display_name,
+                    "identity_provider": provisioned.user.identity_provider,
+                    "identity_subject": provisioned.user.identity_subject,
+                    "login_identifier": normalized_identifier,
+                },
+            ).mappings().one()
+            identity_session.commit()
+        except DBAPIError as exc:
+            identity_session.rollback()
+            message = str(exc.orig).casefold()
+            if "already has a main account" in message:
+                code = "MERCHANT_OWNER_ALREADY_CONFIGURED"
+                safe = "This merchant already has a main account."
+            elif "login account is already used" in message or "identity already exists" in message:
+                code = "MERCHANT_OWNER_IDENTIFIER_CONFLICT"
+                safe = "This login account is already in use."
+            elif "tenant role is unavailable" in message:
+                code = "MERCHANT_OWNER_ROLE_UNAVAILABLE"
+                safe = "The merchant owner role is unavailable."
+            elif "tenant must be active" in message:
+                code = "TENANT_NOT_ACTIVE"
+                safe = "A merchant must be active before its main account can be opened."
+            else:
+                code = "MERCHANT_OWNER_PROVISIONING_FAILED"
+                safe = "The merchant account could not be created. Check the account and try again."
+            raise ApplicationError(code, safe, kind="conflict") from exc
+        return PlatformMerchantOwnerAccount(
+            user_id=row["owner_user_id"],
+            membership_id=row["owner_membership_id"],
+            display_name=row["owner_display_name"],
+            login_identifier=row["owner_login_identifier"],
+            email=row["owner_email"],
+            status=row["owner_membership_status"],
+            created_at=row["owner_created_at"],
+        )
+
+    roles = ensure_tenant_rbac(identity_session, tenant_id=tenant.id)
+    owner_role = roles.get("OWNER")
+    if owner_role is None:
+        raise ApplicationError(
+            "MERCHANT_OWNER_ROLE_UNAVAILABLE",
+            "The merchant owner role is unavailable.",
+            kind="conflict",
+        )
+    if existing_owner is not None:
+        # A legacy pending invitation cannot sign in with a password. Retire
+        # it before replacing it with the direct-login owner in local mode.
+        existing_owner[0].status = "removed"
     user = provisioned.user
     membership = MembershipRow(
         tenant_id=tenant.id,
