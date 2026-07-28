@@ -53,6 +53,12 @@ playwright-report/
 项目输入/
 审查结果/
 work/
+differentFormat/
+
+# Office temporary lock files
+~$*.xlsx
+~$*.xls
+~$*.pptx
 
 # Transitional source trees; final runtime code lives under apps/.
 /backend/
