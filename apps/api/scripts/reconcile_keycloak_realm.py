@@ -73,6 +73,26 @@ BOOTSTRAP_USER_MANAGED_FIELDS = (
 SERVICE_ACCOUNT_REALM_MANAGEMENT_ROLES = ("manage-users",)
 
 
+def _email_optional_user_profile(profile: object) -> dict[str, Any]:
+    """Preserve the realm profile while making the product's email optional."""
+
+    if not isinstance(profile, dict) or not isinstance(profile.get("attributes"), list):
+        raise SystemExit("Keycloak returned an invalid user-profile configuration.")
+    updated = deepcopy(profile)
+    email_attributes = [
+        attribute
+        for attribute in updated["attributes"]
+        if isinstance(attribute, dict) and attribute.get("name") == "email"
+    ]
+    if len(email_attributes) != 1:
+        raise SystemExit("Keycloak user profile must contain exactly one email attribute.")
+    # Accounts may use a merchant-defined account or phone identifier. Email
+    # remains validated when present, but cannot be a hidden prerequisite for
+    # password login when the product form explicitly marks it optional.
+    email_attributes[0].pop("required", None)
+    return updated
+
+
 def _desired_configuration(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     document = json.loads(path.read_text(encoding="utf-8"))
     realm_name = document.get("realm")
@@ -237,6 +257,24 @@ def reconcile(
         expected={204},
         headers=headers,
         json=updated_realm,
+    )
+
+    user_profile_path = f"{realm_path}/users/profile"
+    current_user_profile = _request(
+        client,
+        "GET",
+        user_profile_path,
+        expected={200},
+        headers=headers,
+    ).json()
+    updated_user_profile = _email_optional_user_profile(current_user_profile)
+    _request(
+        client,
+        "PUT",
+        user_profile_path,
+        expected={200},
+        headers=headers,
+        json=updated_user_profile,
     )
 
     desired_user = desired_realm["users"][0]
@@ -453,6 +491,15 @@ def reconcile(
             raise SystemExit("Keycloak realm verification failed for smtpServer.")
     elif verified_realm.get("smtpServer") not in (None, {}):
         raise SystemExit("Keycloak realm verification failed for smtpServer.")
+    verified_user_profile = _request(
+        client,
+        "GET",
+        user_profile_path,
+        expected={200},
+        headers=headers,
+    ).json()
+    if _email_optional_user_profile(verified_user_profile) != verified_user_profile:
+        raise SystemExit("Keycloak user profile still requires an email address.")
     verified_user = _request(
         client,
         "GET",

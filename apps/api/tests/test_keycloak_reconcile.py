@@ -228,6 +228,24 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
             "requiredActions": ["UPDATE_PASSWORD", "CONFIGURE_TOTP"],
             "operatorCustomUserField": "preserved",
         },
+        "user_profile": {
+            "attributes": [
+                {
+                    "name": "email",
+                    "required": {"roles": ["user"]},
+                    "validations": {"email": {}},
+                },
+                {
+                    "name": "firstName",
+                    "required": {"roles": ["user"]},
+                },
+                {
+                    "name": "lastName",
+                    "required": {"roles": ["user"]},
+                },
+            ],
+            "groups": [{"name": "user-metadata"}],
+        },
         "service_account_roles": [
             {
                 "id": "realm-admin-role-uuid",
@@ -263,6 +281,11 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
         if path == "/admin/realms/atc" and request.method == "PUT":
             state["realm"] = json.loads(request.content)
             return httpx.Response(204)
+        if path == "/admin/realms/atc/users/profile" and request.method == "GET":
+            return httpx.Response(200, json=state["user_profile"])
+        if path == "/admin/realms/atc/users/profile" and request.method == "PUT":
+            state["user_profile"] = json.loads(request.content)
+            return httpx.Response(200, json=state["user_profile"])
         if path == "/admin/realms/atc/users" and request.method == "GET":
             assert request.url.params["email"] == "owner@example.cn"
             assert request.url.params["exact"] == "true"
@@ -367,6 +390,14 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
     assert state["master_admin"]["email"] == "owner@example.cn"
     assert state["master_admin"]["emailVerified"] is True
     assert state["realm_user"]["operatorCustomUserField"] == "preserved"
+    email_profile = next(
+        attribute
+        for attribute in state["user_profile"]["attributes"]
+        if attribute["name"] == "email"
+    )
+    assert "required" not in email_profile
+    assert email_profile["validations"] == {"email": {}}
+    assert state["user_profile"]["groups"] == [{"name": "user-metadata"}]
     for field in BOOTSTRAP_USER_MANAGED_FIELDS:
         assert state["realm_user"][field] == desired_realm["users"][0][field]
     for field in REALM_MANAGED_FIELDS:
