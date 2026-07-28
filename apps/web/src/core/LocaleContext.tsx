@@ -117,7 +117,7 @@ const english: Record<string, string> = {
   "可以继续补充商品资料，或从客户需求开始一次新的匹配。":
     "Continue enriching product data, or start a new match from a customer request.",
   "常用操作": "Quick actions",
-  "导入商品模版": "Import product template",
+  "导入商品": "Import products",
   "新建询盘": "New inquiry",
   "查看报价": "View quotations",
   "商品资料完整度": "Product data health",
@@ -131,13 +131,13 @@ const english: Record<string, string> = {
   "实时更新": "Live",
   "部分数据暂不可用": "Some data is unavailable",
   "最近导入": "Recent imports",
-  "商品模版处理记录": "Product template activity",
+  "商品导入记录": "Product import activity",
   "查看全部": "View all",
   "{products} 个 SKU · {warnings} 条提醒":
     "{products} SKUs · {warnings} warnings",
   "还没有导入记录": "No imports yet",
-  "使用固定的商品模版.xlsx，一次导入当前商家的全部商品。":
-    "Use the standard product template to import all products for this merchant.",
+  "下载标准模板并填写商品资料，即可一次导入当前商家的全部商品。":
+    "Download the standard template, complete the product data, and import this merchant's catalog in one go.",
   "打开工作区处理并确认": "Open the workspace to review",
   "草稿": "Draft",
   "已确认": "Confirmed",
@@ -354,6 +354,8 @@ const english: Record<string, string> = {
     "Status refresh failed; retrying: {message}",
   "状态刷新失败，系统将继续重试。":
     "Status refresh failed. The system will keep retrying.",
+  "导入详情加载失败": "Could not load import details",
+  "失败明细下载失败": "Could not download failure details",
   "这里只接受固定格式的 .xlsx 商品模版。":
     "Only the standard .xlsx product template is accepted.",
   "文件签名与 XLSX 商品模版不一致，请重新选择。":
@@ -361,7 +363,7 @@ const english: Record<string, string> = {
   "文件检测失败": "File validation failed",
   "当前账号没有导入商品的权限。":
     "Your account does not have permission to import products.",
-  "商品模版导入失败": "Product template import failed",
+  "商品导入失败": "Product import failed",
   "产品详情加载失败": "Could not load product details",
   "商品资料": "Product data",
   "所有商品从固定 Excel 模版进入这里，并直接按 SKU 管理名称、分类、价格、图片与上下架状态。":
@@ -402,12 +404,12 @@ const english: Record<string, string> = {
   "SKU 详情": "SKU details",
   "SKU 列表分页": "SKU pagination",
   "第 {page} / {pages} 页": "Page {page} of {pages}",
-  "固定商品资料入口": "Standard product data import",
-  "选择按约定填写的 XLSX；供应商可以留空，填写后会关联到进销存。":
-    "Choose a completed standard XLSX template. Supplier is optional and links the SKU to inventory when provided.",
-  "当前固定模版：商品模版.xlsx": "Current template: 商品模版.xlsx",
-  "“商品型号”作为唯一 SKU；供应商可空并按名称关联；分类最多两级；图片列读取图床链接。":
-    "Product model is the unique SKU. Supplier is optional and linked by name. Categories support two levels, and image columns use hosted URLs.",
+  "商品批量导入": "Bulk product import",
+  "上传填写完成的 XLSX 文件。系统会先完整校验，再一次性更新当前商家的商品库。":
+    "Upload a completed XLSX file. The system validates the entire file before updating this merchant's catalog atomically.",
+  "先下载标准模板": "Download the standard template first",
+  "只有商品名称和商品型号必填；分类留空自动归入“未分类”且不进入智能索引，价格留空按 0 处理。":
+    "Only product name and model are required. A blank category becomes “Uncategorized” and is excluded from the AI index; a blank price becomes zero.",
   "固定模版字段": "Template columns",
   "商品名称": "Product name",
   "商品分类": "Product category",
@@ -417,15 +419,48 @@ const english: Record<string, string> = {
   "备注": "Notes",
   "标签": "Tags",
   "商品图片1–10": "Product images 1–10",
-  "下载空白模版": "Download blank template",
+  "下载模板": "Download template",
   "这份模版代表当前完整商品库": "This template represents the complete catalog",
-  "重复型号保留第一条；价格留空按 0 处理；供应商按名称复用或创建；从下一份文件移除的 SKU 会自动下架。":
-    "The first duplicate model is kept. Blank prices become zero. Suppliers are reused or created by name. SKUs omitted from the next import are deactivated.",
+  "导入前会检查全部数据并一次列出所有问题；任何必填项或已填写内容不合法时，本次不会写入部分商品。":
+    "The full file is validated and all issues are reported together. If required or provided data is invalid, no partial catalog changes are written.",
   "格式已确认": "Format verified",
   "格式不一致": "Format mismatch",
-  "选择商品模版": "Choose product template",
-  "仅支持固定列名和列顺序的 XLSX 文件":
-    "Only XLSX files with the standard columns and order are supported",
+  "选择商品文件": "Choose product file",
+  "上传使用标准模板填写完成的 XLSX 文件":
+    "Upload an XLSX file completed with the standard template",
+  "正在检查文件": "Checking file",
+  "正在上传商品文件": "Uploading product file",
+  "文件上传完成，正在创建导入任务": "Upload complete; creating import job",
+  "正在确认文件类型与扩展名": "Verifying the file type and extension",
+  "上传进度 {percent}%，请勿关闭页面":
+    "Upload {percent}% complete. Keep this page open.",
+  "服务器已收到文件，即将进入安全检查和数据校验":
+    "The server has received the file and will begin security and data validation.",
+  "本次未写入商品 · 共发现 {count} 个问题":
+    "No products were written · {count} issues found",
+  "正在读取工作簿": "Reading workbook",
+  "正在校验商品数据": "Validating product data",
+  "正在读取现有商品库": "Loading the existing catalog",
+  "正在计算商品变更": "Planning catalog changes",
+  "正在写入商品": "Writing products",
+  "正在处理已移除商品": "Processing removed products",
+  "正在完成导入": "Finalizing import",
+  "商品导入完成": "Product import complete",
+  "数据校验未通过": "Data validation failed",
+  "正在进行文件安全检查": "Running file security checks",
+  "正在处理商品数据": "Processing product data",
+  "已处理 {processed} / {total} 行":
+    "Processed {processed} of {total} rows",
+  "无法导入的详细信息": "Detailed import failures",
+  "共 {count} 个问题；请修正后重新上传，当前商品库未发生变化。":
+    "{count} issues found. Fix them and upload again; the current catalog was not changed.",
+  "下载失败明细": "Download failure details",
+  "正在加载全部 {count} 条明细…":
+    "Loading all {count} details…",
+  "第 {row} 行": "Row {row}",
+  "文件级": "File level",
+  "原值": "Original value",
+  "修改建议": "Suggested fix",
   "展开后读取提醒详情。": "Expand to view warning details.",
   "商品资料已更新，智能索引尚未同步":
     "Product data updated; AI index is not synchronized",
@@ -434,8 +469,8 @@ const english: Record<string, string> = {
   "前往 AI 搜索管理": "Open AI Search Settings",
   "重新选择": "Choose another file",
   "正在处理…": "Processing…",
-  "确认导入商品库": "Import catalog",
-  "最近模版导入": "Recent template imports",
+  "开始导入": "Start import",
+  "最近商品导入": "Recent product imports",
   "{products} 个 SKU 已处理 · {warnings} 条提醒":
     "{products} SKUs processed · {warnings} warnings",
   "正在读取产品聚合视图": "Loading product details",

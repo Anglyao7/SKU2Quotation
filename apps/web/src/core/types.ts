@@ -163,6 +163,31 @@ export interface CustomerPortalOrder {
 
 export type ImportJobStatus = "scanning" | "parsing" | "needs_review" | "published" | "failed";
 
+export interface ImportIssue {
+  rowNumber?: number;
+  column: string;
+  code: string;
+  message: string;
+  value?: string;
+  suggestion?: string;
+}
+
+export interface ImportResultDetails {
+  outcome?: string;
+  imported?: number;
+  created?: number;
+  updated?: number;
+  unchanged?: number;
+  skipped?: number;
+  issues: ImportIssue[];
+  issueTotal: number;
+  issuesTruncated: number;
+  importProgress?: number;
+  importStage?: string;
+  processedRows?: number;
+  totalRows?: number;
+}
+
 export interface ImportJob {
   id: string;
   filename: string;
@@ -178,6 +203,7 @@ export interface ImportJob {
   parser?: string;
   extensionMatches?: boolean;
   errorMessage?: string;
+  resultDetails: ImportResultDetails;
 }
 
 export interface FileDetection {

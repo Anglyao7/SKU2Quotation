@@ -49,6 +49,45 @@ const importStatusLabel: Record<ImportJob["status"], string> = {
   failed: "导入失败",
 };
 
+const importStageLabel: Record<string, string> = {
+  READING_WORKBOOK: "正在读取工作簿",
+  VALIDATING_ROWS: "正在校验商品数据",
+  LOADING_CATALOG: "正在读取现有商品库",
+  PLANNING_CHANGES: "正在计算商品变更",
+  APPLYING_PRODUCTS: "正在写入商品",
+  ARCHIVING_REMOVED_PRODUCTS: "正在处理已移除商品",
+  FINALIZING: "正在完成导入",
+  COMPLETED: "商品导入完成",
+  VALIDATION_FAILED: "数据校验未通过",
+  FAILED: "商品导入失败",
+};
+
+function exportImportIssues(job: ImportJob) {
+  const escape = (value: string | number | undefined) => {
+    const text = value === undefined ? "" : String(value);
+    return `"${text.replaceAll("\"", "\"\"")}"`;
+  };
+  const rows = [
+    ["Excel 行号", "字段", "错误代码", "原值", "失败原因", "修改建议"],
+    ...job.resultDetails.issues.map((issue) => [
+      issue.rowNumber ?? "",
+      issue.column,
+      issue.code,
+      issue.value ?? "",
+      issue.message,
+      issue.suggestion ?? "",
+    ]),
+  ];
+  const content = `\uFEFF${rows.map((row) => row.map((value) => escape(value)).join(",")).join("\r\n")}`;
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${job.filename.replace(/\.xlsx$/i, "")}-导入失败明细.csv`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function imageStatusLabel(status: SkuListItem["imageStatus"]) {
   if (status === "APPROVED") return "图片已就绪";
   if (status === "SOURCE") return "图片待确认";
@@ -106,6 +145,8 @@ export function ProductsPage() {
   const [lastImport, setLastImport] = useState<ImportJob>();
   const [loadedWarningJobId, setLoadedWarningJobId] = useState<string>();
   const [importBusy, setImportBusy] = useState(false);
+  const [importSubmitStage, setImportSubmitStage] = useState<"idle" | "checking" | "uploading" | "processing">("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [importError, setImportError] = useState("");
   const [importPollingError, setImportPollingError] = useState("");
   const loadSequence = useRef(0);
@@ -207,6 +248,17 @@ export function ProductsPage() {
   }, [importJobs, lastImport?.id]);
 
   useEffect(() => {
+    if (!lastImport || !["failed", "published"].includes(lastImport.status)) return;
+    const missingIssues = lastImport.resultDetails.issueTotal > lastImport.resultDetails.issues.length;
+    const missingWarnings = lastImport.warnings > lastImport.warningMessages.length;
+    if ((!missingIssues && !missingWarnings) || loadedWarningJobId === lastImport.id) return;
+    setLoadedWarningJobId(lastImport.id);
+    void getImport(lastImport.id)
+      .then(setLastImport)
+      .catch(() => setLoadedWarningJobId(undefined));
+  }, [lastImport, loadedWarningJobId]);
+
+  useEffect(() => {
     if (importJobs[0]?.status === "published") {
       void load();
       void loadCategories().catch(() => undefined);
@@ -221,6 +273,8 @@ export function ProductsPage() {
       setDetection(undefined);
       setImportError("");
       setImportPollingError("");
+      setImportSubmitStage("idle");
+      setUploadProgress(0);
     }
     setParams((current) => {
       const next = new URLSearchParams(current);
@@ -243,6 +297,7 @@ export function ProductsPage() {
       return;
     }
     setImportBusy(true);
+    setImportSubmitStage("checking");
     try {
       const nextDetection = await detectFile(file);
       setDetection(nextDetection);
@@ -257,6 +312,7 @@ export function ProductsPage() {
       setImportError(reason instanceof Error ? reason.message : t("文件检测失败"));
     } finally {
       setImportBusy(false);
+      setImportSubmitStage("idle");
       if (importInputRef.current) importInputRef.current.value = "";
     }
   };
@@ -268,9 +324,14 @@ export function ProductsPage() {
     }
     if (!pendingFile || !detection || importError) return;
     setImportBusy(true);
+    setImportSubmitStage("uploading");
+    setUploadProgress(0);
     setImportError("");
     try {
-      const job = await createProductTemplateImport(pendingFile);
+      const job = await createProductTemplateImport(pendingFile, (progress) => {
+        setUploadProgress(progress);
+        if (progress >= 100) setImportSubmitStage("processing");
+      });
       setLastImport(job);
       setLoadedWarningJobId(undefined);
       setPendingFile(undefined);
@@ -281,9 +342,10 @@ export function ProductsPage() {
         setCategories(await listCategories());
       }
     } catch (reason) {
-      setImportError(reason instanceof Error ? reason.message : t("商品模版导入失败"));
+      setImportError(reason instanceof Error ? reason.message : t("商品导入失败"));
     } finally {
       setImportBusy(false);
+      setImportSubmitStage("idle");
     }
   };
 
@@ -332,6 +394,31 @@ export function ProductsPage() {
     setStatus("");
     setPage(1);
   };
+  const inspectImportJob = async (jobId: string) => {
+    setImportError("");
+    try {
+      const job = await getImport(jobId);
+      setLastImport(job);
+      setLoadedWarningJobId(jobId);
+    } catch (reason) {
+      setImportError(reason instanceof Error ? reason.message : t("导入详情加载失败"));
+    }
+  };
+  const downloadIssueDetails = async (job: ImportJob) => {
+    setImportError("");
+    try {
+      const completeJob = (
+        job.resultDetails.issueTotal > job.resultDetails.issues.length
+          ? await getImport(job.id)
+          : job
+      );
+      setLastImport(completeJob);
+      setLoadedWarningJobId(completeJob.id);
+      exportImportIssues(completeJob);
+    } catch (reason) {
+      setImportError(reason instanceof Error ? reason.message : t("失败明细下载失败"));
+    }
+  };
   const rangeStart = result.total ? (result.page - 1) * result.pageSize + 1 : 0;
   const rangeEnd = Math.min(result.page * result.pageSize, result.total);
   const rootCategories = useMemo(
@@ -350,7 +437,8 @@ export function ProductsPage() {
         title={t("SKU 商品库")}
         description={t("所有商品从固定 Excel 模版进入这里，并直接按 SKU 管理名称、分类、价格、图片与上下架状态。")}
         actions={<>
-          {canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品模版")}</Button> : null}
+          {canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}
+          {canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}
         </>}
       />
       <Card className="core-sku-toolbar">
@@ -374,7 +462,7 @@ export function ProductsPage() {
           : <CoreEmpty
               title={t("商品库还是空的")}
               description={t("下载固定模版并填写商品资料，导入后即可按 SKU 管理和发布。")}
-              action={canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品模版")}</Button> : undefined}
+              action={canImport ? <div className="core-empty-actions"><Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载模板")}</a></Button><Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button></div> : undefined}
             />
       ) : null}
       {result.items.length ? (
@@ -435,9 +523,9 @@ export function ProductsPage() {
         <Dialog.Content className="core-template-dialog">
           <div className="core-dialog-heading">
             <div>
-              <Text size="1" color="gray">{t("固定商品资料入口")}</Text>
-              <Dialog.Title>{t("导入商品模版")}</Dialog.Title>
-              <Dialog.Description>{t("选择按约定填写的 XLSX；供应商可以留空，填写后会关联到进销存。")}</Dialog.Description>
+              <Text size="1" color="gray">{t("商品批量导入")}</Text>
+              <Dialog.Title>{t("导入商品")}</Dialog.Title>
+              <Dialog.Description>{t("上传填写完成的 XLSX 文件。系统会先完整校验，再一次性更新当前商家的商品库。")}</Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" onClick={() => setImportDialogOpen(false)} aria-label={t("关闭")}><X /></Button>
           </div>
@@ -445,14 +533,14 @@ export function ProductsPage() {
           <Card className="core-template-contract">
             <span className="core-row-icon"><FileXls /></span>
             <div>
-              <Text weight="bold" as="div">{t("当前固定模版：商品模版.xlsx")}</Text>
-              <Text size="2" color="gray">{t("“商品型号”作为唯一 SKU；供应商可空并按名称关联；分类最多两级；图片列读取图床链接。")}</Text>
+              <Text weight="bold" as="div">{t("先下载标准模板")}</Text>
+              <Text size="2" color="gray">{t("只有商品名称和商品型号必填；分类留空自动归入“未分类”且不进入智能索引，价格留空按 0 处理。")}</Text>
               <div className="core-chip-row" aria-label={t("固定模版字段")}>
                 {["商品名称", "商品分类", "商品型号", "供应商", "商品价格", "商品描述", "备注", "标签", "商品图片1–10"].map((field) => <Badge color="gray" key={field}>{t(field)}</Badge>)}
               </div>
               <div>
                 <Button asChild size="1" variant="soft" color="gray">
-                  <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载空白模版")}</a>
+                  <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载模板")}</a>
                 </Button>
               </div>
             </div>
@@ -462,7 +550,7 @@ export function ProductsPage() {
             <Warning size={22} />
             <div>
               <Text weight="bold" as="div">{t("这份模版代表当前完整商品库")}</Text>
-              <Text size="2" color="gray">{t("重复型号保留第一条；价格留空按 0 处理；供应商按名称复用或创建；从下一份文件移除的 SKU 会自动下架。")}</Text>
+              <Text size="2" color="gray">{t("导入前会检查全部数据并一次列出所有问题；任何必填项或已填写内容不合法时，本次不会写入部分商品。")}</Text>
             </div>
           </Card>
 
@@ -486,10 +574,42 @@ export function ProductsPage() {
           ) : (
             <button className="core-template-dropzone" type="button" disabled={importBusy} onClick={() => importInputRef.current?.click()}>
               <FileArrowUp size={30} />
-              <strong>{t("选择商品模版")}</strong>
-              <span>{t("仅支持固定列名和列顺序的 XLSX 文件")}</span>
+              <strong>{t("选择商品文件")}</strong>
+              <span>{t("上传使用标准模板填写完成的 XLSX 文件")}</span>
             </button>
           )}
+
+          {importBusy && importSubmitStage !== "idle" ? (
+            <Card className="core-import-progress" aria-live="polite">
+              <div className="core-import-progress-heading">
+                <span>
+                  <Text weight="bold" as="div">
+                    {t(
+                      importSubmitStage === "checking"
+                        ? "正在检查文件"
+                        : importSubmitStage === "uploading"
+                        ? "正在上传商品文件"
+                        : "文件上传完成，正在创建导入任务",
+                    )}
+                  </Text>
+                  <Text size="1" color="gray">
+                    {t(
+                      importSubmitStage === "checking"
+                        ? "正在确认文件类型与扩展名"
+                        : importSubmitStage === "uploading"
+                        ? "上传进度 {percent}%，请勿关闭页面"
+                        : "服务器已收到文件，即将进入安全检查和数据校验",
+                      { percent: uploadProgress },
+                    )}
+                  </Text>
+                </span>
+                <strong className="core-tabular">
+                  {importSubmitStage === "uploading" ? `${uploadProgress}%` : importSubmitStage === "processing" ? "100%" : "…"}
+                </strong>
+              </div>
+              <Progress value={importSubmitStage === "uploading" ? uploadProgress : importSubmitStage === "processing" ? 100 : undefined} />
+            </Card>
+          ) : null}
 
           {importError ? <CoreError message={importError} /> : importPollingError ? <CoreError message={importPollingError} onRetry={() => void loadTemplateImports()} /> : null}
           {lastImport ? (
@@ -497,9 +617,73 @@ export function ProductsPage() {
               {lastImport.status === "published" ? <CheckCircle size={24} /> : lastImport.status === "failed" ? <Warning size={24} /> : <ArrowsClockwise size={24} />}
               <div>
                 <Text weight="bold" as="div">{t(importStatusLabel[lastImport.status])} · {lastImport.filename}</Text>
-                <Text size="2" color="gray">{t("{products} 个 SKU 已处理 · {warnings} 条提醒", { products: lastImport.products, warnings: lastImport.warnings })}</Text>
-                {lastImport.errorMessage ? <Text size="1" color="gray">{lastImport.errorMessage.split("；", 1)[0]}</Text> : null}
-                {lastImport.warnings > 0 ? (
+                <Text size="2" color="gray">
+                  {lastImport.status === "failed"
+                    ? t("本次未写入商品 · 共发现 {count} 个问题", { count: lastImport.resultDetails.issueTotal || lastImport.warnings })
+                    : t("{products} 个 SKU 已处理 · {warnings} 条提醒", { products: lastImport.products, warnings: lastImport.warnings })}
+                </Text>
+
+                {lastImport.status === "scanning" || lastImport.status === "parsing" ? (
+                  <div className="core-import-job-progress" aria-live="polite">
+                    <span>
+                      <Text size="1" weight="medium">
+                        {t(
+                          importStageLabel[lastImport.resultDetails.importStage ?? ""]
+                          ?? (lastImport.status === "scanning" ? "正在进行文件安全检查" : "正在处理商品数据"),
+                        )}
+                      </Text>
+                      <strong className="core-tabular">{lastImport.progress}%</strong>
+                    </span>
+                    <Progress value={lastImport.progress} />
+                    {lastImport.resultDetails.totalRows ? (
+                      <Text size="1" color="gray">
+                        {t("已处理 {processed} / {total} 行", {
+                          processed: lastImport.resultDetails.processedRows ?? 0,
+                          total: lastImport.resultDetails.totalRows,
+                        })}
+                      </Text>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {lastImport.errorMessage ? <Text size="1" color="gray" className="core-import-result-message">{lastImport.errorMessage}</Text> : null}
+
+                {lastImport.resultDetails.issueTotal > 0 ? (
+                  <section className="core-import-issues">
+                    <div className="core-import-issues-heading">
+                      <span>
+                        <Text weight="bold" as="div">{t("无法导入的详细信息")}</Text>
+                        <Text size="1" color="gray">
+                          {t("共 {count} 个问题；请修正后重新上传，当前商品库未发生变化。", { count: lastImport.resultDetails.issueTotal })}
+                        </Text>
+                      </span>
+                      <Button size="1" variant="soft" color="gray" onClick={() => void downloadIssueDetails(lastImport)}>
+                        <DownloadSimple />{t("下载失败明细")}
+                      </Button>
+                    </div>
+                    {lastImport.resultDetails.issueTotal > lastImport.resultDetails.issues.length ? (
+                      <Text size="1" color="gray">{t("正在加载全部 {count} 条明细…", { count: lastImport.resultDetails.issueTotal })}</Text>
+                    ) : null}
+                    <div className="core-import-issue-list">
+                      {lastImport.resultDetails.issues.map((issue, index) => (
+                        <article key={`${issue.rowNumber ?? "file"}:${issue.column}:${issue.code}:${index}`}>
+                          <div className="core-import-issue-meta">
+                            <Badge color="red" variant="soft">
+                              {issue.rowNumber ? t("第 {row} 行", { row: issue.rowNumber }) : t("文件级")}
+                            </Badge>
+                            <strong>{issue.column}</strong>
+                            <code>{issue.code}</code>
+                          </div>
+                          <p>{issue.message}</p>
+                          {issue.value ? <small><span>{t("原值")}</span><code>{issue.value}</code></small> : null}
+                          {issue.suggestion ? <small><span>{t("修改建议")}</span>{issue.suggestion}</small> : null}
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+
+                {lastImport.warnings > 0 && lastImport.status === "published" ? (
                   <details
                     className="core-template-warnings"
                     onToggle={(event) => {
@@ -550,20 +734,20 @@ export function ProductsPage() {
               disabled={!pendingFile || !detection || Boolean(importError) || importBusy}
               onClick={() => void importTemplate()}
             >
-              <FileArrowUp />{t(importBusy ? "正在处理…" : "确认导入商品库")}
+              <FileArrowUp />{t(importBusy ? "正在处理…" : "开始导入")}
             </Button>
           </div>
 
           {importJobs.length ? (
             <div className="core-template-history">
-              <Text size="1" color="gray">{t("最近模版导入")}</Text>
+              <Text size="1" color="gray">{t("最近商品导入")}</Text>
               {importJobs.slice(0, 4).map((job) => (
-                <div className="core-template-history-row" key={job.id}>
+                <button type="button" className="core-template-history-row" key={job.id} onClick={() => void inspectImportJob(job.id)}>
                   <FileXls />
                   <span><strong>{job.filename}</strong><small>{t("{products} 个 SKU · {warnings} 条提醒", { products: job.products, warnings: job.warnings })}</small></span>
                   {job.status === "scanning" || job.status === "parsing" ? <Progress value={job.progress} /> : null}
                   <Badge color={job.status === "failed" ? "red" : job.status === "published" ? "jade" : "amber"}>{t(importStatusLabel[job.status])}</Badge>
-                </div>
+                </button>
               ))}
             </div>
           ) : null}

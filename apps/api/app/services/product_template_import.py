@@ -4,6 +4,7 @@ import hashlib
 import mimetypes
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from pathlib import Path
@@ -17,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from ..database import SessionLocal, set_request_context
 from ..db_models import ImportJobRow, SupplierRow
-from ..file_security_models import MediaObjectRow
+from ..file_security_models import MediaObjectRow, WorkerJobRow
 from ..identity_models import TenantRow
 from ..model_mixins import utcnow
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY, SkuRow
@@ -58,10 +59,38 @@ MAX_SUPPLIER_NAME_LENGTH = 300
 TEMPLATE_SOURCE_KEY = SKU_TEMPLATE_SOURCE_OPTION_KEY
 TEMPLATE_SOURCE_VALUE = "PRODUCT_TEMPLATE"
 TEMPLATE_IMAGE_BUCKET = "product-template"
+UNCATEGORIZED_CATEGORY_NAME = "未分类"
+
+
+@dataclass(frozen=True, slots=True)
+class ProductTemplateIssue:
+    row_number: int | None
+    column: str
+    code: str
+    message: str
+    value: str | None = None
+    suggestion: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "row_number": self.row_number,
+            "column": self.column,
+            "code": self.code,
+            "message": self.message,
+            "value": self.value,
+            "suggestion": self.suggestion,
+        }
 
 
 class ProductTemplateValidationError(ValueError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        issues: tuple[ProductTemplateIssue, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.issues = issues
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +124,7 @@ class ProductTemplateImportResult:
     unchanged: int = 0
     skipped: int = 0
     warnings: tuple[str, ...] = ()
+    issues: tuple[ProductTemplateIssue, ...] = ()
     message: str | None = None
 
 
@@ -108,6 +138,48 @@ def _cell_text(value: object) -> str:
     if isinstance(value, float):
         return format(value, ".15g")
     return str(value).strip()
+
+
+def _issue_value(value: object) -> str | None:
+    text = _cell_text(value)
+    if not text:
+        return None
+    return f"{text[:157]}…" if len(text) > 160 else text
+
+
+def _issue(
+    *,
+    row_number: int | None,
+    column: str,
+    code: str,
+    message: str,
+    value: object = None,
+    suggestion: str | None = None,
+) -> ProductTemplateIssue:
+    return ProductTemplateIssue(
+        row_number=row_number,
+        column=column,
+        code=code,
+        message=message,
+        value=_issue_value(value),
+        suggestion=suggestion,
+    )
+
+
+def _validation_summary(issues: list[ProductTemplateIssue]) -> str:
+    affected_rows = {
+        issue.row_number for issue in issues if issue.row_number is not None
+    }
+    location = (
+        f"，涉及 {len(affected_rows)} 行"
+        if affected_rows
+        else ""
+    )
+    first_message = issues[0].message if issues else "文件内容不符合导入要求"
+    return (
+        f"发现 {len(issues)} 个数据问题{location}，未执行本次商品导入。"
+        f"首个问题：{first_message}"
+    )
 
 
 def _decimal(value: object, *, field: str, row_number: int) -> Decimal:
@@ -243,7 +315,11 @@ def _inspect_archive(path: Path) -> None:
         raise ProductTemplateValidationError("文件不是有效的 XLSX 工作簿。") from exc
 
 
-def parse_product_template(path: Path) -> ProductTemplateParseResult:
+def parse_product_template(
+    path: Path,
+    *,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> ProductTemplateParseResult:
     if path.suffix.lower() != ".xlsx":
         raise ProductTemplateValidationError("只支持固定格式的 .xlsx 商品模版。")
     _inspect_archive(path)
@@ -254,8 +330,16 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
 
     try:
         if PRODUCT_TEMPLATE_SHEET not in workbook.sheetnames:
+            issue = _issue(
+                row_number=None,
+                column="工作表",
+                code="SHEET_MISSING",
+                message=f"缺少工作表“{PRODUCT_TEMPLATE_SHEET}”。",
+                suggestion="请下载最新模板，并保留原始工作表名称。",
+            )
             raise ProductTemplateValidationError(
-                f"缺少工作表“{PRODUCT_TEMPLATE_SHEET}”。"
+                issue.message,
+                issues=(issue,),
             )
         sheet = workbook[PRODUCT_TEMPLATE_SHEET]
         received_headers = tuple(
@@ -269,8 +353,41 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
             if _cell_text(sheet.cell(row=1, column=index).value)
         ]
         if received_headers != PRODUCT_TEMPLATE_HEADERS or extra_headers:
+            header_issues: list[ProductTemplateIssue] = []
+            for index, expected in enumerate(PRODUCT_TEMPLATE_HEADERS, start=1):
+                actual = received_headers[index - 1]
+                if actual == expected:
+                    continue
+                header_issues.append(
+                    _issue(
+                        row_number=1,
+                        column=expected,
+                        code="HEADER_MISMATCH",
+                        message=(
+                            f"表头第 {index} 列应为“{expected}”，"
+                            f"实际为“{actual or '空白'}”。"
+                        ),
+                        value=actual,
+                        suggestion="请下载最新模板，不要修改第一行的列名或列顺序。",
+                    )
+                )
+            for index, actual in enumerate(
+                extra_headers,
+                start=len(PRODUCT_TEMPLATE_HEADERS) + 1,
+            ):
+                header_issues.append(
+                    _issue(
+                        row_number=1,
+                        column=f"第 {index} 列",
+                        code="UNEXPECTED_HEADER",
+                        message=f"表头包含模板之外的额外列“{actual}”。",
+                        value=actual,
+                        suggestion="请删除额外列，或把补充信息放入“备注”列。",
+                    )
+                )
             raise ProductTemplateValidationError(
-                "表头与固定商品模版不一致，请使用“商品模版.xlsx”的原始列名和顺序。"
+                f"表头与固定商品模版不一致。{_validation_summary(header_issues)}",
+                issues=tuple(header_issues),
             )
         if sheet.max_row is not None and max(0, sheet.max_row - 1) > MAX_TEMPLATE_ROWS:
             raise ProductTemplateValidationError(
@@ -279,8 +396,11 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
 
         rows: list[ProductTemplateRow] = []
         warnings: list[str] = []
+        issues: list[ProductTemplateIssue] = []
         first_row_by_sku: dict[str, int] = {}
         skipped_rows = 0
+        total_rows = max(0, (sheet.max_row or 1) - 1)
+        progress_interval = max(100, total_rows // 100) if total_rows else 100
         for row_number, values in enumerate(
             sheet.iter_rows(
                 min_row=2,
@@ -289,44 +409,193 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
             ),
             start=2,
         ):
+            processed_rows = row_number - 1
+            if progress_callback is not None and (
+                processed_rows == 1
+                or processed_rows % progress_interval == 0
+                or processed_rows == total_rows
+            ):
+                progress_callback(processed_rows, total_rows)
             if row_number > MAX_TEMPLATE_ROWS + 1:
                 raise ProductTemplateValidationError(
                     f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
                 )
             if not any(_cell_text(value) for value in values):
                 continue
-            if any(isinstance(value, str) and value.lstrip().startswith("=") for value in values):
-                raise ProductTemplateValidationError(
-                    f"第 {row_number} 行包含公式。完整商品模版只接受固定值，请先将公式转换为数值或文本。"
+
+            row_issues: list[ProductTemplateIssue] = []
+            formula_indexes = {
+                index
+                for index, value in enumerate(values)
+                if isinstance(value, str) and value.lstrip().startswith("=")
+            }
+            for index in sorted(formula_indexes):
+                column = PRODUCT_TEMPLATE_HEADERS[index]
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column=column,
+                        code="FORMULA_NOT_ALLOWED",
+                        message=f"第 {row_number} 行的{column}包含公式。",
+                        value=values[index],
+                        suggestion="请复制计算结果并粘贴为固定值后重新导入。",
+                    )
                 )
 
             name = _cell_text(values[0])
             category_text = _cell_text(values[1])
             sku_code = _normalize_sku_code(values[2])
-            supplier_name = _normalize_supplier_name(
-                values[3], row_number=row_number
-            )
-            missing = [
-                label
-                for label, value in (
+            for index, (label, value) in enumerate(
+                (
                     ("商品名称", name),
-                    ("商品分类", category_text),
                     ("商品型号", sku_code),
                 )
-                if not value
-            ]
-            if missing:
-                raise ProductTemplateValidationError(
-                    f"第 {row_number} 行缺少{'、'.join(missing)}，未执行本次全量同步。"
+            ):
+                value_index = (0, 2)[index]
+                if not value and value_index not in formula_indexes:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=label,
+                            code="REQUIRED_VALUE_MISSING",
+                            message=f"第 {row_number} 行缺少{label}。",
+                            suggestion=f"请填写{label}；这是商品导入的必填项。",
+                        )
+                    )
+
+            if len(name) > 500 and 0 not in formula_indexes:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="商品名称",
+                        code="VALUE_TOO_LONG",
+                        message=f"第 {row_number} 行的商品名称超过 500 个字符。",
+                        value=values[0],
+                        suggestion="请缩短商品名称，详细信息可填写在“商品描述”中。",
+                    )
                 )
-            category_parts = _normalize_category_path(
-                category_text, row_number=row_number
-            )
-            category = "/".join(category_parts)
-            if len(name) > 500 or len(category) > 401 or len(sku_code) > 160:
-                raise ProductTemplateValidationError(
-                    f"第 {row_number} 行文本超过字段长度限制，未执行本次全量同步。"
+            if len(sku_code) > 160 and 2 not in formula_indexes:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="商品型号",
+                        code="VALUE_TOO_LONG",
+                        message=f"第 {row_number} 行的商品型号超过 160 个字符。",
+                        value=values[2],
+                        suggestion="请将商品型号缩短至 160 个字符以内。",
+                    )
                 )
+
+            category = UNCATEGORIZED_CATEGORY_NAME
+            if category_text and 1 not in formula_indexes:
+                try:
+                    category = "/".join(
+                        _normalize_category_path(
+                            category_text,
+                            row_number=row_number,
+                        )
+                    )
+                except ProductTemplateValidationError as exc:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column="商品分类",
+                            code="CATEGORY_INVALID",
+                            message=str(exc),
+                            value=values[1],
+                            suggestion="请填写“一级分类”或“一级分类/二级分类”，最多两级。",
+                        )
+                    )
+
+            supplier_name: str | None = None
+            if _cell_text(values[3]) and 3 not in formula_indexes:
+                try:
+                    supplier_name = _normalize_supplier_name(
+                        values[3],
+                        row_number=row_number,
+                    )
+                except ProductTemplateValidationError as exc:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column="供应商",
+                            code="SUPPLIER_INVALID",
+                            message=str(exc),
+                            value=values[3],
+                            suggestion=(
+                                f"供应商可以留空；填写时请控制在 "
+                                f"{MAX_SUPPLIER_NAME_LENGTH} 个字符以内。"
+                            ),
+                        )
+                    )
+
+            unit_price = Decimal("0.00")
+            if _cell_text(values[4]) and 4 not in formula_indexes:
+                try:
+                    unit_price = _decimal(
+                        values[4],
+                        field="商品价格",
+                        row_number=row_number,
+                    )
+                except ProductTemplateValidationError as exc:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column="商品价格",
+                            code="PRICE_INVALID",
+                            message=str(exc),
+                            value=values[4],
+                            suggestion="价格可以留空（系统按 0 处理），或填写大于等于 0 的数字。",
+                        )
+                    )
+
+            tags: tuple[str, ...] = ()
+            if _cell_text(values[7]) and 7 not in formula_indexes:
+                try:
+                    tags = _normalize_tags(values[7], row_number=row_number)
+                except ProductTemplateValidationError as exc:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column="标签",
+                            code="TAGS_INVALID",
+                            message=str(exc),
+                            value=values[7],
+                            suggestion=(
+                                f"标签可以留空；最多填写 {MAX_TAGS} 个，"
+                                "使用逗号分隔。"
+                            ),
+                        )
+                    )
+
+            image_urls: list[str] = []
+            for image_index, value in enumerate(values[8:], start=1):
+                value_index = image_index + 7
+                if not _cell_text(value) or value_index in formula_indexes:
+                    continue
+                image_url = _valid_image_url(value)
+                if image_url is None:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"商品图片{image_index}",
+                            code="IMAGE_URL_INVALID",
+                            message=(
+                                f"第 {row_number} 行商品图片{image_index}"
+                                "不是有效的 HTTP(S) 链接。"
+                            ),
+                            value=value,
+                            suggestion="图片可以留空；填写时请使用可公开访问的 http:// 或 https:// 地址。",
+                        )
+                    )
+                    continue
+                if image_url not in image_urls:
+                    image_urls.append(image_url)
+
+            if row_issues:
+                issues.extend(row_issues)
+                continue
+
             if sku_code in first_row_by_sku:
                 warnings.append(
                     f"第 {row_number} 行商品型号“{sku_code}”与第 "
@@ -335,31 +604,7 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                 skipped_rows += 1
                 continue
 
-            unit_price = Decimal("0.00")
-            if _cell_text(values[4]):
-                try:
-                    unit_price = _decimal(values[4], field="商品价格", row_number=row_number)
-                except ProductTemplateValidationError as exc:
-                    raise ProductTemplateValidationError(
-                        f"{exc}未执行本次全量同步。"
-                    ) from exc
-
             note = _cell_text(values[6]) or None
-            tags = _normalize_tags(values[7], row_number=row_number)
-
-            image_urls: list[str] = []
-            for image_index, value in enumerate(values[8:], start=1):
-                if not _cell_text(value):
-                    continue
-                image_url = _valid_image_url(value)
-                if image_url is None:
-                    raise ProductTemplateValidationError(
-                        f"第 {row_number} 行商品图片{image_index}不是有效的 HTTP(S) 链接，"
-                        "未执行本次全量同步。"
-                    )
-                if image_url not in image_urls:
-                    image_urls.append(image_url)
-
             first_row_by_sku[sku_code] = row_number
             rows.append(
                 ProductTemplateRow(
@@ -375,6 +620,11 @@ def parse_product_template(path: Path) -> ProductTemplateParseResult:
                     default_moq=None,
                     image_urls=tuple(image_urls),
                 )
+            )
+        if issues:
+            raise ProductTemplateValidationError(
+                _validation_summary(issues),
+                issues=tuple(issues),
             )
         if not rows:
             raise ProductTemplateValidationError("模版中没有可导入的有效商品。")
@@ -437,11 +687,58 @@ def _is_template_managed_sku(sku: SkuRow) -> bool:
     )
 
 
+def _record_import_progress(
+    *,
+    job_id: str,
+    tenant_id: UUID,
+    progress: int,
+    stage: str,
+    processed_rows: int = 0,
+    total_rows: int = 0,
+) -> None:
+    """Publish observable progress without committing the catalog transaction."""
+
+    try:
+        with SessionLocal() as progress_session:
+            set_request_context(
+                progress_session,
+                organization_id=UUID(int=0),
+                tenant_id=tenant_id,
+                user_id=UUID(int=0),
+            )
+            worker = progress_session.scalar(
+                select(WorkerJobRow)
+                .where(
+                    WorkerJobRow.tenant_id == tenant_id,
+                    WorkerJobRow.import_job_id == job_id,
+                )
+                .order_by(WorkerJobRow.created_at.desc())
+                .limit(1)
+            )
+            if worker is None:
+                return
+            checkpoint = dict(worker.checkpoint)
+            checkpoint.update(
+                {
+                    "import_progress": max(0, min(100, progress)),
+                    "import_stage": stage,
+                    "processed_rows": max(0, processed_rows),
+                    "total_rows": max(0, total_rows),
+                }
+            )
+            worker.checkpoint = checkpoint
+            progress_session.commit()
+    except Exception:
+        # Progress reporting must never make an otherwise valid import fail.
+        return
+
+
 def _fail_import(
     session,
     *,
     job: ImportJobRow,
     message: str,
+    issues: tuple[ProductTemplateIssue, ...] = (),
 ) -> ProductTemplateImportResult:
     job.status = "failed"
     job.progress = 100
@@ -449,9 +746,16 @@ def _fail_import(
     job.error_message = message
     job.completed_at = utcnow()
     session.commit()
+    _record_import_progress(
+        job_id=job.id,
+        tenant_id=job.tenant_id,
+        progress=100,
+        stage="FAILED",
+    )
     return ProductTemplateImportResult(
         status="failed",
         warnings=(message,),
+        issues=issues,
         message=message,
     )
 
@@ -515,22 +819,75 @@ def process_product_template_import(
         job.status = "parsing"
         job.progress = 25
         session.commit()
+        _record_import_progress(
+            job_id=job.id,
+            tenant_id=tenant_id,
+            progress=25,
+            stage="READING_WORKBOOK",
+        )
+
+        def report_row_validation(processed_rows: int, total_rows: int) -> None:
+            fraction = processed_rows / total_rows if total_rows else 1
+            _record_import_progress(
+                job_id=job.id,
+                tenant_id=tenant_id,
+                progress=25 + int(min(1, fraction) * 15),
+                stage="VALIDATING_ROWS",
+                processed_rows=processed_rows,
+                total_rows=total_rows,
+            )
 
         try:
-            parsed = parse_product_template(source_path)
+            parsed = parse_product_template(
+                source_path,
+                progress_callback=report_row_validation,
+            )
         except ProductTemplateValidationError as exc:
             session.rollback()
             job = session.scalar(statement)
             if job is None:
                 raise RuntimeError("product template import job disappeared") from exc
+            failure_issues = exc.issues or (
+                _issue(
+                    row_number=None,
+                    column="商品文件",
+                    code="FILE_VALIDATION_ERROR",
+                    message=str(exc),
+                    suggestion="请下载最新模板，确认工作表、表头和商品数据后重新导入。",
+                ),
+            )
             job.status = "failed"
             job.progress = 100
-            job.warnings_count = max(1, job.warnings_count)
+            job.warnings_count = max(1, len(failure_issues), job.warnings_count)
             job.error_message = str(exc)
             job.completed_at = utcnow()
             session.commit()
-            return ProductTemplateImportResult(status="failed", warnings=(str(exc),), message=str(exc))
+            _record_import_progress(
+                job_id=job.id,
+                tenant_id=tenant_id,
+                progress=100,
+                stage="VALIDATION_FAILED",
+            )
+            warning_messages = tuple(issue.message for issue in failure_issues)
+            return ProductTemplateImportResult(
+                status="failed",
+                warnings=warning_messages,
+                issues=failure_issues,
+                message=str(exc),
+            )
 
+        job = session.scalar(statement)
+        if job is None:
+            raise RuntimeError("product template import job disappeared")
+        job.progress = 40
+        session.commit()
+        _record_import_progress(
+            job_id=job.id,
+            tenant_id=tenant_id,
+            progress=40,
+            stage="VALIDATING_ROWS",
+            total_rows=len(parsed.rows),
+        )
         job = session.scalar(statement)
         if job is None:
             raise RuntimeError("product template import job disappeared")
@@ -748,6 +1105,14 @@ def process_product_template_import(
         ).all():
             template_images_by_product[image.product_id].append(image)
 
+        _record_import_progress(
+            job_id=job.id,
+            tenant_id=tenant_id,
+            progress=55,
+            stage="LOADING_CATALOG",
+            total_rows=len(parsed.rows),
+        )
+
         # Pre-plan product ownership before making changes. Existing SKUs with
         # siblings are split onto a dedicated product so row order can never
         # overwrite another SKU's name/category/description.
@@ -798,6 +1163,14 @@ def process_product_template_import(
             planned_product_by_sku[template_row.sku_code] = selected_product
             planned_product_code_by_sku[template_row.sku_code] = selected_code
 
+        _record_import_progress(
+            job_id=job.id,
+            tenant_id=tenant_id,
+            progress=65,
+            stage="PLANNING_CHANGES",
+            total_rows=len(parsed.rows),
+        )
+
         suppliers_for_template: dict[str, SupplierRow] = {}
         new_supplier_ids: set[str] = set()
         for normalized_name, (display_name, existing_supplier) in supplier_plan.items():
@@ -837,7 +1210,18 @@ def process_product_template_import(
         dirty_product_ids: set[UUID] = set()
         touched_supplier_ids: set[str] = set()
         runtime_warnings = list(parsed.warnings)
-        for template_row in parsed.rows:
+        progress_interval = max(1, len(parsed.rows) // 100)
+        for row_index, template_row in enumerate(parsed.rows, start=1):
+            if row_index == 1 or row_index % progress_interval == 0:
+                progress = 70 + int((row_index / len(parsed.rows)) * 22)
+                _record_import_progress(
+                    job_id=job.id,
+                    tenant_id=tenant_id,
+                    progress=progress,
+                    stage="APPLYING_PRODUCTS",
+                    processed_rows=row_index,
+                    total_rows=len(parsed.rows),
+                )
             changed = False
             supplier = (
                 suppliers_for_template.get(template_row.supplier_name.casefold())
@@ -1089,6 +1473,15 @@ def process_product_template_import(
                 product.search_document_version = 0
                 dirty_product_ids.add(product.id)
 
+        _record_import_progress(
+            job_id=job.id,
+            tenant_id=tenant_id,
+            progress=94,
+            stage="ARCHIVING_REMOVED_PRODUCTS",
+            processed_rows=len(parsed.rows),
+            total_rows=len(parsed.rows),
+        )
+
         # PRODUCT_TEMPLATE is a full snapshot, but only records explicitly
         # adopted by this importer are managed. Manual/non-template SKUs remain
         # untouched. This source marker makes the second and later imports safe.
@@ -1136,6 +1529,15 @@ def process_product_template_import(
                 product.current_version += 1
                 product.updated_by = user_id
 
+        _record_import_progress(
+            job_id=job.id,
+            tenant_id=tenant_id,
+            progress=97,
+            stage="FINALIZING",
+            processed_rows=len(parsed.rows),
+            total_rows=len(parsed.rows),
+        )
+
         if touched_supplier_ids:
             session.flush()
             for supplier_id in touched_supplier_ids:
@@ -1166,7 +1568,7 @@ def process_product_template_import(
             else ""
         )
         result_summary = (
-            f"商品模版导入完成：新建 {created}，更新 {updated}，"
+            f"商品导入完成：新建 {created}，更新 {updated}，"
             f"未变化 {unchanged}，归档 {archived}，跳过 {parsed.skipped_rows}"
             f"{index_summary}。"
         )
@@ -1179,6 +1581,14 @@ def process_product_template_import(
         )
         job.completed_at = now
         session.commit()
+        _record_import_progress(
+            job_id=job.id,
+            tenant_id=tenant_id,
+            progress=100,
+            stage="COMPLETED",
+            processed_rows=len(parsed.rows),
+            total_rows=len(parsed.rows),
+        )
         return ProductTemplateImportResult(
             status="published",
             imported=imported,

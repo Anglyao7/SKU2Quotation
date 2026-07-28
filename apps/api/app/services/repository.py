@@ -62,6 +62,7 @@ def import_job_model(
     row: ImportJobRow,
     *,
     warning_limit: int | None = None,
+    issue_limit: int | None = None,
 ) -> ImportJob:
     latest_worker = (
         max(row.worker_jobs, key=lambda worker: worker.created_at)
@@ -90,6 +91,37 @@ def import_job_model(
     if warning_total > len(warning_messages):
         result_details["warnings"] = warning_messages
         result_details["warnings_truncated"] = warning_total - len(warning_messages)
+    raw_issues = result_details.get("issues", [])
+    all_issues = (
+        [dict(issue) for issue in raw_issues if isinstance(issue, dict)]
+        if isinstance(raw_issues, list)
+        else []
+    )
+    try:
+        issue_total = max(
+            len(all_issues),
+            int(result_details.get("issue_total", len(all_issues))),
+        )
+    except (TypeError, ValueError):
+        issue_total = len(all_issues)
+    visible_issues = (
+        all_issues[:issue_limit]
+        if issue_limit is not None
+        else all_issues
+    )
+    result_details["issues"] = visible_issues
+    result_details["issue_total"] = issue_total
+    if issue_total > len(visible_issues):
+        result_details["issues_truncated"] = issue_total - len(visible_issues)
+    else:
+        result_details["issues_truncated"] = 0
+    try:
+        observable_progress = max(
+            row.progress,
+            int(result_details.get("import_progress", row.progress)),
+        )
+    except (TypeError, ValueError):
+        observable_progress = row.progress
     return ImportJob(
         id=row.id,
         filename=row.source_file.original_filename,
@@ -97,7 +129,7 @@ def import_job_model(
         source_type=row.source_type,
         detected_type=row.source_file.detected_type,
         status=JobStatus(row.status),
-        progress=row.progress,
+        progress=max(0, min(100, observable_progress)),
         products=row.products_count,
         warnings=row.warnings_count,
         created_at=row.created_at.astimezone().strftime("%H:%M"),
@@ -146,7 +178,10 @@ def list_import_job_models(
     ).all()
     # Polling/list responses stay bounded. The per-job endpoint still exposes
     # every persisted warning on demand.
-    return [import_job_model(row, warning_limit=20) for row in rows]
+    return [
+        import_job_model(row, warning_limit=20, issue_limit=20)
+        for row in rows
+    ]
 
 
 def review_item_model(row: ReviewItemRow) -> ReviewItem:

@@ -691,9 +691,40 @@ interface ApiImportJob {
   parser: string;
   extension_matches: boolean;
   error_message?: string | null;
+  result_details?: {
+    outcome?: string;
+    imported?: number;
+    created?: number;
+    updated?: number;
+    unchanged?: number;
+    skipped?: number;
+    issues?: Array<{
+      row_number?: number | null;
+      column?: string;
+      code?: string;
+      message?: string;
+      value?: string | null;
+      suggestion?: string | null;
+    }>;
+    issue_total?: number;
+    issues_truncated?: number;
+    import_progress?: number;
+    import_stage?: string;
+    processed_rows?: number;
+    total_rows?: number;
+  };
 }
 
 function mapImport(row: ApiImportJob): ImportJob {
+  const details = row.result_details ?? {};
+  const issues = (details.issues ?? []).map((issue) => ({
+    rowNumber: defined(issue.row_number),
+    column: issue.column || "未识别字段",
+    code: issue.code || "VALIDATION_ERROR",
+    message: issue.message || "该字段无法导入。",
+    value: defined(issue.value),
+    suggestion: defined(issue.suggestion),
+  }));
   return {
     id: row.id,
     filename: row.filename,
@@ -709,6 +740,21 @@ function mapImport(row: ApiImportJob): ImportJob {
     parser: row.parser,
     extensionMatches: row.extension_matches,
     errorMessage: defined(row.error_message),
+    resultDetails: {
+      outcome: defined(details.outcome),
+      imported: defined(details.imported),
+      created: defined(details.created),
+      updated: defined(details.updated),
+      unchanged: defined(details.unchanged),
+      skipped: defined(details.skipped),
+      issues,
+      issueTotal: details.issue_total ?? issues.length,
+      issuesTruncated: details.issues_truncated ?? 0,
+      importProgress: defined(details.import_progress),
+      importStage: defined(details.import_stage),
+      processedRows: defined(details.processed_rows),
+      totalRows: defined(details.total_rows),
+    },
   };
 }
 
@@ -775,11 +821,66 @@ export async function createImport(file: File, supplierId?: string) {
   return mapImport(await request<ApiImportJob>("/imports", { method: "POST", body }));
 }
 
-export async function createProductTemplateImport(file: File) {
+function uploadProductTemplate(
+  body: FormData,
+  onUploadProgress: ((percent: number) => void) | undefined,
+  retrySession: boolean,
+): Promise<ApiImportJob> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE}/imports`);
+    xhr.withCredentials = true;
+    if (accessToken) xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onUploadProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      }
+    };
+    xhr.onerror = () => reject(new CoreApiError("无法连接服务，请检查网络后重试。", 0));
+    xhr.onload = () => {
+      let payload: unknown = null;
+      try {
+        payload = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+      } catch {
+        payload = xhr.responseText;
+      }
+      if (xhr.status === 401 && retrySession) {
+        void refreshAuthSession()
+          .then((restored) => {
+            if (!restored) {
+              window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+              throw new CoreApiError(messageFromPayload(payload, "会话已失效"), 401, payload);
+            }
+            return uploadProductTemplate(body, onUploadProgress, false);
+          })
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new CoreApiError(
+          messageFromPayload(payload, `请求失败（${xhr.status}）`),
+          xhr.status,
+          payload,
+        ));
+        return;
+      }
+      onUploadProgress?.(100);
+      resolve(payload as ApiImportJob);
+    };
+    xhr.send(body);
+  });
+}
+
+export async function createProductTemplateImport(
+  file: File,
+  onUploadProgress?: (percent: number) => void,
+) {
   const body = new FormData();
   body.append("file", file);
   body.append("source_type", "PRODUCT_TEMPLATE");
-  return mapImport(await request<ApiImportJob>("/imports", { method: "POST", body }));
+  body.append("defer_processing", "true");
+  return mapImport(await uploadProductTemplate(body, onUploadProgress, true));
 }
 
 interface ApiReviewItem {

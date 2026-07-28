@@ -95,7 +95,13 @@ from app.services.hybrid_search import (
     _score_tag_relevance,
     hybrid_product_search,
 )
-from app.services.knowledge import build_product_chunks, project_product_knowledge
+from app.services.knowledge import (
+    KnowledgeIndexExcludedError,
+    build_product_chunks,
+    indexed_product_ids,
+    project_product_knowledge,
+    update_knowledge_index,
+)
 from app.services.parsers import parse_document
 from app.services.pricing import calculate_price
 from app.services.product_intelligence.fake_parser import FakeProductParserAdapter
@@ -3336,6 +3342,120 @@ def test_manual_knowledge_index_update_and_full_rebuild() -> None:
         session.commit()
 
 
+def test_uncategorized_product_is_removed_from_the_smart_index() -> None:
+    category_id = uuid4()
+    product_id = uuid4()
+    document_id: UUID | None = None
+    chunk_ids: list[UUID] = []
+    try:
+        with SessionLocal() as session:
+            session.add(
+                ProductCategoryRow(
+                    id=category_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    code=f"UNCATEGORIZED-{category_id.hex[:10]}",
+                    name="未分类",
+                    path="未分类",
+                    status="ACTIVE",
+                )
+            )
+            session.add(
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"UNCATEGORIZED-{product_id.hex[:8]}",
+                    name="不应进入智能索引的测试商品",
+                    description="This content must be retired from semantic retrieval.",
+                    status="ACTIVE",
+                    current_version=1,
+                    search_document_version=0,
+                )
+            )
+            session.commit()
+
+            projected = project_product_knowledge(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+            )
+            session.commit()
+            document_id = projected.document_id
+            chunk_ids = list(
+                session.scalars(
+                    select(KnowledgeChunkRow.id).where(
+                        KnowledgeChunkRow.document_id == document_id
+                    )
+                ).all()
+            )
+
+            product = session.get(ProductRow, product_id)
+            assert product is not None
+            product.category_id = category_id
+            product.current_version += 1
+            product.search_document_version = 0
+            session.commit()
+
+            updated = update_knowledge_index(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                full_rebuild=False,
+            )
+
+            assert product_id not in indexed_product_ids(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+            assert session.get(KnowledgeDocumentRow, document_id).status == "STALE"
+            assert all(
+                session.get(KnowledgeChunkRow, chunk_id).status == "STALE"
+                for chunk_id in chunk_ids
+            )
+            assert all(
+                row.status == "STALE"
+                for row in session.scalars(
+                    select(EmbeddingRow).where(
+                        EmbeddingRow.entity_id.in_(chunk_ids)
+                    )
+                ).all()
+            )
+            assert updated.pending_products == 0
+            with pytest.raises(
+                KnowledgeIndexExcludedError,
+                match="未分类商品不会纳入智能索引",
+            ):
+                project_product_knowledge(
+                    session,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                )
+    finally:
+        with SessionLocal() as session:
+            if chunk_ids:
+                session.execute(
+                    delete(EmbeddingRow).where(
+                        EmbeddingRow.entity_id.in_(chunk_ids)
+                    )
+                )
+                session.execute(
+                    delete(KnowledgeChunkRow).where(
+                        KnowledgeChunkRow.id.in_(chunk_ids)
+                    )
+                )
+            if document_id is not None:
+                session.execute(
+                    delete(KnowledgeDocumentRow).where(
+                        KnowledgeDocumentRow.id == document_id
+                    )
+                )
+            session.execute(delete(ProductRow).where(ProductRow.id == product_id))
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.id == category_id
+                )
+            )
+            session.commit()
+
+
 def test_observable_knowledge_index_job_reports_determinate_progress() -> None:
     product_id = uuid4()
     with SessionLocal() as session:
@@ -4482,6 +4602,92 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         assert "逗号分隔" in sheet["H1"].comment.text
     finally:
         workbook.close()
+
+
+def test_product_template_failure_returns_complete_structured_issue_details(
+    request: pytest.FixtureRequest,
+) -> None:
+    import_job_ids: list[str] = []
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[],
+            category_names=[],
+        )
+    )
+    content = _product_template_bytes([
+        [
+            "",
+            "测试分类",
+            "INVALID-DETAIL-A",
+            None,
+            "not-a-price",
+            None,
+            None,
+            None,
+            "javascript:alert(1)",
+            *([None] * 9),
+        ],
+        [
+            "错误商品 B",
+            "一级/二级/三级",
+            "INVALID-DETAIL-B",
+            None,
+            None,
+            None,
+            None,
+            "x" * 81,
+            *([None] * 10),
+        ],
+    ])
+
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "待修正商品.xlsx",
+                content,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={
+            "source_type": "PRODUCT_TEMPLATE",
+            "defer_processing": "true",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    queued = response.json()
+    import_job_ids.append(queued["id"])
+    assert queued["status"] == "scanning"
+    assert queued["progress"] == 5
+
+    detailed = client.get(f"/api/v1/imports/{queued['id']}")
+    assert detailed.status_code == 200
+    payload = detailed.json()
+    assert payload["status"] == "failed"
+    assert payload["progress"] == 100
+    assert payload["products"] == 0
+    assert payload["warnings"] == 5
+    assert payload["result_details"]["issue_total"] == 5
+    assert payload["result_details"]["issues_truncated"] == 0
+    assert payload["result_details"]["import_stage"] == "VALIDATION_FAILED"
+    assert {
+        (issue["row_number"], issue["column"], issue["code"])
+        for issue in payload["result_details"]["issues"]
+    } == {
+        (2, "商品名称", "REQUIRED_VALUE_MISSING"),
+        (2, "商品价格", "PRICE_INVALID"),
+        (2, "商品图片1", "IMAGE_URL_INVALID"),
+        (3, "商品分类", "CATEGORY_INVALID"),
+        (3, "标签", "TAGS_INVALID"),
+    }
+    assert all(
+        issue["message"] and issue["suggestion"]
+        for issue in payload["result_details"]["issues"]
+    )
+
+    assert len(payload["result_details"]["issues"]) == 5
 
 
 def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_prices_as_zero(

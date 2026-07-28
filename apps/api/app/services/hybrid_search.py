@@ -8,12 +8,18 @@ import unicodedata
 from uuid import UUID
 
 from pgvector.sqlalchemy import VECTOR
-from sqlalchemy import cast, select
+from sqlalchemy import cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..knowledge_embedding_models import EmbeddingRow, KnowledgeChunkRow, KnowledgeDocumentRow
 from ..product_center_models import SkuRow
-from ..product_supplier_models import ProductAttributeRow, ProductRow, SupplierProductRow, SupplierScoreRow
+from ..product_supplier_models import (
+    ProductAttributeRow,
+    ProductCategoryRow,
+    ProductRow,
+    SupplierProductRow,
+    SupplierScoreRow,
+)
 from ..public_catalog_models import PublicCatalogOfferRow
 from .embedding import (
     EmbeddingProvider,
@@ -24,6 +30,7 @@ from .embedding_configuration import resolved_text_embedding_provider
 
 
 RANKING_VERSION = "hybrid-product-v2"
+UNCATEGORIZED_CATEGORY_NAME = "未分类"
 WEIGHTS = {
     "keyword": 0.32,
     "semantic": 0.45,
@@ -324,11 +331,21 @@ def hybrid_product_search(
             (ProductRow.tenant_id == KnowledgeDocumentRow.tenant_id)
             & (ProductRow.id == KnowledgeDocumentRow.source_entity_id),
         )
+        .outerjoin(
+            ProductCategoryRow,
+            (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+            & (ProductCategoryRow.id == ProductRow.category_id)
+            & (ProductCategoryRow.status == "ACTIVE"),
+        )
         .where(
             KnowledgeDocumentRow.tenant_id == tenant_id,
             KnowledgeDocumentRow.status == "ACTIVE",
             KnowledgeDocumentRow.source_entity_type == "PRODUCT",
             ProductRow.status == "ACTIVE",
+            or_(
+                ProductCategoryRow.id.is_(None),
+                func.trim(ProductCategoryRow.name) != UNCATEGORIZED_CATEGORY_NAME,
+            ),
         )
     )
     if product_ids is not None:

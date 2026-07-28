@@ -120,7 +120,7 @@ export function CoreDashboardPage() {
             </div>
           )}
           <div className="core-quick-actions" aria-label={t("常用操作")}>
-            {canImport ? <Button asChild variant="soft" color="gray"><Link to="/console/products?import=1"><FileArrowUp />{t("导入商品模版")}</Link></Button> : null}
+            {canImport ? <Button asChild variant="soft" color="gray"><Link to="/console/products?import=1"><FileArrowUp />{t("导入商品")}</Link></Button> : null}
             <Button asChild variant="soft" color="gray"><Link to="/console/inquiries"><ChatCircleDots />{t("新建询盘")}</Link></Button>
             <Button asChild variant="soft" color="gray"><Link to="/console/quotes"><FileText />{t("查看报价")}</Link></Button>
           </div>
@@ -154,7 +154,7 @@ export function CoreDashboardPage() {
       </section>
 
       <Card className="core-panel">
-        <div className="core-panel-heading"><div><Text size="1" color="gray">{t("最近导入")}</Text><Heading size="4">{t("商品模版处理记录")}</Heading></div>{canImport ? <Button asChild size="1" variant="ghost"><Link to="/console/products?import=1">{t("查看全部")}</Link></Button> : null}</div>
+        <div className="core-panel-heading"><div><Text size="1" color="gray">{t("最近导入")}</Text><Heading size="4">{t("商品导入记录")}</Heading></div>{canImport ? <Button asChild size="1" variant="ghost"><Link to="/console/products?import=1">{t("查看全部")}</Link></Button> : null}</div>
         {templateImports.length ? <div className="core-list">
           {templateImports.slice(0, 6).map((job) => (
             <div className="core-list-row" key={job.id}>
@@ -164,7 +164,7 @@ export function CoreDashboardPage() {
               <Text size="1" color="gray">{coreDate(job.createdAt)}</Text>
             </div>
           ))}
-        </div> : <CoreEmpty title={t("还没有导入记录")} description={t("使用固定的商品模版.xlsx，一次导入当前商家的全部商品。")} action={canImport ? <Button asChild variant="soft"><Link to="/console/products?import=1"><FileArrowUp />{t("导入商品模版")}</Link></Button> : undefined} />}
+        </div> : <CoreEmpty title={t("还没有导入记录")} description={t("下载标准模板并填写商品资料，即可一次导入当前商家的全部商品。")} action={canImport ? <Button asChild variant="soft"><Link to="/console/products?import=1"><FileArrowUp />{t("导入商品")}</Link></Button> : undefined} />}
       </Card>
     </div>
   );

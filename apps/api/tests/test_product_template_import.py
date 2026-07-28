@@ -116,6 +116,95 @@ def test_price_is_half_up_quantized_to_two_decimal_places(tmp_path: Path) -> Non
     assert result.warnings == ()
 
 
+def test_optional_columns_can_be_blank_and_blank_price_defaults_to_zero(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "商品模版.xlsx"
+    _write_workbook(
+        path,
+        [[
+            "无选填信息商品",
+            "基础分类",
+            "OPTIONAL-BLANK",
+            None,
+            None,
+            None,
+            None,
+            None,
+            *([None] * 10),
+        ]],
+    )
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert result.rows[0].supplier_name is None
+    assert result.rows[0].unit_price == Decimal("0.00")
+    assert result.rows[0].description is None
+    assert result.rows[0].note is None
+    assert result.rows[0].tags == ()
+    assert result.rows[0].image_urls == ()
+
+
+def test_blank_category_defaults_to_uncategorized(tmp_path: Path) -> None:
+    path = tmp_path / "商品模版.xlsx"
+    _write_workbook(
+        path,
+        [[
+            "待分类商品",
+            None,
+            "UNCATEGORIZED-001",
+            None,
+            None,
+            None,
+            None,
+            None,
+            *([None] * 10),
+        ]],
+    )
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert result.rows[0].category == "未分类"
+    assert result.rows[0].unit_price == Decimal("0.00")
+
+
+def test_parser_reports_determinate_row_progress(tmp_path: Path) -> None:
+    path = tmp_path / "商品模版.xlsx"
+    _write_workbook(
+        path,
+        [
+            [
+                f"进度商品 {index}",
+                "进度分类",
+                f"PROGRESS-{index:03d}",
+                None,
+                None,
+                None,
+                None,
+                None,
+                *([None] * 10),
+            ]
+            for index in range(1, 251)
+        ],
+    )
+    progress: list[tuple[int, int]] = []
+
+    result = parse_product_template(
+        path,
+        progress_callback=lambda processed, total: progress.append((processed, total)),
+    )
+
+    assert len(result.rows) == 250
+    assert progress[0] == (1, 250)
+    assert progress[-1] == (250, 250)
+    assert all(total == 250 for _, total in progress)
+    assert [processed for processed, _ in progress] == sorted(
+        processed for processed, _ in progress
+    )
+
+
 def test_price_respects_numeric_20_2_boundary(tmp_path: Path) -> None:
     path = tmp_path / "商品模版.xlsx"
     _write_workbook(
@@ -183,14 +272,69 @@ def test_invalid_row_rejects_the_full_snapshot(
         parse_product_template(path)
 
 
+def test_validation_collects_complete_row_and_field_details(tmp_path: Path) -> None:
+    path = tmp_path / "商品模版.xlsx"
+    _write_workbook(
+        path,
+        [
+            [
+                "",
+                "分类",
+                "INVALID-MULTI-A",
+                None,
+                "not-a-price",
+                None,
+                None,
+                None,
+                "javascript:alert(1)",
+                *([None] * 9),
+            ],
+            [
+                "商品 B",
+                "一级/二级/三级",
+                "INVALID-MULTI-B",
+                None,
+                None,
+                None,
+                None,
+                "x" * 81,
+                *([None] * 10),
+            ],
+        ],
+    )
+
+    with pytest.raises(ProductTemplateValidationError) as captured:
+        parse_product_template(path)
+
+    issues = captured.value.issues
+    assert len(issues) == 5
+    assert {issue.row_number for issue in issues} == {2, 3}
+    assert {
+        (issue.row_number, issue.column, issue.code)
+        for issue in issues
+    } == {
+        (2, "商品名称", "REQUIRED_VALUE_MISSING"),
+        (2, "商品价格", "PRICE_INVALID"),
+        (2, "商品图片1", "IMAGE_URL_INVALID"),
+        (3, "商品分类", "CATEGORY_INVALID"),
+        (3, "标签", "TAGS_INVALID"),
+    }
+    assert all(issue.suggestion for issue in issues)
+    assert "发现 5 个数据问题" in str(captured.value)
+
+
 def test_wrong_headers_are_rejected_before_rows_are_read(tmp_path: Path) -> None:
     path = tmp_path / "商品模版.xlsx"
     wrong_headers = list(PRODUCT_TEMPLATE_HEADERS)
     wrong_headers[2] = "SKU"
     _write_workbook(path, [], headers=wrong_headers)
 
-    with pytest.raises(ProductTemplateValidationError, match="表头"):
+    with pytest.raises(ProductTemplateValidationError, match="表头") as captured:
         parse_product_template(path)
+
+    assert captured.value.issues[0].row_number == 1
+    assert captured.value.issues[0].column == "商品型号"
+    assert captured.value.issues[0].code == "HEADER_MISMATCH"
 
 
 def test_current_root_template_matches_contract() -> None:

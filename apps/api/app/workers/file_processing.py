@@ -291,6 +291,9 @@ def process_file_worker_job(
                     "superseded": "TEMPLATE_SUPERSEDED",
                 }.get(template_result.status, "TEMPLATE_REJECTED")
                 all_warnings = list(template_result.warnings)
+                issue_details = [
+                    issue.as_dict() for issue in template_result.issues
+                ]
                 persisted_warnings = all_warnings[:MAX_PERSISTED_TEMPLATE_WARNINGS]
                 summary_warnings: list[str] = []
                 for warning in all_warnings:
@@ -323,6 +326,16 @@ def process_file_worker_job(
                     "message": template_result.message,
                     "warnings": persisted_warnings,
                     "warning_total": len(all_warnings),
+                    "issues": issue_details,
+                    "issue_total": len(issue_details),
+                    "import_progress": 100,
+                    "import_stage": (
+                        "COMPLETED"
+                        if template_result.status == "published"
+                        else "VALIDATION_FAILED"
+                        if issue_details
+                        else "FAILED"
+                    ),
                 })
                 truncated_warning_count = len(all_warnings) - len(persisted_warnings)
                 if truncated_warning_count:

@@ -31,6 +31,7 @@
 .core-heading h1, .core-heading h2 { font-family: var(--font-display); line-height: 1.12; letter-spacing: -.025em; text-wrap: balance; }
 .core-heading p { max-width: 62ch; line-height: 1.65; text-wrap: pretty; }
 .core-heading-actions, .core-dialog-actions { min-width: 0; max-width: 100%; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--control-gap); }
+.core-empty-actions { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: var(--control-gap); }
 .core-state { min-height: 180px; padding: 28px !important; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 9px; text-align: center; }
 .core-state > svg { color: var(--core-accent); }
 .core-error { min-height: auto; flex-direction: row; justify-content: flex-start; text-align: left; color: #a43d35; background: var(--danger-soft); }
@@ -186,8 +187,28 @@
 .core-template-dropzone:disabled { opacity: .6; cursor: wait; transform: none; }
 .core-template-dropzone > svg { color: var(--accent); }
 .core-template-dropzone > span { color: var(--text-soft); font-size: 12px; }
+.core-import-progress { padding: 14px !important; display: grid; gap: 10px; border-color: color-mix(in srgb, var(--core-accent) 22%, var(--core-line)) !important; background: color-mix(in srgb, var(--core-accent) 5%, var(--core-surface)); }
+.core-import-progress-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.core-import-progress-heading > span { min-width: 0; display: grid; gap: 3px; }
+.core-import-progress-heading > strong { color: var(--core-accent); font-size: 13px; }
 .core-template-result { padding: 14px !important; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 11px; }
 .core-template-result > div { min-width: 0; display: grid; gap: 3px; }
+.core-import-result-message { display: block; margin-top: 3px; line-height: 1.55; overflow-wrap: anywhere; }
+.core-import-job-progress { margin-top: 8px; display: grid; gap: 7px; }
+.core-import-job-progress > span { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.core-import-job-progress > span strong { color: var(--core-accent); font-size: 12px; }
+.core-import-issues { margin-top: 11px; padding-top: 12px; display: grid; gap: 10px; border-top: 1px solid var(--core-line); }
+.core-import-issues-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.core-import-issues-heading > span { min-width: 0; display: grid; gap: 3px; }
+.core-import-issue-list { max-height: 340px; display: grid; gap: 8px; overflow-y: auto; overscroll-behavior: contain; }
+.core-import-issue-list article { padding: 11px 12px; display: grid; gap: 7px; border: 1px solid color-mix(in srgb, #a43d35 22%, var(--core-line)); border-radius: 11px; background: color-mix(in srgb, #a43d35 4%, var(--core-surface)); }
+.core-import-issue-meta { min-width: 0; display: grid; grid-template-columns: auto minmax(90px, 1fr) auto; align-items: center; gap: 8px; }
+.core-import-issue-meta strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.core-import-issue-meta code { color: var(--core-muted); }
+.core-import-issue-list p { margin: 0; color: var(--core-ink); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.core-import-issue-list small { min-width: 0; display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px; color: var(--core-muted); font-size: 11px; line-height: 1.5; }
+.core-import-issue-list small > span { color: var(--core-muted); }
+.core-import-issue-list small > code { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
 .core-template-warnings { margin-top: .45rem; color: var(--gray-11); font-size: .78rem; }
 .core-template-warnings summary { cursor: pointer; color: var(--accent-11); }
 .core-template-warnings ol { max-height: 12rem; margin: .6rem 0 0; padding-left: 1.2rem; overflow: auto; }
@@ -198,7 +219,9 @@
 .core-template-result.published > svg { color: var(--accent); }
 .core-template-result.failed > svg { color: #a43d35; }
 .core-template-history { padding-top: 14px; display: grid; gap: 5px; border-top: 1px solid var(--line); }
-.core-template-history-row { min-height: 56px; display: grid; grid-template-columns: auto minmax(180px, 1fr) minmax(90px, 150px) auto; align-items: center; gap: 10px; }
+.core-template-history-row { width: 100%; min-height: 56px; padding: 5px 7px; display: grid; grid-template-columns: auto minmax(180px, 1fr) minmax(90px, 150px) auto; align-items: center; gap: 10px; border: 0; border-radius: 10px; color: var(--core-ink); background: transparent; text-align: left; cursor: pointer; }
+.core-template-history-row:hover { background: var(--core-soft); }
+.core-template-history-row:focus-visible { outline: 2px solid var(--core-accent); outline-offset: 1px; }
 .core-template-history-row > svg { color: var(--accent); }
 .core-template-history-row > span { min-width: 0; display: grid; gap: 2px; }
 .core-template-history-row strong, .core-template-history-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -731,6 +754,11 @@
   .core-sku-mobile-facts > span:last-child { grid-column: 1 / -1; }
   .core-sku-pagination { justify-content: space-between; gap: 8px; }
   .core-template-contract { grid-template-columns: 1fr; }
+  .core-import-progress-heading, .core-import-issues-heading { align-items: stretch; flex-direction: column; }
+  .core-import-issues-heading .rt-Button { width: 100%; }
+  .core-import-issue-meta { grid-template-columns: auto minmax(0, 1fr); }
+  .core-import-issue-meta code { grid-column: 2; }
+  .core-import-issue-list small { grid-template-columns: 1fr; gap: 2px; }
   .core-index-reminder { grid-template-columns: auto minmax(0, 1fr); }
   .core-index-reminder .rt-Button { grid-column: 1 / -1; width: 100%; }
   .core-template-history-row { grid-template-columns: auto minmax(0, 1fr) auto; }

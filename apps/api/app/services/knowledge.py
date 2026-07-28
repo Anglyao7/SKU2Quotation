@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, distinct, func, select, update
+from sqlalchemy import and_, distinct, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..db_models import SupplierRow
@@ -34,9 +34,14 @@ FIELD_POLICY_VERSION = 2
 LOCALE = "und"
 FEATURE_MARKERS = ("feature", "use", "application", "cert", "特点", "用途", "认证")
 MARKET_MARKERS = ("market", "country", "region", "市场", "国家", "地区")
+UNCATEGORIZED_CATEGORY_NAME = "未分类"
 
 
 class KnowledgeProjectionError(ValueError):
+    pass
+
+
+class KnowledgeIndexExcludedError(ValueError):
     pass
 
 
@@ -158,6 +163,8 @@ def build_product_payload(
                 ProductCategoryRow.status == "ACTIVE",
             )
         )
+    if category is not None and category.name.strip() == UNCATEGORIZED_CATEGORY_NAME:
+        raise KnowledgeIndexExcludedError("未分类商品不会纳入智能索引")
     attributes = session.scalars(
         select(ProductAttributeRow)
         .where(
@@ -644,6 +651,73 @@ def project_products_knowledge(
     ]
 
 
+def _deactivate_product_knowledge(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_ids: list[UUID],
+) -> None:
+    """Retire active documents for products that are no longer index-eligible."""
+
+    product_ids = list(dict.fromkeys(product_ids))
+    if not product_ids:
+        return
+    now = utcnow()
+    active_document_ids = session.scalars(
+        select(KnowledgeDocumentRow.id).where(
+            KnowledgeDocumentRow.tenant_id == tenant_id,
+            KnowledgeDocumentRow.source_entity_type == "PRODUCT",
+            KnowledgeDocumentRow.source_entity_id.in_(product_ids),
+            KnowledgeDocumentRow.status == "ACTIVE",
+        )
+    ).all()
+    if active_document_ids:
+        active_chunk_ids = session.scalars(
+            select(KnowledgeChunkRow.id).where(
+                KnowledgeChunkRow.tenant_id == tenant_id,
+                KnowledgeChunkRow.document_id.in_(active_document_ids),
+                KnowledgeChunkRow.status == "ACTIVE",
+            )
+        ).all()
+        if active_chunk_ids:
+            session.execute(
+                update(EmbeddingRow)
+                .where(
+                    EmbeddingRow.tenant_id == tenant_id,
+                    EmbeddingRow.entity_id.in_(active_chunk_ids),
+                    EmbeddingRow.status == "ACTIVE",
+                )
+                .values(status="STALE", superseded_at=now, updated_at=now)
+            )
+        session.execute(
+            update(KnowledgeChunkRow)
+            .where(
+                KnowledgeChunkRow.tenant_id == tenant_id,
+                KnowledgeChunkRow.document_id.in_(active_document_ids),
+                KnowledgeChunkRow.status == "ACTIVE",
+            )
+            .values(status="STALE", updated_at=now)
+        )
+        session.execute(
+            update(KnowledgeDocumentRow)
+            .where(
+                KnowledgeDocumentRow.tenant_id == tenant_id,
+                KnowledgeDocumentRow.id.in_(active_document_ids),
+                KnowledgeDocumentRow.status == "ACTIVE",
+            )
+            .values(status="STALE", updated_at=now)
+        )
+    session.execute(
+        update(ProductRow)
+        .where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.id.in_(product_ids),
+        )
+        .values(search_document_version=0, updated_at=now)
+    )
+    session.flush()
+
+
 def indexed_product_ids(
     session: Session,
     *,
@@ -663,6 +737,12 @@ def indexed_product_ids(
             (KnowledgeChunkRow.tenant_id == KnowledgeDocumentRow.tenant_id)
             & (KnowledgeChunkRow.document_id == KnowledgeDocumentRow.id)
             & (KnowledgeChunkRow.status == "ACTIVE"),
+        )
+        .outerjoin(
+            ProductCategoryRow,
+            (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+            & (ProductCategoryRow.id == ProductRow.category_id)
+            & (ProductCategoryRow.status == "ACTIVE"),
         )
         .outerjoin(
             EmbeddingRow,
@@ -685,6 +765,10 @@ def indexed_product_ids(
             KnowledgeDocumentRow.locale == LOCALE,
             KnowledgeDocumentRow.status == "ACTIVE",
             ProductRow.status == "ACTIVE",
+            or_(
+                ProductCategoryRow.id.is_(None),
+                func.trim(ProductCategoryRow.name) != UNCATEGORIZED_CATEGORY_NAME,
+            ),
             ProductRow.search_document_version == ProductRow.current_version,
             KnowledgeDocumentRow.source_version == ProductRow.current_version,
         )
@@ -708,9 +792,20 @@ def knowledge_index_status(
         session.scalar(
             select(func.count())
             .select_from(ProductRow)
+            .outerjoin(
+                ProductCategoryRow,
+                (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+                & (ProductCategoryRow.id == ProductRow.category_id)
+                & (ProductCategoryRow.status == "ACTIVE"),
+            )
             .where(
                 ProductRow.tenant_id == tenant_id,
                 ProductRow.status == "ACTIVE",
+                or_(
+                    ProductCategoryRow.id.is_(None),
+                    func.trim(ProductCategoryRow.name)
+                    != UNCATEGORIZED_CATEGORY_NAME,
+                ),
             )
         )
         or 0
@@ -745,12 +840,46 @@ def update_knowledge_index(
     ) = None,
 ) -> KnowledgeIndexUpdateResult:
     embedder = embedder or resolved_text_embedding_provider(session)
-    all_products = list(
-        session.execute(
-            select(ProductRow.id, ProductRow.name)
+    excluded_product_ids = list(
+        session.scalars(
+            select(ProductRow.id)
+            .join(
+                ProductCategoryRow,
+                (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+                & (ProductCategoryRow.id == ProductRow.category_id),
+            )
             .where(
                 ProductRow.tenant_id == tenant_id,
                 ProductRow.status == "ACTIVE",
+                func.trim(ProductCategoryRow.name)
+                == UNCATEGORIZED_CATEGORY_NAME,
+            )
+        ).all()
+    )
+    if excluded_product_ids:
+        _deactivate_product_knowledge(
+            session,
+            tenant_id=tenant_id,
+            product_ids=excluded_product_ids,
+        )
+        session.commit()
+    all_products = list(
+        session.execute(
+            select(ProductRow.id, ProductRow.name)
+            .outerjoin(
+                ProductCategoryRow,
+                (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+                & (ProductCategoryRow.id == ProductRow.category_id)
+                & (ProductCategoryRow.status == "ACTIVE"),
+            )
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.status == "ACTIVE",
+                or_(
+                    ProductCategoryRow.id.is_(None),
+                    func.trim(ProductCategoryRow.name)
+                    != UNCATEGORIZED_CATEGORY_NAME,
+                ),
             )
             .order_by(ProductRow.id)
         ).all()

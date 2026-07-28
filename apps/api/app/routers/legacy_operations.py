@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ApplicationError
@@ -120,14 +130,20 @@ async def detect_upload(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_import(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     supplier_id: str | None = Form(default=None),
     source_type: str = Form(default="UNKNOWN"),
+    defer_processing: bool = Form(default=False),
     session: Session = Depends(get_authenticated_session),
 ) -> SupplierFileImportResponse:
     context = current_context(session)
     try:
-        return await use_cases.create_import(
+        defer_inline_worker = (
+            defer_processing
+            and use_cases.inline_import_worker_enabled(session)
+        )
+        response = await use_cases.create_import(
             session,
             upload=file,
             supplier_id=supplier_id,
@@ -135,7 +151,15 @@ async def create_import(
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             permissions=context.permissions,
+            defer_inline_worker=defer_inline_worker,
         )
+        if defer_inline_worker:
+            background_tasks.add_task(
+                use_cases.process_deferred_import,
+                tenant_id=context.tenant_id,
+                import_job_id=response.id,
+            )
+        return response
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

@@ -10,8 +10,10 @@ from openpyxl import Workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..database import SessionLocal, set_request_context
 from ..data import PRODUCTS
 from ..domain.errors import ApplicationError
 from ..models import (
@@ -111,6 +113,7 @@ async def create_import(
     tenant_id: UUID,
     user_id: UUID,
     permissions: frozenset[str],
+    defer_inline_worker: bool = False,
 ) -> SupplierFileImportResponse:
     _require_permission(permissions, "product.import")
     original_filename = Path(upload.filename or "unnamed").name
@@ -244,7 +247,7 @@ async def create_import(
 
     worker_result = None
     dialect = session.bind.dialect.name if session.bind is not None else "unknown"
-    if inline_worker_enabled(database_dialect=dialect):
+    if inline_worker_enabled(database_dialect=dialect) and not defer_inline_worker:
         worker_result = process_file_worker_job(
             session,
             tenant_id=tenant_id,
@@ -269,6 +272,43 @@ async def create_import(
     )
 
 
+def inline_import_worker_enabled(session: Session) -> bool:
+    dialect = session.bind.dialect.name if session.bind is not None else "unknown"
+    return inline_worker_enabled(database_dialect=dialect)
+
+
+def process_deferred_import(*, tenant_id: UUID, import_job_id: str) -> None:
+    """Run an inline-profile job after the HTTP response has been sent."""
+
+    with SessionLocal() as session:
+        set_request_context(
+            session,
+            organization_id=UUID(int=0),
+            tenant_id=tenant_id,
+            user_id=UUID(int=0),
+        )
+        worker_job_id = session.scalar(
+            select(WorkerJobRow.id)
+            .where(
+                WorkerJobRow.tenant_id == tenant_id,
+                WorkerJobRow.import_job_id == import_job_id,
+                WorkerJobRow.status.in_(("PENDING", "RETRY")),
+            )
+            .order_by(WorkerJobRow.created_at.desc())
+            .limit(1)
+        )
+        session.rollback()
+        if worker_job_id is None:
+            return
+        process_file_worker_job(
+            session,
+            tenant_id=tenant_id,
+            job_id=worker_job_id,
+            worker_id="deferred-api-worker",
+            storage=get_object_storage(),
+        )
+
+
 def build_product_template_workbook() -> bytes:
     """Build the canonical, blank product-import workbook.
 
@@ -287,7 +327,7 @@ def build_product_template_workbook() -> bytes:
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     instructions = {
         "商品名称": "必填。面向客户展示的商品名称。",
-        "商品分类": "必填。填写“一级分类”或“一级分类/二级分类”，最多两级；不存在时系统会自动创建。",
+        "商品分类": "选填。填写“一级分类”或“一级分类/二级分类”，最多两级；留空自动归入“未分类”，且不会进入智能索引。",
         "商品型号": "必填，作为 SKU 唯一标识；重复型号只保留首次出现的行。",
         "供应商": "选填。用于关联进销存；同名供应商自动复用，不存在时自动创建。",
         "商品价格": "选填。留空时按 0.00 处理，商品仍会正常发布到前台。",
