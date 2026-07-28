@@ -7,6 +7,7 @@ import httpx
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.services.auth.contracts import (
+    IdentityClaim,
     IdentityProviderError,
     IdentityProviderPasswordPolicyError,
 )
@@ -307,6 +308,102 @@ def test_keycloak_password_change_uses_service_account_and_exact_subject(
         "value": "UpdatedPass!456",
     }
     assert all(request[2]["follow_redirects"] is False for request in requests)
+
+
+def test_keycloak_password_user_has_complete_profile_and_is_login_verified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("KEYCLOAK_ADMIN_BASE_URL", raising=False)
+    issuer = "https://identity.example.test/realms/atc"
+    settings = OidcSettings(
+        issuer=issuer,
+        client_id="atc-web",
+        client_secret="S" * 48,
+        scopes=("openid", "profile", "email"),
+        redirect_uris=("https://app.example.test/login/callback",),
+        token_endpoint_auth_method="client_secret_basic",
+        allowed_algorithms=("RS256",),
+        allowed_endpoint_hosts=("identity.example.test",),
+        timeout_seconds=5,
+    )
+    discovery = OidcDiscovery(
+        issuer=issuer,
+        authorization_endpoint=f"{issuer}/authorize",
+        token_endpoint=f"{issuer}/token",
+        jwks_uri=f"{issuer}/jwks",
+        userinfo_endpoint=None,
+        end_session_endpoint=f"{issuer}/logout",
+        signing_algorithms=("RS256",),
+    )
+    created_payload: dict[str, object] = {}
+    verified_credentials: dict[str, str] = {}
+
+    def post(url: str, **kwargs: object) -> httpx.Response:
+        if url == discovery.token_endpoint:
+            return httpx.Response(
+                200,
+                json={"access_token": "service-token", "token_type": "Bearer"},
+                request=httpx.Request("POST", url),
+            )
+        created_payload.update(kwargs["json"])  # type: ignore[arg-type]
+        return httpx.Response(
+            201,
+            headers={
+                "Location": (
+                    "https://identity.example.test/admin/realms/atc/"
+                    "users/new-keycloak-subject"
+                )
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        verified_credentials.update(identifier=identifier, password=password)
+        return IdentityClaim(
+            provider="oidc:test",
+            subject="new-keycloak-subject",
+            email_normalized=None,
+            email_verified=False,
+            display_name="青岚",
+        )
+
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.load_oidc_settings",
+        lambda: settings,
+    )
+    monkeypatch.setattr(
+        "app.services.auth.oidc_provider.get_oidc_discovery",
+        lambda *_args: discovery,
+    )
+    monkeypatch.setattr("app.services.auth.oidc_provider.httpx.post", post)
+    monkeypatch.setattr(OidcIdentityProviderAdapter, "authenticate_password", authenticate)
+
+    claim = OidcIdentityProviderAdapter().provision_password_user(
+        identifier="qinglan",
+        password="Qinglan123",
+        display_name="青岚",
+        email="owner@example.test",
+    )
+
+    assert created_payload["firstName"] == "青岚"
+    assert created_payload["lastName"] == "青岚"
+    assert created_payload["requiredActions"] == []
+    assert created_payload["emailVerified"] is False
+    assert created_payload["credentials"] == [
+        {"type": "password", "temporary": False, "value": "Qinglan123"}
+    ]
+    assert verified_credentials == {
+        "identifier": "qinglan",
+        "password": "Qinglan123",
+    }
+    assert claim.subject == "new-keycloak-subject"
+    assert claim.email_normalized == "owner@example.test"
 
 
 def test_keycloak_password_change_maps_policy_failure_without_upstream_detail(

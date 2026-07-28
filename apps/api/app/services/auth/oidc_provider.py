@@ -26,6 +26,22 @@ SAFE_SIGNING_ALGORITHMS = frozenset(
 )
 
 
+def _keycloak_profile_names(display_name: str) -> tuple[str, str]:
+    """Map the product's single display name onto Keycloak's required profile.
+
+    Keycloak's default user profile requires both firstName and lastName before
+    password grants are allowed.  The product deliberately asks merchants for
+    one display name, so a single-token or CJK name is repeated internally;
+    the application continues to show the original display name from its own
+    identity record.
+    """
+
+    parts = display_name.split(maxsplit=1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return display_name, display_name
+
+
 @dataclass(frozen=True, slots=True)
 class OidcSettings:
     issuer: str
@@ -762,10 +778,12 @@ class OidcIdentityProviderAdapter:
             settings=settings,
             discovery=discovery,
         )
+        first_name, last_name = _keycloak_profile_names(normalized_display_name)
         payload: dict[str, object] = {
             "username": normalized_identifier,
             "enabled": True,
-            "firstName": normalized_display_name,
+            "firstName": first_name,
+            "lastName": last_name,
             "requiredActions": [],
             "credentials": [
                 {
@@ -803,11 +821,40 @@ class OidcIdentityProviderAdapter:
         subject = location.rstrip("/").rsplit("/", 1)[-1]
         if not subject or len(subject) > 255 or "/" in subject:
             raise IdentityProviderError("customer account provisioning failed")
+
+        def remove_unusable_identity() -> None:
+            try:
+                httpx.delete(
+                    f"{admin_realm_url}/users/{quote(subject, safe='')}",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                    timeout=settings.timeout_seconds,
+                    follow_redirects=False,
+                ).raise_for_status()
+            except httpx.HTTPError:
+                pass
+
+        try:
+            verified_claim = self.authenticate_password(
+                identifier=normalized_identifier,
+                password=password,
+            )
+        except IdentityProviderError as exc:
+            # Do not leave an unusable orphan that blocks the administrator
+            # from retrying with the same identifier after configuration is
+            # corrected.
+            remove_unusable_identity()
+            raise IdentityProviderError("customer account provisioning failed") from exc
+        if verified_claim.subject != subject:
+            remove_unusable_identity()
+            raise IdentityProviderError("customer account provisioning failed")
         return IdentityClaim(
             provider=oidc_provider_key(settings.issuer),
             subject=subject,
             email_normalized=normalized_email,
-            email_verified=False,
+            email_verified=verified_claim.email_verified,
             display_name=normalized_display_name,
         )
 
