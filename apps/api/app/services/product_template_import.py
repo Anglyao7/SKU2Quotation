@@ -225,6 +225,27 @@ def _normalize_sku_code(value: object) -> str:
     return _cell_text(value).strip().upper()
 
 
+def _generated_sku_code(
+    *,
+    name: str,
+    category: str,
+    supplier_name: str | None,
+    occurrence: int,
+) -> str:
+    """Create a deterministic temporary SKU when the source has no model."""
+
+    identity = "\x1f".join(
+        (
+            " ".join(name.split()).casefold(),
+            category.casefold(),
+            (supplier_name or "").casefold(),
+        )
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16].upper()
+    base = f"AUTO-{digest}"
+    return base if occurrence == 1 else f"{base}-{occurrence}"
+
+
 def _normalize_supplier_name(value: object, *, row_number: int) -> str | None:
     name = " ".join(_cell_text(value).split())
     if not name:
@@ -398,6 +419,8 @@ def parse_product_template(
         warnings: list[str] = []
         issues: list[ProductTemplateIssue] = []
         first_row_by_sku: dict[str, int] = {}
+        generated_sku_occurrences: dict[str, int] = {}
+        generated_sku_count = 0
         skipped_rows = 0
         total_rows = max(0, (sheet.max_row or 1) - 1)
         progress_interval = max(100, total_rows // 100) if total_rows else 100
@@ -445,23 +468,16 @@ def parse_product_template(
             name = _cell_text(values[0])
             category_text = _cell_text(values[1])
             sku_code = _normalize_sku_code(values[2])
-            for index, (label, value) in enumerate(
-                (
-                    ("商品名称", name),
-                    ("商品型号", sku_code),
-                )
-            ):
-                value_index = (0, 2)[index]
-                if not value and value_index not in formula_indexes:
-                    row_issues.append(
-                        _issue(
-                            row_number=row_number,
-                            column=label,
-                            code="REQUIRED_VALUE_MISSING",
-                            message=f"第 {row_number} 行缺少{label}。",
-                            suggestion=f"请填写{label}；这是商品导入的必填项。",
-                        )
+            if not name and 0 not in formula_indexes:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="商品名称",
+                        code="REQUIRED_VALUE_MISSING",
+                        message=f"第 {row_number} 行缺少商品名称。",
+                        suggestion="请填写商品名称；这是商品导入唯一的必填项。",
                     )
+                )
 
             if len(name) > 500 and 0 not in formula_indexes:
                 row_issues.append(
@@ -596,6 +612,31 @@ def parse_product_template(
                 issues.extend(row_issues)
                 continue
 
+            if not sku_code:
+                generated_base = _generated_sku_code(
+                    name=name,
+                    category=category,
+                    supplier_name=supplier_name,
+                    occurrence=1,
+                )
+                occurrence = generated_sku_occurrences.get(generated_base, 0) + 1
+                sku_code = _generated_sku_code(
+                    name=name,
+                    category=category,
+                    supplier_name=supplier_name,
+                    occurrence=occurrence,
+                )
+                while sku_code in first_row_by_sku:
+                    occurrence += 1
+                    sku_code = _generated_sku_code(
+                        name=name,
+                        category=category,
+                        supplier_name=supplier_name,
+                        occurrence=occurrence,
+                    )
+                generated_sku_occurrences[generated_base] = occurrence
+                generated_sku_count += 1
+
             if sku_code in first_row_by_sku:
                 warnings.append(
                     f"第 {row_number} 行商品型号“{sku_code}”与第 "
@@ -628,6 +669,12 @@ def parse_product_template(
             )
         if not rows:
             raise ProductTemplateValidationError("模版中没有可导入的有效商品。")
+        if generated_sku_count:
+            warnings.insert(
+                0,
+                f"有 {generated_sku_count} 行未填写商品型号，"
+                "系统已根据商品名称、分类和供应商生成临时型号。",
+            )
         return ProductTemplateParseResult(
             rows=tuple(rows),
             warnings=tuple(warnings),

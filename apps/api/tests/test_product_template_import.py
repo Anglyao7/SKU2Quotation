@@ -170,6 +170,51 @@ def test_blank_category_defaults_to_uncategorized(tmp_path: Path) -> None:
     assert result.rows[0].unit_price == Decimal("0.00")
 
 
+def test_blank_model_generates_a_stable_temporary_sku(tmp_path: Path) -> None:
+    path = tmp_path / "商品模版.xlsx"
+    _write_workbook(
+        path,
+        [
+            [
+                "无型号商品",
+                "基础分类",
+                None,
+                "测试供应商",
+                "10",
+                "第一件",
+                None,
+                None,
+                *([None] * 10),
+            ],
+            [
+                "无型号商品",
+                "基础分类",
+                None,
+                "测试供应商",
+                "20",
+                "第二件",
+                None,
+                None,
+                *([None] * 10),
+            ],
+        ],
+    )
+
+    first = parse_product_template(path)
+    repeated = parse_product_template(path)
+
+    assert len(first.rows) == 2
+    assert first.rows[0].sku_code.startswith("AUTO-")
+    assert first.rows[1].sku_code == f"{first.rows[0].sku_code}-2"
+    assert [row.sku_code for row in repeated.rows] == [
+        row.sku_code for row in first.rows
+    ]
+    assert first.skipped_rows == 0
+    assert first.warnings == (
+        "有 2 行未填写商品型号，系统已根据商品名称、分类和供应商生成临时型号。",
+    )
+
+
 def test_parser_reports_determinate_row_progress(tmp_path: Path) -> None:
     path = tmp_path / "商品模版.xlsx"
     _write_workbook(

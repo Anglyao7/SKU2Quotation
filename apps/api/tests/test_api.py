@@ -4600,6 +4600,9 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         assert "商品补充说明" in sheet["G1"].comment.text
         assert sheet["H1"].comment is not None
         assert "逗号分隔" in sheet["H1"].comment.text
+        assert sheet["C1"].comment is not None
+        assert "选填" in sheet["C1"].comment.text
+        assert "临时型号" in sheet["C1"].comment.text
     finally:
         workbook.close()
 

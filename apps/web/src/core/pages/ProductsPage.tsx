@@ -534,7 +534,7 @@ export function ProductsPage() {
             <span className="core-row-icon"><FileXls /></span>
             <div>
               <Text weight="bold" as="div">{t("先下载标准模板")}</Text>
-              <Text size="2" color="gray">{t("只有商品名称和商品型号必填；分类留空自动归入“未分类”且不进入智能索引，价格留空按 0 处理。")}</Text>
+              <Text size="2" color="gray">{t("只有商品名称必填；型号留空自动生成临时型号，分类留空归入“未分类”且不进入智能索引，价格留空按 0 处理。")}</Text>
               <div className="core-chip-row" aria-label={t("固定模版字段")}>
                 {["商品名称", "商品分类", "商品型号", "供应商", "商品价格", "商品描述", "备注", "标签", "商品图片1–10"].map((field) => <Badge color="gray" key={field}>{t(field)}</Badge>)}
               </div>

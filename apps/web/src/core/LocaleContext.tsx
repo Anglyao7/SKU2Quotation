@@ -408,8 +408,8 @@ const english: Record<string, string> = {
   "上传填写完成的 XLSX 文件。系统会先完整校验，再一次性更新当前商家的商品库。":
     "Upload a completed XLSX file. The system validates the entire file before updating this merchant's catalog atomically.",
   "先下载标准模板": "Download the standard template first",
-  "只有商品名称和商品型号必填；分类留空自动归入“未分类”且不进入智能索引，价格留空按 0 处理。":
-    "Only product name and model are required. A blank category becomes “Uncategorized” and is excluded from the AI index; a blank price becomes zero.",
+  "只有商品名称必填；型号留空自动生成临时型号，分类留空归入“未分类”且不进入智能索引，价格留空按 0 处理。":
+    "Only the product name is required. A blank model gets a temporary generated model; a blank category becomes “Uncategorized” and is excluded from the AI index; a blank price becomes zero.",
   "固定模版字段": "Template columns",
   "商品名称": "Product name",
   "商品分类": "Product category",
