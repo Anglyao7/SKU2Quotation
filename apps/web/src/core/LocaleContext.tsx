@@ -950,6 +950,8 @@ const english: Record<string, string> = {
   "商家停用失败。": "Could not deactivate the merchant.",
   "平台租户与前台入口": "Platform merchants & storefronts",
   "新增商家": "Add merchant",
+  "新增商家时请一并开通主账号。主账号使用账号、邮箱或手机号加密码登录，并自动获得该商家的所有者权限。":
+    "Set up the primary account while adding a merchant. It signs in with an account, email, or phone number plus password, and receives owner access automatically.",
   "新增商家会创建独立租户与角色体系。请使用“邀请成员”登记经核验的邮箱和租户角色，再由运维在 Keycloak 开通同邮箱身份；邮箱验证完成后，成员首次登录会自动绑定工作区。":
     "Adding a merchant creates an isolated tenant and role system. Invite verified members with an email and tenant role, then provision the same email in Keycloak. The workspace is linked on first sign-in after email verification.",
   "平台还没有商家": "No merchants yet",
@@ -959,6 +961,11 @@ const english: Record<string, string> = {
   "创建时间": "Created",
   "操作": "Actions",
   "未设置联系邮箱": "No contact email",
+  "主账号：{account}": "Primary account: {account}",
+  "待完善": "needs setup",
+  "尚未开通主账号": "Primary account not set up",
+  "开通主账号": "Set up primary account",
+  "为 {name} 开通主账号": "Set up a primary account for {name}",
   "邀请成员": "Invite member",
   "邀请 {name} 成员": "Invite members to {name}",
   "查看 {name} 商品前台": "View {name} storefront",
@@ -992,6 +999,35 @@ const english: Record<string, string> = {
     "Each email maps to one platform identity. Ambiguous, suspended, or historically deleted records require manual review.",
   "创建邀请": "Create invitation",
   "商家保存失败。": "Could not save the merchant.",
+  "主账号开通失败。": "Could not set up the primary account.",
+  "开通商家主账号": "Set up merchant primary account",
+  "为“{name}”创建可直接登录的所有者账号。该账号拥有本商家的完整管理权限。":
+    "Create a direct-login owner account for {name}. It has full management access to this merchant.",
+  "主账号已开通，可以立即登录工作台。": "The primary account is ready and can sign in now.",
+  "登录账号：{account}": "Sign-in account: {account}",
+  "密码不会被系统再次展示，请使用刚刚设置的密码登录。":
+    "The password will not be shown again. Use the password you just set to sign in.",
+  "主账号姓名": "Primary account name",
+  "对方可使用这个账号登录；邮箱或手机号也可以作为账号。":
+    "They can sign in with this account; an email address or phone number can also be used.",
+  "确认初始密码": "Confirm initial password",
+  "请通过可靠渠道将账号和初始密码交给商家；密码创建后不会再次显示。":
+    "Share the account and initial password through a trusted channel; the password will not be shown again.",
+  "两次输入的密码不一致。": "The two passwords do not match.",
+  "商家与主账号均已创建。": "The merchant and primary account have been created.",
+  "请使用刚刚设置的密码登录；密码不会再次显示。":
+    "Use the password you just set to sign in; it will not be shown again.",
+  "修改商家资料和前台地址。": "Edit merchant details and storefront address.",
+  "创建商家工作区，并同步开通可登录的主账号。":
+    "Create the merchant workspace and its direct-login primary account.",
+  "商家已创建，但主账号尚未开通。请修正账号信息后再次提交，或关闭后从列表中开通。":
+    "The merchant was created, but its primary account was not. Correct the account details and submit again, or set it up from the list after closing.",
+  "商家主账号": "Merchant primary account",
+  "主账号邮箱（可选）": "Primary account email (optional)",
+  "密码创建后不会再次显示，请通过可靠渠道交给商家。":
+    "The password will not be shown again; share it through a trusted channel.",
+  "创建商家并开通账号": "Create merchant and account",
+  "继续开通主账号": "Continue setting up account",
   "编辑商家": "Edit merchant",
   "商家拥有独立商品前台和租户数据空间；前台地址会根据商家名称自动生成。":
     "Each merchant has an isolated storefront and tenant data space. The storefront address is generated from the merchant name.",

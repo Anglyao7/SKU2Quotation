@@ -5,7 +5,7 @@ import re
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from .tenant_slugs import is_reserved_tenant_slug
 
@@ -13,6 +13,47 @@ from .tenant_slugs import is_reserved_tenant_slug
 TenantStatus = Literal["active", "suspended", "archived"]
 TenantRoleCode = Literal["OWNER", "ADMIN", "SALES", "PURCHASING", "VIEWER"]
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class PlatformMerchantOwnerCreate(BaseModel):
+    """Credentials for the first, full-access account of a merchant."""
+
+    display_name: str = Field(min_length=1, max_length=120)
+    login_identifier: str = Field(min_length=2, max_length=320)
+    password: SecretStr
+    email: str | None = Field(default=None, max_length=320)
+
+    @field_validator("display_name", "login_identifier", "email", mode="before")
+    @classmethod
+    def strip_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("login_identifier")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("Login account is invalid.")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        if value is None or not value:
+            return None
+        normalized = value.lower()
+        if not EMAIL_PATTERN.fullmatch(normalized):
+            raise ValueError("Enter a valid email address.")
+        return normalized
+
+
+class PlatformMerchantOwnerAccount(BaseModel):
+    user_id: UUID
+    membership_id: UUID
+    display_name: str
+    login_identifier: str | None
+    email: str | None
+    status: Literal["active", "invited", "suspended", "removed"]
+    created_at: datetime
 
 
 class PlatformTenantSummary(BaseModel):
@@ -28,6 +69,7 @@ class PlatformTenantSummary(BaseModel):
     contact_email: str | None
     sku_count: int = Field(ge=0)
     quote_count: int = Field(ge=0)
+    owner_account: PlatformMerchantOwnerAccount | None = None
     created_at: datetime
     updated_at: datetime
 

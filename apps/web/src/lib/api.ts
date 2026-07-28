@@ -4,6 +4,8 @@ import type {
   DashboardData,
   MemberInvitation,
   MemberInvitationPayload,
+  MerchantOwnerAccount,
+  MerchantOwnerAccountPayload,
   ProductTag,
   ProductTagList,
   ProductTagPayload,
@@ -296,6 +298,12 @@ export const api = {
     request<Tenant>(`/api/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify({ name: payload.name, contact_email: payload.contact_email || null, active: payload.active }) }, true),
   deactivateTenant: (id: string) =>
     request<Tenant>(`/api/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify({ active: false }) }, true),
+  provisionMerchantOwner: (tenantId: string, payload: MerchantOwnerAccountPayload) =>
+    request<MerchantOwnerAccount>(
+      `/api/admin/tenants/${encodeURIComponent(tenantId)}/owner-account`,
+      { method: "POST", body: JSON.stringify(payload) },
+      true,
+    ),
   inviteTenantMember: (tenantId: string, payload: MemberInvitationPayload) =>
     request<MemberInvitation>(
       `/api/admin/tenants/${tenantId}/member-invitations`,

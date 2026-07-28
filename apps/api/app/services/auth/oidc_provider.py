@@ -729,9 +729,10 @@ class OidcIdentityProviderAdapter:
     ) -> IdentityClaim:
         """Create a password identity through Keycloak's admin API.
 
-        This is intentionally separate from invitation activation: these
-        identities are created by a tenant's authorised main account and are
-        already bound to a restricted customer-portal membership.
+        This is intentionally separate from invitation activation. The caller
+        creates the tenant-bound membership and role after the identity exists;
+        it is used for both merchant staff accounts and restricted customer
+        portal accounts.
         """
 
         normalized_identifier = identifier.strip()

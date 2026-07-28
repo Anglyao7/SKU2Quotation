@@ -1805,6 +1805,159 @@ def test_platform_admin_manages_tenant_lifecycle(
     assert current_tenant_guard.json()["detail"]["code"] == "ACTIVE_TENANT_SUSPENSION_FORBIDDEN"
 
 
+def test_platform_admin_can_open_a_password_login_owner_for_an_existing_merchant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suffix = uuid4().hex[:10]
+    created = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": f"Password Owner Merchant {suffix}",
+            "slug": f"password-owner-{suffix}",
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    tenant = created.json()
+    assert tenant["owner_account"] is None
+
+    login_identifier = f"merchant-{suffix}"
+    opened = client.post(
+        f"/api/admin/tenants/{tenant['id']}/owner-account",
+        json={
+            "display_name": "Merchant Password Owner",
+            "login_identifier": login_identifier,
+            "password": f"Merchant{suffix}9",
+            "email": f"merchant-{suffix}@owner.test",
+        },
+    )
+    assert opened.status_code == 201, opened.text
+    owner = opened.json()
+    assert owner["login_identifier"] == login_identifier
+    assert owner["status"] == "active"
+    assert f"Merchant{suffix}9" not in opened.text
+
+    listed = client.get("/api/admin/tenants")
+    assert listed.status_code == 200, listed.text
+    listed_tenant = next(row for row in listed.json() if row["id"] == tenant["id"])
+    assert listed_tenant["owner_account"]["membership_id"] == owner["membership_id"]
+    assert listed_tenant["owner_account"]["login_identifier"] == login_identifier
+
+    repeated = client.post(
+        f"/api/admin/tenants/{tenant['id']}/owner-account",
+        json={
+            "display_name": "Another Owner",
+            "login_identifier": f"another-{suffix}",
+            "password": f"Another{suffix}9",
+        },
+    )
+    assert repeated.status_code == 409
+    assert repeated.json()["detail"]["code"] == "MERCHANT_OWNER_ALREADY_CONFIGURED"
+
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        with TestClient(app) as owner_client:
+            login = owner_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": login_identifier,
+                    "password": f"Merchant{suffix}9",
+                },
+            )
+    assert login.status_code == 200, login.text
+    assert login.json()["data"]["context"]["tenant_id"] == tenant["id"]
+    assert login.json()["data"]["context"]["account_scope"] == "STAFF"
+
+
+def test_preprovisioned_oidc_merchant_owner_can_use_an_account_without_verified_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suffix = uuid4().hex[:10]
+    tenant_response = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": f"OIDC Password Merchant {suffix}",
+            "slug": f"oidc-password-owner-{suffix}",
+            "active": True,
+        },
+    )
+    assert tenant_response.status_code == 201, tenant_response.text
+    tenant_id = tenant_response.json()["id"]
+    provider_key = f"oidc:{'o' * 32}"
+    subject = f"owner-{suffix}"
+
+    def provision(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+        display_name: str,
+        email: str | None = None,
+    ) -> IdentityClaim:
+        assert identifier == f"oidc-owner-{suffix}"
+        assert password == f"Oidc{suffix}9"
+        assert display_name == "OIDC Merchant Owner"
+        assert email is None
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=None,
+            email_verified=False,
+            display_name=display_name,
+        )
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        assert identifier == f"oidc-owner-{suffix}"
+        assert password == f"Oidc{suffix}9"
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=None,
+            email_verified=False,
+            display_name="OIDC Merchant Owner",
+        )
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(OidcIdentityProviderAdapter, "provision_password_user", provision)
+    monkeypatch.setattr(OidcIdentityProviderAdapter, "authenticate_password", authenticate)
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count(MembershipRow.id)).where(
+                MembershipRow.tenant_id == UUID(tenant_id),
+                MembershipRow.login_identifier == f"oidc-owner-{suffix}",
+            )
+        ) == 0
+    opened = client.post(
+        f"/api/admin/tenants/{tenant_id}/owner-account",
+        json={
+            "display_name": "OIDC Merchant Owner",
+            "login_identifier": f"oidc-owner-{suffix}",
+            "password": f"Oidc{suffix}9",
+        },
+    )
+    assert opened.status_code == 201, opened.text
+
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        with TestClient(app) as owner_client:
+            login = owner_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": f"oidc-owner-{suffix}",
+                    "password": f"Oidc{suffix}9",
+                },
+            )
+    assert login.status_code == 200, login.text
+    assert login.json()["data"]["context"]["tenant_id"] == tenant_id
+
+
 def test_platform_admin_routes_reject_regular_members(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

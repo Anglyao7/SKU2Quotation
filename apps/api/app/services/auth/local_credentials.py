@@ -1,8 +1,9 @@
-"""Small local credential primitive for development-only customer subaccounts.
+"""Small local credential primitive for development-only password accounts.
 
 The production profile never reads this table: identities and password policy
-remain with the configured enterprise provider.  Scrypt is part of Python's
-standard library, so the local demo does not add a new password dependency.
+remain with the configured enterprise provider. Scrypt is part of Python's
+standard library, so newly provisioned merchant and customer accounts work in
+the local demo without a new password dependency.
 """
 
 from __future__ import annotations

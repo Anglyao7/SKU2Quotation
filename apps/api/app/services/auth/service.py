@@ -282,7 +282,7 @@ def _local_customer_password_claim(
     identifier: str,
     password: str,
 ) -> IdentityClaim | None:
-    """Authenticate a child account in the local demo without touching env secrets."""
+    """Authenticate a provisioned local password account without env secrets."""
 
     normalized_identifier = normalize_local_identifier(identifier)
     credential = session.scalar(
@@ -302,7 +302,7 @@ def _local_customer_password_claim(
     if (
         user is None
         or user.status != "active"
-        or user.identity_provider != "local-subaccount"
+        or user.identity_provider not in {"local-subaccount", "local-password"}
     ):
         raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
     return IdentityClaim(
@@ -483,17 +483,20 @@ def _issue_authenticated_session(
     if provider == "enterprise_oidc" and (
         not claim.email_verified or not claim.email_normalized
     ):
-        # Keep the verified-email requirement for the normal workforce login
-        # path. Only a pre-provisioned restricted customer subaccount is
-        # intentionally allowed to authenticate by an account/phone identity.
-        customer_membership = session.scalar(
+        # Invited workforce identities still require an email-verified claim.
+        # Accounts created by an authorised platform or merchant administrator
+        # are different: they already have an active, named password login and
+        # a role-bound membership. This supports account/email/phone login
+        # without turning unverified, uninvited OIDC identities into staff.
+        provisioned_membership = session.scalar(
             select(MembershipRow.id).where(
                 MembershipRow.user_id == user.id,
                 MembershipRow.status == "active",
-                MembershipRow.account_scope == "CUSTOMER_SUBACCOUNT",
+                MembershipRow.login_identifier.is_not(None),
+                MembershipRow.account_scope.in_({"STAFF", "CUSTOMER_SUBACCOUNT"}),
             )
         )
-        if customer_membership is None:
+        if provisioned_membership is None:
             raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
 
     memberships = _active_memberships(session, user.id)

@@ -10,6 +10,8 @@ from ..domain.errors import ApplicationError
 from ..platform_admin_schemas import (
     PlatformMemberInvitation,
     PlatformMemberInvitationCreate,
+    PlatformMerchantOwnerAccount,
+    PlatformMerchantOwnerCreate,
     PlatformTenantCreate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
@@ -20,6 +22,14 @@ from .errors import application_http_error
 
 
 router = APIRouter(prefix="/api/admin", tags=["platform-administration"])
+
+
+def _identity_write_session(session: Session, identity_session: Session) -> Session:
+    """Avoid a second SQLite transaction during local account provisioning."""
+
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        return session
+    return identity_session
 
 
 @router.get("/tenants", response_model=list[PlatformTenantSummary])
@@ -59,6 +69,30 @@ def update_tenant_endpoint(
     try:
         return use_cases.update_tenant(
             session,
+            context=context,
+            tenant_id=tenant_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/tenants/{tenant_id}/owner-account",
+    response_model=PlatformMerchantOwnerAccount,
+    status_code=status.HTTP_201_CREATED,
+)
+def provision_merchant_owner_endpoint(
+    tenant_id: UUID,
+    request: PlatformMerchantOwnerCreate,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+    identity_session: Session = Depends(get_auth_session),
+) -> PlatformMerchantOwnerAccount:
+    try:
+        return use_cases.provision_merchant_owner(
+            session,
+            _identity_write_session(session, identity_session),
             context=context,
             tenant_id=tenant_id,
             request=request,

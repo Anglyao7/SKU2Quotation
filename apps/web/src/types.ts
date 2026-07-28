@@ -10,7 +10,18 @@ export interface Tenant {
   contact_email?: string | null;
   sku_count?: number;
   quote_count?: number;
+  owner_account?: MerchantOwnerAccount | null;
   created_at?: string;
+}
+
+export interface MerchantOwnerAccount {
+  user_id: string;
+  membership_id: string;
+  display_name: string;
+  login_identifier?: string | null;
+  email?: string | null;
+  status: "active" | "invited" | "suspended" | "removed";
+  created_at: string;
 }
 
 export interface User {
@@ -186,6 +197,13 @@ export interface TenantPayload {
   slug?: string;
   contact_email?: string;
   active: boolean;
+}
+
+export interface MerchantOwnerAccountPayload {
+  display_name: string;
+  login_identifier: string;
+  password: string;
+  email?: string;
 }
 
 export type TenantRoleCode = "OWNER" | "ADMIN" | "SALES" | "PURCHASING" | "VIEWER";

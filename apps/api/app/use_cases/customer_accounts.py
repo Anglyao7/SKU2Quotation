@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
 from datetime import timedelta
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
@@ -25,20 +24,19 @@ from ..identity_models import (
     LocalAccountCredentialRow,
     MembershipRoleRow,
     MembershipRow,
-    RoleRow,
     TenantRow,
     UserRow,
 )
 from ..model_mixins import utcnow
 from ..public_catalog_models import PublicQuoteDraftRow
 from ..saas_seed import ensure_tenant_rbac
-from ..services.auth.contracts import IdentityProviderError
-from ..services.auth.local_credentials import (
-    new_local_password_material,
-    normalize_local_identifier,
-)
-from ..services.auth.oidc_provider import OidcIdentityProviderAdapter
 from ..services.auth.dependencies import RequestContext
+from ..services.auth.local_credentials import normalize_local_identifier
+from ..services.auth.password_accounts import (
+    PasswordIdentityProvisioningError,
+    password_is_valid,
+    provision_password_identity,
+)
 
 
 _CUSTOMER_SCOPE = "CUSTOMER_SUBACCOUNT"
@@ -64,17 +62,6 @@ def _require_customer_portal(context: RequestContext) -> None:
             "This account can only access the customer portal.",
             kind="forbidden",
         )
-
-
-def _password_is_valid(*, password: str, identifier: str, display_name: str) -> bool:
-    return (
-        8 <= len(password) <= 128
-        and not any(character.isspace() or ord(character) < 32 for character in password)
-        and any(character.isascii() and character.isalpha() for character in password)
-        and any(character.isdigit() for character in password)
-        and password.casefold()
-        not in {identifier.casefold(), display_name.casefold()}
-    )
 
 
 def _subaccount_metrics(
@@ -254,68 +241,6 @@ def list_customer_subaccount_orders(
     )
 
 
-def _provision_identity(
-    session: Session,
-    *,
-    request: CustomerSubaccountCreate,
-) -> tuple[UserRow, tuple[str, str] | None]:
-    password = request.password.get_secret_value()
-    configured_profile = os.getenv("AUTH_PROFILE", "local_fake").lower()
-    if configured_profile == "local_fake":
-        normalized_identifier = normalize_local_identifier(request.login_identifier)
-        existing = session.scalar(
-            select(LocalAccountCredentialRow.user_id).where(
-                LocalAccountCredentialRow.identifier_normalized == normalized_identifier
-            )
-        )
-        if existing is not None:
-            raise ApplicationError(
-                "CUSTOMER_ACCOUNT_IDENTIFIER_CONFLICT",
-                "This login account is already in use.",
-                kind="conflict",
-            )
-        user = UserRow(
-            id=uuid4(),
-            email_normalized=request.email,
-            display_name=request.display_name,
-            identity_provider="local-subaccount",
-            identity_subject=str(uuid4()),
-            status="active",
-            is_platform_admin=False,
-        )
-        return user, new_local_password_material(password)
-    if configured_profile == "enterprise_oidc":
-        try:
-            claim = OidcIdentityProviderAdapter().provision_password_user(
-                identifier=request.login_identifier,
-                password=password,
-                display_name=request.display_name,
-                email=request.email,
-            )
-        except IdentityProviderError as exc:
-            raise ApplicationError(
-                "CUSTOMER_ACCOUNT_PROVISIONING_FAILED",
-                "The customer account could not be created. Check that the account is unique and try again.",
-                kind="conflict",
-            ) from exc
-        return (
-            UserRow(
-                email_normalized=claim.email_normalized,
-                display_name=claim.display_name or request.display_name,
-                identity_provider=claim.provider,
-                identity_subject=claim.subject,
-                status="active",
-                is_platform_admin=False,
-            ),
-            None,
-        )
-    raise ApplicationError(
-        "AUTH_PROVIDER_UNAVAILABLE",
-        "The configured identity provider cannot create customer accounts.",
-        kind="unavailable",
-    )
-
-
 def create_customer_subaccount(
     identity_session: Session,
     *,
@@ -324,7 +249,7 @@ def create_customer_subaccount(
 ) -> CustomerSubaccountSummary:
     _require_parent(context)
     password = request.password.get_secret_value()
-    if not _password_is_valid(
+    if not password_is_valid(
         password=password,
         identifier=request.login_identifier,
         display_name=request.display_name,
@@ -360,7 +285,35 @@ def create_customer_subaccount(
             "Customer portal permissions are not available yet.",
             kind="conflict",
         )
-    user, local_material = _provision_identity(identity_session, request=request)
+    try:
+        provisioned = provision_password_identity(
+            identity_session,
+            identifier=request.login_identifier,
+            password=password,
+            display_name=request.display_name,
+            email=request.email,
+            local_identity_provider="local-subaccount",
+        )
+    except PasswordIdentityProvisioningError as exc:
+        if exc.reason == "identifier_conflict":
+            raise ApplicationError(
+                "CUSTOMER_ACCOUNT_IDENTIFIER_CONFLICT",
+                "This login account is already in use.",
+                kind="conflict",
+            ) from exc
+        if exc.reason == "provider_unavailable":
+            raise ApplicationError(
+                "AUTH_PROVIDER_UNAVAILABLE",
+                "The configured identity provider cannot create customer accounts.",
+                kind="unavailable",
+            ) from exc
+        raise ApplicationError(
+            "CUSTOMER_ACCOUNT_PROVISIONING_FAILED",
+            "The customer account could not be created. Check that the account is unique and try again.",
+            kind="conflict",
+        ) from exc
+    user = provisioned.user
+    local_material = provisioned.local_credential
     membership = MembershipRow(
         tenant_id=context.tenant_id,
         user_id=user.id,
