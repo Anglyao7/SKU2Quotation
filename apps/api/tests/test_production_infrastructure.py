@@ -171,6 +171,11 @@ def test_production_compose_has_one_public_edge_and_private_dependencies() -> No
     assert set(services["postgres"]["networks"]) == {"data"}
     assert set(services["keycloak-postgres"]["networks"]) == {"identity"}
     assert services["redis"]["command"][-1] == "noeviction"
+    assert services["clamav"]["environment"] == {
+        "CLAMD_CONF_StreamMaxLength": "260M",
+        "CLAMD_CONF_MaxFileSize": "250M",
+        "CLAMD_CONF_MaxScanSize": "500M",
+    }
 
 
 def test_production_workloads_are_pinned_bounded_and_health_checked() -> None:

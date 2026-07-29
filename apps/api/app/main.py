@@ -1,8 +1,7 @@
 """智贸云 API composition root.
 
-Business orchestration belongs to ``use_cases``; persistence belongs to
-``repositories``; this module only initializes infrastructure and composes
-routers/middleware.
+Business orchestration belongs to ``use_cases`` and persistence to
+``repositories``; this module only composes infrastructure and routers.
 """
 
 from fastapi import FastAPI
@@ -20,6 +19,7 @@ from .routers.product_intelligence import router as product_intelligence_router
 from .routers.product_center import router as product_center_router
 from .routers.platform_admin import router as platform_admin_router
 from .routers.system import router as system_router
+from .routers.storefront_analytics import router as storefront_analytics_router
 from .routers.tags import router as tags_router
 from .routers.trade_flow import router as trade_flow_router
 from .routers.public_catalog import router as public_catalog_router
@@ -39,7 +39,6 @@ def _initialize_runtime() -> None:
             seed_saas_foundation(session)
             seed_suppliers(session)
             seed_product_center_demo(session)
-
 
 def create_app() -> FastAPI:
     application = FastAPI(
@@ -71,6 +70,7 @@ def create_app() -> FastAPI:
         workspace_router,
         knowledge_search_router,
         system_router,
+        storefront_analytics_router,
         tags_router,
     ):
         application.include_router(router)

@@ -12,7 +12,6 @@ from ..ports.object_storage import ObjectStoragePort
 
 
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
-COMPACT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 class UploadTooLargeError(ValueError):
@@ -33,6 +32,18 @@ def safe_suffix(filename: str) -> str:
     return suffix if re.fullmatch(r"\.[a-z0-9]{1,10}", suffix) else ".bin"
 
 
+def upload_size_limit_bytes() -> int:
+    """Return the application safety ceiling for every runtime profile.
+
+    Compact previously had a much smaller 10 MiB ceiling even though uploads
+    are streamed to disk and the reverse proxy already accepts large request
+    bodies. Keeping one profile-independent limit prevents a file from working
+    locally or in standard deployments but failing after a compact rollout.
+    """
+
+    return MAX_UPLOAD_BYTES
+
+
 async def store_upload(
     upload: Any,
     source_id: str,
@@ -41,11 +52,7 @@ async def store_upload(
     storage: ObjectStoragePort | None = None,
 ) -> StoredUpload:
     storage = storage or get_object_storage()
-    max_upload_bytes = (
-        COMPACT_MAX_UPLOAD_BYTES
-        if os.getenv("ATC_RUNTIME_PROFILE", "standard").lower() == "compact"
-        else MAX_UPLOAD_BYTES
-    )
+    max_upload_bytes = upload_size_limit_bytes()
     stored_filename = f"{source_id}{safe_suffix(upload.filename or '')}"
     object_key = f"tenants/{tenant_id}/quarantine/{stored_filename}"
     staging_root = Path(os.getenv("OBJECT_STORAGE_STAGING_DIR", tempfile.gettempdir()))

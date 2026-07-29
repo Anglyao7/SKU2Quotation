@@ -567,7 +567,7 @@ export function ProductsPage() {
               <FileXls size={30} />
               <div>
                 <Text weight="bold" as="div">{pendingFile.name}</Text>
-                <Text size="2" color="gray">{(pendingFile.size / 1024).toFixed(1)} KB · {detection.detected_type} · {detection.parser}</Text>
+                <Text size="2" color="gray">{(pendingFile.size / 1024 / 1024).toFixed(2)} MB · {detection.detected_type} · {detection.parser}</Text>
               </div>
               <Badge color={detection.extension_matches ? "jade" : "amber"}>{t(detection.extension_matches ? "格式已确认" : "格式不一致")}</Badge>
             </Card>
@@ -575,7 +575,7 @@ export function ProductsPage() {
             <button className="core-template-dropzone" type="button" disabled={importBusy} onClick={() => importInputRef.current?.click()}>
               <FileArrowUp size={30} />
               <strong>{t("选择商品文件")}</strong>
-              <span>{t("上传使用标准模板填写完成的 XLSX 文件")}</span>
+              <span>{t("上传使用标准模板填写完成的 XLSX 文件，单文件最大 250 MB")}</span>
             </button>
           )}
 

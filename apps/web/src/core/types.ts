@@ -452,6 +452,31 @@ export interface SystemMonitoringSnapshot {
   disk: DiskUsage;
 }
 
+export interface StorefrontAnalyticsSnapshot {
+  generatedAt: string;
+  timezone: string;
+  startDate: string;
+  endDate: string;
+  days: number;
+  rawIpRetentionDays: number;
+  summary: {
+    totalViews: number;
+    uniqueVisitors: number;
+    viewedProducts: number;
+    identifiedCountries: number;
+  };
+  daily: Array<{ date: string; views: number }>;
+  countries: Array<{ countryCode: string; views: number; share: number }>;
+  products: Array<{
+    productId: string;
+    skuId: string;
+    skuCode: string;
+    name: string;
+    views: number;
+  }>;
+  countryProducts: Array<{ countryCode: string; skuId: string; views: number }>;
+}
+
 export interface AttributeDefinition {
   id: string;
   categoryId?: string;

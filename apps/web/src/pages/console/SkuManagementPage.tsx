@@ -266,7 +266,7 @@ function ImportDialog({ open, onOpenChange, onImported }: { open: boolean; onOpe
             <button type="button" className="file-drop" onClick={() => inputRef.current?.click()}>
               <FileArrowUp size={32} weight="duotone" />
               <strong>{file ? file.name : "选择 SKU 文件"}</strong>
-              <span>{file ? `${(file.size / 1024).toFixed(1)} KB` : "CSV 或 XLSX，建议不超过 10 MB"}</span>
+              <span>{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : "CSV 或 XLSX，单文件最大 250 MB"}</span>
             </button>
             <input ref={inputRef} className="visually-hidden" type="file" accept=".csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
             {error && <Callout.Root color="red"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error}</Callout.Text></Callout.Root>}

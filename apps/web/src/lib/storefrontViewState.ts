@@ -6,7 +6,6 @@ export interface StorefrontViewState {
   search: string;
   primaryCategory: string;
   secondaryCategory: string;
-  semantic: boolean;
   categoryLayout: StorefrontCategoryLayout;
   expandedCategories: string[];
   savedAt: number;
@@ -42,7 +41,6 @@ export function readStorefrontViewState(slug: string): StorefrontViewState | nul
       search: normalizedString(parsed.search),
       primaryCategory: normalizedString(parsed.primaryCategory, 300),
       secondaryCategory: normalizedString(parsed.secondaryCategory, 300),
-      semantic: parsed.semantic !== false,
       categoryLayout: parsed.categoryLayout === "vertical" ? "vertical" : "horizontal",
       expandedCategories: Array.isArray(parsed.expandedCategories)
         ? parsed.expandedCategories

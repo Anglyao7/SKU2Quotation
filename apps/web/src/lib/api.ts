@@ -20,6 +20,7 @@ import type {
   User,
 } from "../types";
 import { clearCoreAuthSession, getCoreAccessToken } from "../core/api";
+import { publicCatalogCacheKey } from "./publicCatalogRevision";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const PUBLIC_CACHE_MAX_ENTRIES = 160;
@@ -237,7 +238,7 @@ async function getCachedStoreSkus(
   params.sort();
   const query = params.toString();
   const path = `/api/store/${encodeURIComponent(slug)}/skus${query ? `?${query}` : ""}`;
-  return cachedPublicRequest(`catalog:${path}`, PUBLIC_CATALOG_CACHE_TTL_MS, async () => {
+  return cachedPublicRequest(publicCatalogCacheKey("catalog", path), PUBLIC_CATALOG_CACHE_TTL_MS, async () => {
     const raw = await request<unknown>(path);
     const list = normalizeList<Sku>(raw);
     const meta = raw && typeof raw === "object" && !Array.isArray(raw)
@@ -266,7 +267,7 @@ async function getCachedStoreSkus(
     for (const sku of result.items) {
       const detailPath = storeSkuPath(slug, sku.id, filters.locale);
       primePublicRequestCache(
-        `sku:${detailPath}`,
+        publicCatalogCacheKey("sku", detailPath),
         PUBLIC_SKU_CACHE_TTL_MS,
         sku,
       );
@@ -277,7 +278,7 @@ async function getCachedStoreSkus(
       withoutFacets.sort();
       const compactPath = `/api/store/${encodeURIComponent(slug)}/skus?${withoutFacets.toString()}`;
       primePublicRequestCache(
-        `catalog:${compactPath}`,
+        publicCatalogCacheKey("catalog", compactPath),
         PUBLIC_CATALOG_CACHE_TTL_MS,
         result,
       );
@@ -328,7 +329,7 @@ export const api = {
   getStore: (slug: string, locale?: string) => {
     const path = storePath(slug, locale);
     return cachedPublicRequest(
-      `store:${path}`,
+      publicCatalogCacheKey("store", path),
       PUBLIC_STORE_CACHE_TTL_MS,
       () => request<Storefront>(path),
     );
@@ -336,11 +337,20 @@ export const api = {
   async getStoreSku(slug: string, skuId: string, locale?: string): Promise<Sku> {
     const path = storeSkuPath(slug, skuId, locale);
     return cachedPublicRequest(
-      `sku:${path}`,
+      publicCatalogCacheKey("sku", path),
       PUBLIC_SKU_CACHE_TTL_MS,
       async () => normalizeSku(await request<Sku>(path)),
     );
   },
+  recordStoreSkuView: (slug: string, skuId: string, eventId: string) =>
+    request<void>(
+      `/api/store/${encodeURIComponent(slug)}/skus/${encodeURIComponent(skuId)}/views`,
+      {
+        method: "POST",
+        body: JSON.stringify({ event_id: eventId }),
+        keepalive: true,
+      },
+    ),
   async getStoreSkus(
     slug: string,
     filters: StoreSkuFilters = {},

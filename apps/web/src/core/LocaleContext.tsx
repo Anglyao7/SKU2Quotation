@@ -24,6 +24,10 @@ const english: Record<string, string> = {
   "分类管理": "Categories",
   "分类": "Categories",
   "全部商品": "All products",
+  "全部收起": "Collapse all",
+  "全部展开": "Expand all",
+  "收起 {name}": "Collapse {name}",
+  "展开 {name}": "Expand {name}",
   "前台入口": "Storefront entry",
   "{primary} 个一级 · {secondary} 个二级 · 拖动“全部商品”可调整前台入口位置":
     "{primary} primary · {secondary} secondary · drag “All products” to position the storefront entry",
@@ -46,6 +50,46 @@ const english: Record<string, string> = {
   "商家": "Merchants",
   "系统监控": "System monitoring",
   "监控": "Monitor",
+  "网站监测": "Storefront analytics",
+  "商家前台": "Storefront",
+  "观察商品详情访问趋势、主要访问国家，以及不同国家最常查看的商品。":
+    "Track product-detail trends, leading visitor countries, and the products each country views most.",
+  "统计时间范围": "Analytics date range",
+  "近 {days} 天": "Last {days} days",
+  "正在汇总前台访问数据": "Loading storefront analytics",
+  "网站监测数据加载失败": "Could not load storefront analytics",
+  "访问概览": "Traffic overview",
+  "详情访问次数": "Product-detail views",
+  "每次真正进入商品详情后计数": "Counted after a visitor opens a product detail page",
+  "独立访客": "Unique visitors",
+  "按规范化 IP 去重": "Deduplicated by normalized IP",
+  "被查看商品": "Viewed products",
+  "有详情访问的 SKU 数量": "SKUs with at least one detail view",
+  "已识别国家": "Identified countries",
+  "未知地区不计入国家数量": "Unknown locations are excluded",
+  "还没有商品详情访问": "No product-detail views yet",
+  "访客从商家前台进入某个 SKU 的详情页后，趋势与国家分布会开始出现在这里。":
+    "Trends and country distribution will appear after visitors open SKU detail pages from the storefront.",
+  "访问趋势": "Traffic trend",
+  "每日商品详情访问": "Daily product-detail views",
+  "详情访问": "Detail views",
+  "每日商品详情访问折线图": "Line chart of daily product-detail views",
+  "商品热度": "Product interest",
+  "访问最多的商品": "Most-viewed products",
+  "访问最多的商品条形图": "Bar chart of most-viewed products",
+  "国家分布": "Country distribution",
+  "访问来自哪些国家": "Where visitors come from",
+  "访问国家分布柱状图": "Bar chart of visitor countries",
+  "兴趣交叉": "Interest matrix",
+  "不同国家经常查看哪些商品": "Products viewed most by each country",
+  "国家与商品访问": "Country and product views",
+  "国家与商品访问频次热力图": "Heatmap of product views by country",
+  "高频": "High",
+  "低频": "Low",
+  "统计口径与隐私": "Measurement and privacy",
+  "仅在访客真正进入商品详情页时计数。原始 IP 默认保存 {days} 天，仅用于去重与国家统计；本页面不展示原始 IP，长期保留的是按日期、国家和商品汇总后的次数。":
+    "A view is counted only when a visitor opens a product detail page. Raw IPs are kept for {days} days for deduplication and country analytics; this page never exposes them, and only daily country-product totals are retained long term.",
+  "更新于 {time}": "Updated {time}",
   "页面恢复": "Page recovery",
   "页面版本已经更新": "A newer page version is available",
   "这个页面暂时无法打开": "This page could not be opened",
@@ -488,8 +532,8 @@ const english: Record<string, string> = {
   "格式已确认": "Format verified",
   "格式不一致": "Format mismatch",
   "选择商品文件": "Choose product file",
-  "上传使用标准模板填写完成的 XLSX 文件":
-    "Upload an XLSX file completed with the standard template",
+  "上传使用标准模板填写完成的 XLSX 文件，单文件最大 250 MB":
+    "Upload an XLSX file completed with the standard template, up to 250 MB",
   "正在检查文件": "Checking file",
   "正在上传商品文件": "Uploading product file",
   "文件上传完成，正在创建导入任务": "Upload complete; creating import job",
@@ -1091,6 +1135,7 @@ const english: Record<string, string> = {
   "商家列表加载失败。": "Could not load merchants.",
   "商家停用失败。": "Could not deactivate the merchant.",
   "平台租户与前台入口": "Platform merchants & storefronts",
+  "商家、登录账号与商品前台": "Merchants, sign-in accounts, and storefronts",
   "新增商家": "Add merchant",
   "新增商家时请一并开通主账号。主账号使用账号、邮箱或手机号加密码登录，并自动获得该商家的所有者权限。":
     "Set up the primary account while adding a merchant. It signs in with an account, email, or phone number plus password, and receives owner access automatically.",
@@ -1103,11 +1148,15 @@ const english: Record<string, string> = {
   "创建时间": "Created",
   "操作": "Actions",
   "未设置联系邮箱": "No contact email",
+  "尚未开通": "Not set up",
   "主账号：{account}": "Primary account: {account}",
   "待完善": "needs setup",
   "尚未开通主账号": "Primary account not set up",
   "开通主账号": "Set up primary account",
+  "开通登录账号": "Set up sign-in account",
   "为 {name} 开通主账号": "Set up a primary account for {name}",
+  "为 {name} 开通登录账号": "Set up a sign-in account for {name}",
+  "尚未开通登录账号": "Sign-in account not set up",
   "邀请成员": "Invite member",
   "邀请 {name} 成员": "Invite members to {name}",
   "查看 {name} 商品前台": "View {name} storefront",
@@ -1142,11 +1191,17 @@ const english: Record<string, string> = {
   "创建邀请": "Create invitation",
   "商家保存失败。": "Could not save the merchant.",
   "主账号开通失败。": "Could not set up the primary account.",
+  "登录账号开通失败。": "Could not set up the sign-in account.",
   "开通商家主账号": "Set up merchant primary account",
+  "开通商家登录账号": "Set up merchant sign-in account",
   "为“{name}”创建可直接登录的所有者账号。该账号拥有本商家的完整管理权限。":
     "Create a direct-login owner account for {name}. It has full management access to this merchant.",
+  "为“{name}”设置登录邮箱和初始密码。":
+    "Set a sign-in email and initial password for {name}.",
   "主账号已开通，可以立即登录工作台。": "The primary account is ready and can sign in now.",
+  "登录账号已开通，可以立即使用。": "The sign-in account is ready to use.",
   "登录账号：{account}": "Sign-in account: {account}",
+  "登录邮箱：{email}": "Sign-in email: {email}",
   "密码不会被系统再次展示，请使用刚刚设置的密码登录。":
     "The password will not be shown again. Use the password you just set to sign in.",
   "主账号姓名": "Primary account name",
@@ -1164,12 +1219,20 @@ const english: Record<string, string> = {
     "Create the merchant workspace and its direct-login primary account.",
   "商家已创建，但主账号尚未开通。请修正账号信息后再次提交，或关闭后从列表中开通。":
     "The merchant was created, but its primary account was not. Correct the account details and submit again, or set it up from the list after closing.",
+  "商家已创建，但登录账号开通失败：{reason}":
+    "The merchant was created, but its sign-in account could not be set up: {reason}",
+  "修改商家名称或状态。": "Edit the merchant name or status.",
+  "填写三项信息即可创建商家并开通登录账号。":
+    "Enter three details to create the merchant and its sign-in account.",
+  "商家已创建，可以立即登录。": "The merchant is ready and can sign in now.",
   "商家主账号": "Merchant primary account",
   "主账号邮箱（可选）": "Primary account email (optional)",
   "密码创建后不会再次显示，请通过可靠渠道交给商家。":
     "The password will not be shown again; share it through a trusted channel.",
   "创建商家并开通账号": "Create merchant and account",
   "继续开通主账号": "Continue setting up account",
+  "继续开通账号": "Continue setting up account",
+  "创建商家": "Create merchant",
   "编辑商家": "Edit merchant",
   "商家拥有独立商品前台和租户数据空间；前台地址会根据商家名称自动生成。":
     "Each merchant has an isolated storefront and tenant data space. The storefront address is generated from the merchant name.",
@@ -1186,6 +1249,19 @@ const english: Record<string, string> = {
   "商品加载中": "Loading products",
   "数据加载中": "Loading data",
   "账号或密码错误": "Incorrect account or password",
+  "账号或密码错误，请检查开通时的账号和最近一次设置的密码。":
+    "Incorrect account or password. Check the account issued to you and your most recently set password.",
+  "登录尝试过于频繁，请稍后再试。":
+    "Too many login attempts. Please try again later.",
+  "认证服务暂时不可用，请稍后再试。":
+    "The authentication service is temporarily unavailable. Please try again later.",
+  "无法连接登录服务，请检查网络后重试。":
+    "Could not reach the login service. Check your connection and try again.",
+  "登录信息格式不正确，请检查后重试。":
+    "The login details are not in a valid format. Check them and try again.",
+  "登录失败，请稍后重试。": "Login failed. Please try again later.",
+  "请输入账号、邮箱或手机号。": "Enter an account, email address, or phone number.",
+  "请输入密码。": "Enter your password.",
   "智贸云 · 商家运营控制台": "ZhiMao Cloud · Merchant Operations",
   "让商品、询盘和报价成为一条可信链路。":
     "Connect products, inquiries, and quotations in one trusted workflow.",
@@ -1203,11 +1279,13 @@ const english: Record<string, string> = {
   "选择工作区": "Select workspace",
   "登录商家工作台": "Sign in to merchant workspace",
   "确认本次使用的商家空间": "Choose the merchant workspace for this session",
+  "输入登录账号和密码": "Enter your sign-in account and password",
   "使用账号、邮箱或手机号登录":
     "Sign in with an account, email, or phone number",
   "当前账号没有可用的商家空间。":
     "This account has no available merchant workspace.",
   "账号": "Account",
+  "请输入登录账号": "Enter sign-in account",
   "账号、邮箱或手机号": "Account, email, or phone",
   "可使用商家账号、登录邮箱或绑定手机号":
     "Use a merchant account, sign-in email, or linked phone number",

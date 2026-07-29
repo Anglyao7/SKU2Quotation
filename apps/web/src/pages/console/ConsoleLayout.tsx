@@ -3,6 +3,7 @@ import {
   CaretDown,
   CaretRight,
   ChartDonut,
+  ChartLineUp,
   ChatCircleDots,
   Check,
   Cube,
@@ -44,6 +45,7 @@ const navigationGroups = [
     label: "工作",
     items: [
       { to: "/console", label: "概览", mobileLabel: "概览", icon: ChartDonut, end: true, permissions: [], platformAdminOnly: false, mobilePrimary: true },
+      { to: "/console/analytics", label: "网站监测", mobileLabel: "网站监测", icon: ChartLineUp, permissions: ["analytics.view"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/ai-search", label: "AI 搜索", mobileLabel: "AI 搜索", icon: Sparkle, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/ai-search/manage", label: "AI 搜索管理", mobileLabel: "搜索管理", icon: Database, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
     ],
