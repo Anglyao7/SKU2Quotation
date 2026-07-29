@@ -11,14 +11,24 @@ from .translation import TranslationProvider, TranslationProviderError
 
 _IDENTIFIER_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])"
-    r"(?=[A-Za-z0-9._/+%\-]{2,})"
-    r"(?=[A-Za-z0-9._/+%\-]*\d)"
-    r"[A-Za-z0-9][A-Za-z0-9._/+%\-]*"
+    r"(?=[A-Za-z0-9._/+%\-\uFF0D]{2,})"
+    r"(?=[A-Za-z0-9._/+%\-\uFF0D]*[A-Za-z])"
+    r"(?=[A-Za-z0-9._/+%\-\uFF0D]*\d)"
+    r"[A-Za-z0-9][A-Za-z0-9._/+%\-\uFF0D]*"
 )
 _FIELD_MARKER_PATTERN = re.compile(
-    r"\[\[ATC_(?P<item>\d{3})_(?P<field>[A-Z]+(?:_\d{3})?)\]\]"
+    r"\[\[\s*ATCF[\s_-]*(?P<item>\d{3})[\s_-]+"
+    r"(?P<field>\d{3})\s*\]\]",
+    re.IGNORECASE,
 )
-_VALUE_MARKER_PATTERN = re.compile(r"\[\[ATC_VALUE_(?P<item>\d{3})\]\]")
+_VALUE_MARKER_PATTERN = re.compile(
+    r"\[\[\s*ATCV[\s_-]*(?P<item>\d{3})\s*\]\]",
+    re.IGNORECASE,
+)
+_PROTECTED_MARKER_PATTERN = re.compile(
+    r"\[\[\s*ATCK[\s_-]*(?P<item>\d{5})\s*\]\]",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -151,7 +161,7 @@ def _protect_identifiers(
 ) -> str:
     def replace(match: re.Match[str]) -> str:
         literal = match.group(0)
-        placeholder = f"[[ATC_KEEP_{len(protected):05d}]]"
+        placeholder = f"[[ATCK_{len(protected):05d}]]"
         protected[placeholder] = literal
         return placeholder
 
@@ -163,10 +173,11 @@ def _restore_identifiers(
     *,
     protected: dict[str, str],
 ) -> str:
-    restored = value
-    for placeholder, literal in protected.items():
-        restored = restored.replace(placeholder, literal)
-    return restored.strip()
+    def replace(match: re.Match[str]) -> str:
+        placeholder = f"[[ATCK_{int(match.group('item')):05d}]]"
+        return protected.get(placeholder, match.group(0))
+
+    return _PROTECTED_MARKER_PATTERN.sub(replace, value).strip()
 
 
 def _field_values(source: CatalogTranslationSource) -> dict[str, str]:
@@ -200,12 +211,16 @@ def translate_catalog_sources(
 
     protected: dict[str, str] = {}
     expected_fields: dict[int, dict[str, str]] = {}
+    field_names: dict[tuple[int, int], str] = {}
     payload_lines: list[str] = []
     for item_index, source in enumerate(sources):
         fields = _field_values(source)
         expected_fields[item_index] = fields
-        for field, value in fields.items():
-            payload_lines.append(f"[[ATC_{item_index:03d}_{field}]]")
+        for field_index, (field, value) in enumerate(fields.items()):
+            field_names[(item_index, field_index)] = field
+            payload_lines.append(
+                f"[[ATCF_{item_index:03d}_{field_index:03d}]]"
+            )
             payload_lines.append(
                 _protect_identifiers(value, protected=protected)
             )
@@ -225,7 +240,10 @@ def translate_catalog_sources(
             else len(translated_text)
         )
         item_index = int(match.group("item"))
-        field = match.group("field")
+        field_index = int(match.group("field"))
+        field = field_names.get((item_index, field_index))
+        if field is None:
+            continue
         translated_fields[(item_index, field)] = _restore_identifiers(
             translated_text[start:end],
             protected=protected,
@@ -309,7 +327,7 @@ def translate_catalog_values(
     protected: dict[str, str] = {}
     payload_lines: list[str] = []
     for item_index, value in enumerate(values):
-        payload_lines.append(f"[[ATC_VALUE_{item_index:03d}]]")
+        payload_lines.append(f"[[ATCV_{item_index:03d}]]")
         payload_lines.append(_protect_identifiers(value, protected=protected))
 
     translated_text = translator.translate(
