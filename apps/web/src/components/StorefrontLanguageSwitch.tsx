@@ -6,8 +6,10 @@ import type { StorefrontLocale } from "../types";
 
 export function StorefrontLanguageSwitch({
   locale,
+  onBeforeLocaleChange,
 }: {
   locale: StorefrontLocale;
+  onBeforeLocaleChange?: () => void;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -15,6 +17,7 @@ export function StorefrontLanguageSwitch({
 
   const selectLocale = (nextLocale: StorefrontLocale) => {
     if (nextLocale === locale) return;
+    onBeforeLocaleChange?.();
     const params = new URLSearchParams(location.search);
     if (nextLocale === "zh-CN") params.delete("lang");
     else params.set("lang", nextLocale);

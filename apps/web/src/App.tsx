@@ -45,7 +45,6 @@ const TenantManagementPage = recoverableLazy(() => import("./pages/console/Tenan
 const NotFoundPage = recoverableLazy(() => import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })));
 const AiSearchPage = recoverableLazy(() => import("./core/pages/AiSearchPage").then((module) => ({ default: module.AiSearchPage })));
 const AiSearchManagementPage = recoverableLazy(() => import("./core/pages/AiSearchManagementPage").then((module) => ({ default: module.AiSearchManagementPage })));
-const CatalogTranslationPage = recoverableLazy(() => import("./core/pages/CatalogTranslationPage").then((module) => ({ default: module.CatalogTranslationPage })));
 const AccountSettingsPage = recoverableLazy(() => import("./core/pages/AccountSettingsPage").then((module) => ({ default: module.AccountSettingsPage })));
 const CategoriesPage = recoverableLazy(() => import("./core/pages/CategoriesPage").then((module) => ({ default: module.CategoriesPage })));
 const CoreDashboardPage = recoverableLazy(() => import("./core/pages/DashboardPage").then((module) => ({ default: module.CoreDashboardPage })));
@@ -213,7 +212,6 @@ const router = createBrowserRouter([{
         { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
-        { path: "products/translations", element: <PermissionGate anyOf={["product.view"]}><CatalogTranslationPage /></PermissionGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
         { path: "suppliers", element: <Navigate to="/console/products" replace /> },

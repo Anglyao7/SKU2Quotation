@@ -8,6 +8,7 @@ import pytest
 from app.services.catalog_translation import (
     CatalogTranslationSource,
     translate_catalog_sources,
+    translate_catalog_values,
     translation_batches,
 )
 from app.services.translation import (
@@ -114,6 +115,7 @@ def test_catalog_translation_preserves_model_codes_and_field_structure() -> None
     )[0]
 
     assert result.name == "App-enabled smart pet feeder SF-6L20"
+    assert result.source_hash == source.source_hash
     assert result.description == "Scheduled portion feeding，容量 6L"
     assert result.category == "Pet supplies/Smart feeding"
     assert result.tags == ("Smart feeding",)
@@ -144,3 +146,14 @@ def test_translation_batches_bound_request_size_without_splitting_a_sku() -> Non
     )
 
     assert [len(batch) for batch in batches] == [2, 2, 1]
+
+
+def test_catalog_value_translation_preserves_category_segments() -> None:
+    translated = translate_catalog_values(
+        _ReplacingTranslator(),
+        ["宠物用品", "智能喂食"],
+        source_locale="zh-CN",
+        target_locale="en-US",
+    )
+
+    assert translated == ["Pet supplies", "Smart feeding"]

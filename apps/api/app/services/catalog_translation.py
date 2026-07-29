@@ -18,6 +18,7 @@ _IDENTIFIER_PATTERN = re.compile(
 _FIELD_MARKER_PATTERN = re.compile(
     r"\[\[ATC_(?P<item>\d{3})_(?P<field>[A-Z]+(?:_\d{3})?)\]\]"
 )
+_VALUE_MARKER_PATTERN = re.compile(r"\[\[ATC_VALUE_(?P<item>\d{3})\]\]")
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class CatalogTranslationSource:
 @dataclass(frozen=True)
 class CatalogTranslationResult:
     sku_id: UUID
+    source_hash: str
     name: str
     description: str | None
     category: str | None
@@ -279,6 +281,7 @@ def translate_catalog_sources(
         results.append(
             CatalogTranslationResult(
                 sku_id=source.sku_id,
+                source_hash=source.source_hash,
                 name=name,
                 description=description,
                 category="/".join(category_segments) or None,
@@ -287,3 +290,52 @@ def translate_catalog_sources(
             )
         )
     return results
+
+
+def translate_catalog_values(
+    translator: TranslationProvider,
+    values: list[str],
+    *,
+    source_locale: str,
+    target_locale: str,
+) -> list[str]:
+    """Translate a bounded list while preserving its exact item boundaries."""
+
+    if not values:
+        return []
+    if len(values) > 999:
+        raise ValueError("a translation request cannot contain more than 999 values")
+
+    protected: dict[str, str] = {}
+    payload_lines: list[str] = []
+    for item_index, value in enumerate(values):
+        payload_lines.append(f"[[ATC_VALUE_{item_index:03d}]]")
+        payload_lines.append(_protect_identifiers(value, protected=protected))
+
+    translated_text = translator.translate(
+        "\n".join(payload_lines),
+        source_locale=source_locale,
+        target_locale=target_locale,
+    )
+    matches = list(_VALUE_MARKER_PATTERN.finditer(translated_text))
+    translated: dict[int, str] = {}
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(
+            translated_text
+        )
+        translated[int(match.group("item"))] = _restore_identifiers(
+            translated_text[start:end],
+            protected=protected,
+        )
+
+    missing = [
+        item_index
+        for item_index in range(len(values))
+        if not translated.get(item_index, "").strip()
+    ]
+    if missing:
+        raise TranslationProviderError(
+            "translation provider did not preserve the catalog value structure"
+        )
+    return [translated[item_index].strip() for item_index in range(len(values))]

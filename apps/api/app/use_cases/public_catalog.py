@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -37,17 +38,29 @@ from ..public_catalog_schemas import (
     PublicStoreResponse,
 )
 from ..repositories import public_catalog_repository as repository
-from ..repositories import catalog_translation_repository as translation_repository
-from ..services.catalog_translation import catalog_translation_source
+from ..services.catalog_translation import (
+    CatalogTranslationResult,
+    catalog_translation_source,
+    translate_catalog_sources,
+    translate_catalog_values,
+    translation_batches,
+)
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
 from ..services.embedding import EmbeddingProviderError
 from ..services.hybrid_search import _retrieval_tokens, hybrid_product_search
 from ..services.rbac import list_permissions
+from ..services.translation import (
+    TranslationProvider,
+    TranslationProviderError,
+    catalog_translation_is_configured,
+    configured_catalog_translator,
+)
 
 
 MONEY = Decimal("0.01")
 PUBLIC_TOKEN_SEPARATOR = "."
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -287,17 +300,9 @@ def get_store(
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale = _normalized_locale(tenant.default_locale)
     requested_locale = _normalized_locale(locale, default=source_locale)
-    available_locales = list(
-        dict.fromkeys(
-            [
-                source_locale,
-                *translation_repository.available_target_locales(
-                    session,
-                    tenant_id=tenant.id,
-                ),
-            ]
-        )
-    )
+    available_locales = [source_locale]
+    if catalog_translation_is_configured() and source_locale != "en-US":
+        available_locales.append("en-US")
     return PublicStoreResponse(
         id=tenant.id,
         slug=tenant.slug,
@@ -391,6 +396,97 @@ def _sku_response(
             else "FALLBACK"
         ),
     )
+
+
+def _live_translation_provider(
+    *,
+    source_locale: str,
+    target_locale: str,
+) -> TranslationProvider | None:
+    if target_locale == source_locale:
+        return None
+    try:
+        return configured_catalog_translator()
+    except TranslationProviderError as exc:
+        logger.warning("live catalog translation is unavailable: %s", exc)
+        return None
+
+
+def _live_sku_translation_map(
+    rows: list[object],
+    *,
+    translator: TranslationProvider | None,
+    source_locale: str,
+    target_locale: str,
+) -> dict[UUID, CatalogTranslationResult]:
+    if translator is None or not rows:
+        return {}
+    sources = [catalog_translation_source(row) for row in rows]
+    results: list[CatalogTranslationResult] = []
+    try:
+        for batch in translation_batches(
+            sources,
+            max_items=_positive_int_environment(
+                "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
+                50,
+                maximum=100,
+            ),
+            max_characters=_positive_int_environment(
+                "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
+                30_000,
+                maximum=100_000,
+            ),
+        ):
+            results.extend(
+                translate_catalog_sources(
+                    translator,
+                    batch,
+                    source_locale=source_locale,
+                    target_locale=target_locale,
+                )
+            )
+    except TranslationProviderError as exc:
+        logger.warning("live SKU translation failed; using source text: %s", exc)
+        return {}
+    return {result.sku_id: result for result in results}
+
+
+def _live_category_labels(
+    categories: list[str],
+    *,
+    translator: TranslationProvider | None,
+    source_locale: str,
+    target_locale: str,
+) -> dict[str, str]:
+    if translator is None or not categories:
+        return {}
+    segments = list(
+        dict.fromkeys(
+            segment.strip()
+            for category in categories
+            for segment in category.replace("／", "/").split("/")
+            if segment.strip()
+        )
+    )
+    try:
+        translated_segments = translate_catalog_values(
+            translator,
+            segments,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+    except TranslationProviderError as exc:
+        logger.warning("live category translation failed; using source text: %s", exc)
+        return {}
+    segment_labels = dict(zip(segments, translated_segments, strict=True))
+    return {
+        category: "/".join(
+            segment_labels.get(segment.strip(), segment.strip())
+            for segment in category.replace("／", "/").split("/")
+            if segment.strip()
+        )
+        for category in categories
+    }
 
 
 def _lexical_semantic_rows(rows: list[object], *, query: str) -> list[object]:
@@ -647,20 +743,21 @@ def list_public_skus(
         tenant_id=tenant.id,
         product_ids={row[2].id for row in selected},
     )
-    translations = (
-        translation_repository.translation_map(
-            session,
-            tenant_id=tenant.id,
-            sku_ids=[row[1].id for row in selected],
-            target_locale=requested_locale,
-        )
-        if requested_locale != source_locale
-        else {}
+    translator = _live_translation_provider(
+        source_locale=source_locale,
+        target_locale=requested_locale,
+    )
+    translations = _live_sku_translation_map(
+        selected,
+        translator=translator,
+        source_locale=source_locale,
+        target_locale=requested_locale,
     )
     category_labels = (
-        translation_repository.category_translation_map(
-            session,
-            tenant_id=tenant.id,
+        _live_category_labels(
+            categories,
+            translator=translator,
+            source_locale=source_locale,
             target_locale=requested_locale,
         )
         if requested_locale != source_locale and include_facets
@@ -748,15 +845,15 @@ def get_public_sku(
         tenant_id=tenant.id,
         product_ids={row[2].id},
     )
-    translations = (
-        translation_repository.translation_map(
-            session,
-            tenant_id=tenant.id,
-            sku_ids=[sku_id],
-            target_locale=requested_locale,
-        )
-        if requested_locale != source_locale
-        else {}
+    translator = _live_translation_provider(
+        source_locale=source_locale,
+        target_locale=requested_locale,
+    )
+    translations = _live_sku_translation_map(
+        [row],
+        translator=translator,
+        source_locale=source_locale,
+        target_locale=requested_locale,
     )
     return _sku_response(
         row,

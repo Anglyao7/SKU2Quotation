@@ -155,6 +155,7 @@ from app.use_cases.product_center import upsert_public_offer as upsert_public_of
 from app.product_center_schemas import PublicCatalogOfferUpsertRequest
 from app.use_cases.workspace import create_supplier as create_supplier_use_case
 from app.use_cases import catalog_translations as catalog_translation_use_cases
+from app.use_cases import public_catalog as public_catalog_use_cases
 from app.workspace_schemas import SupplierCreateRequest
 from app.trade_flow_models import InquiryMatchResultRow, InquiryRow, QuotationApprovalRow, QuotationItemRow, QuotationRow, QuotationVersionRow
 from app.public_catalog_models import (
@@ -7274,107 +7275,11 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
             session.commit()
 
 
-def test_public_catalog_uses_cached_translation_and_falls_back_when_stale() -> None:
-    with SessionLocal() as session:
-        rows = public_catalog_repository.list_all_public_catalog_rows(
-            session,
-            tenant_id=DEFAULT_TENANT_ID,
-            now=datetime.now(UTC),
-        )
-        source_row = next(row for row in rows if row[1].sku_code == "SF-6L20")
-        source = catalog_translation_source(source_row)
-        translation = CatalogSkuTranslationRow(
-            tenant_id=DEFAULT_TENANT_ID,
-            sku_id=source.sku_id,
-            source_locale="zh-CN",
-            target_locale="en-US",
-            source_hash=source.source_hash,
-            source_category=source.category,
-            name="6L Smart Pet Feeder with App",
-            description="Scheduled portion feeding for pets.",
-            category="Pet Supplies/Smart Feeding",
-            tags=["Smart feeding", "App control"],
-            display_tag="Smart feeding",
-            provider="deeplx",
-            provider_version="v1",
-            product_version=source.product_version,
-            sku_version=source.sku_version,
-        )
-        session.add(translation)
-        session.commit()
-        translation_id = translation.id
-        product_id = source_row[2].id
-        original_description = source_row[2].description
-
-    try:
-        store_response = client.get(
-            "/api/store/demo",
-            params={"locale": "en-US"},
-        )
-        assert store_response.status_code == 200, store_response.text
-        assert store_response.json()["locale"] == "en-US"
-        assert "en-US" in store_response.json()["available_locales"]
-
-        listing_response = client.get(
-            "/api/store/demo/skus",
-            params={"locale": "en-US"},
-        )
-        assert listing_response.status_code == 200, listing_response.text
-        listing = listing_response.json()
-        translated = next(
-            item
-            for item in listing["items"]
-            if item["sku_code"] == "SF-6L20"
-        )
-        assert translated["name"] == "6L Smart Pet Feeder with App"
-        assert translated["category"] == source.category
-        assert translated["category_label"] == "Pet Supplies/Smart Feeding"
-        assert translated["display_tag"] == "Smart feeding"
-        assert translated["translation_status"] == "TRANSLATED"
-        category_option = next(
-            option
-            for option in listing["category_options"]
-            if option["value"] == source.category
-        )
-        assert category_option["label"] == "Pet Supplies/Smart Feeding"
-
-        detail_response = client.get(
-            f"/api/store/demo/skus/{source.sku_id}",
-            params={"locale": "en-US"},
-        )
-        assert detail_response.status_code == 200, detail_response.text
-        assert detail_response.json()["description"] == (
-            "Scheduled portion feeding for pets."
-        )
-
-        with SessionLocal() as session:
-            product = session.get(ProductRow, product_id)
-            assert product is not None
-            product.description = f"{original_description or ''} 已更新"
-            session.commit()
-
-        stale_response = client.get(
-            f"/api/store/demo/skus/{source.sku_id}",
-            params={"locale": "en-US"},
-        )
-        assert stale_response.status_code == 200, stale_response.text
-        assert stale_response.json()["translation_status"] == "FALLBACK"
-        assert stale_response.json()["name"] != "6L Smart Pet Feeder with App"
-    finally:
-        with SessionLocal() as session:
-            product = session.get(ProductRow, product_id)
-            assert product is not None
-            product.description = original_description
-            session.execute(
-                delete(CatalogSkuTranslationRow).where(
-                    CatalogSkuTranslationRow.id == translation_id
-                )
-            )
-            session.commit()
-
-
 class _CatalogTranslationTestProvider:
     identity = TranslationIdentity(provider="deeplx", version="v1")
+
+    def __init__(self) -> None:
+        self.calls = 0
 
     def translate(
         self,
@@ -7385,7 +7290,84 @@ class _CatalogTranslationTestProvider:
     ) -> str:
         assert source_locale == "zh-CN"
         assert target_locale == "en-US"
+        self.calls += 1
         return text.replace("宠物", "Pet").replace("智能", "Smart")
+
+
+def test_public_catalog_translates_each_requested_page_live_without_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _CatalogTranslationTestProvider()
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "configured_catalog_translator",
+        lambda: provider,
+    )
+
+    store_response = client.get(
+        "/api/store/demo",
+        params={"locale": "en-US"},
+    )
+    assert store_response.status_code == 200, store_response.text
+    assert "en-US" in store_response.json()["available_locales"]
+
+    first_page = client.get(
+        "/api/store/demo/skus",
+        params={
+            "locale": "en-US",
+            "page": 1,
+            "page_size": 1,
+            "include_facets": "false",
+        },
+    )
+    assert first_page.status_code == 200, first_page.text
+    first_item = first_page.json()["items"][0]
+    assert first_item["translation_status"] == "TRANSLATED"
+    assert provider.calls == 1
+
+    second_page = client.get(
+        "/api/store/demo/skus",
+        params={
+            "locale": "en-US",
+            "page": 2,
+            "page_size": 1,
+            "include_facets": "false",
+        },
+    )
+    assert second_page.status_code == 200, second_page.text
+    assert second_page.json()["items"][0]["translation_status"] == "TRANSLATED"
+    assert provider.calls == 2
+
+    chinese_page = client.get(
+        "/api/store/demo/skus",
+        params={"page": 1, "page_size": 1, "include_facets": "false"},
+    )
+    assert chinese_page.status_code == 200, chinese_page.text
+    assert chinese_page.json()["items"][0]["translation_status"] == "SOURCE"
+    assert provider.calls == 2
+
+    detail = client.get(
+        f"/api/store/demo/skus/{first_item['id']}",
+        params={"locale": "en-US"},
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["translation_status"] == "TRANSLATED"
+    assert provider.calls == 3
+
+    with SessionLocal() as session:
+        assert (
+            session.scalar(
+                select(func.count(CatalogSkuTranslationRow.id)).where(
+                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            == 0
+        )
 
 
 def test_catalog_translation_job_reports_progress_and_caches_results(
@@ -7443,15 +7425,6 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         assert final.json()["pending_skus"] == 0
         assert final.json()["translated_skus"] == 3
 
-        storefront = client.get(
-            "/api/store/demo/skus",
-            params={"locale": "en-US"},
-        )
-        assert storefront.status_code == 200, storefront.text
-        assert all(
-            item["translation_status"] == "TRANSLATED"
-            for item in storefront.json()["items"]
-        )
     finally:
         with SessionLocal() as session:
             session.execute(

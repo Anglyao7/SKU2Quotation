@@ -37,9 +37,11 @@ NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
 def get_public_store(
     tenant_slug: str,
+    response: Response,
     locale: str | None = Query(default=None, max_length=20),
     session: Session = Depends(get_session),
 ) -> PublicStoreResponse:
+    response.headers.update(NO_STORE_HEADERS)
     try:
         return use_cases.get_store(session, slug=tenant_slug, locale=locale)
     except ApplicationError as exc:
@@ -50,6 +52,7 @@ def get_public_store(
 def list_public_skus(
     tenant_slug: str,
     request: Request,
+    response: Response,
     q: str = Query(default="", max_length=300),
     category: str | None = Query(default=None, max_length=200),
     tags: list[str] = Query(default=[]),
@@ -60,6 +63,18 @@ def list_public_skus(
     locale: str | None = Query(default=None, max_length=20),
     session: Session = Depends(get_session),
 ) -> PublicSkuPage:
+    response.headers.update(NO_STORE_HEADERS)
+    if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
+        enforce_rate_limit(
+            request,
+            scope="public-live-catalog-translation",
+            limit=configured_limit("RATE_LIMIT_PUBLIC_TRANSLATION_REQUESTS", 120),
+            window_seconds=configured_limit(
+                "RATE_LIMIT_PUBLIC_TRANSLATION_WINDOW_SECONDS",
+                60,
+                maximum=86_400,
+            ),
+        )
     if semantic:
         enforce_rate_limit(
             request,
@@ -95,9 +110,23 @@ def list_public_skus(
 def get_public_sku(
     tenant_slug: str,
     sku_id: UUID,
+    request: Request,
+    response: Response,
     locale: str | None = Query(default=None, max_length=20),
     session: Session = Depends(get_session),
 ) -> PublicSkuResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
+        enforce_rate_limit(
+            request,
+            scope="public-live-catalog-translation",
+            limit=configured_limit("RATE_LIMIT_PUBLIC_TRANSLATION_REQUESTS", 120),
+            window_seconds=configured_limit(
+                "RATE_LIMIT_PUBLIC_TRANSLATION_WINDOW_SECONDS",
+                60,
+                maximum=86_400,
+            ),
+        )
     try:
         return use_cases.get_public_sku(
             session,

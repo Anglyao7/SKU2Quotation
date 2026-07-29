@@ -480,7 +480,10 @@ export function StorePage() {
               <span className="powered-by">{t("由智贸云提供")}</span>
             </div>
             <div className="header-actions">
-              <StorefrontLanguageSwitch locale={locale} />
+              <StorefrontLanguageSwitch
+                locale={locale}
+                onBeforeLocaleChange={rememberCatalogPosition}
+              />
               <ThemeToggle
                 labels={{
                   toDark: t("切换深色模式"),
