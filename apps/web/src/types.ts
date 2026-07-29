@@ -47,9 +47,20 @@ export interface Storefront {
   logo_url?: string | null;
   contact_email?: string | null;
   default_currency?: string;
+  locale?: StorefrontLocale;
+  source_locale?: StorefrontLocale;
+  available_locales?: StorefrontLocale[];
   categories?: string[];
+  category_options?: StorefrontCategoryOption[];
   tags?: string[];
   all_products_position?: number;
+}
+
+export type StorefrontLocale = "zh-CN" | "en-US";
+
+export interface StorefrontCategoryOption {
+  value: string;
+  label: string;
 }
 
 export interface Sku {
@@ -58,6 +69,7 @@ export interface Sku {
   sku_code: string;
   name: string;
   category?: string | null;
+  category_label?: string | null;
   category_color?: string | null;
   tags: string[];
   display_tag?: string | null;
@@ -72,6 +84,9 @@ export interface Sku {
   status?: "active" | "inactive";
   created_at?: string;
   updated_at?: string;
+  source_locale?: StorefrontLocale;
+  locale?: StorefrontLocale;
+  translation_status?: "SOURCE" | "TRANSLATED" | "FALLBACK";
 }
 
 export interface SkuList {
@@ -80,7 +95,10 @@ export interface SkuList {
   page?: number;
   pages?: number;
   categories?: string[];
+  category_options?: StorefrontCategoryOption[];
   tags?: string[];
+  source_locale?: StorefrontLocale;
+  locale?: StorefrontLocale;
   all_products_position?: number;
 }
 

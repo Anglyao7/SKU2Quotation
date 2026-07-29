@@ -37,10 +37,11 @@ NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
 def get_public_store(
     tenant_slug: str,
+    locale: str | None = Query(default=None, max_length=20),
     session: Session = Depends(get_session),
 ) -> PublicStoreResponse:
     try:
-        return use_cases.get_store(session, slug=tenant_slug)
+        return use_cases.get_store(session, slug=tenant_slug, locale=locale)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -56,6 +57,7 @@ def list_public_skus(
     include_facets: bool = Query(default=True),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=24, ge=1, le=100),
+    locale: str | None = Query(default=None, max_length=20),
     session: Session = Depends(get_session),
 ) -> PublicSkuPage:
     if semantic:
@@ -80,6 +82,7 @@ def list_public_skus(
             include_facets=include_facets,
             page=page,
             page_size=page_size,
+            locale=locale,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -92,6 +95,7 @@ def list_public_skus(
 def get_public_sku(
     tenant_slug: str,
     sku_id: UUID,
+    locale: str | None = Query(default=None, max_length=20),
     session: Session = Depends(get_session),
 ) -> PublicSkuResponse:
     try:
@@ -99,6 +103,7 @@ def get_public_sku(
             session,
             slug=tenant_slug,
             sku_id=sku_id,
+            locale=locale,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

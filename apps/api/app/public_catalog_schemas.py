@@ -26,8 +26,15 @@ class PublicStoreResponse(BaseModel):
     contact_phone: str | None
     default_currency: str
     locale: str
+    source_locale: str = "zh-CN"
+    available_locales: list[str] = Field(default_factory=lambda: ["zh-CN"])
     all_products_position: int = Field(default=0, ge=0)
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
+
+
+class PublicCategoryOption(BaseModel):
+    value: str
+    label: str
 
 
 class PublicSkuResponse(BaseModel):
@@ -37,6 +44,7 @@ class PublicSkuResponse(BaseModel):
     name: str
     description: str | None
     category: str | None
+    category_label: str | None = None
     category_color: str | None = None
     tags: list[str]
     display_tag: str | None = None
@@ -47,6 +55,9 @@ class PublicSkuResponse(BaseModel):
     image_url: str | None
     product_version: int
     sku_version: int
+    source_locale: str = "zh-CN"
+    locale: str = "zh-CN"
+    translation_status: Literal["SOURCE", "TRANSLATED", "FALLBACK"] = "SOURCE"
 
 
 class PublicSkuPage(BaseModel):
@@ -56,7 +67,10 @@ class PublicSkuPage(BaseModel):
     page_size: int
     pages: int
     categories: list[str]
+    category_options: list[PublicCategoryOption] = Field(default_factory=list)
     tags: list[str]
+    source_locale: str = "zh-CN"
+    locale: str = "zh-CN"
     all_products_position: int = Field(default=0, ge=0)
 
 

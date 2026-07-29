@@ -31,11 +31,14 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSummary,
+    PublicCategoryOption,
     PublicSkuPage,
     PublicSkuResponse,
     PublicStoreResponse,
 )
 from ..repositories import public_catalog_repository as repository
+from ..repositories import catalog_translation_repository as translation_repository
+from ..services.catalog_translation import catalog_translation_source
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
 from ..services.embedding import EmbeddingProviderError
@@ -140,6 +143,23 @@ def _category_path(category: object | None) -> str:
     if path and code and path.casefold() == code.casefold():
         return name
     return path or name
+
+
+def _normalized_locale(value: str | None, *, default: str = "zh-CN") -> str:
+    normalized = (value or default).strip().replace("_", "-")
+    aliases = {
+        "zh": "zh-CN",
+        "zh-cn": "zh-CN",
+        "en": "en-US",
+        "en-us": "en-US",
+    }
+    locale = aliases.get(normalized.casefold())
+    if locale is None:
+        raise ApplicationError(
+            "PUBLIC_LOCALE_UNSUPPORTED",
+            "The requested storefront language is not supported.",
+        )
+    return locale
 
 
 def _ordered_category_paths(
@@ -258,8 +278,26 @@ def _resolve_store(session: Session, *, slug: str):
     return tenant, profile
 
 
-def get_store(session: Session, *, slug: str) -> PublicStoreResponse:
+def get_store(
+    session: Session,
+    *,
+    slug: str,
+    locale: str | None = None,
+) -> PublicStoreResponse:
     tenant, profile = _resolve_store(session, slug=slug)
+    source_locale = _normalized_locale(tenant.default_locale)
+    requested_locale = _normalized_locale(locale, default=source_locale)
+    available_locales = list(
+        dict.fromkeys(
+            [
+                source_locale,
+                *translation_repository.available_target_locales(
+                    session,
+                    tenant_id=tenant.id,
+                ),
+            ]
+        )
+    )
     return PublicStoreResponse(
         id=tenant.id,
         slug=tenant.slug,
@@ -269,7 +307,9 @@ def get_store(session: Session, *, slug: str) -> PublicStoreResponse:
         contact_email=profile.contact_email,
         contact_phone=profile.contact_phone,
         default_currency=tenant.default_currency,
-        locale=tenant.default_locale,
+        locale=requested_locale,
+        source_locale=source_locale,
+        available_locales=available_locales,
         all_products_position=max(0, int(profile.all_products_position or 0)),
     )
 
@@ -280,23 +320,58 @@ def _sku_response(
     image: object | None,
     slug: str,
     category_color: str | None,
+    source_locale: str,
+    locale: str,
+    translation: object | None = None,
 ) -> PublicSkuResponse:
     offer, sku, product, category = row
-    tags = [str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()]
+    source = catalog_translation_source(row)
+    translated = bool(
+        translation is not None
+        and locale != source_locale
+        and getattr(translation, "source_hash", None) == source.source_hash
+    )
+    tags = (
+        [
+            str(tag).strip()
+            for tag in (getattr(translation, "tags", []) or [])
+            if str(tag).strip()
+        ]
+        if translated
+        else list(source.tags)
+    )
+    display_tag = (
+        str(getattr(translation, "display_tag", "") or "").strip() or None
+        if translated
+        else source.display_tag
+    )
     return PublicSkuResponse(
         id=sku.id,
         product_id=product.id,
         sku_code=sku.sku_code,
-        name=sku.name or product.name,
-        description=product.description,
-        category=_category_path(category) or None,
+        name=(
+            str(getattr(translation, "name", "") or "").strip()
+            if translated
+            else source.name
+        ),
+        description=(
+            getattr(translation, "description", None)
+            if translated
+            else source.description
+        ),
+        category=source.category,
+        category_label=(
+            str(getattr(translation, "category", "") or "").strip()
+            if translated
+            else source.category
+        )
+        or source.category,
         category_color=category_color,
         tags=list(dict.fromkeys(tags)),
         display_tag=(
-            offer.display_tag
-            if offer.display_tag
-            and offer.display_tag.casefold()
-            in {tag.casefold() for tag in tags}
+            display_tag
+            if display_tag
+            and display_tag.casefold() in {tag.casefold() for tag in tags}
             else tags[0] if tags else None
         ),
         tag_color=offer.tag_color,
@@ -306,6 +381,15 @@ def _sku_response(
         image_url=_public_image_url(image, slug=slug),
         product_version=product.current_version,
         sku_version=sku.version,
+        source_locale=source_locale,
+        locale=locale,
+        translation_status=(
+            "SOURCE"
+            if locale == source_locale
+            else "TRANSLATED"
+            if translated
+            else "FALLBACK"
+        ),
     )
 
 
@@ -462,8 +546,11 @@ def list_public_skus(
     include_facets: bool,
     page: int,
     page_size: int,
+    locale: str | None = None,
 ) -> PublicSkuPage:
     tenant, profile = _resolve_store(session, slug=slug)
+    source_locale = _normalized_locale(tenant.default_locale)
+    requested_locale = _normalized_locale(locale, default=source_locale)
     now = utcnow()
     wanted_tags = _normalize_tags(tags)
     all_categories = repository.list_catalog_categories(
@@ -560,6 +647,25 @@ def list_public_skus(
         tenant_id=tenant.id,
         product_ids={row[2].id for row in selected},
     )
+    translations = (
+        translation_repository.translation_map(
+            session,
+            tenant_id=tenant.id,
+            sku_ids=[row[1].id for row in selected],
+            target_locale=requested_locale,
+        )
+        if requested_locale != source_locale
+        else {}
+    )
+    category_labels = (
+        translation_repository.category_translation_map(
+            session,
+            tenant_id=tenant.id,
+            target_locale=requested_locale,
+        )
+        if requested_locale != source_locale and include_facets
+        else {}
+    )
     return PublicSkuPage(
         items=[
             _sku_response(
@@ -571,6 +677,9 @@ def list_public_skus(
                     if row[3] is not None
                     else None
                 ),
+                source_locale=source_locale,
+                locale=requested_locale,
+                translation=translations.get(row[1].id),
             )
             for row in selected
         ],
@@ -579,7 +688,16 @@ def list_public_skus(
         page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
         categories=categories,
+        category_options=[
+            PublicCategoryOption(
+                value=category_path,
+                label=category_labels.get(category_path, category_path),
+            )
+            for category_path in categories
+        ],
         tags=facet_tags,
+        source_locale=source_locale,
+        locale=requested_locale,
         all_products_position=(
             _effective_all_products_position(
                 profile.all_products_position,
@@ -597,8 +715,11 @@ def get_public_sku(
     *,
     slug: str,
     sku_id: UUID,
+    locale: str | None = None,
 ) -> PublicSkuResponse:
     tenant, _profile = _resolve_store(session, slug=slug)
+    source_locale = _normalized_locale(tenant.default_locale)
+    requested_locale = _normalized_locale(locale, default=source_locale)
     rows = repository.list_public_catalog_rows_by_sku_ids(
         session,
         tenant_id=tenant.id,
@@ -627,6 +748,16 @@ def get_public_sku(
         tenant_id=tenant.id,
         product_ids={row[2].id},
     )
+    translations = (
+        translation_repository.translation_map(
+            session,
+            tenant_id=tenant.id,
+            sku_ids=[sku_id],
+            target_locale=requested_locale,
+        )
+        if requested_locale != source_locale
+        else {}
+    )
     return _sku_response(
         row,
         image=images.get(row[2].id),
@@ -634,6 +765,9 @@ def get_public_sku(
         category_color=(
             root_category.display_color if root_category is not None else None
         ),
+        source_locale=source_locale,
+        locale=requested_locale,
+        translation=translations.get(sku_id),
     )
 
 

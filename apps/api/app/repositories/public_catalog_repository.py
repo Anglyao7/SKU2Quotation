@@ -267,6 +267,25 @@ def list_public_catalog_page(
     )
 
 
+def list_all_public_catalog_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+):
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query="",
+        category=None,
+    )
+    return list(
+        session.execute(
+            _ordered_public_catalog_statement(statement, query="")
+        ).all()
+    )
+
+
 def count_public_catalog_rows(
     session: Session,
     *,

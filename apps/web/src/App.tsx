@@ -45,6 +45,7 @@ const TenantManagementPage = recoverableLazy(() => import("./pages/console/Tenan
 const NotFoundPage = recoverableLazy(() => import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })));
 const AiSearchPage = recoverableLazy(() => import("./core/pages/AiSearchPage").then((module) => ({ default: module.AiSearchPage })));
 const AiSearchManagementPage = recoverableLazy(() => import("./core/pages/AiSearchManagementPage").then((module) => ({ default: module.AiSearchManagementPage })));
+const CatalogTranslationPage = recoverableLazy(() => import("./core/pages/CatalogTranslationPage").then((module) => ({ default: module.CatalogTranslationPage })));
 const AccountSettingsPage = recoverableLazy(() => import("./core/pages/AccountSettingsPage").then((module) => ({ default: module.AccountSettingsPage })));
 const CategoriesPage = recoverableLazy(() => import("./core/pages/CategoriesPage").then((module) => ({ default: module.CategoriesPage })));
 const CoreDashboardPage = recoverableLazy(() => import("./core/pages/DashboardPage").then((module) => ({ default: module.CoreDashboardPage })));
@@ -134,10 +135,13 @@ function PlatformAdminGate({ children }: { children: ReactNode }) {
 async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
+  const currentUrl = new URL(request.url);
+  const locale = currentUrl.searchParams.get("lang") === "en-US"
+    ? "en-US"
+    : "zh-CN";
   try {
-    const store = await api.getStore(tenantSlug);
+    const store = await api.getStore(tenantSlug, locale);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
-      const currentUrl = new URL(request.url);
       return redirect(`/${encodeURIComponent(store.slug)}${currentUrl.search}${currentUrl.hash}`);
     }
     return store;
@@ -148,16 +152,20 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   }
 }
 
-async function storefrontSkuLoader({ params }: LoaderFunctionArgs) {
+async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   const skuId = params.skuId;
   if (!tenantSlug || !skuId) throw new Response("Not found", { status: 404 });
+  const currentUrl = new URL(request.url);
+  const locale = currentUrl.searchParams.get("lang") === "en-US"
+    ? "en-US"
+    : "zh-CN";
   try {
-    const store = await api.getStore(tenantSlug);
-    const sku = await api.getStoreSku(store.slug, skuId);
+    const store = await api.getStore(tenantSlug, locale);
+    const sku = await api.getStoreSku(store.slug, skuId, locale);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
-        `/${encodeURIComponent(store.slug)}/skus/${encodeURIComponent(sku.id)}`,
+        `/${encodeURIComponent(store.slug)}/skus/${encodeURIComponent(sku.id)}${currentUrl.search}${currentUrl.hash}`,
       );
     }
     return { store, sku };
@@ -205,6 +213,7 @@ const router = createBrowserRouter([{
         { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
+        { path: "products/translations", element: <PermissionGate anyOf={["product.view"]}><CatalogTranslationPage /></PermissionGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
         { path: "suppliers", element: <Navigate to="/console/products" replace /> },

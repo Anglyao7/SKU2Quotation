@@ -2,6 +2,8 @@ import type {
   AttributeDefinition,
   AuthTokenData,
   CategoryLayout,
+  CatalogTranslationJob,
+  CatalogTranslationStatus,
   CoreProduct,
   CustomerPortalOrder,
   CustomerPortalOverview,
@@ -1278,6 +1280,124 @@ export async function getKnowledgeIndexJob(jobId: string): Promise<KnowledgeInde
   return mapKnowledgeIndexJob(
     await request<ApiKnowledgeIndexJob>(
       `/ai/knowledge/index/jobs/${encodeURIComponent(jobId)}`,
+    ),
+  );
+}
+
+interface ApiCatalogTranslationFailure {
+  sku_id?: string | null;
+  sku_code?: string | null;
+  name?: string | null;
+  message: string;
+}
+
+interface ApiCatalogTranslationJob {
+  id: string;
+  source_locale: string;
+  target_locale: string;
+  mode: "INCREMENTAL" | "FULL_REBUILD";
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  total_skus: number;
+  processed_skus: number;
+  failed_skus: number;
+  progress_percent: number;
+  current_sku_id?: string | null;
+  current_sku_name?: string | null;
+  provider: string;
+  provider_version: string;
+  failure_details: ApiCatalogTranslationFailure[];
+  error_message?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+interface ApiCatalogTranslationStatus {
+  source_locale: string;
+  target_locale: string;
+  provider: string;
+  provider_version: string;
+  provider_configured: boolean;
+  total_skus: number;
+  translated_skus: number;
+  stale_skus: number;
+  pending_skus: number;
+  available_locales: string[];
+  latest_job?: ApiCatalogTranslationJob | null;
+}
+
+function mapCatalogTranslationJob(
+  row: ApiCatalogTranslationJob,
+): CatalogTranslationJob {
+  return {
+    id: row.id,
+    sourceLocale: row.source_locale,
+    targetLocale: row.target_locale,
+    mode: row.mode,
+    status: row.status,
+    totalSkus: row.total_skus,
+    processedSkus: row.processed_skus,
+    failedSkus: row.failed_skus,
+    progressPercent: row.progress_percent,
+    currentSkuId: defined(row.current_sku_id),
+    currentSkuName: defined(row.current_sku_name),
+    provider: row.provider,
+    providerVersion: row.provider_version,
+    failureDetails: (row.failure_details ?? []).map((failure) => ({
+      skuId: defined(failure.sku_id),
+      skuCode: defined(failure.sku_code),
+      name: defined(failure.name),
+      message: failure.message,
+    })),
+    errorMessage: defined(row.error_message),
+    createdAt: row.created_at,
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+  };
+}
+
+export async function getCatalogTranslationStatus(): Promise<CatalogTranslationStatus> {
+  const row = await request<ApiCatalogTranslationStatus>(
+    "/catalog/translations/status?target_locale=en-US",
+  );
+  return {
+    sourceLocale: row.source_locale,
+    targetLocale: row.target_locale,
+    provider: row.provider,
+    providerVersion: row.provider_version,
+    providerConfigured: row.provider_configured,
+    totalSkus: row.total_skus,
+    translatedSkus: row.translated_skus,
+    staleSkus: row.stale_skus,
+    pendingSkus: row.pending_skus,
+    availableLocales: row.available_locales,
+    latestJob: row.latest_job
+      ? mapCatalogTranslationJob(row.latest_job)
+      : undefined,
+  };
+}
+
+export async function startCatalogTranslationJob(
+  fullRebuild = false,
+): Promise<CatalogTranslationJob> {
+  return mapCatalogTranslationJob(
+    await request<ApiCatalogTranslationJob>("/catalog/translations/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        target_locale: "en-US",
+        mode: fullRebuild ? "FULL_REBUILD" : "INCREMENTAL",
+        confirm_full_rebuild: fullRebuild,
+      }),
+    }),
+  );
+}
+
+export async function getCatalogTranslationJob(
+  jobId: string,
+): Promise<CatalogTranslationJob> {
+  return mapCatalogTranslationJob(
+    await request<ApiCatalogTranslationJob>(
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}`,
     ),
   );
 }

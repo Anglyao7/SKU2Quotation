@@ -203,6 +203,9 @@ img { display: block; max-width: 100%; }
 .store-identity small { color: var(--text-soft); font-size: 10px; letter-spacing: .04em; }
 .powered-by { padding-left: 14px; border-left: 1px solid var(--line); color: var(--text-soft); font-size: 10px; white-space: nowrap; }
 .header-actions { display: flex; align-items: center; gap: var(--control-gap); }
+.storefront-language-trigger { min-width: 58px; justify-content: center; }
+.storefront-language-check { width: 16px; height: 16px; display: inline-grid; place-items: center; }
+.storefront-language-check svg { width: 14px; height: 14px; }
 .header-count { min-width: 22px; height: 22px; padding-inline: 6px; display: inline-grid; place-items: center; border-radius: 10px; background: rgba(245, 250, 248, 0.16); font-size: 11px; font-weight: 700; }
 .cart-trigger { min-width: 120px; box-shadow: 0 6px 20px rgba(37, 99, 235, 0.18); }
 .catalog-section .rt-Container { padding-inline: 24px; }

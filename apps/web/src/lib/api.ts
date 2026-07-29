@@ -176,11 +176,21 @@ export const api = {
   },
   me: () => request<User>("/api/auth/me", {}, true),
 
-  getStore: (slug: string) => request<Storefront>(`/api/store/${encodeURIComponent(slug)}`),
-  async getStoreSku(slug: string, skuId: string): Promise<Sku> {
+  getStore: (slug: string, locale?: string) => {
+    const params = new URLSearchParams();
+    if (locale) params.set("locale", locale);
+    const query = params.toString();
+    return request<Storefront>(
+      `/api/store/${encodeURIComponent(slug)}${query ? `?${query}` : ""}`,
+    );
+  },
+  async getStoreSku(slug: string, skuId: string, locale?: string): Promise<Sku> {
+    const params = new URLSearchParams();
+    if (locale) params.set("locale", locale);
+    const query = params.toString();
     return normalizeSku(
       await request<Sku>(
-        `/api/store/${encodeURIComponent(slug)}/skus/${encodeURIComponent(skuId)}`,
+        `/api/store/${encodeURIComponent(slug)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}`,
       ),
     );
   },
@@ -193,6 +203,7 @@ export const api = {
       semantic?: boolean;
       includeFacets?: boolean;
       page?: number;
+      locale?: string;
     } = {},
   ): Promise<SkuList> {
     const params = new URLSearchParams();
@@ -201,6 +212,7 @@ export const api = {
     if (filters.tags?.length) params.set("tags", filters.tags.join(","));
     if (filters.semantic) params.set("semantic", "true");
     if (filters.includeFacets === false) params.set("include_facets", "false");
+    if (filters.locale) params.set("locale", filters.locale);
     params.set("page", String(filters.page || 1));
     params.set("page_size", "24");
     const query = params.toString();
@@ -215,7 +227,16 @@ export const api = {
       page: Number(meta.page || filters.page || 1),
       pages: Number(meta.pages || 0),
       categories: Array.isArray(meta.categories) ? (meta.categories as string[]) : undefined,
+      category_options: Array.isArray(meta.category_options)
+        ? (meta.category_options as Array<{ value: string; label: string }>)
+        : undefined,
       tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : undefined,
+      source_locale: typeof meta.source_locale === "string"
+        ? (meta.source_locale as "zh-CN" | "en-US")
+        : undefined,
+      locale: typeof meta.locale === "string"
+        ? (meta.locale as "zh-CN" | "en-US")
+        : undefined,
       all_products_position: Number.isFinite(Number(meta.all_products_position))
         ? Number(meta.all_products_position)
         : undefined,

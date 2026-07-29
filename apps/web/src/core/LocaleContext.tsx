@@ -590,6 +590,51 @@ const english: Record<string, string> = {
   "公开售价": "Public price",
   "计价币种": "Currency",
   "商品标签": "Product tags",
+  "多语言管理": "Languages",
+  "翻译": "Translate",
+  "商品翻译状态读取失败": "Could not load the product translation status",
+  "翻译任务完成，{success} 个成功，{failed} 个需要重试。":
+    "Translation completed: {success} succeeded and {failed} need retrying.",
+  "商品英文内容已更新，共处理 {count} 个 SKU。":
+    "English product content updated. Processed {count} SKUs.",
+  "商品翻译任务失败": "Product translation failed",
+  "当前没有需要翻译或更新的商品。":
+    "No products need translating or updating.",
+  "预先翻译商品名称、描述、分类与标签，并缓存到数据库。访客浏览时不会实时请求翻译接口。":
+    "Translate product names, descriptions, categories, and tags in advance and cache them in the database. Storefront visits never call the provider in real time.",
+  "正在核对商品翻译状态": "Checking product translations",
+  "翻译服务尚未配置，平台管理员需要先注入 DeepLX 环境密钥。":
+    "The translation service is not configured. A platform administrator must inject the DeepLX secret first.",
+  "中文 → 英文": "Chinese → English",
+  "正在翻译 {done} / {total} 个 SKU":
+    "Translating {done} of {total} SKUs",
+  "{count} 个 SKU 等待翻译": "{count} SKUs waiting for translation",
+  "商品英文内容已是最新": "English product content is up to date",
+  "已同步": "Synchronized",
+  "全量重新翻译": "Full retranslation",
+  "增量翻译": "Incremental translation",
+  "{count} 个失败": "{count} failed",
+  "翻译覆盖": "Translation coverage",
+  "正在翻译…": "Translating…",
+  "翻译新增与变更": "Translate new and changed",
+  "正在重新翻译…": "Retranslating…",
+  "当前账号可以查看状态，但没有商品编辑权限。":
+    "You can view translation status, but product edit permission is required to run a job.",
+  "工作方式": "How it works",
+  "翻译一次，前台直接读取": "Translate once, serve from cache",
+  "商品发生新增或名称、描述、分类、标签变更后，执行增量翻译即可。未翻译或翻译失效的字段会自动回退中文原文。":
+    "Run an incremental translation after products are added or their names, descriptions, categories, or tags change. Missing or stale translations automatically fall back to the Chinese source.",
+  "当前提供方": "Active provider",
+  "服务": "Service",
+  "待更新": "Pending",
+  "失效缓存": "Stale cache",
+  "任务明细": "Job details",
+  "未成功翻译的 SKU": "SKUs not translated",
+  "未知 SKU": "Unknown SKU",
+  "全量重新翻译商品？": "Retranslate the full catalog?",
+  "系统会忽略现有缓存，使用当前 DeepLX 配置重新翻译全部 {count} 个 SKU。通常仅在更换翻译规则或缓存异常时使用。":
+    "Existing cache entries will be ignored and all {count} SKUs will be retranslated with the current DeepLX configuration. Use this only after changing translation rules or when the cache is inconsistent.",
+  "确认重新翻译": "Confirm retranslation",
   "前台展示标签": "Storefront display tag",
   "暂无可选标签": "No tags available",
   "新品，热卖，现货": "New, bestseller, in stock",

@@ -27,11 +27,13 @@ import { Link, useLoaderData } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
+import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import { storefrontText } from "../lib/storefrontLocale";
 import { readStorefrontViewState, writeStorefrontViewState } from "../lib/storefrontViewState";
-import type { Sku, Storefront } from "../types";
+import type { Sku, Storefront, StorefrontLocale } from "../types";
 
 type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
 
@@ -58,10 +60,12 @@ function hidePaginationItemOnMobile(index: number, currentPage: number, pageCoun
 function CategoryScrollTrack({
   ariaLabel,
   contentKey,
+  locale,
   children,
 }: {
   ariaLabel: string;
   contentKey: string;
+  locale: StorefrontLocale;
   children: ReactNode;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -129,7 +133,7 @@ function CategoryScrollTrack({
         <button
           type="button"
           className="category-browser-scroll-button is-left"
-          aria-label={`向左查看更多${ariaLabel}`}
+          aria-label={locale === "en-US" ? `View earlier ${ariaLabel}` : `向左查看更多${ariaLabel}`}
           onClick={() => scrollByItem(-1)}
         >
           <CaretLeft weight="bold" />
@@ -142,7 +146,7 @@ function CategoryScrollTrack({
         <button
           type="button"
           className="category-browser-scroll-button is-right"
-          aria-label={`向右查看更多${ariaLabel}`}
+          aria-label={locale === "en-US" ? `View more ${ariaLabel}` : `向右查看更多${ariaLabel}`}
           onClick={() => scrollByItem(1)}
         >
           <CaretRight weight="bold" />
@@ -155,6 +159,15 @@ function CategoryScrollTrack({
 export function StorePage() {
   const loadedStore = useLoaderData() as Storefront;
   const tenantSlug = loadedStore.slug;
+  const locale: StorefrontLocale = loadedStore.locale === "en-US" ? "en-US" : "zh-CN";
+  const t = useCallback(
+    (source: string, values?: Record<string, string | number>) => (
+      storefrontText(locale, source, values)
+    ),
+    [locale],
+  );
+  const localeQuery = locale === "en-US" ? "?lang=en-US" : "";
+  const storefrontHome = `/${encodeURIComponent(tenantSlug)}${localeQuery}`;
   const [initialView] = useState(() => readStorefrontViewState(loadedStore.slug));
   const [store, setStore] = useState<Storefront>(loadedStore);
   const [skus, setSkus] = useState<Sku[]>([]);
@@ -181,6 +194,7 @@ export function StorePage() {
   const requestId = useRef(0);
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
   const activeTenantRef = useRef(loadedStore.slug);
+  const activeLocaleRef = useRef<StorefrontLocale>(locale);
   const facetsLoadedRef = useRef(Boolean(loadedStore.categories?.length));
   const initialLoadPageRef = useRef<number | null>(initialView?.page ?? 1);
   const pendingScrollRestoreRef = useRef<number | null>(initialView?.scrollY ?? null);
@@ -192,9 +206,12 @@ export function StorePage() {
 
   useEffect(() => {
     setStore(loadedStore);
-    if (activeTenantRef.current === loadedStore.slug) return;
+    const tenantChanged = activeTenantRef.current !== loadedStore.slug;
+    const localeChanged = activeLocaleRef.current !== locale;
+    if (!tenantChanged && !localeChanged) return;
     activeTenantRef.current = loadedStore.slug;
-    facetsLoadedRef.current = Boolean(loadedStore.categories?.length);
+    activeLocaleRef.current = locale;
+    facetsLoadedRef.current = false;
     const nextView = readStorefrontViewState(loadedStore.slug);
     setSearch(nextView?.search ?? "");
     setDeferredSearch(nextView?.search.trim() ?? "");
@@ -203,13 +220,15 @@ export function StorePage() {
     setSemantic(nextView?.semantic ?? true);
     setCategoryLayout(nextView?.categoryLayout ?? "horizontal");
     setExpandedCategories(new Set(nextView?.expandedCategories ?? []));
-    setCart(readStoreCart(loadedStore.slug));
-    setCartTenant(loadedStore.slug);
+    if (tenantChanged) {
+      setCart(readStoreCart(loadedStore.slug));
+      setCartTenant(loadedStore.slug);
+    }
     initialLoadPageRef.current = nextView?.page ?? 1;
     pendingScrollRestoreRef.current = nextView?.scrollY ?? null;
     setPage(nextView?.page ?? 1);
     setPages(0);
-  }, [loadedStore]);
+  }, [loadedStore, locale]);
 
   useEffect(() => {
     if (cartTenant === tenantSlug) writeStoreCart(tenantSlug, cart);
@@ -219,11 +238,14 @@ export function StorePage() {
 
   useEffect(() => {
     const previousTitle = document.title;
+    const previousLanguage = document.documentElement.lang;
+    document.documentElement.lang = locale;
     document.title = `${loadedStore.name} | 智贸云`;
     return () => {
       document.title = previousTitle;
+      document.documentElement.lang = previousLanguage;
     };
-  }, [loadedStore.name]);
+  }, [loadedStore.name, locale]);
 
   const loadSkus = useCallback(async (targetPage = 1) => {
     const currentRequest = ++requestId.current;
@@ -238,16 +260,31 @@ export function StorePage() {
         semantic: Boolean(deferredSearch) && semantic,
         includeFacets,
         page: targetPage,
+        locale,
       });
       if (currentRequest !== requestId.current) return;
       if (includeFacets) facetsLoadedRef.current = true;
       setSkus(data.items);
+      setCart((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const sku of data.items) {
+          if (next[sku.id] && next[sku.id].sku !== sku) {
+            next[sku.id] = { ...next[sku.id], sku };
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
       setTotal(data.total);
       setPage(data.page ?? targetPage);
       setPages(data.pages ?? Math.ceil(data.total / 24));
       setStore((current) => current ? {
         ...current,
         categories: data.categories?.length ? data.categories : current.categories,
+        category_options: data.category_options?.length
+          ? data.category_options
+          : current.category_options,
         tags: data.tags?.length ? data.tags : current.tags,
         all_products_position: includeFacets
           ? data.all_products_position ?? current.all_products_position ?? 0
@@ -255,14 +292,14 @@ export function StorePage() {
       } : current);
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
-      setError(caught instanceof Error ? caught.message : "商品加载失败。");
+      setError(caught instanceof Error ? caught.message : t("商品加载失败。"));
       setSkus([]);
     } finally {
       if (currentRequest === requestId.current) {
         setLoading(false);
       }
     }
-  }, [tenantSlug, deferredSearch, category, semantic]);
+  }, [tenantSlug, deferredSearch, category, semantic, locale, t]);
 
   useEffect(() => {
     const targetPage = initialLoadPageRef.current ?? 1;
@@ -293,19 +330,37 @@ export function StorePage() {
     if (store?.categories?.length) return store.categories;
     return Array.from(new Set(skus.map((sku) => sku.category).filter(Boolean))) as string[];
   }, [store?.categories, skus]);
+  const categoryOptions = useMemo(() => {
+    const configured = store.category_options ?? [];
+    const labelByValue = new Map(
+      configured.map((option) => [option.value, option.label]),
+    );
+    return categories.map((value) => ({
+      value,
+      label: labelByValue.get(value) ?? value,
+    }));
+  }, [categories, store.category_options]);
   const categoryTree = useMemo(() => {
     const nodes = new Map<string, { name: string; path: string; children: Array<{ name: string; path: string }> }>();
-    categories.forEach((categoryPath) => {
-      const [primary, secondary] = categoryPath.replace("／", "/").split("/").map((part) => part.trim());
-      if (!primary) return;
-      const node = nodes.get(primary) ?? { name: primary, path: primary, children: [] };
-      if (secondary && !node.children.some((child) => child.name === secondary)) {
-        node.children.push({ name: secondary, path: `${primary}/${secondary}` });
+    categoryOptions.forEach(({ value, label }) => {
+      const [primaryValue, secondaryValue] = value.replace("／", "/").split("/").map((part) => part.trim());
+      const [primaryLabel, secondaryLabel] = label.replace("／", "/").split("/").map((part) => part.trim());
+      if (!primaryValue) return;
+      const node = nodes.get(primaryValue) ?? {
+        name: primaryLabel || primaryValue,
+        path: primaryValue,
+        children: [],
+      };
+      if (secondaryValue && !node.children.some((child) => child.path === value)) {
+        node.children.push({
+          name: secondaryLabel || secondaryValue,
+          path: value,
+        });
       }
-      nodes.set(primary, node);
+      nodes.set(primaryValue, node);
     });
     return Array.from(nodes.values());
-  }, [categories]);
+  }, [categoryOptions]);
   const primaryNavigationItems = useMemo(() => {
     const position = Math.max(
       0,
@@ -407,21 +462,31 @@ export function StorePage() {
         <Container size="4" className="store-header-container">
           <div className="header-inner">
             <div className="store-header-branding">
-              <Link to={`/${encodeURIComponent(tenantSlug)}`} className="store-identity" aria-label={`${store.name} 商品目录首页`}>
+              <Link
+                to={storefrontHome}
+                className="store-identity"
+                aria-label={t("{store} 商品目录首页", { store: store.name })}
+              >
                 {store.logo_url ? (
-                  <img src={store.logo_url} alt={`${store.name} 标志`} />
+                  <img src={store.logo_url} alt={t("{store} 标志", { store: store.name })} />
                 ) : (
                   <span className="store-identity-mark"><StoreIcon size={21} weight="duotone" /></span>
                 )}
                 <span>
                   <strong>{store.name}</strong>
-                  <small>SKU 商品目录</small>
+                  <small>{t("SKU 商品目录")}</small>
                 </span>
               </Link>
-              <span className="powered-by">由智贸云提供</span>
+              <span className="powered-by">{t("由智贸云提供")}</span>
             </div>
             <div className="header-actions">
-              <ThemeToggle />
+              <StorefrontLanguageSwitch locale={locale} />
+              <ThemeToggle
+                labels={{
+                  toDark: t("切换深色模式"),
+                  toLight: t("切换浅色模式"),
+                }}
+              />
               <CartDrawer
                 slug={tenantSlug}
                 storeName={store.name}
@@ -429,6 +494,7 @@ export function StorePage() {
                 lines={cartLines}
                 onQuantity={updateQuantity}
                 onClear={() => setCart({})}
+                locale={locale}
               />
             </div>
           </div>
@@ -441,8 +507,8 @@ export function StorePage() {
             <div className="filter-panel">
               <div className="filter-panel-heading">
                 <div>
-                  <Text size="2" weight="medium">查找商品</Text>
-                  <Text size="1" color="gray">输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找</Text>
+                  <Text size="2" weight="medium">{t("查找商品")}</Text>
+                  <Text size="1" color="gray">{t("输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找")}</Text>
                 </div>
                 <div className="filter-panel-actions">
                   <Button
@@ -450,16 +516,16 @@ export function StorePage() {
                     size="1"
                     variant="soft"
                     color="gray"
-                    aria-label={categoryLayout === "horizontal" ? "切换到左侧分类" : "切换到顶部分类"}
-                    title={categoryLayout === "horizontal" ? "切换到左侧分类" : "切换到顶部分类"}
+                    aria-label={t(categoryLayout === "horizontal" ? "切换到左侧分类" : "切换到顶部分类")}
+                    title={t(categoryLayout === "horizontal" ? "切换到左侧分类" : "切换到顶部分类")}
                     onClick={() => setCategoryLayout(categoryLayout === "horizontal" ? "vertical" : "horizontal")}
                   >
                     {categoryLayout === "horizontal" ? <Columns size={15} weight="duotone" /> : <Rows size={15} weight="duotone" />}
-                    {categoryLayout === "horizontal" ? "左侧分类" : "顶部分类"}
+                    {t(categoryLayout === "horizontal" ? "左侧分类" : "顶部分类")}
                   </Button>
                   {hasFilters && (
                     <Button className="filter-reset-button" size="1" variant="ghost" color="gray" onClick={resetFilters}>
-                      <ArrowCounterClockwise size={15} />清除筛选
+                      <ArrowCounterClockwise size={15} />{t("清除筛选")}
                     </Button>
                   )}
                 </div>
@@ -469,8 +535,8 @@ export function StorePage() {
                   size="3"
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="搜索 SKU、名称、规格或使用场景"
-                  aria-label="搜索商品"
+                  placeholder={t("搜索 SKU、名称、规格或使用场景")}
+                  aria-label={t("查找商品")}
                   className="store-search"
                 >
                   <TextField.Slot><MagnifyingGlass size={19} /></TextField.Slot>
@@ -481,7 +547,7 @@ export function StorePage() {
                         size="1"
                         variant="ghost"
                         color="gray"
-                        aria-label="清除搜索"
+                        aria-label={t("清除搜索")}
                         onClick={() => setSearch("")}
                       >
                         <X size={15} />
@@ -492,17 +558,18 @@ export function StorePage() {
                 <label className="semantic-toggle">
                   <Switch checked={Boolean(search.trim()) && semantic} onCheckedChange={setSemantic} disabled={!search.trim()} />
                   <span className="semantic-icon"><Sparkle size={17} /></span>
-                  <span className="semantic-copy"><Text size="2" weight="medium">AI 语义搜索</Text><Text size="1" color="gray">结合标签理解需求</Text></span>
+                  <span className="semantic-copy"><Text size="2" weight="medium">{t("AI 语义搜索")}</Text><Text size="1" color="gray">{t("结合标签理解需求")}</Text></span>
                 </label>
               </div>
-              <nav className="category-browser" aria-label="按两级分类筛选">
+              <nav className="category-browser" aria-label={t("按两级分类筛选")}>
                 {categoryLayout === "horizontal" ? (
                   <>
                     <div className="category-browser-row">
-                      <span className="category-browser-label">一级分类</span>
+                      <span className="category-browser-label">{t("一级分类")}</span>
                       <CategoryScrollTrack
-                        ariaLabel="一级分类"
+                        ariaLabel={t("一级分类")}
                         contentKey={primaryNavigationItems.map((item) => item.key).join("|")}
+                        locale={locale}
                       >
                         {primaryNavigationItems.map((item) => item.kind === "all" ? (
                           <button
@@ -515,7 +582,7 @@ export function StorePage() {
                             }}
                             key={item.key}
                           >
-                            全部商品
+                            {t("全部商品")}
                           </button>
                         ) : (
                           <button
@@ -534,10 +601,11 @@ export function StorePage() {
                       </CategoryScrollTrack>
                     </div>
                     <div className="category-browser-row">
-                      <span className="category-browser-label">二级分类</span>
+                      <span className="category-browser-label">{t("二级分类")}</span>
                       <CategoryScrollTrack
-                        ariaLabel="二级分类"
+                        ariaLabel={t("二级分类")}
                         contentKey={`${primaryCategory}|${visibleSecondaryOptions.map((item) => item.path).join("|")}`}
+                        locale={locale}
                       >
                         <button
                           type="button"
@@ -545,7 +613,7 @@ export function StorePage() {
                           aria-pressed={!secondaryCategory}
                           onClick={() => setSecondaryCategory("")}
                         >
-                          全部二级
+                          {t("全部二级")}
                         </button>
                         {visibleSecondaryOptions.map((item) => (
                           <button
@@ -564,7 +632,7 @@ export function StorePage() {
                         ))}
                         {!visibleSecondaryOptions.length && (
                           <span className="category-browser-empty">
-                            {primaryCategory && !secondaryOptions.length ? "该分类暂无二级分类" : "暂无二级分类"}
+                            {t(primaryCategory && !secondaryOptions.length ? "该分类暂无二级分类" : "暂无二级分类")}
                           </span>
                         )}
                       </CategoryScrollTrack>
@@ -578,7 +646,7 @@ export function StorePage() {
               {categoryLayout === "vertical" && (
                 <aside className="category-sidebar">
                   <div className="category-sidebar-header">
-                    <Text size="2" weight="medium">商品分类</Text>
+                    <Text size="2" weight="medium">{t("商品分类")}</Text>
                   </div>
                   <nav className="category-sidebar-nav">
                     {primaryNavigationItems.map((item) => item.kind === "all" ? (
@@ -591,7 +659,7 @@ export function StorePage() {
                         }}
                         key={item.key}
                       >
-                        <span>全部商品</span>
+                        <span>{t("全部商品")}</span>
                       </button>
                     ) : (
                       <div key={item.key} className="category-sidebar-group">
@@ -642,11 +710,13 @@ export function StorePage() {
               <div className="results-main">
             <div className="results-header" ref={resultsHeaderRef}>
               <div>
-                <Heading as="h2" size="5">{hasFilters ? "筛选结果" : "全部 SKU"}</Heading>
-                <Text size="2" color="gray">在商品卡片上直接加入清单或调整数量。</Text>
+                <Heading as="h2" size="5">{t(hasFilters ? "筛选结果" : "全部 SKU")}</Heading>
+                <Text size="2" color="gray">{t("在商品卡片上直接加入清单或调整数量。")}</Text>
               </div>
               <Badge color={hasFilters ? "jade" : "gray"} variant="soft" aria-live="polite">
-                {loading ? "正在查找" : `${total.toLocaleString("zh-CN")} 条结果`}
+                {loading
+                  ? t("正在查找")
+                  : t("{count} 条结果", { count: total.toLocaleString(locale) })}
               </Badge>
             </div>
             <Separator size="4" />
@@ -658,9 +728,9 @@ export function StorePage() {
                 <ErrorState message={error} onRetry={() => void loadSkus(page)} />
               ) : skus.length === 0 ? (
                 <EmptyState
-                  title="没有匹配的 SKU"
-                  description="换一个关键词、使用场景或分类，再试一次。"
-                  action={hasFilters ? <Button variant="soft" onClick={resetFilters}>清除筛选</Button> : undefined}
+                  title={t("没有匹配的 SKU")}
+                  description={t("换一个关键词、使用场景或分类，再试一次。")}
+                  action={hasFilters ? <Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button> : undefined}
                 />
               ) : (
                 <div className="sku-grid">
@@ -668,28 +738,29 @@ export function StorePage() {
                     <ProductCard
                       key={sku.id}
                       sku={sku}
-                      detailsHref={`/${encodeURIComponent(tenantSlug)}/skus/${encodeURIComponent(sku.id)}`}
+                      detailsHref={`/${encodeURIComponent(tenantSlug)}/skus/${encodeURIComponent(sku.id)}${localeQuery}`}
                       quantity={cart[sku.id]?.quantity || 0}
                       onAdd={() => addToCart(sku)}
                       onDecrease={() => updateQuantity(sku.id, (cart[sku.id]?.quantity || 0) - 1)}
                       onOpenDetails={rememberCatalogPosition}
+                      locale={locale}
                     />
                   ))}
                 </div>
               )}
               {!loading && !error && skus.length > 0 && pages > 1 && (
-                <nav className="store-pagination" aria-label="商品分页">
+                <nav className="store-pagination" aria-label={t("商品分页")}>
                   <Button
                     type="button"
                     size="2"
                     variant="soft"
                     color="gray"
                     disabled={page <= 1}
-                    aria-label="上一页"
+                    aria-label={t("上一页")}
                     onClick={() => goToPage(page - 1)}
                   >
                     <CaretLeft weight="bold" />
-                    <span className="store-pagination-button-label">上一页</span>
+                    <span className="store-pagination-button-label">{t("上一页")}</span>
                   </Button>
                   <div className="store-pagination-pages">
                     {visiblePaginationItems.map((item, index) => (
@@ -697,7 +768,7 @@ export function StorePage() {
                         <button
                           type="button"
                           className={`store-pagination-page${item === page ? " is-active" : ""}${hidePaginationItemOnMobile(index, page, pages) ? " is-mobile-hidden" : ""}`}
-                          aria-label={`第 ${item} 页`}
+                          aria-label={t("第 {page} 页", { page: item })}
                           aria-current={item === page ? "page" : undefined}
                           disabled={loading}
                           onClick={() => goToPage(item)}
@@ -716,14 +787,17 @@ export function StorePage() {
                     variant="soft"
                     color="gray"
                     disabled={page >= pages}
-                    aria-label="下一页"
+                    aria-label={t("下一页")}
                     onClick={() => goToPage(page + 1)}
                   >
-                    <span className="store-pagination-button-label">下一页</span>
+                    <span className="store-pagination-button-label">{t("下一页")}</span>
                     <CaretRight weight="bold" />
                   </Button>
                   <Text className="store-pagination-status" size="1" color="gray" aria-live="polite">
-                    第 {page.toLocaleString("zh-CN")} / {pages.toLocaleString("zh-CN")} 页
+                    {t("第 {page} / {pages} 页", {
+                      page: page.toLocaleString(locale),
+                      pages: pages.toLocaleString(locale),
+                    })}
                   </Text>
                 </nav>
               )}
@@ -736,8 +810,8 @@ export function StorePage() {
       <footer className="store-footer">
         <Container size="4">
           <div className="store-footer-inner">
-            <Text size="1" color="gray">商品与报价由 {store.name} 提供，报价草稿须经商家确认。</Text>
-            <Link to="/privacy">隐私政策</Link>
+            <Text size="1" color="gray">{t("商品与报价由 {store} 提供，报价草稿须经商家确认。", { store: store.name })}</Text>
+            <Link to="/privacy">{t("隐私政策")}</Link>
           </div>
         </Container>
       </footer>

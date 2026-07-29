@@ -17,11 +17,13 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
+import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { imageFallback, money } from "../lib/format";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import { storefrontText } from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
-import type { Sku, Storefront } from "../types";
+import type { Sku, Storefront, StorefrontLocale } from "../types";
 
 interface SkuDetailLoaderData {
   store: Storefront;
@@ -30,6 +32,12 @@ interface SkuDetailLoaderData {
 
 export function SkuDetailPage() {
   const { store, sku } = useLoaderData() as SkuDetailLoaderData;
+  const locale: StorefrontLocale = store.locale === "en-US" ? "en-US" : "zh-CN";
+  const t = (source: string, values?: Record<string, string | number>) => (
+    storefrontText(locale, source, values)
+  );
+  const localeQuery = locale === "en-US" ? "?lang=en-US" : "";
+  const storefrontHome = `/${encodeURIComponent(store.slug)}${localeQuery}`;
   const location = useLocation();
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
@@ -56,11 +64,14 @@ export function SkuDetailPage() {
 
   useEffect(() => {
     const previousTitle = document.title;
+    const previousLanguage = document.documentElement.lang;
+    document.documentElement.lang = locale;
     document.title = `${sku.name} | ${store.name}`;
     return () => {
       document.title = previousTitle;
+      document.documentElement.lang = previousLanguage;
     };
-  }, [sku.name, store.name]);
+  }, [sku.name, store.name, locale]);
 
   const updateQuantity = (skuId: string, nextQuantity: number) => {
     setCart((current) => {
@@ -86,7 +97,7 @@ export function SkuDetailPage() {
       navigate(-1);
       return;
     }
-    navigate(`/${encodeURIComponent(store.slug)}`);
+    navigate(storefrontHome);
   };
 
   return (
@@ -96,12 +107,12 @@ export function SkuDetailPage() {
           <div className="header-inner">
             <div className="store-header-branding">
               <Link
-                to={`/${encodeURIComponent(store.slug)}`}
+                to={storefrontHome}
                 className="store-identity"
-                aria-label={`${store.name} 商品目录首页`}
+                aria-label={t("{store} 商品目录首页", { store: store.name })}
               >
                 {store.logo_url ? (
-                  <img src={store.logo_url} alt={`${store.name} 标志`} />
+                  <img src={store.logo_url} alt={t("{store} 标志", { store: store.name })} />
                 ) : (
                   <span className="store-identity-mark">
                     <StoreIcon size={21} weight="duotone" />
@@ -109,13 +120,19 @@ export function SkuDetailPage() {
                 )}
                 <span>
                   <strong>{store.name}</strong>
-                  <small>SKU 商品目录</small>
+                  <small>{t("SKU 商品目录")}</small>
                 </span>
               </Link>
-              <span className="powered-by">由智贸云提供</span>
+              <span className="powered-by">{t("由智贸云提供")}</span>
             </div>
             <div className="header-actions">
-              <ThemeToggle />
+              <StorefrontLanguageSwitch locale={locale} />
+              <ThemeToggle
+                labels={{
+                  toDark: t("切换深色模式"),
+                  toLight: t("切换浅色模式"),
+                }}
+              />
               <CartDrawer
                 slug={store.slug}
                 storeName={store.name}
@@ -123,6 +140,7 @@ export function SkuDetailPage() {
                 lines={cartLines}
                 onQuantity={updateQuantity}
                 onClear={() => setCart({})}
+                locale={locale}
               />
             </div>
           </div>
@@ -137,7 +155,7 @@ export function SkuDetailPage() {
             onClick={returnToCatalog}
           >
             <ArrowLeft weight="bold" />
-            返回商品目录
+            {t("返回商品目录")}
           </button>
 
           <section className="sku-detail-layout" aria-labelledby="sku-detail-title">
@@ -154,7 +172,7 @@ export function SkuDetailPage() {
               ) : (
                 <div className="image-unavailable">
                   <ImageIcon size={42} />
-                  <span>暂无图片</span>
+                  <span>{t("暂无图片")}</span>
                 </div>
               )}
               {displayTag ? (
@@ -178,21 +196,21 @@ export function SkuDetailPage() {
 
               <section className="sku-detail-description" aria-labelledby="sku-description-title">
                 <Text id="sku-description-title" as="div" size="1" color="gray" weight="medium">
-                  商品描述
+                  {t("商品描述")}
                 </Text>
                 <div className={`sku-detail-description-content${description ? "" : " is-empty"}`}>
-                  {description || "商家暂未补充详细描述。"}
+                  {description || t("商家暂未补充详细描述。")}
                 </div>
               </section>
 
               {sku.category ? (
                 <Text size="1" color="gray">
-                  {sku.category}
+                  {sku.category_label || sku.category}
                 </Text>
               ) : null}
 
               {sku.tags.length ? (
-                <div className="sku-detail-tags" aria-label="商品标签">
+                <div className="sku-detail-tags" aria-label={t("商品标签")}>
                   {sku.tags.map((tag) => (
                     <Badge key={tag} color="gray" variant="soft">
                       {tag}
@@ -202,16 +220,18 @@ export function SkuDetailPage() {
               ) : null}
 
               <div className="sku-detail-price">
-                <Text size="1" color="gray">参考单价</Text>
+                <Text size="1" color="gray">{t("参考单价")}</Text>
                 <strong>{money(sku.price, sku.currency)}</strong>
               </div>
 
               <Button size="3" className="sku-detail-add" onClick={addToCart}>
                 {quantity ? <Check weight="bold" /> : <Plus weight="bold" />}
-                {quantity ? `已选 ${quantity} 件，再加一件` : "加入报价清单"}
+                {quantity
+                  ? t("已选 {quantity} 件，再加一件", { quantity })
+                  : t("加入报价清单")}
               </Button>
               <Text size="1" color="gray">
-                最终价格与交期以商家确认后的正式报价为准。
+                {t("最终价格与交期以商家确认后的正式报价为准。")}
               </Text>
             </div>
           </section>
@@ -222,9 +242,9 @@ export function SkuDetailPage() {
         <Container size="4">
           <div className="store-footer-inner">
             <Text size="1" color="gray">
-              商品与报价由 {store.name} 提供，报价草稿须经商家确认。
+              {t("商品与报价由 {store} 提供，报价草稿须经商家确认。", { store: store.name })}
             </Text>
-            <Link to="/privacy">隐私政策</Link>
+            <Link to="/privacy">{t("隐私政策")}</Link>
           </div>
         </Container>
       </footer>

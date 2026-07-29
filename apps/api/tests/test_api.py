@@ -53,6 +53,10 @@ from app.embedding_management_models import (
     EmbeddingProviderSettingsRow,
     KnowledgeIndexJobRow,
 )
+from app.catalog_translation_models import (
+    CatalogSkuTranslationRow,
+    CatalogTranslationJobRow,
+)
 from app.image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
 from app.db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
 from app.file_security_models import MediaObjectRow, WorkerJobRow
@@ -92,6 +96,8 @@ from app.saas_seed import (
 from app.services.file_detection import OLE_SIGNATURE, detect_file_path, detect_file_type
 from app.services.embedding import DeterministicFeatureHashEmbedding, validate_vectors
 from app.services.embedding_configuration import decrypt_api_key
+from app.services.catalog_translation import catalog_translation_source
+from app.services.translation import TranslationIdentity
 from app.services.hybrid_search import (
     _retrieval_tokens,
     _score_tag_relevance,
@@ -148,6 +154,7 @@ from app.use_cases.product_center import list_skus as list_authoritative_skus
 from app.use_cases.product_center import upsert_public_offer as upsert_public_offer_use_case
 from app.product_center_schemas import PublicCatalogOfferUpsertRequest
 from app.use_cases.workspace import create_supplier as create_supplier_use_case
+from app.use_cases import catalog_translations as catalog_translation_use_cases
 from app.workspace_schemas import SupplierCreateRequest
 from app.trade_flow_models import InquiryMatchResultRow, InquiryRow, QuotationApprovalRow, QuotationItemRow, QuotationRow, QuotationVersionRow
 from app.public_catalog_models import (
@@ -7267,6 +7274,199 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
             session.commit()
 
 
+def test_public_catalog_uses_cached_translation_and_falls_back_when_stale() -> None:
+    with SessionLocal() as session:
+        rows = public_catalog_repository.list_all_public_catalog_rows(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            now=datetime.now(UTC),
+        )
+        source_row = next(row for row in rows if row[1].sku_code == "SF-6L20")
+        source = catalog_translation_source(source_row)
+        translation = CatalogSkuTranslationRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            sku_id=source.sku_id,
+            source_locale="zh-CN",
+            target_locale="en-US",
+            source_hash=source.source_hash,
+            source_category=source.category,
+            name="6L Smart Pet Feeder with App",
+            description="Scheduled portion feeding for pets.",
+            category="Pet Supplies/Smart Feeding",
+            tags=["Smart feeding", "App control"],
+            display_tag="Smart feeding",
+            provider="deeplx",
+            provider_version="v1",
+            product_version=source.product_version,
+            sku_version=source.sku_version,
+        )
+        session.add(translation)
+        session.commit()
+        translation_id = translation.id
+        product_id = source_row[2].id
+        original_description = source_row[2].description
+
+    try:
+        store_response = client.get(
+            "/api/store/demo",
+            params={"locale": "en-US"},
+        )
+        assert store_response.status_code == 200, store_response.text
+        assert store_response.json()["locale"] == "en-US"
+        assert "en-US" in store_response.json()["available_locales"]
+
+        listing_response = client.get(
+            "/api/store/demo/skus",
+            params={"locale": "en-US"},
+        )
+        assert listing_response.status_code == 200, listing_response.text
+        listing = listing_response.json()
+        translated = next(
+            item
+            for item in listing["items"]
+            if item["sku_code"] == "SF-6L20"
+        )
+        assert translated["name"] == "6L Smart Pet Feeder with App"
+        assert translated["category"] == source.category
+        assert translated["category_label"] == "Pet Supplies/Smart Feeding"
+        assert translated["display_tag"] == "Smart feeding"
+        assert translated["translation_status"] == "TRANSLATED"
+        category_option = next(
+            option
+            for option in listing["category_options"]
+            if option["value"] == source.category
+        )
+        assert category_option["label"] == "Pet Supplies/Smart Feeding"
+
+        detail_response = client.get(
+            f"/api/store/demo/skus/{source.sku_id}",
+            params={"locale": "en-US"},
+        )
+        assert detail_response.status_code == 200, detail_response.text
+        assert detail_response.json()["description"] == (
+            "Scheduled portion feeding for pets."
+        )
+
+        with SessionLocal() as session:
+            product = session.get(ProductRow, product_id)
+            assert product is not None
+            product.description = f"{original_description or ''} 已更新"
+            session.commit()
+
+        stale_response = client.get(
+            f"/api/store/demo/skus/{source.sku_id}",
+            params={"locale": "en-US"},
+        )
+        assert stale_response.status_code == 200, stale_response.text
+        assert stale_response.json()["translation_status"] == "FALLBACK"
+        assert stale_response.json()["name"] != "6L Smart Pet Feeder with App"
+    finally:
+        with SessionLocal() as session:
+            product = session.get(ProductRow, product_id)
+            assert product is not None
+            product.description = original_description
+            session.execute(
+                delete(CatalogSkuTranslationRow).where(
+                    CatalogSkuTranslationRow.id == translation_id
+                )
+            )
+            session.commit()
+
+
+class _CatalogTranslationTestProvider:
+    identity = TranslationIdentity(provider="deeplx", version="v1")
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        assert source_locale == "zh-CN"
+        assert target_locale == "en-US"
+        return text.replace("宠物", "Pet").replace("智能", "Smart")
+
+
+def test_catalog_translation_job_reports_progress_and_caches_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _CatalogTranslationTestProvider()
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "configured_catalog_translator",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **kwargs: catalog_translation_use_cases._run_translation_job(
+            **kwargs
+        ),
+    )
+
+    try:
+        initial = client.get("/api/v1/catalog/translations/status")
+        assert initial.status_code == 200, initial.text
+        initial_payload = initial.json()
+        assert initial_payload["provider_configured"] is True
+        assert initial_payload["pending_skus"] == initial_payload["total_skus"] == 3
+
+        started = client.post(
+            "/api/v1/catalog/translations/jobs",
+            json={
+                "target_locale": "en-US",
+                "mode": "INCREMENTAL",
+                "confirm_full_rebuild": False,
+            },
+        )
+        assert started.status_code == 202, started.text
+        job_id = started.json()["id"]
+
+        finished = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}"
+        )
+        assert finished.status_code == 200, finished.text
+        finished_payload = finished.json()
+        assert finished_payload["status"] == "SUCCEEDED"
+        assert finished_payload["processed_skus"] == 3
+        assert finished_payload["failed_skus"] == 0
+        assert finished_payload["progress_percent"] == 100.0
+
+        final = client.get("/api/v1/catalog/translations/status")
+        assert final.status_code == 200, final.text
+        assert final.json()["pending_skus"] == 0
+        assert final.json()["translated_skus"] == 3
+
+        storefront = client.get(
+            "/api/store/demo/skus",
+            params={"locale": "en-US"},
+        )
+        assert storefront.status_code == 200, storefront.text
+        assert all(
+            item["translation_status"] == "TRANSLATED"
+            for item in storefront.json()["items"]
+        )
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogSkuTranslationRow).where(
+                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogTranslationJobRow).where(
+                    CatalogTranslationJobRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.commit()
+
+
 def test_public_category_facets_follow_managed_sort_order() -> None:
     initial_response = client.get("/api/store/demo/skus")
     assert initial_response.status_code == 200, initial_response.text
@@ -8282,7 +8482,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260729_0039"
+        ).scalar() == "20260729_0040"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -8428,6 +8628,55 @@ def test_storefront_category_layout_migration_is_reversible_on_sqlite(
             "tenant_public_profiles"
         )
     }
+    downgraded_engine.dispose()
+
+
+def test_catalog_translation_migration_is_reversible_on_sqlite(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "catalog-translation-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+
+    command.upgrade(config, "20260729_0039")
+    before_engine = create_engine(migration_url)
+    assert {
+        "catalog_sku_translations",
+        "catalog_translation_jobs",
+    }.isdisjoint(inspect(before_engine).get_table_names())
+    before_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    tables = set(inspect(upgraded_engine).get_table_names())
+    assert {
+        "catalog_sku_translations",
+        "catalog_translation_jobs",
+    }.issubset(tables)
+    translation_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns(
+            "catalog_sku_translations"
+        )
+    }
+    assert {
+        "source_hash",
+        "source_category",
+        "name",
+        "description",
+        "category",
+        "tags",
+        "display_tag",
+    }.issubset(translation_columns)
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260729_0039")
+    downgraded_engine = create_engine(migration_url)
+    assert {
+        "catalog_sku_translations",
+        "catalog_translation_jobs",
+    }.isdisjoint(inspect(downgraded_engine).get_table_names())
     downgraded_engine.dispose()
 
 

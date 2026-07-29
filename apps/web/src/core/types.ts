@@ -628,6 +628,54 @@ export interface EmbeddingSettings {
   updatedAt?: string;
 }
 
+export interface CatalogTranslationFailure {
+  skuId?: string;
+  skuCode?: string;
+  name?: string;
+  message: string;
+}
+
+export type CatalogTranslationJobStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "SUCCEEDED"
+  | "FAILED";
+
+export interface CatalogTranslationJob {
+  id: string;
+  sourceLocale: string;
+  targetLocale: string;
+  mode: "INCREMENTAL" | "FULL_REBUILD";
+  status: CatalogTranslationJobStatus;
+  totalSkus: number;
+  processedSkus: number;
+  failedSkus: number;
+  progressPercent: number;
+  currentSkuId?: string;
+  currentSkuName?: string;
+  provider: string;
+  providerVersion: string;
+  failureDetails: CatalogTranslationFailure[];
+  errorMessage?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface CatalogTranslationStatus {
+  sourceLocale: string;
+  targetLocale: string;
+  provider: string;
+  providerVersion: string;
+  providerConfigured: boolean;
+  totalSkus: number;
+  translatedSkus: number;
+  staleSkus: number;
+  pendingSkus: number;
+  availableLocales: string[];
+  latestJob?: CatalogTranslationJob;
+}
+
 export interface InquiryItem {
   id: string;
   lineNumber: number;
