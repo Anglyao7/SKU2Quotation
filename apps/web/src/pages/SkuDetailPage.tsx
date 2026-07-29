@@ -19,6 +19,7 @@ import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom"
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { api } from "../lib/api";
 import { imageFallback, money } from "../lib/format";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import { storefrontText } from "../lib/storefrontLocale";
@@ -28,6 +29,23 @@ import type { Sku, Storefront, StorefrontLocale } from "../types";
 interface SkuDetailLoaderData {
   store: Storefront;
   sku: Sku;
+}
+
+const viewEventIds = new Map<string, string>();
+
+function storefrontViewEventId(locationKey: string, skuId: string) {
+  const key = `${locationKey}:${skuId}`;
+  const existing = viewEventIds.get(key);
+  if (existing) return existing;
+  const eventId = typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  viewEventIds.set(key, eventId);
+  if (viewEventIds.size > 160) {
+    const oldest = viewEventIds.keys().next().value;
+    if (oldest) viewEventIds.delete(oldest);
+  }
+  return eventId;
 }
 
 export function SkuDetailPage() {
@@ -61,6 +79,11 @@ export function SkuDetailPage() {
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [sku.id]);
+
+  useEffect(() => {
+    const eventId = storefrontViewEventId(location.key, sku.id);
+    void api.recordStoreSkuView(store.slug, sku.id, eventId).catch(() => undefined);
+  }, [location.key, sku.id, store.slug]);
 
   useEffect(() => {
     const previousTitle = document.title;

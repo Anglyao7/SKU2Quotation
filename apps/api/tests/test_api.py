@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from fastapi import Response
+from fastapi import Request, Response
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from sqlalchemy import MetaData, create_engine, delete, func, inspect, select
@@ -60,6 +60,10 @@ from app.catalog_translation_models import (
     CatalogTextTranslationRow,
     CatalogTranslationJobRow,
 )
+from app.storefront_analytics_models import (
+    StorefrontProductViewDailyRow,
+    StorefrontProductViewEventRow,
+)
 from app.image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
 from app.db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
 from app.file_security_models import MediaObjectRow, WorkerJobRow
@@ -101,6 +105,10 @@ from app.services.embedding import DeterministicFeatureHashEmbedding, validate_v
 from app.services.embedding_configuration import decrypt_api_key
 from app.services.catalog_translation import catalog_translation_source
 from app.services.translation import TranslationIdentity
+from app.services.storefront_analytics import (
+    request_country_code,
+    request_visitor_ip,
+)
 from app.services import translation_memory as translation_memory_service
 from app.services.hybrid_search import (
     _retrieval_tokens,
@@ -160,6 +168,7 @@ from app.product_center_schemas import PublicCatalogOfferUpsertRequest
 from app.use_cases.workspace import create_supplier as create_supplier_use_case
 from app.use_cases import catalog_translations as catalog_translation_use_cases
 from app.use_cases import public_catalog as public_catalog_use_cases
+from app.use_cases import storefront_analytics as storefront_analytics_use_cases
 from app.workspace_schemas import SupplierCreateRequest
 from app.trade_flow_models import InquiryMatchResultRow, InquiryRow, QuotationApprovalRow, QuotationItemRow, QuotationRow, QuotationVersionRow
 from app.public_catalog_models import (
@@ -7279,6 +7288,122 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
             session.commit()
 
 
+def test_storefront_detail_views_are_idempotent_and_tenant_analytics_are_aggregated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRUST_CLOUDFLARE_VISITOR_HEADERS", "true")
+    listing = client.get("/api/store/demo/skus", params={"page_size": 1})
+    assert listing.status_code == 200, listing.text
+    sku = listing.json()["items"][0]
+    event_id = f"view-{uuid4()}"
+
+    with SessionLocal() as session:
+        before_total = int(
+            session.scalar(
+                select(
+                    func.coalesce(
+                        func.sum(StorefrontProductViewDailyRow.view_count),
+                        0,
+                    )
+                ).where(
+                    StorefrontProductViewDailyRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            or 0
+        )
+
+    headers = {
+        "CF-Connecting-IP": "203.0.113.17",
+        "CF-IPCountry": "US",
+    }
+    created = client.post(
+        f"/api/store/demo/skus/{sku['id']}/views",
+        headers=headers,
+        json={"event_id": event_id},
+    )
+    assert created.status_code == 204, created.text
+    repeated = client.post(
+        f"/api/store/demo/skus/{sku['id']}/views",
+        headers=headers,
+        json={"event_id": event_id},
+    )
+    assert repeated.status_code == 204, repeated.text
+
+    with SessionLocal() as session:
+        events = session.scalars(
+            select(StorefrontProductViewEventRow).where(
+                StorefrontProductViewEventRow.tenant_id == DEFAULT_TENANT_ID,
+                StorefrontProductViewEventRow.event_id == event_id,
+            )
+        ).all()
+        assert len(events) == 1
+        # TestClient does not run through the trusted production proxy chain;
+        # invalid non-IP scope values fail closed instead of trusting headers.
+        assert events[0].ip_address == "0.0.0.0"
+        assert events[0].country_code == "ZZ"
+        after_total = int(
+            session.scalar(
+                select(
+                    func.coalesce(
+                        func.sum(StorefrontProductViewDailyRow.view_count),
+                        0,
+                    )
+                ).where(
+                    StorefrontProductViewDailyRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            or 0
+        )
+        assert after_total == before_total + 1
+
+    dashboard = client.get("/api/v1/storefront-analytics", params={"days": 30})
+    assert dashboard.status_code == 200, dashboard.text
+    payload = dashboard.json()
+    assert payload["summary"]["total_views"] >= 1
+    assert payload["summary"]["unique_visitors"] >= 1
+    assert payload["summary"]["viewed_products"] >= 1
+    assert any(item["sku_id"] == sku["id"] for item in payload["products"])
+    assert any(item["country_code"] == "ZZ" for item in payload["countries"])
+    assert "ip_address" not in dashboard.text
+
+    with SessionLocal() as session:
+        with pytest.raises(ApplicationError) as denied:
+            storefront_analytics_use_cases.get_storefront_analytics(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                permissions=frozenset(),
+                days=30,
+            )
+        assert denied.value.code == "PERMISSION_REQUIRED"
+
+
+def test_storefront_visitor_headers_require_a_matching_trusted_client_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRUST_CLOUDFLARE_VISITOR_HEADERS", "true")
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "https",
+            "path": "/api/store/demo/skus/example/views",
+            "raw_path": b"/api/store/demo/skus/example/views",
+            "query_string": b"",
+            "headers": [
+                (b"cf-connecting-ip", b"203.0.113.17"),
+                (b"cf-ipcountry", b"US"),
+            ],
+            "client": ("203.0.113.17", 43120),
+            "server": ("4everapi.top", 443),
+        }
+    )
+    visitor_ip = request_visitor_ip(request)
+    assert visitor_ip == "203.0.113.17"
+    assert request_country_code(request, visitor_ip=visitor_ip) == "US"
+    assert request_country_code(request, visitor_ip="203.0.113.18") == "ZZ"
+
+
 class _CatalogTranslationTestProvider:
     identity = TranslationIdentity(provider="deeplx", version="v1")
 
@@ -8571,17 +8696,23 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "local_account_credentials",
         "customer_account_access_events",
     }
+    analytics_tables = {
+        "storefront_product_view_events",
+        "storefront_product_view_daily",
+    }
 
     command.upgrade(config, "20260718_0019")
     before_engine = create_engine(migration_url)
     assert public_tables.isdisjoint(inspect(before_engine).get_table_names())
     assert customer_account_tables.isdisjoint(inspect(before_engine).get_table_names())
+    assert analytics_tables.isdisjoint(inspect(before_engine).get_table_names())
     before_engine.dispose()
 
     command.upgrade(config, "head")
     upgraded_engine = create_engine(migration_url)
     assert public_tables.issubset(inspect(upgraded_engine).get_table_names())
     assert customer_account_tables.issubset(inspect(upgraded_engine).get_table_names())
+    assert analytics_tables.issubset(inspect(upgraded_engine).get_table_names())
     assert "submitted_by_membership_id" in {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
@@ -8589,7 +8720,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260729_0041"
+        ).scalar() == "20260729_0042"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -8597,6 +8728,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     downgraded_engine = create_engine(migration_url)
     assert public_tables.isdisjoint(inspect(downgraded_engine).get_table_names())
     assert customer_account_tables.isdisjoint(inspect(downgraded_engine).get_table_names())
+    assert analytics_tables.isdisjoint(inspect(downgraded_engine).get_table_names())
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)

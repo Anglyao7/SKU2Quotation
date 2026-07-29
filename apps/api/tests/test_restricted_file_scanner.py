@@ -8,7 +8,6 @@ from openpyxl import Workbook
 
 import app.adapters.file_scanner as scanner_module
 from app.adapters.file_scanner import (
-    RESTRICTED_UPLOAD_MAX_BYTES,
     RestrictedSpreadsheetScanner,
     get_file_scanner,
 )
@@ -53,11 +52,13 @@ def test_restricted_scanner_accepts_only_safe_csv_and_xlsx(tmp_path: Path) -> No
 
 def test_restricted_scanner_rejects_size_ole_macros_and_mismatched_formats(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scanner = RestrictedSpreadsheetScanner()
 
+    monkeypatch.setattr(scanner_module, "RESTRICTED_UPLOAD_MAX_BYTES", 1024)
     oversized = tmp_path / "oversized.csv"
-    oversized.write_bytes(b"a" * (RESTRICTED_UPLOAD_MAX_BYTES + 1))
+    oversized.write_bytes(b"a" * 1025)
     assert scanner.scan(oversized).detail_code == "RESTRICTED_FILE_TOO_LARGE"
 
     ole = tmp_path / "legacy.xlsx"
@@ -119,3 +120,13 @@ def test_restricted_scanner_is_only_available_to_compact_production(
 
     monkeypatch.setenv("ATC_RUNTIME_PROFILE", "compact")
     assert isinstance(get_file_scanner(), RestrictedSpreadsheetScanner)
+
+
+def test_restricted_scanner_limits_allow_large_catalog_uploads() -> None:
+    minimum_supported_size = 50 * 1024 * 1024
+    assert scanner_module.RESTRICTED_UPLOAD_MAX_BYTES >= minimum_supported_size
+    assert scanner_module.RESTRICTED_XLSX_MAX_ENTRY_BYTES >= minimum_supported_size
+    assert (
+        scanner_module.RESTRICTED_XLSX_MAX_UNCOMPRESSED_BYTES
+        >= minimum_supported_size
+    )

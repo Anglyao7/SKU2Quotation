@@ -48,6 +48,7 @@ import type {
   SalesOrderSummary,
   SkuListItem,
   SkuListPage,
+  StorefrontAnalyticsSnapshot,
   SupplierPrice,
   SupplierProfile,
   SupplierProfileDetail,
@@ -60,6 +61,7 @@ import type {
 } from "./types";
 import { buildPasswordChangePayload } from "./accountPassword";
 import { buildPasswordLoginPayload } from "./authCredentials";
+import { bumpPublicCatalogRevision } from "../lib/publicCatalogRevision";
 
 const CSRF_STORAGE_KEY = "atc.csrfToken";
 let accessToken: string | undefined;
@@ -800,6 +802,11 @@ async function localDetection(file: File): Promise<FileDetection> {
 }
 
 export async function detectFile(file: File) {
+  // The server only inspects the leading signature bytes. Sending a large
+  // catalog as multipart data just to detect those bytes duplicates the whole
+  // upload, so large files are inspected locally and still receive the full
+  // server-side security scan during the real import.
+  if (file.size > 2 * 1024 * 1024) return localDetection(file);
   try {
     const body = new FormData();
     body.append("file", file);
@@ -1569,10 +1576,12 @@ export async function getCategoryLayout(): Promise<CategoryLayout> {
 export async function updateCategoryLayout(
   allProductsPosition: number,
 ): Promise<CategoryLayout> {
-  return mapCategoryLayout(await request<ApiCategoryLayout>("/categories/layout", {
+  const saved = mapCategoryLayout(await request<ApiCategoryLayout>("/categories/layout", {
     method: "PATCH",
     body: JSON.stringify({ all_products_position: allProductsPosition }),
   }));
+  bumpPublicCatalogRevision();
+  return saved;
 }
 
 function mapCategory(row: ApiCategory): ProductCategory {
@@ -1581,7 +1590,7 @@ function mapCategory(row: ApiCategory): ProductCategory {
 
 export async function createCategory(input: { name: string; parentId?: string; sortOrder?: number; displayColor?: string }): Promise<ProductCategory> {
   const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 24).toUpperCase();
-  return mapCategory(await request<ApiCategory>("/categories", {
+  const created = mapCategory(await request<ApiCategory>("/categories", {
     method: "POST",
     body: JSON.stringify({
       parent_id: input.parentId,
@@ -1591,10 +1600,12 @@ export async function createCategory(input: { name: string; parentId?: string; s
       display_color: input.displayColor,
     }),
   }));
+  bumpPublicCatalogRevision();
+  return created;
 }
 
 export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE"; displayColor?: string | null }): Promise<ProductCategory> {
-  return mapCategory(await request<ApiCategory>(`/categories/${encodeURIComponent(input.id)}`, {
+  const updated = mapCategory(await request<ApiCategory>(`/categories/${encodeURIComponent(input.id)}`, {
     method: "PATCH",
     body: JSON.stringify({
       expected_version: input.expectedVersion,
@@ -1605,10 +1616,12 @@ export async function updateCategory(input: { id: string; expectedVersion: numbe
       display_color: input.displayColor,
     }),
   }));
+  bumpPublicCatalogRevision();
+  return updated;
 }
 
 export async function reorderCategories(categories: ProductCategory[]): Promise<ProductCategory[]> {
-  return (await request<ApiCategory[]>("/categories/reorder", {
+  const reordered = (await request<ApiCategory[]>("/categories/reorder", {
     method: "PATCH",
     body: JSON.stringify({
       items: categories.map((category) => ({
@@ -1617,6 +1630,8 @@ export async function reorderCategories(categories: ProductCategory[]): Promise<
       })),
     }),
   })).map(mapCategory);
+  bumpPublicCatalogRevision();
+  return reordered;
 }
 
 interface ApiSystemMonitoringSnapshot {
@@ -1679,6 +1694,74 @@ export async function getSystemMonitoring(): Promise<SystemMonitoringSnapshot> {
       availableBytes: row.disk.available_bytes,
       utilizationPercent: row.disk.utilization_percent,
     },
+  };
+}
+
+export async function getStorefrontAnalytics(
+  days: 7 | 30 | 60,
+): Promise<StorefrontAnalyticsSnapshot> {
+  const row = await request<{
+    generated_at: string;
+    timezone: string;
+    start_date: string;
+    end_date: string;
+    days: number;
+    raw_ip_retention_days: number;
+    summary: {
+      total_views: number;
+      unique_visitors: number;
+      viewed_products: number;
+      identified_countries: number;
+    };
+    daily: Array<{ date: string; views: number }>;
+    countries: Array<{ country_code: string; views: number; share: number }>;
+    products: Array<{
+      product_id: string;
+      sku_id: string;
+      sku_code: string;
+      name: string;
+      views: number;
+    }>;
+    country_products: Array<{
+      country_code: string;
+      sku_id: string;
+      views: number;
+    }>;
+  }>(`/storefront-analytics?days=${days}`, { cache: "no-store" });
+  return {
+    generatedAt: row.generated_at,
+    timezone: row.timezone,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    days: row.days,
+    rawIpRetentionDays: row.raw_ip_retention_days,
+    summary: {
+      totalViews: Number(row.summary.total_views || 0),
+      uniqueVisitors: Number(row.summary.unique_visitors || 0),
+      viewedProducts: Number(row.summary.viewed_products || 0),
+      identifiedCountries: Number(row.summary.identified_countries || 0),
+    },
+    daily: row.daily.map((item) => ({
+      date: item.date,
+      views: Number(item.views || 0),
+    })),
+    countries: row.countries.map((item) => ({
+      countryCode: item.country_code,
+      views: Number(item.views || 0),
+      share: Number(item.share || 0),
+    })),
+    products: row.products.map((item) => ({
+      productId: item.product_id,
+      skuId: item.sku_id,
+      skuCode: item.sku_code,
+      name: item.name,
+      views: Number(item.views || 0),
+    })),
+    countryProducts: row.country_products.map((item) => ({
+      countryCode: item.country_code,
+      skuId: item.sku_id,
+      views: Number(item.views || 0),
+    })),
   };
 }
 

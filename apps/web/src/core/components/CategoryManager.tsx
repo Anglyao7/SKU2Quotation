@@ -1,5 +1,7 @@
 import { Badge, Button, Select, Text, TextField } from "@radix-ui/themes";
 import {
+  CaretDown,
+  CaretRight,
   DotsSixVertical,
   Folder,
   FolderOpen,
@@ -45,6 +47,48 @@ interface CategoryManagerProps {
 
 const rootParentKey = "__root__";
 const allProductsId = "__all_products__";
+const collapsedRootsStorageKey = "atc.categoryManager.collapsedRoots";
+
+function readCollapsedRoots() {
+  if (typeof window === "undefined") return new Set<string>();
+  try {
+    const value = JSON.parse(
+      window.localStorage.getItem(collapsedRootsStorageKey) || "[]",
+    );
+    return new Set(
+      Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string")
+        : [],
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function writeCollapsedRoots(value: Set<string>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      collapsedRootsStorageKey,
+      JSON.stringify([...value]),
+    );
+  } catch {
+    // Collapsing still works for this render when storage is unavailable.
+  }
+}
+
+function categoryNameKey(value: string) {
+  return value.normalize("NFKC").toLowerCase();
+}
+
+function compareCategoryOrder(left: ProductCategory, right: ProductCategory) {
+  if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder;
+  const leftName = categoryNameKey(left.name);
+  const rightName = categoryNameKey(right.name);
+  if (leftName < rightName) return -1;
+  if (leftName > rightName) return 1;
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
 
 function categoryParentKey(category: ProductCategory) {
   return category.parentId ?? rootParentKey;
@@ -60,7 +104,7 @@ export function CategoryManager({
   onChanged,
   onAllProductsPositionChanged,
 }: CategoryManagerProps) {
-  const { locale, t } = useLocale();
+  const { t } = useLocale();
   const [displayCategories, setDisplayCategories] = useState(categories);
   const [displayAllProductsPosition, setDisplayAllProductsPosition] = useState(
     allProductsPosition,
@@ -71,6 +115,7 @@ export function CategoryManager({
   const [error, setError] = useState("");
   const [reorderError, setReorderError] = useState("");
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [collapsedRootIds, setCollapsedRootIds] = useState(readCollapsedRoots);
   const dragStateRef = useRef<DragState | null>(null);
   const reorderingRef = useRef(false);
 
@@ -89,8 +134,8 @@ export function CategoryManager({
   const roots = useMemo(
     () => displayCategories
       .filter((item) => !item.parentId)
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale)),
-    [displayCategories, locale],
+      .sort(compareCategoryOrder),
+    [displayCategories],
   );
   const childrenByParent = useMemo(() => {
     const result = new Map<string, ProductCategory[]>();
@@ -99,13 +144,54 @@ export function CategoryManager({
       rows.push(item);
       result.set(item.parentId!, rows);
     });
-    result.forEach((rows) => rows.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale)));
+    result.forEach((rows) => rows.sort(compareCategoryOrder));
     return result;
-  }, [displayCategories, locale]);
+  }, [displayCategories]);
+  const collapsibleRootIds = useMemo(
+    () => roots
+      .filter((root) => (childrenByParent.get(root.id)?.length ?? 0) > 0)
+      .map((root) => root.id),
+    [childrenByParent, roots],
+  );
+  const allCollapsibleRootsCollapsed = Boolean(
+    collapsibleRootIds.length
+    && collapsibleRootIds.every((id) => collapsedRootIds.has(id)),
+  );
   const normalizedAllProductsPosition = Math.max(
     0,
     Math.min(displayAllProductsPosition, roots.length),
   );
+
+  useEffect(() => {
+    writeCollapsedRoots(collapsedRootIds);
+  }, [collapsedRootIds]);
+
+  useEffect(() => {
+    const currentRootIds = new Set(roots.map((root) => root.id));
+    setCollapsedRootIds((current) => {
+      const next = new Set(
+        [...current].filter((id) => currentRootIds.has(id)),
+      );
+      return next.size === current.size ? current : next;
+    });
+  }, [roots]);
+
+  const toggleRoot = (rootId: string) => {
+    setCollapsedRootIds((current) => {
+      const next = new Set(current);
+      if (next.has(rootId)) next.delete(rootId);
+      else next.add(rootId);
+      return next;
+    });
+  };
+
+  const toggleAllRoots = () => {
+    setCollapsedRootIds(
+      allCollapsibleRootsCollapsed
+        ? new Set()
+        : new Set(collapsibleRootIds),
+    );
+  };
 
   const updateDragState = (next: DragState | null) => {
     dragStateRef.current = next;
@@ -119,6 +205,12 @@ export function CategoryManager({
 
   const beginChild = (parentId: string) => {
     setError("");
+    setCollapsedRootIds((current) => {
+      if (!current.has(parentId)) return current;
+      const next = new Set(current);
+      next.delete(parentId);
+      return next;
+    });
     setDraft({
       mode: "create",
       parentId,
@@ -444,7 +536,19 @@ export function CategoryManager({
               })}
             </small>
           </span>
-          <Button size="1" variant="soft" disabled={reordering} onClick={beginRoot}><Plus />{t("一级分类")}</Button>
+          <div className="core-category-panel-actions">
+            <Button
+              size="1"
+              variant="ghost"
+              color="gray"
+              disabled={reordering || !collapsibleRootIds.length}
+              onClick={toggleAllRoots}
+            >
+              {allCollapsibleRootsCollapsed ? <CaretRight /> : <CaretDown />}
+              {t(allCollapsibleRootsCollapsed ? "全部展开" : "全部收起")}
+            </Button>
+            <Button size="1" variant="soft" disabled={reordering} onClick={beginRoot}><Plus />{t("一级分类")}</Button>
+          </div>
         </div>
         <div className="core-category-reorder-status" aria-live="polite">
           {reordering ? t("正在保存分类顺序…") : reorderError}
@@ -453,6 +557,8 @@ export function CategoryManager({
           {Array.from({ length: roots.length + 1 }, (_, slot) => {
             const root = roots[slot];
             const children = root ? childrenByParent.get(root.id) ?? [] : [];
+            const collapsed = root ? collapsedRootIds.has(root.id) : false;
+            const childrenId = root ? `category-children-${root.id}` : "";
             return (
               <Fragment key={`category-slot-${slot}`}>
                 {slot === normalizedAllProductsPosition ? (
@@ -484,9 +590,25 @@ export function CategoryManager({
                       data-category-parent={rootParentKey}
                     >
                       {dragHandle(root, roots)}
+                      {children.length ? (
+                        <button
+                          type="button"
+                          className="core-category-collapse-toggle"
+                          aria-expanded={!collapsed}
+                          aria-controls={childrenId}
+                          aria-label={t(collapsed ? "展开 {name}" : "收起 {name}", {
+                            name: root.name,
+                          })}
+                          onClick={() => toggleRoot(root.id)}
+                        >
+                          {collapsed ? <CaretRight weight="bold" /> : <CaretDown weight="bold" />}
+                        </button>
+                      ) : (
+                        <span className="core-category-collapse-placeholder" aria-hidden="true" />
+                      )}
                       <button className="core-category-node-main" type="button" onClick={() => beginEdit(root)}>
                         <span className="core-category-color-mark" style={tagGlassStyle(root.name, root.displayColor)}>
-                          <FolderOpen weight="duotone" />
+                          {collapsed ? <Folder weight="duotone" /> : <FolderOpen weight="duotone" />}
                         </span>
                         <span><strong>{root.name}</strong><small>{children.length ? t("{count} 个二级分类", { count: children.length }) : t("暂无二级分类")}</small></span>
                       </button>
@@ -494,22 +616,24 @@ export function CategoryManager({
                       <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(root)} aria-label={t("编辑 {name}", { name: root.name })}><PencilSimple /></Button>
                       <Button size="1" variant="ghost" disabled={reordering} onClick={() => beginChild(root.id)} aria-label={t("在 {name} 下新增二级分类", { name: root.name })}><Plus /></Button>
                     </div>
-                    {children.map((child) => (
-                      <div
-                        className={`core-category-node child${draft.mode === "edit" && draft.id === child.id ? " is-selected" : ""}${dragClass(child)}`}
-                        data-category-id={child.id}
-                        data-category-parent={root.id}
-                        key={child.id}
-                      >
-                        {dragHandle(child, children)}
-                        <button className="core-category-node-main" type="button" onClick={() => beginEdit(child)}>
-                          <Folder weight="duotone" />
-                          <span><strong>{child.name}</strong><small>{root.name} / {child.name}</small></span>
-                        </button>
-                        {child.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
-                        <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(child)} aria-label={t("编辑 {name}", { name: child.name })}><PencilSimple /></Button>
-                      </div>
-                    ))}
+                    <div id={childrenId} className="core-category-children" hidden={collapsed}>
+                      {children.map((child) => (
+                        <div
+                          className={`core-category-node child${draft.mode === "edit" && draft.id === child.id ? " is-selected" : ""}${dragClass(child)}`}
+                          data-category-id={child.id}
+                          data-category-parent={root.id}
+                          key={child.id}
+                        >
+                          {dragHandle(child, children)}
+                          <button className="core-category-node-main" type="button" onClick={() => beginEdit(child)}>
+                            <Folder weight="duotone" />
+                            <span><strong>{child.name}</strong><small>{root.name} / {child.name}</small></span>
+                          </button>
+                          {child.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
+                          <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(child)} aria-label={t("编辑 {name}", { name: child.name })}><PencilSimple /></Button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ) : null}
               </Fragment>

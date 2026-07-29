@@ -52,6 +52,12 @@ PERMISSION_SEEDS = (
     PermissionSeed("quotation.approve", "quotation", "approve", "Approve quotations"),
     PermissionSeed("catalog.view", "catalog", "view", "View catalogs"),
     PermissionSeed("catalog.publish", "catalog", "publish", "Publish catalogs"),
+    PermissionSeed(
+        "analytics.view",
+        "analytics",
+        "view",
+        "View tenant storefront product analytics",
+    ),
     PermissionSeed("order.view", "order", "view", "View orders"),
     PermissionSeed("order.manage", "order", "manage", "Manage orders"),
     PermissionSeed("inventory.view", "inventory", "view", "View inventory and stock movements"),

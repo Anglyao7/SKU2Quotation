@@ -211,7 +211,8 @@ curl --fail "https://auth.${ATC_DOMAIN}/realms/atc/.well-known/openid-configurat
 并对报价下载等敏感路径关闭访问日志。报价下载凭证只能放在
 `X-Quote-Download-Token` 请求头，禁止恢复成 URL query；代理和应用日志
 都不得记录该请求头。其余 API 请求按 Caddy 验证后的真实客户端 IP 限速，
-并限制请求体最大 260 MiB；应用还通过启用 Redis 的限流层做第二道保护。
+并将代理请求体限制为 260 MiB、应用文件安全上限设为 250 MiB；应用还通过
+启用 Redis 的限流层做第二道保护。
 Redis 使用 `noeviction`：内存耗尽时限流存储会显式失败，应用返回 503，
 不会因静默逐出限流桶而放松防护。
 

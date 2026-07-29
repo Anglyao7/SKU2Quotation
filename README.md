@@ -76,6 +76,10 @@ docker compose ps
 最小暴露面、不可变提交部署、回滚和灾备步骤见
 [DEPLOYMENT.md](./DEPLOYMENT.md)。
 
+图床、CDN、前端静态资产加速以及商家自有完整域名暂列为后续基础设施任务，
+范围、依赖和验收标准见
+[图床、CDN 与商家独立域名后续任务](./docs/FUTURE_INFRASTRUCTURE_ROADMAP.md)。
+
 停止并保留数据：
 
 ```bash

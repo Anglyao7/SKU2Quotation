@@ -5,7 +5,6 @@ import {
   Heading,
   IconButton,
   Separator,
-  Switch,
   Text,
   TextField,
 } from "@radix-ui/themes";
@@ -17,10 +16,10 @@ import {
   Columns,
   MagnifyingGlass,
   Rows,
-  Sparkle,
   Storefront as StoreIcon,
   X,
 } from "@phosphor-icons/react";
+import { ThinkingOrb } from "thinking-orbs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useLoaderData } from "react-router-dom";
@@ -30,6 +29,7 @@ import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/State
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
+import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import { storefrontText } from "../lib/storefrontLocale";
 import { readStorefrontViewState, writeStorefrontViewState } from "../lib/storefrontViewState";
@@ -180,7 +180,6 @@ export function StorePage() {
   const [deferredSearch, setDeferredSearch] = useState(initialView?.search.trim() ?? "");
   const [primaryCategory, setPrimaryCategory] = useState(initialView?.primaryCategory ?? "");
   const [secondaryCategory, setSecondaryCategory] = useState(initialView?.secondaryCategory ?? "");
-  const [semantic, setSemantic] = useState(initialView?.semantic ?? true);
   const [categoryLayout, setCategoryLayout] = useState<"horizontal" | "vertical">(
     initialView?.categoryLayout ?? "horizontal",
   );
@@ -218,7 +217,6 @@ export function StorePage() {
     setDeferredSearch(nextView?.search.trim() ?? "");
     setPrimaryCategory(nextView?.primaryCategory ?? "");
     setSecondaryCategory(nextView?.secondaryCategory ?? "");
-    setSemantic(nextView?.semantic ?? true);
     setCategoryLayout(nextView?.categoryLayout ?? "horizontal");
     setExpandedCategories(new Set(nextView?.expandedCategories ?? []));
     if (tenantChanged) {
@@ -258,7 +256,7 @@ export function StorePage() {
       const data = await api.getStoreSkus(tenantSlug, {
         q: deferredSearch,
         category: category || undefined,
-        semantic: Boolean(deferredSearch) && semantic,
+        semantic: Boolean(deferredSearch),
         includeFacets,
         page: targetPage,
         locale,
@@ -300,12 +298,20 @@ export function StorePage() {
         setLoading(false);
       }
     }
-  }, [tenantSlug, deferredSearch, category, semantic, locale, t]);
+  }, [tenantSlug, deferredSearch, category, locale, t]);
 
   useEffect(() => {
     const targetPage = initialLoadPageRef.current ?? 1;
     void loadSkus(targetPage);
   }, [loadSkus]);
+
+  useEffect(
+    () => subscribePublicCatalogRevision(() => {
+      facetsLoadedRef.current = false;
+      void loadSkus(page);
+    }),
+    [loadSkus, page],
+  );
 
   useEffect(() => {
     if (!loading) initialLoadPageRef.current = null;
@@ -332,7 +338,7 @@ export function StorePage() {
       void api.prefetchStoreSkus(tenantSlug, {
         q: deferredSearch,
         category: category || undefined,
-        semantic: Boolean(deferredSearch) && semantic,
+        semantic: Boolean(deferredSearch),
         includeFacets: false,
         page: page + 1,
         locale,
@@ -361,7 +367,6 @@ export function StorePage() {
     locale,
     page,
     pages,
-    semantic,
     store.source_locale,
     tenantSlug,
   ]);
@@ -456,6 +461,9 @@ export function StorePage() {
     [categoryTree, primaryCategory],
   );
   const hasFilters = Boolean(search || category);
+  const searchPending = Boolean(search.trim()) && (
+    search.trim() !== deferredSearch || loading
+  );
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const cartSkuCount = cartLines.length;
   const visiblePaginationItems = useMemo(() => paginationItems(page, pages), [page, pages]);
@@ -497,7 +505,6 @@ export function StorePage() {
       search,
       primaryCategory,
       secondaryCategory,
-      semantic,
       categoryLayout,
       expandedCategories: Array.from(expandedCategories),
     });
@@ -614,11 +621,6 @@ export function StorePage() {
                     </TextField.Slot>
                   )}
                 </TextField.Root>
-                <label className="semantic-toggle">
-                  <Switch checked={Boolean(search.trim()) && semantic} onCheckedChange={setSemantic} disabled={!search.trim()} />
-                  <span className="semantic-icon"><Sparkle size={17} /></span>
-                  <span className="semantic-copy"><Text size="2" weight="medium">{t("AI 语义搜索")}</Text><Text size="1" color="gray">{t("结合标签理解需求")}</Text></span>
-                </label>
               </div>
               <nav className="category-browser" aria-label={t("按两级分类筛选")}>
                 {categoryLayout === "horizontal" ? (
@@ -773,15 +775,27 @@ export function StorePage() {
                 <Text size="2" color="gray">{t("在商品卡片上直接加入清单或调整数量。")}</Text>
               </div>
               <Badge color={hasFilters ? "jade" : "gray"} variant="soft" aria-live="polite">
-                {loading
-                  ? t("正在查找")
+                {searchPending
+                  ? t("搜索中……")
+                  : loading
+                    ? t("正在查找")
                   : t("{count} 条结果", { count: total.toLocaleString(locale) })}
               </Badge>
             </div>
             <Separator size="4" />
 
             <div className="results-body">
-              {loading ? (
+              {searchPending ? (
+                <div className="store-search-feedback" role="status" aria-live="polite">
+                  <ThinkingOrb
+                    state="working"
+                    size={64}
+                    speed={1.3}
+                    aria-hidden="true"
+                  />
+                  <Text size="3" weight="medium">{t("搜索中……")}</Text>
+                </div>
+              ) : loading ? (
                 <ProductGridSkeleton />
               ) : error ? (
                 <ErrorState message={error} onRetry={() => void loadSkus(page)} />
@@ -807,7 +821,7 @@ export function StorePage() {
                   ))}
                 </div>
               )}
-              {!loading && !error && skus.length > 0 && pages > 1 && (
+              {!searchPending && !loading && !error && skus.length > 0 && pages > 1 && (
                 <nav
                   className="store-pagination"
                   aria-label={t("商品分页")}
