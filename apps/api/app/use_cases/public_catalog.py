@@ -433,7 +433,7 @@ def _live_sku_translation_map(
             ),
             max_characters=_positive_int_environment(
                 "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
-                30_000,
+                2_800,
                 maximum=100_000,
             ),
         ):
