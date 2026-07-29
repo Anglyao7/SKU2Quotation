@@ -428,12 +428,12 @@ def _live_sku_translation_map(
             sources,
             max_items=_positive_int_environment(
                 "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
-                50,
+                5,
                 maximum=100,
             ),
             max_characters=_positive_int_environment(
                 "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
-                2_800,
+                1_800,
                 maximum=100_000,
             ),
         ):
