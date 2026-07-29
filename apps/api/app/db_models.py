@@ -274,5 +274,6 @@ from .embedding_management_models import (  # noqa: E402,F401
 
 from .catalog_translation_models import (  # noqa: E402,F401
     CatalogSkuTranslationRow,
+    CatalogTextTranslationRow,
     CatalogTranslationJobRow,
 )

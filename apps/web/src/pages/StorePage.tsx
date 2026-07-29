@@ -193,6 +193,7 @@ export function StorePage() {
   const [cartTenant, setCartTenant] = useState(loadedStore.slug);
   const requestId = useRef(0);
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
+  const paginationRef = useRef<HTMLElement>(null);
   const activeTenantRef = useRef(loadedStore.slug);
   const activeLocaleRef = useRef<StorefrontLocale>(locale);
   const facetsLoadedRef = useRef(Boolean(loadedStore.categories?.length));
@@ -309,6 +310,61 @@ export function StorePage() {
   useEffect(() => {
     if (!loading) initialLoadPageRef.current = null;
   }, [loading]);
+
+  useEffect(() => {
+    const sourceLocale = store.source_locale ?? "zh-CN";
+    if (
+      loading
+      || error
+      || page < 1
+      || page >= pages
+      || locale === sourceLocale
+    ) {
+      return;
+    }
+    const connection = (
+      navigator as Navigator & { connection?: { saveData?: boolean } }
+    ).connection;
+    if (connection?.saveData) return;
+
+    const prefetch = () => {
+      if (document.visibilityState !== "visible") return;
+      void api.prefetchStoreSkus(tenantSlug, {
+        q: deferredSearch,
+        category: category || undefined,
+        semantic: Boolean(deferredSearch) && semantic,
+        includeFacets: false,
+        page: page + 1,
+        locale,
+      }).catch(() => undefined);
+    };
+    const target = paginationRef.current;
+    if (!target || typeof IntersectionObserver === "undefined") {
+      const timeout = window.setTimeout(prefetch, 1_500);
+      return () => window.clearTimeout(timeout);
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        observer.disconnect();
+        prefetch();
+      },
+      { rootMargin: "700px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [
+    category,
+    deferredSearch,
+    error,
+    loading,
+    locale,
+    page,
+    pages,
+    semantic,
+    store.source_locale,
+    tenantSlug,
+  ]);
 
   useEffect(() => {
     if (loading || pendingScrollRestoreRef.current === null) return;
@@ -752,7 +808,11 @@ export function StorePage() {
                 </div>
               )}
               {!loading && !error && skus.length > 0 && pages > 1 && (
-                <nav className="store-pagination" aria-label={t("商品分页")}>
+                <nav
+                  className="store-pagination"
+                  aria-label={t("商品分页")}
+                  ref={paginationRef}
+                >
                   <Button
                     type="button"
                     size="2"

@@ -649,8 +649,11 @@ def test_sensitive_query_strings_are_excluded_from_every_http_access_log() -> No
     assert "limit_req zone=atc_api_per_ip" in nginx
     assert "client_max_body_size 260m;" in nginx
     assert "X-Quote-Download-Token" not in nginx
-    assert 'default "no-cache";' in nginx
-    assert '~^/assets/ "public, max-age=31536000, immutable";' in nginx
+    assert 'default "no-store, no-cache, must-revalidate";' in nginx
+    assert (
+        '~^/assets/.*:(200|206|304)$ "public, max-age=31536000, immutable";'
+        in nginx
+    )
     assert "~^/api/ \"\";" in nginx
     assert 'add_header Cache-Control $atc_cache_control always;' in nginx
 

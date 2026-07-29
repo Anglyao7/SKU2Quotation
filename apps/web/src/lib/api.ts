@@ -22,6 +22,27 @@ import type {
 import { clearCoreAuthSession, getCoreAccessToken } from "../core/api";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const PUBLIC_CACHE_MAX_ENTRIES = 160;
+const PUBLIC_STORE_CACHE_TTL_MS = 5 * 60_000;
+const PUBLIC_CATALOG_CACHE_TTL_MS = 2 * 60_000;
+const PUBLIC_SKU_CACHE_TTL_MS = 2 * 60_000;
+
+interface PublicCacheEntry {
+  expiresAt: number;
+  promise: Promise<unknown>;
+}
+
+interface StoreSkuFilters {
+  q?: string;
+  category?: string;
+  tags?: string[];
+  semantic?: boolean;
+  includeFacets?: boolean;
+  page?: number;
+  locale?: string;
+}
+
+const publicRequestCache = new Map<string, PublicCacheEntry>();
 
 export class ApiError extends Error {
   status: number;
@@ -98,6 +119,69 @@ async function request<T>(path: string, init: RequestInit = {}, auth = false): P
   return payload as T;
 }
 
+function prunePublicRequestCache() {
+  const now = Date.now();
+  for (const [key, entry] of publicRequestCache) {
+    if (entry.expiresAt <= now) publicRequestCache.delete(key);
+  }
+  while (publicRequestCache.size > PUBLIC_CACHE_MAX_ENTRIES) {
+    const oldestKey = publicRequestCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    publicRequestCache.delete(oldestKey);
+  }
+}
+
+function cachedPublicRequest<T>(
+  key: string,
+  ttlMs: number,
+  loader: () => Promise<T>,
+): Promise<T> {
+  const now = Date.now();
+  const existing = publicRequestCache.get(key);
+  if (existing && existing.expiresAt > now) {
+    publicRequestCache.delete(key);
+    publicRequestCache.set(key, existing);
+    return existing.promise as Promise<T>;
+  }
+  if (existing) publicRequestCache.delete(key);
+
+  const promise = loader().catch((error) => {
+    if (publicRequestCache.get(key)?.promise === promise) {
+      publicRequestCache.delete(key);
+    }
+    throw error;
+  });
+  publicRequestCache.set(key, {
+    expiresAt: now + ttlMs,
+    promise,
+  });
+  prunePublicRequestCache();
+  return promise;
+}
+
+function primePublicRequestCache<T>(key: string, ttlMs: number, value: T) {
+  publicRequestCache.delete(key);
+  publicRequestCache.set(key, {
+    expiresAt: Date.now() + ttlMs,
+    promise: Promise.resolve(value),
+  });
+  prunePublicRequestCache();
+}
+
+function storePath(slug: string, locale?: string) {
+  const params = new URLSearchParams();
+  if (locale) params.set("locale", locale);
+  const query = params.toString();
+  return `/api/store/${encodeURIComponent(slug)}${query ? `?${query}` : ""}`;
+}
+
+function storeSkuPath(slug: string, skuId: string, locale?: string) {
+  const params = new URLSearchParams();
+  if (locale) params.set("locale", locale);
+  const query = params.toString();
+  return `/api/store/${encodeURIComponent(slug)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}`;
+}
+
 function normalizeList<T>(payload: unknown): { items: T[]; total: number } {
   if (Array.isArray(payload)) return { items: payload as T[], total: payload.length };
   if (payload && typeof payload === "object") {
@@ -135,6 +219,71 @@ function normalizeQuote(raw: Quote): Quote {
       image_url: item.image_url_snapshot || item.image_url,
     })),
   };
+}
+
+async function getCachedStoreSkus(
+  slug: string,
+  filters: StoreSkuFilters = {},
+): Promise<SkuList> {
+  const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
+  if (filters.category) params.set("category", filters.category);
+  if (filters.tags?.length) params.set("tags", filters.tags.join(","));
+  if (filters.semantic) params.set("semantic", "true");
+  if (filters.includeFacets === false) params.set("include_facets", "false");
+  if (filters.locale) params.set("locale", filters.locale);
+  params.set("page", String(filters.page || 1));
+  params.set("page_size", "24");
+  params.sort();
+  const query = params.toString();
+  const path = `/api/store/${encodeURIComponent(slug)}/skus${query ? `?${query}` : ""}`;
+  return cachedPublicRequest(`catalog:${path}`, PUBLIC_CATALOG_CACHE_TTL_MS, async () => {
+    const raw = await request<unknown>(path);
+    const list = normalizeList<Sku>(raw);
+    const meta = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+    const result: SkuList = {
+      ...list,
+      items: list.items.map(normalizeSku),
+      page: Number(meta.page || filters.page || 1),
+      pages: Number(meta.pages || 0),
+      categories: Array.isArray(meta.categories) ? (meta.categories as string[]) : undefined,
+      category_options: Array.isArray(meta.category_options)
+        ? (meta.category_options as Array<{ value: string; label: string }>)
+        : undefined,
+      tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : undefined,
+      source_locale: typeof meta.source_locale === "string"
+        ? (meta.source_locale as "zh-CN" | "en-US")
+        : undefined,
+      locale: typeof meta.locale === "string"
+        ? (meta.locale as "zh-CN" | "en-US")
+        : undefined,
+      all_products_position: Number.isFinite(Number(meta.all_products_position))
+        ? Number(meta.all_products_position)
+        : undefined,
+    };
+    for (const sku of result.items) {
+      const detailPath = storeSkuPath(slug, sku.id, filters.locale);
+      primePublicRequestCache(
+        `sku:${detailPath}`,
+        PUBLIC_SKU_CACHE_TTL_MS,
+        sku,
+      );
+    }
+    if (filters.includeFacets !== false) {
+      const withoutFacets = new URLSearchParams(params);
+      withoutFacets.set("include_facets", "false");
+      withoutFacets.sort();
+      const compactPath = `/api/store/${encodeURIComponent(slug)}/skus?${withoutFacets.toString()}`;
+      primePublicRequestCache(
+        `catalog:${compactPath}`,
+        PUBLIC_CATALOG_CACHE_TTL_MS,
+        result,
+      );
+    }
+    return result;
+  });
 }
 
 function consolePath(path: string) {
@@ -177,70 +326,29 @@ export const api = {
   me: () => request<User>("/api/auth/me", {}, true),
 
   getStore: (slug: string, locale?: string) => {
-    const params = new URLSearchParams();
-    if (locale) params.set("locale", locale);
-    const query = params.toString();
-    return request<Storefront>(
-      `/api/store/${encodeURIComponent(slug)}${query ? `?${query}` : ""}`,
+    const path = storePath(slug, locale);
+    return cachedPublicRequest(
+      `store:${path}`,
+      PUBLIC_STORE_CACHE_TTL_MS,
+      () => request<Storefront>(path),
     );
   },
   async getStoreSku(slug: string, skuId: string, locale?: string): Promise<Sku> {
-    const params = new URLSearchParams();
-    if (locale) params.set("locale", locale);
-    const query = params.toString();
-    return normalizeSku(
-      await request<Sku>(
-        `/api/store/${encodeURIComponent(slug)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}`,
-      ),
+    const path = storeSkuPath(slug, skuId, locale);
+    return cachedPublicRequest(
+      `sku:${path}`,
+      PUBLIC_SKU_CACHE_TTL_MS,
+      async () => normalizeSku(await request<Sku>(path)),
     );
   },
   async getStoreSkus(
     slug: string,
-    filters: {
-      q?: string;
-      category?: string;
-      tags?: string[];
-      semantic?: boolean;
-      includeFacets?: boolean;
-      page?: number;
-      locale?: string;
-    } = {},
+    filters: StoreSkuFilters = {},
   ): Promise<SkuList> {
-    const params = new URLSearchParams();
-    if (filters.q) params.set("q", filters.q);
-    if (filters.category) params.set("category", filters.category);
-    if (filters.tags?.length) params.set("tags", filters.tags.join(","));
-    if (filters.semantic) params.set("semantic", "true");
-    if (filters.includeFacets === false) params.set("include_facets", "false");
-    if (filters.locale) params.set("locale", filters.locale);
-    params.set("page", String(filters.page || 1));
-    params.set("page_size", "24");
-    const query = params.toString();
-    const raw = await request<unknown>(
-      `/api/store/${encodeURIComponent(slug)}/skus${query ? `?${query}` : ""}`,
-    );
-    const list = normalizeList<Sku>(raw);
-    const meta = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-    return {
-      ...list,
-      items: list.items.map(normalizeSku),
-      page: Number(meta.page || filters.page || 1),
-      pages: Number(meta.pages || 0),
-      categories: Array.isArray(meta.categories) ? (meta.categories as string[]) : undefined,
-      category_options: Array.isArray(meta.category_options)
-        ? (meta.category_options as Array<{ value: string; label: string }>)
-        : undefined,
-      tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : undefined,
-      source_locale: typeof meta.source_locale === "string"
-        ? (meta.source_locale as "zh-CN" | "en-US")
-        : undefined,
-      locale: typeof meta.locale === "string"
-        ? (meta.locale as "zh-CN" | "en-US")
-        : undefined,
-      all_products_position: Number.isFinite(Number(meta.all_products_position))
-        ? Number(meta.all_products_position)
-        : undefined,
-    };
+    return getCachedStoreSkus(slug, filters);
+  },
+  prefetchStoreSkus: async (slug: string, filters: StoreSkuFilters = {}) => {
+    await getCachedStoreSkus(slug, filters);
   },
   createStoreQuote: async (slug: string, payload: CreateQuoteInput) =>
     normalizeQuote(await request<Quote>(`/api/store/${encodeURIComponent(slug)}/quotes`, {

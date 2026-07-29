@@ -54,6 +54,7 @@ class CatalogTranslationResult:
     category: str | None
     tags: tuple[str, ...]
     display_tag: str | None
+    complete: bool = True
 
 
 def _category_path(category: object | None) -> str:

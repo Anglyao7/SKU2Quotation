@@ -87,6 +87,52 @@ class CatalogSkuTranslationRow(AuditTimestampMixin, Base):
     sku_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class CatalogTextTranslationRow(AuditTimestampMixin, Base):
+    """On-demand translation memory shared by catalog fields with equal text."""
+
+    __tablename__ = "catalog_text_translations"
+    __table_args__ = (
+        CheckConstraint(
+            "source_locale <> target_locale",
+            name="source_target_locale_different",
+        ),
+        CheckConstraint(
+            "length(source_hash) = 64",
+            name="source_hash_sha256_length",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "source_locale",
+            "target_locale",
+            "provider",
+            "provider_version",
+            "source_hash",
+            name="uq_catalog_text_translations_memory_key",
+        ),
+        Index(
+            "ix_catalog_text_translations_tenant_accessed",
+            "tenant_id",
+            "last_accessed_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    source_locale: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_locale: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    translated_text: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(String(60), nullable=False)
+    provider_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    last_accessed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class CatalogTranslationJobRow(AuditTimestampMixin, Base):
     """Tenant-scoped progress record for an explicit catalog translation run."""
 

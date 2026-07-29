@@ -4,11 +4,13 @@ import io
 import os
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
+from threading import Event, Lock
 from time import monotonic, sleep
 from uuid import UUID, uuid4
 
@@ -55,6 +57,7 @@ from app.embedding_management_models import (
 )
 from app.catalog_translation_models import (
     CatalogSkuTranslationRow,
+    CatalogTextTranslationRow,
     CatalogTranslationJobRow,
 )
 from app.image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
@@ -98,6 +101,7 @@ from app.services.embedding import DeterministicFeatureHashEmbedding, validate_v
 from app.services.embedding_configuration import decrypt_api_key
 from app.services.catalog_translation import catalog_translation_source
 from app.services.translation import TranslationIdentity
+from app.services import translation_memory as translation_memory_service
 from app.services.hybrid_search import (
     _retrieval_tokens,
     _score_tag_relevance,
@@ -7294,7 +7298,75 @@ class _CatalogTranslationTestProvider:
         return text.replace("宠物", "Pet").replace("智能", "Smart")
 
 
-def test_public_catalog_translates_each_requested_page_live_without_cache(
+class _BlockingCatalogTranslationTestProvider(_CatalogTranslationTestProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+        self.release = Event()
+        self.lock = Lock()
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        assert source_locale == "zh-CN"
+        assert target_locale == "en-US"
+        with self.lock:
+            self.calls += 1
+        self.started.set()
+        assert self.release.wait(timeout=2)
+        return text.replace("宠物", "Pet")
+
+
+def test_translation_memory_coalesces_identical_inflight_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    provider = _BlockingCatalogTranslationTestProvider()
+    translation_memory_service._reset_translation_memory_for_tests()
+    with SessionLocal() as session:
+        session.execute(
+            delete(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.commit()
+
+    def translate() -> dict[str, str]:
+        return translation_memory_service.translate_values_with_memory(
+            tenant_id=DEFAULT_TENANT_ID,
+            translator=provider,
+            values=["宠物用品"],
+            source_locale="zh-CN",
+            target_locale="en-US",
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(translate)
+            assert provider.started.wait(timeout=2)
+            second = executor.submit(translate)
+            sleep(0.05)
+            provider.release.set()
+            assert first.result(timeout=2)["宠物用品"] == "Pet用品"
+            assert second.result(timeout=2)["宠物用品"] == "Pet用品"
+        assert provider.calls == 1
+    finally:
+        provider.release.set()
+        translation_memory_service._reset_translation_memory_for_tests()
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTextTranslationRow).where(
+                    CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.commit()
+
+
+def test_public_catalog_reuses_on_demand_translation_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _CatalogTranslationTestProvider()
@@ -7308,68 +7380,128 @@ def test_public_catalog_translates_each_requested_page_live_without_cache(
         "configured_catalog_translator",
         lambda: provider,
     )
-
-    store_response = client.get(
-        "/api/store/demo",
-        params={"locale": "en-US"},
-    )
-    assert store_response.status_code == 200, store_response.text
-    assert "en-US" in store_response.json()["available_locales"]
-
-    first_page = client.get(
-        "/api/store/demo/skus",
-        params={
-            "locale": "en-US",
-            "page": 1,
-            "page_size": 1,
-            "include_facets": "false",
-        },
-    )
-    assert first_page.status_code == 200, first_page.text
-    first_item = first_page.json()["items"][0]
-    assert first_item["translation_status"] == "TRANSLATED"
-    first_page_calls = provider.calls
-    assert first_page_calls > 0
-
-    second_page = client.get(
-        "/api/store/demo/skus",
-        params={
-            "locale": "en-US",
-            "page": 2,
-            "page_size": 1,
-            "include_facets": "false",
-        },
-    )
-    assert second_page.status_code == 200, second_page.text
-    assert second_page.json()["items"][0]["translation_status"] == "TRANSLATED"
-    second_page_calls = provider.calls
-    assert second_page_calls > first_page_calls
-
-    chinese_page = client.get(
-        "/api/store/demo/skus",
-        params={"page": 1, "page_size": 1, "include_facets": "false"},
-    )
-    assert chinese_page.status_code == 200, chinese_page.text
-    assert chinese_page.json()["items"][0]["translation_status"] == "SOURCE"
-    assert provider.calls == second_page_calls
-
-    detail = client.get(
-        f"/api/store/demo/skus/{first_item['id']}",
-        params={"locale": "en-US"},
-    )
-    assert detail.status_code == 200, detail.text
-    assert detail.json()["translation_status"] == "TRANSLATED"
-    assert provider.calls > second_page_calls
-
     with SessionLocal() as session:
-        assert (
-            session.scalar(
-                select(func.count(CatalogSkuTranslationRow.id)).where(
-                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+        session.execute(
+            delete(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.commit()
+
+    try:
+        store_response = client.get(
+            "/api/store/demo",
+            params={"locale": "en-US"},
+        )
+        assert store_response.status_code == 200, store_response.text
+        assert "en-US" in store_response.json()["available_locales"]
+
+        first_page = client.get(
+            "/api/store/demo/skus",
+            params={
+                "locale": "en-US",
+                "page": 1,
+                "page_size": 1,
+                "include_facets": "false",
+            },
+        )
+        assert first_page.status_code == 200, first_page.text
+        first_item = first_page.json()["items"][0]
+        assert first_item["translation_status"] == "TRANSLATED"
+        first_page_calls = provider.calls
+        assert first_page_calls > 0
+
+        repeated_first_page = client.get(
+            "/api/store/demo/skus",
+            params={
+                "locale": "en-US",
+                "page": 1,
+                "page_size": 1,
+                "include_facets": "false",
+            },
+        )
+        assert repeated_first_page.status_code == 200, repeated_first_page.text
+        assert provider.calls == first_page_calls
+
+        second_page = client.get(
+            "/api/store/demo/skus",
+            params={
+                "locale": "en-US",
+                "page": 2,
+                "page_size": 1,
+                "include_facets": "false",
+            },
+        )
+        assert second_page.status_code == 200, second_page.text
+        assert second_page.json()["items"][0]["translation_status"] == "TRANSLATED"
+        second_page_calls = provider.calls
+        assert second_page_calls > first_page_calls
+
+        chinese_page = client.get(
+            "/api/store/demo/skus",
+            params={"page": 1, "page_size": 1, "include_facets": "false"},
+        )
+        assert chinese_page.status_code == 200, chinese_page.text
+        assert chinese_page.json()["items"][0]["translation_status"] == "SOURCE"
+        assert provider.calls == second_page_calls
+
+        detail = client.get(
+            f"/api/store/demo/skus/{first_item['id']}",
+            params={"locale": "en-US"},
+        )
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["translation_status"] == "TRANSLATED"
+        assert provider.calls == second_page_calls
+
+        with SessionLocal() as session:
+            changed_sku = session.get(SkuRow, UUID(first_item["id"]))
+            assert changed_sku is not None
+            original_name = changed_sku.name
+            original_version = changed_sku.version
+            changed_sku.name = "宠物缓存失效测试"
+            changed_sku.version += 1
+            session.commit()
+        try:
+            changed_detail = client.get(
+                f"/api/store/demo/skus/{first_item['id']}",
+                params={"locale": "en-US"},
+            )
+            assert changed_detail.status_code == 200, changed_detail.text
+            assert changed_detail.json()["name"].startswith("Pet")
+            assert provider.calls > second_page_calls
+        finally:
+            with SessionLocal() as session:
+                changed_sku = session.get(SkuRow, UUID(first_item["id"]))
+                assert changed_sku is not None
+                changed_sku.name = original_name
+                changed_sku.version = original_version
+                session.commit()
+
+        with SessionLocal() as session:
+            assert (
+                session.scalar(
+                    select(func.count(CatalogTextTranslationRow.id)).where(
+                        CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                    )
+                )
+                or 0
+            ) > 0
+            assert (
+                session.scalar(
+                    select(func.count(CatalogSkuTranslationRow.id)).where(
+                        CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                    )
+                )
+                == 0
+            )
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTextTranslationRow).where(
+                    CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
                 )
             )
-            == 0
-        )
+            session.commit()
 
 
 def test_catalog_translation_job_reports_progress_and_caches_results(
@@ -8457,7 +8589,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260729_0040"
+        ).scalar() == "20260729_0041"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -8618,6 +8750,7 @@ def test_catalog_translation_migration_is_reversible_on_sqlite(
     before_engine = create_engine(migration_url)
     assert {
         "catalog_sku_translations",
+        "catalog_text_translations",
         "catalog_translation_jobs",
     }.isdisjoint(inspect(before_engine).get_table_names())
     before_engine.dispose()
@@ -8627,6 +8760,7 @@ def test_catalog_translation_migration_is_reversible_on_sqlite(
     tables = set(inspect(upgraded_engine).get_table_names())
     assert {
         "catalog_sku_translations",
+        "catalog_text_translations",
         "catalog_translation_jobs",
     }.issubset(tables)
     translation_columns = {
@@ -8644,12 +8778,29 @@ def test_catalog_translation_migration_is_reversible_on_sqlite(
         "tags",
         "display_tag",
     }.issubset(translation_columns)
+    memory_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns(
+            "catalog_text_translations"
+        )
+    }
+    assert {
+        "source_locale",
+        "target_locale",
+        "source_hash",
+        "source_text",
+        "translated_text",
+        "provider",
+        "provider_version",
+        "last_accessed_at",
+    }.issubset(memory_columns)
     upgraded_engine.dispose()
 
     command.downgrade(config, "20260729_0039")
     downgraded_engine = create_engine(migration_url)
     assert {
         "catalog_sku_translations",
+        "catalog_text_translations",
         "catalog_translation_jobs",
     }.isdisjoint(inspect(downgraded_engine).get_table_names())
     downgraded_engine.dispose()

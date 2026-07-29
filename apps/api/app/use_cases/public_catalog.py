@@ -42,7 +42,6 @@ from ..repositories import public_catalog_repository as repository
 from ..services.catalog_translation import (
     CatalogTranslationResult,
     catalog_translation_source,
-    translate_catalog_values,
 )
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
@@ -55,6 +54,7 @@ from ..services.translation import (
     catalog_translation_is_configured,
     configured_catalog_translator,
 )
+from ..services.translation_memory import translate_values_with_memory
 
 
 MONEY = Decimal("0.01")
@@ -336,6 +336,9 @@ def _sku_response(
         and locale != source_locale
         and getattr(translation, "source_hash", None) == source.source_hash
     )
+    translation_complete = bool(
+        translated and getattr(translation, "complete", True)
+    )
     tags = (
         [
             str(tag).strip()
@@ -392,7 +395,7 @@ def _sku_response(
             "SOURCE"
             if locale == source_locale
             else "TRANSLATED"
-            if translated
+            if translation_complete
             else "FALLBACK"
         ),
     )
@@ -415,133 +418,80 @@ def _live_translation_provider(
 def _live_sku_translation_map(
     rows: list[object],
     *,
+    tenant_id: UUID,
     translator: TranslationProvider | None,
     source_locale: str,
     target_locale: str,
+    additional_values: list[str] | None = None,
 ) -> dict[UUID, CatalogTranslationResult]:
     if translator is None or not rows:
         return {}
     sources = [catalog_translation_source(row) for row in rows]
+    names = [source.name for source in sources]
+    description_parts: list[list[tuple[str, str, bool]]] = []
+    translation_values: list[str] = [
+        name for name in names if _CJK_TEXT_PATTERN.search(name)
+    ]
+    for source in sources:
+        parts: list[tuple[str, str, bool]] = []
+        for raw_line in (source.description or "").splitlines(keepends=True):
+            if raw_line.endswith("\r\n"):
+                content, ending = raw_line[:-2], "\r\n"
+            elif raw_line.endswith(("\r", "\n")):
+                content, ending = raw_line[:-1], raw_line[-1:]
+            else:
+                content, ending = raw_line, ""
+            needs_translation = bool(_CJK_TEXT_PATTERN.search(content))
+            parts.append((content, ending, needs_translation))
+            if needs_translation:
+                translation_values.append(content)
+        description_parts.append(parts)
 
-    def translate_values(values: list[str]) -> list[str]:
-        if not values:
-            return []
-        batches: list[list[str]] = []
-        current: list[str] = []
-        current_size = 0
-        max_items = _positive_int_environment(
-            "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
-            24,
-            maximum=100,
+    metadata_candidates: list[str] = []
+    for source in sources:
+        metadata_candidates.extend(
+            segment.strip()
+            for segment in (source.category or "")
+            .replace("／", "/")
+            .split("/")
+            if segment.strip()
         )
-        max_characters = _positive_int_environment(
-            "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
-            1_800,
-            maximum=100_000,
-        )
-        for value in values:
-            if current and (
-                len(current) >= max_items
-                or current_size + len(value) > max_characters
-            ):
-                batches.append(current)
-                current = []
-                current_size = 0
-            current.append(value)
-            current_size += len(value)
-        if current:
-            batches.append(current)
+        metadata_candidates.extend(source.tags)
+    metadata_candidates.extend(additional_values or [])
+    translation_values.extend(
+        value
+        for value in metadata_candidates
+        if value and _CJK_TEXT_PATTERN.search(value)
+    )
+    translated_values = translate_values_with_memory(
+        tenant_id=tenant_id,
+        translator=translator,
+        values=list(dict.fromkeys(translation_values)),
+        source_locale=source_locale,
+        target_locale=target_locale,
+    )
+    names = [translated_values.get(name, name) for name in names]
 
-        translated: list[str] = []
-        for batch in batches:
-            translated.extend(
-                translate_catalog_values(
-                    translator,
-                    batch,
-                    source_locale=source_locale,
-                    target_locale=target_locale,
+    descriptions: list[str | None] = []
+    for source, parts in zip(sources, description_parts, strict=True):
+        if source.description is None:
+            descriptions.append(None)
+            continue
+        descriptions.append(
+            "".join(
+                (
+                    translated_values.get(content, content)
+                    if needs_translation
+                    else content
                 )
-            )
-        return translated
-
-    try:
-        names = [source.name for source in sources]
-        name_indexes = [
-            index
-            for index, value in enumerate(names)
-            if _CJK_TEXT_PATTERN.search(value)
-        ]
-        translated_names = translate_values(
-            [names[index] for index in name_indexes]
-        )
-        for index, translated_name in zip(
-            name_indexes,
-            translated_names,
-            strict=True,
-        ):
-            names[index] = translated_name
-
-        description_parts: list[list[tuple[str, str, bool]]] = []
-        description_values: list[str] = []
-        for source in sources:
-            parts: list[tuple[str, str, bool]] = []
-            for raw_line in (source.description or "").splitlines(keepends=True):
-                if raw_line.endswith("\r\n"):
-                    content, ending = raw_line[:-2], "\r\n"
-                elif raw_line.endswith(("\r", "\n")):
-                    content, ending = raw_line[:-1], raw_line[-1:]
-                else:
-                    content, ending = raw_line, ""
-                needs_translation = bool(_CJK_TEXT_PATTERN.search(content))
-                parts.append((content, ending, needs_translation))
-                if needs_translation:
-                    description_values.append(content)
-            description_parts.append(parts)
-
-        translated_description_values = iter(
-            translate_values(description_values)
-        )
-        descriptions: list[str | None] = []
-        for source, parts in zip(sources, description_parts, strict=True):
-            if source.description is None:
-                descriptions.append(None)
-                continue
-            translated_parts: list[str] = []
-            for content, ending, needs_translation in parts:
-                translated_parts.append(
-                    (
-                        next(translated_description_values)
-                        if needs_translation
-                        else content
-                    )
-                    + ending
-                )
-            descriptions.append("".join(translated_parts))
-
-        metadata_candidates: list[str] = []
-        for source in sources:
-            metadata_candidates.extend(
-                segment.strip()
-                for segment in (source.category or "")
-                .replace("／", "/")
-                .split("/")
-                if segment.strip()
-            )
-            metadata_candidates.extend(source.tags)
-        metadata_values = list(
-            dict.fromkeys(
-                value
-                for value in metadata_candidates
-                if value and _CJK_TEXT_PATTERN.search(value)
+                + ending
+                for content, ending, needs_translation in parts
             )
         )
-        translated_metadata = translate_values(metadata_values)
-        metadata_labels = dict(
-            zip(metadata_values, translated_metadata, strict=True)
-        )
-    except (StopIteration, TranslationProviderError) as exc:
-        logger.warning("live SKU translation failed; using source text: %s", exc)
-        return {}
+    metadata_labels = {
+        value: translated_values.get(value, value)
+        for value in metadata_candidates
+    }
 
     results: dict[UUID, CatalogTranslationResult] = {}
     for index, source in enumerate(sources):
@@ -565,6 +515,22 @@ def _live_sku_translation_map(
             ),
             None,
         )
+        required_values = [
+            value
+            for value in (
+                source.name,
+                *(
+                    content
+                    for content, _ending, needs_translation in description_parts[
+                        index
+                    ]
+                    if needs_translation
+                ),
+                *category_segments,
+                *source.tags,
+            )
+            if value and _CJK_TEXT_PATTERN.search(value)
+        ]
         results[source.sku_id] = CatalogTranslationResult(
             sku_id=source.sku_id,
             source_hash=source.source_hash,
@@ -583,6 +549,10 @@ def _live_sku_translation_map(
                 if display_tag_index is not None
                 else translated_tags[0] if translated_tags else None
             ),
+            complete=all(
+                value in translated_values
+                for value in required_values
+            ),
         )
     return results
 
@@ -590,6 +560,7 @@ def _live_sku_translation_map(
 def _live_category_labels(
     categories: list[str],
     *,
+    tenant_id: UUID,
     translator: TranslationProvider | None,
     source_locale: str,
     target_locale: str,
@@ -604,20 +575,20 @@ def _live_category_labels(
             if segment.strip()
         )
     )
-    try:
-        translated_segments = translate_catalog_values(
-            translator,
-            segments,
-            source_locale=source_locale,
-            target_locale=target_locale,
-        )
-    except TranslationProviderError as exc:
-        logger.warning("live category translation failed; using source text: %s", exc)
-        return {}
-    segment_labels = dict(zip(segments, translated_segments, strict=True))
+    translated_segments = translate_values_with_memory(
+        tenant_id=tenant_id,
+        translator=translator,
+        values=[
+            segment
+            for segment in segments
+            if _CJK_TEXT_PATTERN.search(segment)
+        ],
+        source_locale=source_locale,
+        target_locale=target_locale,
+    )
     return {
         category: "/".join(
-            segment_labels.get(segment.strip(), segment.strip())
+            translated_segments.get(segment.strip(), segment.strip())
             for segment in category.replace("／", "/").split("/")
             if segment.strip()
         )
@@ -885,13 +856,23 @@ def list_public_skus(
     )
     translations = _live_sku_translation_map(
         selected,
+        tenant_id=tenant.id,
         translator=translator,
         source_locale=source_locale,
         target_locale=requested_locale,
+        additional_values=[
+            segment.strip()
+            for category_path in categories
+            for segment in category_path.replace("／", "/").split("/")
+            if segment.strip()
+        ]
+        if requested_locale != source_locale and include_facets
+        else None,
     )
     category_labels = (
         _live_category_labels(
             categories,
+            tenant_id=tenant.id,
             translator=translator,
             source_locale=source_locale,
             target_locale=requested_locale,
@@ -987,6 +968,7 @@ def get_public_sku(
     )
     translations = _live_sku_translation_map(
         [row],
+        tenant_id=tenant.id,
         translator=translator,
         source_locale=source_locale,
         target_locale=requested_locale,
