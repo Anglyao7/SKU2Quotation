@@ -13,6 +13,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Brand } from "../components/Brand";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useCoreAuth } from "../core/AuthContext";
+import { authLoginMessageKey } from "../core/authLoginError";
 import { useLocale } from "../core/LocaleContext";
 
 export function LoginPage() {
@@ -52,7 +53,7 @@ export function LoginPage() {
     try {
       await loginPassword(identifier, password);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("账号或密码错误"));
+      setError(t(authLoginMessageKey(caught)));
     } finally {
       setSubmitting(false);
     }

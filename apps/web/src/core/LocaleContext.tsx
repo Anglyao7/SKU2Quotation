@@ -1186,6 +1186,19 @@ const english: Record<string, string> = {
   "商品加载中": "Loading products",
   "数据加载中": "Loading data",
   "账号或密码错误": "Incorrect account or password",
+  "账号或密码错误，请检查开通时的账号和最近一次设置的密码。":
+    "Incorrect account or password. Check the account issued to you and your most recently set password.",
+  "登录尝试过于频繁，请稍后再试。":
+    "Too many login attempts. Please try again later.",
+  "认证服务暂时不可用，请稍后再试。":
+    "The authentication service is temporarily unavailable. Please try again later.",
+  "无法连接登录服务，请检查网络后重试。":
+    "Could not reach the login service. Check your connection and try again.",
+  "登录信息格式不正确，请检查后重试。":
+    "The login details are not in a valid format. Check them and try again.",
+  "登录失败，请稍后重试。": "Login failed. Please try again later.",
+  "请输入账号、邮箱或手机号。": "Enter an account, email address, or phone number.",
+  "请输入密码。": "Enter your password.",
   "智贸云 · 商家运营控制台": "ZhiMao Cloud · Merchant Operations",
   "让商品、询盘和报价成为一条可信链路。":
     "Connect products, inquiries, and quotations in one trusted workflow.",

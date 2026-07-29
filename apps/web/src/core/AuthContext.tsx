@@ -17,6 +17,7 @@ import {
   refreshAuthSession,
   switchTenant as switchTenantRequest,
 } from "./api";
+import { authLoginMessageKey } from "./authLoginError";
 import type { AuthTokenData, CurrentUser, MembershipSummary } from "./types";
 
 export type AuthStatus = "restoring" | "anonymous" | "selecting_tenant" | "authenticated";
@@ -102,7 +103,11 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
     try {
       await hydrate(await loginPasswordRequest(identifier, password));
     } catch (reason) {
-      setState({ ...initialState, status: "anonymous", error: errorMessage(reason) });
+      setState({
+        ...initialState,
+        status: "anonymous",
+        error: authLoginMessageKey(reason),
+      });
       throw reason;
     }
   }, [hydrate]);
