@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -41,9 +42,7 @@ from ..repositories import public_catalog_repository as repository
 from ..services.catalog_translation import (
     CatalogTranslationResult,
     catalog_translation_source,
-    translate_catalog_sources,
     translate_catalog_values,
-    translation_batches,
 )
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
@@ -61,6 +60,7 @@ from ..services.translation import (
 MONEY = Decimal("0.01")
 PUBLIC_TOKEN_SEPARATOR = "."
 logger = logging.getLogger(__name__)
+_CJK_TEXT_PATTERN = re.compile(r"[\u3400-\u9fff]")
 
 
 @dataclass(frozen=True)
@@ -422,33 +422,169 @@ def _live_sku_translation_map(
     if translator is None or not rows:
         return {}
     sources = [catalog_translation_source(row) for row in rows]
-    results: list[CatalogTranslationResult] = []
-    try:
-        for batch in translation_batches(
-            sources,
-            max_items=_positive_int_environment(
-                "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
-                5,
-                maximum=100,
-            ),
-            max_characters=_positive_int_environment(
-                "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
-                1_800,
-                maximum=100_000,
-            ),
-        ):
-            results.extend(
-                translate_catalog_sources(
+
+    def translate_values(values: list[str]) -> list[str]:
+        if not values:
+            return []
+        batches: list[list[str]] = []
+        current: list[str] = []
+        current_size = 0
+        max_items = _positive_int_environment(
+            "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
+            24,
+            maximum=100,
+        )
+        max_characters = _positive_int_environment(
+            "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
+            1_800,
+            maximum=100_000,
+        )
+        for value in values:
+            if current and (
+                len(current) >= max_items
+                or current_size + len(value) > max_characters
+            ):
+                batches.append(current)
+                current = []
+                current_size = 0
+            current.append(value)
+            current_size += len(value)
+        if current:
+            batches.append(current)
+
+        translated: list[str] = []
+        for batch in batches:
+            translated.extend(
+                translate_catalog_values(
                     translator,
                     batch,
                     source_locale=source_locale,
                     target_locale=target_locale,
                 )
             )
-    except TranslationProviderError as exc:
+        return translated
+
+    try:
+        names = [source.name for source in sources]
+        name_indexes = [
+            index
+            for index, value in enumerate(names)
+            if _CJK_TEXT_PATTERN.search(value)
+        ]
+        translated_names = translate_values(
+            [names[index] for index in name_indexes]
+        )
+        for index, translated_name in zip(
+            name_indexes,
+            translated_names,
+            strict=True,
+        ):
+            names[index] = translated_name
+
+        description_parts: list[list[tuple[str, str, bool]]] = []
+        description_values: list[str] = []
+        for source in sources:
+            parts: list[tuple[str, str, bool]] = []
+            for raw_line in (source.description or "").splitlines(keepends=True):
+                if raw_line.endswith("\r\n"):
+                    content, ending = raw_line[:-2], "\r\n"
+                elif raw_line.endswith(("\r", "\n")):
+                    content, ending = raw_line[:-1], raw_line[-1:]
+                else:
+                    content, ending = raw_line, ""
+                needs_translation = bool(_CJK_TEXT_PATTERN.search(content))
+                parts.append((content, ending, needs_translation))
+                if needs_translation:
+                    description_values.append(content)
+            description_parts.append(parts)
+
+        translated_description_values = iter(
+            translate_values(description_values)
+        )
+        descriptions: list[str | None] = []
+        for source, parts in zip(sources, description_parts, strict=True):
+            if source.description is None:
+                descriptions.append(None)
+                continue
+            translated_parts: list[str] = []
+            for content, ending, needs_translation in parts:
+                translated_parts.append(
+                    (
+                        next(translated_description_values)
+                        if needs_translation
+                        else content
+                    )
+                    + ending
+                )
+            descriptions.append("".join(translated_parts))
+
+        metadata_candidates: list[str] = []
+        for source in sources:
+            metadata_candidates.extend(
+                segment.strip()
+                for segment in (source.category or "")
+                .replace("／", "/")
+                .split("/")
+                if segment.strip()
+            )
+            metadata_candidates.extend(source.tags)
+        metadata_values = list(
+            dict.fromkeys(
+                value
+                for value in metadata_candidates
+                if value and _CJK_TEXT_PATTERN.search(value)
+            )
+        )
+        translated_metadata = translate_values(metadata_values)
+        metadata_labels = dict(
+            zip(metadata_values, translated_metadata, strict=True)
+        )
+    except (StopIteration, TranslationProviderError) as exc:
         logger.warning("live SKU translation failed; using source text: %s", exc)
         return {}
-    return {result.sku_id: result for result in results}
+
+    results: dict[UUID, CatalogTranslationResult] = {}
+    for index, source in enumerate(sources):
+        category_segments = [
+            segment.strip()
+            for segment in (source.category or "")
+            .replace("／", "/")
+            .split("/")
+            if segment.strip()
+        ]
+        translated_tags = tuple(
+            metadata_labels.get(tag, tag)
+            for tag in source.tags
+        )
+        display_tag_index = next(
+            (
+                tag_index
+                for tag_index, tag in enumerate(source.tags)
+                if source.display_tag
+                and tag.casefold() == source.display_tag.casefold()
+            ),
+            None,
+        )
+        results[source.sku_id] = CatalogTranslationResult(
+            sku_id=source.sku_id,
+            source_hash=source.source_hash,
+            name=names[index],
+            description=descriptions[index],
+            category=(
+                "/".join(
+                    metadata_labels.get(segment, segment)
+                    for segment in category_segments
+                )
+                or None
+            ),
+            tags=translated_tags,
+            display_tag=(
+                translated_tags[display_tag_index]
+                if display_tag_index is not None
+                else translated_tags[0] if translated_tags else None
+            ),
+        )
+    return results
 
 
 def _live_category_labels(
