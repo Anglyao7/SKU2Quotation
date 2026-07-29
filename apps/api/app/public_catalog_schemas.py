@@ -26,6 +26,7 @@ class PublicStoreResponse(BaseModel):
     contact_phone: str | None
     default_currency: str
     locale: str
+    all_products_position: int = Field(default=0, ge=0)
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
 
 
@@ -56,6 +57,7 @@ class PublicSkuPage(BaseModel):
     pages: int
     categories: list[str]
     tags: list[str]
+    all_products_position: int = Field(default=0, ge=0)
 
 
 class PublicCartItem(BaseModel):

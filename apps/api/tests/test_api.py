@@ -2032,6 +2032,32 @@ def test_platform_admin_routes_reject_regular_members(
             denied_embedding_settings.json()["detail"]["code"]
             == "PLATFORM_ADMIN_REQUIRED"
         )
+        denied_system_monitoring = regular_client.get(
+            "/api/v1/system/metrics",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_system_monitoring.status_code == 403
+        assert (
+            denied_system_monitoring.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
+
+
+def test_system_monitoring_reports_server_resources_without_caching() -> None:
+    response = client.get("/api/v1/system/metrics")
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    payload = response.json()
+    assert payload["scope"] == "SERVER_HOST"
+    assert payload["cpu"]["logical_cores"] >= 1
+    if payload["cpu"]["utilization_percent"] is not None:
+        assert 0 <= payload["cpu"]["utilization_percent"] <= 100
+    if payload["memory"]["utilization_percent"] is not None:
+        assert 0 <= payload["memory"]["utilization_percent"] <= 100
+    assert payload["disk"]["total_bytes"] > 0
+    assert payload["disk"]["used_bytes"] >= 0
+    assert payload["disk"]["available_bytes"] >= 0
+    assert 0 <= payload["disk"]["utilization_percent"] <= 100
 
 
 def test_member_invitation_rejects_ambiguous_global_email() -> None:
@@ -7285,6 +7311,82 @@ def test_public_category_facets_follow_managed_sort_order() -> None:
             session.commit()
 
 
+def test_all_products_position_is_merchant_controlled_and_publicly_projected() -> None:
+    initial_layout_response = client.get("/api/v1/categories/layout")
+    assert initial_layout_response.status_code == 200, initial_layout_response.text
+    initial_layout = initial_layout_response.json()
+    root_count = initial_layout["root_category_count"]
+    target_position = min(2, root_count)
+
+    try:
+        updated_response = client.patch(
+            "/api/v1/categories/layout",
+            json={"all_products_position": target_position},
+        )
+        assert updated_response.status_code == 200, updated_response.text
+        assert updated_response.json() == {
+            "all_products_position": target_position,
+            "root_category_count": root_count,
+        }
+
+        persisted_response = client.get("/api/v1/categories/layout")
+        assert persisted_response.status_code == 200, persisted_response.text
+        assert (
+            persisted_response.json()["all_products_position"]
+            == target_position
+        )
+
+        public_response = client.get("/api/store/demo/skus")
+        assert public_response.status_code == 200, public_response.text
+        public_payload = public_response.json()
+        visible_roots = {
+            path.replace("／", "/").split("/", 1)[0].strip()
+            for path in public_payload["categories"]
+        }
+        with SessionLocal() as session:
+            ordered_roots = list(
+                session.scalars(
+                    select(ProductCategoryRow)
+                    .where(
+                        ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductCategoryRow.parent_id.is_(None),
+                    )
+                    .order_by(
+                        ProductCategoryRow.sort_order,
+                        ProductCategoryRow.name,
+                    )
+                ).all()
+            )
+        expected_public_position = sum(
+            1 for row in ordered_roots[:target_position] if row.name in visible_roots
+        )
+        assert (
+            public_payload["all_products_position"]
+            == expected_public_position
+        )
+
+        invalid_response = client.patch(
+            "/api/v1/categories/layout",
+            json={"all_products_position": root_count + 1},
+        )
+        assert invalid_response.status_code == 409
+        assert (
+            invalid_response.json()["detail"]["code"]
+            == "CATEGORY_LAYOUT_POSITION_INVALID"
+        )
+    finally:
+        restored = client.patch(
+            "/api/v1/categories/layout",
+            json={
+                "all_products_position": min(
+                    initial_layout["all_products_position"],
+                    root_count,
+                )
+            },
+        )
+        assert restored.status_code == 200, restored.text
+
+
 def test_public_catalog_paginates_in_database_and_can_skip_facets() -> None:
     first = client.get(
         "/api/store/demo/skus",
@@ -8180,7 +8282,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260728_0038"
+        ).scalar() == "20260729_0039"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -8284,6 +8386,47 @@ def test_category_display_color_migration_is_reversible_on_sqlite(tmp_path: Path
     assert "display_color" not in {
         column["name"]
         for column in inspect(downgraded_engine).get_columns("product_categories")
+    }
+    downgraded_engine.dispose()
+
+
+def test_storefront_category_layout_migration_is_reversible_on_sqlite(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "storefront-category-layout-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+
+    command.upgrade(config, "20260728_0038")
+    before_engine = create_engine(migration_url)
+    assert "all_products_position" not in {
+        column["name"]
+        for column in inspect(before_engine).get_columns("tenant_public_profiles")
+    }
+    before_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    columns = {
+        column["name"]: column
+        for column in inspect(upgraded_engine).get_columns("tenant_public_profiles")
+    }
+    assert "all_products_position" in columns
+    with upgraded_engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM tenant_public_profiles "
+            "WHERE all_products_position != 0"
+        ).scalar() == 0
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260728_0038")
+    downgraded_engine = create_engine(migration_url)
+    assert "all_products_position" not in {
+        column["name"]
+        for column in inspect(downgraded_engine).get_columns(
+            "tenant_public_profiles"
+        )
     }
     downgraded_engine.dispose()
 

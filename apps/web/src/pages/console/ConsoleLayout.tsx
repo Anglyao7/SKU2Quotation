@@ -11,6 +11,7 @@ import {
   FileText,
   GlobeHemisphereWest,
   Key,
+  Pulse,
   SignOut,
   Sparkle,
   Storefront as StoreIcon,
@@ -72,6 +73,7 @@ const navigationGroups = [
     label: "平台",
     items: [
       { to: "/console/tenants", label: "商家管理", mobileLabel: "商家", icon: StoreIcon, permissions: [], platformAdminOnly: true, mobilePrimary: false },
+      { to: "/console/system/monitoring", label: "系统监控", mobileLabel: "监控", icon: Pulse, permissions: [], platformAdminOnly: true, mobilePrimary: false },
     ],
   },
   {
@@ -119,7 +121,7 @@ export function ConsoleLayout() {
   const accessManagementVisible = visibleNavigation.some((item) => item.to === "/console/system/permissions");
   const mobileMoreActive = mobileMore.some((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
     || location.pathname.startsWith("/console/account")
-    || location.pathname.startsWith("/console/system/permissions");
+    || (accessManagementVisible && location.pathname.startsWith("/console/system/permissions"));
   const storefrontPath = activeTenantSlug ? `/${encodeURIComponent(activeTenantSlug)}` : "/";
   const activeTenant = useMemo<Tenant | undefined>(() => activeTenantId ? { id: activeTenantId, name: profile?.context.tenantName ?? t("当前工作区"), slug: activeTenantSlug, active: true, status: "active" } : undefined, [activeTenantId, activeTenantSlug, profile?.context.tenantName, t]);
 
@@ -179,7 +181,6 @@ export function ConsoleLayout() {
             {mobileMore.map(({ to, label, icon: Icon }) => <DropdownMenu.Item asChild key={to}><Link to={to}><Icon size={17} />{t(label)}</Link></DropdownMenu.Item>)}
             <DropdownMenu.Separator />
             <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />{t("账户与安全")}</Link></DropdownMenu.Item>
-            {!accessManagementVisible ? <DropdownMenu.Item asChild><Link to="/console/system/permissions"><Key size={17} />{t("我的权限")}</Link></DropdownMenu.Item> : null}
             <DropdownMenu.Item asChild><Link to={storefrontPath}><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>
             <DropdownMenu.Separator />
             <DropdownMenu.Item color="red" onSelect={() => void logout()}><SignOut size={17} />{t("退出登录")}</DropdownMenu.Item>
@@ -254,7 +255,7 @@ export function ConsoleLayout() {
                 </div>
               </DropdownMenu.Label>
               <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />{t("账户与安全")}</Link></DropdownMenu.Item>
-              <DropdownMenu.Item asChild><Link to="/console/system/permissions"><Key size={17} />{t(accessManagementVisible ? "成员与权限" : "我的权限")}</Link></DropdownMenu.Item>
+              {accessManagementVisible ? <DropdownMenu.Item asChild><Link to="/console/system/permissions"><Key size={17} />{t("成员与权限")}</Link></DropdownMenu.Item> : null}
               <DropdownMenu.Item asChild><Link to={storefrontPath}><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item color="red" onSelect={() => void logout()}><SignOut size={17} />{t("退出登录")}</DropdownMenu.Item>

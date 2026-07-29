@@ -93,6 +93,62 @@ img { display: block; max-width: 100%; }
 
 .route-loading { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 12px; color: var(--text-soft); font-size: 14px; }
 .not-found-page { min-height: 100dvh; padding: 28px clamp(20px, 5vw, 64px); display: flex; flex-direction: column; }
+.application-error-page {
+  min-height: 100dvh;
+  padding: 28px clamp(20px, 5vw, 64px);
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 34%),
+    var(--page);
+}
+.application-error-card {
+  width: min(620px, 100%);
+  margin: auto;
+  padding: clamp(28px, 6vw, 54px);
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 28px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 28px 70px color-mix(in srgb, #1f312d 12%, transparent);
+}
+.application-error-card h1 {
+  max-width: 12em;
+  margin: 0;
+  line-height: 1.1;
+}
+.application-error-card > p {
+  max-width: 48em;
+  line-height: 1.75;
+}
+.application-error-card code {
+  max-width: 100%;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  border-radius: 10px;
+  color: var(--text-soft);
+  background: var(--page-soft);
+  font-size: 12px;
+}
+.application-error-icon {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 17px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, var(--surface));
+}
+.application-error-icon svg { width: 27px; height: 27px; }
+.application-error-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .not-found-content { margin: auto; display: grid; justify-items: start; max-width: 480px; gap: 14px; }
 .not-found-content > svg { color: var(--accent); }
 

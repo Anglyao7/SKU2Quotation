@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 
 from ..domain.errors import ApplicationError
 from ..repositories.outbox_repository import outbox_metrics
-from ..system_schemas import OutboxMetricsResponse
+from ..services.auth.dependencies import RequestContext
+from ..services.system_monitoring import system_monitoring_snapshot
+from ..system_schemas import OutboxMetricsResponse, SystemMonitoringResponse
 
 
 def get_outbox_metrics(
@@ -30,3 +32,16 @@ def get_outbox_metrics(
         oldest_unpublished_at=metrics.oldest_unpublished_at,
         lag_seconds=metrics.lag_seconds,
     )
+
+
+def get_system_monitoring(
+    *,
+    context: RequestContext,
+) -> SystemMonitoringResponse:
+    if not context.is_platform_admin:
+        raise ApplicationError(
+            "PLATFORM_ADMIN_REQUIRED",
+            "Platform administrator access is required.",
+            kind="forbidden",
+        )
+    return system_monitoring_snapshot()

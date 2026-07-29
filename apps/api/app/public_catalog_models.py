@@ -35,6 +35,10 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
             "publication_status IN ('DRAFT', 'PUBLISHED', 'SUSPENDED')",
             name="publication_status_allowed",
         ),
+        CheckConstraint(
+            "all_products_position >= 0",
+            name="all_products_position_nonnegative",
+        ),
         UniqueConstraint("slug", name="uq_tenant_public_profiles_slug"),
         Index(
             "ix_tenant_public_profiles_publication_slug",
@@ -56,6 +60,9 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
     contact_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
     publication_status: Mapped[str] = mapped_column(
         String(20), default="DRAFT", nullable=False
+    )
+    all_products_position: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
     )
 
 

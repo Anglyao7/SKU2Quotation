@@ -7,7 +7,9 @@ import { App } from "./App";
 import { CoreAuthProvider } from "./core/AuthContext";
 import { LocaleProvider } from "./core/LocaleContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { installChunkRecovery } from "./lib/chunkRecovery";
 
+installChunkRecovery();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ThemeProvider>

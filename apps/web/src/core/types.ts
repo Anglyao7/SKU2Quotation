@@ -412,6 +412,46 @@ export interface ProductCategory {
   version: number;
 }
 
+export interface CategoryLayout {
+  allProductsPosition: number;
+  rootCategoryCount: number;
+}
+
+export interface CpuUsage {
+  utilizationPercent?: number;
+  logicalCores: number;
+  quotaCores?: number;
+  load1m?: number;
+  load5m?: number;
+  load15m?: number;
+}
+
+export interface MemoryUsage {
+  usedBytes?: number;
+  totalBytes?: number;
+  availableBytes?: number;
+  utilizationPercent?: number;
+  containerUsedBytes?: number;
+  containerLimitBytes?: number;
+}
+
+export interface DiskUsage {
+  mountPath: string;
+  usedBytes: number;
+  totalBytes: number;
+  availableBytes: number;
+  utilizationPercent: number;
+}
+
+export interface SystemMonitoringSnapshot {
+  sampledAt: string;
+  scope: string;
+  uptimeSeconds?: number;
+  cpu: CpuUsage;
+  memory: MemoryUsage;
+  disk: DiskUsage;
+}
+
 export interface AttributeDefinition {
   id: string;
   categoryId?: string;

@@ -327,6 +327,15 @@ class CategoryReorderRequest(BaseModel):
         return self
 
 
+class CategoryLayoutResponse(BaseModel):
+    all_products_position: int = Field(ge=0)
+    root_category_count: int = Field(ge=0)
+
+
+class CategoryLayoutUpdateRequest(BaseModel):
+    all_products_position: int = Field(ge=0, le=500)
+
+
 class SupplierPriceCreateRequest(BaseModel):
     supplier_product_id: UUID
     sku_id: UUID | None = None

@@ -56,6 +56,40 @@ ensure_compact_swap() {
   fi
 }
 
+prepare_web_static_store() {
+  local static_dir="${RUNTIME_DIR}/web-static"
+  local adoption_marker="${static_dir}/.atc-persistent-static"
+  local current_web_id=""
+  local archive_container=""
+  local image=""
+
+  mkdir -p "${static_dir}"
+  if [[ ! -f "${adoption_marker}" ]]; then
+    current_web_id="$(compose ps -q web 2>/dev/null || true)"
+    if [[ -n "${current_web_id}" ]] \
+      && [[ "$(docker inspect --format '{{.State.Running}}' "${current_web_id}" 2>/dev/null || true)" == "true" ]]; then
+      info "preserving the currently served frontend assets for open browser sessions"
+      docker cp "${current_web_id}:/usr/share/nginx/html/." "${static_dir}"
+    fi
+    mkdir -p "${static_dir}/assets"
+    info "adopting recent immutable frontend assets into the persistent store"
+    while IFS= read -r image; do
+      [[ -n "${image}" && "${image}" != *":<none>" ]] || continue
+      archive_container="$(docker create --entrypoint /bin/true "${image}")"
+      docker cp \
+        "${archive_container}:/usr/share/nginx/html/assets/." \
+        "${static_dir}/assets" \
+        || true
+      docker rm "${archive_container}" >/dev/null
+    done < <(
+      docker images --format '{{.Repository}}:{{.Tag}}' atc-web \
+        | head -n 12
+    )
+    touch "${adoption_marker}"
+  fi
+  chown -R 101:101 "${static_dir}"
+}
+
 if [[ "$(uname -s)" == "Linux" ]]; then
   available_kib="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
   if [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]]; then
@@ -96,9 +130,16 @@ if [[ -f "${DEPLOYMENT_STATE_DIR}/current.env" ]]; then
   cp "${DEPLOYMENT_STATE_DIR}/current.env" "${DEPLOYMENT_STATE_DIR}/previous.env"
 fi
 
-info "fetching the requested immutable release"
-git fetch --tags --prune origin
-if resolved_commit="$(git rev-parse --verify "${TARGET_REF}^{commit}" 2>/dev/null)"; then
+if [[ "${TARGET_REF}" =~ ^[0-9a-f]{40}$ ]] \
+  && resolved_commit="$(git rev-parse --verify "${TARGET_REF}^{commit}" 2>/dev/null)"; then
+  info "using the requested immutable release already present in the local object store"
+else
+  info "fetching the requested immutable release"
+  git fetch --tags --prune origin
+fi
+if [[ -n "${resolved_commit:-}" ]]; then
+  :
+elif resolved_commit="$(git rev-parse --verify "${TARGET_REF}^{commit}" 2>/dev/null)"; then
   :
 elif resolved_commit="$(git rev-parse --verify "origin/${TARGET_REF}^{commit}" 2>/dev/null)"; then
   :
@@ -110,7 +151,7 @@ git checkout --detach "${resolved_commit}"
 
 export ATC_COMMIT_SHA="${resolved_commit}"
 export ATC_RELEASE="production-$(date -u +%Y%m%dT%H%M%SZ)-${resolved_commit:0:12}"
-export ATC_MIGRATION_HEAD="20260728_0038"
+export ATC_MIGRATION_HEAD="20260729_0039"
 export ATC_CONFIG_VERSION="production-v1-${resolved_commit:0:12}"
 export ATC_IMAGE_DIGEST="sha256:$(printf '%064d' 0)"
 export ATC_ENABLE_WORKERS="${ATC_ENABLE_WORKERS:-false}"
@@ -121,6 +162,7 @@ fi
 render_keycloak_realm
 render_caddy_sites
 compose_with_ops config --quiet
+prepare_web_static_store
 
 rollback_on_error() {
   status="$?"

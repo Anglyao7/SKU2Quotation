@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,8 @@ from ..product_center_schemas import (
     AttributeDefinitionCreateRequest,
     AttributeDefinitionResponse,
     CategoryCreateRequest,
+    CategoryLayoutResponse,
+    CategoryLayoutUpdateRequest,
     CategoryReorderRequest,
     CategoryResponse,
     CategoryUpdateRequest,
@@ -48,7 +50,8 @@ from ..product_center_schemas import (
     SupplierPriceResponse,
 )
 from ..product_supplier_models import ProductCategoryRow, ProductRow
-from ..public_catalog_models import PublicCatalogOfferRow
+from ..identity_models import TenantRow
+from ..public_catalog_models import PublicCatalogOfferRow, TenantPublicProfileRow
 from ..repositories import product_center_repository as repository
 
 
@@ -741,6 +744,100 @@ def list_categories(
         )
         for row in repository.list_categories(session, tenant_id=tenant_id)
     ]
+
+
+def get_category_layout(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+) -> CategoryLayoutResponse:
+    _require(permissions, "product.view")
+    root_count = len(
+        repository.list_sibling_categories(
+            session, tenant_id=tenant_id, parent_id=None
+        )
+    )
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id
+        )
+    )
+    position = min(
+        max(0, int(profile.all_products_position or 0)) if profile else 0,
+        root_count,
+    )
+    return CategoryLayoutResponse(
+        all_products_position=position,
+        root_category_count=root_count,
+    )
+
+
+def update_category_layout(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    request: CategoryLayoutUpdateRequest,
+) -> CategoryLayoutResponse:
+    _require(permissions, "product.edit")
+    root_count = len(
+        repository.list_sibling_categories(
+            session, tenant_id=tenant_id, parent_id=None
+        )
+    )
+    if request.all_products_position > root_count:
+        raise ApplicationError(
+            "CATEGORY_LAYOUT_POSITION_INVALID",
+            "“全部商品”的位置超出当前一级分类数量，请刷新后重试。",
+            kind="conflict",
+        )
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id
+        )
+    )
+    if profile is None:
+        tenant = session.get(TenantRow, tenant_id)
+        if tenant is None:
+            raise ApplicationError(
+                "TENANT_NOT_FOUND",
+                "Merchant workspace was not found.",
+                kind="not_found",
+            )
+        profile = TenantPublicProfileRow(
+            tenant_id=tenant_id,
+            slug=tenant.slug,
+            publication_status=(
+                "PUBLISHED" if tenant.status == "active" else "SUSPENDED"
+            ),
+        )
+        session.add(profile)
+        session.flush()
+    previous = max(0, int(profile.all_products_position or 0))
+    profile.all_products_position = request.all_products_position
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=None,
+            entity_type="CATEGORY",
+            entity_id=str(tenant_id),
+            action="category_layout.updated",
+            before={"all_products_position": previous},
+            after={"all_products_position": request.all_products_position},
+            actor_membership_id=membership_id,
+        )
+    )
+    _commit(
+        session,
+        conflict_code="CATEGORY_LAYOUT_CONFLICT",
+        conflict_message="分类入口顺序保存失败，请刷新后重试。",
+    )
+    return CategoryLayoutResponse(
+        all_products_position=request.all_products_position,
+        root_category_count=root_count,
+    )
 
 
 def _category_response(row: ProductCategoryRow) -> CategoryResponse:

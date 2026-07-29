@@ -245,6 +245,20 @@
 .core-category-node.is-drop-before::before, .core-category-node.is-drop-after::after { content: ""; position: absolute; z-index: 1; right: 8px; left: 8px; height: 2px; border-radius: 999px; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent); pointer-events: none; }
 .core-category-node.is-drop-before::before { top: -2px; }
 .core-category-node.is-drop-after::after { bottom: -2px; }
+.core-category-all-products {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin-block: 3px 7px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface));
+}
+.core-category-all-products:hover { background: color-mix(in srgb, var(--accent-soft) 78%, var(--surface)); }
+.core-category-all-products .core-category-node-main { cursor: default; }
+.core-category-all-products-mark {
+  --tag-glass-color: var(--accent);
+  --tag-glass-ink: #ffffff;
+}
+.core-category-all-products + .core-category-branch,
+.core-category-branch + .core-category-all-products { margin-top: 6px; }
 .core-category-drag-handle { width: 30px; height: 38px; display: grid; place-items: center; border: 0; border-radius: 8px; color: var(--text-soft); background: transparent; cursor: grab; touch-action: none; transition: color 140ms ease, background 140ms ease, transform 100ms ease; }
 .core-category-drag-handle:hover { color: var(--accent); background: var(--accent-soft); }
 .core-category-drag-handle:active { cursor: grabbing; transform: scale(.94); }
@@ -284,6 +298,67 @@
 .core-category-color-inheritance > span:last-child { min-width: 0; display: grid; gap: 3px; }
 .core-category-editor-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .core-category-editor-actions { margin-top: 8px; padding-top: 16px; display: flex; justify-content: flex-end; gap: var(--control-gap); border-top: 1px solid var(--line); }
+
+.core-system-monitor-sampled { display: inline-flex; align-items: center; gap: 7px; color: var(--core-muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.core-system-monitor-error { padding: 12px 14px !important; display: flex; align-items: center; gap: 9px; color: #8a4b12; background: color-mix(in srgb, #f4bd6b 16%, var(--core-surface)) !important; }
+.core-system-monitor-error > svg { flex: 0 0 auto; }
+.core-system-monitor-status {
+  min-height: 108px;
+  padding: 20px;
+  display: grid;
+  grid-template-columns: auto minmax(170px, .55fr) minmax(360px, 1fr);
+  align-items: center;
+  gap: 16px;
+  overflow: hidden;
+  border: 1px solid var(--core-line);
+  border-radius: var(--radius-card);
+  background:
+    linear-gradient(115deg, color-mix(in srgb, var(--accent-soft) 80%, transparent), transparent 64%),
+    var(--core-surface);
+}
+.core-system-monitor-status.is-warning { background: linear-gradient(115deg, color-mix(in srgb, #f4bd6b 19%, var(--core-surface)), var(--core-surface) 64%); }
+.core-system-monitor-status.is-critical { background: linear-gradient(115deg, color-mix(in srgb, #d55c51 16%, var(--core-surface)), var(--core-surface) 64%); }
+.core-system-monitor-status-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; color: var(--accent); background: var(--accent-soft); }
+.core-system-monitor-status.is-warning .core-system-monitor-status-icon { color: #9a5d16; background: color-mix(in srgb, #f4bd6b 22%, var(--core-surface)); }
+.core-system-monitor-status.is-critical .core-system-monitor-status-icon { color: #a43d35; background: color-mix(in srgb, #d55c51 16%, var(--core-surface)); }
+.core-system-monitor-status-icon svg { width: 25px; height: 25px; }
+.core-system-monitor-status > div:nth-child(2) { display: grid; gap: 3px; }
+.core-system-monitor-status > div:nth-child(2) strong { font-family: var(--font-display); font-size: 24px; font-weight: 550; letter-spacing: -.025em; }
+.core-system-monitor-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--core-line); border-radius: 12px; background: var(--core-line); }
+.core-system-monitor-facts > span { min-width: 0; padding: 12px 14px; display: grid; gap: 4px; background: color-mix(in srgb, var(--core-surface) 88%, transparent); }
+.core-system-monitor-facts small,
+.core-system-monitor-capacity small,
+.core-system-monitor-detail-row small { color: var(--core-muted); font-size: 10px; font-weight: 500; }
+.core-system-monitor-facts b,
+.core-system-monitor-capacity b,
+.core-system-monitor-detail-row b { overflow: hidden; font-size: 12px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.core-system-monitor-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(310px, .65fr); gap: 14px; align-items: stretch; }
+.core-system-monitor-stack { min-width: 0; display: grid; grid-template-rows: 1fr 1fr; gap: 14px; }
+.core-system-monitor-card { min-width: 0; padding: 20px !important; display: grid; align-content: start; gap: 16px; overflow: hidden; }
+.core-system-monitor-cpu { min-height: 446px; grid-template-rows: auto auto auto minmax(120px, 1fr) auto auto; }
+.core-system-monitor-card-heading { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; }
+.core-system-monitor-card-heading > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.core-system-monitor-card-heading > span:nth-child(2) strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.core-system-monitor-card-heading > b { font-size: 20px; font-variant-numeric: tabular-nums; letter-spacing: -.03em; }
+.core-system-monitor-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; color: var(--core-accent); background: var(--accent-soft); }
+.core-system-monitor-icon svg { width: 21px; height: 21px; }
+.core-system-monitor-primary-value { display: flex; align-items: baseline; gap: 10px; }
+.core-system-monitor-primary-value strong { font-size: clamp(48px, 6vw, 76px); font-variant-numeric: tabular-nums; font-weight: 600; line-height: .95; letter-spacing: -.065em; }
+.core-system-monitor-card .rt-ProgressRoot { height: 6px; }
+.core-system-monitor-card.is-warning .rt-ProgressIndicator { background: #c37b22; }
+.core-system-monitor-card.is-critical .rt-ProgressIndicator { background: #b6473e; }
+.core-system-monitor-chart { min-height: 120px; padding: 13px 10px 0; display: grid; grid-template-columns: repeat(30, minmax(2px, 1fr)); align-items: end; gap: clamp(2px, .5vw, 5px); border-bottom: 1px solid var(--core-line); background-image: linear-gradient(to bottom, var(--core-line) 1px, transparent 1px); background-size: 100% 33.333%; }
+.core-system-monitor-chart > span { min-height: 5px; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--accent) 78%, transparent); transition: height 280ms ease; }
+.core-system-monitor-chart > span.is-empty { opacity: .14; }
+.core-system-monitor-chart > span.is-warning { background: #c37b22; }
+.core-system-monitor-chart > span.is-critical { background: #b6473e; }
+.core-system-monitor-detail-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--core-line); border-radius: 11px; background: var(--core-line); }
+.core-system-monitor-detail-row > span,
+.core-system-monitor-capacity > span { min-width: 0; padding: 11px 12px; display: grid; gap: 4px; background: var(--core-soft); }
+.core-system-monitor-capacity { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--core-line); border-radius: 11px; background: var(--core-line); }
+.core-system-monitor-note { padding: 16px 18px !important; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px; }
+.core-system-monitor-note > svg { width: 23px; height: 23px; color: var(--core-accent); }
+.core-system-monitor-note > div { display: grid; gap: 4px; }
 
 .core-detail-dialog { width: min(1120px, calc(100vw - 28px)) !important; max-width: 1120px !important; max-height: 90dvh !important; overflow-y: auto; }
 .core-dialog-heading { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
@@ -652,6 +727,11 @@
   .core-sku-toolbar > :first-child { grid-column: 1 / -1; }
   .core-category-manager-layout { grid-template-columns: 1fr; }
   .core-category-tree { max-height: 330px; }
+  .core-system-monitor-status { grid-template-columns: auto minmax(0, 1fr); }
+  .core-system-monitor-facts { grid-column: 1 / -1; }
+  .core-system-monitor-grid { grid-template-columns: 1fr; }
+  .core-system-monitor-cpu { min-height: 390px; }
+  .core-system-monitor-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; }
   .core-sku-table-card { display: none; }
   .core-supplier-table-card { display: none; }
   .core-sku-mobile-list { display: grid; gap: 10px; }
@@ -768,6 +848,16 @@
   .core-category-tree { max-height: 280px; }
   .core-category-editor { padding: 17px 14px; }
   .core-category-editor-row { grid-template-columns: 1fr; }
+  .core-category-all-products { grid-template-columns: auto minmax(0, 1fr); }
+  .core-category-all-products > .rt-Badge { display: none; }
+  .core-system-monitor-facts { grid-template-columns: 1fr; }
+  .core-system-monitor-stack { grid-template-columns: 1fr; }
+  .core-system-monitor-card { padding: 16px !important; }
+  .core-system-monitor-cpu { min-height: 360px; }
+  .core-system-monitor-primary-value { align-items: flex-end; flex-direction: column; gap: 2px; }
+  .core-system-monitor-primary-value strong { align-self: flex-start; font-size: 52px; }
+  .core-system-monitor-chart { min-height: 92px; gap: 2px; }
+  .core-system-monitor-detail-row { grid-template-columns: 1fr; }
   .core-master-grid section { grid-column: auto; }
   .core-list-row { grid-template-columns: auto minmax(0, 1fr) auto; }
   .core-list-row > :nth-child(n + 4) { display: none; }

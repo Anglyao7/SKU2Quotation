@@ -12,34 +12,85 @@ import {
   useRouteError,
   type LoaderFunctionArgs,
 } from "react-router-dom";
-import { lazy, Suspense, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { Brand } from "./components/Brand";
 import { ErrorState } from "./components/States";
 import { useCoreAuth } from "./core/AuthContext";
 import { useLocale } from "./core/LocaleContext";
 import { api, ApiError } from "./lib/api";
+import {
+  importWithChunkRecovery,
+  isChunkLoadFailure,
+  reloadLatestBundle,
+} from "./lib/chunkRecovery";
 import { LoginPage } from "./pages/LoginPage";
 
-const LandingPage = lazy(() => import("./pages/marketing/LandingPage").then((module) => ({ default: module.LandingPage })));
-const StorePage = lazy(() => import("./pages/StorePage").then((module) => ({ default: module.StorePage })));
-const SkuDetailPage = lazy(() => import("./pages/SkuDetailPage").then((module) => ({ default: module.SkuDetailPage })));
-const PrivacyPage = lazy(() => import("./pages/PrivacyPage").then((module) => ({ default: module.PrivacyPage })));
-const ConsoleLayout = lazy(() => import("./pages/console/ConsoleLayout").then((module) => ({ default: module.ConsoleLayout })));
-const TenantManagementPage = lazy(() => import("./pages/console/TenantManagementPage").then((module) => ({ default: module.TenantManagementPage })));
-const NotFoundPage = lazy(() => import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })));
-const AiSearchPage = lazy(() => import("./core/pages/AiSearchPage").then((module) => ({ default: module.AiSearchPage })));
-const AiSearchManagementPage = lazy(() => import("./core/pages/AiSearchManagementPage").then((module) => ({ default: module.AiSearchManagementPage })));
-const AccountSettingsPage = lazy(() => import("./core/pages/AccountSettingsPage").then((module) => ({ default: module.AccountSettingsPage })));
-const CategoriesPage = lazy(() => import("./core/pages/CategoriesPage").then((module) => ({ default: module.CategoriesPage })));
-const CoreDashboardPage = lazy(() => import("./core/pages/DashboardPage").then((module) => ({ default: module.CoreDashboardPage })));
-const InquiryPage = lazy(() => import("./core/pages/InquiryPage").then((module) => ({ default: module.InquiryPage })));
-const InventoryPage = lazy(() => import("./core/pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
-const PermissionsPage = lazy(() => import("./core/pages/PermissionsPage").then((module) => ({ default: module.PermissionsPage })));
-const ProductsPage = lazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
-const QuotesPage = lazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
-const TagManagementPage = lazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
-const CustomerAccountsPage = lazy(() => import("./core/pages/CustomerAccountsPage").then((module) => ({ default: module.CustomerAccountsPage })));
-const CustomerPortalPage = lazy(() => import("./pages/CustomerPortalPage").then((module) => ({ default: module.CustomerPortalPage })));
+function recoverableLazy<T extends ComponentType<any>>(
+  loader: () => Promise<{ default: T }>,
+) {
+  return lazy(() => importWithChunkRecovery(loader));
+}
+
+const LandingPage = recoverableLazy(() => import("./pages/marketing/LandingPage").then((module) => ({ default: module.LandingPage })));
+const StorePage = recoverableLazy(() => import("./pages/StorePage").then((module) => ({ default: module.StorePage })));
+const SkuDetailPage = recoverableLazy(() => import("./pages/SkuDetailPage").then((module) => ({ default: module.SkuDetailPage })));
+const PrivacyPage = recoverableLazy(() => import("./pages/PrivacyPage").then((module) => ({ default: module.PrivacyPage })));
+const ConsoleLayout = recoverableLazy(() => import("./pages/console/ConsoleLayout").then((module) => ({ default: module.ConsoleLayout })));
+const TenantManagementPage = recoverableLazy(() => import("./pages/console/TenantManagementPage").then((module) => ({ default: module.TenantManagementPage })));
+const NotFoundPage = recoverableLazy(() => import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })));
+const AiSearchPage = recoverableLazy(() => import("./core/pages/AiSearchPage").then((module) => ({ default: module.AiSearchPage })));
+const AiSearchManagementPage = recoverableLazy(() => import("./core/pages/AiSearchManagementPage").then((module) => ({ default: module.AiSearchManagementPage })));
+const AccountSettingsPage = recoverableLazy(() => import("./core/pages/AccountSettingsPage").then((module) => ({ default: module.AccountSettingsPage })));
+const CategoriesPage = recoverableLazy(() => import("./core/pages/CategoriesPage").then((module) => ({ default: module.CategoriesPage })));
+const CoreDashboardPage = recoverableLazy(() => import("./core/pages/DashboardPage").then((module) => ({ default: module.CoreDashboardPage })));
+const InquiryPage = recoverableLazy(() => import("./core/pages/InquiryPage").then((module) => ({ default: module.InquiryPage })));
+const InventoryPage = recoverableLazy(() => import("./core/pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
+const PermissionsPage = recoverableLazy(() => import("./core/pages/PermissionsPage").then((module) => ({ default: module.PermissionsPage })));
+const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMonitoringPage").then((module) => ({ default: module.SystemMonitoringPage })));
+const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
+const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
+const TagManagementPage = recoverableLazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
+const CustomerAccountsPage = recoverableLazy(() => import("./core/pages/CustomerAccountsPage").then((module) => ({ default: module.CustomerAccountsPage })));
+const CustomerPortalPage = recoverableLazy(() => import("./pages/CustomerPortalPage").then((module) => ({ default: module.CustomerPortalPage })));
+
+function ApplicationRouteError() {
+  const error = useRouteError();
+  const { t } = useLocale();
+  const staleBundle = isChunkLoadFailure(error);
+  const detail = error instanceof Error ? error.message : String(error ?? "");
+
+  return (
+    <main className="application-error-page">
+      <Brand />
+      <section className="application-error-card">
+        <span className="application-error-icon"><ShieldWarning weight="duotone" /></span>
+        <Text size="1" color="gray">{t("页面恢复")}</Text>
+        <Heading size="7">
+          {t(staleBundle ? "页面版本已经更新" : "这个页面暂时无法打开")}
+        </Heading>
+        <Text size="3" color="gray">
+          {t(staleBundle
+            ? "系统检测到浏览器仍在使用旧版页面资源，重新加载后会自动切换到最新版。"
+            : "系统没有丢失你的数据。请重新加载页面；若问题持续出现，再联系平台管理员。")}
+        </Text>
+        {import.meta.env.DEV && detail ? <code>{detail}</code> : null}
+        <div className="application-error-actions">
+          <Button size="3" onClick={() => reloadLatestBundle(true)}>
+            {t("重新加载最新版")}
+          </Button>
+          <Button asChild size="3" variant="soft" color="gray">
+            <a href="/">{t("返回首页")}</a>
+          </Button>
+        </div>
+      </section>
+    </main>
+  );
+}
 
 function ProtectedRoute() {
   const { status } = useCoreAuth();
@@ -70,7 +121,7 @@ function PermissionGate({ anyOf, children }: { anyOf: string[]; children: ReactN
   const { hasAnyPermission } = useCoreAuth();
   const { t } = useLocale();
   if (hasAnyPermission(...anyOf)) return children;
-  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("当前成员没有此工作区权限")}</Heading><Text size="2" color="gray">{t("需要以下任一服务端权限：{permissions}", { permissions: anyOf.join(" / ") })}</Text><Button asChild variant="soft"><a href="/console/system/permissions">{t("查看我的权限")}</a></Button></Card></div>;
+  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("当前成员没有此工作区权限")}</Heading><Text size="2" color="gray">{t("需要以下任一服务端权限：{permissions}", { permissions: anyOf.join(" / ") })}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
 }
 
 function PlatformAdminGate({ children }: { children: ReactNode }) {
@@ -130,7 +181,10 @@ function StorefrontRouteError() {
   return <main className="not-found-page"><Brand /><div className="not-found-content"><ErrorState message={message} onRetry={() => window.location.reload()} /></div></main>;
 }
 
-const router = createBrowserRouter([
+const router = createBrowserRouter([{
+  element: <Outlet />,
+  errorElement: <ApplicationRouteError />,
+  children: [
   { path: "/", element: <LandingPage /> },
   { path: "/store/:tenantSlug", element: <LegacyStoreRedirect /> },
   { path: "/login", element: <LoginPage /> },
@@ -159,6 +213,7 @@ const router = createBrowserRouter([
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "system/permissions", element: <PermissionsPage /> },
+        { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
         { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },
@@ -193,7 +248,8 @@ const router = createBrowserRouter([
     errorElement: <StorefrontRouteError />,
   },
   { path: "*", element: <NotFoundPage /> },
-]);
+  ],
+}]);
 
 export function App() {
   const { t } = useLocale();

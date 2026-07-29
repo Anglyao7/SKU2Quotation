@@ -249,6 +249,9 @@ export function StorePage() {
         ...current,
         categories: data.categories?.length ? data.categories : current.categories,
         tags: data.tags?.length ? data.tags : current.tags,
+        all_products_position: includeFacets
+          ? data.all_products_position ?? current.all_products_position ?? 0
+          : current.all_products_position,
       } : current);
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
@@ -303,6 +306,22 @@ export function StorePage() {
     });
     return Array.from(nodes.values());
   }, [categories]);
+  const primaryNavigationItems = useMemo(() => {
+    const position = Math.max(
+      0,
+      Math.min(store.all_products_position ?? 0, categoryTree.length),
+    );
+    const items: Array<
+      | { kind: "all"; key: "all" }
+      | { kind: "category"; key: string; node: (typeof categoryTree)[number] }
+    > = categoryTree.map((node) => ({
+      kind: "category",
+      key: node.path,
+      node,
+    }));
+    items.splice(position, 0, { kind: "all", key: "all" });
+    return items;
+  }, [categoryTree, store.all_products_position]);
   const secondaryOptions = useMemo(
     () => categoryTree.find((node) => node.path === primaryCategory)?.children ?? [],
     [categoryTree, primaryCategory],
@@ -483,31 +502,33 @@ export function StorePage() {
                       <span className="category-browser-label">一级分类</span>
                       <CategoryScrollTrack
                         ariaLabel="一级分类"
-                        contentKey={categoryTree.map((item) => item.path).join("|")}
+                        contentKey={primaryNavigationItems.map((item) => item.key).join("|")}
                       >
-                        <button
-                          type="button"
-                          className={`category-browser-option${!primaryCategory ? " is-active" : ""}`}
-                          aria-pressed={!primaryCategory}
-                          onClick={() => {
-                            setPrimaryCategory("");
-                            setSecondaryCategory("");
-                          }}
-                        >
-                          全部商品
-                        </button>
-                        {categoryTree.map((item) => (
+                        {primaryNavigationItems.map((item) => item.kind === "all" ? (
                           <button
                             type="button"
-                            className={`category-browser-option${primaryCategory === item.path ? " is-active" : ""}`}
-                            aria-pressed={primaryCategory === item.path}
+                            className={`category-browser-option${!primaryCategory ? " is-active" : ""}`}
+                            aria-pressed={!primaryCategory}
                             onClick={() => {
-                              setPrimaryCategory(item.path);
+                              setPrimaryCategory("");
                               setSecondaryCategory("");
                             }}
-                            key={item.path}
+                            key={item.key}
                           >
-                            {item.name}
+                            全部商品
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className={`category-browser-option${primaryCategory === item.node.path ? " is-active" : ""}`}
+                            aria-pressed={primaryCategory === item.node.path}
+                            onClick={() => {
+                              setPrimaryCategory(item.node.path);
+                              setSecondaryCategory("");
+                            }}
+                            key={item.key}
+                          >
+                            {item.node.name}
                           </button>
                         ))}
                       </CategoryScrollTrack>
@@ -560,49 +581,51 @@ export function StorePage() {
                     <Text size="2" weight="medium">商品分类</Text>
                   </div>
                   <nav className="category-sidebar-nav">
-                    <button
-                      type="button"
-                      className={`category-sidebar-item is-all${!primaryCategory && !secondaryCategory ? " is-active" : ""}`}
-                      onClick={() => {
-                        setPrimaryCategory("");
-                        setSecondaryCategory("");
-                      }}
-                    >
-                      <span>全部商品</span>
-                    </button>
-                    {categoryTree.map((node) => (
-                      <div key={node.path} className="category-sidebar-group">
+                    {primaryNavigationItems.map((item) => item.kind === "all" ? (
+                      <button
+                        type="button"
+                        className={`category-sidebar-item is-all${!primaryCategory && !secondaryCategory ? " is-active" : ""}`}
+                        onClick={() => {
+                          setPrimaryCategory("");
+                          setSecondaryCategory("");
+                        }}
+                        key={item.key}
+                      >
+                        <span>全部商品</span>
+                      </button>
+                    ) : (
+                      <div key={item.key} className="category-sidebar-group">
                         <button
                           type="button"
-                          className={`category-sidebar-item is-primary${primaryCategory === node.path && !secondaryCategory ? " is-active" : ""}${node.children.length > 0 ? " has-children" : ""}`}
-                          title={node.name}
+                          className={`category-sidebar-item is-primary${primaryCategory === item.node.path && !secondaryCategory ? " is-active" : ""}${item.node.children.length > 0 ? " has-children" : ""}`}
+                          title={item.node.name}
                           onClick={() => {
-                            if (node.children.length > 0) {
-                              toggleCategoryExpansion(node.path);
+                            if (item.node.children.length > 0) {
+                              toggleCategoryExpansion(item.node.path);
                             }
-                            setPrimaryCategory(node.path);
+                            setPrimaryCategory(item.node.path);
                             setSecondaryCategory("");
                           }}
                         >
-                          <span>{node.name}</span>
-                          {node.children.length > 0 && (
+                          <span>{item.node.name}</span>
+                          {item.node.children.length > 0 && (
                             <CaretDown
                               size={14}
                               weight="bold"
-                              className={expandedCategories.has(node.path) ? "is-expanded" : ""}
+                              className={expandedCategories.has(item.node.path) ? "is-expanded" : ""}
                             />
                           )}
                         </button>
-                        {node.children.length > 0 && expandedCategories.has(node.path) && (
+                        {item.node.children.length > 0 && expandedCategories.has(item.node.path) && (
                           <div className="category-sidebar-children">
-                            {node.children.map((child) => (
+                            {item.node.children.map((child) => (
                               <button
                                 type="button"
                                 key={child.path}
                                 className={`category-sidebar-item is-secondary${secondaryCategory === child.path ? " is-active" : ""}`}
                                 title={child.name}
                                 onClick={() => {
-                                  setPrimaryCategory(node.path);
+                                  setPrimaryCategory(item.node.path);
                                   setSecondaryCategory(child.path);
                                 }}
                               >

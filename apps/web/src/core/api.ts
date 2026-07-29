@@ -1,6 +1,7 @@
 import type {
   AttributeDefinition,
   AuthTokenData,
+  CategoryLayout,
   CoreProduct,
   CustomerPortalOrder,
   CustomerPortalOverview,
@@ -48,6 +49,7 @@ import type {
   SupplierPrice,
   SupplierProfile,
   SupplierProfileDetail,
+  SystemMonitoringSnapshot,
   TenantMember,
   TenantPermission,
   TenantRole,
@@ -1428,6 +1430,31 @@ export async function listCategories(): Promise<ProductCategory[]> {
   return (await request<ApiCategory[]>("/categories")).map(mapCategory);
 }
 
+interface ApiCategoryLayout {
+  all_products_position: number;
+  root_category_count: number;
+}
+
+function mapCategoryLayout(row: ApiCategoryLayout): CategoryLayout {
+  return {
+    allProductsPosition: row.all_products_position,
+    rootCategoryCount: row.root_category_count,
+  };
+}
+
+export async function getCategoryLayout(): Promise<CategoryLayout> {
+  return mapCategoryLayout(await request<ApiCategoryLayout>("/categories/layout"));
+}
+
+export async function updateCategoryLayout(
+  allProductsPosition: number,
+): Promise<CategoryLayout> {
+  return mapCategoryLayout(await request<ApiCategoryLayout>("/categories/layout", {
+    method: "PATCH",
+    body: JSON.stringify({ all_products_position: allProductsPosition }),
+  }));
+}
+
 function mapCategory(row: ApiCategory): ProductCategory {
   return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), displayColor: defined(row.display_color), status: row.status, sortOrder: row.sort_order, version: row.version };
 }
@@ -1470,6 +1497,69 @@ export async function reorderCategories(categories: ProductCategory[]): Promise<
       })),
     }),
   })).map(mapCategory);
+}
+
+interface ApiSystemMonitoringSnapshot {
+  sampled_at: string;
+  scope: string;
+  uptime_seconds?: number | null;
+  cpu: {
+    utilization_percent?: number | null;
+    logical_cores: number;
+    quota_cores?: number | null;
+    load_1m?: number | null;
+    load_5m?: number | null;
+    load_15m?: number | null;
+  };
+  memory: {
+    used_bytes?: number | null;
+    total_bytes?: number | null;
+    available_bytes?: number | null;
+    utilization_percent?: number | null;
+    container_used_bytes?: number | null;
+    container_limit_bytes?: number | null;
+  };
+  disk: {
+    mount_path: string;
+    used_bytes: number;
+    total_bytes: number;
+    available_bytes: number;
+    utilization_percent: number;
+  };
+}
+
+export async function getSystemMonitoring(): Promise<SystemMonitoringSnapshot> {
+  const row = await request<ApiSystemMonitoringSnapshot>("/system/metrics", {
+    cache: "no-store",
+  });
+  return {
+    sampledAt: row.sampled_at,
+    scope: row.scope,
+    uptimeSeconds: defined(row.uptime_seconds),
+    cpu: {
+      utilizationPercent: defined(row.cpu.utilization_percent),
+      logicalCores: row.cpu.logical_cores,
+      quotaCores: defined(row.cpu.quota_cores),
+      load1m: defined(row.cpu.load_1m),
+      load5m: defined(row.cpu.load_5m),
+      load15m: defined(row.cpu.load_15m),
+    },
+    memory: {
+      usedBytes: defined(row.memory.used_bytes),
+      totalBytes: defined(row.memory.total_bytes),
+      availableBytes: defined(row.memory.available_bytes),
+      utilizationPercent: defined(row.memory.utilization_percent),
+      containerUsedBytes: defined(row.memory.container_used_bytes),
+      containerLimitBytes: defined(row.memory.container_limit_bytes),
+    },
+    disk: {
+      mountPath: row.disk.mount_path,
+      usedBytes: row.disk.used_bytes,
+      totalBytes: row.disk.total_bytes,
+      availableBytes: row.disk.available_bytes,
+      utilizationPercent: row.disk.utilization_percent,
+    },
+  };
 }
 
 export async function listAttributeDefinitions(categoryId?: string): Promise<AttributeDefinition[]> {

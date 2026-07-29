@@ -5,9 +5,11 @@ import {
   FolderOpen,
   PencilSimple,
   Plus,
+  Storefront,
   TreeStructure,
 } from "@phosphor-icons/react";
 import {
+  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -36,10 +38,13 @@ interface DragState {
 
 interface CategoryManagerProps {
   categories: ProductCategory[];
+  allProductsPosition: number;
   onChanged: () => Promise<void>;
+  onAllProductsPositionChanged: (position: number) => Promise<void>;
 }
 
 const rootParentKey = "__root__";
+const allProductsId = "__all_products__";
 
 function categoryParentKey(category: ProductCategory) {
   return category.parentId ?? rootParentKey;
@@ -51,10 +56,15 @@ function sameOrder(left: ProductCategory[], right: ProductCategory[]) {
 
 export function CategoryManager({
   categories,
+  allProductsPosition,
   onChanged,
+  onAllProductsPositionChanged,
 }: CategoryManagerProps) {
   const { locale, t } = useLocale();
   const [displayCategories, setDisplayCategories] = useState(categories);
+  const [displayAllProductsPosition, setDisplayAllProductsPosition] = useState(
+    allProductsPosition,
+  );
   const [draft, setDraft] = useState<Draft>({ mode: "create", name: "", sortOrder: 0, status: "ACTIVE" });
   const [saving, setSaving] = useState(false);
   const [reordering, setReordering] = useState(false);
@@ -66,6 +76,7 @@ export function CategoryManager({
 
   useEffect(() => {
     setDisplayCategories(categories);
+    setDisplayAllProductsPosition(allProductsPosition);
     setDraft((current) => {
       if (current.mode !== "edit") return current;
       const latest = categories.find((category) => category.id === current.id);
@@ -73,7 +84,7 @@ export function CategoryManager({
         ? { ...current, version: latest.version, sortOrder: latest.sortOrder, displayColor: latest.displayColor }
         : current;
     });
-  }, [categories]);
+  }, [allProductsPosition, categories]);
 
   const roots = useMemo(
     () => displayCategories
@@ -91,6 +102,10 @@ export function CategoryManager({
     result.forEach((rows) => rows.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale)));
     return result;
   }, [displayCategories, locale]);
+  const normalizedAllProductsPosition = Math.max(
+    0,
+    Math.min(displayAllProductsPosition, roots.length),
+  );
 
   const updateDragState = (next: DragState | null) => {
     dragStateRef.current = next;
@@ -214,6 +229,32 @@ export function CategoryManager({
     }
   };
 
+  const persistAllProductsPosition = async (nextPosition: number) => {
+    const normalized = Math.max(0, Math.min(nextPosition, roots.length));
+    if (
+      reorderingRef.current
+      || normalized === normalizedAllProductsPosition
+    ) return;
+    const previous = normalizedAllProductsPosition;
+    setDisplayAllProductsPosition(normalized);
+    reorderingRef.current = true;
+    setReordering(true);
+    setReorderError("");
+    try {
+      await onAllProductsPositionChanged(normalized);
+    } catch (reason) {
+      setDisplayAllProductsPosition(previous);
+      setReorderError(
+        reason instanceof Error
+          ? reason.message
+          : t("“全部商品”顺序保存失败，请刷新后重试。"),
+      );
+    } finally {
+      reorderingRef.current = false;
+      setReordering(false);
+    }
+  };
+
   const startDragging = (
     event: PointerEvent<HTMLButtonElement>,
     category: ProductCategory,
@@ -225,6 +266,19 @@ export function CategoryManager({
       pointerId: event.pointerId,
       sourceId: category.id,
       parentKey: categoryParentKey(category),
+    });
+  };
+
+  const startAllProductsDragging = (
+    event: PointerEvent<HTMLButtonElement>,
+  ) => {
+    if (reorderingRef.current || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateDragState({
+      pointerId: event.pointerId,
+      sourceId: allProductsId,
+      parentKey: rootParentKey,
     });
   };
 
@@ -241,7 +295,14 @@ export function CategoryManager({
     const targetNode = document
       .elementFromPoint(event.clientX, event.clientY)
       ?.closest<HTMLElement>(".core-category-node[data-category-id]");
-    if (!targetNode || targetNode.dataset.categoryParent !== current.parentKey) {
+    if (
+      !targetNode
+      || targetNode.dataset.categoryParent !== current.parentKey
+      || (
+        current.sourceId !== allProductsId
+        && targetNode.dataset.categoryId === allProductsId
+      )
+    ) {
       updateDragState({ ...current, targetId: undefined, placement: undefined });
       return;
     }
@@ -264,6 +325,27 @@ export function CategoryManager({
     updateDragState(null);
     if (!current?.targetId || !current.placement) return;
     void persistReorder(siblings, current.sourceId, current.targetId, current.placement);
+  };
+
+  const finishAllProductsDragging = (
+    event: PointerEvent<HTMLButtonElement>,
+  ) => {
+    const current = dragStateRef.current;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    updateDragState(null);
+    if (
+      current?.sourceId !== allProductsId
+      || !current.targetId
+      || !current.placement
+      || current.targetId === allProductsId
+    ) return;
+    const targetIndex = roots.findIndex((root) => root.id === current.targetId);
+    if (targetIndex < 0) return;
+    void persistAllProductsPosition(
+      targetIndex + (current.placement === "after" ? 1 : 0),
+    );
   };
 
   const cancelDragging = (event: PointerEvent<HTMLButtonElement>) => {
@@ -309,12 +391,44 @@ export function CategoryManager({
     </button>
   );
 
+  const allProductsDragHandle = (
+    <button
+      type="button"
+      className="core-category-drag-handle"
+      aria-label={t("拖动调整全部商品入口顺序")}
+      aria-describedby="category-reorder-help"
+      disabled={reordering}
+      onPointerDown={startAllProductsDragging}
+      onPointerMove={moveDragging}
+      onPointerUp={finishAllProductsDragging}
+      onPointerCancel={cancelDragging}
+      onKeyDown={(event) => {
+        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        event.preventDefault();
+        void persistAllProductsPosition(
+          normalizedAllProductsPosition + (event.key === "ArrowUp" ? -1 : 1),
+        );
+      }}
+    >
+      <DotsSixVertical weight="bold" />
+    </button>
+  );
+
   const dragClass = (category: ProductCategory) => {
     if (!dragState) return "";
     if (dragState.sourceId === category.id) return " is-dragging";
     if (dragState.targetId !== category.id) return "";
     return dragState.placement === "before" ? " is-drop-before" : " is-drop-after";
   };
+  const allProductsDragClass = !dragState
+    ? ""
+    : dragState.sourceId === allProductsId
+      ? " is-dragging"
+      : dragState.targetId === allProductsId
+        ? dragState.placement === "before"
+          ? " is-drop-before"
+          : " is-drop-after"
+        : "";
 
   return (
     <div className="core-category-manager-layout">
@@ -324,7 +438,7 @@ export function CategoryManager({
             <TreeStructure />
             <strong>{t("分类结构")}</strong>
             <small id="category-reorder-help">
-              {t("{primary} 个一级 · {secondary} 个二级 · 拖动手柄调整同级顺序", {
+              {t("{primary} 个一级 · {secondary} 个二级 · 拖动“全部商品”可调整前台入口位置", {
                 primary: roots.length,
                 secondary: displayCategories.length - roots.length,
               })}
@@ -336,51 +450,78 @@ export function CategoryManager({
           {reordering ? t("正在保存分类顺序…") : reorderError}
         </div>
         <div className="core-category-tree">
-          {roots.length ? roots.map((root) => {
-            const children = childrenByParent.get(root.id) ?? [];
+          {Array.from({ length: roots.length + 1 }, (_, slot) => {
+            const root = roots[slot];
+            const children = root ? childrenByParent.get(root.id) ?? [] : [];
             return (
-              <div className="core-category-branch" key={root.id}>
-                <div
-                  className={`core-category-node root${draft.mode === "edit" && draft.id === root.id ? " is-selected" : ""}${dragClass(root)}`}
-                  data-category-id={root.id}
-                  data-category-parent={rootParentKey}
-                >
-                  {dragHandle(root, roots)}
-                  <button className="core-category-node-main" type="button" onClick={() => beginEdit(root)}>
-                    <span className="core-category-color-mark" style={tagGlassStyle(root.name, root.displayColor)}>
-                      <FolderOpen weight="duotone" />
-                    </span>
-                    <span><strong>{root.name}</strong><small>{children.length ? t("{count} 个二级分类", { count: children.length }) : t("暂无二级分类")}</small></span>
-                  </button>
-                  {root.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
-                  <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(root)} aria-label={t("编辑 {name}", { name: root.name })}><PencilSimple /></Button>
-                  <Button size="1" variant="ghost" disabled={reordering} onClick={() => beginChild(root.id)} aria-label={t("在 {name} 下新增二级分类", { name: root.name })}><Plus /></Button>
-                </div>
-                {children.map((child) => (
+              <Fragment key={`category-slot-${slot}`}>
+                {slot === normalizedAllProductsPosition ? (
                   <div
-                    className={`core-category-node child${draft.mode === "edit" && draft.id === child.id ? " is-selected" : ""}${dragClass(child)}`}
-                    data-category-id={child.id}
-                    data-category-parent={root.id}
-                    key={child.id}
+                    className={`core-category-node root core-category-all-products${allProductsDragClass}`}
+                    data-category-id={allProductsId}
+                    data-category-parent={rootParentKey}
                   >
-                    {dragHandle(child, children)}
-                    <button className="core-category-node-main" type="button" onClick={() => beginEdit(child)}>
-                      <Folder weight="duotone" />
-                      <span><strong>{child.name}</strong><small>{root.name} / {child.name}</small></span>
-                    </button>
-                    {child.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
-                    <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(child)} aria-label={t("编辑 {name}", { name: child.name })}><PencilSimple /></Button>
+                    {allProductsDragHandle}
+                    <div className="core-category-node-main">
+                      <span className="core-category-color-mark core-category-all-products-mark">
+                        <Storefront weight="duotone" />
+                      </span>
+                      <span>
+                        <strong>{t("全部商品")}</strong>
+                        <small>{t("前台固定入口 · 当前前方有 {count} 个一级分类", {
+                          count: normalizedAllProductsPosition,
+                        })}</small>
+                      </span>
+                    </div>
+                    <Badge color="jade" variant="soft">{t("前台入口")}</Badge>
                   </div>
-                ))}
-              </div>
+                ) : null}
+                {root ? (
+                  <div className="core-category-branch">
+                    <div
+                      className={`core-category-node root${draft.mode === "edit" && draft.id === root.id ? " is-selected" : ""}${dragClass(root)}`}
+                      data-category-id={root.id}
+                      data-category-parent={rootParentKey}
+                    >
+                      {dragHandle(root, roots)}
+                      <button className="core-category-node-main" type="button" onClick={() => beginEdit(root)}>
+                        <span className="core-category-color-mark" style={tagGlassStyle(root.name, root.displayColor)}>
+                          <FolderOpen weight="duotone" />
+                        </span>
+                        <span><strong>{root.name}</strong><small>{children.length ? t("{count} 个二级分类", { count: children.length }) : t("暂无二级分类")}</small></span>
+                      </button>
+                      {root.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
+                      <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(root)} aria-label={t("编辑 {name}", { name: root.name })}><PencilSimple /></Button>
+                      <Button size="1" variant="ghost" disabled={reordering} onClick={() => beginChild(root.id)} aria-label={t("在 {name} 下新增二级分类", { name: root.name })}><Plus /></Button>
+                    </div>
+                    {children.map((child) => (
+                      <div
+                        className={`core-category-node child${draft.mode === "edit" && draft.id === child.id ? " is-selected" : ""}${dragClass(child)}`}
+                        data-category-id={child.id}
+                        data-category-parent={root.id}
+                        key={child.id}
+                      >
+                        {dragHandle(child, children)}
+                        <button className="core-category-node-main" type="button" onClick={() => beginEdit(child)}>
+                          <Folder weight="duotone" />
+                          <span><strong>{child.name}</strong><small>{root.name} / {child.name}</small></span>
+                        </button>
+                        {child.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
+                        <Button size="1" variant="ghost" color="gray" disabled={reordering} onClick={() => beginEdit(child)} aria-label={t("编辑 {name}", { name: child.name })}><PencilSimple /></Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </Fragment>
             );
-          }) : (
+          })}
+          {!roots.length ? (
             <div className="core-category-tree-empty">
               <TreeStructure size={28} />
               <strong>{t("还没有分类")}</strong>
               <Text size="2" color="gray">{t("新建一级分类，或导入带有分类的商品模版。")}</Text>
             </div>
-          )}
+          ) : null}
         </div>
       </section>
 

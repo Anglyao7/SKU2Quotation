@@ -176,6 +176,44 @@ def _ordered_category_paths(
     )
 
 
+def _effective_all_products_position(
+    raw_position: int,
+    *,
+    visible_category_ids: set[UUID],
+    all_categories: list[object],
+) -> int:
+    categories_by_id = {
+        getattr(category, "id"): category
+        for category in all_categories
+        if getattr(category, "id", None) is not None
+    }
+    visible_root_ids: set[UUID] = set()
+    for category_id in visible_category_ids:
+        category = categories_by_id.get(category_id)
+        if category is None:
+            continue
+        visible_root_ids.add(
+            getattr(category, "parent_id", None) or getattr(category, "id")
+        )
+    roots = sorted(
+        (
+            category
+            for category in all_categories
+            if getattr(category, "parent_id", None) is None
+        ),
+        key=lambda category: (
+            int(getattr(category, "sort_order", 0) or 0),
+            str(getattr(category, "name", "") or "").casefold(),
+        ),
+    )
+    cutoff = max(0, min(int(raw_position or 0), len(roots)))
+    return sum(
+        1
+        for category in roots[:cutoff]
+        if getattr(category, "id", None) in visible_root_ids
+    )
+
+
 def get_public_media(
     session: Session, *, slug: str, image_id: UUID
 ) -> tuple[bytes, str]:
@@ -232,6 +270,7 @@ def get_store(session: Session, *, slug: str) -> PublicStoreResponse:
         contact_phone=profile.contact_phone,
         default_currency=tenant.default_currency,
         locale=tenant.default_locale,
+        all_products_position=max(0, int(profile.all_products_position or 0)),
     )
 
 
@@ -424,7 +463,7 @@ def list_public_skus(
     page: int,
     page_size: int,
 ) -> PublicSkuPage:
-    tenant, _profile = _resolve_store(session, slug=slug)
+    tenant, profile = _resolve_store(session, slug=slug)
     now = utcnow()
     wanted_tags = _normalize_tags(tags)
     all_categories = repository.list_catalog_categories(
@@ -541,6 +580,15 @@ def list_public_skus(
         pages=math.ceil(total / page_size) if total else 0,
         categories=categories,
         tags=facet_tags,
+        all_products_position=(
+            _effective_all_products_position(
+                profile.all_products_position,
+                visible_category_ids=visible_category_ids,
+                all_categories=all_categories,
+            )
+            if include_facets
+            else 0
+        ),
     )
 
 

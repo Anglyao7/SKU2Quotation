@@ -10,6 +10,8 @@ from ..product_center_schemas import (
     AttributeDefinitionCreateRequest,
     AttributeDefinitionResponse,
     CategoryCreateRequest,
+    CategoryLayoutResponse,
+    CategoryLayoutUpdateRequest,
     CategoryReorderRequest,
     CategoryResponse,
     CategoryUpdateRequest,
@@ -222,6 +224,39 @@ def create_category(
     context = _context(session)
     try:
         return use_cases.create_category(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get("/categories/layout", response_model=CategoryLayoutResponse)
+def get_category_layout(
+    session: Session = Depends(get_authenticated_session),
+) -> CategoryLayoutResponse:
+    context = _context(session)
+    try:
+        return use_cases.get_category_layout(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/categories/layout", response_model=CategoryLayoutResponse)
+def update_category_layout(
+    request: CategoryLayoutUpdateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> CategoryLayoutResponse:
+    context = _context(session)
+    try:
+        return use_cases.update_category_layout(
             session,
             tenant_id=context.tenant_id,
             membership_id=context.membership_id,

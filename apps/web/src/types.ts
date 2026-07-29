@@ -49,6 +49,7 @@ export interface Storefront {
   default_currency?: string;
   categories?: string[];
   tags?: string[];
+  all_products_position?: number;
 }
 
 export interface Sku {
@@ -80,6 +81,7 @@ export interface SkuList {
   pages?: number;
   categories?: string[];
   tags?: string[];
+  all_products_position?: number;
 }
 
 export interface ProductTag {

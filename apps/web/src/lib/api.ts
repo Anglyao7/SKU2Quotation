@@ -216,6 +216,9 @@ export const api = {
       pages: Number(meta.pages || 0),
       categories: Array.isArray(meta.categories) ? (meta.categories as string[]) : undefined,
       tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : undefined,
+      all_products_position: Number.isFinite(Number(meta.all_products_position))
+        ? Number(meta.all_products_position)
+        : undefined,
     };
   },
   createStoreQuote: async (slug: string, payload: CreateQuoteInput) =>
