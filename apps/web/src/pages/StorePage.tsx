@@ -26,6 +26,7 @@ import { Link, useLoaderData } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
+import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
@@ -566,6 +567,12 @@ export function StorePage() {
           </div>
         </Container>
       </header>
+
+      <StorefrontAnnouncements
+        announcements={store.announcements || []}
+        tenantSlug={tenantSlug}
+        locale={locale}
+      />
 
       <main>
         <section className="catalog-section">

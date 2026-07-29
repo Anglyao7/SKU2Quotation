@@ -223,6 +223,53 @@ def test_oidc_password_grant_validates_tokens_without_exposing_credentials(
     }
 
 
+def test_oidc_token_exchange_uses_private_keycloak_backchannel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = OidcSettings(
+        issuer="https://auth.example.test/realms/atc",
+        client_id="atc-web",
+        client_secret="S" * 48,
+        scopes=("openid",),
+        redirect_uris=("https://app.example.test/login/callback",),
+        token_endpoint_auth_method="client_secret_basic",
+        allowed_algorithms=("RS256",),
+        allowed_endpoint_hosts=("auth.example.test",),
+        timeout_seconds=5,
+        backchannel_base_url="http://keycloak:8080",
+    )
+    discovery = OidcDiscovery(
+        issuer=settings.issuer,
+        authorization_endpoint=f"{settings.issuer}/protocol/openid-connect/auth",
+        token_endpoint=f"{settings.issuer}/protocol/openid-connect/token",
+        jwks_uri=f"{settings.issuer}/protocol/openid-connect/certs",
+        userinfo_endpoint=None,
+        end_session_endpoint=None,
+        signing_algorithms=("RS256",),
+    )
+    requested_urls: list[str] = []
+
+    def post(url: str, **_kwargs: object) -> httpx.Response:
+        requested_urls.append(url)
+        return httpx.Response(
+            200,
+            json={"access_token": "service-token", "token_type": "Bearer"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("app.services.auth.oidc_provider.httpx.post", post)
+    tokens = OidcIdentityProviderAdapter._request_tokens(
+        settings=settings,
+        discovery=discovery,
+        token_payload={"grant_type": "client_credentials", "client_id": "atc-web"},
+    )
+
+    assert tokens["access_token"] == "service-token"
+    assert requested_urls == [
+        "http://keycloak:8080/realms/atc/protocol/openid-connect/token"
+    ]
+
+
 def test_keycloak_password_change_uses_service_account_and_exact_subject(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

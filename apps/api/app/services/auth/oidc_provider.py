@@ -53,6 +53,7 @@ class OidcSettings:
     allowed_algorithms: tuple[str, ...]
     allowed_endpoint_hosts: tuple[str, ...]
     timeout_seconds: float
+    backchannel_base_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,9 @@ def load_oidc_settings() -> OidcSettings:
     issuer = os.getenv("OIDC_ISSUER", "").strip()
     issuer_host = (urlsplit(issuer).hostname or "").lower()
     allowed_endpoint_hosts = _csv(os.getenv("OIDC_ALLOWED_ENDPOINT_HOSTS", ""))
+    backchannel_base_url = _validated_backchannel_base_url(
+        os.getenv("OIDC_BACKCHANNEL_BASE_URL", "").strip()
+    )
     settings = OidcSettings(
         issuer=issuer,
         client_id=os.getenv("OIDC_CLIENT_ID", "").strip(),
@@ -100,6 +104,7 @@ def load_oidc_settings() -> OidcSettings:
             host.lower() for host in (allowed_endpoint_hosts or (issuer_host,))
         ),
         timeout_seconds=timeout,
+        backchannel_base_url=backchannel_base_url,
     )
     if (
         not settings.issuer
@@ -125,6 +130,73 @@ def load_oidc_settings() -> OidcSettings:
     ):
         raise IdentityProviderError("OIDC client secret is missing")
     return settings
+
+
+def _validated_backchannel_base_url(value: str) -> str | None:
+    """Accept only an explicitly trusted service-network origin.
+
+    Browser-visible OIDC URLs and the token issuer remain unchanged. This
+    origin is used only by the API container to avoid routing Keycloak traffic
+    through public DNS, Cloudflare, and Caddy.
+    """
+
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    app_env = os.getenv("APP_ENV", "development").lower()
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise IdentityProviderError("OIDC backchannel endpoint is invalid") from exc
+    common_valid = (
+        parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path in {"", "/"}
+        and bool(parsed.hostname)
+    )
+    managed_internal = (
+        parsed.scheme == "http"
+        and parsed.hostname == "keycloak"
+        and port == 8080
+    )
+    development_local = (
+        app_env not in {"staging", "production", "prod"}
+        and parsed.scheme == "http"
+        and parsed.hostname in {"keycloak", "localhost", "127.0.0.1"}
+        and port is not None
+    )
+    if not common_valid or (
+        app_env in {"staging", "production", "prod"}
+        and not managed_internal
+    ) or (
+        app_env not in {"staging", "production", "prod"}
+        and not managed_internal
+        and not development_local
+    ):
+        raise IdentityProviderError("OIDC backchannel endpoint is invalid")
+    return value.rstrip("/")
+
+
+def _backchannel_endpoint(
+    endpoint: str,
+    *,
+    backchannel_base_url: str | None,
+) -> str:
+    if not backchannel_base_url:
+        return endpoint
+    public = urlsplit(endpoint)
+    internal = urlsplit(backchannel_base_url)
+    return urlunsplit(
+        (
+            internal.scheme,
+            internal.netloc,
+            public.path,
+            public.query,
+            "",
+        )
+    )
 
 
 def _is_forbidden_ip_literal(hostname: str) -> bool:
@@ -200,6 +272,7 @@ def get_oidc_discovery(
     issuer: str,
     timeout_seconds: float,
     allowed_hosts: tuple[str, ...],
+    backchannel_base_url: str | None = None,
 ) -> OidcDiscovery:
     discovery_url = issuer.rstrip("/") + "/.well-known/openid-configuration"
     _https_endpoint(
@@ -209,7 +282,10 @@ def get_oidc_discovery(
     )
     try:
         response = httpx.get(
-            discovery_url,
+            _backchannel_endpoint(
+                discovery_url,
+                backchannel_base_url=backchannel_base_url,
+            ),
             headers={"Accept": "application/json"},
             timeout=timeout_seconds,
             follow_redirects=False,
@@ -358,6 +434,7 @@ def public_oidc_config() -> dict[str, object]:
         settings.issuer,
         settings.timeout_seconds,
         settings.allowed_endpoint_hosts,
+        settings.backchannel_base_url,
     )
     if discovery.end_session_endpoint is None:
         raise IdentityProviderError("OIDC end-session endpoint is missing")
@@ -408,7 +485,10 @@ class OidcIdentityProviderAdapter:
             token_payload["client_secret"] = settings.client_secret
         try:
             token_response = httpx.post(
-                discovery.token_endpoint,
+                _backchannel_endpoint(
+                    discovery.token_endpoint,
+                    backchannel_base_url=settings.backchannel_base_url,
+                ),
                 data=token_payload,
                 auth=request_auth,
                 headers={"Accept": "application/json"},
@@ -460,7 +540,14 @@ class OidcIdentityProviderAdapter:
             None
             if id_token_has_verified_email
             else cls._userinfo(
-                endpoint=discovery.userinfo_endpoint,
+                endpoint=(
+                    _backchannel_endpoint(
+                        discovery.userinfo_endpoint,
+                        backchannel_base_url=settings.backchannel_base_url,
+                    )
+                    if discovery.userinfo_endpoint
+                    else None
+                ),
                 access_token=access_token,
                 timeout=settings.timeout_seconds,
             )
@@ -511,6 +598,7 @@ class OidcIdentityProviderAdapter:
             settings.issuer,
             settings.timeout_seconds,
             settings.allowed_endpoint_hosts,
+            settings.backchannel_base_url,
         )
         token_payload: dict[str, str] = {
             "grant_type": "authorization_code",
@@ -549,6 +637,7 @@ class OidcIdentityProviderAdapter:
             settings.issuer,
             settings.timeout_seconds,
             settings.allowed_endpoint_hosts,
+            settings.backchannel_base_url,
         )
         tokens = self._request_tokens(
             settings=settings,
@@ -695,6 +784,7 @@ class OidcIdentityProviderAdapter:
             settings.issuer,
             settings.timeout_seconds,
             settings.allowed_endpoint_hosts,
+            settings.backchannel_base_url,
         )
         admin_realm_url = self._keycloak_admin_realm_url(settings)
         access_token = self._service_access_token(
@@ -772,6 +862,7 @@ class OidcIdentityProviderAdapter:
             settings.issuer,
             settings.timeout_seconds,
             settings.allowed_endpoint_hosts,
+            settings.backchannel_base_url,
         )
         admin_realm_url = self._keycloak_admin_realm_url(settings)
         access_token = self._service_access_token(
@@ -876,7 +967,10 @@ class OidcIdentityProviderAdapter:
                 raise IdentityProviderError("OIDC signing algorithm is not allowed")
             signing_key = get_signing_key(
                 id_token,
-                jwks_uri=discovery.jwks_uri,
+                jwks_uri=_backchannel_endpoint(
+                    discovery.jwks_uri,
+                    backchannel_base_url=settings.backchannel_base_url,
+                ),
                 algorithm=algorithm,
                 timeout_seconds=settings.timeout_seconds,
             )

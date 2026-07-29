@@ -64,6 +64,7 @@ from app.storefront_analytics_models import (
     StorefrontProductViewDailyRow,
     StorefrontProductViewEventRow,
 )
+from app.announcement_models import StorefrontAnnouncementRow
 from app.image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
 from app.db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
 from app.file_security_models import MediaObjectRow, WorkerJobRow
@@ -608,6 +609,95 @@ def test_user_can_persist_console_locale_preference() -> None:
             session.commit()
 
 
+def test_merchant_can_schedule_ticker_and_safe_rich_popup_announcements() -> None:
+    starts_at = datetime.now(UTC) - timedelta(minutes=1)
+    ticker = client.post(
+        "/api/v1/announcements",
+        json={
+            "title": "Holiday shipping",
+            "display_type": "TICKER",
+            "ticker_text": "Orders placed this week ship on Monday.",
+            "content_blocks": [],
+            "starts_at": starts_at.isoformat(),
+            "duration_days": 2,
+            "repeat_interval_hours": 24,
+            "publication_status": "PUBLISHED",
+        },
+    )
+    assert ticker.status_code == 201, ticker.text
+    ticker_data = ticker.json()
+    assert ticker_data["is_active"] is True
+
+    popup = client.post(
+        "/api/v1/announcements",
+        json={
+            "title": "New collection",
+            "display_type": "MODAL",
+            "content_blocks": [
+                {"type": "heading", "text": "Explore the new collection"},
+                {"type": "paragraph", "text": "New products are now available."},
+                {
+                    "type": "image",
+                    "url": "https://cdn.example.test/new.jpg",
+                    "alt": "New collection",
+                },
+                {
+                    "type": "video",
+                    "url": "https://cdn.example.test/new.mp4",
+                    "caption": "Product walkthrough",
+                },
+            ],
+            "starts_at": starts_at.isoformat(),
+            "duration_days": 3,
+            "repeat_interval_hours": 12,
+            "publication_status": "PUBLISHED",
+        },
+    )
+    assert popup.status_code == 201, popup.text
+    popup_data = popup.json()
+    assert popup_data["content_blocks"][2]["type"] == "image"
+
+    listed = client.get("/api/v1/announcements")
+    assert listed.status_code == 200, listed.text
+    listed_ids = {row["id"] for row in listed.json()["items"]}
+    assert {ticker_data["id"], popup_data["id"]} <= listed_ids
+
+    storefront = client.get("/api/store/demo")
+    assert storefront.status_code == 200, storefront.text
+    public_rows = {
+        row["id"]: row for row in storefront.json()["announcements"]
+    }
+    assert public_rows[ticker_data["id"]]["ticker_text"].startswith("Orders")
+    assert public_rows[popup_data["id"]]["repeat_interval_hours"] == 12
+
+    unsafe = client.post(
+        "/api/v1/announcements",
+        json={
+            "title": "Unsafe",
+            "display_type": "MODAL",
+            "content_blocks": [
+                {"type": "image", "url": "javascript:alert(1)"}
+            ],
+            "starts_at": starts_at.isoformat(),
+            "duration_days": 1,
+            "publication_status": "PUBLISHED",
+        },
+    )
+    assert unsafe.status_code == 422
+
+    for announcement_id in (ticker_data["id"], popup_data["id"]):
+        removed = client.delete(f"/api/v1/announcements/{announcement_id}")
+        assert removed.status_code == 204
+    with SessionLocal() as session:
+        assert session.scalars(
+            select(StorefrontAnnouncementRow).where(
+                StorefrontAnnouncementRow.id.in_(
+                    (UUID(ticker_data["id"]), UUID(popup_data["id"]))
+                )
+            )
+        ).all() == []
+
+
 def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
     assert client.get("/api/v1/suppliers").status_code == 401
@@ -624,6 +714,18 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     )
     assert login_response.status_code == 200, login_response.text
     token_data = login_response.json()["data"]
+    assert token_data["memberships"] == [
+        {
+            "id": str(DEFAULT_MEMBERSHIP_ID),
+            "tenant_id": str(DEFAULT_TENANT_ID),
+            "tenant_name": "Local Demo Company",
+            "tenant_slug": "demo",
+            "status": "active",
+        }
+    ]
+    assert token_data["permission_version"] == 1
+    assert "product.view" in token_data["permissions"]
+    assert "announcement.manage" in token_data["permissions"]
     access_token = token_data["access_token"]
     csrf_token = token_data["csrf_token"]
     raw_refresh = login_response.cookies.get(REFRESH_COOKIE_NAME)
@@ -7699,7 +7801,7 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
             session.commit()
 
 
-def test_public_category_facets_follow_managed_sort_order() -> None:
+def test_public_category_and_all_products_follow_managed_sort_order() -> None:
     initial_response = client.get("/api/store/demo/skus")
     assert initial_response.status_code == 200, initial_response.text
     initial_categories = initial_response.json()["categories"]
@@ -7725,9 +7827,14 @@ def test_public_category_facets_follow_managed_sort_order() -> None:
         session.commit()
 
     try:
-        reordered_response = client.get("/api/store/demo/skus")
+        reordered_response = client.get(
+            "/api/store/demo/skus",
+            params={"page": 1, "page_size": 1},
+        )
         assert reordered_response.status_code == 200, reordered_response.text
-        assert reordered_response.json()["categories"] == desired_categories
+        reordered_payload = reordered_response.json()
+        assert reordered_payload["categories"] == desired_categories
+        assert reordered_payload["items"][0]["category"] == desired_categories[0]
     finally:
         with SessionLocal() as session:
             rows = list(
@@ -8720,7 +8827,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260729_0042"
+        ).scalar() == "20260730_0043"
     upgraded_engine.dispose()
     command.check(config)
 

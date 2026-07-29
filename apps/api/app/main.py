@@ -1,14 +1,11 @@
-"""智贸云 API composition root.
-
-Business orchestration belongs to ``use_cases`` and persistence to
-``repositories``; this module only composes infrastructure and routers.
-"""
+"""智贸云 API composition root; business logic lives outside this module."""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import SessionLocal, init_database
 from .routers.auth import router as auth_router
+from .routers.announcements import router as announcements_router
 from .routers.access_control import router as access_control_router
 from .routers.health import router as health_router
 from .routers.image_intelligence import router as image_intelligence_router
@@ -31,6 +28,7 @@ from .saas_seed import demo_seed_enabled, seed_saas_foundation
 from .product_center_seed import seed_product_center_demo
 from .services.repository import seed_suppliers
 
+
 def _initialize_runtime() -> None:
     validate_startup_configuration()
     init_database()
@@ -39,6 +37,7 @@ def _initialize_runtime() -> None:
             seed_saas_foundation(session)
             seed_suppliers(session)
             seed_product_center_demo(session)
+
 
 def create_app() -> FastAPI:
     application = FastAPI(
@@ -56,6 +55,7 @@ def create_app() -> FastAPI:
     for router in (
         health_router,
         auth_router,
+        announcements_router,
         access_control_router,
         legacy_operations_router,
         product_intelligence_router,

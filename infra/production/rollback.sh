@@ -38,7 +38,7 @@ if [[ "${ATC_ENABLE_WORKERS:-false}" == "true" ]]; then
     tenant-worker product-event-consumer
 fi
 wait_for_public_health 60 5
-verify_api_oidc_hairpin
+verify_api_oidc_connectivity
 
 if [[ -f "${DEPLOYMENT_STATE_DIR}/current.env" && "${metadata_file}" != "${DEPLOYMENT_STATE_DIR}/current.env" ]]; then
   cp "${DEPLOYMENT_STATE_DIR}/current.env" "${DEPLOYMENT_STATE_DIR}/rolled-back-from.env"

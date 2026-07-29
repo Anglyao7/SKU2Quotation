@@ -530,7 +530,7 @@ export function CategoryManager({
             <TreeStructure />
             <strong>{t("分类结构")}</strong>
             <small id="category-reorder-help">
-              {t("{primary} 个一级 · {secondary} 个二级 · 拖动“全部商品”可调整前台入口位置", {
+              {t("{primary} 个一级 · {secondary} 个二级 · 分类顺序同步控制前台导航与商品陈列", {
                 primary: roots.length,
                 secondary: displayCategories.length - roots.length,
               })}

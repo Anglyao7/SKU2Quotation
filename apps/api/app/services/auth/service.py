@@ -65,6 +65,7 @@ class IssuedSession:
     refresh_token: str
     csrf_token: str
     requires_tenant_selection: bool
+    memberships: tuple[tuple[MembershipRow, TenantRow], ...]
 
 
 def _aware(value: datetime) -> datetime:
@@ -582,6 +583,7 @@ def _issue_authenticated_session(
         refresh_token=refresh_token,
         csrf_token=csrf_token,
         requires_tenant_selection=len(memberships) > 1,
+        memberships=tuple(memberships),
     )
 
 
@@ -730,6 +732,7 @@ def _retry_recent_rotation(
         permission_version=auth_session.permission_version,
         locale=user.locale,
     )
+    memberships = tuple(_active_memberships(session, user.id))
     session.commit()
     return IssuedSession(
         auth_session=auth_session,
@@ -740,6 +743,7 @@ def _retry_recent_rotation(
         refresh_token=successor_refresh,
         csrf_token=successor_csrf,
         requires_tenant_selection=membership is None,
+        memberships=memberships,
     )
 
 
@@ -870,6 +874,7 @@ def _rotate(
         permission_version=auth_session.permission_version,
         locale=user.locale,
     )
+    memberships = tuple(_active_memberships(session, user.id))
     session.commit()
     return IssuedSession(
         auth_session=auth_session,
@@ -880,6 +885,7 @@ def _rotate(
         refresh_token=new_refresh,
         csrf_token=new_csrf,
         requires_tenant_selection=membership is None,
+        memberships=memberships,
     )
 
 

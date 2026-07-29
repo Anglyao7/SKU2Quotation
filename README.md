@@ -103,14 +103,24 @@ docker compose down --volumes
 - `/console/dashboard`：企业仪表盘
 - `/console/products`：SKU 商品库与固定 Excel 模版导入
 - `/console/products/categories`：一级、二级商品分类管理
+- `/console/products/tags`：商品标签与前台展示标签管理
 - `/console/ai-search`：AI 产品搜索
+- `/console/ai-search/manage`：Embedding 配置、增量更新与全量重建
+- `/console/inventory`：仓库、库存、采购入库、销售出库与调拨
+- `/console/announcements`：定时滚动字幕与富内容弹窗公告
+- `/console/analytics`：商家前台商品访问与国家分布
 - `/console/inquiries`：询盘匹配工作台
 - `/console/quotes`：报价列表、详情、修订与审批
 - `/console/system/permissions`：权限查看
+- `/console/system/monitoring`：CPU、内存和磁盘监控
 
 当前 Demo 的商品闭环为：下载固定商品模版 → 填写全部 SKU → 在商品库上传 XLSX → 系统按商品型号更新 SKU、公开价、描述、图片及可选供应商 → 商品发布到商家前台 → 选购后生成报价草稿。供应商列可以留空；填写时会按名称复用或创建供应商，并将 SKU 关联到进销存。商品价格可以留空，系统会按 `0.00` 保存并正常发布。供应商及采购成本不会暴露到客户目录。
 
-平台管理员创建的新商家会立即获得独立租户和空商品前台，但不会自动伪造商家成员。商家成员邀请与首次 Owner 分配属于后续账号开通流程；在完成该流程前，平台管理员仍可从 `/console/tenants` 管理商家状态。
+平台管理员创建商家时填写商家名、登录邮箱和初始密码，系统会同时创建独立租户、空商品前台和首位 Owner 登录账号。已有但尚未开通账号的商家，也可以在 `/console/tenants` 补充开通 Owner。
+
+本轮性能审查、缓存边界、登录链路和公告功能的运维说明见
+[性能与商家公告说明](./docs/PERFORMANCE_AND_ANNOUNCEMENTS.md)；其他专题文档入口见
+[docs/README.md](./docs/README.md)。
 
 核心 API 使用 `/api/v1`。为现有商品前台和报价下载保留以下兼容接口：
 

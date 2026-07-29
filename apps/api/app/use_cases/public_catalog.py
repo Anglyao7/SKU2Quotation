@@ -55,6 +55,7 @@ from ..services.translation import (
     configured_catalog_translator,
 )
 from ..services.translation_memory import translate_values_with_memory
+from . import announcements as announcement_use_cases
 
 
 MONEY = Decimal("0.01")
@@ -316,6 +317,10 @@ def get_store(
         source_locale=source_locale,
         available_locales=available_locales,
         all_products_position=max(0, int(profile.all_products_position or 0)),
+        announcements=announcement_use_cases.public_announcements(
+            session,
+            tenant_id=tenant.id,
+        ),
     )
 
 
@@ -756,8 +761,10 @@ def list_public_skus(
     requested_locale = _normalized_locale(locale, default=source_locale)
     now = utcnow()
     wanted_tags = _normalize_tags(tags)
-    all_categories = repository.list_catalog_categories(
-        session, tenant_id=tenant.id
+    all_categories = (
+        repository.list_catalog_categories(session, tenant_id=tenant.id)
+        if include_facets
+        else []
     )
 
     if semantic and query.strip():
@@ -819,16 +826,8 @@ def list_public_skus(
             query="",
             category=None,
         )
-        facet_tags = repository.list_public_catalog_tags(
-            session,
-            tenant_id=tenant.id,
-            now=now,
-            query="",
-            category=None,
-        )
     else:
         visible_category_ids = set()
-        facet_tags = []
 
     categories = _ordered_category_paths(
         visible_category_ids,
@@ -909,7 +908,10 @@ def list_public_skus(
             )
             for category_path in categories
         ],
-        tags=facet_tags,
+        # Storefront tag chips were removed. Individual SKU tags remain in
+        # each card and in semantic search, but the first page no longer scans
+        # every public offer just to build an unused global facet.
+        tags=[],
         source_locale=source_locale,
         locale=requested_locale,
         all_products_position=(

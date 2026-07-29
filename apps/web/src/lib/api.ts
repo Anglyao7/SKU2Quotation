@@ -1,9 +1,5 @@
 import type {
-  AuthToken,
   CreateQuoteInput,
-  DashboardData,
-  MemberInvitation,
-  MemberInvitationPayload,
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
   ProductTag,
@@ -12,19 +8,16 @@ import type {
   Quote,
   Sku,
   SkuList,
-  SkuImportResult,
-  SkuPayload,
   Storefront,
   Tenant,
   TenantPayload,
-  User,
 } from "../types";
 import { clearCoreAuthSession, getCoreAccessToken } from "../core/api";
 import { publicCatalogCacheKey } from "./publicCatalogRevision";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const PUBLIC_CACHE_MAX_ENTRIES = 160;
-const PUBLIC_STORE_CACHE_TTL_MS = 5 * 60_000;
+const PUBLIC_STORE_CACHE_TTL_MS = 60_000;
 const PUBLIC_CATALOG_CACHE_TTL_MS = 2 * 60_000;
 const PUBLIC_SKU_CACHE_TTL_MS = 2 * 60_000;
 
@@ -287,10 +280,6 @@ async function getCachedStoreSkus(
   });
 }
 
-function consolePath(path: string) {
-  return path;
-}
-
 async function download(
   path: string,
   filename: string,
@@ -318,14 +307,6 @@ async function download(
 }
 
 export const api = {
-  async login(email: string, password: string, tenantSlug?: string) {
-    return request<AuthToken>("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password, tenant_slug: tenantSlug?.trim() || undefined }),
-    });
-  },
-  me: () => request<User>("/api/auth/me", {}, true),
-
   getStore: (slug: string, locale?: string) => {
     const path = storePath(slug, locale);
     return cachedPublicRequest(
@@ -372,34 +353,6 @@ export const api = {
       token ? { headers: { "X-Quote-Download-Token": token } } : {},
     ),
 
-  async getDashboard() {
-    const raw = await request<DashboardData>(consolePath("/api/console/dashboard"), {}, true);
-    return { ...raw, recent_quotes: (raw.recent_quotes || []).map(normalizeQuote) };
-  },
-  async getConsoleSkus(q = "", page = 1): Promise<SkuList> {
-    const params = new URLSearchParams({ page: String(page), page_size: "100" });
-    if (q) params.set("q", q);
-    const base = `/api/console/skus?${params.toString()}`;
-    const raw = await request<unknown>(consolePath(base), {}, true);
-    const list = normalizeList<Sku>(raw);
-    const meta = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-    return { ...list, items: list.items.map(normalizeSku), page: Number(meta.page || page), pages: Number(meta.pages || 0) };
-  },
-  createSku: (payload: SkuPayload) => {
-    const body = { ...payload, price: payload.price ?? 0 };
-    return request<Sku>(consolePath("/api/console/skus"), { method: "POST", body: JSON.stringify(body) }, true);
-  },
-  updateSku: (id: string, payload: SkuPayload) => {
-    const body = { ...payload, price: payload.price ?? 0 };
-    return request<Sku>(consolePath(`/api/console/skus/${id}`), { method: "PATCH", body: JSON.stringify(body) }, true);
-  },
-  deleteSku: (id: string) =>
-    request<void>(consolePath(`/api/console/skus/${id}`), { method: "DELETE" }, true),
-  importSkus: (file: File) => {
-    const body = new FormData();
-    body.append("file", file);
-    return request<SkuImportResult>(consolePath("/api/console/skus/import"), { method: "POST", body }, true);
-  },
   getProductTags(category = "", limit = 200, offset = 0) {
     const params = new URLSearchParams({
       limit: String(limit),
@@ -426,17 +379,6 @@ export const api = {
       { method: "DELETE" },
       true,
     ),
-  async getQuotes(): Promise<Quote[]> {
-    const raw = await request<unknown>("/api/v1/public-quote-drafts", {}, true);
-    return normalizeList<Quote>(raw).items.map(normalizeQuote);
-  },
-  downloadConsoleQuote: (quoteId: string, type: "pdf" | "xlsx") =>
-    download(
-      `/api/v1/public-quote-drafts/${quoteId}/${type}`,
-      `quotation-${quoteId}.${type}`,
-      { auth: true },
-    ),
-
   async getTenants(): Promise<Tenant[]> {
     const raw = await request<unknown>("/api/admin/tenants", {}, true);
     return normalizeList<Tenant>(raw).items.map(normalizeTenant);
@@ -451,12 +393,6 @@ export const api = {
   provisionMerchantOwner: (tenantId: string, payload: MerchantOwnerAccountPayload) =>
     request<MerchantOwnerAccount>(
       `/api/admin/tenants/${encodeURIComponent(tenantId)}/owner-account`,
-      { method: "POST", body: JSON.stringify(payload) },
-      true,
-    ),
-  inviteTenantMember: (tenantId: string, payload: MemberInvitationPayload) =>
-    request<MemberInvitation>(
-      `/api/admin/tenants/${tenantId}/member-invitations`,
       { method: "POST", body: JSON.stringify(payload) },
       true,
     ),

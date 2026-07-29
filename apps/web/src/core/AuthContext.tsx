@@ -58,8 +58,33 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
 
   const hydrate = useCallback(async (session: AuthTokenData) => {
     if (session.requiresTenantSelection || !session.context.tenantId) {
-      const memberships = await listMemberships();
+      const memberships = session.memberships?.length
+        ? session.memberships
+        : await listMemberships();
       setState({ status: "selecting_tenant", session, memberships, permissions: new Set() });
+      return;
+    }
+    if (session.permissions && session.permissionVersion !== undefined) {
+      const memberships = session.memberships?.length
+        ? session.memberships
+        : [{
+            id: session.context.membershipId || "",
+            tenantId: session.context.tenantId,
+            tenantName: session.context.tenantName || "",
+            tenantSlug: session.context.tenantSlug || "",
+            status: "active",
+          }];
+      setState({
+        status: "authenticated",
+        session,
+        profile: {
+          user: session.user,
+          context: session.context,
+          memberships,
+        },
+        memberships,
+        permissions: new Set(session.permissions),
+      });
       return;
     }
     const bootstrap = await getAuthBootstrap();
@@ -137,14 +162,11 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const reloadProfile = useCallback(async () => {
-    const [profile, memberships] = await Promise.all([
-      getCurrentUser(),
-      listMemberships(),
-    ]);
+    const profile = await getCurrentUser();
     setState((current) => ({
       ...current,
       profile,
-      memberships,
+      memberships: profile.memberships,
       session: current.session
         ? {
             ...current.session,

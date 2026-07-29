@@ -23,7 +23,7 @@ import {
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { EmptyState, ErrorState, TableSkeleton } from "../../components/States";
-import { useAuth } from "../../context/AuthContext";
+import { useCoreAuth } from "../../core/AuthContext";
 import { api } from "../../lib/api";
 import type { ProductTag } from "../../types";
 import type { ConsoleOutletContext } from "./ConsoleLayout";
@@ -49,7 +49,7 @@ const TAG_CATEGORIES = [
 ];
 
 export function TagManagementPage() {
-  const { user } = useAuth();
+  const { profile } = useCoreAuth();
   const { activeTenantId } = useOutletContext<ConsoleOutletContext>();
   const [tags, setTags] = useState<ProductTag[]>([]);
   const [total, setTotal] = useState(0);
@@ -60,7 +60,7 @@ export function TagManagementPage() {
   const [deleting, setDeleting] = useState<ProductTag | null>(null);
   const [payload, setPayload] = useState<TagPayload>(emptyPayload);
   const [saving, setSaving] = useState(false);
-  const isPlatformAdmin = user?.role === "platform_admin";
+  const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
 
   const load = useCallback(async () => {
     if (isPlatformAdmin && !activeTenantId) {

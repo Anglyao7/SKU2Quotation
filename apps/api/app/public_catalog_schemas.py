@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .announcement_schemas import PublicAnnouncementResponse
 
 PUBLIC_DRAFT_DISCLAIMER = (
     "此文件仅为报价申请草稿和价格预估，当前状态为待人工确认；"
@@ -29,6 +30,7 @@ class PublicStoreResponse(BaseModel):
     source_locale: str = "zh-CN"
     available_locales: list[str] = Field(default_factory=lambda: ["zh-CN"])
     all_products_position: int = Field(default=0, ge=0)
+    announcements: list[PublicAnnouncementResponse] = Field(default_factory=list)
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
 
 

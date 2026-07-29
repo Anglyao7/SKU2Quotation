@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import Text, case, cast, exists, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..identity_models import TenantRow
 from ..product_center_models import SkuRow
@@ -15,6 +15,11 @@ from ..public_catalog_models import (
     PublicQuoteDraftItemRow,
     PublicQuoteDraftRow,
     TenantPublicProfileRow,
+)
+
+ParentProductCategoryRow = aliased(
+    ProductCategoryRow,
+    name="parent_product_category",
 )
 
 
@@ -109,6 +114,11 @@ def _public_catalog_statement(
             (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
             & (ProductCategoryRow.id == ProductRow.category_id),
         )
+        .outerjoin(
+            ParentProductCategoryRow,
+            (ParentProductCategoryRow.tenant_id == ProductCategoryRow.tenant_id)
+            & (ParentProductCategoryRow.id == ProductCategoryRow.parent_id),
+        )
         .where(
             PublicCatalogOfferRow.tenant_id == tenant_id,
             PublicCatalogOfferRow.publication_status == "PUBLISHED",
@@ -194,7 +204,29 @@ def _ordered_public_catalog_statement(statement, *, query: str):
             SkuRow.id,
         )
     return statement.order_by(
-        ProductCategoryRow.path,
+        # The category tree is also the storefront merchandising order.
+        # Products without a category remain visible, but always come last.
+        case((ProductCategoryRow.id.is_(None), 1), else_=0),
+        func.coalesce(
+            ParentProductCategoryRow.sort_order,
+            ProductCategoryRow.sort_order,
+            2_147_483_647,
+        ),
+        func.lower(
+            func.coalesce(
+                ParentProductCategoryRow.name,
+                ProductCategoryRow.name,
+                "",
+            )
+        ),
+        # Products assigned directly to the primary category precede its
+        # ordered secondary-category groups.
+        case(
+            (ProductCategoryRow.id.is_(None), 2_147_483_647),
+            (ProductCategoryRow.parent_id.is_(None), -1),
+            else_=ProductCategoryRow.sort_order,
+        ),
+        func.lower(func.coalesce(ProductCategoryRow.name, "")),
         ProductRow.name,
         SkuRow.sku_code,
         SkuRow.id,
@@ -333,33 +365,6 @@ def list_public_catalog_category_ids(
         .distinct()
     )
     return set(session.scalars(statement).all())
-
-
-def list_public_catalog_tags(
-    session: Session,
-    *,
-    tenant_id: UUID,
-    now: datetime,
-    query: str,
-    category: str | None,
-) -> list[str]:
-    """Read one small JSON column at a time instead of hydrating every catalog row."""
-
-    statement = _public_catalog_statement(
-        tenant_id=tenant_id,
-        now=now,
-        query=query,
-        category=category,
-    ).with_only_columns(PublicCatalogOfferRow.tags).order_by(None)
-    values: set[str] = set()
-    result = session.scalars(statement).yield_per(500)
-    for raw_tags in result:
-        values.update(
-            str(tag).strip()
-            for tag in (raw_tags or [])
-            if str(tag).strip()
-        )
-    return sorted(values, key=str.casefold)
 
 
 def list_catalog_categories(

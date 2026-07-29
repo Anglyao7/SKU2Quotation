@@ -12,6 +12,7 @@ import {
   FileText,
   GlobeHemisphereWest,
   Key,
+  Megaphone,
   Pulse,
   SignOut,
   Sparkle,
@@ -29,6 +30,7 @@ import { Brand } from "../../components/Brand";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { useCoreAuth } from "../../core/AuthContext";
 import { updateMerchantSettings } from "../../core/api";
+import { preloadConsoleRoute } from "../../core/routePreload";
 import { useLocale } from "../../core/LocaleContext";
 import { initials } from "../../lib/format";
 import type { BusinessMode, UiLocale } from "../../core/types";
@@ -62,6 +64,7 @@ const navigationGroups = [
     label: "经营",
     items: [
       { to: "/console/inventory", label: "进销存", mobileLabel: "库存", icon: Warehouse, permissions: ["inventory.view"], platformAdminOnly: false, mobilePrimary: true },
+      { to: "/console/announcements", label: "公告管理", mobileLabel: "公告", icon: Megaphone, permissions: ["announcement.manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {
@@ -170,17 +173,17 @@ export function ConsoleLayout() {
       <nav className="desktop-console-nav" aria-label={t("控制台导航")}>
         {visibleGroups.map((group) => <section className="nav-group" key={group.label}>
           <Text className="nav-group-label" size="1">{t(group.label)}</Text>
-          {group.items.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Icon size={20} weight="duotone" /><span>{t(label)}</span></NavLink>)}
+          {group.items.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} onPointerEnter={() => preloadConsoleRoute(to)} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Icon size={20} weight="duotone" /><span>{t(label)}</span></NavLink>)}
         </section>)}
       </nav>
       <nav className="mobile-console-nav" aria-label={t("移动端控制台导航")}>
-        {mobilePrimary.map(({ to, mobileLabel, icon: Icon, end }) => <NavLink key={to} to={to} end={end} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Icon size={20} weight="duotone" /><span>{t(mobileLabel)}</span></NavLink>)}
+        {mobilePrimary.map(({ to, mobileLabel, icon: Icon, end }) => <NavLink key={to} to={to} end={end} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Icon size={20} weight="duotone" /><span>{t(mobileLabel)}</span></NavLink>)}
         <DropdownMenu.Root>
           <DropdownMenu.Trigger>
             <button type="button" className={`nav-item mobile-more-trigger ${mobileMoreActive ? "active" : ""}`}><DotsThreeOutline size={20} weight="duotone" /><span>{t("更多")}</span></button>
           </DropdownMenu.Trigger>
           <DropdownMenu.Content align="end" sideOffset={10} className="mobile-more-content">
-            {mobileMore.map(({ to, label, icon: Icon }) => <DropdownMenu.Item asChild key={to}><Link to={to}><Icon size={17} />{t(label)}</Link></DropdownMenu.Item>)}
+            {mobileMore.map(({ to, label, icon: Icon }) => <DropdownMenu.Item asChild key={to}><Link to={to} onPointerEnter={() => preloadConsoleRoute(to)} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)}><Icon size={17} />{t(label)}</Link></DropdownMenu.Item>)}
             <DropdownMenu.Separator />
             <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />{t("账户与安全")}</Link></DropdownMenu.Item>
             <DropdownMenu.Item asChild><Link to={storefrontPath}><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>

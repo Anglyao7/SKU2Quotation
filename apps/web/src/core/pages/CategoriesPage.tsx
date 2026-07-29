@@ -47,7 +47,7 @@ export function CategoriesPage() {
       <CorePageHeading
         eyebrow={t("商品资料")}
         title={t("分类管理")}
-        description={t("维护商品前台与 SKU 商品库共用的两级分类、颜色与展示顺序；拖动“全部商品”即可决定哪些一级分类显示在它前面。")}
+        description={t("一级与二级分类顺序会同步控制前台分类导航和“全部商品”的陈列顺序；拖动“全部商品”只调整入口位置。")}
         actions={<>
           <Button asChild variant="soft" color="gray"><Link to="/console/products"><Cube />{t("SKU 商品库")}</Link></Button>
           <Button variant="soft" disabled={loading} onClick={() => void load()}><ArrowsClockwise />{t("刷新")}</Button>

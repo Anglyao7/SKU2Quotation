@@ -858,7 +858,19 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .console-shell { min-height: 100dvh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); overflow-x: clip; background: var(--page); }
 .console-sidebar { position: sticky; top: 0; height: 100dvh; padding: 18px 12px 14px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface); }
 .sidebar-brand { padding: 4px 10px 23px; }
-.desktop-console-nav { min-height: 0; display: grid; align-content: start; gap: 17px; overflow-y: auto; }
+.desktop-console-nav {
+  min-height: 0;
+  width: 100%;
+  flex: 1 1 auto;
+  display: grid;
+  align-content: start;
+  gap: 17px;
+  padding-right: 3px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .nav-group { display: grid; gap: 4px; }
 .nav-group-label { padding: 0 12px 4px; color: var(--text-soft); font-size: 10px !important; font-weight: 650; letter-spacing: .13em; }
 .nav-item { min-height: 40px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border: 0; border-radius: var(--radius-control); color: var(--text-soft); background: transparent; font-size: 14px; font-weight: 550; text-align: left; cursor: pointer; transition: background 140ms ease, color 140ms ease, transform 100ms ease; }
@@ -866,7 +878,7 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .nav-item:active { transform: translateY(1px); }
 .nav-item.active { color: var(--accent-strong); background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
 .mobile-console-nav { display: none; }
-.sidebar-footer { padding-top: 13px; display: grid; gap: 4px; margin-top: auto; border-top: 1px solid var(--line); }
+.sidebar-footer { flex: 0 0 auto; padding-top: 13px; display: grid; gap: 4px; margin-top: auto; border-top: 1px solid var(--line); }
 .sidebar-footer .rt-Button { justify-content: flex-start; }
 .sidebar-account-card { min-width: 0; padding: 8px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; border-radius: 10px; transition: background 140ms ease; }
 .sidebar-account-card:hover { background: var(--page-soft); }

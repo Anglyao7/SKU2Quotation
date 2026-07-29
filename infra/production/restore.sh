@@ -183,7 +183,7 @@ if [[ "${ATC_ENABLE_WORKERS:-false}" == "true" ]]; then
     tenant-worker product-event-consumer
 fi
 wait_for_public_health 60 5
-verify_api_oidc_hairpin
+verify_api_oidc_connectivity
 trap - ERR INT TERM
 
 info "restore completed from ${backup_name}"

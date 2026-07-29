@@ -121,6 +121,9 @@ class AuthTokenData(BaseModel):
     requires_tenant_selection: bool
     user: AuthUser
     context: AuthContext
+    memberships: list[MembershipSummary] = Field(default_factory=list)
+    permission_version: int | None = None
+    permissions: list[str] = Field(default_factory=list)
 
 
 class AuthTokenResponse(BaseModel):

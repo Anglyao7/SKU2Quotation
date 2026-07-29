@@ -182,10 +182,13 @@ expand/contract：本次发布只做向后兼容的新增，旧字段/旧行为�
    secret；
 9. 更新 API/Web/Worker/Caddy 并验证公网 API 与 OIDC discovery。
 
-API 容器在内部网络中把 `auth.${ATC_DOMAIN}` 解析到 Caddy 的网络别名，
-仍以正式域名和 TLS 证书访问 OIDC，不会绕过 issuer 校验，也不依赖云主机
-是否支持访问自身公网 IP 的 hairpin NAT。部署验收还会向 token endpoint
-发送一个必然失败的假授权码，确认容器到 OIDC 的 TLS 路径真实可用。
+浏览器仍使用 `https://auth.${ATC_DOMAIN}`，OIDC issuer 及令牌中的签发者
+也保持正式公网地址；API 容器则通过受限的
+`OIDC_BACKCHANNEL_BASE_URL=http://keycloak:8080` 在服务网络内完成
+discovery、token、JWKS 和 userinfo 请求，避免登录请求绕行 Cloudflare、
+Caddy 和云主机公网回环。应用仍严格校验 discovery 返回的正式 issuer，
+生产环境也只接受这一固定内部服务地址。部署验收会向内网 token endpoint
+发送一个必然失败的假授权码，以确认内部回源链路真实可用。
 
 脚本不会运行 `docker compose down`、不会删除卷，也不会自动执行数据库
 downgrade。升级失败时会用 `.deployments/previous.env` 恢复上一组应用镜像；

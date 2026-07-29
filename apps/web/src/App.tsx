@@ -23,6 +23,7 @@ import { ErrorState } from "./components/States";
 import { useCoreAuth } from "./core/AuthContext";
 import { useLocale } from "./core/LocaleContext";
 import { api, ApiError } from "./lib/api";
+import { readStorefrontViewState } from "./lib/storefrontViewState";
 import {
   importWithChunkRecovery,
   isChunkLoadFailure,
@@ -53,6 +54,7 @@ const InventoryPage = recoverableLazy(() => import("./core/pages/InventoryPage")
 const PermissionsPage = recoverableLazy(() => import("./core/pages/PermissionsPage").then((module) => ({ default: module.PermissionsPage })));
 const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMonitoringPage").then((module) => ({ default: module.SystemMonitoringPage })));
 const StorefrontAnalyticsPage = recoverableLazy(() => import("./core/pages/StorefrontAnalyticsPage").then((module) => ({ default: module.StorefrontAnalyticsPage })));
+const AnnouncementsPage = recoverableLazy(() => import("./core/pages/AnnouncementsPage").then((module) => ({ default: module.AnnouncementsPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
 const TagManagementPage = recoverableLazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
@@ -140,6 +142,16 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     ? "en-US"
     : "zh-CN";
   try {
+    const savedView = readStorefrontViewState(tenantSlug);
+    const category = savedView?.secondaryCategory || savedView?.primaryCategory;
+    void api.prefetchStoreSkus(tenantSlug, {
+      q: savedView?.search.trim() || undefined,
+      category: category || undefined,
+      semantic: Boolean(savedView?.search.trim()),
+      includeFacets: true,
+      page: savedView?.page || 1,
+      locale,
+    }).catch(() => undefined);
     const store = await api.getStore(tenantSlug, locale);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(`/${encodeURIComponent(store.slug)}${currentUrl.search}${currentUrl.hash}`);
@@ -161,8 +173,10 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
     ? "en-US"
     : "zh-CN";
   try {
-    const store = await api.getStore(tenantSlug, locale);
-    const sku = await api.getStoreSku(store.slug, skuId, locale);
+    const [store, sku] = await Promise.all([
+      api.getStore(tenantSlug, locale),
+      api.getStoreSku(tenantSlug, skuId, locale),
+    ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
         `/${encodeURIComponent(store.slug)}/skus/${encodeURIComponent(sku.id)}${currentUrl.search}${currentUrl.hash}`,
@@ -223,6 +237,7 @@ const router = createBrowserRouter([{
         { path: "system/permissions", element: <PermissionsPage /> },
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "analytics", element: <PermissionGate anyOf={["analytics.view"]}><StorefrontAnalyticsPage /></PermissionGate> },
+        { path: "announcements", element: <PermissionGate anyOf={["announcement.manage"]}><AnnouncementsPage /></PermissionGate> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
         { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },

@@ -1,5 +1,3 @@
-export type Role = "platform_admin" | "merchant_admin" | "merchant_staff";
-
 export interface Tenant {
   id: string;
   name: string;
@@ -24,21 +22,6 @@ export interface MerchantOwnerAccount {
   created_at: string;
 }
 
-export interface User {
-  id: string;
-  name?: string;
-  full_name?: string;
-  email: string;
-  role: Role;
-  tenant_id?: string | null;
-  tenant?: Tenant | null;
-}
-
-export interface AuthToken {
-  access_token: string;
-  token_type: string;
-}
-
 export interface Storefront {
   id?: string;
   name: string;
@@ -54,9 +37,39 @@ export interface Storefront {
   category_options?: StorefrontCategoryOption[];
   tags?: string[];
   all_products_position?: number;
+  announcements?: PublicAnnouncement[];
 }
 
 export type StorefrontLocale = "zh-CN" | "en-US";
+
+export type AnnouncementDisplayType = "TICKER" | "MODAL";
+export type AnnouncementBlockType =
+  | "heading"
+  | "paragraph"
+  | "bullet_list"
+  | "image"
+  | "video"
+  | "link";
+
+export interface AnnouncementContentBlock {
+  type: AnnouncementBlockType;
+  text?: string | null;
+  url?: string | null;
+  alt?: string | null;
+  caption?: string | null;
+}
+
+export interface PublicAnnouncement {
+  id: string;
+  title: string;
+  display_type: AnnouncementDisplayType;
+  ticker_text?: string | null;
+  content_blocks: AnnouncementContentBlock[];
+  starts_at: string;
+  ends_at: string;
+  repeat_interval_hours: number;
+  version: number;
+}
 
 export interface StorefrontCategoryOption {
   value: string;
@@ -178,40 +191,6 @@ export interface Quote {
   xlsx_url?: string;
 }
 
-export interface DashboardData {
-  tenant?: Storefront;
-  sku_count: number;
-  active_sku_count?: number;
-  quote_count: number;
-  quote_this_month?: number;
-  tenant_count?: number;
-  quote_total?: number | string;
-  recent_quotes?: Quote[];
-  top_categories?: Array<{ name: string; count: number }>;
-}
-
-export interface SkuPayload {
-  sku_code: string;
-  name: string;
-  category?: string;
-  tags: string[];
-  description?: string;
-  image_url?: string;
-  price?: number | null;
-  currency: string;
-  stock?: number | null;
-  active: boolean;
-}
-
-export interface SkuImportResult {
-  imported?: number;
-  created?: number;
-  inserted?: number;
-  updated?: number;
-  failed?: number;
-  errors?: Array<{ row?: number; sku_code?: string; message?: string; error?: string }>;
-}
-
 export interface TenantPayload {
   name: string;
   slug?: string;
@@ -224,25 +203,4 @@ export interface MerchantOwnerAccountPayload {
   login_identifier: string;
   password: string;
   email?: string;
-}
-
-export type TenantRoleCode = "OWNER" | "ADMIN" | "SALES" | "PURCHASING" | "VIEWER";
-
-export interface MemberInvitationPayload {
-  email: string;
-  display_name: string;
-  role: TenantRoleCode;
-}
-
-export interface MemberInvitation {
-  tenant_id: string;
-  user_id: string;
-  membership_id: string;
-  email: string;
-  display_name: string;
-  role: TenantRoleCode;
-  membership_status: "invited" | "active";
-  created: boolean;
-  identity_already_bound: boolean;
-  requires_identity_provider_provisioning: boolean;
 }

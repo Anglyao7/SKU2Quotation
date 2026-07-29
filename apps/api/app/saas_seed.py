@@ -58,6 +58,12 @@ PERMISSION_SEEDS = (
         "view",
         "View tenant storefront product analytics",
     ),
+    PermissionSeed(
+        "announcement.manage",
+        "announcement",
+        "manage",
+        "Create, schedule, publish, and remove storefront announcements",
+    ),
     PermissionSeed("order.view", "order", "view", "View orders"),
     PermissionSeed("order.manage", "order", "manage", "Manage orders"),
     PermissionSeed("inventory.view", "inventory", "view", "View inventory and stock movements"),
@@ -106,7 +112,7 @@ ROLE_SEEDS = {
     "SALES": {
         "product.view", "product.import", "supplier.view", "customer.view", "customer.manage",
         "inquiry.view", "inquiry.manage", "quotation.view", "quotation.create",
-        "catalog.view", "catalog.publish", "order.view",
+        "catalog.view", "catalog.publish", "announcement.manage", "order.view",
         "inventory.view", "inventory.sale",
     },
     "PURCHASING": {

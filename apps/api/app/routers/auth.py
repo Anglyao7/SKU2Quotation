@@ -25,7 +25,7 @@ from ..auth_schemas import (
     UserPreferencesResponse,
     UserPreferencesUpdate,
 )
-from ..database import get_auth_session, get_session
+from ..database import get_auth_session, get_session, set_request_context
 from ..services.auth.dependencies import RequestContext, bearer, require_request_context
 from ..services.auth.service import (
     AuthError,
@@ -43,6 +43,7 @@ from ..services.auth.tokens import REFRESH_COOKIE_NAME, REFRESH_TTL_SECONDS
 from ..services.auth.contracts import IdentityProviderError
 from ..services.auth.oidc_provider import public_oidc_config
 from ..services.rate_limit import configured_limit, enforce_rate_limit
+from ..services.rbac import list_permissions
 from ..domain.errors import ApplicationError
 from ..localization import normalize_ui_locale
 from ..use_cases.authentication import get_current_user
@@ -69,7 +70,26 @@ def _masked_email(email: str | None) -> str | None:
     return f"{local[:1]}***@{domain}"
 
 
-def _token_response(result: IssuedSession) -> AuthTokenResponse:
+def _token_response(
+    result: IssuedSession,
+    *,
+    business_session: Session,
+) -> AuthTokenResponse:
+    permissions: list[str] = []
+    if result.membership is not None and result.tenant is not None:
+        set_request_context(
+            business_session,
+            organization_id=result.tenant.organization_id,
+            tenant_id=result.tenant.id,
+            user_id=result.user.id,
+        )
+        permissions = sorted(
+            list_permissions(
+                business_session,
+                tenant_id=result.tenant.id,
+                user_id=result.user.id,
+            )
+        )
     return AuthTokenResponse(
         data=AuthTokenData(
             access_token=result.access_token,
@@ -114,6 +134,22 @@ def _token_response(result: IssuedSession) -> AuthTokenResponse:
                     result.membership.account_scope if result.membership else None
                 ),
             ),
+            memberships=[
+                MembershipSummary(
+                    id=membership.id,
+                    tenant_id=tenant.id,
+                    tenant_name=tenant.name,
+                    tenant_slug=tenant.slug,
+                    status=membership.status,
+                )
+                for membership, tenant in result.memberships
+            ],
+            permission_version=(
+                result.membership.permission_version
+                if result.membership is not None
+                else None
+            ),
+            permissions=permissions,
         )
     )
 
@@ -186,6 +222,7 @@ def login_endpoint(
     request: Request,
     response: Response,
     session: Session = Depends(get_auth_session),
+    business_session: Session = Depends(get_session),
 ) -> AuthTokenResponse:
     response.headers.update(NO_STORE_HEADERS)
     if isinstance(payload, PasswordLoginRequest):
@@ -235,7 +272,7 @@ def login_endpoint(
     except AuthError as exc:
         raise _http_error(exc) from exc
     _set_refresh_cookie(response, result.refresh_token)
-    return _token_response(result)
+    return _token_response(result, business_session=business_session)
 
 
 @router.post("/auth/refresh", response_model=AuthTokenResponse)
@@ -244,6 +281,7 @@ def refresh_endpoint(
     response: Response,
     csrf_token: str = Header(alias="X-CSRF-Token"),
     session: Session = Depends(get_auth_session),
+    business_session: Session = Depends(get_session),
 ) -> AuthTokenResponse:
     response.headers.update(NO_STORE_HEADERS)
     raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
@@ -268,7 +306,7 @@ def refresh_endpoint(
         response.delete_cookie(REFRESH_COOKIE_NAME, path="/api/v1/auth")
         raise _http_error(exc) from exc
     _set_refresh_cookie(response, result.refresh_token)
-    return _token_response(result)
+    return _token_response(result, business_session=business_session)
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -330,6 +368,7 @@ def tenant_context_endpoint(
     csrf_token: str = Header(alias="X-CSRF-Token"),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: Session = Depends(get_auth_session),
+    business_session: Session = Depends(get_session),
 ) -> AuthTokenResponse:
     response.headers.update(NO_STORE_HEADERS)
     raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
@@ -350,7 +389,7 @@ def tenant_context_endpoint(
     except AuthError as exc:
         raise _http_error(exc) from exc
     _set_refresh_cookie(response, result.refresh_token)
-    return _token_response(result)
+    return _token_response(result, business_session=business_session)
 
 
 @router.get("/auth/memberships", response_model=list[MembershipSummary])

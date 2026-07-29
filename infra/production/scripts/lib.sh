@@ -176,12 +176,24 @@ wait_for_public_health() {
   return 1
 }
 
-verify_api_oidc_hairpin() {
+verify_api_oidc_connectivity() {
   compose exec -T api python -c "
 import json, os, urllib.error, urllib.parse, urllib.request
 issuer = os.environ['OIDC_ISSUER'].rstrip('/')
+backchannel = os.environ.get('OIDC_BACKCHANNEL_BASE_URL', '').rstrip('/')
+issuer_parts = urllib.parse.urlsplit(issuer)
+internal_origin = urllib.parse.urlsplit(backchannel) if backchannel else issuer_parts
+def internal_url(public_url):
+    public = urllib.parse.urlsplit(public_url)
+    return urllib.parse.urlunsplit((
+        internal_origin.scheme,
+        internal_origin.netloc,
+        public.path,
+        public.query,
+        '',
+    ))
 discovery = json.load(urllib.request.urlopen(
-    issuer + '/.well-known/openid-configuration', timeout=10
+    internal_url(issuer + '/.well-known/openid-configuration'), timeout=10
 ))
 assert discovery['issuer'] == issuer
 payload = urllib.parse.urlencode({
@@ -190,7 +202,10 @@ payload = urllib.parse.urlencode({
     'redirect_uri': os.environ['OIDC_REDIRECT_URIS'].split(',')[0],
     'client_id': os.environ['OIDC_CLIENT_ID'],
 }).encode()
-request = urllib.request.Request(discovery['token_endpoint'], data=payload)
+request = urllib.request.Request(
+    internal_url(discovery['token_endpoint']),
+    data=payload,
+)
 try:
     urllib.request.urlopen(request, timeout=10)
 except urllib.error.HTTPError as error:
@@ -198,7 +213,7 @@ except urllib.error.HTTPError as error:
 else:
     raise AssertionError('invalid OIDC code was unexpectedly accepted')
 "
-  info "API-container OIDC discovery/token hairpin smoke passed"
+  info "API-container OIDC discovery/token backchannel smoke passed"
 }
 
 write_release_metadata() {

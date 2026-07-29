@@ -36,6 +36,9 @@ export interface AuthTokenData {
   requiresTenantSelection: boolean;
   user: AuthUser;
   context: AuthWorkspaceContext;
+  memberships?: MembershipSummary[];
+  permissionVersion?: number;
+  permissions?: string[];
 }
 
 export interface CurrentUser {
@@ -212,31 +215,6 @@ export interface FileDetection {
   extension_matches: boolean;
   parser: string;
   warning?: string | null;
-}
-
-export interface ReviewField {
-  key: string;
-  label: string;
-  source: string;
-  normalized: string;
-  confidence: number;
-}
-
-export interface ReviewItem {
-  id: string;
-  jobId?: string;
-  taskId?: string;
-  candidateGroupKey?: string;
-  appliedProductId?: string;
-  status?: "pending" | "approved" | "rejected";
-  name: string;
-  model: string;
-  category?: string;
-  supplier: string;
-  source: string;
-  location: string;
-  imageStatus: "SOURCE" | "APPROVED";
-  fields: ReviewField[];
 }
 
 export interface DashboardMetric {
@@ -477,6 +455,52 @@ export interface StorefrontAnalyticsSnapshot {
   countryProducts: Array<{ countryCode: string; skuId: string; views: number }>;
 }
 
+export type AnnouncementDisplayType = "TICKER" | "MODAL";
+export type AnnouncementStatus = "DRAFT" | "PUBLISHED" | "PAUSED";
+export type AnnouncementBlockType =
+  | "heading"
+  | "paragraph"
+  | "bullet_list"
+  | "image"
+  | "video"
+  | "link";
+
+export interface AnnouncementContentBlock {
+  type: AnnouncementBlockType;
+  text?: string;
+  url?: string;
+  alt?: string;
+  caption?: string;
+}
+
+export interface StorefrontAnnouncement {
+  id: string;
+  title: string;
+  displayType: AnnouncementDisplayType;
+  tickerText?: string;
+  contentBlocks: AnnouncementContentBlock[];
+  startsAt: string;
+  endsAt: string;
+  repeatIntervalHours: number;
+  publicationStatus: AnnouncementStatus;
+  version: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AnnouncementPayload {
+  title: string;
+  displayType: AnnouncementDisplayType;
+  tickerText?: string;
+  contentBlocks: AnnouncementContentBlock[];
+  startsAt: string;
+  endsAt?: string;
+  durationDays?: number;
+  repeatIntervalHours: number;
+  publicationStatus: AnnouncementStatus;
+}
+
 export interface AttributeDefinition {
   id: string;
   categoryId?: string;
@@ -491,87 +515,6 @@ export interface AttributeDefinition {
   isMatchable: boolean;
   status: string;
   version: number;
-}
-
-export interface SupplierPrice {
-  id: string;
-  productId: string;
-  supplierProductId: string;
-  supplierId: string;
-  supplierName: string;
-  skuId?: string;
-  minQuantity: number;
-  maxQuantity?: number;
-  unitPrice: number;
-  currency: string;
-  unitCode: string;
-  incoterm?: string;
-  taxStatus?: string;
-  validFrom: string;
-  validTo?: string;
-  status: string;
-  priceValidity: ProductOffer["priceValidity"];
-  confirmedAt?: string;
-  createdAt: string;
-}
-
-export interface SupplierScore {
-  overallScore?: number;
-  qualityScore?: number;
-  priceScore?: number;
-  deliveryScore?: number;
-  responseScore?: number;
-  riskScore?: number;
-  sampleSize: number;
-  methodVersion: string;
-  calculatedAt: string;
-}
-
-export interface SupplierProfile {
-  id: string;
-  supplierCode: string;
-  name: string;
-  category: string;
-  categorySummary?: string;
-  countryCode?: string;
-  website?: string;
-  status: string;
-  riskLevel: string;
-  health: string;
-  version: number;
-  activeProducts: number;
-  activeSkus: number;
-  pendingReviews: number;
-  validPrices: number;
-  expiredPrices: number;
-  latestImportAt?: string;
-  updatedAt: string;
-  latestScore?: SupplierScore;
-}
-
-export interface SupplierProfileDetail extends SupplierProfile {
-  sources: Array<{
-    supplierProductId: string;
-    productId: string;
-    productCode: string;
-    productName: string;
-    skuId?: string;
-    supplierSku?: string;
-    leadTimeDays?: number;
-    status: string;
-    unitPrice?: number;
-    currency?: string;
-    priceValidTo?: string;
-    priceValidity: string;
-  }>;
-  recentImports: Array<{
-    id: string;
-    filename: string;
-    status: string;
-    productsCount: number;
-    warningsCount: number;
-    createdAt: string;
-  }>;
 }
 
 export interface HybridSearchEvidence {
@@ -651,54 +594,6 @@ export interface EmbeddingSettings {
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
   updatedAt?: string;
-}
-
-export interface CatalogTranslationFailure {
-  skuId?: string;
-  skuCode?: string;
-  name?: string;
-  message: string;
-}
-
-export type CatalogTranslationJobStatus =
-  | "QUEUED"
-  | "RUNNING"
-  | "SUCCEEDED"
-  | "FAILED";
-
-export interface CatalogTranslationJob {
-  id: string;
-  sourceLocale: string;
-  targetLocale: string;
-  mode: "INCREMENTAL" | "FULL_REBUILD";
-  status: CatalogTranslationJobStatus;
-  totalSkus: number;
-  processedSkus: number;
-  failedSkus: number;
-  progressPercent: number;
-  currentSkuId?: string;
-  currentSkuName?: string;
-  provider: string;
-  providerVersion: string;
-  failureDetails: CatalogTranslationFailure[];
-  errorMessage?: string;
-  createdAt: string;
-  startedAt?: string;
-  completedAt?: string;
-}
-
-export interface CatalogTranslationStatus {
-  sourceLocale: string;
-  targetLocale: string;
-  provider: string;
-  providerVersion: string;
-  providerConfigured: boolean;
-  totalSkus: number;
-  translatedSkus: number;
-  staleSkus: number;
-  pendingSkus: number;
-  availableLocales: string[];
-  latestJob?: CatalogTranslationJob;
 }
 
 export interface InquiryItem {

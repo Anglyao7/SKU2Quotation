@@ -1,9 +1,9 @@
 import type {
   AttributeDefinition,
+  AnnouncementContentBlock,
+  AnnouncementPayload,
   AuthTokenData,
   CategoryLayout,
-  CatalogTranslationJob,
-  CatalogTranslationStatus,
   CoreProduct,
   CustomerPortalOrder,
   CustomerPortalOverview,
@@ -43,15 +43,12 @@ import type {
   PublicQuoteDraftSummary,
   QuotationRecord,
   QuotationSummary,
-  ReviewItem,
   SalesOrder,
   SalesOrderSummary,
   SkuListItem,
   SkuListPage,
   StorefrontAnalyticsSnapshot,
-  SupplierPrice,
-  SupplierProfile,
-  SupplierProfileDetail,
+  StorefrontAnnouncement,
   SystemMonitoringSnapshot,
   TenantMember,
   TenantPermission,
@@ -68,6 +65,9 @@ let accessToken: string | undefined;
 let refreshInFlight: Promise<AuthTokenData | undefined> | undefined;
 let authGeneration = 0;
 const getRequestsInFlight = new Map<string, Promise<unknown>>();
+const getResponseCache = new Map<string, { expiresAt: number; value: unknown }>();
+const GET_RESPONSE_CACHE_TTL_MS = 12_000;
+const GET_RESPONSE_CACHE_MAX_ENTRIES = 180;
 
 function resolveApiBase() {
   const configured = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
@@ -130,6 +130,9 @@ interface ApiAuthTokenData {
     default_workspace?: string | null;
     account_scope?: "STAFF" | "CUSTOMER_SUBACCOUNT" | null;
   };
+  memberships?: ApiMembershipSummary[];
+  permission_version?: number | null;
+  permissions?: string[];
 }
 
 interface ApiMembershipSummary {
@@ -164,6 +167,11 @@ function mapAuthData(row: ApiAuthTokenData): AuthTokenData {
       defaultWorkspace: defined(row.context.default_workspace),
       accountScope: defined(row.context.account_scope),
     },
+    memberships: Array.isArray(row.memberships)
+      ? row.memberships.map(mapMembership)
+      : undefined,
+    permissionVersion: defined(row.permission_version),
+    permissions: Array.isArray(row.permissions) ? row.permissions : undefined,
   };
 }
 
@@ -172,6 +180,7 @@ function acceptAuthData(row: ApiAuthTokenData) {
   accessToken = mapped.accessToken;
   authGeneration += 1;
   getRequestsInFlight.clear();
+  getResponseCache.clear();
   window.sessionStorage.setItem(CSRF_STORAGE_KEY, mapped.csrfToken);
   window.localStorage.removeItem("qingwan.accessToken");
   window.localStorage.removeItem("atc_access_token");
@@ -186,6 +195,7 @@ export function clearCoreAuthSession() {
   accessToken = undefined;
   authGeneration += 1;
   getRequestsInFlight.clear();
+  getResponseCache.clear();
   window.sessionStorage.removeItem(CSRF_STORAGE_KEY);
   window.localStorage.removeItem("qingwan.accessToken");
   window.localStorage.removeItem("atc_access_token");
@@ -242,15 +252,38 @@ async function performRequest<T>(path: string, init: RequestInit, retrySession: 
 async function request<T>(path: string, init: RequestInit = {}, retrySession = true): Promise<T> {
   const method = (init.method || "GET").toUpperCase();
   if (method !== "GET" || init.signal) {
+    if (method !== "GET") getResponseCache.clear();
     return performRequest<T>(path, init, retrySession);
   }
   const key = `${authGeneration}:${path}`;
+  const cacheable = init.cache !== "no-store"
+    && !path.startsWith("/auth/")
+    && !path.includes("/status")
+    && !path.includes("/jobs")
+    && !path.includes("/system/metrics")
+    && !path.includes("/storefront-analytics");
+  const now = Date.now();
+  const cached = cacheable ? getResponseCache.get(key) : undefined;
+  if (cached && cached.expiresAt > now) return cached.value as T;
+  if (cached) getResponseCache.delete(key);
   const existing = getRequestsInFlight.get(key);
   if (existing) return existing as Promise<T>;
   const pending = performRequest<T>(path, init, retrySession);
   getRequestsInFlight.set(key, pending);
   try {
-    return await pending;
+    const value = await pending;
+    if (cacheable) {
+      getResponseCache.set(key, {
+        expiresAt: Date.now() + GET_RESPONSE_CACHE_TTL_MS,
+        value,
+      });
+      while (getResponseCache.size > GET_RESPONSE_CACHE_MAX_ENTRIES) {
+        const oldest = getResponseCache.keys().next().value as string | undefined;
+        if (!oldest) break;
+        getResponseCache.delete(oldest);
+      }
+    }
+    return value;
   } finally {
     if (getRequestsInFlight.get(key) === pending) getRequestsInFlight.delete(key);
   }
@@ -333,11 +366,6 @@ function mapCurrentUser(row: ApiCurrentUserResponse): CurrentUser {
 
 export async function getCurrentUser(): Promise<CurrentUser> {
   return mapCurrentUser(await request<ApiCurrentUserResponse>("/me"));
-}
-
-export async function getPermissions(): Promise<PermissionSet> {
-  const row = await request<{ membership_id: string; permission_version: number; permissions: string[] }>("/me/permissions");
-  return { membershipId: row.membership_id, permissionVersion: row.permission_version, permissions: row.permissions };
 }
 
 export async function getAuthBootstrap(): Promise<{ profile: CurrentUser; permissions: PermissionSet }> {
@@ -824,14 +852,6 @@ export async function getImport(jobId: string) {
   return mapImport(await request<ApiImportJob>(`/imports/${encodeURIComponent(jobId)}`));
 }
 
-export async function createImport(file: File, supplierId?: string) {
-  const body = new FormData();
-  body.append("file", file);
-  body.append("source_type", "SUPPLIER_CATALOG");
-  if (supplierId) body.append("supplier_id", supplierId);
-  return mapImport(await request<ApiImportJob>("/imports", { method: "POST", body }));
-}
-
 function uploadProductTemplate(
   body: FormData,
   onUploadProgress: ((percent: number) => void) | undefined,
@@ -892,74 +912,6 @@ export async function createProductTemplateImport(
   body.append("source_type", "PRODUCT_TEMPLATE");
   body.append("defer_processing", "true");
   return mapImport(await uploadProductTemplate(body, onUploadProgress, true));
-}
-
-interface ApiReviewItem {
-  id: string;
-  job_id?: string;
-  task_id?: string;
-  candidate_group_key?: string;
-  applied_product_id?: string | null;
-  status: ReviewItem["status"];
-  name: string;
-  model: string;
-  category: string;
-  supplier: string;
-  source: string;
-  location: string;
-  image_status: ReviewItem["imageStatus"];
-  fields: ReviewItem["fields"];
-}
-
-function mapReview(row: ApiReviewItem): ReviewItem {
-  return {
-    id: row.id,
-    jobId: row.job_id,
-    taskId: row.task_id,
-    candidateGroupKey: row.candidate_group_key,
-    appliedProductId: defined(row.applied_product_id),
-    status: row.status,
-    name: row.name,
-    model: row.model,
-    category: row.category,
-    supplier: row.supplier,
-    source: row.source,
-    location: row.location,
-    imageStatus: row.image_status,
-    fields: row.fields,
-  };
-}
-
-export async function listReviewItems(jobId?: string) {
-  const path = jobId ? `/review-items?job_id=${encodeURIComponent(jobId)}` : "/product-review-items";
-  return (await request<ApiReviewItem[]>(path)).map(mapReview);
-}
-
-export async function updateReviewItem(itemId: string, normalizedValues: Record<string, string>) {
-  return mapReview(await request<ApiReviewItem>(`/review-items/${encodeURIComponent(itemId)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ normalized_values: normalizedValues }),
-  }));
-}
-
-export async function approveReviewItem(itemId: string) {
-  await request(`/review-items/${encodeURIComponent(itemId)}/approve`, { method: "POST" });
-}
-
-export async function approveProductCandidate(item: ReviewItem, confirmedValues: Record<string, string>) {
-  if (!item.taskId || !item.candidateGroupKey) throw new CoreApiError("审核记录缺少可信 Candidate 上下文", 400);
-  return request<{ product_id: string }>(
-    `/ai/product-intelligence/tasks/${encodeURIComponent(item.taskId)}/groups/${encodeURIComponent(item.candidateGroupKey)}/approve`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        idempotency_key: `web-review-${item.taskId}-${item.candidateGroupKey}`,
-        confirmed_values: confirmedValues,
-        activate: true,
-        change_reason: "Product Center human-confirmed internal publication",
-      }),
-    },
-  );
 }
 
 interface ApiOffer {
@@ -1136,14 +1088,6 @@ function mapAttribute(row: ApiProductDetail["attributes"][number]): ProductAttri
   return { id: row.id, definitionId: defined(row.definition_id), key: row.key, value: row.value, unitCode: defined(row.unit_code), reviewStatus: row.review_status };
 }
 
-export async function listProducts(params: { q?: string; categoryId?: string; approvedImagesOnly?: boolean } = {}) {
-  const query = new URLSearchParams();
-  if (params.q) query.set("q", params.q);
-  if (params.categoryId) query.set("category_id", params.categoryId);
-  if (params.approvedImagesOnly) query.set("approved_images_only", "true");
-  return (await request<ApiProduct[]>(`/products${query.size ? `?${query}` : ""}`)).map(mapProduct);
-}
-
 export async function listSkus(params: {
   q?: string;
   categoryId?: string;
@@ -1199,23 +1143,6 @@ function mapKnowledgeIndexStatus(row: ApiKnowledgeIndexStatus): KnowledgeIndexSt
 export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
   return mapKnowledgeIndexStatus(
     await request<ApiKnowledgeIndexStatus>("/ai/knowledge/index"),
-  );
-}
-
-export async function updateKnowledgeIndex(): Promise<KnowledgeIndexStatus> {
-  return mapKnowledgeIndexStatus(
-    await request<ApiKnowledgeIndexStatus>("/ai/knowledge/index/update", {
-      method: "POST",
-    }),
-  );
-}
-
-export async function rebuildKnowledgeIndex(): Promise<KnowledgeIndexStatus> {
-  return mapKnowledgeIndexStatus(
-    await request<ApiKnowledgeIndexStatus>("/ai/knowledge/index/rebuild", {
-      method: "POST",
-      body: JSON.stringify({ confirm_full_rebuild: true }),
-    }),
   );
 }
 
@@ -1287,124 +1214,6 @@ export async function getKnowledgeIndexJob(jobId: string): Promise<KnowledgeInde
   return mapKnowledgeIndexJob(
     await request<ApiKnowledgeIndexJob>(
       `/ai/knowledge/index/jobs/${encodeURIComponent(jobId)}`,
-    ),
-  );
-}
-
-interface ApiCatalogTranslationFailure {
-  sku_id?: string | null;
-  sku_code?: string | null;
-  name?: string | null;
-  message: string;
-}
-
-interface ApiCatalogTranslationJob {
-  id: string;
-  source_locale: string;
-  target_locale: string;
-  mode: "INCREMENTAL" | "FULL_REBUILD";
-  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
-  total_skus: number;
-  processed_skus: number;
-  failed_skus: number;
-  progress_percent: number;
-  current_sku_id?: string | null;
-  current_sku_name?: string | null;
-  provider: string;
-  provider_version: string;
-  failure_details: ApiCatalogTranslationFailure[];
-  error_message?: string | null;
-  created_at: string;
-  started_at?: string | null;
-  completed_at?: string | null;
-}
-
-interface ApiCatalogTranslationStatus {
-  source_locale: string;
-  target_locale: string;
-  provider: string;
-  provider_version: string;
-  provider_configured: boolean;
-  total_skus: number;
-  translated_skus: number;
-  stale_skus: number;
-  pending_skus: number;
-  available_locales: string[];
-  latest_job?: ApiCatalogTranslationJob | null;
-}
-
-function mapCatalogTranslationJob(
-  row: ApiCatalogTranslationJob,
-): CatalogTranslationJob {
-  return {
-    id: row.id,
-    sourceLocale: row.source_locale,
-    targetLocale: row.target_locale,
-    mode: row.mode,
-    status: row.status,
-    totalSkus: row.total_skus,
-    processedSkus: row.processed_skus,
-    failedSkus: row.failed_skus,
-    progressPercent: row.progress_percent,
-    currentSkuId: defined(row.current_sku_id),
-    currentSkuName: defined(row.current_sku_name),
-    provider: row.provider,
-    providerVersion: row.provider_version,
-    failureDetails: (row.failure_details ?? []).map((failure) => ({
-      skuId: defined(failure.sku_id),
-      skuCode: defined(failure.sku_code),
-      name: defined(failure.name),
-      message: failure.message,
-    })),
-    errorMessage: defined(row.error_message),
-    createdAt: row.created_at,
-    startedAt: defined(row.started_at),
-    completedAt: defined(row.completed_at),
-  };
-}
-
-export async function getCatalogTranslationStatus(): Promise<CatalogTranslationStatus> {
-  const row = await request<ApiCatalogTranslationStatus>(
-    "/catalog/translations/status?target_locale=en-US",
-  );
-  return {
-    sourceLocale: row.source_locale,
-    targetLocale: row.target_locale,
-    provider: row.provider,
-    providerVersion: row.provider_version,
-    providerConfigured: row.provider_configured,
-    totalSkus: row.total_skus,
-    translatedSkus: row.translated_skus,
-    staleSkus: row.stale_skus,
-    pendingSkus: row.pending_skus,
-    availableLocales: row.available_locales,
-    latestJob: row.latest_job
-      ? mapCatalogTranslationJob(row.latest_job)
-      : undefined,
-  };
-}
-
-export async function startCatalogTranslationJob(
-  fullRebuild = false,
-): Promise<CatalogTranslationJob> {
-  return mapCatalogTranslationJob(
-    await request<ApiCatalogTranslationJob>("/catalog/translations/jobs", {
-      method: "POST",
-      body: JSON.stringify({
-        target_locale: "en-US",
-        mode: fullRebuild ? "FULL_REBUILD" : "INCREMENTAL",
-        confirm_full_rebuild: fullRebuild,
-      }),
-    }),
-  );
-}
-
-export async function getCatalogTranslationJob(
-  jobId: string,
-): Promise<CatalogTranslationJob> {
-  return mapCatalogTranslationJob(
-    await request<ApiCatalogTranslationJob>(
-      `/catalog/translations/jobs/${encodeURIComponent(jobId)}`,
     ),
   );
 }
@@ -1765,6 +1574,110 @@ export async function getStorefrontAnalytics(
   };
 }
 
+interface ApiStorefrontAnnouncement {
+  id: string;
+  title: string;
+  display_type: "TICKER" | "MODAL";
+  ticker_text?: string | null;
+  content_blocks: AnnouncementContentBlock[];
+  starts_at: string;
+  ends_at: string;
+  repeat_interval_hours: number;
+  publication_status: "DRAFT" | "PUBLISHED" | "PAUSED";
+  version: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapStorefrontAnnouncement(
+  row: ApiStorefrontAnnouncement,
+): StorefrontAnnouncement {
+  return {
+    id: row.id,
+    title: row.title,
+    displayType: row.display_type,
+    tickerText: defined(row.ticker_text),
+    contentBlocks: row.content_blocks || [],
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+    repeatIntervalHours: row.repeat_interval_hours,
+    publicationStatus: row.publication_status,
+    version: row.version,
+    isActive: row.is_active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function announcementBody(input: AnnouncementPayload) {
+  return {
+    title: input.title,
+    display_type: input.displayType,
+    ticker_text: input.displayType === "TICKER" ? input.tickerText || null : null,
+    content_blocks: input.displayType === "MODAL" ? input.contentBlocks : [],
+    starts_at: input.startsAt,
+    ends_at: input.endsAt || null,
+    duration_days: input.durationDays ?? null,
+    repeat_interval_hours: input.repeatIntervalHours,
+    publication_status: input.publicationStatus,
+  };
+}
+
+export async function listAnnouncements(): Promise<{
+  items: StorefrontAnnouncement[];
+  total: number;
+}> {
+  const row = await request<{
+    items: ApiStorefrontAnnouncement[];
+    total: number;
+  }>("/announcements");
+  return {
+    items: row.items.map(mapStorefrontAnnouncement),
+    total: row.total,
+  };
+}
+
+export async function createAnnouncement(
+  input: AnnouncementPayload,
+): Promise<StorefrontAnnouncement> {
+  const announcement = mapStorefrontAnnouncement(
+    await request<ApiStorefrontAnnouncement>("/announcements", {
+      method: "POST",
+      body: JSON.stringify(announcementBody(input)),
+    }),
+  );
+  bumpPublicCatalogRevision();
+  return announcement;
+}
+
+export async function updateAnnouncement(
+  announcementId: string,
+  input: AnnouncementPayload,
+): Promise<StorefrontAnnouncement> {
+  const announcement = mapStorefrontAnnouncement(
+    await request<ApiStorefrontAnnouncement>(
+      `/announcements/${encodeURIComponent(announcementId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(announcementBody(input)),
+      },
+    ),
+  );
+  bumpPublicCatalogRevision();
+  return announcement;
+}
+
+export async function deleteAnnouncement(
+  announcementId: string,
+): Promise<void> {
+  await request<void>(
+    `/announcements/${encodeURIComponent(announcementId)}`,
+    { method: "DELETE" },
+  );
+  bumpPublicCatalogRevision();
+}
+
 export async function listAttributeDefinitions(categoryId?: string): Promise<AttributeDefinition[]> {
   const rows = await request<ApiAttributeDefinition[]>(`/attribute-definitions${categoryId ? `?category_id=${encodeURIComponent(categoryId)}` : ""}`);
   return rows.map((row) => ({ id: row.id, categoryId: defined(row.category_id), attributeKey: row.attribute_key, displayName: row.display_name, dataType: row.data_type, unitCode: defined(row.unit_code), enumValues: defined(row.enum_values), isRequired: row.is_required, isVariant: row.is_variant, isFilterable: row.is_filterable, isMatchable: row.is_matchable, status: row.status, version: row.version }));
@@ -1778,65 +1691,11 @@ export async function createAttributeDefinition(input: Omit<AttributeDefinition,
   return { ...input, id: row.id, status: row.status, version: row.version };
 }
 
-interface ApiPrice { id: string; product_id: string; supplier_product_id: string; supplier_id: string; supplier_name: string; sku_id?: string | null; min_quantity: number; max_quantity?: number | null; unit_price: number; currency: string; unit_code: string; incoterm?: string | null; tax_status?: string | null; valid_from: string; valid_to?: string | null; status: string; price_validity: SupplierPrice["priceValidity"]; confirmed_at?: string | null; created_at: string }
-
-function mapPrice(row: ApiPrice): SupplierPrice {
-  return { id: row.id, productId: row.product_id, supplierProductId: row.supplier_product_id, supplierId: row.supplier_id, supplierName: row.supplier_name, skuId: defined(row.sku_id), minQuantity: row.min_quantity, maxQuantity: defined(row.max_quantity), unitPrice: Number(row.unit_price), currency: row.currency, unitCode: row.unit_code, incoterm: defined(row.incoterm), taxStatus: defined(row.tax_status), validFrom: row.valid_from, validTo: defined(row.valid_to), status: row.status, priceValidity: row.price_validity, confirmedAt: defined(row.confirmed_at), createdAt: row.created_at };
-}
-
-export async function listPrices(productId: string) {
-  return (await request<ApiPrice[]>(`/products/${encodeURIComponent(productId)}/prices`)).map(mapPrice);
-}
-
-export async function createPrice(input: { supplierProductId: string; skuId?: string; minQuantity: number; maxQuantity?: number; unitPrice: number; currency: string; unitCode: string; incoterm?: string; validFrom: string; validTo?: string }) {
-  return mapPrice(await request<ApiPrice>("/product-prices", {
-    method: "POST",
-    body: JSON.stringify({ supplier_product_id: input.supplierProductId, sku_id: input.skuId, min_quantity: input.minQuantity, max_quantity: input.maxQuantity, unit_price: input.unitPrice, currency: input.currency, unit_code: input.unitCode, incoterm: input.incoterm, valid_from: input.validFrom, valid_to: input.validTo }),
-  }));
-}
-
 interface ApiDashboard { generated_at: string; data_scope: "TENANT" | "SELF"; metrics: Array<{ key: string; label: string; value: number; unit?: string | null; status: string; destination: string }>; recent_imports: Array<{ id: string; filename: string; supplier_name: string; source_type: string; status: string; progress: number; products_count: number; warnings_count: number; created_at: string }>; data_health?: { score: number; active_products: number; approved_image_coverage: number; supplier_source_coverage: number; valid_price_coverage: number } | null }
 
 export async function getDashboard(): Promise<DashboardSnapshot> {
   const row = await request<ApiDashboard>("/dashboard");
   return { generatedAt: row.generated_at, dataScope: row.data_scope, metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, sourceType: item.source_type, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })), dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined };
-}
-
-interface ApiSupplierProfile { id: string; supplier_code: string; name: string; category: string; category_summary?: string | null; country_code?: string | null; website?: string | null; status: string; risk_level: string; health: string; version: number; active_products: number; active_skus: number; pending_reviews: number; valid_prices: number; expired_prices: number; latest_import_at?: string | null; updated_at: string; latest_score?: { overall_score?: number | string | null; quality_score?: number | string | null; price_score?: number | string | null; delivery_score?: number | string | null; response_score?: number | string | null; risk_score?: number | string | null; sample_size: number; method_version: string; calculated_at: string } | null }
-interface ApiSupplierDetail extends ApiSupplierProfile { sources: Array<{ supplier_product_id: string; product_id: string; product_code: string; product_name: string; sku_id?: string | null; supplier_sku?: string | null; lead_time_days?: number | null; status: string; unit_price?: number | string | null; currency?: string | null; price_valid_to?: string | null; price_validity: string }>; recent_imports: Array<{ id: string; filename: string; status: string; products_count: number; warnings_count: number; created_at: string }> }
-
-function mapSupplier(row: ApiSupplierProfile): SupplierProfile {
-  const numeric = (value: number | string | null | undefined) => value == null ? undefined : Number(value);
-  const score = row.latest_score;
-  return { id: row.id, supplierCode: row.supplier_code, name: row.name, category: row.category, categorySummary: defined(row.category_summary), countryCode: defined(row.country_code), website: defined(row.website), status: row.status, riskLevel: row.risk_level, health: row.health, version: row.version, activeProducts: row.active_products, activeSkus: row.active_skus, pendingReviews: row.pending_reviews, validPrices: row.valid_prices, expiredPrices: row.expired_prices, latestImportAt: defined(row.latest_import_at), updatedAt: row.updated_at, latestScore: score ? { overallScore: numeric(score.overall_score), qualityScore: numeric(score.quality_score), priceScore: numeric(score.price_score), deliveryScore: numeric(score.delivery_score), responseScore: numeric(score.response_score), riskScore: numeric(score.risk_score), sampleSize: score.sample_size, methodVersion: score.method_version, calculatedAt: score.calculated_at } : undefined };
-}
-
-export async function listSupplierProfiles() {
-  return (await request<ApiSupplierProfile[]>("/supplier-profiles")).map(mapSupplier);
-}
-
-export async function createSupplierProfile(input: {
-  supplierCode: string;
-  name: string;
-  category: string;
-  countryCode?: string;
-  website?: string;
-}) {
-  return mapSupplier(await request<ApiSupplierProfile>("/supplier-profiles", {
-    method: "POST",
-    body: JSON.stringify({
-      supplier_code: input.supplierCode,
-      name: input.name,
-      category: input.category,
-      country_code: input.countryCode,
-      website: input.website,
-    }),
-  }));
-}
-
-export async function getSupplierProfile(supplierId: string): Promise<SupplierProfileDetail> {
-  const row = await request<ApiSupplierDetail>(`/supplier-profiles/${encodeURIComponent(supplierId)}`);
-  return { ...mapSupplier(row), sources: row.sources.map((source) => ({ supplierProductId: source.supplier_product_id, productId: source.product_id, productCode: source.product_code, productName: source.product_name, skuId: defined(source.sku_id), supplierSku: defined(source.supplier_sku), leadTimeDays: defined(source.lead_time_days), status: source.status, unitPrice: source.unit_price == null ? undefined : Number(source.unit_price), currency: defined(source.currency), priceValidTo: defined(source.price_valid_to), priceValidity: source.price_validity })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, status: item.status, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })) };
 }
 
 export async function searchImage(file: File) {
