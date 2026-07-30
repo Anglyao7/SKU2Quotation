@@ -20,6 +20,7 @@ from alembic.config import Config
 from fastapi import Request, Response
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
+from openpyxl.drawing.image import Image as OpenpyxlImage
 from sqlalchemy import MetaData, create_engine, delete, func, inspect, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
@@ -229,6 +230,19 @@ def _cleanup_template_test_records(
                 )
             )
         if product_ids:
+            image_rows = session.scalars(
+                select(ProductImageRow)
+                .where(
+                    ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductImageRow.product_id.in_(product_ids),
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+            object_keys.extend(
+                row.object_key
+                for row in image_rows
+                if not row.object_key.startswith(("http://", "https://"))
+            )
             session.execute(
                 delete(ProductImageRow).where(
                     ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
@@ -303,7 +317,7 @@ def _cleanup_template_test_records(
                 if media_object_ids
                 else []
             )
-            object_keys = [row.object_key for row in media_rows]
+            object_keys.extend(row.object_key for row in media_rows)
             session.execute(
                 delete(WorkerJobRow).where(
                     WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
@@ -4897,8 +4911,122 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         assert sheet["C1"].comment is not None
         assert "选填" in sheet["C1"].comment.text
         assert "临时型号" in sheet["C1"].comment.text
+        assert sheet["I1"].comment is not None
+        assert "直接插入" in sheet["I1"].comment.text
+        assert "HTTP(S)" in sheet["I1"].comment.text
     finally:
         workbook.close()
+
+
+def test_product_template_imports_embedded_images_into_managed_storage(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    import_job_ids: list[str] = []
+    sku_code = "EMBEDDED-API-001"
+    category_name = "内嵌图片测试分类"
+    _cleanup_template_test_records(
+        import_job_ids=[],
+        sku_codes=[sku_code],
+        category_names=[category_name],
+    )
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[sku_code],
+            category_names=[category_name],
+        )
+    )
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0"
+        b"\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00"
+        b"\x00IEND\xaeB`\x82"
+    )
+    image_path = tmp_path / "embedded-product.png"
+    image_path.write_bytes(image_bytes)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = PRODUCT_TEMPLATE_SHEET
+    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    sheet.append([
+        "内嵌图片 API 商品",
+        category_name,
+        sku_code,
+        None,
+        None,
+        "两张图片直接放在 Excel 单元格位置",
+        None,
+        None,
+        *([None] * 10),
+    ])
+    first = OpenpyxlImage(image_path)
+    first.anchor = "I2"
+    sheet.add_image(first)
+    second = OpenpyxlImage(image_path)
+    second.anchor = "J2"
+    sheet.add_image(second)
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "内嵌图片商品.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+
+    assert response.status_code == 201, response.text
+    import_job_ids.append(response.json()["id"])
+    assert response.json()["status"] == "published"
+    with SessionLocal() as session:
+        sku = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == sku_code,
+            )
+        )
+        assert sku is not None
+        images = session.scalars(
+            select(ProductImageRow)
+            .where(
+                ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductImageRow.product_id == sku.product_id,
+                ProductImageRow.deleted_at.is_(None),
+            )
+            .order_by(ProductImageRow.sort_order)
+        ).all()
+        assert len(images) == 2
+        assert [image.image_role for image in images] == ["MAIN", "GALLERY"]
+        assert all(image.storage_provider == "LOCAL" for image in images)
+        assert all(image.bucket == "product-template" for image in images)
+        assert all(image.content_type == "image/png" for image in images)
+        assert all(image.byte_size == len(image_bytes) for image in images)
+        assert all(
+            image.sha256 == hashlib.sha256(image_bytes).hexdigest()
+            for image in images
+        )
+        assert all(
+            get_object_storage().exists(image.object_key)
+            for image in images
+        )
+
+    listing = client.get("/api/store/demo/skus", params={"q": sku_code})
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["total"] == 1
+    public_image_url = listing.json()["items"][0]["image_url"]
+    assert public_image_url.startswith("/api/store/demo/media/")
+    public_image = client.get(public_image_url)
+    assert public_image.status_code == 200
+    assert public_image.content == image_bytes
+    assert public_image.headers["content-type"].startswith("image/png")
 
 
 def test_product_template_failure_returns_complete_structured_issue_details(

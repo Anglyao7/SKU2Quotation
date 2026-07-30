@@ -55,6 +55,7 @@ playwright-report/
 work/
 differentFormat/
 商品列表_*.xlsx
+配件上传.xlsx
 
 # Office temporary lock files
 ~$*.xlsx

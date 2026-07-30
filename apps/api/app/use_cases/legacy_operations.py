@@ -335,7 +335,10 @@ def build_product_template_workbook() -> bytes:
         "备注": "选填，仅作为商品补充说明。",
         "标签": "选填。多个标签使用中文或英文逗号分隔，最多 20 个。",
     }
-    image_instruction = "选填。填写可公开访问的 HTTP(S) 商品图片地址。"
+    image_instruction = (
+        "选填。可把真实图片直接插入对应单元格位置，"
+        "也可填写可公开访问的 HTTP(S) 商品图片地址。"
+    )
     widths = (28, 18, 22, 28, 14, 44, 24, 24, *([38] * 10))
 
     for index, (header, width) in enumerate(

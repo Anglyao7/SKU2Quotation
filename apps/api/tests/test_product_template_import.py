@@ -1,8 +1,10 @@
 from decimal import Decimal
+import hashlib
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as OpenpyxlImage
 
 from app.services.product_template_import import (
     PRODUCT_TEMPLATE_HEADERS,
@@ -51,7 +53,61 @@ def test_fixed_template_keeps_note_without_creating_a_moq(tmp_path: Path) -> Non
     assert result.rows[0].tags == ("新品", "热卖")
     assert result.rows[0].default_moq is None
     assert result.rows[0].image_urls == ("https://img.example.com/sku-001.jpg",)
+    assert result.rows[0].image_url_columns == (1,)
+    assert result.rows[0].embedded_images == ()
     assert result.warnings == ()
+
+
+def test_embedded_images_are_mapped_to_product_rows_and_image_columns(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "内嵌图片商品.xlsx"
+    image_path = tmp_path / "product.png"
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0"
+        b"\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00"
+        b"\x00IEND\xaeB`\x82"
+    )
+    image_path.write_bytes(image_bytes)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = PRODUCT_TEMPLATE_SHEET
+    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    sheet.append([
+        "内嵌图片商品",
+        "配件",
+        "EMBEDDED-001",
+        None,
+        None,
+        "包含两张真实图片",
+        None,
+        None,
+        *([None] * 10),
+    ])
+    first = OpenpyxlImage(image_path)
+    first.anchor = "I2"
+    sheet.add_image(first)
+    second = OpenpyxlImage(image_path)
+    second.anchor = "J2"
+    sheet.add_image(second)
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    embedded = result.rows[0].embedded_images
+    assert len(embedded) == 2
+    assert [image.image_column for image in embedded] == [1, 2]
+    assert all(image.row_number == 2 for image in embedded)
+    assert all(image.content_type == "image/png" for image in embedded)
+    assert all(image.byte_size == len(image_bytes) for image in embedded)
+    assert all(
+        image.sha256 == hashlib.sha256(image_bytes).hexdigest()
+        for image in embedded
+    )
 
 
 def test_duplicate_sku_is_case_and_whitespace_insensitive(tmp_path: Path) -> None:

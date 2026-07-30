@@ -1,8 +1,8 @@
 import { Button, Card, IconButton, Text } from "@radix-ui/themes";
 import { Check, Image as ImageIcon, Minus, Plus, Trash } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { imageFallback, money } from "../lib/format";
+import { money } from "../lib/format";
 import { storefrontText } from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
 import type { Sku, StorefrontLocale } from "../types";
@@ -24,13 +24,15 @@ export function ProductCard({
   onOpenDetails: () => void;
   locale: StorefrontLocale;
 }) {
-  const fallback = imageFallback(sku.sku_code);
-  const [imageSrc, setImageSrc] = useState(sku.image_url || fallback);
-  const [imageFailed, setImageFailed] = useState(false);
+  const [imageFailed, setImageFailed] = useState(!sku.image_url);
   const displayTag = sku.display_tag || sku.tags[0];
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
+
+  useEffect(() => {
+    setImageFailed(!sku.image_url);
+  }, [sku.image_url]);
 
   return (
     <Card className={`sku-card${quantity > 0 ? " is-selected" : ""}`} variant="surface">
@@ -41,16 +43,13 @@ export function ProductCard({
         aria-label={t("查看 {name} 商品详情", { name: sku.name })}
         onClick={onOpenDetails}
       >
-        {!imageFailed ? (
+        {sku.image_url && !imageFailed ? (
           <img
             className="sku-image"
-            src={imageSrc}
+            src={sku.image_url}
             alt={sku.name}
             loading="lazy"
-            onError={() => {
-              if (imageSrc !== fallback) setImageSrc(fallback);
-              else setImageFailed(true);
-            }}
+            onError={() => setImageFailed(true)}
           />
         ) : (
           <div className="image-unavailable"><ImageIcon size={30} /><span>{t("暂无图片")}</span></div>

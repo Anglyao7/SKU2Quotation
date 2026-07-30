@@ -15,6 +15,7 @@ import {
   CheckCircle,
   FilePdf,
   FileXls,
+  Image as ImageIcon,
   Minus,
   Plus,
   ShoppingCartSimple,
@@ -22,11 +23,11 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
-import { imageFallback, money, quoteNumber } from "../lib/format";
+import { money, quoteNumber } from "../lib/format";
 import { storefrontText } from "../lib/storefrontLocale";
 import type { CreateQuoteInput, Quote, Sku, StorefrontLocale } from "../types";
 
@@ -43,6 +44,26 @@ interface CartDrawerProps {
   onQuantity: (skuId: string, quantity: number) => void;
   onClear: () => void;
   locale: StorefrontLocale;
+}
+
+function CartLineImage({ sku }: { sku: Sku }) {
+  const [imageFailed, setImageFailed] = useState(!sku.image_url);
+
+  useEffect(() => {
+    setImageFailed(!sku.image_url);
+  }, [sku.image_url]);
+
+  return sku.image_url && !imageFailed ? (
+    <img
+      src={sku.image_url}
+      alt={sku.name}
+      onError={() => setImageFailed(true)}
+    />
+  ) : (
+    <span className="cart-line-image-placeholder" aria-hidden="true">
+      <ImageIcon size={21} />
+    </span>
+  );
 }
 
 export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, onClear, locale }: CartDrawerProps) {
@@ -186,7 +207,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
               <div className="cart-lines">
                 {lines.map(({ sku, quantity }) => (
                   <div className="cart-line" key={sku.id}>
-                    <img src={sku.image_url || imageFallback(sku.sku_code)} alt={sku.name} />
+                    <CartLineImage sku={sku} />
                     <div className="cart-line-copy">
                       <Text size="2" weight="medium" className="truncate-text">{sku.name}</Text>
                       <Text size="1" color="gray" className="mono-text">{sku.sku_code}</Text>

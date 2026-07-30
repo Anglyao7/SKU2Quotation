@@ -20,7 +20,7 @@ import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
-import { imageFallback, money } from "../lib/format";
+import { money } from "../lib/format";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import { storefrontText } from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
@@ -61,9 +61,7 @@ export function SkuDetailPage() {
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(store.slug),
   );
-  const fallback = imageFallback(sku.sku_code);
-  const [imageSrc, setImageSrc] = useState(sku.image_url || fallback);
-  const [imageFailed, setImageFailed] = useState(false);
+  const [imageFailed, setImageFailed] = useState(!sku.image_url);
   const displayTag = sku.display_tag || sku.tags[0];
   const quantity = cart[sku.id]?.quantity || 0;
   const cartLines = useMemo(() => Object.values(cart), [cart]);
@@ -79,6 +77,10 @@ export function SkuDetailPage() {
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [sku.id]);
+
+  useEffect(() => {
+    setImageFailed(!sku.image_url);
+  }, [sku.image_url]);
 
   useEffect(() => {
     const eventId = storefrontViewEventId(location.key, sku.id);
@@ -183,14 +185,11 @@ export function SkuDetailPage() {
 
           <section className="sku-detail-layout" aria-labelledby="sku-detail-title">
             <Card className="sku-detail-media" variant="surface">
-              {!imageFailed ? (
+              {sku.image_url && !imageFailed ? (
                 <img
-                  src={imageSrc}
+                  src={sku.image_url}
                   alt={sku.name}
-                  onError={() => {
-                    if (imageSrc !== fallback) setImageSrc(fallback);
-                    else setImageFailed(true);
-                  }}
+                  onError={() => setImageFailed(true)}
                 />
               ) : (
                 <div className="image-unavailable">

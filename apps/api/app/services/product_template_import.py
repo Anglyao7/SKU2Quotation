@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
+import os
+import posixpath
 import re
+import tempfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 from zipfile import BadZipFile, ZipFile
@@ -16,6 +20,7 @@ from openpyxl import load_workbook
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
+from ..adapters.object_storage import get_object_storage
 from ..database import SessionLocal, set_request_context
 from ..db_models import ImportJobRow, SupplierRow
 from ..file_security_models import MediaObjectRow, WorkerJobRow
@@ -60,6 +65,9 @@ TEMPLATE_SOURCE_KEY = SKU_TEMPLATE_SOURCE_OPTION_KEY
 TEMPLATE_SOURCE_VALUE = "PRODUCT_TEMPLATE"
 TEMPLATE_IMAGE_BUCKET = "product-template"
 UNCATEGORIZED_CATEGORY_NAME = "未分类"
+PRODUCT_IMAGE_COLUMN_OFFSET = 8
+PRODUCT_IMAGE_COLUMN_COUNT = 10
+OOXML_WORKBOOK_PART = "xl/workbook.xml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +102,18 @@ class ProductTemplateValidationError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class EmbeddedTemplateImage:
+    row_number: int
+    image_column: int
+    sequence: int
+    archive_path: str
+    original_filename: str
+    content_type: str
+    byte_size: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProductTemplateRow:
     row_number: int
     name: str
@@ -106,6 +126,21 @@ class ProductTemplateRow:
     tags: tuple[str, ...]
     default_moq: Decimal | None
     image_urls: tuple[str, ...]
+    image_url_columns: tuple[int, ...]
+    embedded_images: tuple[EmbeddedTemplateImage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StoredTemplateImage:
+    image_column: int
+    sequence: int
+    object_key: str
+    original_filename: str
+    content_type: str
+    byte_size: int
+    sha256: str
+    storage_provider: str
+    archive_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +371,273 @@ def _inspect_archive(path: Path) -> None:
         raise ProductTemplateValidationError("文件不是有效的 XLSX 工作簿。") from exc
 
 
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _xml_attribute(element: ET.Element, name: str) -> str | None:
+    for key, value in element.attrib.items():
+        if _xml_local_name(key) == name:
+            return value
+    return None
+
+
+def _first_xml_child(element: ET.Element, name: str) -> ET.Element | None:
+    return next(
+        (child for child in element if _xml_local_name(child.tag) == name),
+        None,
+    )
+
+
+def _relationship_part_path(source_part: str) -> str:
+    return posixpath.join(
+        posixpath.dirname(source_part),
+        "_rels",
+        f"{posixpath.basename(source_part)}.rels",
+    )
+
+
+def _resolve_package_target(source_part: str, target: str) -> str | None:
+    normalized_target = target.replace("\\", "/").strip()
+    if not normalized_target:
+        return None
+    if normalized_target.startswith("/"):
+        resolved = posixpath.normpath(normalized_target.lstrip("/"))
+    else:
+        resolved = posixpath.normpath(
+            posixpath.join(posixpath.dirname(source_part), normalized_target)
+        )
+    if resolved in {"", ".", ".."} or resolved.startswith("../"):
+        return None
+    return PurePosixPath(resolved).as_posix()
+
+
+def _relationship_targets(
+    archive: ZipFile,
+    *,
+    source_part: str,
+) -> dict[str, str]:
+    rels_path = _relationship_part_path(source_part)
+    if rels_path not in archive.namelist():
+        return {}
+    try:
+        root = ET.fromstring(archive.read(rels_path))
+    except (ET.ParseError, KeyError):
+        return {}
+    targets: dict[str, str] = {}
+    for relationship in root:
+        if _xml_local_name(relationship.tag) != "Relationship":
+            continue
+        if str(relationship.attrib.get("TargetMode", "")).casefold() == "external":
+            continue
+        relationship_id = relationship.attrib.get("Id")
+        target = relationship.attrib.get("Target")
+        resolved = (
+            _resolve_package_target(source_part, target)
+            if target is not None
+            else None
+        )
+        if relationship_id and resolved:
+            targets[relationship_id] = resolved
+    return targets
+
+
+def _zip_member_sha256(archive: ZipFile, member: str) -> str:
+    digest = hashlib.sha256()
+    with archive.open(member) as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _embedded_image_content_type(member: str) -> str | None:
+    content_type, _encoding = mimetypes.guess_type(member)
+    if content_type and content_type.startswith("image/"):
+        return content_type
+    return None
+
+
+def _extract_embedded_template_images(
+    path: Path,
+) -> tuple[dict[int, tuple[EmbeddedTemplateImage, ...]], tuple[str, ...]]:
+    """Read XLSX drawing relationships without materializing every image.
+
+    Excel drawing anchors are zero-based. A drawing that starts in I2 therefore
+    belongs to product row 2 and 商品图片1. Keeping only archive references in
+    the parse result prevents a large workbook from duplicating all image bytes
+    in worker memory.
+    """
+
+    warnings: list[str] = []
+    grouped: dict[int, list[EmbeddedTemplateImage]] = defaultdict(list)
+    try:
+        with ZipFile(path) as archive:
+            archive_names = set(archive.namelist())
+            if OOXML_WORKBOOK_PART not in archive_names:
+                return {}, ()
+            try:
+                workbook_root = ET.fromstring(archive.read(OOXML_WORKBOOK_PART))
+            except ET.ParseError:
+                return {}, ("工作簿图片关系无法读取，已忽略内嵌图片。",)
+
+            sheet_relationships = _relationship_targets(
+                archive,
+                source_part=OOXML_WORKBOOK_PART,
+            )
+            sheet_part: str | None = None
+            for element in workbook_root.iter():
+                if (
+                    _xml_local_name(element.tag) == "sheet"
+                    and element.attrib.get("name") == PRODUCT_TEMPLATE_SHEET
+                ):
+                    relationship_id = _xml_attribute(element, "id")
+                    sheet_part = (
+                        sheet_relationships.get(relationship_id)
+                        if relationship_id
+                        else None
+                    )
+                    break
+            if sheet_part is None or sheet_part not in archive_names:
+                return {}, ()
+
+            try:
+                sheet_root = ET.fromstring(archive.read(sheet_part))
+            except ET.ParseError:
+                return {}, ("商品工作表图片关系无法读取，已忽略内嵌图片。",)
+            drawing_relationships = _relationship_targets(
+                archive,
+                source_part=sheet_part,
+            )
+            drawing_parts: list[str] = []
+            for element in sheet_root.iter():
+                if _xml_local_name(element.tag) != "drawing":
+                    continue
+                relationship_id = _xml_attribute(element, "id")
+                drawing_part = (
+                    drawing_relationships.get(relationship_id)
+                    if relationship_id
+                    else None
+                )
+                if drawing_part and drawing_part in archive_names:
+                    drawing_parts.append(drawing_part)
+
+            ignored_anchors = 0
+            unreadable_images = 0
+            drawing_sequence = 0
+            for drawing_part in drawing_parts:
+                try:
+                    drawing_root = ET.fromstring(archive.read(drawing_part))
+                except ET.ParseError:
+                    unreadable_images += 1
+                    continue
+                image_relationships = _relationship_targets(
+                    archive,
+                    source_part=drawing_part,
+                )
+                for anchor in drawing_root:
+                    if _xml_local_name(anchor.tag) not in {
+                        "oneCellAnchor",
+                        "twoCellAnchor",
+                    }:
+                        continue
+                    from_anchor = _first_xml_child(anchor, "from")
+                    if from_anchor is None:
+                        unreadable_images += 1
+                        continue
+                    row_element = _first_xml_child(from_anchor, "row")
+                    column_element = _first_xml_child(from_anchor, "col")
+                    if (
+                        row_element is None
+                        or column_element is None
+                        or row_element.text is None
+                        or column_element.text is None
+                    ):
+                        unreadable_images += 1
+                        continue
+                    try:
+                        row_number = int(row_element.text) + 1
+                        zero_based_column = int(column_element.text)
+                    except ValueError:
+                        unreadable_images += 1
+                        continue
+
+                    blip = next(
+                        (
+                            element
+                            for element in anchor.iter()
+                            if _xml_local_name(element.tag) == "blip"
+                        ),
+                        None,
+                    )
+                    relationship_id = (
+                        _xml_attribute(blip, "embed") if blip is not None else None
+                    )
+                    media_part = (
+                        image_relationships.get(relationship_id)
+                        if relationship_id
+                        else None
+                    )
+                    if media_part is None:
+                        continue
+                    if not (
+                        PRODUCT_IMAGE_COLUMN_OFFSET
+                        <= zero_based_column
+                        < PRODUCT_IMAGE_COLUMN_OFFSET + PRODUCT_IMAGE_COLUMN_COUNT
+                    ) or row_number < 2:
+                        ignored_anchors += 1
+                        continue
+                    if media_part not in archive_names:
+                        unreadable_images += 1
+                        continue
+                    content_type = _embedded_image_content_type(media_part)
+                    if content_type is None:
+                        unreadable_images += 1
+                        continue
+                    info = archive.getinfo(media_part)
+                    if info.file_size <= 0:
+                        unreadable_images += 1
+                        continue
+                    drawing_sequence += 1
+                    grouped[row_number].append(
+                        EmbeddedTemplateImage(
+                            row_number=row_number,
+                            image_column=(
+                                zero_based_column - PRODUCT_IMAGE_COLUMN_OFFSET + 1
+                            ),
+                            sequence=drawing_sequence,
+                            archive_path=media_part,
+                            original_filename=PurePosixPath(media_part).name[:500],
+                            content_type=content_type,
+                            byte_size=info.file_size,
+                            sha256=_zip_member_sha256(archive, media_part),
+                        )
+                    )
+
+            if ignored_anchors:
+                warnings.append(
+                    f"有 {ignored_anchors} 张内嵌图片未放在商品图片1-10列，已忽略。"
+                )
+            if unreadable_images:
+                warnings.append(
+                    f"有 {unreadable_images} 张内嵌图片格式或关系异常，已忽略。"
+                )
+    except BadZipFile:
+        return {}, ()
+
+    return (
+        {
+            row_number: tuple(
+                sorted(
+                    images,
+                    key=lambda image: (image.image_column, image.sequence),
+                )
+            )
+            for row_number, images in grouped.items()
+        },
+        tuple(warnings),
+    )
+
+
 def parse_product_template(
     path: Path,
     *,
@@ -415,13 +717,17 @@ def parse_product_template(
                 f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
             )
 
+        embedded_images_by_row, embedded_image_warnings = (
+            _extract_embedded_template_images(path)
+        )
         rows: list[ProductTemplateRow] = []
-        warnings: list[str] = []
+        warnings: list[str] = list(embedded_image_warnings)
         issues: list[ProductTemplateIssue] = []
         first_row_by_sku: dict[str, int] = {}
         generated_sku_occurrences: dict[str, int] = {}
         generated_sku_count = 0
         skipped_rows = 0
+        visited_rows: set[int] = set()
         total_rows = max(0, (sheet.max_row or 1) - 1)
         progress_interval = max(100, total_rows // 100) if total_rows else 100
         for row_number, values in enumerate(
@@ -443,8 +749,10 @@ def parse_product_template(
                 raise ProductTemplateValidationError(
                     f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
                 )
-            if not any(_cell_text(value) for value in values):
+            embedded_images = embedded_images_by_row.get(row_number, ())
+            if not any(_cell_text(value) for value in values) and not embedded_images:
                 continue
+            visited_rows.add(row_number)
 
             row_issues: list[ProductTemplateIssue] = []
             formula_indexes = {
@@ -585,6 +893,7 @@ def parse_product_template(
                     )
 
             image_urls: list[str] = []
+            image_url_columns: list[int] = []
             for image_index, value in enumerate(values[8:], start=1):
                 value_index = image_index + 7
                 if not _cell_text(value) or value_index in formula_indexes:
@@ -601,12 +910,16 @@ def parse_product_template(
                                 "不是有效的 HTTP(S) 链接。"
                             ),
                             value=value,
-                            suggestion="图片可以留空；填写时请使用可公开访问的 http:// 或 https:// 地址。",
+                            suggestion=(
+                                "图片可以留空或直接插入该单元格位置；"
+                                "填写文本时请使用可公开访问的 http:// 或 https:// 地址。"
+                            ),
                         )
                     )
                     continue
                 if image_url not in image_urls:
                     image_urls.append(image_url)
+                    image_url_columns.append(image_index)
 
             if row_issues:
                 issues.extend(row_issues)
@@ -660,6 +973,8 @@ def parse_product_template(
                     tags=tags,
                     default_moq=None,
                     image_urls=tuple(image_urls),
+                    image_url_columns=tuple(image_url_columns),
+                    embedded_images=embedded_images,
                 )
             )
         if issues:
@@ -674,6 +989,15 @@ def parse_product_template(
                 0,
                 f"有 {generated_sku_count} 行未填写商品型号，"
                 "系统已根据商品名称、分类和供应商生成临时型号。",
+            )
+        unmatched_embedded_images = sum(
+            len(images)
+            for row_number, images in embedded_images_by_row.items()
+            if row_number not in visited_rows
+        )
+        if unmatched_embedded_images:
+            warnings.append(
+                f"有 {unmatched_embedded_images} 张内嵌图片未对应到有效商品行，已忽略。"
             )
         return ProductTemplateParseResult(
             rows=tuple(rows),
@@ -815,6 +1139,162 @@ def _image_content_type(url: str) -> str:
 def _filename_from_url(url: str) -> str:
     filename = Path(urlsplit(url).path).name
     return filename[:500] or "product-image"
+
+
+def _embedded_storage_provider() -> str:
+    return (
+        "S3"
+        if os.getenv("OBJECT_STORAGE_BACKEND", "local").casefold().strip() == "s3"
+        else "LOCAL"
+    )
+
+
+def _safe_embedded_image_suffix(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    return suffix if re.fullmatch(r"\.[a-z0-9]{1,10}", suffix) else ".img"
+
+
+def _embedded_image_object_key(
+    *,
+    tenant_id: UUID,
+    sku_code: str,
+    image: EmbeddedTemplateImage,
+) -> str:
+    sku_digest = hashlib.sha256(sku_code.encode("utf-8")).hexdigest()[:24]
+    suffix = _safe_embedded_image_suffix(image.original_filename)
+    return (
+        f"tenants/{tenant_id}/approved-media/product-template/"
+        f"{sku_digest}/{image.image_column:02d}-{image.sha256}{suffix}"
+    )
+
+
+def _embedded_original_filename(
+    *,
+    source_filename: str,
+    image: EmbeddedTemplateImage,
+) -> str:
+    source_stem = Path(source_filename).stem.strip() or "商品"
+    suffix = _safe_embedded_image_suffix(image.original_filename)
+    filename = (
+        f"{source_stem}-第{image.row_number}行-"
+        f"商品图片{image.image_column}{suffix}"
+    )
+    return filename[-500:]
+
+
+def _template_image_specs(
+    row: ProductTemplateRow,
+    *,
+    tenant_id: UUID,
+    source_filename: str,
+) -> tuple[StoredTemplateImage, ...]:
+    specs: list[StoredTemplateImage] = []
+    for sequence, (image_url, image_column) in enumerate(
+        zip(row.image_urls, row.image_url_columns, strict=True),
+        start=1,
+    ):
+        specs.append(
+            StoredTemplateImage(
+                image_column=image_column,
+                sequence=sequence,
+                object_key=image_url,
+                original_filename=_filename_from_url(image_url),
+                content_type=_image_content_type(image_url),
+                byte_size=0,
+                sha256=hashlib.sha256(image_url.encode("utf-8")).hexdigest(),
+                storage_provider="EXTERNAL",
+            )
+        )
+    for image in row.embedded_images:
+        specs.append(
+            StoredTemplateImage(
+                image_column=image.image_column,
+                sequence=image.sequence,
+                object_key=_embedded_image_object_key(
+                    tenant_id=tenant_id,
+                    sku_code=row.sku_code,
+                    image=image,
+                ),
+                original_filename=_embedded_original_filename(
+                    source_filename=source_filename,
+                    image=image,
+                ),
+                content_type=image.content_type,
+                byte_size=image.byte_size,
+                sha256=image.sha256,
+                storage_provider=_embedded_storage_provider(),
+                archive_path=image.archive_path,
+            )
+        )
+    return tuple(
+        sorted(
+            specs,
+            key=lambda spec: (
+                spec.image_column,
+                0 if spec.archive_path is None else 1,
+                spec.sequence,
+            ),
+        )
+    )
+
+
+def _store_new_embedded_images(
+    source_path: Path,
+    *,
+    specs: tuple[StoredTemplateImage, ...],
+    existing_object_keys: set[str],
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> None:
+    unique_specs: dict[str, StoredTemplateImage] = {}
+    for spec in specs:
+        if spec.archive_path is not None:
+            unique_specs.setdefault(spec.object_key, spec)
+    pending = [
+        spec
+        for object_key, spec in unique_specs.items()
+        if object_key not in existing_object_keys
+    ]
+    if not pending:
+        return
+
+    storage = get_object_storage()
+    staging_root = Path(
+        os.getenv("OBJECT_STORAGE_STAGING_DIR", tempfile.gettempdir())
+    )
+    staging_root.mkdir(parents=True, exist_ok=True)
+    with ZipFile(source_path) as archive:
+        for index, spec in enumerate(pending, start=1):
+            assert spec.archive_path is not None
+            if not storage.exists(spec.object_key):
+                suffix = _safe_embedded_image_suffix(spec.original_filename)
+                descriptor, raw_path = tempfile.mkstemp(
+                    prefix="atc-template-image-",
+                    suffix=suffix,
+                    dir=staging_root,
+                )
+                path = Path(raw_path)
+                digest = hashlib.sha256()
+                byte_size = 0
+                try:
+                    with os.fdopen(
+                        descriptor,
+                        "wb",
+                    ) as output, archive.open(spec.archive_path) as source:
+                        while chunk := source.read(1024 * 1024):
+                            digest.update(chunk)
+                            byte_size += len(chunk)
+                            output.write(chunk)
+                    if byte_size != spec.byte_size or digest.hexdigest() != spec.sha256:
+                        raise RuntimeError("embedded product image changed during import")
+                    storage.put_file(
+                        path,
+                        object_key=spec.object_key,
+                        content_type=spec.content_type,
+                    )
+                finally:
+                    path.unlink(missing_ok=True)
+            if progress_callback is not None:
+                progress_callback(index, len(pending))
 
 
 def _load_image_map(
@@ -1132,20 +1612,45 @@ def process_product_template_import(
             if existing_sku_ids
             else {}
         )
-        all_image_urls = {
-            url for template_row in parsed.rows for url in template_row.image_urls
+        image_specs_by_row = {
+            template_row.row_number: _template_image_specs(
+                template_row,
+                tenant_id=tenant_id,
+                source_filename=job.source_file.original_filename,
+            )
+            for template_row in parsed.rows
         }
+        all_image_specs = tuple(
+            spec
+            for template_row in parsed.rows
+            for spec in image_specs_by_row[template_row.row_number]
+        )
         images = _load_image_map(
             session,
             tenant_id=tenant_id,
-            image_urls=all_image_urls,
+            image_urls={spec.object_key for spec in all_image_specs},
+        )
+        embedded_specs = tuple(
+            spec for spec in all_image_specs if spec.archive_path is not None
+        )
+        _store_new_embedded_images(
+            source_path,
+            specs=embedded_specs,
+            existing_object_keys=set(images),
+            progress_callback=lambda processed, total: _record_import_progress(
+                job_id=job.id,
+                tenant_id=tenant_id,
+                progress=55 + int((processed / total) * 9) if total else 64,
+                stage="STORING_IMAGES",
+                processed_rows=processed,
+                total_rows=total,
+            ),
         )
         template_images_by_product: dict[UUID, list[ProductImageRow]] = defaultdict(list)
         for image in session.scalars(
             select(ProductImageRow)
             .where(
                 ProductImageRow.tenant_id == tenant_id,
-                ProductImageRow.storage_provider == "EXTERNAL",
                 ProductImageRow.bucket == TEMPLATE_IMAGE_BUCKET,
             )
             .execution_options(include_deleted=True)
@@ -1454,20 +1959,22 @@ def process_product_template_import(
                     offer.published_at = now
                     changed = True
 
-            desired_image_urls = set(template_row.image_urls)
+            row_image_specs = image_specs_by_row[template_row.row_number]
+            desired_image_keys = {spec.object_key for spec in row_image_specs}
             for old_image in template_images_by_product.get(product.id, ()):
                 if (
-                    old_image.object_key not in desired_image_urls
+                    old_image.object_key not in desired_image_keys
                     and old_image.deleted_at is None
                 ):
                     old_image.deleted_at = now
                     changed = True
 
-            for image_index, image_url in enumerate(template_row.image_urls):
-                image = images.get(image_url)
+            for image_index, image_spec in enumerate(row_image_specs):
+                image = images.get(image_spec.object_key)
                 if image is not None and image.product_id != product.id:
                     runtime_warnings.append(
-                        f"第 {template_row.row_number} 行图片链接已被其他商品使用，已跳过该图片。"
+                        f"第 {template_row.row_number} 行商品图片"
+                        f"{image_spec.image_column}已被其他商品使用，已跳过该图片。"
                     )
                     continue
                 if image is None:
@@ -1475,13 +1982,13 @@ def process_product_template_import(
                         id=uuid4(),
                         tenant_id=tenant_id,
                         product_id=product.id,
-                        storage_provider="EXTERNAL",
+                        storage_provider=image_spec.storage_provider,
                         bucket=TEMPLATE_IMAGE_BUCKET,
-                        object_key=image_url,
-                        original_filename=_filename_from_url(image_url),
-                        content_type=_image_content_type(image_url),
-                        byte_size=0,
-                        sha256=hashlib.sha256(image_url.encode("utf-8")).hexdigest(),
+                        object_key=image_spec.object_key,
+                        original_filename=image_spec.original_filename,
+                        content_type=image_spec.content_type,
+                        byte_size=image_spec.byte_size,
+                        sha256=image_spec.sha256,
                         image_role="MAIN" if image_index == 0 else "GALLERY",
                         sort_order=image_index,
                         approval_status="APPROVED",
@@ -1489,17 +1996,17 @@ def process_product_template_import(
                         created_by=user_id,
                     )
                     session.add(image)
-                    images[image_url] = image
+                    images[image_spec.object_key] = image
                     template_images_by_product[product.id].append(image)
                     changed = True
                 else:
-                    if image.storage_provider != "EXTERNAL":
-                        runtime_warnings.append(
-                            f"第 {template_row.row_number} 行图片链接与非外链图片冲突，已跳过该图片。"
-                        )
-                        continue
                     image_values = {
+                        "storage_provider": image_spec.storage_provider,
                         "bucket": TEMPLATE_IMAGE_BUCKET,
+                        "original_filename": image_spec.original_filename,
+                        "content_type": image_spec.content_type,
+                        "byte_size": image_spec.byte_size,
+                        "sha256": image_spec.sha256,
                         "deleted_at": None,
                         "image_role": "MAIN" if image_index == 0 else "GALLERY",
                         "sort_order": image_index,
