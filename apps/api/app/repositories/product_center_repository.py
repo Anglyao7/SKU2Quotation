@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..ai_data_models import AISourceEvidenceRow
-from ..db_models import ImportJobRow, SupplierRow
+from ..db_models import ImportJobRow, SourceFileRow, SupplierRow
 from ..product_center_models import (
     AttributeDefinitionRow,
     ProductAuditEventRow,
@@ -31,6 +32,8 @@ class SkuListRow:
     product: ProductRow
     category: ProductCategoryRow | None
     public_offer: PublicCatalogOfferRow | None
+    source_filename: str | None
+    source_imported_at: datetime | None
 
 
 def list_product_rows(
@@ -329,7 +332,14 @@ def list_sku_page_rows(
     )
 
     statement = (
-        select(SkuRow, ProductRow, ProductCategoryRow, PublicCatalogOfferRow)
+        select(
+            SkuRow,
+            ProductRow,
+            ProductCategoryRow,
+            PublicCatalogOfferRow,
+            SourceFileRow.original_filename,
+            ImportJobRow.completed_at,
+        )
         .join(ProductRow, sku_product_join)
         .outerjoin(
             ProductCategoryRow,
@@ -345,6 +355,22 @@ def list_sku_page_rows(
                 PublicCatalogOfferRow.tenant_id == tenant_id,
                 PublicCatalogOfferRow.sku_id == SkuRow.id,
                 PublicCatalogOfferRow.deleted_at.is_(None),
+            ),
+        )
+        .outerjoin(
+            ImportJobRow,
+            and_(
+                ImportJobRow.tenant_id == tenant_id,
+                ImportJobRow.id == SkuRow.latest_import_job_id,
+                ImportJobRow.deleted_at.is_(None),
+            ),
+        )
+        .outerjoin(
+            SourceFileRow,
+            and_(
+                SourceFileRow.tenant_id == tenant_id,
+                SourceFileRow.id == ImportJobRow.source_file_id,
+                SourceFileRow.deleted_at.is_(None),
             ),
         )
         .where(*conditions)
@@ -375,8 +401,17 @@ def list_sku_page_rows(
                 product=product,
                 category=category,
                 public_offer=public_offer,
+                source_filename=source_filename,
+                source_imported_at=source_imported_at,
             )
-            for sku, product, category, public_offer in rows
+            for (
+                sku,
+                product,
+                category,
+                public_offer,
+                source_filename,
+                source_imported_at,
+            ) in rows
         ],
         total,
     )

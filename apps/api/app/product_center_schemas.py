@@ -94,6 +94,9 @@ class SkuListItem(BaseModel):
     status: str
     version: int
     updated_at: datetime
+    source_type: Literal["PRODUCT_TEMPLATE", "LEGACY_IMPORT", "MANUAL"]
+    source_filename: str | None
+    source_imported_at: datetime | None
     image_status: Literal["APPROVED", "SOURCE", "NONE"]
 
 

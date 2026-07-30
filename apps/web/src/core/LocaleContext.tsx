@@ -328,8 +328,8 @@ const english: Record<string, string> = {
   "{products} 个 SKU · {warnings} 条提醒":
     "{products} SKUs · {warnings} warnings",
   "还没有导入记录": "No imports yet",
-  "下载标准模板并填写商品资料，即可一次导入当前商家的全部商品。":
-    "Download the standard template, complete the product data, and import this merchant's catalog in one go.",
+  "下载标准模板并填写商品资料；以后每次上传都会按 SKU 增量合并。":
+    "Download the standard template and complete the product data. Every later upload is merged incrementally by SKU.",
   "打开工作区处理并确认": "Open the workspace to review",
   "草稿": "Draft",
   "已确认": "Confirmed",
@@ -581,6 +581,13 @@ const english: Record<string, string> = {
     "{total} SKUs · Showing {start}–{end}",
   "正在更新结果…": "Updating results…",
   "每页 {count} 条": "{count} per page",
+  "源文件": "Source file",
+  "导入时间": "Imported at",
+  "源文件 / 导入时间": "Source file / Imported at",
+  "历史导入": "Legacy import",
+  "历史数据暂无文件记录": "No source file recorded for legacy data",
+  "手工录入": "Manual entry",
+  "非文件导入": "Not imported from a file",
   "SKU 商品列表": "SKU product list",
   "打开 SKU {code} 的编辑详情": "Open edit details for SKU {code}",
   "SKU / 商品": "SKU / Product",
@@ -594,14 +601,37 @@ const english: Record<string, string> = {
   "图片": "Image",
   "更新于 {date}": "Updated {date}",
   "SKU 详情": "SKU details",
+  "批量删除": "Bulk delete",
+  "批量删除 SKU": "Bulk delete SKUs",
+  "已选择 {count} 个，最多 500 个":
+    "{count} selected, up to 500",
+  "选择当前页": "Select this page",
+  "取消选择本页": "Deselect this page",
+  "退出批量操作": "Exit bulk mode",
+  "删除已选 {count} 项": "Delete {count} selected",
+  "选择": "Select",
+  "取消选择": "Deselect",
+  "{action} SKU {code}": "{action} SKU {code}",
+  "选择此 SKU": "Select this SKU",
+  "确认删除 {count} 个 SKU？": "Delete {count} SKUs?",
+  "删除后这些 SKU 将从商品库、商家前台和搜索结果中隐藏。":
+    "These SKUs will be hidden from the catalog, storefront, and search results.",
+  "历史业务数据会保留": "Business history will be preserved",
+  "库存流水和历史报价不会被物理删除；以后重新导入相同 SKU 时可以恢复商品。":
+    "Inventory movements and historical quotations are not physically deleted. Importing the same SKU later can restore the product.",
+  "正在删除…": "Deleting…",
+  "已删除 {count} 个 SKU。": "Deleted {count} SKUs.",
+  "已删除 {success} 个 SKU，{failed} 个未能删除。":
+    "Deleted {success} SKUs; {failed} could not be deleted.",
+  "批量删除失败，请稍后重试。": "Bulk deletion failed. Try again shortly.",
   "SKU 列表分页": "SKU pagination",
   "第 {page} / {pages} 页": "Page {page} of {pages}",
   "商品批量导入": "Bulk product import",
-  "上传填写完成的 XLSX 文件。系统会先完整校验，再一次性更新当前商家的商品库。":
-    "Upload a completed XLSX file. The system validates the entire file before updating this merchant's catalog atomically.",
+  "上传填写完成的 XLSX 文件。系统会先完整校验，再按 SKU 增量合并到当前商品库。":
+    "Upload a completed XLSX file. The system validates the whole file, then incrementally merges it into the catalog by SKU.",
   "先下载标准模板": "Download the standard template first",
-  "只有商品名称必填；型号留空自动生成临时型号，分类留空归入“未分类”且不进入智能索引，价格留空按 0 处理。":
-    "Only the product name is required. A blank model gets a temporary generated model; a blank category becomes “Uncategorized” and is excluded from the AI index; a blank price becomes zero.",
+  "只有商品名称必填；型号留空会自动生成临时型号，但需要以后准确更新同一商品时，建议填写稳定型号。分类留空归入“未分类”且不进入智能索引，价格留空按 0 处理。":
+    "Only the product name is required. A temporary model is generated when blank, but use a stable model when the same product must be updated accurately later. A blank category becomes “Uncategorized” and is excluded from the AI index; a blank price becomes zero.",
   "固定模版字段": "Template columns",
   "商品名称": "Product name",
   "商品分类": "Product category",
@@ -612,9 +642,9 @@ const english: Record<string, string> = {
   "标签": "Tags",
   "商品图片1–10": "Product images 1–10",
   "下载模板": "Download template",
-  "这份模版代表当前完整商品库": "This template represents the complete catalog",
-  "导入前会检查全部数据并一次列出所有问题；任何必填项或已填写内容不合法时，本次不会写入部分商品。":
-    "The full file is validated and all issues are reported together. If required or provided data is invalid, no partial catalog changes are written.",
+  "每次导入都会增量合并": "Every import is an incremental merge",
+  "相同 SKU 更新，新 SKU 新增；本次文件未包含的旧商品继续保留。文件会先完整校验，存在错误时不会写入部分商品。":
+    "Matching SKUs are updated, new SKUs are added, and existing products omitted from this file are preserved. The whole file is validated first, so invalid files never write partial changes.",
   "格式已确认": "Format verified",
   "格式不一致": "Format mismatch",
   "选择商品文件": "Choose product file",
@@ -635,7 +665,6 @@ const english: Record<string, string> = {
   "正在读取现有商品库": "Loading the existing catalog",
   "正在计算商品变更": "Planning catalog changes",
   "正在写入商品": "Writing products",
-  "正在处理已移除商品": "Processing removed products",
   "正在完成导入": "Finalizing import",
   "商品导入完成": "Product import complete",
   "数据校验未通过": "Data validation failed",

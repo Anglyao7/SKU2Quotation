@@ -123,7 +123,13 @@ export function LandingPage() {
     <div className={styles.page}>
       <a className={styles.skipLink} href="#main-content">跳到正文</a>
 
-      <header className={`${styles.header} ${headerElevated || menuOpen ? styles.headerGlass : ""}`}>
+      <header
+        className={[
+          styles.header,
+          headerElevated || menuOpen ? styles.headerGlass : "",
+          headerElevated ? styles.headerBelowHero : "",
+        ].filter(Boolean).join(" ")}
+      >
         <div className={`${styles.shell} ${styles.headerInner}`}>
           <Brand subtitle="万千货品，自成脉络" />
           <nav className={styles.desktopNav} aria-label="官网主导航">
@@ -190,6 +196,7 @@ export function LandingPage() {
           </div>
         </section>
 
+        <div className={styles.afterHero}>
         <section className={styles.proofSection} id="product">
           <div className={styles.shell}>
             <Reveal className={styles.sectionHeading}>
@@ -198,7 +205,7 @@ export function LandingPage() {
             </Reveal>
 
             <Reveal>
-              <figure className={styles.productProof}>
+              <figure className={`${styles.productProof} ${styles.goldTraceCard}`}>
                 <figcaption>
                   <span>智贸云商品前台</span>
                   <strong>{window.location.host}/{primaryStorefrontSlug}</strong>
@@ -229,7 +236,7 @@ export function LandingPage() {
             </figure>
           </Reveal>
 
-          <Reveal className={styles.painCopy}>
+          <Reveal className={`${styles.painCopy} ${styles.goldTraceCard}`}>
             <h2>好商品，不该失落在表格之间。</h2>
             <p>当规格、图片、价格与供应商各自散落，每一次寻找都在重复昨天。智贸云把它们重新编入同一条脉络。</p>
             <dl className={styles.painList}>
@@ -277,7 +284,7 @@ export function LandingPage() {
           </Reveal>
 
           <Reveal className={styles.capabilityGrid}>
-            <article className={`${styles.capabilityCard} ${styles.capPrimary}`}>
+            <article className={`${styles.capabilityCard} ${styles.capPrimary} ${styles.goldTraceCard}`}>
               <Package size={30} weight="duotone" aria-hidden="true" />
               <span className={styles.capGiant} aria-hidden="true">SKU</span>
               <div>
@@ -285,28 +292,28 @@ export function LandingPage() {
                 <p>每个 SKU 都能独立被看见，规格、价格与图片不必藏在复杂的产品层级里。</p>
               </div>
             </article>
-            <article className={`${styles.capabilityCard} ${styles.capSearch}`}>
+            <article className={`${styles.capabilityCard} ${styles.capSearch} ${styles.goldTraceCard}`}>
               <Tag size={30} weight="duotone" aria-hidden="true" />
               <div>
                 <h3>让标签成为寻找的线索</h3>
                 <p>名称、编码、类目与标签彼此照应，也为更自然的相似商品检索留下余地。</p>
               </div>
             </article>
-            <article className={`${styles.capabilityCard} ${styles.capQuote}`}>
+            <article className={`${styles.capabilityCard} ${styles.capQuote} ${styles.goldTraceCard}`}>
               <ShoppingCartSimple size={30} weight="duotone" aria-hidden="true" />
               <div>
                 <h3>选定之后，报价自然成形</h3>
                 <p>选中的 SKU 与数量，顺势进入客户报价。</p>
               </div>
             </article>
-            <article className={`${styles.capabilityCard} ${styles.capTenant}`}>
+            <article className={`${styles.capabilityCard} ${styles.capTenant} ${styles.goldTraceCard}`}>
               <ShieldCheck size={30} weight="duotone" aria-hidden="true" />
               <div>
                 <h3>各自经营，彼此有界</h3>
                 <p>平台看见全局，商家只看见自己的商品、报价与前台。</p>
               </div>
             </article>
-            <article className={`${styles.capabilityCard} ${styles.capExport}`}>
+            <article className={`${styles.capabilityCard} ${styles.capExport} ${styles.goldTraceCard}`}>
               <div className={styles.exportIcons} aria-hidden="true"><FilePdf size={27} /><FileXls size={27} /></div>
               <div>
                 <h3>一纸报价，随需抵达</h3>
@@ -328,7 +335,7 @@ export function LandingPage() {
               </ul>
             </Reveal>
 
-            <Reveal className={styles.routeCard}>
+            <Reveal className={`${styles.routeCard} ${styles.goldTraceCard}`}>
               <div className={styles.routeCardTop}>
                 <Buildings size={28} weight="duotone" />
                 <span>商家的专属门牌</span>
@@ -346,7 +353,7 @@ export function LandingPage() {
         </section>
 
         <section className={`${styles.shell} ${styles.ctaSection}`}>
-          <Reveal className={styles.ctaCard}>
+          <Reveal className={`${styles.ctaCard} ${styles.goldTraceCard}`}>
             <div>
               <h2>先让第一批商品，走完抵达客户的路。</h2>
               <p>从一家商家、一张表格开始，完成一次真实的展示、选择与报价。</p>
@@ -356,6 +363,7 @@ export function LandingPage() {
             </Link>
           </Reveal>
         </section>
+        </div>
       </main>
 
       <footer className={styles.footer}>

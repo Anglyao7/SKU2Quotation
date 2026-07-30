@@ -411,6 +411,7 @@ def batch_delete_skus(
         result = use_cases.batch_delete_skus(
             session,
             tenant_id=context.tenant_id,
+            user_id=context.user_id,
             membership_id=context.membership_id,
             permissions=context.permissions,
             sku_ids=request.sku_ids,
@@ -431,6 +432,7 @@ def batch_update_sku_status(
         result = use_cases.batch_update_sku_status(
             session,
             tenant_id=context.tenant_id,
+            user_id=context.user_id,
             membership_id=context.membership_id,
             permissions=context.permissions,
             sku_ids=request.sku_ids,

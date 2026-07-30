@@ -52,8 +52,19 @@ class SkuRow(AuditTimestampMixin, Base):
             name="fk_skus_tenant_supplier",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "latest_import_job_id"],
+            ["import_jobs.tenant_id", "import_jobs.id"],
+            name="fk_skus_tenant_latest_import_job",
+            ondelete="RESTRICT",
+        ),
         Index("ix_skus_tenant_product_status", "tenant_id", "product_id", "status"),
         Index("ix_skus_tenant_supplier", "tenant_id", "supplier_id"),
+        Index(
+            "ix_skus_tenant_latest_import_job",
+            "tenant_id",
+            "latest_import_job_id",
+        ),
         Index("ix_skus_tenant_status_updated", "tenant_id", "status", "updated_at"),
     )
 
@@ -63,6 +74,9 @@ class SkuRow(AuditTimestampMixin, Base):
     )
     product_id: Mapped[UUID] = mapped_column(nullable=False)
     supplier_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    latest_import_job_id: Mapped[str | None] = mapped_column(
+        String(40), nullable=True
+    )
     sku_code: Mapped[str] = mapped_column(String(160), nullable=False)
     name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     option_values: Mapped[dict[str, Any]] = mapped_column(

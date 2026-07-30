@@ -981,6 +981,9 @@ interface ApiSkuListItem {
   status: SkuListItem["status"];
   version: number;
   updated_at: string;
+  source_type: SkuListItem["sourceType"];
+  source_filename?: string | null;
+  source_imported_at?: string | null;
   image_status: SkuListItem["imageStatus"];
 }
 
@@ -1076,6 +1079,9 @@ function mapSkuListItem(row: ApiSkuListItem): SkuListItem {
     status: row.status,
     version: row.version,
     updatedAt: row.updated_at,
+    sourceType: row.source_type,
+    sourceFilename: defined(row.source_filename),
+    sourceImportedAt: defined(row.source_imported_at),
     imageStatus: row.image_status,
   };
 }
@@ -1109,6 +1115,37 @@ export async function listSkus(params: {
     pageSize: row.page_size,
     total: row.total,
     pages: row.pages,
+  };
+}
+
+export interface SkuBatchOperationResult {
+  successCount: number;
+  failedCount: number;
+  totalCount: number;
+  failedItems: Array<{ skuId: string; reason: string }>;
+}
+
+interface ApiSkuBatchOperationResult {
+  success_count: number;
+  failed_count: number;
+  total_count: number;
+  failed_items: Array<{ sku_id: string; reason: string }>;
+}
+
+export async function batchDeleteSkus(skuIds: string[]): Promise<SkuBatchOperationResult> {
+  const row = await request<ApiSkuBatchOperationResult>("/skus/batch-delete", {
+    method: "POST",
+    body: JSON.stringify({ sku_ids: skuIds }),
+  });
+  bumpPublicCatalogRevision();
+  return {
+    successCount: row.success_count,
+    failedCount: row.failed_count,
+    totalCount: row.total_count,
+    failedItems: row.failed_items.map((item) => ({
+      skuId: item.sku_id,
+      reason: item.reason,
+    })),
   };
 }
 

@@ -5,11 +5,12 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ApplicationError
+from ..db_models import SupplierRow
 from ..model_mixins import utcnow
 from ..product_center_models import (
     AttributeDefinitionRow,
@@ -96,6 +97,19 @@ def _category_display_name(category: ProductCategoryRow) -> str:
     if not path or path.casefold() == category.code.casefold():
         return category.name
     return path
+
+
+def _sku_source_type(
+    sku: SkuRow,
+    *,
+    source_filename: str | None,
+) -> str:
+    if source_filename:
+        return "PRODUCT_TEMPLATE"
+    marker = sku.option_values.get(SKU_TEMPLATE_SOURCE_OPTION_KEY)
+    if isinstance(marker, dict) and marker.get("source") == "PRODUCT_TEMPLATE":
+        return "LEGACY_IMPORT"
+    return "MANUAL"
 
 
 def _price_validity(price: SupplierPriceRow | None, *, now: datetime | None = None) -> str:
@@ -440,6 +454,12 @@ def list_skus(
                 status=row.sku.status,
                 version=row.sku.version,
                 updated_at=row.sku.updated_at,
+                source_type=_sku_source_type(
+                    row.sku,
+                    source_filename=row.source_filename,
+                ),
+                source_filename=row.source_filename,
+                source_imported_at=row.source_imported_at,
                 image_status=image_status,
             )
         )
@@ -1365,55 +1385,157 @@ def batch_delete_skus(
     session: Session,
     *,
     tenant_id: UUID,
+    user_id: UUID,
     membership_id: UUID,
     permissions: frozenset[str],
     sku_ids: list[UUID],
 ) -> dict[str, Any]:
-    """批量删除 SKU"""
-    _require(permissions, "product_center.write")
+    """Soft-delete SKUs while preserving inventory and quotation history."""
+    _require(permissions, "product.edit")
 
-    success_count = 0
-    failed_count = 0
+    requested_ids = list(dict.fromkeys(sku_ids))
+    rows = session.scalars(
+        select(SkuRow)
+        .where(
+            SkuRow.tenant_id == tenant_id,
+            SkuRow.id.in_(requested_ids),
+        )
+        .execution_options(include_deleted=True)
+    ).all()
+    rows_by_id = {row.id: row for row in rows}
+    selected_rows: list[SkuRow] = []
     failed_items: list[dict[str, Any]] = []
-
-    for sku_id in sku_ids:
-        try:
-            sku = session.query(SkuRow).filter(
-                SkuRow.tenant_id == tenant_id,
-                SkuRow.id == sku_id,
-            ).first()
-
-            if not sku:
-                failed_count += 1
-                failed_items.append({
+    for sku_id in requested_ids:
+        row = rows_by_id.get(sku_id)
+        if row is None or row.deleted_at is not None:
+            failed_items.append(
+                {
                     "sku_id": str(sku_id),
-                    "reason": "SKU not found"
-                })
-                continue
+                    "reason": "SKU 不存在或已经删除",
+                }
+            )
+            continue
+        selected_rows.append(row)
 
-            session.delete(sku)
-            success_count += 1
-        except Exception as exc:
-            failed_count += 1
-            failed_items.append({
-                "sku_id": str(sku_id),
-                "reason": str(exc)
-            })
+    if not selected_rows:
+        return {
+            "success_count": 0,
+            "failed_count": len(failed_items),
+            "total_count": len(requested_ids),
+            "failed_items": failed_items,
+        }
 
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise ApplicationError(
-            "BATCH_DELETE_FAILED",
-            "批量删除失败，可能存在关联数据",
-            kind="conflict"
-        ) from exc
+    now = utcnow()
+    selected_ids = [row.id for row in selected_rows]
+    product_ids = list(dict.fromkeys(row.product_id for row in selected_rows))
+    supplier_ids = {
+        row.supplier_id for row in selected_rows if row.supplier_id is not None
+    }
+    offers = session.scalars(
+        select(PublicCatalogOfferRow).where(
+            PublicCatalogOfferRow.tenant_id == tenant_id,
+            PublicCatalogOfferRow.sku_id.in_(selected_ids),
+            PublicCatalogOfferRow.deleted_at.is_(None),
+        )
+    ).all()
+    offers_by_sku = {row.sku_id: row for row in offers}
+
+    for sku in selected_rows:
+        before = {
+            "sku_code": sku.sku_code,
+            "status": sku.status,
+            "version": sku.version,
+        }
+        sku.status = "ARCHIVED"
+        sku.deleted_at = now
+        sku.updated_at = now
+        sku.updated_by_user_id = user_id
+        sku.version += 1
+        offer = offers_by_sku.get(sku.id)
+        if offer is not None and offer.publication_status != "SUSPENDED":
+            offer.publication_status = "SUSPENDED"
+            offer.updated_at = now
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=sku.product_id,
+                entity_type="SKU",
+                entity_id=str(sku.id),
+                action="sku.deleted",
+                before=before,
+                after={
+                    "sku_code": sku.sku_code,
+                    "status": sku.status,
+                    "version": sku.version,
+                    "deleted_at": now.isoformat(),
+                },
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            )
+        )
+
+    session.flush()
+    remaining_by_product = dict(
+        session.execute(
+            select(SkuRow.product_id, func.count(SkuRow.id))
+            .where(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.product_id.in_(product_ids),
+                SkuRow.deleted_at.is_(None),
+                SkuRow.status != "ARCHIVED",
+            )
+            .group_by(SkuRow.product_id)
+        ).all()
+    )
+    products = session.scalars(
+        select(ProductRow).where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.id.in_(product_ids),
+        )
+    ).all()
+    for product in products:
+        product.current_version += 1
+        product.search_document_version = 0
+        product.updated_by = user_id
+        product.updated_at = now
+        if remaining_by_product.get(product.id, 0) == 0:
+            product.status = "ARCHIVED"
+            product.archived_at = now
+
+    if supplier_ids:
+        active_counts = dict(
+            session.execute(
+                select(SkuRow.supplier_id, func.count(SkuRow.id))
+                .where(
+                    SkuRow.tenant_id == tenant_id,
+                    SkuRow.supplier_id.in_(supplier_ids),
+                    SkuRow.status == "ACTIVE",
+                    SkuRow.deleted_at.is_(None),
+                )
+                .group_by(SkuRow.supplier_id)
+            ).all()
+        )
+        suppliers = session.scalars(
+            select(SupplierRow).where(
+                SupplierRow.tenant_id == tenant_id,
+                SupplierRow.id.in_(supplier_ids),
+                SupplierRow.deleted_at.is_(None),
+            )
+        ).all()
+        for supplier in suppliers:
+            supplier.active_skus = int(active_counts.get(supplier.id, 0))
+            supplier.updated_at = now
+
+    _commit(
+        session,
+        conflict_code="BATCH_DELETE_FAILED",
+        conflict_message="批量删除失败，请刷新商品库后重试。",
+    )
 
     return {
-        "success_count": success_count,
-        "failed_count": failed_count,
-        "total_count": len(sku_ids),
+        "success_count": len(selected_rows),
+        "failed_count": len(failed_items),
+        "total_count": len(requested_ids),
         "failed_items": failed_items,
     }
 
@@ -1422,13 +1544,14 @@ def batch_update_sku_status(
     session: Session,
     *,
     tenant_id: UUID,
+    user_id: UUID,
     membership_id: UUID,
     permissions: frozenset[str],
     sku_ids: list[UUID],
     status: str,
 ) -> dict[str, Any]:
     """批量更新 SKU 状态"""
-    _require(permissions, "product_center.write")
+    _require(permissions, "product.edit")
 
     if status not in SKU_STATUSES:
         raise ApplicationError(
@@ -1459,7 +1582,7 @@ def batch_update_sku_status(
 
             sku.status = status
             sku.updated_at = now
-            sku.updated_by_user_id = membership_id
+            sku.updated_by_user_id = user_id
             sku.version += 1
             success_count += 1
         except Exception as exc:

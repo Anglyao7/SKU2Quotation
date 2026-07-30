@@ -322,6 +322,9 @@ export interface SkuListItem {
   status: ProductSku["status"];
   version: number;
   updatedAt: string;
+  sourceType: "PRODUCT_TEMPLATE" | "LEGACY_IMPORT" | "MANUAL";
+  sourceFilename?: string;
+  sourceImportedAt?: string;
   imageStatus: "SOURCE" | "APPROVED" | "NONE";
 }
 

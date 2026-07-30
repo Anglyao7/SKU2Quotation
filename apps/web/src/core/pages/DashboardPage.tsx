@@ -164,7 +164,7 @@ export function CoreDashboardPage() {
               <Text size="1" color="gray">{coreDate(job.createdAt)}</Text>
             </div>
           ))}
-        </div> : <CoreEmpty title={t("还没有导入记录")} description={t("下载标准模板并填写商品资料，即可一次导入当前商家的全部商品。")} action={canImport ? <Button asChild variant="soft"><Link to="/console/products?import=1"><FileArrowUp />{t("导入商品")}</Link></Button> : undefined} />}
+        </div> : <CoreEmpty title={t("还没有导入记录")} description={t("下载标准模板并填写商品资料；以后每次上传都会按 SKU 增量合并。")} action={canImport ? <Button asChild variant="soft"><Link to="/console/products?import=1"><FileArrowUp />{t("导入商品")}</Link></Button> : undefined} />}
       </Card>
     </div>
   );

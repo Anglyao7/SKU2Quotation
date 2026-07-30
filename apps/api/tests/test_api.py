@@ -4605,6 +4605,9 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
     assert active["status"] == "ACTIVE"
     assert active["version"] == 1
     assert active["updated_at"]
+    assert active["source_type"] == "MANUAL"
+    assert active["source_filename"] is None
+    assert active["source_imported_at"] is None
     assert active["image_status"] == "APPROVED"
 
     without_suppliers = client.get(
@@ -4661,6 +4664,146 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
                 page_size=50,
             )
         assert denied.value.code == "PERMISSION_REQUIRED"
+
+
+def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
+    suffix = uuid4().hex[:8].upper()
+    product_id = uuid4()
+    first_sku_id = uuid4()
+    second_sku_id = uuid4()
+    missing_sku_id = uuid4()
+    with SessionLocal() as session:
+        category = ProductCategoryRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            code=f"BATCH-DELETE-{suffix}",
+            name=f"Batch Delete {suffix}",
+            path=f"BATCH-DELETE-{suffix}",
+            status="ACTIVE",
+        )
+        session.add(category)
+        session.flush()
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"BATCH-PRODUCT-{suffix}",
+                name=f"Batch Product {suffix}",
+                category_id=category.id,
+                status="ACTIVE",
+            )
+        )
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=first_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"BATCH-{suffix}-A",
+                    name=f"Batch SKU A {suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=second_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"BATCH-{suffix}-B",
+                    name=f"Batch SKU B {suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                PublicCatalogOfferRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    sku_id=first_sku_id,
+                    unit_price=Decimal("10"),
+                    currency="CNY",
+                    tags=[],
+                    publication_status="PUBLISHED",
+                ),
+                PublicCatalogOfferRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    sku_id=second_sku_id,
+                    unit_price=Decimal("20"),
+                    currency="CNY",
+                    tags=[],
+                    publication_status="PUBLISHED",
+                ),
+            ]
+        )
+        session.commit()
+
+    first_delete = client.post(
+        "/api/v1/skus/batch-delete",
+        json={"sku_ids": [str(first_sku_id), str(missing_sku_id)]},
+    )
+    assert first_delete.status_code == 200, first_delete.text
+    assert first_delete.json()["success_count"] == 1
+    assert first_delete.json()["failed_count"] == 1
+    assert first_delete.json()["total_count"] == 2
+    assert first_delete.json()["failed_items"] == [
+        {
+            "sku_id": str(missing_sku_id),
+            "reason": "SKU 不存在或已经删除",
+        }
+    ]
+
+    listing = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix},
+    )
+    assert listing.status_code == 200, listing.text
+    assert [item["id"] for item in listing.json()["items"]] == [str(second_sku_id)]
+
+    with SessionLocal() as session:
+        deleted_sku = session.scalar(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.id == first_sku_id,
+            )
+            .execution_options(include_deleted=True)
+        )
+        product = session.get(ProductRow, product_id)
+        offer = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == first_sku_id,
+            )
+        )
+        assert deleted_sku is not None
+        assert deleted_sku.deleted_at is not None
+        assert deleted_sku.status == "ARCHIVED"
+        assert deleted_sku.version == 2
+        assert offer is not None
+        assert offer.publication_status == "SUSPENDED"
+        assert product is not None
+        assert product.status == "ACTIVE"
+        assert product.search_document_version == 0
+
+    second_delete = client.post(
+        "/api/v1/skus/batch-delete",
+        json={"sku_ids": [str(second_sku_id)]},
+    )
+    assert second_delete.status_code == 200, second_delete.text
+    assert second_delete.json()["success_count"] == 1
+    with SessionLocal() as session:
+        product = session.get(ProductRow, product_id)
+        assert product is not None
+        assert product.status == "ARCHIVED"
+        assert product.archived_at is not None
+
+    empty_listing = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix},
+    )
+    assert empty_listing.status_code == 200, empty_listing.text
+    assert empty_listing.json()["total"] == 0
 
 
 def test_upload_parse_review_and_approve_xlsx() -> None:
@@ -5056,6 +5199,9 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
     assert sku_by_code["TPL-API-001"]["public_offer_status"] == "PUBLISHED"
     assert sku_by_code["TPL-API-001"]["image_status"] == "APPROVED"
     assert sku_by_code["TPL-API-001"]["tags"] == ["新品", "热卖"]
+    assert sku_by_code["TPL-API-001"]["source_type"] == "PRODUCT_TEMPLATE"
+    assert sku_by_code["TPL-API-001"]["source_filename"] == "商品模版.xlsx"
+    assert sku_by_code["TPL-API-001"]["source_imported_at"]
     assert sku_by_code["TPL-API-002"]["public_price"] == "0.00"
     assert sku_by_code["TPL-API-002"]["public_offer_status"] == "PUBLISHED"
 
@@ -5136,7 +5282,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         "/api/v1/imports",
         files={
             "file": (
-                "商品模版.xlsx",
+                "商品更新.xlsx",
                 content.getvalue(),
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
@@ -5158,6 +5304,8 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
     }
     assert repeated_by_code["TPL-API-001"]["version"] == 2
     assert repeated_by_code["TPL-API-002"]["version"] == 1
+    assert repeated_by_code["TPL-API-001"]["source_filename"] == "商品更新.xlsx"
+    assert repeated_by_code["TPL-API-002"]["source_filename"] == "商品更新.xlsx"
     with SessionLocal() as session:
         preserved_sku = session.scalar(
             select(SkuRow).where(
@@ -5234,7 +5382,8 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
     )
     assert reduced.status_code == 201, reduced.text
     created_import_job_ids.append(reduced.json()["id"])
-    assert "归档 1" in reduced.json()["error_message"]
+    assert "保留未包含商品" in reduced.json()["error_message"]
+    assert "归档" not in reduced.json()["error_message"]
 
     with SessionLocal() as session:
         sku_a = session.scalar(
@@ -5260,10 +5409,10 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
             image_a_id,
             execution_options={"include_deleted": True},
         )
-        assert sku_a is not None and sku_a.status == "ARCHIVED"
-        assert product_a is not None and product_a.status == "ARCHIVED"
-        assert offer_a is not None and offer_a.publication_status == "SUSPENDED"
-        assert image_a is not None and image_a.deleted_at is not None
+        assert sku_a is not None and sku_a.status == "ACTIVE"
+        assert product_a is not None and product_a.status == "ACTIVE"
+        assert offer_a is not None and offer_a.publication_status == "PUBLISHED"
+        assert image_a is not None and image_a.deleted_at is None
 
     restored = client.post(
         "/api/v1/imports",
@@ -8824,10 +8973,14 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         column["name"]
         for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
     }
+    assert "latest_import_job_id" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("skus")
+    }
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260730_0043"
+        ).scalar() == "20260730_0044"
     upgraded_engine.dispose()
     command.check(config)
 

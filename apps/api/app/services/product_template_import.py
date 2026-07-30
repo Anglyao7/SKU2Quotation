@@ -253,7 +253,7 @@ def _normalize_supplier_name(value: object, *, row_number: int) -> str | None:
     if len(name) > MAX_SUPPLIER_NAME_LENGTH:
         raise ProductTemplateValidationError(
             f"第 {row_number} 行的供应商名称超过 {MAX_SUPPLIER_NAME_LENGTH} 个字符，"
-            "未执行本次全量同步。"
+            "未执行本次增量导入。"
         )
     return name
 
@@ -271,7 +271,7 @@ def _normalize_tags(value: object, *, row_number: int) -> tuple[str, ...]:
         if len(tag) > MAX_TAG_LENGTH:
             raise ProductTemplateValidationError(
                 f"第 {row_number} 行的标签\"{tag[:12]}…\"超过 {MAX_TAG_LENGTH} 个字符，"
-                "未执行本次全量同步。"
+                "未执行本次增量导入。"
             )
         normalized = tag.casefold()
         if normalized in seen:
@@ -281,7 +281,7 @@ def _normalize_tags(value: object, *, row_number: int) -> tuple[str, ...]:
         if len(tags) > MAX_TAGS:
             raise ProductTemplateValidationError(
                 f"第 {row_number} 行最多填写 {MAX_TAGS} 个标签，"
-                "未执行本次全量同步。"
+                "未执行本次增量导入。"
             )
     return tuple(tags)
 
@@ -938,9 +938,9 @@ def process_product_template_import(
         job = session.scalar(statement)
         if job is None:
             raise RuntimeError("product template import job disappeared")
-        # Serialize authoritative snapshots per tenant. PostgreSQL takes a row
-        # lock here; SQLite already serializes writers. Once the lock is held,
-        # an older retry is rejected if a newer snapshot has already won.
+        # Serialize import batches per tenant. PostgreSQL takes a row lock
+        # here; SQLite already serializes writers. Once the lock is held, an
+        # older retry is rejected if a newer import has already won.
         tenant = session.scalar(
             select(TenantRow)
             .where(TenantRow.id == tenant_id)
@@ -973,7 +973,7 @@ def process_product_template_import(
         )
         if newer_published_job_id is not None:
             message = (
-                "本次商品模版早于已经生效的新版本，系统已跳过旧快照，"
+                "本次商品模版早于已经生效的新版本，系统已跳过旧导入批次，"
                 "不会覆盖当前商品库。"
             )
             job.status = "failed"
@@ -1361,6 +1361,7 @@ def process_product_template_import(
                     tenant_id=tenant_id,
                     product_id=product.id,
                     supplier_id=supplier.id if supplier is not None else None,
+                    latest_import_job_id=job.id,
                     sku_code=template_row.sku_code,
                     name=template_row.name,
                     option_values=_template_option_values(template_row.note),
@@ -1407,6 +1408,11 @@ def process_product_template_import(
                         if row.id != sku.id
                     ]
                     sku_rows_by_product[product.id].append(sku)
+                # Provenance follows the most recent successful import even
+                # when the row's business fields were unchanged. It is kept
+                # out of ``changed`` so the import summary and AI index only
+                # report actual catalog-content changes.
+                sku.latest_import_job_id = job.id
             if supplier is not None:
                 touched_supplier_ids.add(supplier.id)
 
@@ -1524,65 +1530,21 @@ def process_product_template_import(
             job_id=job.id,
             tenant_id=tenant_id,
             progress=94,
-            stage="ARCHIVING_REMOVED_PRODUCTS",
+            stage="FINALIZING",
             processed_rows=len(parsed.rows),
             total_rows=len(parsed.rows),
         )
 
-        # PRODUCT_TEMPLATE is a full snapshot, but only records explicitly
-        # adopted by this importer are managed. Manual/non-template SKUs remain
-        # untouched. This source marker makes the second and later imports safe.
-        archived = 0
-        for sku in sku_rows:
-            if (
-                not _is_template_managed_sku(sku)
-                or _normalize_sku_code(sku.sku_code) in incoming_sku_codes
-            ):
-                continue
-
-            if sku.supplier_id is not None:
-                touched_supplier_ids.add(sku.supplier_id)
-            sku_was_active = sku.status != "ARCHIVED" or sku.deleted_at is not None
-            if sku_was_active:
-                sku.status = "ARCHIVED"
-                sku.deleted_at = None
-                sku.version += 1
-                sku.updated_by_user_id = user_id
-                archived += 1
-
-            offer = offers.get(sku.id)
-            if offer is not None and offer.publication_status != "SUSPENDED":
-                offer.publication_status = "SUSPENDED"
-
-            for image in template_images_by_product.get(sku.product_id, ()):
-                if image.deleted_at is None:
-                    image.deleted_at = now
-
-            product = products_by_id.get(sku.product_id)
-            if product is None:
-                continue
-            product_skus = [
-                row
-                for row in sku_rows_by_product.get(product.id, ())
-            ]
-            if (
-                product_skus
-                and all(_is_template_managed_sku(row) for row in product_skus)
-                and all(row.status == "ARCHIVED" for row in product_skus)
-                and (product.status != "ARCHIVED" or product.archived_at is None)
-            ):
-                product.status = "ARCHIVED"
-                product.archived_at = now
-                product.current_version += 1
-                product.updated_by = user_id
-
-        _record_import_progress(
-            job_id=job.id,
-            tenant_id=tenant_id,
-            progress=97,
-            stage="FINALIZING",
-            processed_rows=len(parsed.rows),
-            total_rows=len(parsed.rows),
+        # Imports are incremental merges. A missing row is not evidence that a
+        # merchant intended to delete a product, so previously imported SKUs
+        # remain untouched until an explicit archive/delete action is used.
+        preserved = sum(
+            1
+            for sku in sku_rows
+            if _is_template_managed_sku(sku)
+            and _normalize_sku_code(sku.sku_code) not in incoming_sku_codes
+            and sku.status == "ACTIVE"
+            and sku.deleted_at is None
         )
 
         if touched_supplier_ids:
@@ -1616,7 +1578,8 @@ def process_product_template_import(
         )
         result_summary = (
             f"商品导入完成：新建 {created}，更新 {updated}，"
-            f"未变化 {unchanged}，归档 {archived}，跳过 {parsed.skipped_rows}"
+            f"未变化 {unchanged}，保留未包含商品 {preserved}，"
+            f"跳过 {parsed.skipped_rows}"
             f"{index_summary}。"
         )
         job.products_count = imported

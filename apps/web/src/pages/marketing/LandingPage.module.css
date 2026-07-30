@@ -1001,6 +1001,458 @@
   font-size: 12px;
 }
 
+/*
+ * The full-bleed hero deliberately keeps its original daylight palette.
+ * Everything after it moves into a quieter, nocturnal brand world.
+ */
+.afterHero,
+.footer,
+.headerBelowHero {
+  --mk-purple: #2d1b69;
+  --mk-gold: #d4af37;
+  --mk-bg: #0a0616;
+  --mk-paper: #1b1042;
+  --mk-paper-strong: #120a29;
+  --mk-fg: #f3efe9;
+  --mk-muted: #aaa2b9;
+  --mk-sage: #746896;
+  --mk-sage-soft: #1b1040;
+  --mk-clay: #3d286f;
+  --mk-clay-soft: #180d3a;
+  --mk-border: rgba(212, 175, 55, 0.22);
+  --mk-terra: var(--mk-gold);
+  --mk-terra-soft: #28194e;
+  --mk-shadow:
+    0 30px 90px rgba(18, 8, 58, 0.46),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.afterHero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    linear-gradient(148deg, #080411 0%, #160c35 48%, #0b0618 100%);
+  color: var(--mk-fg);
+  color-scheme: dark;
+}
+
+.afterHero::before,
+.afterHero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.afterHero::before {
+  inset: -2% -8%;
+  opacity: 0.76;
+  background:
+    radial-gradient(ellipse at 12% 8%, rgba(70, 39, 158, 0.96) 0%, rgba(45, 27, 105, 0.62) 22%, transparent 48%),
+    radial-gradient(ellipse at 88% 22%, rgba(212, 175, 55, 0.42) 0%, rgba(123, 91, 70, 0.24) 24%, transparent 48%),
+    radial-gradient(ellipse at 22% 52%, rgba(212, 175, 55, 0.3) 0%, rgba(86, 57, 103, 0.22) 24%, transparent 46%),
+    radial-gradient(ellipse at 82% 70%, rgba(75, 43, 166, 0.9) 0%, rgba(45, 27, 105, 0.48) 28%, transparent 54%),
+    radial-gradient(ellipse at 48% 92%, rgba(212, 175, 55, 0.34) 0%, rgba(99, 70, 91, 0.2) 25%, transparent 50%);
+  background-size: 100% 1900px;
+  background-repeat: repeat-y;
+  transform: translate3d(-2.5%, -0.4%, 0) scale(1.02);
+  transform-origin: 50% 35%;
+  animation: ambientGradientBreath 16s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+
+.afterHero::after {
+  opacity: 0.32;
+  background-image:
+    linear-gradient(rgba(212, 175, 55, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(212, 175, 55, 0.018) 1px, transparent 1px);
+  background-size: 96px 96px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 12%, #000 88%, transparent);
+}
+
+.afterHero > section {
+  position: relative;
+  z-index: 1;
+}
+
+.headerBelowHero {
+  border-bottom-color: rgba(212, 175, 55, 0.2);
+  background:
+    linear-gradient(100deg, rgba(45, 27, 105, 0.62), transparent 55%),
+    rgba(11, 6, 27, 0.9);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 16px 46px rgba(18, 8, 58, 0.34);
+  -webkit-backdrop-filter: saturate(112%) blur(18px);
+  backdrop-filter: saturate(112%) blur(18px);
+}
+
+.headerBelowHero::before {
+  opacity: 0.16;
+  background:
+    radial-gradient(ellipse 40% 160% at 10% -40%, rgba(212, 175, 55, 0.15), transparent 70%),
+    linear-gradient(100deg, rgba(255, 255, 255, 0.035), transparent 40%);
+}
+
+.headerBelowHero .headerLogin {
+  background: var(--mk-terra);
+  color: #18101c;
+}
+
+.headerBelowHero .headerLogin:hover {
+  background: #e5c75e;
+  color: #18101c;
+}
+
+.headerBelowHero .desktopNav a:hover {
+  color: var(--mk-fg);
+}
+
+.proofSection {
+  border-color: rgba(212, 175, 55, 0.15);
+  background: rgba(13, 7, 31, 0.52);
+}
+
+.sectionHeading h2,
+.workflowHeading h2,
+.sectionHeadingCompact h2,
+.merchantCopy h2,
+.ctaCard h2,
+.painCopy h2 {
+  color: var(--mk-fg);
+}
+
+.sectionKicker {
+  position: relative;
+  padding-left: 28px;
+}
+
+.sectionKicker::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 18px;
+  height: 1px;
+  background: currentColor;
+  box-shadow: 0 0 10px rgba(212, 175, 55, 0.46);
+}
+
+.goldTraceCard {
+  position: relative;
+  isolation: isolate;
+}
+
+.productProof,
+.routeCard {
+  border-color: rgba(212, 175, 55, 0.27);
+  background:
+    linear-gradient(145deg, rgba(75, 47, 155, 0.4), transparent 58%),
+    rgba(35, 19, 82, 0.96);
+  box-shadow: var(--mk-shadow);
+}
+
+.productProof figcaption {
+  border-bottom-color: rgba(212, 175, 55, 0.16);
+  background: #241557;
+}
+
+.productProof img {
+  background: #21124f;
+}
+
+.painVisual figure {
+  position: relative;
+}
+
+.painVisual img {
+  border: 1px solid rgba(212, 175, 55, 0.24);
+  filter: saturate(0.72) contrast(1.04) brightness(0.78);
+  box-shadow:
+    0 34px 90px rgba(4, 2, 15, 0.6),
+    0 0 0 8px rgba(212, 175, 55, 0.025);
+}
+
+.imageCaption {
+  color: #958b9a;
+}
+
+.painCopy {
+  overflow: hidden;
+  border-color: rgba(212, 175, 55, 0.24);
+  background:
+    radial-gradient(circle at 92% 4%, rgba(75, 47, 155, 0.72), transparent 42%),
+    linear-gradient(145deg, rgba(59, 35, 130, 0.56), transparent 62%),
+    rgba(40, 21, 94, 0.97);
+  box-shadow:
+    0 28px 70px rgba(18, 8, 58, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+
+.painList {
+  border-top-color: rgba(212, 175, 55, 0.16);
+}
+
+.painList > div {
+  border-bottom-color: rgba(212, 175, 55, 0.14);
+}
+
+.painList dt {
+  color: #dfc85f;
+}
+
+.workflowSection {
+  border-color: rgba(212, 175, 55, 0.15);
+  background: rgba(15, 8, 37, 0.5);
+}
+
+.workflowList {
+  counter-reset: workflow-step;
+}
+
+.workflowList::before {
+  background: linear-gradient(
+    90deg,
+    rgba(212, 175, 55, 0.18),
+    rgba(212, 175, 55, 0.72),
+    rgba(212, 175, 55, 0.18)
+  );
+  box-shadow: 0 0 14px rgba(212, 175, 55, 0.14);
+}
+
+.workflowList li {
+  counter-increment: workflow-step;
+}
+
+.workflowList li::before {
+  content: "0" counter(workflow-step);
+  position: absolute;
+  top: 10px;
+  right: 2px;
+  color: rgba(212, 175, 55, 0.42);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.16em;
+}
+
+.workflowMarker {
+  border-color: rgba(212, 175, 55, 0.48);
+  background:
+    radial-gradient(circle at 35% 25%, rgba(75, 47, 155, 0.75), transparent 68%),
+    #21114f;
+  color: var(--mk-terra);
+  box-shadow:
+    0 0 0 7px rgba(212, 175, 55, 0.04),
+    0 10px 34px rgba(18, 8, 58, 0.38);
+}
+
+.capabilitiesSection {
+  background: rgba(12, 6, 29, 0.2);
+}
+
+.capabilityCard {
+  border-color: rgba(212, 175, 55, 0.2);
+  background:
+    linear-gradient(150deg, rgba(75, 47, 155, 0.54), transparent 64%),
+    rgba(42, 23, 96, 0.94);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.025),
+    0 22px 60px rgba(18, 8, 58, 0.3);
+  transition:
+    transform 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 260ms ease,
+    background-color 260ms ease;
+}
+
+.capabilityCard:hover {
+  z-index: 2;
+  transform: translateY(-4px);
+  border-color: rgba(212, 175, 55, 0.52);
+}
+
+.capPrimary {
+  border-color: rgba(212, 175, 55, 0.32);
+  background:
+    radial-gradient(circle at 80% 10%, rgba(83, 52, 166, 0.76), transparent 46%),
+    linear-gradient(145deg, #35207a, #21114f 72%);
+  color: var(--mk-fg);
+}
+
+.capPrimary p {
+  color: #aaa1ae;
+}
+
+.capPrimary svg,
+.capabilityCard svg {
+  color: var(--mk-terra);
+}
+
+.capGiant {
+  color: rgba(212, 175, 55, 0.15);
+}
+
+.capSearch {
+  background:
+    radial-gradient(circle at 94% 6%, rgba(83, 52, 166, 0.76), transparent 45%),
+    #321c75;
+}
+
+.capQuote {
+  background:
+    linear-gradient(145deg, rgba(75, 47, 155, 0.62), transparent 72%),
+    #2a1764;
+}
+
+.capTenant {
+  background:
+    radial-gradient(circle at 82% 14%, rgba(83, 52, 166, 0.7), transparent 46%),
+    #301873;
+}
+
+.capExport {
+  background:
+    radial-gradient(circle at 85% 15%, rgba(212, 175, 55, 0.1), transparent 38%),
+    linear-gradient(145deg, rgba(75, 47, 155, 0.58), transparent 72%),
+    #2c1a68;
+}
+
+.merchantSection {
+  border-color: rgba(212, 175, 55, 0.15);
+  background: rgba(12, 6, 29, 0.52);
+}
+
+.merchantCopy li {
+  color: #d8d0dc;
+}
+
+.routeCard {
+  background:
+    radial-gradient(circle at 13% 86%, rgba(212, 175, 55, 0.09), transparent 26%),
+    radial-gradient(circle at 90% 8%, rgba(83, 52, 166, 0.76), transparent 47%),
+    rgba(38, 20, 89, 0.98);
+}
+
+.routeExample strong {
+  color: #dfc85f;
+  text-shadow: 0 0 26px rgba(212, 175, 55, 0.18);
+}
+
+.ctaCard {
+  overflow: hidden;
+  border-color: rgba(212, 175, 55, 0.3);
+  background:
+    radial-gradient(circle at 88% 16%, rgba(83, 52, 166, 0.86), transparent 43%),
+    radial-gradient(circle at 12% 110%, rgba(212, 175, 55, 0.08), transparent 35%),
+    linear-gradient(140deg, #3a2183, #251254 68%);
+  box-shadow:
+    0 34px 90px rgba(18, 8, 58, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.goldTraceCard {
+  background-color: #2d1b69;
+  background-image: none;
+}
+
+.afterHero .primaryButton {
+  background: var(--mk-terra);
+  color: #170d2e;
+  box-shadow: 0 12px 32px rgba(212, 175, 55, 0.16);
+}
+
+.afterHero .primaryButton:hover {
+  background: #e5c75e;
+  color: #170d2e;
+  box-shadow: 0 16px 42px rgba(212, 175, 55, 0.23);
+}
+
+@property --gold-trace-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.goldTraceCard::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: 3;
+  padding: 1.25px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 1;
+  background: conic-gradient(
+    from var(--gold-trace-angle),
+    transparent 0deg 326deg,
+    rgba(212, 175, 55, 0.12) 332deg,
+    #d4af37 339deg,
+    #fff0a4 343deg,
+    #d4af37 347deg,
+    rgba(212, 175, 55, 0.16) 353deg,
+    transparent 358deg
+  );
+  filter: drop-shadow(0 0 4px rgba(212, 175, 55, 0.58));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: goldTrace 8.5s linear infinite;
+}
+
+.painCopy::before { animation-delay: -2s; }
+.capabilityCard:nth-child(2)::before { animation-delay: -3.5s; }
+.capabilityCard:nth-child(3)::before { animation-delay: -7s; }
+.capabilityCard:nth-child(4)::before { animation-delay: -10.5s; }
+.capabilityCard:nth-child(5)::before { animation-delay: -13s; }
+.routeCard::before { animation-delay: -5s; }
+.ctaCard::before { animation-delay: -9s; }
+
+@keyframes goldTrace {
+  to { --gold-trace-angle: 360deg; }
+}
+
+@keyframes ambientGradientBreath {
+  0% {
+    opacity: 0.66;
+    transform: translate3d(-2.5%, -0.4%, 0) scale(1.02);
+  }
+
+  48% {
+    opacity: 0.94;
+    transform: translate3d(1.2%, 0.35%, 0) scale(1.07);
+  }
+
+  100% {
+    opacity: 0.76;
+    transform: translate3d(2.7%, -0.55%, 0) scale(1.035);
+  }
+}
+
+.footer {
+  border-top-color: rgba(212, 175, 55, 0.17);
+  background:
+    linear-gradient(100deg, rgba(45, 27, 105, 0.52), transparent 52%),
+    #090514;
+  color-scheme: dark;
+}
+
+.footer :global(.brand-mark) {
+  background: var(--mk-terra);
+  color: #18101c;
+}
+
+.footer nav a:hover {
+  color: var(--mk-terra);
+}
+
 @media (max-width: 1080px) {
   .hero {
     min-height: max(780px, 100dvh);
@@ -1365,7 +1817,9 @@
   .header::before,
   .heroCopy > *,
   .heroBackdrop,
-  .reveal {
+  .reveal,
+  .afterHero::before,
+  .goldTraceCard::before {
     opacity: 1;
     transform: none;
     animation: none;
@@ -1374,7 +1828,8 @@
 
   .headerLogin:hover,
   .primaryButton:hover,
-  .secondaryButton:hover {
+  .secondaryButton:hover,
+  .capabilityCard:hover {
     transform: none;
   }
 }
