@@ -110,6 +110,101 @@ def test_embedded_images_are_mapped_to_product_rows_and_image_columns(
     )
 
 
+def test_alternate_sheet_name_is_auto_detected_without_grouping_skus(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "供应商原始图册.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    sheet.append([
+        "同名商品",
+        "服饰/套装",
+        "STYLE-001",
+        None,
+        None,
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    sheet.append([
+        "同名商品",
+        "服饰/套装",
+        "STYLE-002",
+        None,
+        None,
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    workbook.create_sheet("Sheet2")
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert [row.sku_code for row in result.rows] == ["STYLE-001", "STYLE-002"]
+    assert [row.name for row in result.rows] == ["同名商品", "同名商品"]
+    assert result.warnings == (
+        "已自动识别工作表“Sheet1”作为商品列表；每一行仍按一个 SKU 导入。",
+    )
+
+
+def test_sequential_image_columns_can_extend_beyond_ten(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "扩展图片列.xlsx"
+    image_path = tmp_path / "extended-product.png"
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0"
+        b"\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00"
+        b"\x00IEND\xaeB`\x82"
+    )
+    image_path.write_bytes(image_bytes)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    extended_headers = [
+        *PRODUCT_TEMPLATE_HEADERS,
+        *(f"商品图片{index}" for index in range(11, 19)),
+    ]
+    sheet.append(extended_headers)
+    sheet.append([
+        "十八图商品",
+        "服饰/套装",
+        "IMAGES-018",
+        None,
+        None,
+        None,
+        None,
+        None,
+        *([None] * 17),
+        "https://img.example.com/image-18.jpg",
+    ])
+    embedded = OpenpyxlImage(image_path)
+    embedded.anchor = "Y2"
+    sheet.add_image(embedded)
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert result.rows[0].image_urls == (
+        "https://img.example.com/image-18.jpg",
+    )
+    assert result.rows[0].image_url_columns == (18,)
+    assert [image.image_column for image in result.rows[0].embedded_images] == [17]
+    assert result.warnings == (
+        "已自动识别工作表“Sheet1”作为商品列表；每一行仍按一个 SKU 导入。",
+    )
+
+
 def test_duplicate_sku_is_case_and_whitespace_insensitive(tmp_path: Path) -> None:
     path = tmp_path / "商品模版.xlsx"
     _write_workbook(

@@ -52,6 +52,7 @@ PRODUCT_TEMPLATE_HEADERS = (
     "商品图片9",
     "商品图片10",
 )
+PRODUCT_TEMPLATE_BASE_HEADERS = PRODUCT_TEMPLATE_HEADERS[:8]
 MAX_TEMPLATE_ROWS = 20_000
 MAX_ARCHIVE_ENTRIES = 5_000
 MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
@@ -67,6 +68,7 @@ TEMPLATE_IMAGE_BUCKET = "product-template"
 UNCATEGORIZED_CATEGORY_NAME = "未分类"
 PRODUCT_IMAGE_COLUMN_OFFSET = 8
 PRODUCT_IMAGE_COLUMN_COUNT = 10
+MAX_PRODUCT_IMAGE_COLUMN_COUNT = 50
 OOXML_WORKBOOK_PART = "xl/workbook.xml"
 
 
@@ -459,13 +461,18 @@ def _embedded_image_content_type(member: str) -> str | None:
 
 def _extract_embedded_template_images(
     path: Path,
+    *,
+    sheet_name: str,
+    image_column_count: int,
 ) -> tuple[dict[int, tuple[EmbeddedTemplateImage, ...]], tuple[str, ...]]:
     """Read XLSX drawing relationships without materializing every image.
 
     Excel drawing anchors are zero-based. A drawing that starts in I2 therefore
-    belongs to product row 2 and 商品图片1. Keeping only archive references in
-    the parse result prevents a large workbook from duplicating all image bytes
-    in worker memory.
+    belongs to product row 2 and 商品图片1. The caller supplies the detected
+    product worksheet and its sequential image-column count so compatible
+    workbooks are not forced to rename a sheet or discard columns after
+    商品图片10. Keeping only archive references in the parse result prevents a
+    large workbook from duplicating all image bytes in worker memory.
     """
 
     warnings: list[str] = []
@@ -488,7 +495,7 @@ def _extract_embedded_template_images(
             for element in workbook_root.iter():
                 if (
                     _xml_local_name(element.tag) == "sheet"
-                    and element.attrib.get("name") == PRODUCT_TEMPLATE_SHEET
+                    and element.attrib.get("name") == sheet_name
                 ):
                     relationship_id = _xml_attribute(element, "id")
                     sheet_part = (
@@ -582,7 +589,7 @@ def _extract_embedded_template_images(
                     if not (
                         PRODUCT_IMAGE_COLUMN_OFFSET
                         <= zero_based_column
-                        < PRODUCT_IMAGE_COLUMN_OFFSET + PRODUCT_IMAGE_COLUMN_COUNT
+                        < PRODUCT_IMAGE_COLUMN_OFFSET + image_column_count
                     ) or row_number < 2:
                         ignored_anchors += 1
                         continue
@@ -615,7 +622,8 @@ def _extract_embedded_template_images(
 
             if ignored_anchors:
                 warnings.append(
-                    f"有 {ignored_anchors} 张内嵌图片未放在商品图片1-10列，已忽略。"
+                    f"有 {ignored_anchors} 张内嵌图片未放在"
+                    f"商品图片1-{image_column_count}列，已忽略。"
                 )
             if unreadable_images:
                 warnings.append(
@@ -638,6 +646,111 @@ def _extract_embedded_template_images(
     )
 
 
+def _product_image_column_count(sheet: object) -> int | None:
+    """Return the compatible sequential image-column count for a worksheet."""
+
+    max_column = getattr(sheet, "max_column", None) or len(PRODUCT_TEMPLATE_HEADERS)
+    header_values = [
+        _cell_text(sheet.cell(row=1, column=index).value)
+        for index in range(1, max_column + 1)
+    ]
+    last_header_index = next(
+        (
+            index
+            for index in range(len(header_values), 0, -1)
+            if header_values[index - 1]
+        ),
+        0,
+    )
+    if last_header_index < len(PRODUCT_TEMPLATE_HEADERS):
+        return None
+    effective_headers = tuple(header_values[:last_header_index])
+    if effective_headers[: len(PRODUCT_TEMPLATE_BASE_HEADERS)] != (
+        PRODUCT_TEMPLATE_BASE_HEADERS
+    ):
+        return None
+    image_column_count = (
+        len(effective_headers) - len(PRODUCT_TEMPLATE_BASE_HEADERS)
+    )
+    if not (
+        PRODUCT_IMAGE_COLUMN_COUNT
+        <= image_column_count
+        <= MAX_PRODUCT_IMAGE_COLUMN_COUNT
+    ):
+        return None
+    expected_headers = PRODUCT_TEMPLATE_BASE_HEADERS + tuple(
+        f"商品图片{index}" for index in range(1, image_column_count + 1)
+    )
+    if effective_headers != expected_headers:
+        return None
+    return image_column_count
+
+
+def _select_product_sheet(
+    workbook: object,
+) -> tuple[object, int, str | None]:
+    """Select a uniquely identifiable one-row-per-SKU worksheet."""
+
+    preferred_sheet = (
+        workbook[PRODUCT_TEMPLATE_SHEET]
+        if PRODUCT_TEMPLATE_SHEET in workbook.sheetnames
+        else None
+    )
+    preferred_image_count = (
+        _product_image_column_count(preferred_sheet)
+        if preferred_sheet is not None
+        else None
+    )
+    if preferred_sheet is not None and preferred_image_count is not None:
+        return preferred_sheet, preferred_image_count, None
+
+    compatible_sheets = [
+        (sheet, image_column_count)
+        for sheet in workbook.worksheets
+        if (image_column_count := _product_image_column_count(sheet)) is not None
+    ]
+    if len(compatible_sheets) == 1:
+        sheet, image_column_count = compatible_sheets[0]
+        return (
+            sheet,
+            image_column_count,
+            (
+                f"已自动识别工作表“{sheet.title}”作为商品列表；"
+                "每一行仍按一个 SKU 导入。"
+            ),
+        )
+    if len(compatible_sheets) > 1:
+        sheet_names = "、".join(f"“{sheet.title}”" for sheet, _ in compatible_sheets)
+        issue = _issue(
+            row_number=None,
+            column="工作表",
+            code="SHEET_AMBIGUOUS",
+            message=f"发现多个可导入的商品工作表：{sheet_names}。",
+            suggestion="请只保留一个商品数据页，或将目标页重命名为“商品列表”。",
+        )
+        raise ProductTemplateValidationError(issue.message, issues=(issue,))
+    if preferred_sheet is not None:
+        return preferred_sheet, PRODUCT_IMAGE_COLUMN_COUNT, None
+
+    available_sheets = "、".join(
+        f"“{sheet_name}”" for sheet_name in workbook.sheetnames
+    )
+    issue = _issue(
+        row_number=None,
+        column="工作表",
+        code="SHEET_MISSING",
+        message=(
+            f"未找到符合商品模板表头的数据页。现有工作表："
+            f"{available_sheets or '无'}。"
+        ),
+        suggestion=(
+            "请使用下载模板，或保留前 8 个字段并按顺序使用"
+            "“商品图片1、商品图片2……”列。"
+        ),
+    )
+    raise ProductTemplateValidationError(issue.message, issues=(issue,))
+
+
 def parse_product_template(
     path: Path,
     *,
@@ -652,32 +765,23 @@ def parse_product_template(
         raise ProductTemplateValidationError("商品模版无法读取，请重新导出为 XLSX。") from exc
 
     try:
-        if PRODUCT_TEMPLATE_SHEET not in workbook.sheetnames:
-            issue = _issue(
-                row_number=None,
-                column="工作表",
-                code="SHEET_MISSING",
-                message=f"缺少工作表“{PRODUCT_TEMPLATE_SHEET}”。",
-                suggestion="请下载最新模板，并保留原始工作表名称。",
-            )
-            raise ProductTemplateValidationError(
-                issue.message,
-                issues=(issue,),
-            )
-        sheet = workbook[PRODUCT_TEMPLATE_SHEET]
+        sheet, image_column_count, sheet_warning = _select_product_sheet(workbook)
+        effective_headers = PRODUCT_TEMPLATE_BASE_HEADERS + tuple(
+            f"商品图片{index}" for index in range(1, image_column_count + 1)
+        )
         received_headers = tuple(
             _cell_text(sheet.cell(row=1, column=index).value)
-            for index in range(1, len(PRODUCT_TEMPLATE_HEADERS) + 1)
+            for index in range(1, len(effective_headers) + 1)
         )
-        max_column = sheet.max_column or len(PRODUCT_TEMPLATE_HEADERS)
+        max_column = sheet.max_column or len(effective_headers)
         extra_headers = [
-            _cell_text(sheet.cell(row=1, column=index).value)
-            for index in range(len(PRODUCT_TEMPLATE_HEADERS) + 1, max_column + 1)
+            (index, _cell_text(sheet.cell(row=1, column=index).value))
+            for index in range(len(effective_headers) + 1, max_column + 1)
             if _cell_text(sheet.cell(row=1, column=index).value)
         ]
-        if received_headers != PRODUCT_TEMPLATE_HEADERS or extra_headers:
+        if received_headers != effective_headers or extra_headers:
             header_issues: list[ProductTemplateIssue] = []
-            for index, expected in enumerate(PRODUCT_TEMPLATE_HEADERS, start=1):
+            for index, expected in enumerate(effective_headers, start=1):
                 actual = received_headers[index - 1]
                 if actual == expected:
                     continue
@@ -694,10 +798,7 @@ def parse_product_template(
                         suggestion="请下载最新模板，不要修改第一行的列名或列顺序。",
                     )
                 )
-            for index, actual in enumerate(
-                extra_headers,
-                start=len(PRODUCT_TEMPLATE_HEADERS) + 1,
-            ):
+            for index, actual in extra_headers:
                 header_issues.append(
                     _issue(
                         row_number=1,
@@ -718,10 +819,17 @@ def parse_product_template(
             )
 
         embedded_images_by_row, embedded_image_warnings = (
-            _extract_embedded_template_images(path)
+            _extract_embedded_template_images(
+                path,
+                sheet_name=sheet.title,
+                image_column_count=image_column_count,
+            )
         )
         rows: list[ProductTemplateRow] = []
-        warnings: list[str] = list(embedded_image_warnings)
+        warnings: list[str] = []
+        if sheet_warning is not None:
+            warnings.append(sheet_warning)
+        warnings.extend(embedded_image_warnings)
         issues: list[ProductTemplateIssue] = []
         first_row_by_sku: dict[str, int] = {}
         generated_sku_occurrences: dict[str, int] = {}
@@ -733,7 +841,7 @@ def parse_product_template(
         for row_number, values in enumerate(
             sheet.iter_rows(
                 min_row=2,
-                max_col=len(PRODUCT_TEMPLATE_HEADERS),
+                max_col=len(effective_headers),
                 values_only=True,
             ),
             start=2,
@@ -761,7 +869,7 @@ def parse_product_template(
                 if isinstance(value, str) and value.lstrip().startswith("=")
             }
             for index in sorted(formula_indexes):
-                column = PRODUCT_TEMPLATE_HEADERS[index]
+                column = effective_headers[index]
                 row_issues.append(
                     _issue(
                         row_number=row_number,
