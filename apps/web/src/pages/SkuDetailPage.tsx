@@ -17,10 +17,12 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
+import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { money } from "../lib/format";
+import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import { storefrontText } from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
@@ -62,6 +64,7 @@ export function SkuDetailPage() {
     () => readStoreCart(store.slug),
   );
   const [imageFailed, setImageFailed] = useState(!sku.image_url);
+  const [announcements, setAnnouncements] = useState(store.announcements || []);
   const displayTag = sku.display_tag || sku.tags[0];
   const quantity = cart[sku.id]?.quantity || 0;
   const cartLines = useMemo(() => Object.values(cart), [cart]);
@@ -81,6 +84,19 @@ export function SkuDetailPage() {
   useEffect(() => {
     setImageFailed(!sku.image_url);
   }, [sku.image_url]);
+
+  useEffect(() => {
+    setAnnouncements(store.announcements || []);
+  }, [store.announcements]);
+
+  useEffect(
+    () => subscribePublicCatalogRevision(() => {
+      void api.getStore(store.slug, locale)
+        .then((nextStore) => setAnnouncements(nextStore.announcements || []))
+        .catch(() => undefined);
+    }),
+    [locale, store.slug],
+  );
 
   useEffect(() => {
     const eventId = storefrontViewEventId(location.key, sku.id);
@@ -171,6 +187,12 @@ export function SkuDetailPage() {
           </div>
         </Container>
       </header>
+
+      <StorefrontAnnouncements
+        announcements={announcements}
+        tenantSlug={store.slug}
+        locale={locale}
+      />
 
       <main className="sku-detail-main">
         <Container size="4">

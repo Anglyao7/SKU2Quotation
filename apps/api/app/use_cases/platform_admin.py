@@ -29,18 +29,24 @@ from ..platform_admin_schemas import (
 )
 from ..public_catalog_models import TenantPublicProfileRow
 from ..repositories import platform_admin_repository as repository
-from ..repositories.public_catalog_repository import find_published_profile_by_slug
 from ..saas_seed import ensure_tenant_rbac
 from ..inventory_seed import ensure_default_warehouse
 from ..services.auth.dependencies import RequestContext
 from ..services.member_invitations import invite_tenant_member as create_member_invitation
+from ..services.storefront_paths import (
+    allocate_storefront_slug,
+    exact_storefront_slug_is_available,
+)
 from ..services.auth.local_credentials import normalize_local_identifier
 from ..services.auth.password_accounts import (
     PasswordIdentityProvisioningError,
     password_is_valid,
     provision_password_identity,
 )
-from ..tenant_slugs import is_reserved_tenant_slug, storefront_slug_from_name
+from ..tenant_slugs import (
+    is_reserved_tenant_slug,
+    storefront_slug_from_name,
+)
 
 
 def _require_platform_admin(context: RequestContext) -> None:
@@ -145,23 +151,31 @@ def create_tenant(
     request: PlatformTenantCreate,
 ) -> PlatformTenantSummary:
     _require_platform_admin(context)
-    slug = (
+    base_slug = (
         request.slug.casefold()
         if request.slug
         else storefront_slug_from_name(request.name)
     )
-    if is_reserved_tenant_slug(slug):
+    if is_reserved_tenant_slug(base_slug):
         raise ApplicationError(
             "TENANT_SLUG_RESERVED",
             "This storefront slug is reserved by the platform.",
             kind="invalid",
         )
-    if repository.find_tenant_by_slug(session, slug) is not None:
+    if request.slug and not exact_storefront_slug_is_available(
+        session,
+        slug=base_slug,
+    ):
         raise ApplicationError(
             "TENANT_SLUG_EXISTS",
             "This storefront slug is already in use.",
             kind="conflict",
         )
+    slug = (
+        base_slug
+        if request.slug
+        else allocate_storefront_slug(session, base=base_slug)
+    )
     tenant = TenantRow(
         organization_id=context.organization_id,
         name=request.name,
@@ -215,21 +229,12 @@ def update_tenant(
             kind="conflict",
         )
     if request.name is not None:
-        next_slug = storefront_slug_from_name(request.name)
-        slug_owner = repository.find_tenant_by_slug(session, next_slug)
-        public_owner = find_published_profile_by_slug(session, slug=next_slug)
-        if (
-            slug_owner is not None
-            and slug_owner.id != tenant.id
-        ) or (
-            public_owner is not None
-            and public_owner.tenant_id != tenant.id
-        ):
-            raise ApplicationError(
-                "TENANT_SLUG_EXISTS",
-                "This storefront path is already in use.",
-                kind="conflict",
-            )
+        base_slug = storefront_slug_from_name(request.name)
+        next_slug = allocate_storefront_slug(
+            session,
+            base=base_slug,
+            exclude_tenant_id=tenant.id,
+        )
         tenant.name = request.name
     else:
         next_slug = tenant.slug

@@ -39,6 +39,7 @@ function recoverableLazy<T extends ComponentType<any>>(
 
 const LandingPage = recoverableLazy(() => import("./pages/marketing/LandingPage").then((module) => ({ default: module.LandingPage })));
 const StorePage = recoverableLazy(() => import("./pages/StorePage").then((module) => ({ default: module.StorePage })));
+const ProductDetailPage = recoverableLazy(() => import("./pages/ProductDetailPage").then((module) => ({ default: module.ProductDetailPage })));
 const SkuDetailPage = recoverableLazy(() => import("./pages/SkuDetailPage").then((module) => ({ default: module.SkuDetailPage })));
 const PrivacyPage = recoverableLazy(() => import("./pages/PrivacyPage").then((module) => ({ default: module.PrivacyPage })));
 const ConsoleLayout = recoverableLazy(() => import("./pages/console/ConsoleLayout").then((module) => ({ default: module.ConsoleLayout })));
@@ -57,6 +58,7 @@ const StorefrontAnalyticsPage = recoverableLazy(() => import("./core/pages/Store
 const AnnouncementsPage = recoverableLazy(() => import("./core/pages/AnnouncementsPage").then((module) => ({ default: module.AnnouncementsPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
+const QuoteTemplatesPage = recoverableLazy(() => import("./core/pages/QuoteTemplatesPage").then((module) => ({ default: module.QuoteTemplatesPage })));
 const TagManagementPage = recoverableLazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
 const CustomerAccountsPage = recoverableLazy(() => import("./core/pages/CustomerAccountsPage").then((module) => ({ default: module.CustomerAccountsPage })));
 const CustomerPortalPage = recoverableLazy(() => import("./pages/CustomerPortalPage").then((module) => ({ default: module.CustomerPortalPage })));
@@ -144,7 +146,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   try {
     const savedView = readStorefrontViewState(tenantSlug);
     const category = savedView?.secondaryCategory || savedView?.primaryCategory;
-    void api.prefetchStoreSkus(tenantSlug, {
+    void api.prefetchStoreProducts(tenantSlug, {
       q: savedView?.search.trim() || undefined,
       category: category || undefined,
       semantic: Boolean(savedView?.search.trim()),
@@ -157,6 +159,32 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
       return redirect(`/${encodeURIComponent(store.slug)}${currentUrl.search}${currentUrl.hash}`);
     }
     return store;
+  }
+  catch (error) {
+    if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
+    throw error;
+  }
+}
+
+async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) {
+  const tenantSlug = params.tenantSlug;
+  const productId = params.productId;
+  if (!tenantSlug || !productId) throw new Response("Not found", { status: 404 });
+  const currentUrl = new URL(request.url);
+  const locale = currentUrl.searchParams.get("lang") === "en-US"
+    ? "en-US"
+    : "zh-CN";
+  try {
+    const [store, product] = await Promise.all([
+      api.getStore(tenantSlug, locale),
+      api.getStoreProduct(tenantSlug, productId, locale),
+    ]);
+    if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
+      return redirect(
+        `/${encodeURIComponent(store.slug)}/products/${encodeURIComponent(product.id)}${currentUrl.search}${currentUrl.hash}`,
+      );
+    }
+    return { store, product };
   }
   catch (error) {
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
@@ -232,6 +260,7 @@ const router = createBrowserRouter([{
         { path: "suppliers", element: <Navigate to="/console/products" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
+        { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "system/permissions", element: <PermissionsPage /> },
@@ -259,6 +288,12 @@ const router = createBrowserRouter([{
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },
   { path: "/account", element: <Navigate to="/console/account" replace /> },
   { path: "/system/permissions", element: <Navigate to="/console/system/permissions" replace /> },
+  {
+    path: "/:tenantSlug/products/:productId",
+    loader: storefrontProductLoader,
+    element: <ProductDetailPage />,
+    errorElement: <StorefrontRouteError />,
+  },
   {
     path: "/:tenantSlug/skus/:skuId",
     loader: storefrontSkuLoader,

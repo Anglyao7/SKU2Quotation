@@ -10,6 +10,7 @@ const preloads: Record<string, () => Promise<unknown>> = {
   "/console/announcements": () => import("./pages/AnnouncementsPage"),
   "/console/inquiries": () => import("./pages/InquiryPage"),
   "/console/quotes": () => import("./pages/QuotesPage"),
+  "/console/quote-templates": () => import("./pages/QuoteTemplatesPage"),
   "/console/customer-accounts": () => import("./pages/CustomerAccountsPage"),
   "/console/system/permissions": () => import("./pages/PermissionsPage"),
   "/console/system/monitoring": () => import("./pages/SystemMonitoringPage"),

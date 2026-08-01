@@ -196,6 +196,7 @@ def seed_product_center_demo(session: Session) -> None:
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
                 SkuRow.sku_code == sku_code,
             )
+            .execution_options(include_deleted=True)
         )
         if sku is None:
             sku = SkuRow(

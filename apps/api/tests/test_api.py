@@ -21,6 +21,7 @@ from fastapi import Request, Response
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.styles import Font, PatternFill
 from sqlalchemy import MetaData, create_engine, delete, func, inspect, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
@@ -40,6 +41,7 @@ from app.database import API_ROOT, SessionLocal, engine
 from app.identity_models import (
     AuthRefreshTokenRow,
     AuthSessionRow,
+    LocalAccountCredentialRow,
     MembershipRoleRow,
     MembershipRow,
     OrganizationRow,
@@ -141,14 +143,26 @@ from app.services.product_intelligence.adoption import (
 from app.services.product_template_import import (
     PRODUCT_TEMPLATE_HEADERS,
     PRODUCT_TEMPLATE_SHEET,
+    PRODUCT_VARIANT_TEMPLATE_HEADERS,
+    parse_product_template,
+)
+from app.services.category_template_import import (
+    CATEGORY_TEMPLATE_HEADERS,
+    CATEGORY_TEMPLATE_SHEET,
 )
 from app.services.product_intelligence.normalization import normalize_product_field
 from app.services.rbac import has_permission, list_permissions
 from app.services.auth.tokens import REFRESH_COOKIE_NAME, hash_secret
 from app.services.auth.contracts import IdentityClaim, IdentityProviderError
 from app.services.auth.oidc_provider import OidcIdentityProviderAdapter
-from app.services.auth.service import AuthError, _validate_new_password
+from app.services.auth.local_credentials import new_local_password_material
+from app.services.auth.service import (
+    AuthError,
+    _validate_new_password,
+    verify_current_user_password,
+)
 from app.production_bootstrap import bootstrap_production_owner
+from app.product_center_seed import seed_product_center_demo
 from app.tenant_slugs import RESERVED_TENANT_SLUGS, storefront_slug_from_name
 from app.model_mixins import mark_deleted, restore_deleted
 from app.adapters.file_scanner import (
@@ -164,6 +178,7 @@ from app.workers.file_processing import process_file_worker_job
 import app.workers.file_processing as file_processing_worker
 from app.workers.outbox_relay import relay_one_outbox_event
 from app.use_cases.product_center import list_products as list_authoritative_products
+from app.use_cases.product_center import delete_all_products as delete_all_products_use_case
 from app.use_cases.product_center import list_skus as list_authoritative_skus
 from app.use_cases.product_center import upsert_public_offer as upsert_public_offer_use_case
 from app.product_center_schemas import PublicCatalogOfferUpsertRequest
@@ -525,6 +540,45 @@ def test_merchant_name_updates_storefront_path_and_preserves_old_link() -> None:
             session.commit()
 
 
+def test_merchant_name_collision_receives_unique_storefront_path() -> None:
+    target_name = f"Shared Merchant {uuid4().hex[:8]}"
+    base_slug = storefront_slug_from_name(target_name)
+    occupied = client.post(
+        "/api/admin/tenants",
+        json={"name": target_name, "active": True},
+    )
+    assert occupied.status_code == 201, occupied.text
+    assert occupied.json()["slug"] == base_slug
+
+    with SessionLocal() as session:
+        tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert tenant is not None and profile is not None
+        original_name = tenant.name
+        original_tenant_slug = tenant.slug
+        original_profile_slug = profile.slug
+        original_aliases = list(profile.legacy_slugs or [])
+
+    try:
+        response = client.patch(
+            "/api/v1/me/merchant",
+            json={"name": target_name},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["slug"] == f"{base_slug}-2"
+        assert client.get(f"/api/store/{base_slug}-2").status_code == 200
+    finally:
+        with SessionLocal() as session:
+            tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert tenant is not None and profile is not None
+            tenant.name = original_name
+            tenant.slug = original_tenant_slug
+            profile.slug = original_profile_slug
+            profile.legacy_slugs = original_aliases
+            session.commit()
+
+
 def test_merchant_business_mode_switches_default_currency_safely() -> None:
     with SessionLocal() as session:
         tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
@@ -625,22 +679,88 @@ def test_user_can_persist_console_locale_preference() -> None:
 
 def test_merchant_can_schedule_ticker_and_safe_rich_popup_announcements() -> None:
     starts_at = datetime.now(UTC) - timedelta(minutes=1)
+    with SessionLocal() as session:
+        def published_sku() -> SkuRow | None:
+            return session.scalar(
+                select(SkuRow)
+                .join(
+                    PublicCatalogOfferRow,
+                    (PublicCatalogOfferRow.tenant_id == SkuRow.tenant_id)
+                    & (PublicCatalogOfferRow.sku_id == SkuRow.id),
+                )
+                .join(
+                    ProductRow,
+                    (ProductRow.tenant_id == SkuRow.tenant_id)
+                    & (ProductRow.id == SkuRow.product_id),
+                )
+                .where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.status == "ACTIVE",
+                    SkuRow.deleted_at.is_(None),
+                    ProductRow.status == "ACTIVE",
+                    ProductRow.deleted_at.is_(None),
+                    PublicCatalogOfferRow.publication_status == "PUBLISHED",
+                    PublicCatalogOfferRow.deleted_at.is_(None),
+                )
+                .limit(1)
+            )
+
+        related_sku = published_sku()
+        if related_sku is None:
+            seed_product_center_demo(session)
+            demo_sku = session.scalar(
+                select(SkuRow)
+                .where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.sku_code == "AQ-320S",
+                )
+                .execution_options(include_deleted=True)
+            )
+            assert demo_sku is not None
+            restore_deleted(demo_sku)
+            demo_sku.status = "ACTIVE"
+            demo_product = session.get(
+                ProductRow,
+                demo_sku.product_id,
+                execution_options={"include_deleted": True},
+            )
+            assert demo_product is not None
+            restore_deleted(demo_product)
+            demo_product.status = "ACTIVE"
+            demo_offer = session.scalar(
+                select(PublicCatalogOfferRow)
+                .where(
+                    PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                    PublicCatalogOfferRow.sku_id == demo_sku.id,
+                )
+                .execution_options(include_deleted=True)
+            )
+            assert demo_offer is not None
+            restore_deleted(demo_offer)
+            demo_offer.publication_status = "PUBLISHED"
+            session.commit()
+            related_sku = published_sku()
+        assert related_sku is not None
+        related_sku_id = related_sku.id
     ticker = client.post(
         "/api/v1/announcements",
         json={
-            "title": "Holiday shipping",
             "display_type": "TICKER",
             "ticker_text": "Orders placed this week ship on Monday.",
             "content_blocks": [],
+            "related_sku_ids": [str(related_sku_id)],
             "starts_at": starts_at.isoformat(),
             "duration_days": 2,
-            "repeat_interval_hours": 24,
+            "ticker_speed_px_per_second": 85,
             "publication_status": "PUBLISHED",
         },
     )
     assert ticker.status_code == 201, ticker.text
     ticker_data = ticker.json()
     assert ticker_data["is_active"] is True
+    assert ticker_data["title"] is None
+    assert ticker_data["ticker_speed_px_per_second"] == 85
+    assert ticker_data["related_skus"][0]["id"] == str(related_sku_id)
 
     popup = client.post(
         "/api/v1/announcements",
@@ -663,7 +783,6 @@ def test_merchant_can_schedule_ticker_and_safe_rich_popup_announcements() -> Non
             ],
             "starts_at": starts_at.isoformat(),
             "duration_days": 3,
-            "repeat_interval_hours": 12,
             "publication_status": "PUBLISHED",
         },
     )
@@ -682,7 +801,22 @@ def test_merchant_can_schedule_ticker_and_safe_rich_popup_announcements() -> Non
         row["id"]: row for row in storefront.json()["announcements"]
     }
     assert public_rows[ticker_data["id"]]["ticker_text"].startswith("Orders")
-    assert public_rows[popup_data["id"]]["repeat_interval_hours"] == 12
+    assert public_rows[ticker_data["id"]]["related_skus"][0]["id"] == str(related_sku_id)
+    assert public_rows[ticker_data["id"]]["ticker_speed_px_per_second"] == 85
+    assert public_rows[popup_data["id"]]["ticker_speed_px_per_second"] == 60
+
+    missing_sku = client.post(
+        "/api/v1/announcements",
+        json={
+            "display_type": "TICKER",
+            "ticker_text": "Unavailable product",
+            "related_sku_ids": [str(uuid4())],
+            "starts_at": starts_at.isoformat(),
+            "duration_days": 1,
+            "publication_status": "PUBLISHED",
+        },
+    )
+    assert missing_sku.status_code == 422
 
     unsafe = client.post(
         "/api/v1/announcements",
@@ -1790,6 +1924,29 @@ def test_platform_admin_rejects_every_reserved_storefront_slug() -> None:
         )
 
 
+def test_platform_admin_auto_allocates_duplicate_name_storefront_paths() -> None:
+    suffix = uuid4().hex[:10]
+    base_name = f"YoYo {suffix}"
+    expected_base = storefront_slug_from_name(base_name)
+
+    created = []
+    for name in (base_name, f"{base_name}~", f"{base_name}!!!"):
+        response = client.post(
+            "/api/admin/tenants",
+            json={"name": name, "active": True},
+        )
+        assert response.status_code == 201, response.text
+        created.append(response.json())
+
+    assert [tenant["slug"] for tenant in created] == [
+        expected_base,
+        f"{expected_base}-2",
+        f"{expected_base}-3",
+    ]
+    for tenant in created:
+        assert client.get(f"/api/store/{tenant['slug']}").status_code == 200
+
+
 def test_platform_admin_manages_tenant_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2440,6 +2597,8 @@ def test_phase4a1a_schema_contains_only_approved_product_intelligence_tables() -
         "public_quote_drafts",
         "public_quote_draft_items",
         "public_quote_download_tokens",
+        "quote_excel_templates",
+        "storefront_announcements",
     }.issubset(tables)
     assert {"auth_sessions", "auth_refresh_tokens", "media_objects", "worker_jobs"}.issubset(
         tables
@@ -2487,6 +2646,7 @@ def test_phase4a1a_tables_are_tenant_scoped_candidate_only_and_product_detached(
         "public_quote_drafts",
         "public_quote_draft_items",
         "public_quote_download_tokens",
+        "quote_excel_templates",
     ):
         columns = {column["name"] for column in database_inspector.get_columns(table_name)}
         assert {"tenant_id", "created_at", "updated_at", "deleted_at"}.issubset(columns)
@@ -4820,6 +4980,313 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
     assert empty_listing.json()["total"] == 0
 
 
+def test_demo_seed_does_not_reinsert_a_soft_deleted_sku() -> None:
+    sku_code = "AQ-320S"
+    with SessionLocal() as session:
+        original = session.scalar(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == sku_code,
+            )
+            .execution_options(include_deleted=True)
+        )
+        assert original is not None
+        original_status = original.status
+        original_deleted_at = original.deleted_at
+        original.status = "ARCHIVED"
+        original.deleted_at = datetime.now(UTC)
+        session.commit()
+
+    try:
+        with SessionLocal() as session:
+            seed_product_center_demo(session)
+
+        with SessionLocal() as session:
+            rows = session.scalars(
+                select(SkuRow)
+                .where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.sku_code == sku_code,
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+            assert len(rows) == 1
+            assert rows[0].status == "ARCHIVED"
+            assert rows[0].deleted_at is not None
+    finally:
+        with SessionLocal() as session:
+            row = session.scalar(
+                select(SkuRow)
+                .where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.sku_code == sku_code,
+                )
+                .execution_options(include_deleted=True)
+            )
+            assert row is not None
+            row.status = original_status
+            row.deleted_at = original_deleted_at
+            session.commit()
+
+
+def test_delete_all_products_route_requires_the_current_password(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_delete_all_products(_session, **kwargs):
+        calls.append(kwargs)
+        return {"deleted_product_count": 7, "deleted_sku_count": 11}
+
+    monkeypatch.setattr(
+        "app.routers.product_center.use_cases.delete_all_products",
+        fake_delete_all_products,
+    )
+
+    rejected = client.post(
+        "/api/v1/product-center/products/delete-all",
+        json={"password": "wrong-password"},
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["detail"] == {
+        "code": "CURRENT_PASSWORD_INVALID",
+        "message": "密码错误，请重新输入。",
+    }
+    assert "wrong-password" not in rejected.text
+    assert calls == []
+
+    accepted = client.post(
+        "/api/v1/product-center/products/delete-all",
+        json={"password": "zhimaoyun123"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json() == {
+        "deleted_product_count": 7,
+        "deleted_sku_count": 11,
+    }
+    assert calls[0]["tenant_id"] == DEFAULT_TENANT_ID
+    assert calls[0]["user_id"] == DEFAULT_OWNER_USER_ID
+
+
+def test_current_password_verification_supports_local_merchant_accounts() -> None:
+    user_id = uuid4()
+    identifier = f"delete-all-{uuid4().hex}@example.test"
+    password = "MerchantPass42"
+    salt, password_hash = new_local_password_material(password)
+    try:
+        with SessionLocal() as session:
+            session.add(
+                UserRow(
+                    id=user_id,
+                    email_normalized=identifier,
+                    display_name="Delete All Merchant",
+                    identity_provider="local-password",
+                    identity_subject=f"local-password:{user_id}",
+                    status="active",
+                )
+            )
+            session.flush()
+            session.add(
+                LocalAccountCredentialRow(
+                    user_id=user_id,
+                    identifier_normalized=identifier,
+                    password_salt=salt,
+                    password_hash=password_hash,
+                )
+            )
+            session.commit()
+
+        with SessionLocal() as session:
+            verify_current_user_password(
+                session,
+                user_id=user_id,
+                password=password,
+            )
+            with pytest.raises(AuthError) as rejected:
+                verify_current_user_password(
+                    session,
+                    user_id=user_id,
+                    password="NotThePassword42",
+                )
+            assert rejected.value.code == "CURRENT_PASSWORD_INVALID"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(LocalAccountCredentialRow).where(
+                    LocalAccountCredentialRow.user_id == user_id
+                )
+            )
+            session.execute(delete(UserRow).where(UserRow.id == user_id))
+            session.commit()
+
+
+def test_delete_all_products_is_tenant_scoped_and_uses_bulk_soft_delete() -> None:
+    suffix = uuid4().hex[:10]
+    organization_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    membership_id = uuid4()
+    product_id = uuid4()
+    sku_id = uuid4()
+    try:
+        with SessionLocal() as session:
+            session.add(
+                OrganizationRow(
+                    id=organization_id,
+                    code=f"delete-all-{suffix}",
+                    name=f"Delete All {suffix}",
+                    status="active",
+                )
+            )
+            session.add(
+                TenantRow(
+                    id=tenant_id,
+                    organization_id=organization_id,
+                    slug=f"delete-all-{suffix}",
+                    name=f"Delete All {suffix}",
+                    status="active",
+                )
+            )
+            session.add(
+                UserRow(
+                    id=user_id,
+                    email_normalized=f"delete-all-{suffix}@example.test",
+                    display_name="Catalog Owner",
+                    identity_provider="local-password",
+                    identity_subject=f"delete-all:{suffix}",
+                    status="active",
+                )
+            )
+            session.add(
+                MembershipRow(
+                    id=membership_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    status="active",
+                    joined_at=datetime.now(UTC),
+                )
+            )
+            session.flush()
+            session.add(
+                ProductRow(
+                    id=product_id,
+                    tenant_id=tenant_id,
+                    product_code=f"DELETE-ALL-{suffix}",
+                    name="Bulk deletion test product",
+                    status="ACTIVE",
+                    current_version=3,
+                    search_document_version=3,
+                )
+            )
+            session.flush()
+            session.add(
+                SkuRow(
+                    id=sku_id,
+                    tenant_id=tenant_id,
+                    product_id=product_id,
+                    sku_code=f"DELETE-ALL-SKU-{suffix}",
+                    name="Bulk deletion test SKU",
+                    option_values={},
+                    status="ACTIVE",
+                    version=4,
+                )
+            )
+            session.flush()
+            session.add(
+                PublicCatalogOfferRow(
+                    tenant_id=tenant_id,
+                    sku_id=sku_id,
+                    unit_price=Decimal("12.00"),
+                    currency="CNY",
+                    tags=[],
+                    publication_status="PUBLISHED",
+                )
+            )
+            session.commit()
+
+        with SessionLocal() as session:
+            result = delete_all_products_use_case(
+                session,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                membership_id=membership_id,
+                permissions=frozenset({"product.edit"}),
+            )
+            assert result == {
+                "deleted_product_count": 1,
+                "deleted_sku_count": 1,
+            }
+
+        with SessionLocal() as session:
+            sku = session.scalar(
+                select(SkuRow)
+                .where(SkuRow.tenant_id == tenant_id, SkuRow.id == sku_id)
+                .execution_options(include_deleted=True)
+            )
+            product = session.get(ProductRow, product_id)
+            offer = session.scalar(
+                select(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.tenant_id == tenant_id,
+                    PublicCatalogOfferRow.sku_id == sku_id,
+                )
+            )
+            event = session.scalar(
+                select(ProductAuditEventRow).where(
+                    ProductAuditEventRow.tenant_id == tenant_id,
+                    ProductAuditEventRow.action == "catalog.deleted_all",
+                )
+            )
+            assert sku is not None
+            assert sku.status == "ARCHIVED"
+            assert sku.deleted_at is not None
+            assert sku.version == 5
+            assert product is not None
+            assert product.status == "ARCHIVED"
+            assert product.archived_at is not None
+            assert product.current_version == 4
+            assert product.search_document_version == 0
+            assert offer is not None
+            assert offer.publication_status == "SUSPENDED"
+            assert event is not None
+            assert event.before == {"product_count": 1, "sku_count": 1}
+
+            repeated = delete_all_products_use_case(
+                session,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                membership_id=membership_id,
+                permissions=frozenset({"product.edit"}),
+            )
+            assert repeated == {
+                "deleted_product_count": 0,
+                "deleted_sku_count": 0,
+            }
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.tenant_id == tenant_id
+                )
+            )
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.tenant_id == tenant_id
+                )
+            )
+            session.execute(delete(SkuRow).where(SkuRow.tenant_id == tenant_id))
+            session.execute(
+                delete(ProductRow).where(ProductRow.tenant_id == tenant_id)
+            )
+            session.execute(
+                delete(MembershipRow).where(MembershipRow.tenant_id == tenant_id)
+            )
+            session.execute(delete(TenantRow).where(TenantRow.id == tenant_id))
+            session.execute(delete(UserRow).where(UserRow.id == user_id))
+            session.execute(
+                delete(OrganizationRow).where(OrganizationRow.id == organization_id)
+            )
+            session.commit()
+
+
 def test_upload_parse_review_and_approve_xlsx() -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -5027,6 +5494,117 @@ def test_product_template_imports_embedded_images_into_managed_storage(
     assert public_image.status_code == 200
     assert public_image.content == image_bytes
     assert public_image.headers["content-type"].startswith("image/png")
+
+
+def test_product_variant_template_imports_one_product_with_multiple_public_skus(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    import_job_ids: list[str] = []
+    category_name = "商品规格模板测试"
+    workbook_path = tmp_path / "商品图册模板（更新了商品规格分类）.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet.append(list(PRODUCT_VARIANT_TEMPLATE_HEADERS))
+    sheet.append([
+        "规格模板 API 摄像头",
+        category_name,
+        "VARIANT-API-CAMERA",
+        None,
+        "同一个商品下包含两个可报价规格",
+        "接口回归测试",
+        "是",
+        12,
+        "普通款",
+        10,
+        None,
+    ])
+    sheet.append([
+        "规格模板 API 摄像头",
+        category_name,
+        "VARIANT-API-CAMERA",
+        None,
+        "同一个商品下包含两个可报价规格",
+        None,
+        None,
+        12,
+        "蓝牙款",
+        20,
+        None,
+    ])
+    workbook.save(workbook_path)
+    workbook.close()
+
+    parsed = parse_product_template(workbook_path)
+    sku_codes = [row.sku_code for row in parsed.rows]
+    _cleanup_template_test_records(
+        import_job_ids=[],
+        sku_codes=sku_codes,
+        category_names=[category_name],
+    )
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=sku_codes,
+            category_names=[category_name],
+        )
+    )
+
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                workbook_path.name,
+                workbook_path.read_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert response.status_code == 201, response.text
+    job = response.json()
+    import_job_ids.append(job["id"])
+    assert job["status"] == "published"
+    assert any(
+        "商品+规格模板" in warning
+        for warning in job["warning_messages"]
+    )
+
+    sku_response = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": "VARIANT-API-CAMERA", "page_size": 10},
+    )
+    assert sku_response.status_code == 200, sku_response.text
+    sku_items = sku_response.json()["items"]
+    assert len(sku_items) == 2
+    assert len({item["product_id"] for item in sku_items}) == 1
+    assert {item["name"] for item in sku_items} == {
+        "规格模板 API 摄像头 · 普通款",
+        "规格模板 API 摄像头 · 蓝牙款",
+    }
+
+    product_listing = client.get(
+        "/api/store/demo/products",
+        params={"q": "规格模板 API 摄像头"},
+    )
+    assert product_listing.status_code == 200, product_listing.text
+    payload = product_listing.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["product_code"] == "VARIANT-API-CAMERA"
+    assert payload["items"][0]["sku_count"] == 2
+    assert payload["items"][0]["price_from"] == "10.00"
+    assert payload["items"][0]["price_to"] == "20.00"
+
+    product_detail = client.get(
+        f"/api/store/demo/products/{payload['items'][0]['id']}"
+    )
+    assert product_detail.status_code == 200, product_detail.text
+    detail = product_detail.json()
+    assert detail["name"] == "规格模板 API 摄像头"
+    assert {
+        item["specification"] for item in detail["skus"]
+    } == {"普通款", "蓝牙款"}
 
 
 def test_product_template_failure_returns_complete_structured_issue_details(
@@ -7595,6 +8173,31 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
         assert "supplier_price" not in item
         assert "moq" not in item
 
+    product_listing_response = client.get("/api/store/demo/products")
+    assert product_listing_response.status_code == 200, product_listing_response.text
+    product_listing = product_listing_response.json()
+    assert product_listing["total"] == 3
+    product_by_name = {
+        item["name"]: item for item in product_listing["items"]
+    }
+    product_summary = product_by_name["八片带门宠物围栏"]
+    assert product_summary["sku_count"] == 1
+    assert Decimal(str(product_summary["price_from"])) == Decimal("229.00")
+    assert Decimal(str(product_summary["price_to"])) == Decimal("229.00")
+    product_detail_response = client.get(
+        f"/api/store/demo/products/{product_summary['id']}"
+    )
+    assert product_detail_response.status_code == 200, product_detail_response.text
+    assert "max-age=30" in product_detail_response.headers["cache-control"]
+    assert (
+        "stale-while-revalidate=120"
+        in product_detail_response.headers["cache-control"]
+    )
+    product_detail = product_detail_response.json()
+    assert product_detail["name"] == product_summary["name"]
+    assert [item["sku_code"] for item in product_detail["skus"]] == ["PF-8G01"]
+    assert client.get(f"/api/store/demo/products/{uuid4()}").status_code == 404
+
     detail_response = client.get(
         f"/api/store/demo/skus/{by_code['PF-8G01']['id']}"
     )
@@ -8008,6 +8611,70 @@ def test_public_catalog_reuses_on_demand_translation_memory(
             session.commit()
 
 
+def test_public_product_detail_reuses_one_product_translation_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _CatalogTranslationTestProvider()
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "configured_catalog_translator",
+        lambda: provider,
+    )
+
+    def fail_duplicate_sku_translation(*_args, **_kwargs):
+        raise AssertionError(
+            "product detail must not run a second per-SKU translation batch"
+        )
+
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "_live_sku_translation_map",
+        fail_duplicate_sku_translation,
+    )
+    with SessionLocal() as session:
+        session.execute(
+            delete(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.commit()
+
+    try:
+        chinese_listing = client.get(
+            "/api/store/demo/products",
+            params={"page": 1, "page_size": 1, "include_facets": "false"},
+        )
+        assert chinese_listing.status_code == 200, chinese_listing.text
+        product_id = chinese_listing.json()["items"][0]["id"]
+
+        detail = client.get(
+            f"/api/store/demo/products/{product_id}",
+            params={"locale": "en-US"},
+        )
+        assert detail.status_code == 200, detail.text
+        payload = detail.json()
+        assert payload["translation_status"] == "TRANSLATED"
+        assert payload["skus"]
+        assert all(
+            sku["translation_status"] == "TRANSLATED"
+            for sku in payload["skus"]
+        )
+        assert provider.calls > 0
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTextTranslationRow).where(
+                    CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.commit()
+
+
 def test_catalog_translation_job_reports_progress_and_caches_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8302,6 +8969,331 @@ def test_postgres_hybrid_search_bounds_candidates_before_orm_hydration() -> None
     assert "FROM EMBEDDINGS" in semantic_sql
     assert " LIMIT " in semantic_sql
     assert " LIMIT " in lexical_sql
+
+
+def test_category_template_download_and_incremental_import_are_idempotent() -> None:
+    download = client.get("/api/v1/category-template.xlsx")
+    assert download.status_code == 200, download.text
+    assert download.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    downloaded_workbook = load_workbook(BytesIO(download.content), read_only=True)
+    try:
+        assert CATEGORY_TEMPLATE_SHEET in downloaded_workbook.sheetnames
+        downloaded_sheet = downloaded_workbook[CATEGORY_TEMPLATE_SHEET]
+        assert tuple(downloaded_sheet.cell(1, column).value for column in (1, 2)) == (
+            CATEGORY_TEMPLATE_HEADERS
+        )
+    finally:
+        downloaded_workbook.close()
+
+    suffix = uuid4().hex[:10].upper()
+    primary_one = f"导入一级甲-{suffix}"
+    primary_two = f"导入一级乙-{suffix}"
+    secondary_one = f"导入二级甲-{suffix}"
+    secondary_two = f"导入二级乙-{suffix}"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = CATEGORY_TEMPLATE_SHEET
+    sheet.append(list(CATEGORY_TEMPLATE_HEADERS))
+    sheet.append([primary_one, secondary_one])
+    sheet.append([primary_one, secondary_two])
+    sheet.append([primary_two, None])
+    sheet.append([primary_one, secondary_one])
+    sheet.append([None, None])
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+
+    created_ids: list[str] = []
+    try:
+        first = client.post(
+            "/api/v1/categories/import",
+            files={
+                "file": (
+                    "分类模板.xlsx",
+                    content.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert first.status_code == 200, first.text
+        assert first.json() == {
+            "processed_rows": 3,
+            "primary_created": 2,
+            "secondary_created": 2,
+            "primary_existing": 0,
+            "secondary_existing": 0,
+            "duplicate_rows_ignored": 1,
+            "blank_rows_ignored": 1,
+        }
+
+        second = client.post(
+            "/api/v1/categories/import",
+            files={
+                "file": (
+                    "分类模板.xlsx",
+                    content.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["primary_created"] == 0
+        assert second.json()["secondary_created"] == 0
+        assert second.json()["primary_existing"] == 2
+        assert second.json()["secondary_existing"] == 2
+
+        with SessionLocal() as session:
+            imported = list(
+                session.scalars(
+                    select(ProductCategoryRow).where(
+                        ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductCategoryRow.name.in_(
+                            [primary_one, primary_two, secondary_one, secondary_two]
+                        ),
+                    )
+                ).all()
+            )
+            created_ids = [str(row.id) for row in imported]
+            root_by_name = {
+                row.name: row for row in imported if row.parent_id is None
+            }
+            children = [row for row in imported if row.parent_id is not None]
+            assert set(root_by_name) == {primary_one, primary_two}
+            assert {row.name for row in children} == {secondary_one, secondary_two}
+            assert all(row.parent_id == root_by_name[primary_one].id for row in children)
+            assert [row.name for row in sorted(children, key=lambda row: row.sort_order)] == [
+                secondary_one,
+                secondary_two,
+            ]
+    finally:
+        with SessionLocal() as session:
+            if not created_ids:
+                created_ids = [
+                    str(value)
+                    for value in session.scalars(
+                        select(ProductCategoryRow.id).where(
+                            ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                            ProductCategoryRow.name.in_(
+                                [primary_one, primary_two, secondary_one, secondary_two]
+                            ),
+                        )
+                    ).all()
+                ]
+            if created_ids:
+                category_ids = [UUID(value) for value in created_ids]
+                session.execute(
+                    delete(ProductAuditEventRow).where(
+                        ProductAuditEventRow.entity_type == "CATEGORY",
+                        ProductAuditEventRow.entity_id.in_(created_ids),
+                    )
+                )
+                session.execute(
+                    delete(ProductCategoryRow).where(
+                        ProductCategoryRow.id.in_(category_ids),
+                        ProductCategoryRow.parent_id.is_not(None),
+                    )
+                )
+                session.flush()
+                session.execute(
+                    delete(ProductCategoryRow).where(
+                        ProductCategoryRow.id.in_(category_ids)
+                    )
+                )
+                session.commit()
+
+
+def test_category_delete_cascades_children_without_deleting_products() -> None:
+    suffix = uuid4().hex[:10].upper()
+    category_ids: list[str] = []
+    product_ids = [uuid4(), uuid4()]
+    definition_id = uuid4()
+    attribute_id = uuid4()
+    try:
+        root_response = client.post(
+            "/api/v1/categories",
+            json={
+                "code": f"DELETE-ROOT-{suffix}",
+                "name": f"待删除一级-{suffix}",
+                "sort_order": 900,
+            },
+        )
+        assert root_response.status_code == 201, root_response.text
+        root = root_response.json()
+        category_ids.append(root["id"])
+
+        children = []
+        for position in range(2):
+            response = client.post(
+                "/api/v1/categories",
+                json={
+                    "parent_id": root["id"],
+                    "code": f"DELETE-CHILD-{position}-{suffix}",
+                    "name": f"待删除二级-{position}-{suffix}",
+                    "sort_order": position,
+                },
+            )
+            assert response.status_code == 201, response.text
+            children.append(response.json())
+            category_ids.append(response.json()["id"])
+
+        with SessionLocal() as session:
+            session.add_all(
+                [
+                    ProductRow(
+                        id=product_ids[0],
+                        tenant_id=DEFAULT_TENANT_ID,
+                        product_code=f"DELETE-CATEGORY-PRODUCT-A-{suffix}",
+                        name=f"分类删除保留商品甲-{suffix}",
+                        category_id=UUID(root["id"]),
+                        status="ACTIVE",
+                        default_unit="PCS",
+                        current_version=1,
+                        search_document_version=8,
+                        created_by=DEFAULT_OWNER_USER_ID,
+                        updated_by=DEFAULT_OWNER_USER_ID,
+                    ),
+                    ProductRow(
+                        id=product_ids[1],
+                        tenant_id=DEFAULT_TENANT_ID,
+                        product_code=f"DELETE-CATEGORY-PRODUCT-B-{suffix}",
+                        name=f"分类删除保留商品乙-{suffix}",
+                        category_id=UUID(children[0]["id"]),
+                        status="ACTIVE",
+                        default_unit="PCS",
+                        current_version=1,
+                        search_document_version=9,
+                        created_by=DEFAULT_OWNER_USER_ID,
+                        updated_by=DEFAULT_OWNER_USER_ID,
+                    ),
+                ]
+            )
+            session.add(
+                AttributeDefinitionRow(
+                    id=definition_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    category_id=UUID(children[0]["id"]),
+                    attribute_key=f"delete_category_{suffix.lower()}",
+                    display_name="待保留的属性值",
+                    data_type="TEXT",
+                    is_required=False,
+                    is_variant=False,
+                    is_filterable=True,
+                    is_matchable=True,
+                    status="ACTIVE",
+                    version=1,
+                )
+            )
+            session.flush()
+            session.add(
+                ProductAttributeRow(
+                    id=attribute_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_ids[1],
+                    attribute_definition_id=definition_id,
+                    attribute_key=f"delete_category_{suffix.lower()}",
+                    value_text="属性值继续保留",
+                    review_status="CONFIRMED",
+                )
+            )
+            session.commit()
+
+        impact_response = client.get(
+            f"/api/v1/categories/{root['id']}/delete-impact"
+        )
+        assert impact_response.status_code == 200, impact_response.text
+        assert impact_response.json() == {
+            "category_id": root["id"],
+            "category_name": root["name"],
+            "is_primary": True,
+            "child_category_count": 2,
+            "affected_product_count": 2,
+            "attribute_definition_count": 1,
+            "attribute_value_count": 1,
+        }
+
+        stale_response = client.delete(
+            f"/api/v1/categories/{root['id']}",
+            params={"expected_version": root["version"] + 1},
+        )
+        assert stale_response.status_code == 409
+        assert stale_response.json()["detail"]["code"] == "CATEGORY_VERSION_CONFLICT"
+
+        delete_response = client.delete(
+            f"/api/v1/categories/{root['id']}",
+            params={"expected_version": root["version"]},
+        )
+        assert delete_response.status_code == 200, delete_response.text
+        assert delete_response.json()["deleted_category_count"] == 3
+        assert delete_response.json()["unclassified_product_count"] == 2
+        assert delete_response.json()["deleted_attribute_definition_count"] == 1
+        assert delete_response.json()["detached_attribute_value_count"] == 1
+
+        with SessionLocal() as session:
+            assert not session.scalars(
+                select(ProductCategoryRow).where(
+                    ProductCategoryRow.id.in_([UUID(value) for value in category_ids])
+                )
+            ).all()
+            products = list(
+                session.scalars(
+                    select(ProductRow)
+                    .where(ProductRow.id.in_(product_ids))
+                    .order_by(ProductRow.product_code)
+                ).all()
+            )
+            assert len(products) == 2
+            assert all(product.category_id is None for product in products)
+            assert all(product.search_document_version == 0 for product in products)
+            assert session.get(AttributeDefinitionRow, definition_id) is None
+            attribute = session.get(ProductAttributeRow, attribute_id)
+            assert attribute is not None
+            assert attribute.attribute_definition_id is None
+            assert attribute.value_text == "属性值继续保留"
+            assert session.scalar(
+                select(ProductAuditEventRow).where(
+                    ProductAuditEventRow.entity_type == "CATEGORY",
+                    ProductAuditEventRow.entity_id == root["id"],
+                    ProductAuditEventRow.action == "category.deleted",
+                )
+            ) is not None
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.entity_type == "CATEGORY",
+                    ProductAuditEventRow.entity_id.in_(category_ids),
+                )
+            )
+            session.execute(
+                delete(ProductAttributeRow).where(
+                    ProductAttributeRow.id == attribute_id
+                )
+            )
+            session.execute(
+                delete(ProductRow).where(ProductRow.id.in_(product_ids))
+            )
+            session.execute(
+                delete(AttributeDefinitionRow).where(
+                    AttributeDefinitionRow.id == definition_id
+                )
+            )
+            if category_ids:
+                category_uuids = [UUID(value) for value in category_ids]
+                session.execute(
+                    delete(ProductCategoryRow).where(
+                        ProductCategoryRow.id.in_(category_uuids),
+                        ProductCategoryRow.parent_id.is_not(None),
+                    )
+                )
+                session.flush()
+                session.execute(
+                    delete(ProductCategoryRow).where(
+                        ProductCategoryRow.id.in_(category_uuids)
+                    )
+                )
+            session.commit()
 
 
 def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
@@ -8900,17 +9892,23 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         pdf_response = client.get(draft["pdf_url"], headers=download_headers)
         assert pdf_response.status_code == 200, pdf_response.text
         assert pdf_response.content.startswith(b"%PDF")
-        assert pdf_response.headers["x-quote-status"] == "PENDING_CONFIRMATION"
+        assert "x-quote-status" not in pdf_response.headers
         assert pdf_response.headers["cache-control"] == "private, no-store"
         assert pdf_response.headers["pragma"] == "no-cache"
-        assert "PENDING-CONFIRMATION.pdf" in pdf_response.headers["content-disposition"]
+        assert f'{draft["quote_number"]}.pdf' in pdf_response.headers["content-disposition"]
+        assert "PENDING-CONFIRMATION" not in pdf_response.headers["content-disposition"]
 
         xlsx_response = client.get(draft["xlsx_url"], headers=download_headers)
         assert xlsx_response.status_code == 200, xlsx_response.text
         workbook = load_workbook(BytesIO(xlsx_response.content), data_only=False)
         sheet = workbook.active
-        assert "待人工确认" in sheet["A1"].value
-        assert sheet["B4"].value == "'=2+2"
+        assert sheet["A1"].value == "报价单 / QUOTATION"
+        assert sheet["B3"].value == "'=2+2"
+        assert all(
+            "待人工确认" not in str(cell.value or "")
+            for row in sheet.iter_rows()
+            for cell in row
+        )
         header_row = next(
             row_index
             for row_index in range(1, sheet.max_row + 1)
@@ -8977,6 +9975,116 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     )
     assert expired.status_code == 410
     assert expired.json()["detail"]["code"] == "DOWNLOAD_EXPIRED"
+
+
+def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "商家报价单"
+    sheet.merge_cells("A1:G1")
+    sheet["A1"] = "报价单 {{quote_number}}"
+    sheet["A1"].font = Font(size=18, bold=True, color="D4AF37")
+    sheet["A1"].fill = PatternFill("solid", fgColor="2D1B69")
+    sheet["A2"] = "客户"
+    sheet["B2"] = "{{customer_name}}"
+    sheet["D2"] = "{{quote_date}}"
+    headers = ["SKU代码", "品名", "规格", "数量", "单位", "单价", "金额"]
+    for column, header in enumerate(headers, 1):
+        cell = sheet.cell(4, column, header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="2D1B69")
+    sample = ["SAMPLE-001", "示例商品", "红色 / M", 1, "件", 1.5, 1.5]
+    for column, value in enumerate(sample, 1):
+        cell = sheet.cell(5, column, value)
+        cell.fill = PatternFill("solid", fgColor="F4EFFA")
+    sheet["A6"] = "合计"
+    sheet["G6"] = "=SUM(G5:G5)"
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+
+    upload = client.post(
+        "/api/v1/quote-excel-templates",
+        files={
+            "file": (
+                "商家自定义报价单.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    template = upload.json()
+    template_id = template["id"]
+    assert template["sheet_name"] == "商家报价单"
+    assert template["header_row"] == 4
+    assert template["data_start_row"] == 5
+    assert {column["header"] for column in template["columns"]} == set(headers)
+
+    mappings = {
+        "A": "sku_code",
+        "B": "product_name",
+        "C": "specification",
+        "D": "quantity",
+        "E": "unit_code",
+        "F": "unit_price",
+        "G": "line_total",
+    }
+    configured = client.put(
+        f"/api/v1/quote-excel-templates/{template_id}",
+        json={
+            "name": "外贸标准报价单",
+            "column_mappings": mappings,
+            "is_default": True,
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    assert configured.json()["is_default"] is True
+
+    try:
+        listing = client.get("/api/store/demo/skus", params={"limit": 2})
+        assert listing.status_code == 200, listing.text
+        skus = listing.json()["items"][:2]
+        assert len(skus) == 2
+        created = client.post(
+            "/api/store/demo/quotes",
+            json={
+                "customer_name": "=Formula Customer",
+                "privacy_acknowledged": True,
+                "items": [
+                    {"sku_id": skus[0]["id"], "quantity": 2},
+                    {"sku_id": skus[1]["id"], "quantity": 3},
+                ],
+            },
+        )
+        assert created.status_code == 201, created.text
+        draft = created.json()
+        downloaded = client.get(
+            draft["xlsx_url"],
+            headers={"X-Quote-Download-Token": draft["download_token"]},
+        )
+        assert downloaded.status_code == 200, downloaded.text
+        rendered = load_workbook(BytesIO(downloaded.content), data_only=False)
+        rendered_sheet = rendered["商家报价单"]
+        assert rendered_sheet["A1"].value == f"报价单 {draft['quote_number']}"
+        assert rendered_sheet["B2"].value == "'=Formula Customer"
+        assert rendered_sheet["A5"].value == skus[0]["sku_code"]
+        assert rendered_sheet["A6"].value == skus[1]["sku_code"]
+        assert rendered_sheet["B5"].value == skus[0]["name"]
+        assert rendered_sheet["D5"].value == 2
+        assert rendered_sheet["D6"].value == 3
+        assert rendered_sheet["G7"].value == "=SUM(G5:G6)"
+        assert rendered_sheet["A5"].fill.fgColor.rgb.endswith("F4EFFA")
+        assert rendered_sheet["A6"].fill.fgColor.rgb.endswith("F4EFFA")
+        assert all(
+            "待人工确认" not in str(cell.value or "")
+            for row in rendered_sheet.iter_rows()
+            for cell in row
+        )
+        rendered.close()
+    finally:
+        deleted = client.delete(f"/api/v1/quote-excel-templates/{template_id}")
+        assert deleted.status_code == 204, deleted.text
 
 
 def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_reads() -> None:
@@ -9075,6 +10183,8 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "public_quote_drafts",
         "public_quote_draft_items",
         "public_quote_download_tokens",
+        "quote_excel_templates",
+        "storefront_announcements",
     }
     customer_account_tables = {
         "local_account_credentials",
@@ -9105,10 +10215,22 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         column["name"]
         for column in inspect(upgraded_engine).get_columns("skus")
     }
+    assert {"specification_snapshot", "option_values_snapshot"}.issubset({
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_quote_draft_items")
+    })
+    announcement_columns = {
+        column["name"]: column
+        for column in inspect(upgraded_engine).get_columns("storefront_announcements")
+    }
+    assert "related_sku_ids" in announcement_columns
+    assert "ticker_speed_px_per_second" in announcement_columns
+    assert "repeat_interval_hours" not in announcement_columns
+    assert announcement_columns["title"]["nullable"] is True
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260730_0044"
+        ).scalar() == "20260801_0047"
     upgraded_engine.dispose()
     command.check(config)
 

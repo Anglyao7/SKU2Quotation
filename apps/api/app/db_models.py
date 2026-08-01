@@ -253,6 +253,8 @@ from .public_catalog_models import (  # noqa: E402,F401
     TenantPublicProfileRow,
 )
 
+from .quote_template_models import QuoteExcelTemplateRow  # noqa: E402,F401
+
 from .inventory_models import (  # noqa: E402,F401
     InventoryBalanceRow,
     InventoryDocumentItemRow,
@@ -282,3 +284,5 @@ from .storefront_analytics_models import (  # noqa: E402,F401
     StorefrontProductViewDailyRow,
     StorefrontProductViewEventRow,
 )
+
+from .announcement_models import StorefrontAnnouncementRow  # noqa: E402,F401

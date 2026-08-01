@@ -12,24 +12,35 @@ import {
   ArrowDown,
   ArrowUp,
   CalendarDots,
+  CheckCircle,
   Clock,
   ImageSquare,
   LinkSimple,
   ListBullets,
+  MagnifyingGlass,
   Megaphone,
   NotePencil,
+  Package,
   Plus,
   TextAa,
   Trash,
   VideoCamera,
+  X,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createAnnouncement,
   deleteAnnouncement,
   listAnnouncements,
+  listSkus,
   updateAnnouncement,
 } from "../api";
+import {
+  DEFAULT_ANNOUNCEMENT_TICKER_SPEED,
+  MAX_ANNOUNCEMENT_TICKER_SPEED,
+  MIN_ANNOUNCEMENT_TICKER_SPEED,
+  normalizeAnnouncementTickerSpeed,
+} from "../announcementSpeed";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type {
@@ -37,7 +48,9 @@ import type {
   AnnouncementContentBlock,
   AnnouncementDisplayType,
   AnnouncementPayload,
+  AnnouncementRelatedSku,
   AnnouncementStatus,
+  SkuListItem,
   StorefrontAnnouncement,
 } from "../types";
 import "./AnnouncementsPage.css";
@@ -52,9 +65,15 @@ interface AnnouncementForm {
   endsAt: string;
   scheduleMode: "range" | "duration";
   durationDays: number;
-  repeatIntervalHours: number;
+  tickerSpeedPxPerSecond: number;
   publicationStatus: AnnouncementStatus;
+  relatedSkus: AnnouncementRelatedSku[];
 }
+
+type Translate = (
+  source: string,
+  values?: Record<string, string | number>,
+) => string;
 
 const blockLabels: Record<AnnouncementBlockType, string> = {
   heading: "小标题",
@@ -93,14 +112,15 @@ function defaultForm(): AnnouncementForm {
     endsAt: localInputValue(end),
     scheduleMode: "range",
     durationDays: 7,
-    repeatIntervalHours: 24,
-    publicationStatus: "DRAFT",
+    tickerSpeedPxPerSecond: DEFAULT_ANNOUNCEMENT_TICKER_SPEED,
+    publicationStatus: "PUBLISHED",
+    relatedSkus: [],
   };
 }
 
 function formFromAnnouncement(row: StorefrontAnnouncement): AnnouncementForm {
   return {
-    title: row.title,
+    title: row.title || "",
     displayType: row.displayType,
     tickerText: row.tickerText || "",
     contentBlocks: row.contentBlocks,
@@ -108,8 +128,11 @@ function formFromAnnouncement(row: StorefrontAnnouncement): AnnouncementForm {
     endsAt: localInputValue(new Date(row.endsAt)),
     scheduleMode: "range",
     durationDays: 7,
-    repeatIntervalHours: row.repeatIntervalHours,
+    tickerSpeedPxPerSecond: normalizeAnnouncementTickerSpeed(
+      row.tickerSpeedPxPerSecond,
+    ),
     publicationStatus: row.publicationStatus,
+    relatedSkus: row.relatedSkus || [],
   };
 }
 
@@ -150,25 +173,71 @@ function formatDate(value: string, locale: string) {
   }).format(new Date(value));
 }
 
+function isSafeWebUrl(value: string | undefined) {
+  if (!value?.trim()) return false;
+  try {
+    const parsed = new URL(value.trim());
+    return ["http:", "https:"].includes(parsed.protocol)
+      && Boolean(parsed.hostname)
+      && !parsed.username
+      && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
+function contentBlockError(
+  block: AnnouncementContentBlock,
+  index: number,
+  t: Translate,
+) {
+  const position = index + 1;
+  const label = t(blockLabels[block.type]);
+  if (["heading", "paragraph", "bullet_list"].includes(block.type) && !block.text?.trim()) {
+    return t("请填写第 {index} 个“{type}”内容。", { index: position, type: label });
+  }
+  if (block.type === "link" && !block.text?.trim()) {
+    return t("请填写第 {index} 个链接的显示文字。", { index: position });
+  }
+  if (["link", "image", "video"].includes(block.type) && !block.url?.trim()) {
+    return t("请填写第 {index} 个“{type}”的网址。", { index: position, type: label });
+  }
+  if (block.url && !isSafeWebUrl(block.url)) {
+    return t("第 {index} 个“{type}”的网址无效，请使用 http:// 或 https://。", {
+      index: position,
+      type: label,
+    });
+  }
+  return "";
+}
+
 function AnnouncementPreview({
   form,
   t,
 }: {
   form: AnnouncementForm;
-  t: (source: string) => string;
+  t: Translate;
 }) {
   if (form.displayType === "TICKER") {
+    const previewDuration = Math.max(
+      5,
+      720 / normalizeAnnouncementTickerSpeed(form.tickerSpeedPxPerSecond),
+    );
     return (
       <div className="announcement-ticker-preview">
         <Megaphone size={17} weight="duotone" />
-        <span>{form.tickerText || t("滚动字幕内容会显示在这里")}</span>
+        <div>
+          <span style={{ animationDuration: `${previewDuration}s` }}>
+            {form.tickerText || t("滚动字幕内容会显示在这里")}
+          </span>
+        </div>
       </div>
     );
   }
   return (
     <div className="announcement-modal-preview">
       <Text size="1" color="gray">{t("弹窗预览")}</Text>
-      <Heading size="5">{form.title || t("公告标题")}</Heading>
+      {form.title.trim() ? <Heading size="5">{form.title}</Heading> : null}
       <div className="announcement-preview-blocks">
         {form.contentBlocks.length === 0 ? (
           <Text size="2" color="gray">{t("添加正文、图片或视频内容")}</Text>
@@ -208,14 +277,134 @@ function AnnouncementPreview({
   );
 }
 
+function relatedSkuFromListItem(row: SkuListItem): AnnouncementRelatedSku {
+  return {
+    id: row.id,
+    productId: row.productId,
+    skuCode: row.skuCode,
+    name: row.name || row.productName,
+    productName: row.productName,
+    isPublic: row.status === "ACTIVE" && row.publicOfferStatus === "PUBLISHED",
+  };
+}
+
+function RelatedSkuPicker({
+  selected,
+  onChange,
+  t,
+}: {
+  selected: AnnouncementRelatedSku[];
+  onChange: (rows: AnnouncementRelatedSku[]) => void;
+  t: Translate;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SkuListItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const timeout = window.setTimeout(async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const page = await listSkus({
+          q: query.trim() || undefined,
+          statuses: ["ACTIVE"],
+          page: 1,
+          pageSize: 12,
+        });
+        if (!cancelled) setResults(page.items);
+      } catch (caught) {
+        if (!cancelled) {
+          setResults([]);
+          setError(caught instanceof Error ? caught.message : t("SKU 加载失败"));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 240);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [query, t]);
+
+  const selectedIds = new Set(selected.map((row) => row.id));
+  const available = results.filter((row) => !selectedIds.has(row.id));
+
+  return (
+    <div className="announcement-sku-picker">
+      {selected.length ? (
+        <div className="announcement-selected-skus" aria-label={t("已关联 SKU")}>
+          {selected.map((sku) => (
+            <div className="announcement-selected-sku" key={sku.id}>
+              <Package weight="duotone" />
+              <span>
+                <strong>{sku.productName}</strong>
+                <small>{sku.skuCode}{sku.name !== sku.productName ? ` · ${sku.name}` : ""}</small>
+              </span>
+              {!sku.isPublic ? <Badge color="amber" variant="soft">{t("未上架")}</Badge> : null}
+              <button
+                type="button"
+                aria-label={t("取消关联 {sku}", { sku: sku.skuCode })}
+                onClick={() => onChange(selected.filter((row) => row.id !== sku.id))}
+              >
+                <X />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {selected.length < 20 ? (
+        <div className="announcement-sku-search">
+          <TextField.Root
+            value={query}
+            placeholder={t("搜索 SKU 编号、SKU 名称或商品名")}
+            onChange={(event) => setQuery(event.target.value)}
+          >
+            <TextField.Slot><MagnifyingGlass /></TextField.Slot>
+          </TextField.Root>
+          <div className="announcement-sku-results" aria-live="polite">
+            {loading ? <Text size="1" color="gray">{t("正在搜索 SKU…")}</Text> : null}
+            {!loading && error ? <Text size="1" color="red">{error}</Text> : null}
+            {!loading && !error && available.length === 0 ? (
+              <Text size="1" color="gray">{t(query.trim() ? "没有找到可关联的 SKU" : "暂无可关联 SKU")}</Text>
+            ) : null}
+            {!loading && !error ? available.map((row) => (
+              <button
+                type="button"
+                className="announcement-sku-result"
+                key={row.id}
+                onClick={() => onChange([...selected, relatedSkuFromListItem(row)])}
+              >
+                <span>
+                  <strong>{row.productName}</strong>
+                  <small>{row.skuCode}{row.name !== row.productName ? ` · ${row.name}` : ""}</small>
+                </span>
+                <Badge color={row.publicOfferStatus === "PUBLISHED" ? "jade" : "amber"} variant="soft">
+                  {t(row.publicOfferStatus === "PUBLISHED" ? "已上架" : "未上架")}
+                </Badge>
+              </button>
+            )) : null}
+          </div>
+        </div>
+      ) : <Text size="1" color="gray">{t("每条公告最多关联 20 个 SKU。")}</Text>}
+    </div>
+  );
+}
+
 function RichBlockEditor({
   blocks,
   onChange,
   t,
+  invalidIndex,
 }: {
   blocks: AnnouncementContentBlock[];
   onChange: (blocks: AnnouncementContentBlock[]) => void;
-  t: (source: string) => string;
+  t: Translate;
+  invalidIndex?: number;
 }) {
   const update = (index: number, changes: Partial<AnnouncementContentBlock>) => {
     onChange(blocks.map((block, position) => (
@@ -249,7 +438,11 @@ function RichBlockEditor({
         })}
       </div>
       {blocks.map((block, index) => (
-        <section className="announcement-block-row" key={`${block.type}-${index}`}>
+        <section
+          className={`announcement-block-row${invalidIndex === index ? " is-invalid" : ""}`}
+          data-announcement-block-index={index}
+          key={`${block.type}-${index}`}
+        >
           <div className="announcement-block-row-heading">
             <span>{index + 1}. {t(blockLabels[block.type])}</span>
             <div>
@@ -297,6 +490,7 @@ export function AnnouncementsPage() {
   const [form, setForm] = useState<AnnouncementForm>(defaultForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  const [invalidBlockIndex, setInvalidBlockIndex] = useState<number>();
   const [deleting, setDeleting] = useState<StorefrontAnnouncement>();
   const [deleteBusy, setDeleteBusy] = useState(false);
 
@@ -329,11 +523,15 @@ export function AnnouncementsPage() {
     () => items.filter((item) => item.isActive).length,
     [items],
   );
+  const formTickerSpeed = normalizeAnnouncementTickerSpeed(
+    form.tickerSpeedPxPerSecond,
+  );
 
   const openCreate = () => {
     setEditingId(undefined);
     setForm(defaultForm());
     setFormError("");
+    setInvalidBlockIndex(undefined);
     setEditorOpen(true);
   };
 
@@ -341,14 +539,12 @@ export function AnnouncementsPage() {
     setEditingId(row.id);
     setForm(formFromAnnouncement(row));
     setFormError("");
+    setInvalidBlockIndex(undefined);
     setEditorOpen(true);
   };
 
   const save = async () => {
-    if (!form.title.trim()) {
-      setFormError(t("请填写公告标题。"));
-      return;
-    }
+    setInvalidBlockIndex(undefined);
     if (form.displayType === "TICKER" && !form.tickerText.trim()) {
       setFormError(t("请填写滚动字幕内容。"));
       return;
@@ -356,6 +552,21 @@ export function AnnouncementsPage() {
     if (form.displayType === "MODAL" && form.contentBlocks.length === 0) {
       setFormError(t("请至少添加一个弹窗内容块。"));
       return;
+    }
+    if (form.displayType === "MODAL") {
+      const invalidIndex = form.contentBlocks.findIndex((block, index) => (
+        Boolean(contentBlockError(block, index, t))
+      ));
+      if (invalidIndex >= 0) {
+        setInvalidBlockIndex(invalidIndex);
+        setFormError(contentBlockError(form.contentBlocks[invalidIndex], invalidIndex, t));
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLElement>(
+            `[data-announcement-block-index="${invalidIndex}"]`,
+          )?.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+        return;
+      }
     }
     const startsAt = new Date(form.startsAt);
     if (!form.startsAt || Number.isNaN(startsAt.getTime())) {
@@ -373,20 +584,14 @@ export function AnnouncementsPage() {
       setFormError(t("持续天数应为 1 到 365 天。"));
       return;
     }
-    if (
-      form.displayType === "MODAL"
-      && (!Number.isInteger(form.repeatIntervalHours)
-        || form.repeatIntervalHours < 1
-        || form.repeatIntervalHours > 720)
-    ) {
-      setFormError(t("再次显示间隔应为 1 到 720 小时。"));
-      return;
-    }
+    const tickerSpeedPxPerSecond = normalizeAnnouncementTickerSpeed(
+      form.tickerSpeedPxPerSecond,
+    );
     setSaving(true);
     setFormError("");
     try {
       const payload: AnnouncementPayload = {
-        title: form.title.trim(),
+        title: form.title.trim() || undefined,
         displayType: form.displayType,
         tickerText: form.displayType === "TICKER" ? form.tickerText.trim() : undefined,
         contentBlocks: form.displayType === "MODAL" ? form.contentBlocks : [],
@@ -395,8 +600,9 @@ export function AnnouncementsPage() {
           ? endsAt?.toISOString()
           : undefined,
         durationDays: form.scheduleMode === "duration" ? form.durationDays : undefined,
-        repeatIntervalHours: form.repeatIntervalHours,
+        tickerSpeedPxPerSecond,
         publicationStatus: form.publicationStatus,
+        relatedSkuIds: form.relatedSkus.map((sku) => sku.id),
       };
       const saved = editingId
         ? await updateAnnouncement(editingId, payload)
@@ -432,7 +638,7 @@ export function AnnouncementsPage() {
       <CorePageHeading
         eyebrow={t("商家前台")}
         title={t("公告管理")}
-        description={t("按时间发布顶部滚动字幕或富内容弹窗，并控制访客再次看到弹窗的间隔。")}
+        description={t("按时间发布顶部滚动字幕或富内容弹窗；进入有效期后立即生效，访客可在本次访问中关闭。")}
         actions={(
           <Button onClick={openCreate}>
             <Plus size={17} />{t("新建公告")}
@@ -443,7 +649,7 @@ export function AnnouncementsPage() {
       <div className="announcement-summary">
         <div><Megaphone size={22} weight="duotone" /><span><strong>{items.length}</strong><small>{t("全部公告")}</small></span></div>
         <div><CalendarDots size={22} weight="duotone" /><span><strong>{activeCount}</strong><small>{t("当前展示中")}</small></span></div>
-        <div><Clock size={22} weight="duotone" /><span><strong>1–720h</strong><small>{t("弹窗再次提醒间隔")}</small></span></div>
+        <div><Clock size={22} weight="duotone" /><span><strong>{t("本次访问")}</strong><small>{t("关闭后不再显示")}</small></span></div>
       </div>
 
       {loading ? (
@@ -466,7 +672,7 @@ export function AnnouncementsPage() {
               </div>
               <div className="announcement-list-content">
                 <div className="announcement-list-title">
-                  <Heading size="4">{row.title}</Heading>
+                  <Heading size="4">{row.title || row.tickerText || t("富内容公告")}</Heading>
                   <Badge color={statusColor(row.publicationStatus)} variant="soft">
                     {t(scheduleState(row))}
                   </Badge>
@@ -476,12 +682,22 @@ export function AnnouncementsPage() {
                 </div>
                 <Text size="2" color="gray">
                   {row.displayType === "TICKER"
-                    ? row.tickerText
-                    : t("{count} 个内容块 · 每 {hours} 小时最多显示一次", {
+                    ? t("{text} · 滚动速度 {speed} px/s", {
+                        text: row.tickerText || "",
+                        speed: normalizeAnnouncementTickerSpeed(
+                          row.tickerSpeedPxPerSecond,
+                        ),
+                      })
+                    : t("{count} 个内容块 · 本次访问可选择不再显示", {
                         count: row.contentBlocks.length,
-                        hours: row.repeatIntervalHours,
                       })}
                 </Text>
+                {row.relatedSkus.length ? (
+                  <div className="announcement-related-summary">
+                    <Package size={14} />
+                    <span>{t("关联 {count} 个 SKU", { count: row.relatedSkus.length })}</span>
+                  </div>
+                ) : null}
                 <div className="announcement-schedule">
                   <CalendarDots size={15} />
                   <span>{formatDate(row.startsAt, locale)} — {formatDate(row.endsAt, locale)}</span>
@@ -515,33 +731,107 @@ export function AnnouncementsPage() {
           <div className="announcement-editor-grid">
             <div className="announcement-form-column">
               <label className="announcement-field">
-                <span>{t("公告标题")}</span>
-                <TextField.Root value={form.title} maxLength={200} placeholder={t("例如：国庆假期发货安排")} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} />
+                <span>{t("公告标题")}<small>{t("选填")}</small></span>
+                <TextField.Root value={form.title} maxLength={200} placeholder={t("例如：国庆假期发货安排（选填）")} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} />
               </label>
 
               <div className="announcement-field">
-                <span>{t("展示方式")}</span>
+                <span>{t("展示方式")}<small>{t("当前：{mode}", { mode: t(form.displayType === "TICKER" ? "顶部滚动字幕" : "富内容弹窗") })}</small></span>
                 <div className="announcement-segmented">
-                  <button type="button" className={form.displayType === "TICKER" ? "is-active" : ""} onClick={() => setForm((current) => ({ ...current, displayType: "TICKER", contentBlocks: [] }))}>
-                    <Megaphone />{t("顶部滚动字幕")}
+                  <button
+                    type="button"
+                    aria-pressed={form.displayType === "TICKER"}
+                    className={form.displayType === "TICKER" ? "is-active" : ""}
+                    onClick={() => {
+                      setForm((current) => ({ ...current, displayType: "TICKER" }));
+                      setFormError("");
+                      setInvalidBlockIndex(undefined);
+                    }}
+                  >
+                    <span className="announcement-mode-icon"><Megaphone /></span>
+                    <span><strong>{t("顶部滚动字幕")}</strong><small>{t("前台顶部持续滚动，可由访客关闭")}</small></span>
+                    <CheckCircle className="announcement-mode-check" weight="fill" />
                   </button>
-                  <button type="button" className={form.displayType === "MODAL" ? "is-active" : ""} onClick={() => setForm((current) => ({ ...current, displayType: "MODAL", tickerText: "", contentBlocks: current.contentBlocks.length ? current.contentBlocks : [initialBlock("paragraph")] }))}>
-                    <NotePencil />{t("富内容弹窗")}
+                  <button
+                    type="button"
+                    aria-pressed={form.displayType === "MODAL"}
+                    className={form.displayType === "MODAL" ? "is-active" : ""}
+                    onClick={() => {
+                      setForm((current) => ({
+                        ...current,
+                        displayType: "MODAL",
+                        contentBlocks: current.contentBlocks.length
+                          ? current.contentBlocks
+                          : [initialBlock("paragraph")],
+                      }));
+                      setFormError("");
+                    }}
+                  >
+                    <span className="announcement-mode-icon"><NotePencil /></span>
+                    <span><strong>{t("富内容弹窗")}</strong><small>{t("支持文字、图片、视频与商品关联")}</small></span>
+                    <CheckCircle className="announcement-mode-check" weight="fill" />
                   </button>
                 </div>
               </div>
 
               {form.displayType === "TICKER" ? (
-                <label className="announcement-field">
-                  <span>{t("字幕内容")}<small>{t("仅支持纯文本")}</small></span>
-                  <TextArea value={form.tickerText} maxLength={2000} rows={4} placeholder={t("输入需要在商品前台顶部滚动展示的内容")} onChange={(event) => setForm((current) => ({ ...current, tickerText: event.target.value }))} />
-                </label>
+                <div className="announcement-ticker-fields">
+                  <label className="announcement-field">
+                    <span>{t("字幕内容")}<small>{t("仅支持纯文本")}</small></span>
+                    <TextArea value={form.tickerText} maxLength={2000} rows={4} placeholder={t("输入需要在商品前台顶部滚动展示的内容")} onChange={(event) => setForm((current) => ({ ...current, tickerText: event.target.value }))} />
+                  </label>
+                  <label className="announcement-field announcement-speed-field">
+                    <span>
+                      {t("滚动速度")}
+                      <small>{t("{speed} 像素/秒", { speed: formTickerSpeed })}</small>
+                    </span>
+                    <input
+                      type="range"
+                      min={MIN_ANNOUNCEMENT_TICKER_SPEED}
+                      max={MAX_ANNOUNCEMENT_TICKER_SPEED}
+                      step={5}
+                      value={formTickerSpeed}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        tickerSpeedPxPerSecond: Number(event.target.value),
+                      }))}
+                    />
+                    <span className="announcement-speed-scale" aria-hidden="true">
+                      <small>{t("慢")}</small>
+                      <small>{t("快")}</small>
+                    </span>
+                  </label>
+                </div>
               ) : (
                 <div className="announcement-field">
                   <span>{t("弹窗内容")}<small>{t("按内容块安全组合文字、图片、视频与链接")}</small></span>
-                  <RichBlockEditor blocks={form.contentBlocks} t={t} onChange={(contentBlocks) => setForm((current) => ({ ...current, contentBlocks }))} />
+                  <RichBlockEditor
+                    blocks={form.contentBlocks}
+                    t={t}
+                    invalidIndex={invalidBlockIndex}
+                    onChange={(contentBlocks) => {
+                      setForm((current) => ({ ...current, contentBlocks }));
+                      setFormError("");
+                      setInvalidBlockIndex(undefined);
+                    }}
+                  />
                 </div>
               )}
+
+              <div className="announcement-form-section">
+                <div className="announcement-form-section-title">
+                  <Package />
+                  <span>
+                    <strong>{t("关联商品 SKU")}</strong>
+                    <small>{t("选填；前台访客可从公告直接进入商品详情")}</small>
+                  </span>
+                </div>
+                <RelatedSkuPicker
+                  selected={form.relatedSkus}
+                  t={t}
+                  onChange={(relatedSkus) => setForm((current) => ({ ...current, relatedSkus }))}
+                />
+              </div>
 
               <div className="announcement-form-section">
                 <div className="announcement-form-section-title">
@@ -574,7 +864,7 @@ export function AnnouncementsPage() {
                 </div>
               </div>
 
-              <div className="announcement-two-fields">
+              <div className="announcement-publication-fields">
                 <label className="announcement-field">
                   <span>{t("发布状态")}</span>
                   <select value={form.publicationStatus} onChange={(event) => setForm((current) => ({ ...current, publicationStatus: event.target.value as AnnouncementStatus }))}>
@@ -583,12 +873,20 @@ export function AnnouncementsPage() {
                     <option value="PAUSED">{t("暂停展示")}</option>
                   </select>
                 </label>
-                {form.displayType === "MODAL" ? (
-                  <label className="announcement-field">
-                    <span>{t("再次显示间隔（小时）")}</span>
-                    <input type="number" min={1} max={720} value={form.repeatIntervalHours} onChange={(event) => setForm((current) => ({ ...current, repeatIntervalHours: Number(event.target.value) }))} />
-                  </label>
-                ) : <div />}
+              </div>
+
+              <div className={`announcement-publication-state is-${form.publicationStatus.toLowerCase()}`}>
+                {form.publicationStatus === "PUBLISHED" ? <CheckCircle weight="fill" /> : <Clock weight="duotone" />}
+                <span>
+                  <strong>{t(statusLabel(form.publicationStatus))}</strong>
+                  <small>
+                    {t(form.publicationStatus === "PUBLISHED"
+                      ? "保存后将在设定时间内展示到商家前台。"
+                      : form.publicationStatus === "PAUSED"
+                        ? "该公告保存后不会在商家前台展示。"
+                        : "草稿仅保存在后台，不会在商家前台展示。")}
+                  </small>
+                </span>
               </div>
             </div>
 
@@ -600,8 +898,8 @@ export function AnnouncementsPage() {
                   <Clock size={17} />
                   <Text size="1" color="gray">
                     {form.displayType === "MODAL"
-                      ? t("同一浏览器看过后，至少间隔 {hours} 小时才会再次出现。", { hours: form.repeatIntervalHours })
-                      : t("滚动字幕在公告有效期内持续显示，不使用富文本。")}
+                      ? t("访客可选择“以后不显示”；本次访问中翻页不会再次弹出，完整刷新或开始新会话后恢复。")
+                      : t("访客关闭后，本次访问中翻页不会再次显示；完整刷新或开始新会话后恢复。")}
                   </Text>
                 </div>
               </div>
@@ -620,7 +918,7 @@ export function AnnouncementsPage() {
         <AlertDialog.Content maxWidth="440px">
           <AlertDialog.Title>{t("删除公告")}</AlertDialog.Title>
           <AlertDialog.Description>
-            {t("删除“{name}”后，商品前台会停止展示，且无法恢复。", { name: deleting?.title || "" })}
+            {t("删除“{name}”后，商品前台会停止展示，且无法恢复。", { name: deleting?.title || deleting?.tickerText || t("未命名公告") })}
           </AlertDialog.Description>
           <div className="core-dialog-actions">
             <AlertDialog.Cancel><Button variant="soft" color="gray" disabled={deleteBusy}>{t("取消")}</Button></AlertDialog.Cancel>

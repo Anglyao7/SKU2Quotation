@@ -9,6 +9,7 @@ from openpyxl.drawing.image import Image as OpenpyxlImage
 from app.services.product_template_import import (
     PRODUCT_TEMPLATE_HEADERS,
     PRODUCT_TEMPLATE_SHEET,
+    PRODUCT_VARIANT_TEMPLATE_HEADERS,
     ProductTemplateValidationError,
     parse_product_template,
 )
@@ -151,6 +152,166 @@ def test_alternate_sheet_name_is_auto_detected_without_grouping_skus(
     assert result.warnings == (
         "已自动识别工作表“Sheet1”作为商品列表；每一行仍按一个 SKU 导入。",
     )
+
+
+def test_product_variant_template_groups_rows_and_generates_stable_skus(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "商品图册模板（更新了商品规格分类）.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet.append(list(PRODUCT_VARIANT_TEMPLATE_HEADERS))
+    sheet.append([
+        "双目云台摄像机",
+        "数码/摄像头",
+        "CAMERA-0389",
+        None,
+        "室外双目联动摄像机",
+        "支持定制包装",
+        "是",
+        12,
+        "普通款",
+        10,
+        None,
+    ])
+    sheet.append([
+        "双目云台摄像机",
+        "数码/摄像头",
+        "CAMERA-0389",
+        None,
+        "室外双目联动摄像机",
+        None,
+        "否",
+        12,
+        "蓝牙款",
+        20,
+        None,
+    ])
+    sheet.append([
+        "单规格摄像头",
+        "数码",
+        "CAMERA-3333",
+        600,
+        "室内摄像头",
+        None,
+        None,
+        24,
+        None,
+        None,
+        None,
+    ])
+    workbook.save(path)
+    workbook.close()
+
+    first = parse_product_template(path)
+    repeated = parse_product_template(path)
+
+    assert len(first.rows) == 3
+    assert first.rows[0].product_key == first.rows[1].product_key
+    assert first.rows[0].product_key != first.rows[2].product_key
+    assert first.rows[0].sku_code != first.rows[1].sku_code
+    assert [row.sku_code for row in first.rows] == [
+        row.sku_code for row in repeated.rows
+    ]
+    assert [row.specification for row in first.rows] == [
+        "普通款",
+        "蓝牙款",
+        None,
+    ]
+    assert [row.sku_name for row in first.rows] == [
+        "双目云台摄像机 · 普通款",
+        "双目云台摄像机 · 蓝牙款",
+        "单规格摄像头",
+    ]
+    assert [row.unit_price for row in first.rows] == [
+        Decimal("10.00"),
+        Decimal("20.00"),
+        Decimal("600.00"),
+    ]
+    assert first.rows[0].tags == ("新品",)
+    assert first.rows[0].units_per_carton == "12"
+    assert first.rows[2].sku_code == "CAMERA-3333"
+    assert first.warnings[0].startswith("已自动识别工作表")
+    assert "商品+规格模板" in first.warnings[1]
+
+
+def test_product_variant_template_reads_embedded_image_from_column_k(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "多规格内嵌图片.xlsx"
+    image_path = tmp_path / "variant.png"
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0"
+        b"\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00"
+        b"\x00IEND\xaeB`\x82"
+    )
+    image_path.write_bytes(image_bytes)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet.append(list(PRODUCT_VARIANT_TEMPLATE_HEADERS))
+    sheet.append([
+        "带图商品",
+        "配件",
+        "IMAGE-PRODUCT",
+        88,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ])
+    image = OpenpyxlImage(image_path)
+    image.anchor = "K2"
+    sheet.add_image(image)
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert len(result.rows[0].embedded_images) == 1
+    assert result.rows[0].embedded_images[0].image_column == 1
+    assert result.rows[0].embedded_images[0].sha256 == hashlib.sha256(
+        image_bytes
+    ).hexdigest()
+
+
+def test_product_variant_template_requires_unique_specs_for_multi_row_product(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "重复规格.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet.append(list(PRODUCT_VARIANT_TEMPLATE_HEADERS))
+    for price in (10, 20):
+        sheet.append([
+            "重复规格商品",
+            "数码",
+            "DUP-SPEC",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "标准款",
+            price,
+            None,
+        ])
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(
+        ProductTemplateValidationError,
+        match="规格名称|重复",
+    ):
+        parse_product_template(path)
 
 
 def test_sequential_image_columns_can_extend_beyond_ten(

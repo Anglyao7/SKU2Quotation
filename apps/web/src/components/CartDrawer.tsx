@@ -1,4 +1,5 @@
 import {
+  AlertDialog,
   Badge,
   Button,
   Callout,
@@ -68,6 +69,7 @@ function CartLineImage({ sku }: { sku: Sku }) {
 
 export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, onClear, locale }: CartDrawerProps) {
   const [open, setOpen] = useState(false);
+  const [reviewReminderOpen, setReviewReminderOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [downloading, setDownloading] = useState<"pdf" | "xlsx" | null>(null);
   const [error, setError] = useState("");
@@ -103,6 +105,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
     };
     try {
       setQuote(await api.createStoreQuote(slug, payload));
+      setReviewReminderOpen(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("报价单生成失败，请稍后重试。"));
     } finally {
@@ -132,6 +135,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
   };
 
   return (
+    <>
     <Dialog.Root open={open} onOpenChange={handleOpen}>
       <Dialog.Trigger>
         <Button className="cart-trigger" size="3">
@@ -159,7 +163,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
             <Text size="1" color="gray">{t(lines.length > 0 ? "报价清单" : "选品报价")}</Text>
             <Dialog.Title>{t(lines.length > 0 ? "生成报价单" : "报价清单")}</Dialog.Title>
             <Dialog.Description id="cart-description">
-              {t(lines.length > 0 ? "确认商品数量并填写客户信息。" : "添加商品后，即可生成报价草稿。")}
+              {t(lines.length > 0 ? "确认商品数量并填写客户信息。" : "添加商品后，即可生成报价单。")}
             </Dialog.Description>
           </div>
           <Dialog.Close>
@@ -172,8 +176,8 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
           <div className="quote-success">
             <span className="success-icon"><CheckCircle size={38} weight="duotone" /></span>
             <div>
-              <Text as="div" size="5" weight="bold">{t("报价草稿已生成")}</Text>
-              <Text as="div" size="2" color="gray">{t("文件可先行下载，正式对客前仍需商家确认。")}</Text>
+              <Text as="div" size="5" weight="bold">{t("报价单已生成")}</Text>
+              <Text as="div" size="2" color="gray">{t("可以下载 Excel 或 PDF 文件。")}</Text>
               <Text as="div" size="2" color="gray" className="mono-text">{quoteNumber(quote)}</Text>
             </div>
             {error && <Callout.Root color="red"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error}</Callout.Text></Callout.Root>}
@@ -191,7 +195,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
           <div className="drawer-empty">
             <span className="drawer-empty-icon"><ShoppingCartSimple size={34} weight="duotone" /></span>
             <Text size="4" weight="medium" className="drawer-empty-title">{t("报价清单还是空的")}</Text>
-            <Text size="2" color="gray" className="drawer-empty-copy">{t("从商品列表中选择需要报价的 SKU，再回来确认数量并生成报价草稿。")}</Text>
+            <Text size="2" color="gray" className="drawer-empty-copy">{t("从商品列表中选择需要报价的 SKU，再回来确认数量并生成报价单。")}</Text>
             <Dialog.Close><Button size="3" variant="soft">{t("继续浏览商品")}</Button></Dialog.Close>
           </div>
         ) : (
@@ -233,7 +237,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
               <div className="quote-total-row">
                 <Text color="gray" size="2">{t("商品参考合计")}</Text>
                 <div>
-                  <Text color="gray" size="1" as="div">{t("最终报价以商家确认为准")}</Text>
+                  <Text color="gray" size="1" as="div">{t("按已选数量计算")}</Text>
                   <Text weight="bold" size="4">{money(knownTotal, currency)}</Text>
                 </div>
               </div>
@@ -242,7 +246,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
                 <div className="cart-section-heading">
                   <div>
                     <Text size="2" weight="medium">{t("客户信息")}</Text>
-                    <Text size="1" color="gray">{t("用于生成本次报价草稿")}</Text>
+                    <Text size="1" color="gray">{t("用于生成本次报价单")}</Text>
                   </div>
                 </div>
                 <div className="form-grid">
@@ -292,12 +296,26 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
                 <strong>{money(knownTotal, currency)}</strong>
               </div>
               <Button className="quote-submit" type="submit" size="3" loading={submitting} disabled={!lines.length}>
-                {t("生成报价草稿")}<ArrowRight size={18} />
+                {t("提交并生成报价单")}<ArrowRight size={18} />
               </Button>
             </div>
           </form>
         )}
       </Dialog.Content>
     </Dialog.Root>
+    <AlertDialog.Root open={reviewReminderOpen} onOpenChange={setReviewReminderOpen}>
+      <AlertDialog.Content maxWidth="460px">
+        <AlertDialog.Title>{t("报价确认提醒")}</AlertDialog.Title>
+        <AlertDialog.Description>
+          {t("本次报价需由商家确认后生效，请以商家后续确认的最终版本为准。")}
+        </AlertDialog.Description>
+        <div className="core-dialog-actions quote-review-dialog-actions">
+          <AlertDialog.Action>
+            <Button onClick={() => setReviewReminderOpen(false)}>{t("知道了")}</Button>
+          </AlertDialog.Action>
+        </div>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
+    </>
   );
 }

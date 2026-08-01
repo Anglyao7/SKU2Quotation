@@ -37,8 +37,8 @@ class StorefrontAnnouncementRow(AuditTimestampMixin, Base):
         ),
         CheckConstraint("ends_at > starts_at", name="schedule_range_valid"),
         CheckConstraint(
-            "repeat_interval_hours BETWEEN 1 AND 720",
-            name="repeat_interval_hours_valid",
+            "ticker_speed_px_per_second BETWEEN 20 AND 160",
+            name="ticker_speed_px_per_second_valid",
         ),
         CheckConstraint("version >= 1", name="version_positive"),
         CheckConstraint(
@@ -65,10 +65,15 @@ class StorefrontAnnouncementRow(AuditTimestampMixin, Base):
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
     )
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
     display_type: Mapped[str] = mapped_column(String(20), nullable=False)
     ticker_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_blocks: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_DOCUMENT,
+        default=list,
+        nullable=False,
+    )
+    related_sku_ids: Mapped[list[str]] = mapped_column(
         JSON_DOCUMENT,
         default=list,
         nullable=False,
@@ -81,9 +86,9 @@ class StorefrontAnnouncementRow(AuditTimestampMixin, Base):
         DateTime(timezone=True),
         nullable=False,
     )
-    repeat_interval_hours: Mapped[int] = mapped_column(
+    ticker_speed_px_per_second: Mapped[int] = mapped_column(
         Integer,
-        default=24,
+        default=60,
         nullable=False,
     )
     publication_status: Mapped[str] = mapped_column(

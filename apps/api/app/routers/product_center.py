@@ -1,21 +1,38 @@
 from __future__ import annotations
 
+from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..domain.errors import ApplicationError
 from ..product_center_schemas import (
     AttributeDefinitionCreateRequest,
     AttributeDefinitionResponse,
     CategoryCreateRequest,
+    CategoryDeleteImpactResponse,
+    CategoryDeleteResponse,
+    CategoryImportResponse,
     CategoryLayoutResponse,
     CategoryLayoutUpdateRequest,
     CategoryReorderRequest,
     CategoryResponse,
     CategoryUpdateRequest,
     ProductCard,
+    ProductDeleteAllRequest,
+    ProductDeleteAllResponse,
     ProductDetail,
     ProductReviewQueueItem,
     PublicCatalogOfferResponse,
@@ -30,7 +47,16 @@ from ..product_center_schemas import (
     SupplierPriceCreateRequest,
     SupplierPriceResponse,
 )
+from ..database import get_auth_session
 from ..services.auth.dependencies import current_context, get_authenticated_session
+from ..services.auth.service import AuthError, verify_current_user_password
+from ..services.category_template_import import (
+    CATEGORY_TEMPLATE_MAX_FILE_BYTES,
+    CATEGORY_TEMPLATE_PATH,
+    CategoryTemplateValidationError,
+    parse_category_template,
+)
+from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..use_cases import product_center as use_cases
 from .errors import application_http_error
 
@@ -40,6 +66,30 @@ router = APIRouter(prefix="/api/v1", tags=["product-center"])
 
 def _context(session: Session):
     return current_context(session)
+
+
+@router.get("/category-template.xlsx")
+def download_category_template() -> Response:
+    filename = "分类模板.xlsx"
+    if not CATEGORY_TEMPLATE_PATH.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "CATEGORY_TEMPLATE_UNAVAILABLE",
+                "message": "分类模板暂时不可用，请稍后重试。",
+            },
+        )
+    return Response(
+        content=CATEGORY_TEMPLATE_PATH.read_bytes(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="category-template.xlsx"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "Cache-Control": "public, max-age=300",
+        },
+    )
 
 
 @router.get("/products", response_model=list[ProductCard])
@@ -234,6 +284,67 @@ def create_category(
         raise application_http_error(exc) from exc
 
 
+@router.post("/categories/import", response_model=CategoryImportResponse)
+async def import_categories(
+    file: UploadFile = File(...),
+    session: Session = Depends(get_authenticated_session),
+) -> CategoryImportResponse:
+    context = _context(session)
+    if "product.edit" not in context.permissions:
+        await file.close()
+        raise application_http_error(
+            ApplicationError(
+                "PERMISSION_REQUIRED",
+                "Permission required: product.edit",
+                kind="forbidden",
+            )
+        )
+    filename = (file.filename or "").strip()
+    if not filename.lower().endswith(".xlsx"):
+        await file.close()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "CATEGORY_TEMPLATE_FILE_TYPE_INVALID",
+                "message": "分类导入只支持 .xlsx 文件，请下载分类模板后填写。",
+            },
+        )
+    try:
+        content = await file.read(CATEGORY_TEMPLATE_MAX_FILE_BYTES + 1)
+    finally:
+        await file.close()
+    if len(content) > CATEGORY_TEMPLATE_MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "code": "CATEGORY_TEMPLATE_TOO_LARGE",
+                "message": "分类模板超过 50 MB，请拆分后分别导入。",
+            },
+        )
+    try:
+        parsed = await run_in_threadpool(parse_category_template, content)
+    except CategoryTemplateValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "CATEGORY_TEMPLATE_INVALID",
+                "message": str(exc),
+                "issues": [issue.as_dict() for issue in exc.issues],
+            },
+        ) from exc
+
+    try:
+        return use_cases.import_categories(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            parsed=parsed,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.get("/categories/layout", response_model=CategoryLayoutResponse)
 def get_category_layout(
     session: Session = Depends(get_authenticated_session),
@@ -300,6 +411,49 @@ def update_category(
             permissions=context.permissions,
             category_id=category_id,
             request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/categories/{category_id}/delete-impact",
+    response_model=CategoryDeleteImpactResponse,
+)
+def get_category_delete_impact(
+    category_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> CategoryDeleteImpactResponse:
+    context = _context(session)
+    try:
+        return use_cases.get_category_delete_impact(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            category_id=category_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/categories/{category_id}",
+    response_model=CategoryDeleteResponse,
+)
+def delete_category(
+    category_id: UUID,
+    expected_version: int = Query(ge=1),
+    session: Session = Depends(get_authenticated_session),
+) -> CategoryDeleteResponse:
+    context = _context(session)
+    try:
+        return use_cases.delete_category(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            category_id=category_id,
+            expected_version=expected_version,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -417,6 +571,61 @@ def batch_delete_skus(
             sku_ids=request.sku_ids,
         )
         return SkuBatchOperationResponse(**result)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/product-center/products/delete-all",
+    response_model=ProductDeleteAllResponse,
+    status_code=status.HTTP_200_OK,
+)
+def delete_all_products(
+    payload: ProductDeleteAllRequest,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+    auth_session: Session = Depends(get_auth_session),
+) -> ProductDeleteAllResponse:
+    """Delete only the active tenant's catalog after password confirmation."""
+
+    context = _context(session)
+    response.headers["Cache-Control"] = "no-store"
+    enforce_rate_limit(
+        request,
+        scope="product-delete-all",
+        limit=configured_limit("RATE_LIMIT_DELETE_ALL_PRODUCTS_REQUESTS", 5),
+        window_seconds=configured_limit(
+            "RATE_LIMIT_DELETE_ALL_PRODUCTS_WINDOW_SECONDS",
+            300,
+            maximum=86_400,
+        ),
+        additional_subjects=(("user", str(context.user_id)),),
+    )
+    try:
+        verify_current_user_password(
+            auth_session,
+            user_id=context.user_id,
+            password=payload.password.get_secret_value(),
+        )
+    except AuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": exc.code,
+                "message": "密码错误，请重新输入。",
+            },
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        result = use_cases.delete_all_products(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+        )
+        return ProductDeleteAllResponse(**result)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

@@ -315,6 +315,64 @@ def _local_customer_password_claim(
     )
 
 
+def verify_current_user_password(
+    session: Session,
+    *,
+    user_id: UUID,
+    password: str,
+) -> None:
+    """Verify the signed-in user's current password without creating a session.
+
+    Locally provisioned merchant accounts keep only an scrypt digest in the
+    identity database. Enterprise accounts delegate verification to the
+    configured identity provider, matching the normal password-login flow.
+    """
+
+    def invalid_password() -> AuthError:
+        return AuthError(
+            "CURRENT_PASSWORD_INVALID",
+            "current password is invalid",
+        )
+
+    if not password or len(password) > 1024:
+        raise invalid_password()
+    user = session.get(UserRow, user_id)
+    if user is None or user.status != "active":
+        raise invalid_password()
+
+    credential = session.get(LocalAccountCredentialRow, user.id)
+    if credential is not None:
+        if verify_local_password(
+            password=password,
+            salt=credential.password_salt,
+            password_hash=credential.password_hash,
+        ):
+            return
+        raise invalid_password()
+
+    if user.identity_provider == "local-bootstrap":
+        provider = "local_fake"
+        identifier = user.email_normalized or "owner"
+    elif user.identity_provider.startswith("oidc:") and user.email_normalized:
+        provider = "enterprise_oidc"
+        identifier = user.email_normalized
+    else:
+        raise invalid_password()
+
+    try:
+        claim = _identity_adapter(provider).authenticate_password(
+            identifier=identifier,
+            password=password,
+        )
+    except (AuthError, IdentityProviderError) as exc:
+        raise invalid_password() from exc
+    if (
+        claim.provider != user.identity_provider
+        or claim.subject != user.identity_subject
+    ):
+        raise invalid_password()
+
+
 def _password_policy_error() -> AuthError:
     return AuthError(
         "PASSWORD_POLICY_VIOLATION",

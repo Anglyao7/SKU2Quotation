@@ -232,6 +232,12 @@ class PublicQuoteDraftItemRow(AuditTimestampMixin, Base):
     sku_code_snapshot: Mapped[str] = mapped_column(String(160), nullable=False)
     name_snapshot: Mapped[str] = mapped_column(String(500), nullable=False)
     description_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    specification_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    option_values_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSON_DOCUMENT,
+        default=dict,
+        nullable=False,
+    )
     category_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
     tags_snapshot: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
     image_url_snapshot: Mapped[str | None] = mapped_column(String(2000), nullable=True)

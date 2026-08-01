@@ -128,6 +128,8 @@ def test_composed_routes_preserve_the_public_contract(tmp_path: Path) -> None:
         ("POST", "/api/v1/ai/search/products"),
         ("POST", "/api/v1/quotations/{quotation_id}/revisions"),
         ("GET", "/api/store/{tenant_slug}"),
+        ("GET", "/api/store/{tenant_slug}/products"),
+        ("GET", "/api/store/{tenant_slug}/products/{product_id}"),
         ("GET", "/api/store/{tenant_slug}/skus"),
         ("POST", "/api/store/{tenant_slug}/quotes"),
         ("GET", "/api/quotes/{quote_draft_id}/pdf"),

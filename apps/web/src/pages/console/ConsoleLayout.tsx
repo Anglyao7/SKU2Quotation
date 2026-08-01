@@ -10,6 +10,7 @@ import {
   Database,
   DotsThreeOutline,
   FileText,
+  FileXls,
   GlobeHemisphereWest,
   Key,
   Megaphone,
@@ -72,6 +73,7 @@ const navigationGroups = [
     items: [
       { to: "/console/inquiries", label: "询盘", mobileLabel: "询盘", icon: ChatCircleDots, permissions: ["inquiry.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/quotes", label: "报价", mobileLabel: "报价", icon: FileText, permissions: ["quotation.view"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/quote-templates", label: "报价模板", mobileLabel: "模板", icon: FileXls, permissions: ["quotation.create"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {

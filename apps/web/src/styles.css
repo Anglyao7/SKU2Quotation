@@ -617,6 +617,16 @@ img { display: block; max-width: 100%; }
 .sku-card-body { min-height: 140px; display: flex; flex-direction: column; padding: 24px; gap: 8px; }
 .sku-name { min-height: 43px; line-height: 1.45; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; display: -webkit-box !important; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .sku-name a:hover { color: var(--accent-strong); }
+.product-card-meta {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 550;
+}
+.product-card-meta svg { flex: 0 0 auto; color: var(--accent); }
 .sku-card-footer { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-top: auto; padding-top: 20px; }
 .sku-price-block { min-width: 0; display: grid; gap: 4px; }
 .price-text { color: var(--accent-strong); font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
@@ -722,6 +732,96 @@ img { display: block; max-width: 100%; }
   letter-spacing: -.035em;
 }
 .sku-detail-add { min-width: min(100%, 230px); }
+.product-detail-main .sku-detail-layout { margin-bottom: clamp(30px, 4vw, 52px); }
+.product-variant-section {
+  padding: clamp(20px, 3vw, 30px);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.product-variant-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.product-variant-heading > div { display: grid; gap: 4px; }
+.product-variant-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+.product-variant-heading > span svg { color: var(--accent); }
+.product-variant-list { display: grid; }
+.product-variant-row {
+  position: relative;
+  min-width: 0;
+  min-height: 82px;
+  padding: 16px 2px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(130px, auto) minmax(130px, auto);
+  align-items: center;
+  gap: 24px;
+  border-bottom: 1px solid var(--line);
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.product-variant-row:last-child { border-bottom: 0; }
+.product-variant-row.is-selected {
+  margin-inline: -12px;
+  padding-inline: 14px;
+  border-radius: 14px;
+  border-bottom-color: transparent;
+  background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+}
+.product-variant-identity,
+.product-variant-price {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.product-variant-identity strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.product-variant-identity span,
+.product-variant-price small {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.product-variant-price { justify-items: start; }
+.product-variant-price strong {
+  color: var(--accent-strong);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.product-variant-row > .rt-Button,
+.product-variant-row > .sku-quantity-control {
+  min-width: 126px;
+  justify-self: end;
+}
+.product-variant-selected {
+  position: absolute;
+  top: 6px;
+  right: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent-strong);
+  font-size: 9px;
+  font-weight: 700;
+}
 
 .privacy-consent { display: flex; align-items: flex-start; gap: 9px; padding: 12px 14px; border: 1px solid var(--gray-a5); border-radius: 10px; background: var(--gray-a2); color: var(--gray-11); font-size: 12px; line-height: 1.65; }
 .privacy-consent input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent-9); flex: 0 0 auto; }
@@ -838,6 +938,7 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .drawer-empty-title { color: var(--text); line-height: 1.35; }
 .drawer-empty-copy { max-width: 320px; line-height: 1.75; text-wrap: balance; }
 .download-actions { display: flex; gap: var(--control-gap); margin-top: 8px; }
+.quote-review-dialog-actions { margin-top: 20px; }
 
 /* Login */
 .login-page { min-height: 100dvh; padding: 26px clamp(22px, 4vw, 60px); display: flex; flex-direction: column; background: var(--page); }
@@ -1148,6 +1249,8 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .sku-card:hover { transform: none; box-shadow: none; }
   .sku-card-body { min-height: 104px; padding: 8px; }
   .sku-name { min-height: 32px; font-size: 12px !important; line-height: 1.32; }
+  .product-card-meta { gap: 4px; font-size: 9px; }
+  .product-card-meta svg { width: 12px; height: 12px; }
   .sku-card-footer { align-items: center; gap: 4px; padding-top: 8px; }
   .sku-price-block { gap: 0; }
   .sku-price-block > .rt-Text:first-child { display: none; }
@@ -1183,6 +1286,26 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .sku-detail-description-content { font-size: 12.5px; line-height: 1.68; }
   .sku-detail-price { margin-top: 2px; padding-top: 12px; }
   .sku-detail-add { width: 100%; }
+  .product-detail-main .sku-detail-layout { margin-bottom: 24px; }
+  .product-variant-section { padding: 16px; border-radius: 18px; }
+  .product-variant-heading { align-items: start; padding-bottom: 14px; }
+  .product-variant-heading > span { padding-top: 4px; }
+  .product-variant-row {
+    min-height: 0;
+    padding-block: 14px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 14px;
+  }
+  .product-variant-row.is-selected { margin-inline: -8px; padding-inline: 10px; border-radius: 12px; }
+  .product-variant-price { grid-column: 1; grid-row: 2; }
+  .product-variant-price small { display: none; }
+  .product-variant-row > .rt-Button,
+  .product-variant-row > .sku-quantity-control {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    min-width: 112px;
+  }
+  .product-variant-selected { top: 3px; right: 1px; }
   .cart-drawer {
     border-radius: 0 !important;
     padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)) !important;

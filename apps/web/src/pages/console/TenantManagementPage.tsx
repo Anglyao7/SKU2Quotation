@@ -25,7 +25,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import { EmptyState, ErrorState, TableSkeleton } from "../../components/States";
 import { useLocale } from "../../core/LocaleContext";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { dateTime } from "../../lib/format";
 import type {
   MerchantOwnerAccount,
@@ -34,6 +34,16 @@ import type {
   TenantPayload,
 } from "../../types";
 import type { ConsoleOutletContext } from "./ConsoleLayout";
+
+const LOGIN_EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+function apiErrorCode(caught: unknown): string | undefined {
+  if (!(caught instanceof ApiError) || !caught.details || typeof caught.details !== "object") return undefined;
+  const detail = (caught.details as { detail?: unknown }).detail;
+  if (!detail || typeof detail !== "object") return undefined;
+  const code = (detail as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
 
 function tenantLoginEmail(tenant: Tenant): string {
   return (
@@ -469,6 +479,13 @@ function TenantFormDialog({
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const name = String(data.get("name") || "").trim();
+    const loginEmail = current
+      ? ""
+      : String(data.get("login_email") || "").trim().toLowerCase();
+    if (!current && !LOGIN_EMAIL_PATTERN.test(loginEmail)) {
+      setError(t("请输入有效的登录邮箱，例如 name@company.com。"));
+      return;
+    }
     setSaving(true);
     setError("");
 
@@ -484,7 +501,6 @@ function TenantFormDialog({
         return;
       }
 
-      const loginEmail = String(data.get("login_email") || "").trim().toLowerCase();
       const password = String(data.get("password") || "");
       const tenantPayload: TenantPayload = {
         name,
@@ -521,7 +537,11 @@ function TenantFormDialog({
       setCreatedOwner(owner);
       await onChanged().catch(() => undefined);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("商家保存失败。"));
+      setError(
+        apiErrorCode(caught) === "TENANT_SLUG_EXISTS"
+          ? t("商家前台地址暂时发生冲突，请再次提交，系统会自动分配新地址。")
+          : caught instanceof Error ? caught.message : t("商家保存失败。"),
+      );
     } finally {
       setSaving(false);
     }
@@ -555,6 +575,11 @@ function TenantFormDialog({
                 email: createdOwner.email || createdOwner.login_identifier || "—",
               })}
             </Text>
+            {createdTenant ? (
+              <Text size="2" color="gray" className="mono-text">
+                {t("前台地址：/{slug}", { slug: createdTenant.slug })}
+              </Text>
+            ) : null}
             <div className="dialog-actions">
               <Dialog.Close><Button>{t("完成")}</Button></Dialog.Close>
             </div>
@@ -591,10 +616,12 @@ function TenantFormDialog({
                     name="login_email"
                     type="email"
                     required
+                    pattern={LOGIN_EMAIL_PATTERN.source}
                     maxLength={320}
                     autoComplete="email"
                     autoCapitalize="none"
                     placeholder="name@company.com"
+                    title={t("请输入有效的登录邮箱，例如 name@company.com。")}
                   />
                 </label>
                 <label className="field-group">

@@ -39,6 +39,12 @@ POSTGRESQL_MIGRATION_MANAGED_FOREIGN_KEYS = {
     "fk_memberships_tenant_parent_membership",
     "fk_public_quote_drafts_tenant_submitter",
 }
+SQLITE_MIGRATION_MANAGED_UNIQUE_OBJECTS = {
+    # SQLite represents this named composite unique constraint as an index
+    # after the membership batch rebuild. PostgreSQL retains the constraint
+    # shape declared by the ORM and migration.
+    "uq_memberships_tenant_login_identifier",
+}
 
 
 def include_object(
@@ -59,6 +65,12 @@ def include_object(
         type_ == "foreign_key_constraint"
         and name in POSTGRESQL_MIGRATION_MANAGED_FOREIGN_KEYS
         and context.get_context().dialect.name == "sqlite"
+    ):
+        return False
+    if (
+        context.get_context().dialect.name == "sqlite"
+        and name in SQLITE_MIGRATION_MANAGED_UNIQUE_OBJECTS
+        and type_ in {"index", "unique_constraint"}
     ):
         return False
     return True

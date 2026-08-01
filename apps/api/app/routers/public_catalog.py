@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
@@ -7,8 +8,11 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from ..database import get_auth_session, get_session
+from ..adapters.object_storage import get_object_storage
 from ..domain.errors import ApplicationError
 from ..public_catalog_schemas import (
+    PublicProductDetail,
+    PublicProductPage,
     PublicQuoteDraftCreate,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSummary,
@@ -31,7 +35,11 @@ from .errors import application_http_error
 
 
 router = APIRouter(tags=["public-catalog"])
+logger = logging.getLogger(__name__)
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+PUBLIC_DETAIL_CACHE_HEADERS = {
+    "Cache-Control": "public, max-age=30, stale-while-revalidate=120",
+}
 
 
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
@@ -97,6 +105,108 @@ def list_public_skus(
             include_facets=include_facets,
             page=page,
             page_size=page_size,
+            locale=locale,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/store/{tenant_slug}/products",
+    response_model=PublicProductPage,
+)
+def list_public_products(
+    tenant_slug: str,
+    request: Request,
+    response: Response,
+    q: str = Query(default="", max_length=300),
+    category: str | None = Query(default=None, max_length=200),
+    tags: list[str] = Query(default=[]),
+    semantic: bool = Query(default=False),
+    include_facets: bool = Query(default=True),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=24, ge=1, le=100),
+    locale: str | None = Query(default=None, max_length=20),
+    session: Session = Depends(get_session),
+) -> PublicProductPage:
+    response.headers.update(NO_STORE_HEADERS)
+    if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
+        enforce_rate_limit(
+            request,
+            scope="public-live-catalog-translation",
+            limit=configured_limit(
+                "RATE_LIMIT_PUBLIC_TRANSLATION_REQUESTS",
+                120,
+            ),
+            window_seconds=configured_limit(
+                "RATE_LIMIT_PUBLIC_TRANSLATION_WINDOW_SECONDS",
+                60,
+                maximum=86_400,
+            ),
+        )
+    if semantic:
+        enforce_rate_limit(
+            request,
+            scope="public-semantic-product-search",
+            limit=configured_limit(
+                "RATE_LIMIT_PUBLIC_AI_SEARCH_REQUESTS",
+                30,
+            ),
+            window_seconds=configured_limit(
+                "RATE_LIMIT_PUBLIC_AI_SEARCH_WINDOW_SECONDS",
+                60,
+                maximum=86_400,
+            ),
+        )
+    try:
+        return use_cases.list_public_products(
+            session,
+            slug=tenant_slug,
+            query=q,
+            category=category,
+            tags=tags,
+            semantic=semantic,
+            include_facets=include_facets,
+            page=page,
+            page_size=page_size,
+            locale=locale,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/store/{tenant_slug}/products/{product_id}",
+    response_model=PublicProductDetail,
+)
+def get_public_product(
+    tenant_slug: str,
+    product_id: UUID,
+    request: Request,
+    response: Response,
+    locale: str | None = Query(default=None, max_length=20),
+    session: Session = Depends(get_session),
+) -> PublicProductDetail:
+    response.headers.update(PUBLIC_DETAIL_CACHE_HEADERS)
+    if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
+        enforce_rate_limit(
+            request,
+            scope="public-live-catalog-translation",
+            limit=configured_limit(
+                "RATE_LIMIT_PUBLIC_TRANSLATION_REQUESTS",
+                120,
+            ),
+            window_seconds=configured_limit(
+                "RATE_LIMIT_PUBLIC_TRANSLATION_WINDOW_SECONDS",
+                60,
+                maximum=86_400,
+            ),
+        )
+    try:
+        return use_cases.get_public_product(
+            session,
+            slug=tenant_slug,
+            product_id=product_id,
             locale=locale,
         )
     except ApplicationError as exc:
@@ -250,14 +360,28 @@ def get_tenant_public_quote_draft(
 def _document_headers(*, quote_number: str, extension: str) -> dict[str, str]:
     disposition = "inline" if extension == "pdf" else "attachment"
     return {
-        "Content-Disposition": (
-            f'{disposition}; filename="{quote_number}-PENDING-CONFIRMATION.{extension}"'
-        ),
+        "Content-Disposition": f'{disposition}; filename="{quote_number}.{extension}"',
         "Cache-Control": "private, no-store",
         "Pragma": "no-cache",
         "X-Content-Type-Options": "nosniff",
-        "X-Quote-Status": "PENDING_CONFIRMATION",
     }
+
+
+def _render_quote_xlsx(document) -> bytes:
+    template = document.excel_template
+    if template is not None:
+        try:
+            with get_object_storage().materialize(template.object_key) as path:
+                return render_public_quote_draft_xlsx(
+                    document,
+                    template_path=path,
+                )
+        except Exception:
+            logger.exception(
+                "custom quote Excel rendering failed; using the standard template",
+                extra={"quote_number": document.quote.quote_number},
+            )
+    return render_public_quote_draft_xlsx(document)
 
 
 @router.get("/api/quotes/{quote_draft_id}/pdf")
@@ -318,7 +442,7 @@ def download_public_quote_draft_xlsx(
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return Response(
-        content=render_public_quote_draft_xlsx(document),
+        content=_render_quote_xlsx(document),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=_document_headers(
             quote_number=document.quote.quote_number, extension="xlsx"
@@ -386,7 +510,7 @@ def download_tenant_quote_draft_xlsx(
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return Response(
-        content=render_public_quote_draft_xlsx(document),
+        content=_render_quote_xlsx(document),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=_document_headers(
             quote_number=document.quote.quote_number, extension="xlsx"

@@ -34,9 +34,27 @@ import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import { storefrontText } from "../lib/storefrontLocale";
 import { readStorefrontViewState, writeStorefrontViewState } from "../lib/storefrontViewState";
-import type { Sku, Storefront, StorefrontLocale } from "../types";
+import type { StoreProduct, Storefront, StorefrontLocale } from "../types";
 
 type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
+
+function importProductDetailModule() {
+  return import("./ProductDetailPage");
+}
+
+let productDetailModulePromise: ReturnType<
+  typeof importProductDetailModule
+> | null = null;
+
+function preloadProductDetailModule() {
+  if (!productDetailModulePromise) {
+    productDetailModulePromise = importProductDetailModule().catch((error) => {
+      productDetailModulePromise = null;
+      throw error;
+    });
+  }
+  return productDetailModulePromise;
+}
 
 function paginationItems(currentPage: number, pageCount: number): PaginationItem[] {
   if (pageCount <= 7) {
@@ -171,7 +189,7 @@ export function StorePage() {
   const storefrontHome = `/${encodeURIComponent(tenantSlug)}${localeQuery}`;
   const [initialView] = useState(() => readStorefrontViewState(loadedStore.slug));
   const [store, setStore] = useState<Storefront>(loadedStore);
-  const [skus, setSkus] = useState<Sku[]>([]);
+  const [products, setProducts] = useState<StoreProduct[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(initialView?.page ?? 1);
@@ -247,14 +265,14 @@ export function StorePage() {
     };
   }, [loadedStore.name, locale]);
 
-  const loadSkus = useCallback(async (targetPage = 1) => {
+  const loadProducts = useCallback(async (targetPage = 1) => {
     const currentRequest = ++requestId.current;
     const includeFacets = !facetsLoadedRef.current;
     setPage(targetPage);
     setLoading(true);
     setError("");
     try {
-      const data = await api.getStoreSkus(tenantSlug, {
+      const data = await api.getStoreProducts(tenantSlug, {
         q: deferredSearch,
         category: category || undefined,
         semantic: Boolean(deferredSearch),
@@ -264,18 +282,7 @@ export function StorePage() {
       });
       if (currentRequest !== requestId.current) return;
       if (includeFacets) facetsLoadedRef.current = true;
-      setSkus(data.items);
-      setCart((current) => {
-        let changed = false;
-        const next = { ...current };
-        for (const sku of data.items) {
-          if (next[sku.id] && next[sku.id].sku !== sku) {
-            next[sku.id] = { ...next[sku.id], sku };
-            changed = true;
-          }
-        }
-        return changed ? next : current;
-      });
+      setProducts(data.items);
       setTotal(data.total);
       setPage(data.page ?? targetPage);
       setPages(data.pages ?? Math.ceil(data.total / 24));
@@ -293,7 +300,7 @@ export function StorePage() {
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
       setError(caught instanceof Error ? caught.message : t("商品加载失败。"));
-      setSkus([]);
+      setProducts([]);
     } finally {
       if (currentRequest === requestId.current) {
         setLoading(false);
@@ -303,15 +310,18 @@ export function StorePage() {
 
   useEffect(() => {
     const targetPage = initialLoadPageRef.current ?? 1;
-    void loadSkus(targetPage);
-  }, [loadSkus]);
+    void loadProducts(targetPage);
+  }, [loadProducts]);
 
   useEffect(
     () => subscribePublicCatalogRevision(() => {
       facetsLoadedRef.current = false;
-      void loadSkus(page);
+      void api.getStore(tenantSlug, locale)
+        .then((nextStore) => setStore(nextStore))
+        .catch(() => undefined);
+      void loadProducts(page);
     }),
-    [loadSkus, page],
+    [loadProducts, locale, page, tenantSlug],
   );
 
   useEffect(() => {
@@ -336,7 +346,7 @@ export function StorePage() {
 
     const prefetch = () => {
       if (document.visibilityState !== "visible") return;
-      void api.prefetchStoreSkus(tenantSlug, {
+      void api.prefetchStoreProducts(tenantSlug, {
         q: deferredSearch,
         category: category || undefined,
         semantic: Boolean(deferredSearch),
@@ -386,12 +396,53 @@ export function StorePage() {
       window.cancelAnimationFrame(firstFrame);
       if (secondFrame) window.cancelAnimationFrame(secondFrame);
     };
-  }, [loading, page, skus.length]);
+  }, [loading, page, products.length]);
+
+  const prefetchProductDetails = useCallback(
+    (productId: string) => {
+      void preloadProductDetailModule().catch(() => undefined);
+      void api.prefetchStoreProduct(tenantSlug, productId, locale)
+        .catch(() => undefined);
+    },
+    [locale, tenantSlug],
+  );
+
+  useEffect(() => {
+    if (loading || error || products.length === 0) return;
+    void preloadProductDetailModule().catch(() => undefined);
+
+    const sourceLocale = store.source_locale ?? "zh-CN";
+    const connection = (
+      navigator as Navigator & { connection?: { saveData?: boolean } }
+    ).connection;
+    if (locale !== sourceLocale || connection?.saveData) return;
+
+    // Warm only the first visible row after the catalog itself is usable.
+    // Intent prefetch below covers every other card without turning one page
+    // view into 24 detail requests.
+    const timer = window.setTimeout(() => {
+      void Promise.allSettled(
+        products.slice(0, 3).map((product) => (
+          api.prefetchStoreProduct(tenantSlug, product.id, locale)
+        )),
+      );
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [
+    error,
+    loading,
+    locale,
+    products,
+    store.source_locale,
+    tenantSlug,
+  ]);
 
   const categories = useMemo(() => {
     if (store?.categories?.length) return store.categories;
-    return Array.from(new Set(skus.map((sku) => sku.category).filter(Boolean))) as string[];
-  }, [store?.categories, skus]);
+    return Array.from(
+      new Set(products.map((product) => product.category).filter(Boolean)),
+    ) as string[];
+  }, [store?.categories, products]);
   const categoryOptions = useMemo(() => {
     const configured = store.category_options ?? [];
     const labelByValue = new Map(
@@ -485,12 +536,6 @@ export function StorePage() {
       return next;
     });
   };
-  const addToCart = (sku: Sku) => {
-    setCart((current) => ({
-      ...current,
-      [sku.id]: { sku, quantity: current[sku.id] ? current[sku.id].quantity + 1 : 1 },
-    }));
-  };
   const updateQuantity = (skuId: string, quantity: number) => {
     setCart((current) => {
       const next = { ...current };
@@ -517,7 +562,7 @@ export function StorePage() {
       behavior: reducedMotion ? "auto" : "smooth",
       block: "start",
     });
-    void loadSkus(targetPage);
+    void loadProducts(targetPage);
   };
 
   return (
@@ -538,7 +583,7 @@ export function StorePage() {
                 )}
                 <span>
                   <strong>{store.name}</strong>
-                  <small>{t("SKU 商品目录")}</small>
+                  <small>{t("商品目录")}</small>
                 </span>
               </Link>
               <span className="powered-by">{t("由智贸云提供")}</span>
@@ -778,8 +823,8 @@ export function StorePage() {
               <div className="results-main">
             <div className="results-header" ref={resultsHeaderRef}>
               <div>
-                <Heading as="h2" size="5">{t(hasFilters ? "筛选结果" : "全部 SKU")}</Heading>
-                <Text size="2" color="gray">{t("在商品卡片上直接加入清单或调整数量。")}</Text>
+                <Heading as="h2" size="5">{t(hasFilters ? "筛选结果" : "全部商品")}</Heading>
+                <Text size="2" color="gray">{t("点击商品查看可选规格与 SKU。")}</Text>
               </div>
               <Badge color={hasFilters ? "jade" : "gray"} variant="soft" aria-live="polite">
                 {searchPending
@@ -805,30 +850,28 @@ export function StorePage() {
               ) : loading ? (
                 <ProductGridSkeleton />
               ) : error ? (
-                <ErrorState message={error} onRetry={() => void loadSkus(page)} />
-              ) : skus.length === 0 ? (
+                <ErrorState message={error} onRetry={() => void loadProducts(page)} />
+              ) : products.length === 0 ? (
                 <EmptyState
-                  title={t("没有匹配的 SKU")}
+                  title={t("没有匹配的商品")}
                   description={t("换一个关键词、使用场景或分类，再试一次。")}
                   action={hasFilters ? <Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button> : undefined}
                 />
               ) : (
                 <div className="sku-grid">
-                  {skus.map((sku) => (
+                  {products.map((product) => (
                     <ProductCard
-                      key={sku.id}
-                      sku={sku}
-                      detailsHref={`/${encodeURIComponent(tenantSlug)}/skus/${encodeURIComponent(sku.id)}${localeQuery}`}
-                      quantity={cart[sku.id]?.quantity || 0}
-                      onAdd={() => addToCart(sku)}
-                      onDecrease={() => updateQuantity(sku.id, (cart[sku.id]?.quantity || 0) - 1)}
+                      key={product.id}
+                      product={product}
+                      detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${localeQuery}`}
                       onOpenDetails={rememberCatalogPosition}
+                      onPrefetchDetails={() => prefetchProductDetails(product.id)}
                       locale={locale}
                     />
                   ))}
                 </div>
               )}
-              {!searchPending && !loading && !error && skus.length > 0 && pages > 1 && (
+              {!searchPending && !loading && !error && products.length > 0 && pages > 1 && (
                 <nav
                   className="store-pagination"
                   aria-label={t("商品分页")}

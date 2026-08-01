@@ -1,4 +1,4 @@
-import { Badge, Button, Card, Dialog, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
+import { Badge, Button, Card, Checkbox, Dialog, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
 import { ArrowsClockwise, CaretRight, CheckCircle, ClockCounterClockwise, DownloadSimple, FileArrowUp, FileXls, ImageSquare, MagnifyingGlass, Plus, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -7,12 +7,12 @@ import {
   createAttributeDefinition,
   createProductTemplateImport,
   createSkus,
+  deleteAllProducts,
   detectFile,
   getImport,
   getProduct,
   listAttributeDefinitions,
   listCategories,
-  listImports,
   listPublicCatalogOffers,
   listSkus,
   PRODUCT_TEMPLATE_DOWNLOAD_URL,
@@ -28,6 +28,14 @@ import type { AttributeDefinition, FileDetection, ImportJob, ProductCategory, Pr
 
 const splitValues = (value: string) => value.split(/[,，;；、|\n]/).map((item) => item.trim()).filter(Boolean);
 const emptySkuPage: SkuListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
+const SKU_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
+const SKU_PAGE_SIZE_STORAGE_KEY = "ai-trade-cloud:sku-page-size";
+
+function initialSkuPageSize() {
+  if (typeof window === "undefined") return 50;
+  const stored = Number(window.localStorage.getItem(SKU_PAGE_SIZE_STORAGE_KEY));
+  return SKU_PAGE_SIZE_OPTIONS.find((option) => option === stored) ?? 50;
+}
 
 const skuStatusLabel: Record<ProductSku["status"], string> = {
   ACTIVE: "在售",
@@ -149,6 +157,7 @@ export function ProductsPage() {
   const [categoryId, setCategoryId] = useState("");
   const [status, setStatus] = useState<"" | ProductSku["status"]>("");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(initialSkuPageSize);
   const [result, setResult] = useState<SkuListPage>(emptySkuPage);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [selected, setSelected] = useState<ProductDetail>();
@@ -159,7 +168,6 @@ export function ProductsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
   const [importOpen, setImportOpen] = useState(canImport && params.get("import") === "1");
-  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [pendingFile, setPendingFile] = useState<File>();
   const [detection, setDetection] = useState<FileDetection>();
   const [lastImport, setLastImport] = useState<ImportJob>();
@@ -169,12 +177,15 @@ export function ProductsPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [importError, setImportError] = useState("");
   const [importPollingError, setImportPollingError] = useState("");
-  const [bulkSelectionMode, setBulkSelectionMode] = useState(false);
   const [selectedSkuIds, setSelectedSkuIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);
+  const [deleteAllPassword, setDeleteAllPassword] = useState("");
+  const [deleteAllBusy, setDeleteAllBusy] = useState(false);
+  const [deleteAllError, setDeleteAllError] = useState("");
   const [bulkError, setBulkError] = useState("");
   const [bulkNotice, setBulkNotice] = useState("");
   const loadSequence = useRef(0);
@@ -189,7 +200,7 @@ export function ProductsPage() {
         categoryId: categoryId || primaryCategoryId || undefined,
         statuses: status ? [status] : undefined,
         page,
-        pageSize: 50,
+        pageSize,
       });
       if (sequence === loadSequence.current) setResult(next);
     } catch (reason) {
@@ -199,7 +210,7 @@ export function ProductsPage() {
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [categoryId, debouncedQuery, page, primaryCategoryId, status, t]);
+  }, [categoryId, debouncedQuery, page, pageSize, primaryCategoryId, status, t]);
 
   const loadCategories = useCallback(async () => {
     setCategories(await listCategories());
@@ -212,42 +223,34 @@ export function ProductsPage() {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     setSelectedSkuIds(new Set());
-    setBulkSelectionMode(false);
     setDeleteDialogOpen(false);
     setBulkError("");
   }, [categoryId, debouncedQuery, primaryCategoryId, status]);
 
-  const loadTemplateImports = useCallback(async () => {
-    if (!canImport) return;
-    const rows = await listImports();
-    setImportJobs(rows.filter((row) => row.sourceType === "PRODUCT_TEMPLATE"));
+  const refreshCurrentImport = useCallback(async () => {
+    if (!lastImport?.id) return undefined;
+    const next = await getImport(lastImport.id);
+    setLastImport(next);
     setImportPollingError("");
-  }, [canImport]);
-
-  useEffect(() => {
-    if (!canImport) {
-      setImportJobs([]);
-      return;
+    if (next.status === "published") {
+      await load();
+      await loadCategories().catch(() => undefined);
     }
-    if (!importOpen) return;
-    void loadTemplateImports().catch((reason) => {
-      setImportJobs([]);
-      setImportPollingError(reason instanceof Error ? t("导入记录刷新失败：{message}", { message: reason.message }) : t("导入记录暂时无法刷新。"));
-    });
-  }, [canImport, importOpen, loadTemplateImports, t]);
+    return next;
+  }, [lastImport?.id, load, loadCategories]);
 
   useEffect(() => {
-    if (!importOpen) return;
-    if (!importJobs.some((job) => job.status === "scanning" || job.status === "parsing")) return;
+    if (!importOpen || !lastImport || !["scanning", "parsing"].includes(lastImport.status)) return;
     let cancelled = false;
     let timer = 0;
     const poll = () => {
       timer = window.setTimeout(() => {
-        void loadTemplateImports()
+        void refreshCurrentImport()
+          .then((next) => {
+            if (!cancelled && next && ["scanning", "parsing"].includes(next.status)) poll();
+          })
           .catch((reason) => {
             setImportPollingError(reason instanceof Error ? t("状态刷新失败，系统将继续重试：{message}", { message: reason.message }) : t("状态刷新失败，系统将继续重试。"));
-          })
-          .finally(() => {
             if (!cancelled) poll();
           });
       }, 1800);
@@ -257,7 +260,7 @@ export function ProductsPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [importJobs, importOpen, loadTemplateImports, t]);
+  }, [importOpen, lastImport?.id, lastImport?.status, refreshCurrentImport, t]);
 
   useEffect(() => {
     const requested = params.get("import") === "1";
@@ -276,12 +279,6 @@ export function ProductsPage() {
   }, [canImport, params, setParams]);
 
   useEffect(() => {
-    if (!lastImport) return;
-    const latest = importJobs.find((job) => job.id === lastImport.id);
-    if (latest) setLastImport(latest);
-  }, [importJobs, lastImport?.id]);
-
-  useEffect(() => {
     if (!lastImport || !["failed", "published"].includes(lastImport.status)) return;
     const missingIssues = lastImport.resultDetails.issueTotal > lastImport.resultDetails.issues.length;
     const missingWarnings = lastImport.warnings > lastImport.warningMessages.length;
@@ -291,13 +288,6 @@ export function ProductsPage() {
       .then(setLastImport)
       .catch(() => setLoadedWarningJobId(undefined));
   }, [lastImport, loadedWarningJobId]);
-
-  useEffect(() => {
-    if (importJobs[0]?.status === "published") {
-      void load();
-      void loadCategories().catch(() => undefined);
-    }
-  }, [importJobs, load, loadCategories]);
 
   const setImportDialogOpen = (open: boolean) => {
     if (open && !canImport) return;
@@ -370,7 +360,6 @@ export function ProductsPage() {
       setLoadedWarningJobId(undefined);
       setPendingFile(undefined);
       setDetection(undefined);
-      await loadTemplateImports();
       if (job.status === "published") {
         await load();
         setCategories(await listCategories());
@@ -457,8 +446,7 @@ export function ProductsPage() {
       return next;
     });
   };
-  const leaveBulkSelection = () => {
-    setBulkSelectionMode(false);
+  const clearSkuSelection = () => {
     setSelectedSkuIds(new Set());
     setDeleteDialogOpen(false);
     setBulkError("");
@@ -481,12 +469,10 @@ export function ProductsPage() {
           : t("已删除 {count} 个 SKU。", { count: response.successCount }),
       );
       setDeleteDialogOpen(false);
-      if (!response.failedCount) setBulkSelectionMode(false);
-      const deletedCurrentPage = result.items.filter(
-        (item) => selectedIds.includes(item.id) && !failedIds.has(item.id),
-      ).length;
-      if (deletedCurrentPage === result.items.length && page > 1) {
-        setPage((current) => Math.max(1, current - 1));
+      const remainingTotal = Math.max(0, result.total - response.successCount);
+      const lastAvailablePage = Math.max(1, Math.ceil(remainingTotal / pageSize));
+      if (page > lastAvailablePage) {
+        setPage(lastAvailablePage);
       } else {
         await load();
       }
@@ -498,14 +484,36 @@ export function ProductsPage() {
       setDeleteBusy(false);
     }
   };
-  const inspectImportJob = async (jobId: string) => {
-    setImportError("");
+  const setDeleteAllOpen = (open: boolean) => {
+    if (!canDelete || deleteAllBusy) return;
+    setDeleteAllDialogOpen(open);
+    setDeleteAllPassword("");
+    setDeleteAllError("");
+  };
+  const deleteEveryProduct = async () => {
+    if (!canDelete || !deleteAllPassword) return;
+    setDeleteAllBusy(true);
+    setDeleteAllError("");
     try {
-      const job = await getImport(jobId);
-      setLastImport(job);
-      setLoadedWarningJobId(jobId);
+      const response = await deleteAllProducts(deleteAllPassword);
+      setSelectedSkuIds(new Set());
+      setDeleteDialogOpen(false);
+      setDeleteAllDialogOpen(false);
+      setDeleteAllPassword("");
+      setBulkNotice(
+        t("已删除当前商家的全部商品，共 {products} 个商品、{skus} 个 SKU。", {
+          products: response.deletedProductCount,
+          skus: response.deletedSkuCount,
+        }),
+      );
+      if (page === 1) await load();
+      else setPage(1);
     } catch (reason) {
-      setImportError(reason instanceof Error ? reason.message : t("导入详情加载失败"));
+      setDeleteAllError(
+        reason instanceof Error ? t(reason.message) : t("全部商品删除失败，请稍后重试。"),
+      );
+    } finally {
+      setDeleteAllBusy(false);
     }
   };
   const downloadIssueDetails = async (job: ImportJob) => {
@@ -525,6 +533,13 @@ export function ProductsPage() {
   };
   const rangeStart = result.total ? (result.page - 1) * result.pageSize + 1 : 0;
   const rangeEnd = Math.min(result.page * result.pageSize, result.total);
+  const changePageSize = (value: string) => {
+    const next = SKU_PAGE_SIZE_OPTIONS.find((option) => option === Number(value));
+    if (!next || next === pageSize) return;
+    setPageSize(next);
+    setPage(1);
+    window.localStorage.setItem(SKU_PAGE_SIZE_STORAGE_KEY, String(next));
+  };
   const rootCategories = useMemo(
     () => categories.filter((item) => !item.parentId && item.status !== "ARCHIVED"),
     [categories],
@@ -543,6 +558,7 @@ export function ProductsPage() {
         actions={<>
           {canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}
           {canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}
+          {canDelete ? <Button variant="soft" color="red" onClick={() => setDeleteAllOpen(true)}><Trash />{t("删除全部商品")}</Button> : null}
         </>}
       />
       <Card className="core-sku-toolbar">
@@ -565,17 +581,14 @@ export function ProductsPage() {
           <Button size="1" variant="ghost" color="gray" onClick={() => setBulkNotice("")} aria-label={t("关闭")}><X /></Button>
         </Card>
       ) : null}
-      {bulkSelectionMode && result.items.length ? (
+      {canDelete && selectedSkuIds.size > 0 ? (
         <Card className="core-sku-bulk-bar">
           <div>
             <Text size="1" color="gray">{t("批量删除 SKU")}</Text>
             <Text size="2" weight="bold">{t("已选择 {count} 个，最多 500 个", { count: selectedSkuIds.size })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
-            <Button size="2" variant="soft" color="gray" onClick={toggleCurrentPageSelection}>
-              <CheckCircle />{t(allCurrentPageSelected ? "取消选择本页" : "选择当前页")}
-            </Button>
-            <Button size="2" variant="soft" color="gray" onClick={leaveBulkSelection}>{t("退出批量操作")}</Button>
+            <Button size="2" variant="soft" color="gray" onClick={clearSkuSelection}>{t("清除选择")}</Button>
             <Button size="2" color="red" disabled={!selectedSkuIds.size || deleteBusy} onClick={() => setDeleteDialogOpen(true)}>
               <Trash />{t("删除已选 {count} 项", { count: selectedSkuIds.size })}
             </Button>
@@ -599,20 +612,47 @@ export function ProductsPage() {
             <Text size="2" color="gray">{t("共 {total} 个 SKU · 当前显示 {start}–{end}", { total: result.total.toLocaleString(locale), start: rangeStart, end: rangeEnd })}</Text>
             <div className="core-sku-list-meta-actions">
               {loading ? <Text size="1" color="gray">{t("正在更新结果…")}</Text> : <Text size="1" color="gray">{t("每页 {count} 条", { count: result.pageSize })}</Text>}
-              {canDelete && !bulkSelectionMode ? <Button size="1" variant="soft" color="red" onClick={() => { setBulkSelectionMode(true); setBulkError(""); setBulkNotice(""); }}><Trash />{t("批量删除")}</Button> : null}
+              {canDelete ? <Text size="1" color={selectedSkuIds.size ? undefined : "gray"}>{t("已选择 {count} 个 SKU", { count: selectedSkuIds.size })}</Text> : null}
             </div>
           </div>
           <Card className="core-sku-table-card">
-            <div className={bulkSelectionMode ? "core-sku-table selection-active" : "core-sku-table"} role="table" aria-label={t("SKU 商品列表")}>
+            <div className={canDelete ? "core-sku-table selection-enabled" : "core-sku-table"} role="table" aria-label={t("SKU 商品列表")}>
               <div className="core-sku-table-head" role="row">
-                {bulkSelectionMode ? <span aria-hidden="true">{t("选择")}</span> : null}
+                {canDelete ? (
+                  <span className="core-sku-checkbox-cell">
+                    <Checkbox
+                      checked={allCurrentPageSelected ? true : currentPageSelected.length ? "indeterminate" : false}
+                      onCheckedChange={toggleCurrentPageSelection}
+                      aria-label={t(allCurrentPageSelected ? "取消选择本页全部 SKU" : "选择本页全部 SKU")}
+                    />
+                  </span>
+                ) : null}
                 <span>{t("SKU / 商品")}</span><span>{t("分类与标签")}</span><span>{t("公开价")}</span><span>{t("状态")}</span><span>{t("源文件 / 导入时间")}</span><span>{t("更新时间")}</span><span aria-hidden="true" />
               </div>
               {result.items.map((sku) => {
                 const isSelected = selectedSkuIds.has(sku.id);
                 return (
-                <button type="button" className="core-sku-table-row" role="row" key={sku.id} data-selected={isSelected || undefined} aria-pressed={bulkSelectionMode ? isSelected : undefined} onClick={() => bulkSelectionMode ? toggleSkuSelection(sku.id) : void openProduct(sku.productId, "skus")} aria-label={bulkSelectionMode ? t("{action} SKU {code}", { action: t(isSelected ? "取消选择" : "选择"), code: sku.skuCode }) : t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}>
-                  {bulkSelectionMode ? <span className="core-sku-selection-indicator" aria-hidden="true"><CheckCircle weight={isSelected ? "fill" : "regular"} /></span> : null}
+                <div
+                  className="core-sku-table-row"
+                  role="row"
+                  tabIndex={0}
+                  key={sku.id}
+                  data-selected={isSelected || undefined}
+                  onClick={() => void openProduct(sku.productId, "skus")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void openProduct(sku.productId, "skus");
+                  }}
+                  aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}
+                >
+                  {canDelete ? (
+                    <span className="core-sku-checkbox-cell" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => toggleSkuSelection(sku.id)}
+                        aria-label={t(isSelected ? "取消选择 SKU {code}" : "选择 SKU {code}", { code: sku.skuCode })}
+                      />
+                    </span>
+                  ) : null}
                   <span className="core-sku-name-cell">
                     <span className={`core-sku-image-state ${sku.imageStatus.toLowerCase()}`} title={t(sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片")}><ImageSquare /></span>
                     <span><strong className="core-tabular">{sku.skuCode}</strong><small>{sku.name || sku.productName}</small></span>
@@ -627,7 +667,7 @@ export function ProductsPage() {
                   <span className="core-sku-source-cell" title={sku.sourceFilename}><strong>{t(skuSourceLabel(sku))}</strong><small>{sku.sourceImportedAt ? skuImportDateTime(sku.sourceImportedAt) : t(sku.sourceType === "LEGACY_IMPORT" ? "历史数据暂无文件记录" : "非文件导入")}</small></span>
                   <span><strong>{skuUpdatedDate(sku.updatedAt)}</strong><small>v{sku.version}</small></span>
                   <CaretRight aria-hidden="true" />
-                </button>
+                </div>
                 );
               })}
             </div>
@@ -636,31 +676,48 @@ export function ProductsPage() {
             {result.items.map((sku) => {
               const isSelected = selectedSkuIds.has(sku.id);
               return (
-              <button type="button" className="core-sku-mobile-card" key={sku.id} data-selected={isSelected || undefined} aria-pressed={bulkSelectionMode ? isSelected : undefined} onClick={() => bulkSelectionMode ? toggleSkuSelection(sku.id) : void openProduct(sku.productId, "skus")} aria-label={bulkSelectionMode ? t("{action} SKU {code}", { action: t(isSelected ? "取消选择" : "选择"), code: sku.skuCode }) : t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}>
-                {bulkSelectionMode ? <span className="core-sku-mobile-selection"><CheckCircle weight={isSelected ? "fill" : "regular"} />{t(isSelected ? "已选择" : "选择此 SKU")}</span> : null}
-                <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge></span>
-                <span className="core-sku-mobile-facts">
-                  <span><small>{t("公开价")}</small><strong className="core-tabular">{t(skuPrice(sku))}</strong></span>
-                  <span><small>{t("图片")}</small><strong>{t(imageStatusLabel(sku.imageStatus))}</strong></span>
-                  <span><small>{t("供应商")}</small><strong>{sku.supplierSummary.primarySupplierName || t("未关联")}</strong></span>
-                </span>
-                <span className="core-chip-row"><Badge color="gray">{primaryCategoryLabel(sku.category?.name) || t("未分类")}</Badge>{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
-                <span className="core-sku-mobile-source">
-                  <span><small>{t("源文件")}</small><strong title={sku.sourceFilename}>{t(skuSourceLabel(sku))}</strong></span>
-                  <span><small>{t("导入时间")}</small><strong>{skuImportDateTime(sku.sourceImportedAt)}</strong></span>
-                </span>
-                <span className="core-sku-mobile-footer"><small>{t("更新于 {date}", { date: skuUpdatedDate(sku.updatedAt) })}</small><span>{t("SKU 详情")}<CaretRight /></span></span>
-              </button>
+              <article className="core-sku-mobile-card" key={sku.id} data-selected={isSelected || undefined}>
+                {canDelete ? (
+                  <label className="core-sku-mobile-selection">
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => toggleSkuSelection(sku.id)}
+                      aria-label={t(isSelected ? "取消选择 SKU {code}" : "选择 SKU {code}", { code: sku.skuCode })}
+                    />
+                    <span>{t(isSelected ? "已选择" : "选择此 SKU")}</span>
+                  </label>
+                ) : null}
+                <button type="button" className="core-sku-mobile-open" onClick={() => void openProduct(sku.productId, "skus")} aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}>
+                  <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge></span>
+                  <span className="core-sku-mobile-facts">
+                    <span><small>{t("公开价")}</small><strong className="core-tabular">{t(skuPrice(sku))}</strong></span>
+                    <span><small>{t("图片")}</small><strong>{t(imageStatusLabel(sku.imageStatus))}</strong></span>
+                    <span><small>{t("供应商")}</small><strong>{sku.supplierSummary.primarySupplierName || t("未关联")}</strong></span>
+                  </span>
+                  <span className="core-chip-row"><Badge color="gray">{primaryCategoryLabel(sku.category?.name) || t("未分类")}</Badge>{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
+                  <span className="core-sku-mobile-source">
+                    <span><small>{t("源文件")}</small><strong title={sku.sourceFilename}>{t(skuSourceLabel(sku))}</strong></span>
+                    <span><small>{t("导入时间")}</small><strong>{skuImportDateTime(sku.sourceImportedAt)}</strong></span>
+                  </span>
+                  <span className="core-sku-mobile-footer"><small>{t("更新于 {date}", { date: skuUpdatedDate(sku.updatedAt) })}</small><span>{t("SKU 详情")}<CaretRight /></span></span>
+                </button>
+              </article>
               );
             })}
           </div>
-          {result.pages > 1 ? (
-            <nav className="core-sku-pagination" aria-label={t("SKU 列表分页")}>
+          <nav className="core-sku-pagination" aria-label={t("SKU 列表分页")}>
+            <label className="core-sku-page-size-control">
+              <span>{t("每页显示")}</span>
+              <select value={pageSize} onChange={(event) => changePageSize(event.target.value)} disabled={loading}>
+                {SKU_PAGE_SIZE_OPTIONS.map((option) => <option key={option} value={option}>{t("{count} 条", { count: option })}</option>)}
+              </select>
+            </label>
+            <div className="core-sku-pagination-controls">
               <Button variant="soft" color="gray" disabled={loading || result.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>{t("上一页")}</Button>
               <Text size="2" color="gray">{t("第 {page} / {pages} 页", { page: result.page, pages: result.pages })}</Text>
               <Button variant="soft" color="gray" disabled={loading || result.page >= result.pages} onClick={() => setPage((current) => Math.min(result.pages, current + 1))}>{t("下一页")}</Button>
-            </nav>
-          ) : null}
+            </div>
+          </nav>
         </>
       ) : null}
 
@@ -688,6 +745,50 @@ export function ProductsPage() {
               <Trash />{t(deleteBusy ? "正在删除…" : "确认删除")}
             </Button>
           </div>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      <Dialog.Root open={deleteAllDialogOpen} onOpenChange={(open) => setDeleteAllOpen(open)}>
+        <Dialog.Content className="core-sku-delete-dialog core-delete-all-dialog">
+          <form onSubmit={(event) => { event.preventDefault(); void deleteEveryProduct(); }}>
+            <div className="core-dialog-heading">
+              <div>
+                <Text size="1" color="red">{t("危险操作")}</Text>
+                <Dialog.Title>{t("删除当前商家的全部商品？")}</Dialog.Title>
+                <Dialog.Description>{t("这会删除当前商家的全部商品和 SKU，不受当前筛选条件影响。")}</Dialog.Description>
+              </div>
+              <Button type="button" variant="ghost" color="gray" disabled={deleteAllBusy} onClick={() => setDeleteAllOpen(false)} aria-label={t("关闭")}><X /></Button>
+            </div>
+            <Card className="core-notice core-delete-all-notice">
+              <Warning size={22} />
+              <div>
+                <Text weight="bold" as="div">{t("商品会从所有展示与搜索入口隐藏")}</Text>
+                <Text size="2" color="gray">{t("库存流水和历史报价会保留；以后重新导入相同 SKU 时仍可恢复商品。")}</Text>
+              </div>
+            </Card>
+            <label className="core-delete-all-password" htmlFor="delete-all-products-password">
+              <Text size="2" weight="medium">{t("输入当前登录密码以确认")}</Text>
+              <TextField.Root
+                id="delete-all-products-password"
+                name="current-password"
+                type="password"
+                value={deleteAllPassword}
+                onChange={(event) => { setDeleteAllPassword(event.target.value); setDeleteAllError(""); }}
+                autoComplete="current-password"
+                placeholder={t("当前登录密码")}
+                disabled={deleteAllBusy}
+                maxLength={1024}
+                autoFocus
+              />
+            </label>
+            {deleteAllError ? <div className="core-form-error" role="alert">{deleteAllError}</div> : null}
+            <div className="core-dialog-actions">
+              <Button type="button" variant="soft" color="gray" disabled={deleteAllBusy} onClick={() => setDeleteAllOpen(false)}>{t("取消")}</Button>
+              <Button type="submit" color="red" disabled={deleteAllBusy || !deleteAllPassword}>
+                <Trash />{t(deleteAllBusy ? "正在删除全部商品…" : "确认删除全部商品")}
+              </Button>
+            </div>
+          </form>
         </Dialog.Content>
       </Dialog.Root>
 
@@ -783,7 +884,7 @@ export function ProductsPage() {
             </Card>
           ) : null}
 
-          {importError ? <CoreError message={importError} /> : importPollingError ? <CoreError message={importPollingError} onRetry={() => void loadTemplateImports()} /> : null}
+          {importError ? <CoreError message={importError} /> : importPollingError ? <CoreError message={importPollingError} onRetry={() => void refreshCurrentImport()} /> : null}
           {lastImport ? (
             <Card className={`core-template-result ${lastImport.status}`}>
               {lastImport.status === "published" ? <CheckCircle size={24} /> : lastImport.status === "failed" ? <Warning size={24} /> : <ArrowsClockwise size={24} />}
@@ -909,20 +1010,6 @@ export function ProductsPage() {
               <FileArrowUp />{t(importBusy ? "正在处理…" : "开始导入")}
             </Button>
           </div>
-
-          {importJobs.length ? (
-            <div className="core-template-history">
-              <Text size="1" color="gray">{t("最近商品导入")}</Text>
-              {importJobs.slice(0, 4).map((job) => (
-                <button type="button" className="core-template-history-row" key={job.id} onClick={() => void inspectImportJob(job.id)}>
-                  <FileXls />
-                  <span><strong>{job.filename}</strong><small>{t("{products} 个 SKU · {warnings} 条提醒", { products: job.products, warnings: job.warnings })}</small></span>
-                  {job.status === "scanning" || job.status === "parsing" ? <Progress value={job.progress} /> : null}
-                  <Badge color={job.status === "failed" ? "red" : job.status === "published" ? "jade" : "amber"}>{t(importStatusLabel[job.status])}</Badge>
-                </button>
-              ))}
-            </div>
-          ) : null}
         </Dialog.Content>
       </Dialog.Root> : null}
 

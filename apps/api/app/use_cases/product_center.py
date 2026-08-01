@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,9 @@ from ..product_center_schemas import (
     AttributeDefinitionCreateRequest,
     AttributeDefinitionResponse,
     CategoryCreateRequest,
+    CategoryDeleteImpactResponse,
+    CategoryDeleteResponse,
+    CategoryImportResponse,
     CategoryLayoutResponse,
     CategoryLayoutUpdateRequest,
     CategoryReorderRequest,
@@ -50,10 +53,14 @@ from ..product_center_schemas import (
     SupplierPriceCreateRequest,
     SupplierPriceResponse,
 )
-from ..product_supplier_models import ProductCategoryRow, ProductRow
+from ..product_supplier_models import ProductAttributeRow, ProductCategoryRow, ProductRow
 from ..identity_models import TenantRow
 from ..public_catalog_models import PublicCatalogOfferRow, TenantPublicProfileRow
 from ..repositories import product_center_repository as repository
+from ..services.category_template_import import (
+    CategoryTemplateParseResult,
+    category_name_key,
+)
 
 
 FIELD_LABELS = {
@@ -938,6 +945,147 @@ def create_category(
     return _category_response(row)
 
 
+def import_categories(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    parsed: CategoryTemplateParseResult,
+) -> CategoryImportResponse:
+    _require(permissions, "product.edit")
+    existing_categories = repository.list_categories(session, tenant_id=tenant_id)
+    roots_by_name = {
+        category_name_key(row.name): row
+        for row in existing_categories
+        if row.parent_id is None
+    }
+    children_by_parent: dict[UUID, dict[str, ProductCategoryRow]] = {}
+    for row in existing_categories:
+        if row.parent_id is None:
+            continue
+        children_by_parent.setdefault(row.parent_id, {})[
+            category_name_key(row.name)
+        ] = row
+
+    next_root_order = max(
+        (row.sort_order for row in existing_categories if row.parent_id is None),
+        default=-1,
+    ) + 1
+    next_child_order = {
+        parent_id: max((row.sort_order for row in children.values()), default=-1) + 1
+        for parent_id, children in children_by_parent.items()
+    }
+    primary_created = 0
+    secondary_created = 0
+    primary_existing = 0
+    secondary_existing = 0
+
+    for group in parsed.groups:
+        root_key = category_name_key(group.primary_name)
+        root = roots_by_name.get(root_key)
+        if root is None:
+            root_id = uuid4()
+            root = ProductCategoryRow(
+                id=root_id,
+                tenant_id=tenant_id,
+                parent_id=None,
+                code=f"IMP-{root_id.hex.upper()}",
+                name=group.primary_name,
+                path=group.primary_name,
+                sort_order=next_root_order,
+                display_color=None,
+                status="ACTIVE",
+            )
+            next_root_order += 1
+            session.add(root)
+            roots_by_name[root_key] = root
+            children_by_parent[root.id] = {}
+            next_child_order[root.id] = 0
+            primary_created += 1
+            session.add(
+                ProductAuditEventRow(
+                    tenant_id=tenant_id,
+                    product_id=None,
+                    entity_type="CATEGORY",
+                    entity_id=str(root.id),
+                    action="category.imported",
+                    before={},
+                    after={
+                        "parent_id": None,
+                        "code": root.code,
+                        "name": root.name,
+                        "sort_order": root.sort_order,
+                        "source": "CATEGORY_TEMPLATE",
+                    },
+                    actor_membership_id=membership_id,
+                )
+            )
+        else:
+            primary_existing += 1
+
+        child_rows = children_by_parent.setdefault(root.id, {})
+        child_sort_order = next_child_order.setdefault(
+            root.id,
+            max((row.sort_order for row in child_rows.values()), default=-1) + 1,
+        )
+        for secondary_name in group.secondary_names:
+            child_key = category_name_key(secondary_name)
+            if child_key in child_rows:
+                secondary_existing += 1
+                continue
+            child_id = uuid4()
+            child = ProductCategoryRow(
+                id=child_id,
+                tenant_id=tenant_id,
+                parent_id=root.id,
+                code=f"IMP-{child_id.hex.upper()}",
+                name=secondary_name,
+                path=f"{root.name}/{secondary_name}",
+                sort_order=child_sort_order,
+                display_color=None,
+                status="ACTIVE",
+            )
+            child_sort_order += 1
+            session.add(child)
+            child_rows[child_key] = child
+            secondary_created += 1
+            session.add(
+                ProductAuditEventRow(
+                    tenant_id=tenant_id,
+                    product_id=None,
+                    entity_type="CATEGORY",
+                    entity_id=str(child.id),
+                    action="category.imported",
+                    before={},
+                    after={
+                        "parent_id": str(root.id),
+                        "code": child.code,
+                        "name": child.name,
+                        "sort_order": child.sort_order,
+                        "source": "CATEGORY_TEMPLATE",
+                    },
+                    actor_membership_id=membership_id,
+                )
+            )
+        next_child_order[root.id] = child_sort_order
+
+    _commit(
+        session,
+        conflict_code="CATEGORY_IMPORT_CONFLICT",
+        conflict_message="分类导入时数据已发生变化，请刷新后重新导入。",
+    )
+    return CategoryImportResponse(
+        processed_rows=parsed.processed_rows,
+        primary_created=primary_created,
+        secondary_created=secondary_created,
+        primary_existing=primary_existing,
+        secondary_existing=secondary_existing,
+        duplicate_rows_ignored=parsed.duplicate_rows_ignored,
+        blank_rows_ignored=parsed.blank_rows_ignored,
+    )
+
+
 def reorder_categories(
     session: Session,
     *,
@@ -1119,6 +1267,267 @@ def update_category(
         conflict_message="分类保存失败，请刷新后重试。",
     )
     return _category_response(row)
+
+
+def _category_delete_scope(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    category: ProductCategoryRow,
+) -> list[ProductCategoryRow]:
+    children = repository.list_child_categories(
+        session,
+        tenant_id=tenant_id,
+        parent_id=category.id,
+    )
+    return [category, *children]
+
+
+def _category_delete_counts(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    categories: list[ProductCategoryRow],
+) -> tuple[int, list[UUID], int]:
+    category_ids = [row.id for row in categories]
+    affected_product_count = int(
+        session.scalar(
+            select(func.count(ProductRow.id)).where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.category_id.in_(category_ids),
+            )
+        )
+        or 0
+    )
+    attribute_definition_ids = list(
+        session.scalars(
+            select(AttributeDefinitionRow.id).where(
+                AttributeDefinitionRow.tenant_id == tenant_id,
+                AttributeDefinitionRow.category_id.in_(category_ids),
+            )
+        ).all()
+    )
+    attribute_value_count = (
+        int(
+            session.scalar(
+                select(func.count(ProductAttributeRow.id)).where(
+                    ProductAttributeRow.tenant_id == tenant_id,
+                    ProductAttributeRow.attribute_definition_id.in_(
+                        attribute_definition_ids
+                    ),
+                )
+            )
+            or 0
+        )
+        if attribute_definition_ids
+        else 0
+    )
+    return affected_product_count, attribute_definition_ids, attribute_value_count
+
+
+def get_category_delete_impact(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    category_id: UUID,
+) -> CategoryDeleteImpactResponse:
+    _require(permissions, "product.edit")
+    category = repository.get_category(
+        session,
+        tenant_id=tenant_id,
+        category_id=category_id,
+    )
+    if category is None:
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND",
+            "分类不存在或已经被删除。",
+            kind="not_found",
+        )
+    categories = _category_delete_scope(
+        session,
+        tenant_id=tenant_id,
+        category=category,
+    )
+    affected_product_count, attribute_definition_ids, attribute_value_count = (
+        _category_delete_counts(
+            session,
+            tenant_id=tenant_id,
+            categories=categories,
+        )
+    )
+    return CategoryDeleteImpactResponse(
+        category_id=category.id,
+        category_name=category.name,
+        is_primary=category.parent_id is None,
+        child_category_count=len(categories) - 1,
+        affected_product_count=affected_product_count,
+        attribute_definition_count=len(attribute_definition_ids),
+        attribute_value_count=attribute_value_count,
+    )
+
+
+def delete_category(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    category_id: UUID,
+    expected_version: int,
+) -> CategoryDeleteResponse:
+    _require(permissions, "product.edit")
+    category = repository.get_category(
+        session,
+        tenant_id=tenant_id,
+        category_id=category_id,
+    )
+    if category is None:
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND",
+            "分类不存在或已经被删除。",
+            kind="not_found",
+        )
+    if category.version != expected_version:
+        raise ApplicationError(
+            "CATEGORY_VERSION_CONFLICT",
+            "分类已被其他人修改，请刷新后重试。",
+            kind="conflict",
+        )
+    categories = _category_delete_scope(
+        session,
+        tenant_id=tenant_id,
+        category=category,
+    )
+    category_ids = [row.id for row in categories]
+    child_ids = [row.id for row in categories[1:]]
+    affected_product_count, attribute_definition_ids, attribute_value_count = (
+        _category_delete_counts(
+            session,
+            tenant_id=tenant_id,
+            categories=categories,
+        )
+    )
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id
+        )
+    )
+    roots = repository.list_sibling_categories(
+        session,
+        tenant_id=tenant_id,
+        parent_id=None,
+    )
+    all_products_position = max(
+        0,
+        int(profile.all_products_position or 0) if profile else 0,
+    )
+    if category.parent_id is None:
+        deleted_root_index = next(
+            (index for index, root in enumerate(roots) if root.id == category.id),
+            len(roots),
+        )
+        if deleted_root_index < all_products_position:
+            all_products_position -= 1
+        all_products_position = min(
+            all_products_position,
+            max(0, len(roots) - 1),
+        )
+        if profile is not None:
+            profile.all_products_position = all_products_position
+    else:
+        all_products_position = min(all_products_position, len(roots))
+
+    now = utcnow()
+    before = {
+        "category": _category_response(category).model_dump(mode="json"),
+        "children": [
+            _category_response(child).model_dump(mode="json")
+            for child in categories[1:]
+        ],
+    }
+    try:
+        session.execute(
+            update(ProductRow)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.category_id.in_(category_ids),
+            )
+            .values(
+                category_id=None,
+                search_document_version=0,
+                updated_at=now,
+            )
+        )
+        if attribute_definition_ids:
+            session.execute(
+                update(ProductAttributeRow)
+                .where(
+                    ProductAttributeRow.tenant_id == tenant_id,
+                    ProductAttributeRow.attribute_definition_id.in_(
+                        attribute_definition_ids
+                    ),
+                )
+                .values(attribute_definition_id=None, updated_at=now)
+            )
+            session.execute(
+                delete(AttributeDefinitionRow).where(
+                    AttributeDefinitionRow.tenant_id == tenant_id,
+                    AttributeDefinitionRow.id.in_(attribute_definition_ids),
+                )
+            )
+        if child_ids:
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == tenant_id,
+                    ProductCategoryRow.id.in_(child_ids),
+                )
+            )
+        session.execute(
+            delete(ProductCategoryRow).where(
+                ProductCategoryRow.tenant_id == tenant_id,
+                ProductCategoryRow.id == category.id,
+            )
+        )
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=None,
+                entity_type="CATEGORY",
+                entity_id=str(category.id),
+                action="category.deleted",
+                before=before,
+                after={
+                    "deleted_category_count": len(categories),
+                    "unclassified_product_count": affected_product_count,
+                    "deleted_attribute_definition_count": len(
+                        attribute_definition_ids
+                    ),
+                    "detached_attribute_value_count": attribute_value_count,
+                },
+                actor_membership_id=membership_id,
+            )
+        )
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "CATEGORY_DELETE_CONFLICT",
+            "分类仍被其他数据引用，请刷新后重试。",
+            kind="conflict",
+        ) from exc
+    _commit(
+        session,
+        conflict_code="CATEGORY_DELETE_CONFLICT",
+        conflict_message="分类删除失败，请刷新后重试。",
+    )
+    return CategoryDeleteResponse(
+        deleted_category_count=len(categories),
+        unclassified_product_count=affected_product_count,
+        deleted_attribute_definition_count=len(attribute_definition_ids),
+        detached_attribute_value_count=attribute_value_count,
+        all_products_position=all_products_position,
+    )
 
 
 def list_attribute_definitions(
@@ -1537,6 +1946,123 @@ def batch_delete_skus(
         "failed_count": len(failed_items),
         "total_count": len(requested_ids),
         "failed_items": failed_items,
+    }
+
+
+def delete_all_products(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+) -> dict[str, int]:
+    """Soft-delete one tenant's complete catalog with set-based updates."""
+
+    _require(permissions, "product.edit")
+    deleted_sku_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(SkuRow)
+            .where(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+    deleted_product_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProductRow)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.deleted_at.is_(None),
+                ProductRow.status != "ARCHIVED",
+            )
+        )
+        or 0
+    )
+    if deleted_sku_count == 0 and deleted_product_count == 0:
+        return {"deleted_product_count": 0, "deleted_sku_count": 0}
+
+    now = utcnow()
+    session.execute(
+        update(PublicCatalogOfferRow)
+        .where(
+            PublicCatalogOfferRow.tenant_id == tenant_id,
+            PublicCatalogOfferRow.deleted_at.is_(None),
+            PublicCatalogOfferRow.publication_status != "SUSPENDED",
+        )
+        .values(publication_status="SUSPENDED", updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    session.execute(
+        update(SkuRow)
+        .where(
+            SkuRow.tenant_id == tenant_id,
+            SkuRow.deleted_at.is_(None),
+        )
+        .values(
+            status="ARCHIVED",
+            deleted_at=now,
+            updated_at=now,
+            updated_by_user_id=user_id,
+            version=SkuRow.version + 1,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    session.execute(
+        update(ProductRow)
+        .where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.deleted_at.is_(None),
+            ProductRow.status != "ARCHIVED",
+        )
+        .values(
+            status="ARCHIVED",
+            archived_at=now,
+            search_document_version=0,
+            current_version=ProductRow.current_version + 1,
+            updated_by=user_id,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    session.execute(
+        update(SupplierRow)
+        .where(
+            SupplierRow.tenant_id == tenant_id,
+            SupplierRow.deleted_at.is_(None),
+            SupplierRow.active_skus != 0,
+        )
+        .values(active_skus=0, updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=None,
+            entity_type="PRODUCT",
+            entity_id=str(tenant_id),
+            action="catalog.deleted_all",
+            before={
+                "product_count": deleted_product_count,
+                "sku_count": deleted_sku_count,
+            },
+            after={"product_count": 0, "sku_count": 0},
+            actor_membership_id=membership_id,
+            occurred_at=now,
+        )
+    )
+    _commit(
+        session,
+        conflict_code="DELETE_ALL_PRODUCTS_FAILED",
+        conflict_message="全部商品删除失败，请刷新商品库后重试。",
+    )
+    return {
+        "deleted_product_count": deleted_product_count,
+        "deleted_sku_count": deleted_sku_count,
     }
 
 

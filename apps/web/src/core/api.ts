@@ -41,6 +41,9 @@ import type {
   PublicCatalogOffer,
   PublicQuoteDraft,
   PublicQuoteDraftSummary,
+  QuoteExcelTemplate,
+  QuoteExcelTemplateUpdate,
+  QuoteTemplateField,
   QuotationRecord,
   QuotationSummary,
   SalesOrder,
@@ -58,7 +61,9 @@ import type {
 } from "./types";
 import { buildPasswordChangePayload } from "./accountPassword";
 import { buildPasswordLoginPayload } from "./authCredentials";
+import { normalizeAnnouncementTickerSpeed } from "./announcementSpeed";
 import { bumpPublicCatalogRevision } from "../lib/publicCatalogRevision";
+import { resetStorefrontAnnouncementVisit } from "../lib/storefrontAnnouncementVisit";
 
 const CSRF_STORAGE_KEY = "atc.csrfToken";
 let accessToken: string | undefined;
@@ -79,6 +84,7 @@ function resolveApiBase() {
 
 const API_BASE = resolveApiBase();
 export const PRODUCT_TEMPLATE_DOWNLOAD_URL = `${API_BASE}/product-template.xlsx`;
+export const CATEGORY_TEMPLATE_DOWNLOAD_URL = `${API_BASE}/category-template.xlsx`;
 
 export class CoreApiError extends Error {
   status: number;
@@ -193,6 +199,7 @@ export function getCoreAccessToken() {
 
 export function clearCoreAuthSession() {
   accessToken = undefined;
+  resetStorefrontAnnouncementVisit();
   authGeneration += 1;
   getRequestsInFlight.clear();
   getResponseCache.clear();
@@ -844,10 +851,6 @@ export async function detectFile(file: File) {
   }
 }
 
-export async function listImports() {
-  return (await request<ApiImportJob[]>("/imports")).map(mapImport);
-}
-
 export async function getImport(jobId: string) {
   return mapImport(await request<ApiImportJob>(`/imports/${encodeURIComponent(jobId)}`));
 }
@@ -1149,6 +1152,26 @@ export async function batchDeleteSkus(skuIds: string[]): Promise<SkuBatchOperati
   };
 }
 
+export interface ProductDeleteAllResult {
+  deletedProductCount: number;
+  deletedSkuCount: number;
+}
+
+export async function deleteAllProducts(password: string): Promise<ProductDeleteAllResult> {
+  const row = await request<{
+    deleted_product_count: number;
+    deleted_sku_count: number;
+  }>("/product-center/products/delete-all", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+  bumpPublicCatalogRevision();
+  return {
+    deletedProductCount: row.deleted_product_count,
+    deletedSkuCount: row.deleted_sku_count,
+  };
+}
+
 interface ApiKnowledgeIndexStatus {
   total_products: number;
   indexed_products: number;
@@ -1399,8 +1422,117 @@ export async function upsertPublicCatalogOffer(
 interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; display_color?: string | null; status: string; sort_order: number; version: number }
 interface ApiAttributeDefinition { id: string; category_id?: string | null; attribute_key: string; display_name: string; data_type: AttributeDefinition["dataType"]; unit_code?: string | null; enum_values?: string[] | null; is_required: boolean; is_variant: boolean; is_filterable: boolean; is_matchable: boolean; status: string; version: number }
 
+interface ApiCategoryImportResult {
+  processed_rows: number;
+  primary_created: number;
+  secondary_created: number;
+  primary_existing: number;
+  secondary_existing: number;
+  duplicate_rows_ignored: number;
+  blank_rows_ignored: number;
+}
+
+interface ApiCategoryDeleteImpact {
+  category_id: string;
+  category_name: string;
+  is_primary: boolean;
+  child_category_count: number;
+  affected_product_count: number;
+  attribute_definition_count: number;
+  attribute_value_count: number;
+}
+
+interface ApiCategoryDeleteResult {
+  deleted_category_count: number;
+  unclassified_product_count: number;
+  deleted_attribute_definition_count: number;
+  detached_attribute_value_count: number;
+  all_products_position: number;
+}
+
+export interface CategoryImportResult {
+  processedRows: number;
+  primaryCreated: number;
+  secondaryCreated: number;
+  primaryExisting: number;
+  secondaryExisting: number;
+  duplicateRowsIgnored: number;
+  blankRowsIgnored: number;
+}
+
+export interface CategoryDeleteImpact {
+  categoryId: string;
+  categoryName: string;
+  isPrimary: boolean;
+  childCategoryCount: number;
+  affectedProductCount: number;
+  attributeDefinitionCount: number;
+  attributeValueCount: number;
+}
+
+export interface CategoryDeleteResult {
+  deletedCategoryCount: number;
+  unclassifiedProductCount: number;
+  deletedAttributeDefinitionCount: number;
+  detachedAttributeValueCount: number;
+  allProductsPosition: number;
+}
+
 export async function listCategories(): Promise<ProductCategory[]> {
   return (await request<ApiCategory[]>("/categories")).map(mapCategory);
+}
+
+export async function importCategories(file: File): Promise<CategoryImportResult> {
+  const body = new FormData();
+  body.append("file", file);
+  const row = await request<ApiCategoryImportResult>("/categories/import", {
+    method: "POST",
+    body,
+  });
+  bumpPublicCatalogRevision();
+  return {
+    processedRows: row.processed_rows,
+    primaryCreated: row.primary_created,
+    secondaryCreated: row.secondary_created,
+    primaryExisting: row.primary_existing,
+    secondaryExisting: row.secondary_existing,
+    duplicateRowsIgnored: row.duplicate_rows_ignored,
+    blankRowsIgnored: row.blank_rows_ignored,
+  };
+}
+
+export async function getCategoryDeleteImpact(categoryId: string): Promise<CategoryDeleteImpact> {
+  const row = await request<ApiCategoryDeleteImpact>(
+    `/categories/${encodeURIComponent(categoryId)}/delete-impact`,
+    { cache: "no-store" },
+  );
+  return {
+    categoryId: row.category_id,
+    categoryName: row.category_name,
+    isPrimary: row.is_primary,
+    childCategoryCount: row.child_category_count,
+    affectedProductCount: row.affected_product_count,
+    attributeDefinitionCount: row.attribute_definition_count,
+    attributeValueCount: row.attribute_value_count,
+  };
+}
+
+export async function deleteCategory(
+  categoryId: string,
+  expectedVersion: number,
+): Promise<CategoryDeleteResult> {
+  const row = await request<ApiCategoryDeleteResult>(
+    `/categories/${encodeURIComponent(categoryId)}?expected_version=${expectedVersion}`,
+    { method: "DELETE" },
+  );
+  bumpPublicCatalogRevision();
+  return {
+    deletedCategoryCount: row.deleted_category_count,
+    unclassifiedProductCount: row.unclassified_product_count,
+    deletedAttributeDefinitionCount: row.deleted_attribute_definition_count,
+    detachedAttributeValueCount: row.detached_attribute_value_count,
+    allProductsPosition: row.all_products_position,
+  };
 }
 
 interface ApiCategoryLayout {
@@ -1613,14 +1745,22 @@ export async function getStorefrontAnalytics(
 
 interface ApiStorefrontAnnouncement {
   id: string;
-  title: string;
+  title?: string | null;
   display_type: "TICKER" | "MODAL";
   ticker_text?: string | null;
   content_blocks: AnnouncementContentBlock[];
   starts_at: string;
   ends_at: string;
-  repeat_interval_hours: number;
+  ticker_speed_px_per_second?: number | null;
   publication_status: "DRAFT" | "PUBLISHED" | "PAUSED";
+  related_skus: Array<{
+    id: string;
+    product_id: string;
+    sku_code: string;
+    name: string;
+    product_name: string;
+    is_public: boolean;
+  }>;
   version: number;
   is_active: boolean;
   created_at: string;
@@ -1632,14 +1772,24 @@ function mapStorefrontAnnouncement(
 ): StorefrontAnnouncement {
   return {
     id: row.id,
-    title: row.title,
+    title: defined(row.title),
     displayType: row.display_type,
     tickerText: defined(row.ticker_text),
     contentBlocks: row.content_blocks || [],
     startsAt: row.starts_at,
     endsAt: row.ends_at,
-    repeatIntervalHours: row.repeat_interval_hours,
+    tickerSpeedPxPerSecond: normalizeAnnouncementTickerSpeed(
+      row.ticker_speed_px_per_second,
+    ),
     publicationStatus: row.publication_status,
+    relatedSkus: (row.related_skus || []).map((sku) => ({
+      id: sku.id,
+      productId: sku.product_id,
+      skuCode: sku.sku_code,
+      name: sku.name,
+      productName: sku.product_name,
+      isPublic: sku.is_public,
+    })),
     version: row.version,
     isActive: row.is_active,
     createdAt: row.created_at,
@@ -1656,8 +1806,11 @@ function announcementBody(input: AnnouncementPayload) {
     starts_at: input.startsAt,
     ends_at: input.endsAt || null,
     duration_days: input.durationDays ?? null,
-    repeat_interval_hours: input.repeatIntervalHours,
+    ticker_speed_px_per_second: normalizeAnnouncementTickerSpeed(
+      input.tickerSpeedPxPerSecond,
+    ),
     publication_status: input.publicationStatus,
+    related_sku_ids: input.relatedSkuIds,
   };
 }
 
@@ -1810,7 +1963,7 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
   return rows.map((row) => ({ id: row.id, quotationNumber: row.quotation_number, customerName: row.customer_name, currency: row.currency, status: row.status, currentVersion: row.current_version, totalAmount: Number(row.total_amount), updatedAt: row.updated_at }));
 }
 
-interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
+interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
 interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; currency: string; total_amount: number | string; valid_until: string; created_at: string }
 
@@ -1833,7 +1986,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     contentHash: row.content_hash,
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
-    items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, position: item.position, quantity: Number(item.quantity), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
+    items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, position: item.position, quantity: Number(item.quantity), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
   };
 }
 
@@ -1844,6 +1997,120 @@ export async function listPublicQuoteDrafts(): Promise<PublicQuoteDraftSummary[]
 
 export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(`/public-quote-drafts/${encodeURIComponent(draftId)}`));
+}
+
+interface ApiQuoteExcelColumn {
+  key: string;
+  index: number;
+  header: string;
+  samples: string[];
+  suggested_field?: QuoteTemplateField | null;
+  mapped_field?: QuoteTemplateField | null;
+}
+
+interface ApiQuoteExcelTemplate {
+  id: string;
+  name: string;
+  original_filename: string;
+  byte_size: number;
+  sheet_names: string[];
+  sheet_name: string;
+  header_row: number;
+  data_start_row: number;
+  data_end_row: number;
+  columns: ApiQuoteExcelColumn[];
+  column_mappings: Record<string, QuoteTemplateField>;
+  is_default: boolean;
+  is_ready: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapQuoteExcelTemplate(row: ApiQuoteExcelTemplate): QuoteExcelTemplate {
+  return {
+    id: row.id,
+    name: row.name,
+    originalFilename: row.original_filename,
+    byteSize: row.byte_size,
+    sheetNames: row.sheet_names,
+    sheetName: row.sheet_name,
+    headerRow: row.header_row,
+    dataStartRow: row.data_start_row,
+    dataEndRow: row.data_end_row,
+    columns: row.columns.map((column) => ({
+      key: column.key,
+      index: column.index,
+      header: column.header,
+      samples: column.samples ?? [],
+      suggestedField: defined(column.suggested_field),
+      mappedField: defined(column.mapped_field),
+    })),
+    columnMappings: row.column_mappings ?? {},
+    isDefault: row.is_default,
+    isReady: row.is_ready,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function listQuoteExcelTemplates(): Promise<QuoteExcelTemplate[]> {
+  const response = await request<{ items: ApiQuoteExcelTemplate[]; total: number }>(
+    "/quote-excel-templates",
+  );
+  return response.items.map(mapQuoteExcelTemplate);
+}
+
+export async function uploadQuoteExcelTemplate(
+  file: File,
+  name?: string,
+): Promise<QuoteExcelTemplate> {
+  const body = new FormData();
+  body.append("file", file);
+  if (name?.trim()) body.append("name", name.trim());
+  return mapQuoteExcelTemplate(await request<ApiQuoteExcelTemplate>(
+    "/quote-excel-templates",
+    { method: "POST", body },
+  ));
+}
+
+export async function reparseQuoteExcelTemplate(
+  templateId: string,
+  sheetName: string,
+  headerRow: number,
+): Promise<QuoteExcelTemplate> {
+  return mapQuoteExcelTemplate(await request<ApiQuoteExcelTemplate>(
+    `/quote-excel-templates/${encodeURIComponent(templateId)}/reparse`,
+    {
+      method: "POST",
+      body: JSON.stringify({ sheet_name: sheetName, header_row: headerRow }),
+    },
+  ));
+}
+
+export async function updateQuoteExcelTemplate(
+  templateId: string,
+  input: QuoteExcelTemplateUpdate,
+): Promise<QuoteExcelTemplate> {
+  return mapQuoteExcelTemplate(await request<ApiQuoteExcelTemplate>(
+    `/quote-excel-templates/${encodeURIComponent(templateId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        name: input.name,
+        column_mappings: input.columnMappings,
+        is_default: input.isDefault,
+      }),
+    },
+  ));
+}
+
+export async function deleteQuoteExcelTemplate(templateId: string): Promise<void> {
+  await request<void>(
+    `/quote-excel-templates/${encodeURIComponent(templateId)}`,
+    { method: "DELETE" },
+  );
 }
 
 interface ApiWarehouse {

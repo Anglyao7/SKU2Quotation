@@ -9,8 +9,8 @@ from ..domain.errors import ApplicationError
 from ..identity_models import TenantRow
 from ..inventory_models import WarehouseRow
 from ..public_catalog_models import TenantPublicProfileRow
-from ..repositories.public_catalog_repository import find_published_profile_by_slug
 from ..services.auth.dependencies import RequestContext
+from ..services.storefront_paths import allocate_storefront_slug
 from ..tenant_slugs import storefront_slug_from_name
 
 
@@ -132,29 +132,17 @@ def update_merchant_settings(
         )
     if request.name is not None:
         try:
-            new_slug = storefront_slug_from_name(request.name)
+            base_slug = storefront_slug_from_name(request.name)
         except ValueError as exc:
             raise ApplicationError(
                 "MERCHANT_NAME_INVALID",
                 "Merchant name must contain at least one letter or number.",
             ) from exc
-
-        slug_owner = session.scalar(
-            select(TenantRow).where(
-                TenantRow.slug == new_slug,
-                TenantRow.id != tenant.id,
-                TenantRow.deleted_at.is_(None),
-            )
+        new_slug = allocate_storefront_slug(
+            session,
+            base=base_slug,
+            exclude_tenant_id=tenant.id,
         )
-        public_owner = find_published_profile_by_slug(session, slug=new_slug)
-        if slug_owner is not None or (
-            public_owner is not None and public_owner.tenant_id != tenant.id
-        ):
-            raise ApplicationError(
-                "STOREFRONT_PATH_EXISTS",
-                "A merchant with the same storefront path already exists.",
-                kind="conflict",
-            )
 
         profile = session.scalar(
             select(TenantPublicProfileRow).where(

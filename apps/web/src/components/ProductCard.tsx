@@ -1,53 +1,71 @@
-import { Button, Card, IconButton, Text } from "@radix-ui/themes";
-import { Check, Image as ImageIcon, Minus, Plus, Trash } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { Button, Card, Text } from "@radix-ui/themes";
+import { ArrowRight, Image as ImageIcon, Stack } from "@phosphor-icons/react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { money } from "../lib/format";
 import { storefrontText } from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
-import type { Sku, StorefrontLocale } from "../types";
+import type { StoreProduct, StorefrontLocale } from "../types";
 
 export function ProductCard({
-  sku,
+  product,
   detailsHref,
-  quantity,
-  onAdd,
-  onDecrease,
   onOpenDetails,
+  onPrefetchDetails,
   locale,
 }: {
-  sku: Sku;
+  product: StoreProduct;
   detailsHref: string;
-  quantity: number;
-  onAdd: () => void;
-  onDecrease: () => void;
   onOpenDetails: () => void;
+  onPrefetchDetails: () => void;
   locale: StorefrontLocale;
 }) {
-  const [imageFailed, setImageFailed] = useState(!sku.image_url);
-  const displayTag = sku.display_tag || sku.tags[0];
+  const [imageFailed, setImageFailed] = useState(!product.image_url);
+  const prefetchedDetails = useRef(false);
+  const displayTag = product.display_tag || product.tags[0];
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
+  const priceFrom = Number(product.price_from);
+  const priceTo = Number(product.price_to);
+  const priceLabel = (
+    Number.isFinite(priceFrom)
+    && Number.isFinite(priceTo)
+    && Math.abs(priceFrom - priceTo) > 0.0001
+  )
+    ? `${money(product.price_from, product.currency)} – ${money(product.price_to, product.currency)}`
+    : money(product.price_from, product.currency);
 
   useEffect(() => {
-    setImageFailed(!sku.image_url);
-  }, [sku.image_url]);
+    setImageFailed(!product.image_url);
+  }, [product.image_url]);
+
+  const prefetchDetails = () => {
+    if (prefetchedDetails.current) return;
+    prefetchedDetails.current = true;
+    onPrefetchDetails();
+  };
 
   return (
-    <Card className={`sku-card${quantity > 0 ? " is-selected" : ""}`} variant="surface">
+    <Card
+      className="sku-card product-card"
+      variant="surface"
+      onPointerEnter={prefetchDetails}
+      onPointerDown={prefetchDetails}
+      onFocus={prefetchDetails}
+    >
       <Link
         to={detailsHref}
         state={{ fromStorefrontCatalog: true }}
         className="sku-image-wrap sku-detail-link"
-        aria-label={t("查看 {name} 商品详情", { name: sku.name })}
+        aria-label={t("查看 {name} 商品详情", { name: product.name })}
         onClick={onOpenDetails}
       >
-        {sku.image_url && !imageFailed ? (
+        {product.image_url && !imageFailed ? (
           <img
             className="sku-image"
-            src={sku.image_url}
-            alt={sku.name}
+            src={product.image_url}
+            alt={product.name}
             loading="lazy"
             onError={() => setImageFailed(true)}
           />
@@ -57,13 +75,12 @@ export function ProductCard({
         {displayTag && (
           <span
             className="sku-glass-tag"
-            style={tagGlassStyle(displayTag, sku.tag_color)}
+            style={tagGlassStyle(displayTag, product.tag_color)}
             title={displayTag}
           >
             <span>{displayTag}</span>
           </span>
         )}
-        {quantity > 0 && <span className="cart-count-badge"><Check size={13} weight="bold" />{t("已选 {quantity}", { quantity })}</span>}
       </Link>
       <div className="sku-card-body">
         <Text as="div" size="3" weight="medium" className="sku-name">
@@ -72,36 +89,36 @@ export function ProductCard({
             state={{ fromStorefrontCatalog: true }}
             onClick={onOpenDetails}
           >
-            {sku.name}
+            {product.name}
           </Link>
         </Text>
+        <div className="product-card-meta">
+          <Stack size={15} weight="duotone" />
+          <span>
+            {product.sku_count > 1
+              ? t("{count} 个可选 SKU", { count: product.sku_count })
+              : t("1 个 SKU")}
+          </span>
+        </div>
         <div className="sku-card-footer">
           <div className="sku-price-block">
-            <Text as="div" size="1" color="gray">{t("参考单价")}</Text>
-            <Text as="div" size="4" weight="bold" className="price-text">{money(sku.price, sku.currency)}</Text>
+            <Text as="div" size="1" color="gray">
+              {product.sku_count > 1 ? t("参考价格区间") : t("参考单价")}
+            </Text>
+            <Text as="div" size="4" weight="bold" className="price-text">
+              {priceLabel}
+            </Text>
           </div>
-          {quantity > 0 ? (
-            <div className="sku-quantity-control" aria-label={t("{name} 已选数量", { name: sku.name })}>
-              <IconButton
-                size="2"
-                variant="soft"
-                color="gray"
-                onClick={onDecrease}
-                aria-label={t("减少 {name} 数量", { name: sku.name })}
-              >
-                {quantity <= 1 ? <Trash size={16} /> : <Minus size={16} />}
-              </IconButton>
-              <span><small>{t("已选")}</small><strong>{quantity}</strong></span>
-              <IconButton size="2" onClick={onAdd} aria-label={t("增加 {name} 数量", { name: sku.name })}>
-                <Plus size={16} />
-              </IconButton>
-            </div>
-          ) : (
-            <Button size="2" className="sku-add-button" onClick={onAdd} aria-label={t("将 {name} 加入报价清单", { name: sku.name })}>
-              <Plus size={17} />
-              <span className="sku-add-label">{t("加入清单")}</span>
-            </Button>
-          )}
+          <Button asChild size="2" className="sku-add-button">
+            <Link
+              to={detailsHref}
+              state={{ fromStorefrontCatalog: true }}
+              onClick={onOpenDetails}
+            >
+              <span className="sku-add-label">{t("查看规格")}</span>
+              <ArrowRight size={16} />
+            </Link>
+          </Button>
         </div>
       </div>
     </Card>

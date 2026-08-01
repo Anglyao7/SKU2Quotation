@@ -57,7 +57,7 @@ class AnnouncementContentBlock(BaseModel):
 
 
 class AnnouncementWriteRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: str | None = Field(default=None, max_length=200)
     display_type: AnnouncementDisplayType
     ticker_text: str | None = Field(default=None, max_length=2_000)
     content_blocks: list[AnnouncementContentBlock] = Field(
@@ -67,8 +67,9 @@ class AnnouncementWriteRequest(BaseModel):
     starts_at: datetime
     ends_at: datetime | None = None
     duration_days: int | None = Field(default=None, ge=1, le=365)
-    repeat_interval_hours: int = Field(default=24, ge=1, le=720)
+    ticker_speed_px_per_second: int = Field(default=60, ge=20, le=160)
     publication_status: AnnouncementStatus = "DRAFT"
+    related_sku_ids: list[UUID] = Field(default_factory=list, max_length=20)
 
     @field_validator("title", "ticker_text", mode="before")
     @classmethod
@@ -77,6 +78,11 @@ class AnnouncementWriteRequest(BaseModel):
             return value
         normalized = value.strip()
         return normalized or None
+
+    @field_validator("related_sku_ids")
+    @classmethod
+    def unique_related_skus(cls, value: list[UUID]) -> list[UUID]:
+        return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
     def validate_announcement(self) -> "AnnouncementWriteRequest":
@@ -97,16 +103,26 @@ class AnnouncementWriteRequest(BaseModel):
         return self
 
 
+class AnnouncementRelatedSkuResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    sku_code: str
+    name: str
+    product_name: str
+    is_public: bool
+
+
 class AnnouncementResponse(BaseModel):
     id: UUID
-    title: str
+    title: str | None
     display_type: AnnouncementDisplayType
     ticker_text: str | None
     content_blocks: list[AnnouncementContentBlock]
     starts_at: datetime
     ends_at: datetime
-    repeat_interval_hours: int
+    ticker_speed_px_per_second: int
     publication_status: AnnouncementStatus
+    related_skus: list[AnnouncementRelatedSkuResponse] = Field(default_factory=list)
     version: int
     is_active: bool
     created_at: datetime
@@ -120,11 +136,12 @@ class AnnouncementListResponse(BaseModel):
 
 class PublicAnnouncementResponse(BaseModel):
     id: UUID
-    title: str
+    title: str | None
     display_type: AnnouncementDisplayType
     ticker_text: str | None
     content_blocks: list[AnnouncementContentBlock]
     starts_at: datetime
     ends_at: datetime
-    repeat_interval_hours: int
+    ticker_speed_px_per_second: int
     version: int
+    related_skus: list[AnnouncementRelatedSkuResponse] = Field(default_factory=list)

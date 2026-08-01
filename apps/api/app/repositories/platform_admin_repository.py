@@ -18,10 +18,6 @@ def get_tenant(session: Session, tenant_id: UUID) -> TenantRow | None:
     return session.get(TenantRow, tenant_id)
 
 
-def find_tenant_by_slug(session: Session, slug: str) -> TenantRow | None:
-    return session.scalar(select(TenantRow).where(TenantRow.slug == slug))
-
-
 def get_public_profile(session: Session, tenant_id: UUID) -> TenantPublicProfileRow | None:
     return session.get(TenantPublicProfileRow, tenant_id)
 

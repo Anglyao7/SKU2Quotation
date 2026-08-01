@@ -34,6 +34,9 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftResponse,
     PublicQuoteDraftSummary,
     PublicCategoryOption,
+    PublicProductDetail,
+    PublicProductPage,
+    PublicProductSummary,
     PublicSkuPage,
     PublicSkuResponse,
     PublicStoreResponse,
@@ -56,6 +59,7 @@ from ..services.translation import (
 )
 from ..services.translation_memory import translate_values_with_memory
 from . import announcements as announcement_use_cases
+from . import quote_templates as quote_template_use_cases
 
 
 MONEY = Decimal("0.01")
@@ -69,6 +73,17 @@ class CustomerQuoteSubmitter:
     membership_id: UUID
     tenant_id: UUID
     user_id: UUID
+
+
+@dataclass(frozen=True)
+class PublicProductTranslation:
+    name: str
+    description: str | None
+    category: str | None
+    tags: tuple[str, ...]
+    display_tag: str | None
+    specifications: dict[str, str]
+    complete: bool
 
 
 def optional_customer_quote_submitter(
@@ -394,6 +409,11 @@ def _sku_response(
         image_url=_public_image_url(image, slug=slug),
         product_version=product.current_version,
         sku_version=sku.version,
+        specification=(
+            str((sku.option_values or {}).get("规格名称") or "").strip()
+            or None
+        ),
+        option_values=dict(sku.option_values or {}),
         source_locale=source_locale,
         locale=locale,
         translation_status=(
@@ -601,6 +621,271 @@ def _live_category_labels(
     }
 
 
+def _group_catalog_rows(
+    rows: list[object],
+    *,
+    product_ids: list[UUID] | None = None,
+) -> list[list[object]]:
+    grouped: dict[UUID, list[object]] = {}
+    for row in rows:
+        grouped.setdefault(row[2].id, []).append(row)
+    ordered_ids = product_ids or list(grouped)
+    return [grouped[product_id] for product_id in ordered_ids if product_id in grouped]
+
+
+def _product_group_tags(rows: list[object]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            str(tag).strip()
+            for row in rows
+            for tag in (row[0].tags or [])
+            if str(tag).strip()
+        )
+    )
+
+
+def _product_group_display_tag(
+    rows: list[object],
+    *,
+    tags: tuple[str, ...],
+) -> str | None:
+    tag_lookup = {tag.casefold(): tag for tag in tags}
+    return next(
+        (
+            tag_lookup.get(str(row[0].display_tag or "").strip().casefold())
+            for row in rows
+            if str(row[0].display_tag or "").strip()
+            and tag_lookup.get(
+                str(row[0].display_tag or "").strip().casefold()
+            )
+        ),
+        tags[0] if tags else None,
+    )
+
+
+def _live_product_translation_map(
+    groups: list[list[object]],
+    *,
+    tenant_id: UUID,
+    translator: TranslationProvider | None,
+    source_locale: str,
+    target_locale: str,
+) -> dict[UUID, PublicProductTranslation]:
+    if translator is None or not groups:
+        return {}
+    translation_values: list[str] = []
+    sources: list[dict[str, object]] = []
+    for rows in groups:
+        _offer, _sku, product, category = rows[0]
+        tags = _product_group_tags(rows)
+        display_tag = _product_group_display_tag(rows, tags=tags)
+        category_segments = [
+            segment.strip()
+            for segment in _category_path(category)
+            .replace("／", "/")
+            .split("/")
+            if segment.strip()
+        ]
+        description_parts: list[tuple[str, str, bool]] = []
+        for raw_line in str(product.description or "").splitlines(keepends=True):
+            if raw_line.endswith("\r\n"):
+                content, ending = raw_line[:-2], "\r\n"
+            elif raw_line.endswith(("\r", "\n")):
+                content, ending = raw_line[:-1], raw_line[-1:]
+            else:
+                content, ending = raw_line, ""
+            needs_translation = bool(_CJK_TEXT_PATTERN.search(content))
+            description_parts.append((content, ending, needs_translation))
+            if needs_translation:
+                translation_values.append(content)
+        specifications = tuple(
+            dict.fromkeys(
+                str((row[1].option_values or {}).get("规格名称") or "").strip()
+                for row in rows
+                if str(
+                    (row[1].option_values or {}).get("规格名称") or ""
+                ).strip()
+            )
+        )
+        values = [
+            str(product.name).strip(),
+            *category_segments,
+            *tags,
+            *specifications,
+        ]
+        translation_values.extend(
+            value for value in values if _CJK_TEXT_PATTERN.search(value)
+        )
+        sources.append(
+            {
+                "product_id": product.id,
+                "name": str(product.name).strip(),
+                "description": str(product.description or "").strip() or None,
+                "description_parts": description_parts,
+                "category_segments": category_segments,
+                "tags": tags,
+                "display_tag": display_tag,
+                "specifications": specifications,
+            }
+        )
+
+    translated_values = translate_values_with_memory(
+        tenant_id=tenant_id,
+        translator=translator,
+        values=list(dict.fromkeys(translation_values)),
+        source_locale=source_locale,
+        target_locale=target_locale,
+    )
+    results: dict[UUID, PublicProductTranslation] = {}
+    for source in sources:
+        name = str(source["name"])
+        description = source["description"]
+        description_parts = source["description_parts"]
+        category_segments = source["category_segments"]
+        tags = source["tags"]
+        display_tag = source["display_tag"]
+        specifications = source["specifications"]
+        translated_tags = tuple(
+            translated_values.get(tag, tag) for tag in tags
+        )
+        display_tag_index = next(
+            (
+                index
+                for index, tag in enumerate(tags)
+                if display_tag and tag.casefold() == display_tag.casefold()
+            ),
+            None,
+        )
+        required_values = [
+            value
+            for value in (
+                name,
+                *(
+                    content
+                    for content, _ending, needs_translation in description_parts
+                    if needs_translation
+                ),
+                *category_segments,
+                *tags,
+                *specifications,
+            )
+            if value and _CJK_TEXT_PATTERN.search(value)
+        ]
+        results[source["product_id"]] = PublicProductTranslation(
+            name=translated_values.get(name, name),
+            description=(
+                "".join(
+                    (
+                        translated_values.get(content, content)
+                        if needs_translation
+                        else content
+                    )
+                    + ending
+                    for content, ending, needs_translation in description_parts
+                )
+                if description is not None
+                else None
+            ),
+            category=(
+                "/".join(
+                    translated_values.get(segment, segment)
+                    for segment in category_segments
+                )
+                or None
+            ),
+            tags=translated_tags,
+            display_tag=(
+                translated_tags[display_tag_index]
+                if display_tag_index is not None
+                else translated_tags[0] if translated_tags else None
+            ),
+            specifications={
+                specification: translated_values.get(
+                    specification,
+                    specification,
+                )
+                for specification in specifications
+            },
+            complete=all(
+                value in translated_values for value in required_values
+            ),
+        )
+    return results
+
+
+def _product_summary_response(
+    rows: list[object],
+    *,
+    image: object | None,
+    slug: str,
+    category_color: str | None,
+    source_locale: str,
+    locale: str,
+    translation: PublicProductTranslation | None,
+) -> PublicProductSummary:
+    _offer, first_sku, product, category = rows[0]
+    tags = _product_group_tags(rows)
+    display_tag = _product_group_display_tag(rows, tags=tags)
+    translated = translation is not None and locale != source_locale
+    prices = [_money(Decimal(row[0].unit_price)) for row in rows]
+    currencies = [str(row[0].currency) for row in rows]
+    product_model = str(
+        (first_sku.option_values or {}).get("商品型号") or ""
+    ).strip()
+    public_product_code = (
+        product_model
+        or (
+            str(first_sku.sku_code)
+            if str(product.product_code).startswith(("TPL-", "TPLX-"))
+            else str(product.product_code)
+        )
+    )
+    tag_color = next(
+        (
+            str(row[0].tag_color)
+            for row in rows
+            if row[0].tag_color
+        ),
+        None,
+    )
+    return PublicProductSummary(
+        id=product.id,
+        product_code=public_product_code,
+        name=translation.name if translated else str(product.name),
+        description=(
+            translation.description
+            if translated
+            else str(product.description or "").strip() or None
+        ),
+        category=_category_path(category) or None,
+        category_label=(
+            translation.category
+            if translated
+            else _category_path(category) or None
+        ),
+        category_color=category_color,
+        tags=list(translation.tags if translated else tags),
+        display_tag=translation.display_tag if translated else display_tag,
+        tag_color=tag_color,
+        price_from=min(prices),
+        price_to=max(prices),
+        currency=currencies[0],
+        unit_code=product.default_unit or "piece",
+        image_url=_public_image_url(image, slug=slug),
+        sku_count=len({row[1].id for row in rows}),
+        product_version=product.current_version,
+        source_locale=source_locale,
+        locale=locale,
+        translation_status=(
+            "SOURCE"
+            if locale == source_locale
+            else "TRANSLATED"
+            if translation is not None and translation.complete
+            else "FALLBACK"
+        ),
+    )
+
+
 def _lexical_semantic_rows(rows: list[object], *, query: str) -> list[object]:
     normalized_query = query.casefold().strip()
     query_tokens = _retrieval_tokens(query, query=True)
@@ -740,6 +1025,348 @@ def _vector_semantic_rows(
             rank_by_product_id[row[2].id],
             str(row[1].sku_code).casefold(),
         ),
+    )
+
+
+def list_public_products(
+    session: Session,
+    *,
+    slug: str,
+    query: str,
+    category: str | None,
+    tags: list[str],
+    semantic: bool,
+    include_facets: bool,
+    page: int,
+    page_size: int,
+    locale: str | None = None,
+) -> PublicProductPage:
+    tenant, profile = _resolve_store(session, slug=slug)
+    source_locale = _normalized_locale(tenant.default_locale)
+    requested_locale = _normalized_locale(locale, default=source_locale)
+    now = utcnow()
+    wanted_tags = _normalize_tags(tags)
+    all_categories = (
+        repository.list_catalog_categories(session, tenant_id=tenant.id)
+        if include_facets
+        else []
+    )
+
+    if semantic and query.strip():
+        try:
+            candidate_rows = _vector_semantic_rows(
+                session,
+                tenant_id=tenant.id,
+                query=query,
+                now=now,
+                category=category,
+            )
+        except EmbeddingProviderError:
+            candidate_rows = _bounded_public_lexical_rows(
+                session,
+                tenant_id=tenant.id,
+                query=query,
+                now=now,
+                category=category,
+            )
+        if wanted_tags:
+            candidate_rows = [
+                row
+                for row in candidate_rows
+                if wanted_tags.issubset(
+                    {
+                        str(tag).strip().casefold()
+                        for tag in (row[0].tags or [])
+                    }
+                )
+            ]
+        matching_product_ids = list(
+            dict.fromkeys(row[2].id for row in candidate_rows)
+        )
+        total = len(matching_product_ids)
+        start = (page - 1) * page_size
+        selected_product_ids = matching_product_ids[start : start + page_size]
+    else:
+        total = repository.count_public_catalog_products(
+            session,
+            tenant_id=tenant.id,
+            now=now,
+            query=query,
+            category=category,
+            tags=wanted_tags,
+        )
+        selected_product_ids = repository.list_public_product_ids_page(
+            session,
+            tenant_id=tenant.id,
+            now=now,
+            query=query,
+            category=category,
+            tags=wanted_tags,
+            page=page,
+            page_size=page_size,
+        )
+
+    selected_rows = repository.list_public_catalog_rows_by_product_ids(
+        session,
+        tenant_id=tenant.id,
+        product_ids=selected_product_ids,
+        now=now,
+        category=category,
+    )
+    groups = _group_catalog_rows(
+        selected_rows,
+        product_ids=selected_product_ids,
+    )
+    if include_facets:
+        visible_category_ids = repository.list_public_catalog_category_ids(
+            session,
+            tenant_id=tenant.id,
+            now=now,
+            query="",
+            category=None,
+        )
+    else:
+        visible_category_ids = set()
+    categories = _ordered_category_paths(
+        visible_category_ids,
+        all_categories=all_categories,
+    )
+    category_rows_by_id = {row.id: row for row in all_categories}
+    category_colors_by_id = {
+        row.id: (
+            row.display_color
+            if row.parent_id is None
+            else category_rows_by_id.get(row.parent_id).display_color
+            if category_rows_by_id.get(row.parent_id) is not None
+            else None
+        )
+        for row in all_categories
+    }
+    images = repository.approved_image_map(
+        session,
+        tenant_id=tenant.id,
+        product_ids=set(selected_product_ids),
+    )
+    translator = _live_translation_provider(
+        source_locale=source_locale,
+        target_locale=requested_locale,
+    )
+    translations = _live_product_translation_map(
+        groups,
+        tenant_id=tenant.id,
+        translator=translator,
+        source_locale=source_locale,
+        target_locale=requested_locale,
+    )
+    category_labels = (
+        _live_category_labels(
+            categories,
+            tenant_id=tenant.id,
+            translator=translator,
+            source_locale=source_locale,
+            target_locale=requested_locale,
+        )
+        if requested_locale != source_locale and include_facets
+        else {}
+    )
+    return PublicProductPage(
+        items=[
+            _product_summary_response(
+                rows,
+                image=images.get(rows[0][2].id),
+                slug=tenant.slug,
+                category_color=(
+                    category_colors_by_id.get(rows[0][3].id)
+                    if rows[0][3] is not None
+                    else None
+                ),
+                source_locale=source_locale,
+                locale=requested_locale,
+                translation=translations.get(rows[0][2].id),
+            )
+            for rows in groups
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total else 0,
+        categories=categories,
+        category_options=[
+            PublicCategoryOption(
+                value=category_path,
+                label=category_labels.get(category_path, category_path),
+            )
+            for category_path in categories
+        ],
+        # Product tags remain part of each product and semantic-search input.
+        # The storefront no longer renders a global tag facet, so avoid a
+        # full-catalog scan solely to populate unused chips.
+        tags=[],
+        source_locale=source_locale,
+        locale=requested_locale,
+        all_products_position=(
+            _effective_all_products_position(
+                profile.all_products_position,
+                visible_category_ids=visible_category_ids,
+                all_categories=all_categories,
+            )
+            if include_facets
+            else 0
+        ),
+    )
+
+
+def get_public_product(
+    session: Session,
+    *,
+    slug: str,
+    product_id: UUID,
+    locale: str | None = None,
+) -> PublicProductDetail:
+    tenant, _profile = _resolve_store(session, slug=slug)
+    source_locale = _normalized_locale(tenant.default_locale)
+    requested_locale = _normalized_locale(locale, default=source_locale)
+    rows = repository.list_public_catalog_rows_by_product_ids(
+        session,
+        tenant_id=tenant.id,
+        product_ids=[product_id],
+        now=utcnow(),
+        category=None,
+    )
+    if not rows:
+        raise ApplicationError(
+            "PUBLIC_PRODUCT_NOT_FOUND",
+            "Public product was not found.",
+            kind="not_found",
+        )
+    category = rows[0][3]
+    root_category = (
+        repository.get_catalog_category(
+            session,
+            tenant_id=tenant.id,
+            category_id=category.parent_id,
+        )
+        if category is not None and category.parent_id is not None
+        else category
+    )
+    image = repository.approved_image_for_product(
+        session,
+        tenant_id=tenant.id,
+        product_id=product_id,
+    )
+    translator = _live_translation_provider(
+        source_locale=source_locale,
+        target_locale=requested_locale,
+    )
+    product_translations = _live_product_translation_map(
+        [rows],
+        tenant_id=tenant.id,
+        translator=translator,
+        source_locale=source_locale,
+        target_locale=requested_locale,
+    )
+    product_translation = product_translations.get(product_id)
+    summary = _product_summary_response(
+        rows,
+        image=image,
+        slug=tenant.slug,
+        category_color=(
+            root_category.display_color
+            if root_category is not None
+            else None
+        ),
+        source_locale=source_locale,
+        locale=requested_locale,
+        translation=product_translation,
+    )
+    source_group_tags = _product_group_tags(rows)
+    translated_tag_by_source = (
+        {
+            source_tag.casefold(): translated_tag
+            for source_tag, translated_tag in zip(
+                source_group_tags,
+                product_translation.tags,
+            )
+        }
+        if product_translation is not None
+        else {}
+    )
+    skus: list[PublicSkuResponse] = []
+    for row in sorted(
+        rows,
+        key=lambda item: (
+            str((item[1].option_values or {}).get("规格名称") or "").casefold(),
+            str(item[1].sku_code).casefold(),
+        ),
+    ):
+        response = _sku_response(
+            row,
+            image=image,
+            slug=tenant.slug,
+            category_color=summary.category_color,
+            source_locale=source_locale,
+            locale=requested_locale,
+            translation=None,
+        )
+        source_specification = str(
+            (row[1].option_values or {}).get("规格名称") or ""
+        ).strip()
+        specification = (
+            product_translation.specifications.get(
+                source_specification,
+                source_specification,
+            )
+            if product_translation is not None and source_specification
+            else source_specification or None
+        )
+        source_sku_tags = tuple(
+            dict.fromkeys(
+                str(tag).strip()
+                for tag in (row[0].tags or [])
+                if str(tag).strip()
+            )
+        )
+        localized_sku_tags = [
+            translated_tag_by_source.get(tag.casefold(), tag)
+            for tag in source_sku_tags
+        ]
+        source_display_tag = str(row[0].display_tag or "").strip()
+        localized_display_tag = (
+            translated_tag_by_source.get(
+                source_display_tag.casefold(),
+                source_display_tag,
+            )
+            if source_display_tag
+            else localized_sku_tags[0] if localized_sku_tags else None
+        )
+        if (
+            localized_display_tag
+            and localized_display_tag.casefold()
+            not in {tag.casefold() for tag in localized_sku_tags}
+        ):
+            localized_display_tag = (
+                localized_sku_tags[0] if localized_sku_tags else None
+            )
+        response = response.model_copy(
+            update={
+                "name": (
+                    f"{summary.name} · {specification}"
+                    if specification
+                    else summary.name
+                ),
+                "description": summary.description,
+                "category_label": summary.category_label,
+                "tags": localized_sku_tags,
+                "display_tag": localized_display_tag,
+                "specification": specification,
+                "locale": requested_locale,
+                "translation_status": summary.translation_status,
+            }
+        )
+        skus.append(response)
+    return PublicProductDetail(
+        **summary.model_dump(),
+        skus=skus,
     )
 
 
@@ -997,6 +1624,8 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
         sku_code_snapshot=row.sku_code_snapshot,
         name_snapshot=row.name_snapshot,
         description_snapshot=row.description_snapshot,
+        specification_snapshot=row.specification_snapshot,
+        option_values_snapshot=row.option_values_snapshot or {},
         category_snapshot=row.category_snapshot,
         tags_snapshot=row.tags_snapshot,
         image_url_snapshot=row.image_url_snapshot,
@@ -1007,6 +1636,27 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
         product_version=row.product_version,
         sku_version=row.sku_version,
     )
+
+
+def _quote_specification(option_values: dict[str, object]) -> str | None:
+    parts: list[str] = []
+    for key, value in option_values.items():
+        label = str(key).strip()
+        if not label or label.startswith("_") or value in (None, "", [], {}):
+            continue
+        if isinstance(value, list):
+            text = ", ".join(str(item).strip() for item in value if str(item).strip())
+        elif isinstance(value, dict):
+            text = ", ".join(
+                f"{nested_key}: {nested_value}"
+                for nested_key, nested_value in value.items()
+                if str(nested_value).strip()
+            )
+        else:
+            text = str(value).strip()
+        if text:
+            parts.append(f"{label}: {text}")
+    return "；".join(parts) or None
 
 
 def _draft_response(
@@ -1109,6 +1759,12 @@ def create_public_quote_draft(
         line_total = _money(unit_price * quantity)
         subtotal += line_total
         tags = [str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()]
+        option_values = {
+            str(key): value
+            for key, value in (sku.option_values or {}).items()
+            if str(key).strip() and not str(key).startswith("_")
+        }
+        specification = _quote_specification(option_values)
         image_url = _public_image_url(images.get(product.id), slug=tenant.slug)
         item_row = PublicQuoteDraftItemRow(
             tenant_id=tenant.id,
@@ -1122,6 +1778,8 @@ def create_public_quote_draft(
             sku_code_snapshot=sku.sku_code,
             name_snapshot=sku.name or product.name,
             description_snapshot=product.description,
+            specification_snapshot=specification,
+            option_values_snapshot=option_values,
             category_snapshot=_category_path(category) or None,
             tags_snapshot=list(dict.fromkeys(tags)),
             image_url_snapshot=image_url,
@@ -1141,6 +1799,9 @@ def create_public_quote_draft(
                 "sku_version": sku.version,
                 "sku_code": sku.sku_code,
                 "name": item_row.name_snapshot,
+                "description": item_row.description_snapshot,
+                "specification": specification,
+                "option_values": option_values,
                 "category": item_row.category_snapshot,
                 "tags": item_row.tags_snapshot,
                 "image_url": image_url,
@@ -1303,6 +1964,10 @@ def get_quote_document(
         contact_email=profile.contact_email,
         contact_phone=profile.contact_phone,
         quote=_draft_response(draft, items),
+        excel_template=quote_template_use_cases.default_render_spec(
+            session,
+            tenant_id=tenant_id,
+        ),
     )
 
 
@@ -1389,4 +2054,8 @@ def get_tenant_quote_document(
         contact_email=profile.contact_email if profile else None,
         contact_phone=profile.contact_phone if profile else None,
         quote=_draft_response(draft, items),
+        excel_template=quote_template_use_cases.default_render_spec(
+            session,
+            tenant_id=tenant_id,
+        ),
     )

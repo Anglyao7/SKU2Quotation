@@ -53,6 +53,21 @@ PRODUCT_TEMPLATE_HEADERS = (
     "商品图片10",
 )
 PRODUCT_TEMPLATE_BASE_HEADERS = PRODUCT_TEMPLATE_HEADERS[:8]
+PRODUCT_VARIANT_TEMPLATE_HEADERS = (
+    "商品名称",
+    "分类名称",
+    "商品型号",
+    "商品价格",
+    "商品描述",
+    "备注",
+    "是否是新品",
+    "一箱个数",
+    "规格名称",
+    "规格价格",
+    "商品图片",
+)
+TEMPLATE_LAYOUT_SKU_ROWS = "SKU_ROWS"
+TEMPLATE_LAYOUT_PRODUCT_VARIANTS = "PRODUCT_VARIANTS"
 MAX_TEMPLATE_ROWS = 20_000
 MAX_ARCHIVE_ENTRIES = 5_000
 MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
@@ -116,11 +131,45 @@ class EmbeddedTemplateImage:
 
 
 @dataclass(frozen=True, slots=True)
+class ProductTemplateLayout:
+    kind: str
+    headers: tuple[str, ...]
+    image_column_offset: int
+    image_column_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProductVariantTemplateCandidate:
+    row_number: int
+    name: str
+    category: str
+    product_model: str | None
+    product_key: str
+    product_price: Decimal
+    description: str | None
+    note: str | None
+    is_new: bool
+    units_per_carton: str | None
+    specification: str | None
+    specification_price: Decimal | None
+    image_urls: tuple[str, ...]
+    image_url_columns: tuple[int, ...]
+    embedded_images: tuple[EmbeddedTemplateImage, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ProductTemplateRow:
     row_number: int
     name: str
     category: str
+    product_key: str
+    product_model: str | None
     sku_code: str
+    sku_name: str
+    specification: str | None
+    units_per_carton: str | None
+    is_new: bool
+    schema_version: int
     supplier_name: str | None
     unit_price: Decimal
     description: str | None
@@ -463,16 +512,17 @@ def _extract_embedded_template_images(
     path: Path,
     *,
     sheet_name: str,
+    image_column_offset: int,
     image_column_count: int,
 ) -> tuple[dict[int, tuple[EmbeddedTemplateImage, ...]], tuple[str, ...]]:
     """Read XLSX drawing relationships without materializing every image.
 
-    Excel drawing anchors are zero-based. A drawing that starts in I2 therefore
-    belongs to product row 2 and 商品图片1. The caller supplies the detected
-    product worksheet and its sequential image-column count so compatible
-    workbooks are not forced to rename a sheet or discard columns after
-    商品图片10. Keeping only archive references in the parse result prevents a
-    large workbook from duplicating all image bytes in worker memory.
+    Excel drawing anchors are zero-based. The caller supplies the detected
+    product worksheet, the first image column and its sequential column count.
+    This supports both the original I:R image area and the product/variant
+    template whose single image column is K. Keeping only archive references
+    in the parse result prevents a large workbook from duplicating all image
+    bytes in worker memory.
     """
 
     warnings: list[str] = []
@@ -587,9 +637,9 @@ def _extract_embedded_template_images(
                     if media_part is None:
                         continue
                     if not (
-                        PRODUCT_IMAGE_COLUMN_OFFSET
+                        image_column_offset
                         <= zero_based_column
-                        < PRODUCT_IMAGE_COLUMN_OFFSET + image_column_count
+                        < image_column_offset + image_column_count
                     ) or row_number < 2:
                         ignored_anchors += 1
                         continue
@@ -609,7 +659,7 @@ def _extract_embedded_template_images(
                         EmbeddedTemplateImage(
                             row_number=row_number,
                             image_column=(
-                                zero_based_column - PRODUCT_IMAGE_COLUMN_OFFSET + 1
+                                zero_based_column - image_column_offset + 1
                             ),
                             sequence=drawing_sequence,
                             archive_path=media_part,
@@ -621,9 +671,13 @@ def _extract_embedded_template_images(
                     )
 
             if ignored_anchors:
+                image_area = (
+                    "商品图片列"
+                    if image_column_count == 1
+                    else f"商品图片1-{image_column_count}列"
+                )
                 warnings.append(
-                    f"有 {ignored_anchors} 张内嵌图片未放在"
-                    f"商品图片1-{image_column_count}列，已忽略。"
+                    f"有 {ignored_anchors} 张内嵌图片未放在{image_area}，已忽略。"
                 )
             if unreadable_images:
                 warnings.append(
@@ -686,41 +740,80 @@ def _product_image_column_count(sheet: object) -> int | None:
     return image_column_count
 
 
+def _product_template_layout(sheet: object | None) -> ProductTemplateLayout | None:
+    if sheet is None:
+        return None
+    max_column = getattr(sheet, "max_column", None) or len(PRODUCT_TEMPLATE_HEADERS)
+    header_values = tuple(
+        _cell_text(sheet.cell(row=1, column=index).value)
+        for index in range(1, max_column + 1)
+    )
+    last_header_index = next(
+        (
+            index
+            for index in range(len(header_values), 0, -1)
+            if header_values[index - 1]
+        ),
+        0,
+    )
+    effective_headers = header_values[:last_header_index]
+    if effective_headers == PRODUCT_VARIANT_TEMPLATE_HEADERS:
+        return ProductTemplateLayout(
+            kind=TEMPLATE_LAYOUT_PRODUCT_VARIANTS,
+            headers=PRODUCT_VARIANT_TEMPLATE_HEADERS,
+            image_column_offset=10,
+            image_column_count=1,
+        )
+    image_column_count = _product_image_column_count(sheet)
+    if image_column_count is None:
+        return None
+    return ProductTemplateLayout(
+        kind=TEMPLATE_LAYOUT_SKU_ROWS,
+        headers=PRODUCT_TEMPLATE_BASE_HEADERS
+        + tuple(
+            f"商品图片{index}"
+            for index in range(1, image_column_count + 1)
+        ),
+        image_column_offset=PRODUCT_IMAGE_COLUMN_OFFSET,
+        image_column_count=image_column_count,
+    )
+
+
 def _select_product_sheet(
     workbook: object,
-) -> tuple[object, int, str | None]:
-    """Select a uniquely identifiable one-row-per-SKU worksheet."""
+) -> tuple[object, ProductTemplateLayout, str | None]:
+    """Select a uniquely identifiable supported product worksheet."""
 
     preferred_sheet = (
         workbook[PRODUCT_TEMPLATE_SHEET]
         if PRODUCT_TEMPLATE_SHEET in workbook.sheetnames
         else None
     )
-    preferred_image_count = (
-        _product_image_column_count(preferred_sheet)
-        if preferred_sheet is not None
-        else None
-    )
-    if preferred_sheet is not None and preferred_image_count is not None:
-        return preferred_sheet, preferred_image_count, None
+    preferred_layout = _product_template_layout(preferred_sheet)
+    if preferred_sheet is not None and preferred_layout is not None:
+        return preferred_sheet, preferred_layout, None
 
     compatible_sheets = [
-        (sheet, image_column_count)
+        (sheet, layout)
         for sheet in workbook.worksheets
-        if (image_column_count := _product_image_column_count(sheet)) is not None
+        if (layout := _product_template_layout(sheet)) is not None
     ]
     if len(compatible_sheets) == 1:
-        sheet, image_column_count = compatible_sheets[0]
+        sheet, layout = compatible_sheets[0]
+        behavior = (
+            "相同商品的多行规格会合并为一个商品，并生成独立 SKU。"
+            if layout.kind == TEMPLATE_LAYOUT_PRODUCT_VARIANTS
+            else "每一行仍按一个 SKU 导入。"
+        )
         return (
             sheet,
-            image_column_count,
-            (
-                f"已自动识别工作表“{sheet.title}”作为商品列表；"
-                "每一行仍按一个 SKU 导入。"
-            ),
+            layout,
+            f"已自动识别工作表“{sheet.title}”作为商品列表；{behavior}",
         )
     if len(compatible_sheets) > 1:
-        sheet_names = "、".join(f"“{sheet.title}”" for sheet, _ in compatible_sheets)
+        sheet_names = "、".join(
+            f"“{sheet.title}”" for sheet, _layout in compatible_sheets
+        )
         issue = _issue(
             row_number=None,
             column="工作表",
@@ -730,7 +823,16 @@ def _select_product_sheet(
         )
         raise ProductTemplateValidationError(issue.message, issues=(issue,))
     if preferred_sheet is not None:
-        return preferred_sheet, PRODUCT_IMAGE_COLUMN_COUNT, None
+        return (
+            preferred_sheet,
+            ProductTemplateLayout(
+                kind=TEMPLATE_LAYOUT_SKU_ROWS,
+                headers=PRODUCT_TEMPLATE_HEADERS,
+                image_column_offset=PRODUCT_IMAGE_COLUMN_OFFSET,
+                image_column_count=PRODUCT_IMAGE_COLUMN_COUNT,
+            ),
+            None,
+        )
 
     available_sheets = "、".join(
         f"“{sheet_name}”" for sheet_name in workbook.sheetnames
@@ -744,11 +846,484 @@ def _select_product_sheet(
             f"{available_sheets or '无'}。"
         ),
         suggestion=(
-            "请使用下载模板，或保留前 8 个字段并按顺序使用"
-            "“商品图片1、商品图片2……”列。"
+            "请使用下载模板，或使用“商品名称、分类名称、商品型号、"
+            "商品价格、商品描述、备注、是否是新品、一箱个数、"
+            "规格名称、规格价格、商品图片”的多规格模板。"
         ),
     )
     raise ProductTemplateValidationError(issue.message, issues=(issue,))
+
+
+def _variant_product_key(
+    *,
+    name: str,
+    category: str,
+    product_model: str | None,
+) -> str:
+    if product_model:
+        return f"MODEL:{_normalize_sku_code(product_model)}"
+    normalized = "\x1f".join(
+        (
+            " ".join(name.split()).casefold(),
+            category.casefold(),
+        )
+    )
+    return f"AUTO:{hashlib.sha256(normalized.encode('utf-8')).hexdigest().upper()}"
+
+
+def _variant_sku_code(
+    *,
+    product_key: str,
+    product_model: str | None,
+    specification: str | None,
+) -> str:
+    base = (
+        _normalize_sku_code(product_model)
+        if product_model
+        else f"AUTO-{hashlib.sha256(product_key.encode('utf-8')).hexdigest()[:16].upper()}"
+    )
+    if not specification:
+        return base[:160]
+    specification_digest = hashlib.sha256(
+        " ".join(specification.split()).casefold().encode("utf-8")
+    ).hexdigest()[:10].upper()
+    return f"{base[:149]}-{specification_digest}"
+
+
+def _new_product_flag(
+    value: object,
+    *,
+    row_number: int,
+) -> bool:
+    normalized = _cell_text(value).strip().casefold()
+    if not normalized:
+        return False
+    if normalized in {"是", "true", "1", "yes", "y", "新品"}:
+        return True
+    if normalized in {"否", "false", "0", "no", "n"}:
+        return False
+    raise ProductTemplateValidationError(
+        f"第 {row_number} 行的是否是新品应填写“是”或“否”。"
+    )
+
+
+def _is_variant_template_instruction_row(values: tuple[object, ...]) -> bool:
+    name = _cell_text(values[0])
+    if name.startswith("以上均为例子"):
+        return True
+    return (
+        name == "商品名称"
+        and any("可填" in _cell_text(value) for value in values[1:])
+    )
+
+
+def _parse_product_variant_rows(
+    sheet: object,
+    *,
+    effective_headers: tuple[str, ...],
+    embedded_images_by_row: dict[int, tuple[EmbeddedTemplateImage, ...]],
+    embedded_image_warnings: tuple[str, ...],
+    sheet_warning: str | None,
+    progress_callback: Callable[[int, int], None] | None,
+) -> ProductTemplateParseResult:
+    candidates: list[ProductVariantTemplateCandidate] = []
+    warnings: list[str] = [
+        "已识别商品+规格模板：相同商品型号的多行会合并为一个商品。"
+    ]
+    if sheet_warning is not None:
+        warnings.insert(0, sheet_warning)
+    warnings.extend(embedded_image_warnings)
+    issues: list[ProductTemplateIssue] = []
+    skipped_rows = 0
+    generated_model_rows = 0
+    visited_rows: set[int] = set()
+    total_rows = max(0, (sheet.max_row or 1) - 1)
+    progress_interval = max(100, total_rows // 100) if total_rows else 100
+
+    for row_number, raw_values in enumerate(
+        sheet.iter_rows(
+            min_row=2,
+            max_col=len(effective_headers),
+            values_only=True,
+        ),
+        start=2,
+    ):
+        values = tuple(raw_values)
+        processed_rows = row_number - 1
+        if progress_callback is not None and (
+            processed_rows == 1
+            or processed_rows % progress_interval == 0
+            or processed_rows == total_rows
+        ):
+            progress_callback(processed_rows, total_rows)
+        if row_number > MAX_TEMPLATE_ROWS + 1:
+            raise ProductTemplateValidationError(
+                f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
+            )
+        embedded_images = embedded_images_by_row.get(row_number, ())
+        if not any(_cell_text(value) for value in values) and not embedded_images:
+            continue
+        visited_rows.add(row_number)
+        if _is_variant_template_instruction_row(values):
+            skipped_rows += 1
+            continue
+
+        row_issues: list[ProductTemplateIssue] = []
+        formula_indexes = {
+            index
+            for index, value in enumerate(values)
+            if isinstance(value, str) and value.lstrip().startswith("=")
+        }
+        for index in sorted(formula_indexes):
+            column = effective_headers[index]
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column=column,
+                    code="FORMULA_NOT_ALLOWED",
+                    message=f"第 {row_number} 行的{column}包含公式。",
+                    value=values[index],
+                    suggestion="请复制计算结果并粘贴为固定值后重新导入。",
+                )
+            )
+
+        name = _cell_text(values[0])
+        if not name and 0 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品名称",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"第 {row_number} 行缺少商品名称。",
+                    suggestion="请填写商品名称；这是该模板唯一必填的商品字段。",
+                )
+            )
+        elif len(name) > 500 and 0 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品名称",
+                    code="VALUE_TOO_LONG",
+                    message=f"第 {row_number} 行的商品名称超过 500 个字符。",
+                    value=values[0],
+                    suggestion="请缩短商品名称，详细信息可填写在“商品描述”中。",
+                )
+            )
+
+        category = UNCATEGORIZED_CATEGORY_NAME
+        category_text = _cell_text(values[1])
+        if category_text and 1 not in formula_indexes:
+            try:
+                category = "/".join(
+                    _normalize_category_path(
+                        category_text,
+                        row_number=row_number,
+                    )
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="分类名称",
+                        code="CATEGORY_INVALID",
+                        message=str(exc),
+                        value=values[1],
+                        suggestion="请填写“一级分类”或“一级分类/二级分类”，最多两级。",
+                    )
+                )
+
+        raw_model = _cell_text(values[2])
+        product_model = raw_model or None
+        if len(raw_model) > 160 and 2 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品型号",
+                    code="VALUE_TOO_LONG",
+                    message=f"第 {row_number} 行的商品型号超过 160 个字符。",
+                    value=values[2],
+                    suggestion="请将商品型号缩短至 160 个字符以内。",
+                )
+            )
+        product_key = _variant_product_key(
+            name=name,
+            category=category,
+            product_model=product_model,
+        )
+        if product_model is None:
+            generated_model_rows += 1
+
+        product_price = Decimal("0.00")
+        if _cell_text(values[3]) and 3 not in formula_indexes:
+            try:
+                product_price = _decimal(
+                    values[3],
+                    field="商品价格",
+                    row_number=row_number,
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="商品价格",
+                        code="PRICE_INVALID",
+                        message=str(exc),
+                        value=values[3],
+                        suggestion="价格可以留空（系统按 0 处理），或填写大于等于 0 的数字。",
+                    )
+                )
+
+        is_new = False
+        if 6 not in formula_indexes:
+            try:
+                is_new = _new_product_flag(values[6], row_number=row_number)
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="是否是新品",
+                        code="NEW_PRODUCT_FLAG_INVALID",
+                        message=str(exc),
+                        value=values[6],
+                        suggestion="可以留空；需要标记新品时填写“是”，否则填写“否”。",
+                    )
+                )
+
+        specification = _cell_text(values[8]) or None
+        if specification is not None and len(specification) > 500:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="规格名称",
+                    code="VALUE_TOO_LONG",
+                    message=f"第 {row_number} 行的规格名称超过 500 个字符。",
+                    value=values[8],
+                    suggestion="请缩短规格名称。",
+                )
+            )
+        specification_price: Decimal | None = None
+        if _cell_text(values[9]) and 9 not in formula_indexes:
+            try:
+                specification_price = _decimal(
+                    values[9],
+                    field="规格价格",
+                    row_number=row_number,
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="规格价格",
+                        code="PRICE_INVALID",
+                        message=str(exc),
+                        value=values[9],
+                        suggestion="规格价格可以留空，或填写大于等于 0 的数字。",
+                    )
+                )
+
+        image_urls: list[str] = []
+        image_url_columns: list[int] = []
+        if _cell_text(values[10]) and 10 not in formula_indexes:
+            image_url = _valid_image_url(values[10])
+            if image_url is None:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="商品图片",
+                        code="IMAGE_URL_INVALID",
+                        message=f"第 {row_number} 行商品图片不是有效的 HTTP(S) 链接。",
+                        value=values[10],
+                        suggestion=(
+                            "图片可以留空或直接插入该单元格位置；"
+                            "填写文本时请使用可公开访问的 http:// 或 https:// 地址。"
+                        ),
+                    )
+                )
+            else:
+                image_urls.append(image_url)
+                image_url_columns.append(1)
+
+        if row_issues:
+            issues.extend(row_issues)
+            continue
+        candidates.append(
+            ProductVariantTemplateCandidate(
+                row_number=row_number,
+                name=name,
+                category=category,
+                product_model=product_model,
+                product_key=product_key,
+                product_price=product_price,
+                description=_cell_text(values[4]) or None,
+                note=_cell_text(values[5]) or None,
+                is_new=is_new,
+                units_per_carton=_cell_text(values[7]) or None,
+                specification=specification,
+                specification_price=specification_price,
+                image_urls=tuple(image_urls),
+                image_url_columns=tuple(image_url_columns),
+                embedded_images=embedded_images,
+            )
+        )
+
+    grouped: dict[str, list[ProductVariantTemplateCandidate]] = defaultdict(list)
+    for candidate in candidates:
+        grouped[candidate.product_key].append(candidate)
+
+    rows: list[ProductTemplateRow] = []
+    first_row_by_sku: dict[str, int] = {}
+    for group in grouped.values():
+        first = group[0]
+        normalized_names = {
+            " ".join(candidate.name.split()).casefold() for candidate in group
+        }
+        normalized_categories = {
+            candidate.category.casefold() for candidate in group
+        }
+        if len(normalized_names) > 1 or len(normalized_categories) > 1:
+            for candidate in group[1:]:
+                if (
+                    " ".join(candidate.name.split()).casefold()
+                    == " ".join(first.name.split()).casefold()
+                    and candidate.category.casefold() == first.category.casefold()
+                ):
+                    continue
+                issues.append(
+                    _issue(
+                        row_number=candidate.row_number,
+                        column="商品型号",
+                        code="PRODUCT_GROUP_CONFLICT",
+                        message=(
+                            f"第 {candidate.row_number} 行与第 {first.row_number} 行"
+                            "使用相同商品型号，但商品名称或分类不同。"
+                        ),
+                        value=candidate.product_model,
+                        suggestion="同一商品型号的所有规格行请使用相同商品名称和分类。",
+                    )
+                )
+            continue
+
+        seen_specs: dict[str, int] = {}
+        if len(group) > 1:
+            for candidate in group:
+                if not candidate.specification:
+                    issues.append(
+                        _issue(
+                            row_number=candidate.row_number,
+                            column="规格名称",
+                            code="SPECIFICATION_REQUIRED",
+                            message=(
+                                f"商品“{first.name}”包含多行规格，"
+                                f"第 {candidate.row_number} 行缺少规格名称。"
+                            ),
+                            suggestion="多规格商品的每一行都需要填写唯一的规格名称。",
+                        )
+                    )
+                    continue
+                normalized_spec = " ".join(
+                    candidate.specification.split()
+                ).casefold()
+                if normalized_spec in seen_specs:
+                    issues.append(
+                        _issue(
+                            row_number=candidate.row_number,
+                            column="规格名称",
+                            code="SPECIFICATION_DUPLICATE",
+                            message=(
+                                f"第 {candidate.row_number} 行规格名称与第 "
+                                f"{seen_specs[normalized_spec]} 行重复。"
+                            ),
+                            value=candidate.specification,
+                            suggestion="同一商品下的规格名称必须唯一。",
+                        )
+                    )
+                else:
+                    seen_specs[normalized_spec] = candidate.row_number
+
+        for candidate in group:
+            sku_code = _variant_sku_code(
+                product_key=candidate.product_key,
+                product_model=candidate.product_model,
+                specification=candidate.specification,
+            )
+            if sku_code in first_row_by_sku:
+                issues.append(
+                    _issue(
+                        row_number=candidate.row_number,
+                        column="规格名称",
+                        code="SKU_IDENTITY_DUPLICATE",
+                        message=(
+                            f"第 {candidate.row_number} 行生成的 SKU 与第 "
+                            f"{first_row_by_sku[sku_code]} 行重复。"
+                        ),
+                        value=candidate.specification,
+                        suggestion="请确认商品型号和规格名称组合唯一。",
+                    )
+                )
+                continue
+            first_row_by_sku[sku_code] = candidate.row_number
+            sku_name = (
+                f"{candidate.name} · {candidate.specification}"
+                if candidate.specification
+                else candidate.name
+            )
+            rows.append(
+                ProductTemplateRow(
+                    row_number=candidate.row_number,
+                    name=candidate.name,
+                    category=candidate.category,
+                    product_key=candidate.product_key,
+                    product_model=candidate.product_model,
+                    sku_code=sku_code,
+                    sku_name=sku_name,
+                    specification=candidate.specification,
+                    units_per_carton=candidate.units_per_carton,
+                    is_new=candidate.is_new,
+                    schema_version=2,
+                    supplier_name=None,
+                    unit_price=(
+                        candidate.specification_price
+                        if candidate.specification_price is not None
+                        else candidate.product_price
+                    ),
+                    description=candidate.description or first.description,
+                    note=candidate.note,
+                    tags=("新品",) if candidate.is_new else (),
+                    default_moq=None,
+                    image_urls=candidate.image_urls,
+                    image_url_columns=candidate.image_url_columns,
+                    embedded_images=candidate.embedded_images,
+                )
+            )
+
+    if issues:
+        raise ProductTemplateValidationError(
+            _validation_summary(issues),
+            issues=tuple(issues),
+        )
+    if not rows:
+        raise ProductTemplateValidationError("模版中没有可导入的有效商品。")
+    if skipped_rows:
+        warnings.append(f"已自动忽略 {skipped_rows} 行模板说明。")
+    if generated_model_rows:
+        warnings.append(
+            f"有 {generated_model_rows} 行未填写商品型号，"
+            "系统已根据商品名称和分类生成稳定的商品与 SKU 标识。"
+        )
+    unmatched_embedded_images = sum(
+        len(images)
+        for row_number, images in embedded_images_by_row.items()
+        if row_number not in visited_rows
+    )
+    if unmatched_embedded_images:
+        warnings.append(
+            f"有 {unmatched_embedded_images} 张内嵌图片未对应到有效商品行，已忽略。"
+        )
+    return ProductTemplateParseResult(
+        rows=tuple(rows),
+        warnings=tuple(warnings),
+        skipped_rows=skipped_rows,
+    )
 
 
 def parse_product_template(
@@ -765,10 +1340,8 @@ def parse_product_template(
         raise ProductTemplateValidationError("商品模版无法读取，请重新导出为 XLSX。") from exc
 
     try:
-        sheet, image_column_count, sheet_warning = _select_product_sheet(workbook)
-        effective_headers = PRODUCT_TEMPLATE_BASE_HEADERS + tuple(
-            f"商品图片{index}" for index in range(1, image_column_count + 1)
-        )
+        sheet, layout, sheet_warning = _select_product_sheet(workbook)
+        effective_headers = layout.headers
         received_headers = tuple(
             _cell_text(sheet.cell(row=1, column=index).value)
             for index in range(1, len(effective_headers) + 1)
@@ -822,9 +1395,19 @@ def parse_product_template(
             _extract_embedded_template_images(
                 path,
                 sheet_name=sheet.title,
-                image_column_count=image_column_count,
+                image_column_offset=layout.image_column_offset,
+                image_column_count=layout.image_column_count,
             )
         )
+        if layout.kind == TEMPLATE_LAYOUT_PRODUCT_VARIANTS:
+            return _parse_product_variant_rows(
+                sheet,
+                effective_headers=effective_headers,
+                embedded_images_by_row=embedded_images_by_row,
+                embedded_image_warnings=embedded_image_warnings,
+                sheet_warning=sheet_warning,
+                progress_callback=progress_callback,
+            )
         rows: list[ProductTemplateRow] = []
         warnings: list[str] = []
         if sheet_warning is not None:
@@ -1073,7 +1656,14 @@ def parse_product_template(
                     row_number=row_number,
                     name=name,
                     category=category,
+                    product_key=sku_code,
+                    product_model=sku_code,
                     sku_code=sku_code,
+                    sku_name=name,
+                    specification=None,
+                    units_per_carton=None,
+                    is_new=False,
+                    schema_version=1,
                     supplier_name=supplier_name,
                     unit_price=unit_price,
                     description=_cell_text(values[5]) or None,
@@ -1121,15 +1711,18 @@ def _category_code(name: str) -> str:
     return f"TPL-{digest}"
 
 
-def _product_code(sku_code: str) -> str:
-    # Product code is an internal, deterministic ownership marker. Keeping it
-    # independent of the display SKU also guarantees one product per SKU.
-    digest = hashlib.sha256(sku_code.encode("utf-8")).hexdigest()[:24].upper()
+def _product_code(product_key: str) -> str:
+    # Product code is an internal, deterministic ownership marker. In the
+    # original template the key equals the SKU; in the variant template all
+    # rows of one product deliberately share the same key.
+    digest = hashlib.sha256(product_key.encode("utf-8")).hexdigest()[:24].upper()
     return f"TPL-{digest}"
 
 
-def _alternate_product_code(sku_code: str) -> str:
-    digest = hashlib.sha256(f"PRODUCT_TEMPLATE:{sku_code}".encode("utf-8")).hexdigest()
+def _alternate_product_code(product_key: str) -> str:
+    digest = hashlib.sha256(
+        f"PRODUCT_TEMPLATE:{product_key}".encode("utf-8")
+    ).hexdigest()
     return f"TPLX-{digest[:48].upper()}"
 
 
@@ -1139,7 +1732,7 @@ def _supplier_identity(name: str) -> tuple[str, str]:
 
 
 def _template_option_values(
-    note: str | None,
+    row: ProductTemplateRow,
     *,
     existing: dict[str, object] | None = None,
 ) -> dict[str, object]:
@@ -1149,12 +1742,37 @@ def _template_option_values(
     values: dict[str, object] = dict(existing or {})
     values[TEMPLATE_SOURCE_KEY] = {
         "source": TEMPLATE_SOURCE_VALUE,
-        "schema": 1,
+        "schema": row.schema_version,
     }
-    if note:
-        values["备注"] = note
+    if row.note:
+        values["备注"] = row.note
     else:
         values.pop("备注", None)
+    if row.schema_version >= 2:
+        if row.product_model:
+            values["商品型号"] = row.product_model
+        else:
+            values.pop("商品型号", None)
+        if row.specification:
+            values["规格名称"] = row.specification
+        else:
+            values.pop("规格名称", None)
+        if row.units_per_carton:
+            values["一箱个数"] = row.units_per_carton
+        else:
+            values.pop("一箱个数", None)
+        if row.is_new:
+            values["是否是新品"] = True
+        else:
+            values.pop("是否是新品", None)
+    else:
+        # Keep the historical SKU-row template contract unchanged. These keys
+        # belong to the product/variant template and must not be reintroduced
+        # after a merchant edits ordinary SKU option values.
+        values.pop("商品型号", None)
+        values.pop("规格名称", None)
+        values.pop("一箱个数", None)
+        values.pop("是否是新品", None)
     return values
 
 
@@ -1720,18 +2338,48 @@ def process_product_template_import(
             if existing_sku_ids
             else {}
         )
-        image_specs_by_row = {
-            template_row.row_number: _template_image_specs(
-                template_row,
-                tenant_id=tenant_id,
-                source_filename=job.source_file.original_filename,
+        template_rows_by_product_key: dict[str, list[ProductTemplateRow]] = (
+            defaultdict(list)
+        )
+        for template_row in parsed.rows:
+            template_rows_by_product_key[template_row.product_key].append(
+                template_row
             )
-            for template_row in parsed.rows
-        }
+        image_specs_by_product_key: dict[
+            str, tuple[StoredTemplateImage, ...]
+        ] = {}
+        for product_key, template_rows in template_rows_by_product_key.items():
+            specs_by_content_and_column: dict[
+                tuple[str, int], StoredTemplateImage
+            ] = {}
+            for template_row in template_rows:
+                for spec in _template_image_specs(
+                    template_row,
+                    tenant_id=tenant_id,
+                    source_filename=job.source_file.original_filename,
+                ):
+                    # The same image repeated in the same image column across
+                    # several variant rows is one product image. The same
+                    # bytes placed in two distinct image columns are two
+                    # intentional gallery slots and must both be retained.
+                    specs_by_content_and_column.setdefault(
+                        (spec.sha256, spec.image_column),
+                        spec,
+                    )
+            image_specs_by_product_key[product_key] = tuple(
+                sorted(
+                    specs_by_content_and_column.values(),
+                    key=lambda spec: (
+                        spec.image_column,
+                        0 if spec.archive_path is None else 1,
+                        spec.sequence,
+                    ),
+                )
+            )
         all_image_specs = tuple(
             spec
-            for template_row in parsed.rows
-            for spec in image_specs_by_row[template_row.row_number]
+            for specs in image_specs_by_product_key.values()
+            for spec in specs
         )
         images = _load_image_map(
             session,
@@ -1773,55 +2421,74 @@ def process_product_template_import(
             total_rows=len(parsed.rows),
         )
 
-        # Pre-plan product ownership before making changes. Existing SKUs with
-        # siblings are split onto a dedicated product so row order can never
-        # overwrite another SKU's name/category/description.
-        planned_product_by_sku: dict[str, ProductRow | None] = {}
-        planned_product_code_by_sku: dict[str, str | None] = {}
-        for template_row in parsed.rows:
-            sku = skus.get(template_row.sku_code)
-            current_product = products_by_id.get(sku.product_id) if sku else None
-            siblings = (
-                [
-                    row
-                    for row in sku_rows_by_product.get(sku.product_id, ())
-                    if row.id != sku.id
-                ]
-                if sku
-                else []
+        # A product/variant template intentionally maps several SKU rows onto
+        # one ProductRow. The original template uses a unique product_key per
+        # SKU, so it retains its historical one-row-per-product behavior.
+        planned_product_by_key: dict[str, ProductRow | None] = {}
+        planned_product_code_by_key: dict[str, str | None] = {}
+        for product_key, template_rows in template_rows_by_product_key.items():
+            incoming_codes = {row.sku_code for row in template_rows}
+            current_products = list(
+                dict.fromkeys(
+                    products_by_id[sku.product_id]
+                    for row in template_rows
+                    if (sku := skus.get(row.sku_code)) is not None
+                    and sku.product_id in products_by_id
+                )
             )
-            if current_product is not None and not siblings:
-                planned_product_by_sku[template_row.sku_code] = current_product
-                planned_product_code_by_sku[template_row.sku_code] = None
-                continue
-
             selected_product: ProductRow | None = None
             selected_code: str | None = None
-            for candidate_code in (
-                _product_code(template_row.sku_code),
-                _alternate_product_code(template_row.sku_code),
-            ):
+            candidate_codes = (
+                _product_code(product_key),
+                _alternate_product_code(product_key),
+            )
+            for candidate_code in candidate_codes:
                 candidate = products.get(candidate_code)
                 candidate_skus = (
                     sku_rows_by_product.get(candidate.id, ())
                     if candidate is not None
                     else ()
                 )
-                if candidate is None or not candidate_skus:
+                candidate_sku_codes = {
+                    _normalize_sku_code(row.sku_code)
+                    for row in candidate_skus
+                }
+                if (
+                    candidate is None
+                    or candidate in current_products
+                    or not candidate_sku_codes
+                    or bool(candidate_sku_codes & incoming_codes)
+                ):
                     selected_product = candidate
                     selected_code = candidate_code
                     break
             if selected_code is None:
-                return _fail_import(
-                    session,
-                    job=job,
-                    message=(
-                        f"SKU“{template_row.sku_code}”无法分配独立商品记录；"
-                        "保留的模版商品编码已被其他 SKU 占用。"
+                reusable_product = next(
+                    (
+                        product
+                        for product in current_products
+                        if {
+                            _normalize_sku_code(row.sku_code)
+                            for row in sku_rows_by_product.get(product.id, ())
+                        }.issubset(incoming_codes)
                     ),
+                    None,
                 )
-            planned_product_by_sku[template_row.sku_code] = selected_product
-            planned_product_code_by_sku[template_row.sku_code] = selected_code
+                if reusable_product is not None:
+                    selected_product = reusable_product
+                else:
+                    return _fail_import(
+                        session,
+                        job=job,
+                        message=(
+                            f"商品“{template_rows[0].name}”无法分配商品记录；"
+                            "保留的模板商品编码已被其他商品占用。"
+                        ),
+                    )
+            planned_product_by_key[product_key] = selected_product
+            planned_product_code_by_key[product_key] = (
+                selected_code if selected_product is None else None
+            )
 
         _record_import_progress(
             job_id=job.id,
@@ -1869,6 +2536,8 @@ def process_product_template_import(
         unchanged = 0
         dirty_product_ids: set[UUID] = set()
         touched_supplier_ids: set[str] = set()
+        synced_image_product_keys: set[str] = set()
+        moved_from_product_ids: set[UUID] = set()
         runtime_warnings = list(parsed.warnings)
         progress_interval = max(1, len(parsed.rows) // 100)
         for row_index, template_row in enumerate(parsed.rows, start=1):
@@ -1927,8 +2596,8 @@ def process_product_template_import(
             sku = skus.get(template_row.sku_code)
             if sku is not None and sku.supplier_id is not None:
                 touched_supplier_ids.add(sku.supplier_id)
-            product = planned_product_by_sku[template_row.sku_code]
-            product_code = planned_product_code_by_sku[template_row.sku_code]
+            product = planned_product_by_key[template_row.product_key]
+            product_code = planned_product_code_by_key[template_row.product_key]
             is_new = sku is None
             if product is None:
                 assert product_code is not None
@@ -1947,6 +2616,7 @@ def process_product_template_import(
                 session.add(product)
                 products[product_code] = product
                 products_by_id[product.id] = product
+                planned_product_by_key[template_row.product_key] = product
                 # Product and category must exist before the composite SKU
                 # foreign key is evaluated (notably by SQLite executemany).
                 session.flush()
@@ -1976,8 +2646,8 @@ def process_product_template_import(
                     supplier_id=supplier.id if supplier is not None else None,
                     latest_import_job_id=job.id,
                     sku_code=template_row.sku_code,
-                    name=template_row.name,
-                    option_values=_template_option_values(template_row.note),
+                    name=template_row.sku_name,
+                    option_values=_template_option_values(template_row),
                     default_moq=template_row.default_moq,
                     moq_unit=None,
                     status="ACTIVE",
@@ -1998,9 +2668,9 @@ def process_product_template_import(
                     "product_id": product.id,
                     "supplier_id": supplier.id if supplier is not None else None,
                     "sku_code": template_row.sku_code,
-                    "name": template_row.name,
+                    "name": template_row.sku_name,
                     "option_values": _template_option_values(
-                        template_row.note,
+                        template_row,
                         existing=sku.option_values,
                     ),
                     "default_moq": template_row.default_moq,
@@ -2015,6 +2685,7 @@ def process_product_template_import(
                     sku.updated_by_user_id = user_id
                     changed = True
                 if old_product_id != product.id:
+                    moved_from_product_ids.add(old_product_id)
                     sku_rows_by_product[old_product_id] = [
                         row
                         for row in sku_rows_by_product[old_product_id]
@@ -2067,69 +2738,77 @@ def process_product_template_import(
                     offer.published_at = now
                     changed = True
 
-            row_image_specs = image_specs_by_row[template_row.row_number]
-            desired_image_keys = {spec.object_key for spec in row_image_specs}
-            for old_image in template_images_by_product.get(product.id, ()):
-                if (
-                    old_image.object_key not in desired_image_keys
-                    and old_image.deleted_at is None
-                ):
-                    old_image.deleted_at = now
-                    changed = True
-
-            for image_index, image_spec in enumerate(row_image_specs):
-                image = images.get(image_spec.object_key)
-                if image is not None and image.product_id != product.id:
-                    runtime_warnings.append(
-                        f"第 {template_row.row_number} 行商品图片"
-                        f"{image_spec.image_column}已被其他商品使用，已跳过该图片。"
-                    )
-                    continue
-                if image is None:
-                    image = ProductImageRow(
-                        id=uuid4(),
-                        tenant_id=tenant_id,
-                        product_id=product.id,
-                        storage_provider=image_spec.storage_provider,
-                        bucket=TEMPLATE_IMAGE_BUCKET,
-                        object_key=image_spec.object_key,
-                        original_filename=image_spec.original_filename,
-                        content_type=image_spec.content_type,
-                        byte_size=image_spec.byte_size,
-                        sha256=image_spec.sha256,
-                        image_role="MAIN" if image_index == 0 else "GALLERY",
-                        sort_order=image_index,
-                        approval_status="APPROVED",
-                        alt_text=template_row.name,
-                        created_by=user_id,
-                    )
-                    session.add(image)
-                    images[image_spec.object_key] = image
-                    template_images_by_product[product.id].append(image)
-                    changed = True
-                else:
-                    image_values = {
-                        "storage_provider": image_spec.storage_provider,
-                        "bucket": TEMPLATE_IMAGE_BUCKET,
-                        "original_filename": image_spec.original_filename,
-                        "content_type": image_spec.content_type,
-                        "byte_size": image_spec.byte_size,
-                        "sha256": image_spec.sha256,
-                        "deleted_at": None,
-                        "image_role": "MAIN" if image_index == 0 else "GALLERY",
-                        "sort_order": image_index,
-                        "approval_status": "APPROVED",
-                        "alt_text": template_row.name,
-                    }
-                    if any(
-                        getattr(image, key) != value
-                        for key, value in image_values.items()
+            if template_row.product_key not in synced_image_product_keys:
+                synced_image_product_keys.add(template_row.product_key)
+                product_image_specs = image_specs_by_product_key[
+                    template_row.product_key
+                ]
+                desired_image_keys = {
+                    spec.object_key for spec in product_image_specs
+                }
+                for old_image in template_images_by_product.get(product.id, ()):
+                    if (
+                        old_image.object_key not in desired_image_keys
+                        and old_image.deleted_at is None
                     ):
-                        for key, value in image_values.items():
-                            setattr(image, key, value)
+                        old_image.deleted_at = now
                         changed = True
-                    if image not in template_images_by_product[product.id]:
+
+                for image_index, image_spec in enumerate(product_image_specs):
+                    image = images.get(image_spec.object_key)
+                    if image is not None and image.product_id != product.id:
+                        runtime_warnings.append(
+                            f"商品“{template_row.name}”的图片"
+                            f"{image_spec.image_column}已被其他商品使用，已跳过该图片。"
+                        )
+                        continue
+                    if image is None:
+                        image = ProductImageRow(
+                            id=uuid4(),
+                            tenant_id=tenant_id,
+                            product_id=product.id,
+                            storage_provider=image_spec.storage_provider,
+                            bucket=TEMPLATE_IMAGE_BUCKET,
+                            object_key=image_spec.object_key,
+                            original_filename=image_spec.original_filename,
+                            content_type=image_spec.content_type,
+                            byte_size=image_spec.byte_size,
+                            sha256=image_spec.sha256,
+                            image_role="MAIN" if image_index == 0 else "GALLERY",
+                            sort_order=image_index,
+                            approval_status="APPROVED",
+                            alt_text=template_row.name,
+                            created_by=user_id,
+                        )
+                        session.add(image)
+                        images[image_spec.object_key] = image
                         template_images_by_product[product.id].append(image)
+                        changed = True
+                    else:
+                        image_values = {
+                            "storage_provider": image_spec.storage_provider,
+                            "bucket": TEMPLATE_IMAGE_BUCKET,
+                            "original_filename": image_spec.original_filename,
+                            "content_type": image_spec.content_type,
+                            "byte_size": image_spec.byte_size,
+                            "sha256": image_spec.sha256,
+                            "deleted_at": None,
+                            "image_role": (
+                                "MAIN" if image_index == 0 else "GALLERY"
+                            ),
+                            "sort_order": image_index,
+                            "approval_status": "APPROVED",
+                            "alt_text": template_row.name,
+                        }
+                        if any(
+                            getattr(image, key) != value
+                            for key, value in image_values.items()
+                        ):
+                            for key, value in image_values.items():
+                                setattr(image, key, value)
+                            changed = True
+                        if image not in template_images_by_product[product.id]:
+                            template_images_by_product[product.id].append(image)
 
             if is_new:
                 created += 1
@@ -2140,6 +2819,21 @@ def process_product_template_import(
             if changed and product.status == "ACTIVE":
                 product.search_document_version = 0
                 dirty_product_ids.add(product.id)
+
+        for previous_product_id in moved_from_product_ids:
+            previous_product = products_by_id.get(previous_product_id)
+            if previous_product is None:
+                continue
+            still_active = any(
+                row.status == "ACTIVE" and row.deleted_at is None
+                for row in sku_rows_by_product.get(previous_product_id, ())
+            )
+            if not still_active and previous_product.status != "ARCHIVED":
+                previous_product.status = "ARCHIVED"
+                previous_product.archived_at = now
+                previous_product.current_version += 1
+                previous_product.updated_by = user_id
+                previous_product.search_document_version = 0
 
         _record_import_progress(
             job_id=job.id,

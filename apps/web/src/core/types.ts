@@ -476,16 +476,26 @@ export interface AnnouncementContentBlock {
   caption?: string;
 }
 
+export interface AnnouncementRelatedSku {
+  id: string;
+  productId: string;
+  skuCode: string;
+  name: string;
+  productName: string;
+  isPublic: boolean;
+}
+
 export interface StorefrontAnnouncement {
   id: string;
-  title: string;
+  title?: string;
   displayType: AnnouncementDisplayType;
   tickerText?: string;
   contentBlocks: AnnouncementContentBlock[];
   startsAt: string;
   endsAt: string;
-  repeatIntervalHours: number;
+  tickerSpeedPxPerSecond: number;
   publicationStatus: AnnouncementStatus;
+  relatedSkus: AnnouncementRelatedSku[];
   version: number;
   isActive: boolean;
   createdAt: string;
@@ -493,15 +503,16 @@ export interface StorefrontAnnouncement {
 }
 
 export interface AnnouncementPayload {
-  title: string;
+  title?: string;
   displayType: AnnouncementDisplayType;
   tickerText?: string;
   contentBlocks: AnnouncementContentBlock[];
   startsAt: string;
   endsAt?: string;
   durationDays?: number;
-  repeatIntervalHours: number;
+  tickerSpeedPxPerSecond: number;
   publicationStatus: AnnouncementStatus;
+  relatedSkuIds: string[];
 }
 
 export interface AttributeDefinition {
@@ -698,6 +709,8 @@ export interface PublicQuoteDraftItem {
   skuCode: string;
   name: string;
   description?: string;
+  specification?: string;
+  optionValues: Record<string, unknown>;
   category?: string;
   tags: string[];
   imageUrl?: string;
@@ -740,6 +753,61 @@ export interface PublicQuoteDraftSummary {
   total: number;
   validUntil: string;
   createdAt: string;
+}
+
+export type QuoteTemplateField =
+  | "serial_number"
+  | "sku_code"
+  | "product_name"
+  | "description"
+  | "specification"
+  | "category"
+  | "tags"
+  | "quantity"
+  | "unit_code"
+  | "unit_price"
+  | "line_total"
+  | "currency"
+  | "quote_number"
+  | "quote_date"
+  | "customer_name"
+  | "customer_company"
+  | "customer_email"
+  | "customer_phone"
+  | "notes";
+
+export interface QuoteExcelColumn {
+  key: string;
+  index: number;
+  header: string;
+  samples: string[];
+  suggestedField?: QuoteTemplateField;
+  mappedField?: QuoteTemplateField;
+}
+
+export interface QuoteExcelTemplate {
+  id: string;
+  name: string;
+  originalFilename: string;
+  byteSize: number;
+  sheetNames: string[];
+  sheetName: string;
+  headerRow: number;
+  dataStartRow: number;
+  dataEndRow: number;
+  columns: QuoteExcelColumn[];
+  columnMappings: Partial<Record<string, QuoteTemplateField>>;
+  isDefault: boolean;
+  isReady: boolean;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QuoteExcelTemplateUpdate {
+  name: string;
+  columnMappings: Partial<Record<string, QuoteTemplateField>>;
+  isDefault: boolean;
 }
 
 export interface Warehouse {

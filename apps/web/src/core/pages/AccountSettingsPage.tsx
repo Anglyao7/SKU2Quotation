@@ -164,7 +164,9 @@ export function AccountSettingsPage() {
       setMerchantSuccess(t("商家名称和前台地址已更新，旧地址会自动跳转到新地址。"));
     } catch (caught) {
       if (caught instanceof CoreApiError && caught.status === 409) {
-        setMerchantError(t("该商家名称对应的前台地址已被使用，请换一个名称。"));
+        setMerchantError(
+          t("商家前台地址暂时发生冲突，请再次提交，系统会自动分配新地址。"),
+        );
       } else if (caught instanceof CoreApiError && caught.status === 403) {
         setMerchantError(t("当前成员没有修改商家资料的权限。"));
       } else {

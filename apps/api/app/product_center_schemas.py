@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
 class ProductCategorySummary(BaseModel):
@@ -339,6 +339,34 @@ class CategoryLayoutUpdateRequest(BaseModel):
     all_products_position: int = Field(ge=0, le=500)
 
 
+class CategoryImportResponse(BaseModel):
+    processed_rows: int = Field(ge=1)
+    primary_created: int = Field(ge=0)
+    secondary_created: int = Field(ge=0)
+    primary_existing: int = Field(ge=0)
+    secondary_existing: int = Field(ge=0)
+    duplicate_rows_ignored: int = Field(ge=0)
+    blank_rows_ignored: int = Field(ge=0)
+
+
+class CategoryDeleteImpactResponse(BaseModel):
+    category_id: UUID
+    category_name: str
+    is_primary: bool
+    child_category_count: int = Field(ge=0)
+    affected_product_count: int = Field(ge=0)
+    attribute_definition_count: int = Field(ge=0)
+    attribute_value_count: int = Field(ge=0)
+
+
+class CategoryDeleteResponse(BaseModel):
+    deleted_category_count: int = Field(ge=1)
+    unclassified_product_count: int = Field(ge=0)
+    deleted_attribute_definition_count: int = Field(ge=0)
+    detached_attribute_value_count: int = Field(ge=0)
+    all_products_position: int = Field(ge=0)
+
+
 class SupplierPriceCreateRequest(BaseModel):
     supplier_product_id: UUID
     sku_id: UUID | None = None
@@ -434,6 +462,15 @@ class ProductReviewQueueItem(BaseModel):
 
 class SkuBatchDeleteRequest(BaseModel):
     sku_ids: list[UUID] = Field(min_length=1, max_length=500)
+
+
+class ProductDeleteAllRequest(BaseModel):
+    password: SecretStr
+
+
+class ProductDeleteAllResponse(BaseModel):
+    deleted_product_count: int
+    deleted_sku_count: int
 
 
 class SkuBatchUpdateStatusRequest(BaseModel):

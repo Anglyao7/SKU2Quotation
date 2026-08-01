@@ -61,14 +61,24 @@ export interface AnnouncementContentBlock {
 
 export interface PublicAnnouncement {
   id: string;
-  title: string;
+  title?: string | null;
   display_type: AnnouncementDisplayType;
   ticker_text?: string | null;
   content_blocks: AnnouncementContentBlock[];
   starts_at: string;
   ends_at: string;
-  repeat_interval_hours: number;
+  ticker_speed_px_per_second: number;
   version: number;
+  related_skus: PublicAnnouncementRelatedSku[];
+}
+
+export interface PublicAnnouncementRelatedSku {
+  id: string;
+  product_id: string;
+  sku_code: string;
+  name: string;
+  product_name: string;
+  is_public: boolean;
 }
 
 export interface StorefrontCategoryOption {
@@ -78,6 +88,7 @@ export interface StorefrontCategoryOption {
 
 export interface Sku {
   id: string;
+  product_id?: string;
   tenant_id?: string;
   sku_code: string;
   name: string;
@@ -100,10 +111,52 @@ export interface Sku {
   source_locale?: StorefrontLocale;
   locale?: StorefrontLocale;
   translation_status?: "SOURCE" | "TRANSLATED" | "FALLBACK";
+  specification?: string | null;
+  option_values?: Record<string, unknown>;
 }
 
 export interface SkuList {
   items: Sku[];
+  total: number;
+  page?: number;
+  pages?: number;
+  categories?: string[];
+  category_options?: StorefrontCategoryOption[];
+  tags?: string[];
+  source_locale?: StorefrontLocale;
+  locale?: StorefrontLocale;
+  all_products_position?: number;
+}
+
+export interface StoreProduct {
+  id: string;
+  product_code?: string | null;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  category_label?: string | null;
+  category_color?: string | null;
+  tags: string[];
+  display_tag?: string | null;
+  tag_color?: string | null;
+  price_from: number | string;
+  price_to: number | string;
+  currency: string;
+  unit_code: string;
+  image_url?: string | null;
+  sku_count: number;
+  product_version: number;
+  source_locale?: StorefrontLocale;
+  locale?: StorefrontLocale;
+  translation_status?: "SOURCE" | "TRANSLATED" | "FALLBACK";
+}
+
+export interface StoreProductDetail extends StoreProduct {
+  skus: Sku[];
+}
+
+export interface StoreProductList {
+  items: StoreProduct[];
   total: number;
   page?: number;
   pages?: number;

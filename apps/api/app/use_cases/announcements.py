@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..announcement_models import StorefrontAnnouncementRow
 from ..announcement_schemas import (
     AnnouncementListResponse,
+    AnnouncementRelatedSkuResponse,
     AnnouncementResponse,
     AnnouncementWriteRequest,
     PublicAnnouncementResponse,
@@ -49,11 +50,20 @@ def _schedule(request: AnnouncementWriteRequest) -> tuple[datetime, datetime]:
 
 
 def _response(
+    session: Session,
     row: StorefrontAnnouncementRow,
     *,
     now: datetime | None = None,
+    public_only: bool = False,
 ) -> AnnouncementResponse:
     timestamp = now or utcnow()
+    related_skus = _related_skus(
+        session,
+        tenant_id=row.tenant_id,
+        sku_ids=_stored_sku_ids(row.related_sku_ids),
+        now=timestamp,
+        public_only=public_only,
+    )
     return AnnouncementResponse(
         id=row.id,
         title=row.title,
@@ -62,8 +72,9 @@ def _response(
         content_blocks=row.content_blocks or [],
         starts_at=row.starts_at,
         ends_at=row.ends_at,
-        repeat_interval_hours=row.repeat_interval_hours,
+        ticker_speed_px_per_second=row.ticker_speed_px_per_second,
         publication_status=row.publication_status,
+        related_skus=related_skus,
         version=row.version,
         is_active=(
             row.publication_status == "PUBLISHED"
@@ -72,6 +83,69 @@ def _response(
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _stored_sku_ids(values: list[str] | None) -> list[UUID]:
+    result: list[UUID] = []
+    for value in values or []:
+        try:
+            result.append(UUID(str(value)))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _related_skus(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    sku_ids: list[UUID],
+    now: datetime,
+    public_only: bool,
+) -> list[AnnouncementRelatedSkuResponse]:
+    rows = repository.list_related_skus(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=sku_ids,
+        now=now,
+    )
+    return [
+        AnnouncementRelatedSkuResponse(
+            id=row.id,
+            product_id=row.product_id,
+            sku_code=row.sku_code,
+            name=row.name,
+            product_name=row.product_name,
+            is_public=row.is_public,
+        )
+        for row in rows
+        if row.is_public or not public_only
+    ]
+
+
+def _validated_related_sku_ids(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    requested_ids: list[UUID],
+) -> list[str]:
+    if not requested_ids:
+        return []
+    rows = repository.list_related_skus(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=requested_ids,
+        now=utcnow(),
+    )
+    found_ids = {row.id for row in rows}
+    missing = [sku_id for sku_id in requested_ids if sku_id not in found_ids]
+    if missing:
+        raise ApplicationError(
+            "ANNOUNCEMENT_RELATED_SKU_INVALID",
+            "One or more related SKUs are unavailable in this workspace.",
+            kind="validation",
+        )
+    return [str(sku_id) for sku_id in requested_ids]
 
 
 def list_announcements(
@@ -84,7 +158,7 @@ def list_announcements(
     rows, total = repository.list_for_tenant(session, tenant_id=tenant_id)
     now = utcnow()
     return AnnouncementListResponse(
-        items=[_response(row, now=now) for row in rows],
+        items=[_response(session, row, now=now) for row in rows],
         total=total,
     )
 
@@ -99,6 +173,11 @@ def create_announcement(
 ) -> AnnouncementResponse:
     _require_manage(permissions)
     starts_at, ends_at = _schedule(request)
+    related_sku_ids = _validated_related_sku_ids(
+        session,
+        tenant_id=tenant_id,
+        requested_ids=request.related_sku_ids,
+    )
     row = StorefrontAnnouncementRow(
         tenant_id=tenant_id,
         title=request.title,
@@ -109,9 +188,10 @@ def create_announcement(
             if request.display_type == "MODAL"
             else []
         ),
+        related_sku_ids=related_sku_ids,
         starts_at=starts_at,
         ends_at=ends_at,
-        repeat_interval_hours=request.repeat_interval_hours,
+        ticker_speed_px_per_second=request.ticker_speed_px_per_second,
         publication_status=request.publication_status,
         version=1,
         created_by_user_id=user_id,
@@ -120,7 +200,7 @@ def create_announcement(
     session.add(row)
     session.commit()
     session.refresh(row)
-    return _response(row)
+    return _response(session, row)
 
 
 def update_announcement(
@@ -145,6 +225,11 @@ def update_announcement(
             kind="not_found",
         )
     starts_at, ends_at = _schedule(request)
+    related_sku_ids = _validated_related_sku_ids(
+        session,
+        tenant_id=tenant_id,
+        requested_ids=request.related_sku_ids,
+    )
     row.title = request.title
     row.display_type = request.display_type
     row.ticker_text = request.ticker_text if request.display_type == "TICKER" else None
@@ -153,15 +238,16 @@ def update_announcement(
         if request.display_type == "MODAL"
         else []
     )
+    row.related_sku_ids = related_sku_ids
     row.starts_at = starts_at
     row.ends_at = ends_at
-    row.repeat_interval_hours = request.repeat_interval_hours
+    row.ticker_speed_px_per_second = request.ticker_speed_px_per_second
     row.publication_status = request.publication_status
     row.version += 1
     row.updated_by_user_id = user_id
     session.commit()
     session.refresh(row)
-    return _response(row)
+    return _response(session, row)
 
 
 def delete_announcement(
@@ -201,8 +287,15 @@ def public_announcements(
             content_blocks=row.content_blocks or [],
             starts_at=row.starts_at,
             ends_at=row.ends_at,
-            repeat_interval_hours=row.repeat_interval_hours,
+            ticker_speed_px_per_second=row.ticker_speed_px_per_second,
             version=row.version,
+            related_skus=_related_skus(
+                session,
+                tenant_id=tenant_id,
+                sku_ids=_stored_sku_ids(row.related_sku_ids),
+                now=utcnow(),
+                public_only=True,
+            ),
         )
         for row in repository.list_active(
             session,

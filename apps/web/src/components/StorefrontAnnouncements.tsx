@@ -1,42 +1,94 @@
 import { Button, Dialog, Text } from "@radix-ui/themes";
-import { Megaphone, X } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState } from "react";
+import { ArrowRight, Megaphone, Package, X } from "@phosphor-icons/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import {
+  announcementDismissedForVisit,
+  dismissAnnouncementForVisit,
+} from "../lib/storefrontAnnouncementVisit";
 import { storefrontText } from "../lib/storefrontLocale";
 import type {
   AnnouncementContentBlock,
   PublicAnnouncement,
+  PublicAnnouncementRelatedSku,
   StorefrontLocale,
 } from "../types";
 import "./StorefrontAnnouncements.css";
 
 
-const SEEN_PREFIX = "zhimaoyun.storefront.announcement.seen";
-
-function seenKey(slug: string, announcement: PublicAnnouncement) {
-  return `${SEEN_PREFIX}.${slug}.${announcement.id}.v${announcement.version}`;
+function modalVisitKey(slug: string, announcement: PublicAnnouncement) {
+  return `modal.${slug}.${announcement.id}.v${announcement.version}`;
 }
 
-function lastSeen(slug: string, announcement: PublicAnnouncement) {
-  try {
-    const value = Number(window.localStorage.getItem(seenKey(slug, announcement)));
-    return Number.isFinite(value) ? value : 0;
-  } catch {
-    return 0;
-  }
+function dismissModalForVisit(slug: string, announcement: PublicAnnouncement) {
+  dismissAnnouncementForVisit(modalVisitKey(slug, announcement));
 }
 
-function markSeen(slug: string, announcement: PublicAnnouncement) {
-  try {
-    window.localStorage.setItem(seenKey(slug, announcement), String(Date.now()));
-  } catch {
-    // Storage may be unavailable in strict privacy modes. The announcement
-    // still works for this page view; the browser simply cannot persist it.
-  }
+function tickerSignature(announcements: PublicAnnouncement[]) {
+  return announcements
+    .map((announcement) => `${announcement.id}.v${announcement.version}`)
+    .sort()
+    .join("-");
 }
 
-function shouldShowModal(slug: string, announcement: PublicAnnouncement) {
-  const elapsed = Date.now() - lastSeen(slug, announcement);
-  return elapsed >= announcement.repeat_interval_hours * 60 * 60 * 1000;
+function tickerDismissedKey(slug: string, signature: string) {
+  return `ticker.${slug}.${signature}`;
+}
+
+function wasTickerDismissed(slug: string, signature: string) {
+  return Boolean(signature)
+    && announcementDismissedForVisit(tickerDismissedKey(slug, signature));
+}
+
+function markTickerDismissed(slug: string, signature: string) {
+  if (!signature) return;
+  dismissAnnouncementForVisit(tickerDismissedKey(slug, signature));
+}
+
+function productDetailPath(
+  tenantSlug: string,
+  productId: string,
+  locale: StorefrontLocale,
+) {
+  const query = locale === "en-US" ? "?lang=en-US" : "";
+  return `/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(productId)}${query}`;
+}
+
+function RelatedSkus({
+  skus,
+  tenantSlug,
+  locale,
+  label,
+}: {
+  skus: PublicAnnouncementRelatedSku[];
+  tenantSlug: string;
+  locale: StorefrontLocale;
+  label: string;
+}) {
+  if (!skus.length) return null;
+  return (
+    <section className="store-announcement-related-products" aria-label={label}>
+      <div className="store-announcement-related-heading">
+        <Package weight="duotone" />
+        <span>{label}</span>
+      </div>
+      <div className="store-announcement-related-list">
+        {skus.map((sku) => (
+          <Link
+            key={sku.id}
+            to={productDetailPath(tenantSlug, sku.product_id, locale)}
+            state={{ fromStorefrontCatalog: false }}
+          >
+            <span>
+              <strong>{sku.product_name}</strong>
+              <small>{sku.sku_code}{sku.name !== sku.product_name ? ` · ${sku.name}` : ""}</small>
+            </span>
+            <ArrowRight />
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function RichContent({ blocks }: { blocks: AnnouncementContentBlock[] }) {
@@ -104,34 +156,104 @@ export function StorefrontAnnouncements({
     () => announcements.filter((announcement) => announcement.display_type === "MODAL"),
     [announcements],
   );
+  const currentTickerSignature = useMemo(() => tickerSignature(tickers), [tickers]);
+  const modalSignature = useMemo(() => tickerSignature(modals), [modals]);
+  const tickerSpeed = tickers[0]?.ticker_speed_px_per_second || 60;
   const [activeModal, setActiveModal] = useState<PublicAnnouncement>();
+  const [tickerHidden, setTickerHidden] = useState(() => (
+    wasTickerDismissed(tenantSlug, currentTickerSignature)
+  ));
+  const [tickerDurationSeconds, setTickerDurationSeconds] = useState(34);
+  const tickerTrackRef = useRef<HTMLDivElement>(null);
+  const presentedModalKeys = useRef(new Set<string>());
+
+  useEffect(() => {
+    setTickerHidden(wasTickerDismissed(tenantSlug, currentTickerSignature));
+  }, [currentTickerSignature, tenantSlug]);
 
   useEffect(() => {
     setActiveModal(undefined);
-    const eligible = modals.find((announcement) => shouldShowModal(tenantSlug, announcement));
+    const eligible = modals.find((announcement) => {
+      const key = modalVisitKey(tenantSlug, announcement);
+      return !announcementDismissedForVisit(key) && !presentedModalKeys.current.has(key);
+    });
     if (!eligible) return;
+    presentedModalKeys.current.add(modalVisitKey(tenantSlug, eligible));
     const timeout = window.setTimeout(() => {
-      markSeen(tenantSlug, eligible);
       setActiveModal(eligible);
-    }, 700);
+    }, 250);
     return () => window.clearTimeout(timeout);
-  }, [modals, tenantSlug]);
+  }, [modalSignature, tenantSlug]);
+
+  useEffect(() => {
+    const track = tickerTrackRef.current;
+    if (!track || tickerHidden) return;
+    const updateDuration = () => {
+      const travelDistance = track.scrollWidth / 2;
+      setTickerDurationSeconds(Math.max(8, travelDistance / tickerSpeed));
+    };
+    updateDuration();
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? undefined
+      : new ResizeObserver(updateDuration);
+    resizeObserver?.observe(track);
+    window.addEventListener("resize", updateDuration);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateDuration);
+    };
+  }, [currentTickerSignature, tickerHidden, tickerSpeed]);
+
+  const closeTicker = () => {
+    markTickerDismissed(tenantSlug, currentTickerSignature);
+    setTickerHidden(true);
+  };
+
+  const dismissActiveModalForVisit = () => {
+    if (activeModal) dismissModalForVisit(tenantSlug, activeModal);
+    setActiveModal(undefined);
+  };
 
   return (
     <>
-      {tickers.length ? (
+      {tickers.length && !tickerHidden ? (
         <aside className="store-announcement-ticker" aria-label={t("商家公告")}>
           <Megaphone size={17} weight="duotone" aria-hidden="true" />
           <div className="store-announcement-ticker-window">
-            <div className="store-announcement-ticker-track">
+            <div
+              ref={tickerTrackRef}
+              className="store-announcement-ticker-track"
+              style={{ animationDuration: `${tickerDurationSeconds}s` }}
+            >
               {[...tickers, ...tickers].map((announcement, index) => (
                 <span key={`${announcement.id}-${index}`}>
                   {announcement.ticker_text}
+                  {announcement.related_skus?.[0] ? (
+                    <Link
+                      className="store-announcement-ticker-product"
+                      to={productDetailPath(
+                        tenantSlug,
+                        announcement.related_skus[0].product_id,
+                        locale,
+                      )}
+                    >
+                      {t("查看商品")}<ArrowRight />
+                    </Link>
+                  ) : null}
                   <i aria-hidden="true">◆</i>
                 </span>
               ))}
             </div>
           </div>
+          <button
+            type="button"
+            className="store-announcement-ticker-close"
+            aria-label={t("关闭滚动字幕")}
+            title={t("关闭滚动字幕")}
+            onClick={closeTicker}
+          >
+            <X />
+          </button>
         </aside>
       ) : null}
 
@@ -149,14 +271,27 @@ export function StorefrontAnnouncements({
             <>
               <div className="store-announcement-dialog-heading">
                 <span><Megaphone weight="duotone" />{t("商家公告")}</span>
-                <Dialog.Title>{activeModal.title}</Dialog.Title>
+                <Dialog.Title className={activeModal.title ? undefined : "visually-hidden"}>
+                  {activeModal.title || t("商家公告")}
+                </Dialog.Title>
               </div>
               <RichContent blocks={activeModal.content_blocks} />
+              <RelatedSkus
+                skus={activeModal.related_skus || []}
+                tenantSlug={tenantSlug}
+                locale={locale}
+                label={t("相关商品")}
+              />
               <div className="store-announcement-dialog-actions">
-                <Dialog.Close>
-                  <Button size="3">{t("我知道了")}</Button>
-                </Dialog.Close>
-                <Text size="1" color="gray">{t("关闭后不会在短时间内重复弹出")}</Text>
+                <Text size="1" color="gray">{t("完整刷新或开始新会话后，公告会重新出现")}</Text>
+                <div>
+                  <Button size="3" variant="soft" color="gray" onClick={dismissActiveModalForVisit}>
+                    {t("以后不显示")}
+                  </Button>
+                  <Dialog.Close>
+                    <Button size="3">{t("我知道了")}</Button>
+                  </Dialog.Close>
+                </div>
               </div>
             </>
           ) : null}

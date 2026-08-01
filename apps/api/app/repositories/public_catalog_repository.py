@@ -57,6 +57,37 @@ def find_published_profile_by_slug(
     )
 
 
+def occupied_storefront_slugs(
+    session: Session,
+    *,
+    exclude_tenant_id: UUID | None = None,
+) -> set[str]:
+    """Return current and legacy storefront paths that cannot be reassigned."""
+
+    tenant_statement = select(TenantRow.slug)
+    profile_statement = select(
+        TenantPublicProfileRow.slug,
+        TenantPublicProfileRow.legacy_slugs,
+    ).where(TenantPublicProfileRow.deleted_at.is_(None))
+    if exclude_tenant_id is not None:
+        tenant_statement = tenant_statement.where(TenantRow.id != exclude_tenant_id)
+        profile_statement = profile_statement.where(
+            TenantPublicProfileRow.tenant_id != exclude_tenant_id
+        )
+    occupied = {
+        str(slug).casefold().strip()
+        for slug in session.scalars(tenant_statement).all()
+        if str(slug).strip()
+    }
+    for slug, legacy_slugs in session.execute(profile_statement).all():
+        occupied.update(
+            str(value).casefold().strip()
+            for value in [slug, *(legacy_slugs or [])]
+            if str(value).strip()
+        )
+    return occupied
+
+
 def find_published_profile_by_tenant(
     session: Session, *, tenant_id: UUID
 ) -> TenantPublicProfileRow | None:
@@ -299,6 +330,138 @@ def list_public_catalog_page(
     )
 
 
+def _public_product_id_statement(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    category: str | None,
+    tags: set[str],
+):
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        category=category,
+    )
+    statement = _with_catalog_tag_filters(session, statement, tags=tags)
+    uncategorized = case((ProductCategoryRow.id.is_(None), 1), else_=0)
+    root_sort = func.coalesce(
+        ParentProductCategoryRow.sort_order,
+        ProductCategoryRow.sort_order,
+        2_147_483_647,
+    )
+    root_name = func.lower(
+        func.coalesce(
+            ParentProductCategoryRow.name,
+            ProductCategoryRow.name,
+            "",
+        )
+    )
+    child_sort = case(
+        (ProductCategoryRow.id.is_(None), 2_147_483_647),
+        (ProductCategoryRow.parent_id.is_(None), -1),
+        else_=ProductCategoryRow.sort_order,
+    )
+    child_name = func.lower(func.coalesce(ProductCategoryRow.name, ""))
+    product_name = func.lower(ProductRow.name)
+    normalized = query.casefold().strip()
+    match_rank = func.min(
+        case(
+            (func.lower(SkuRow.sku_code) == normalized, 0),
+            (func.lower(ProductRow.name) == normalized, 1),
+            else_=2,
+        )
+    )
+    grouped = (
+        statement.with_only_columns(
+            ProductRow.id.label("product_id"),
+            uncategorized.label("uncategorized"),
+            root_sort.label("root_sort"),
+            root_name.label("root_name"),
+            child_sort.label("child_sort"),
+            child_name.label("child_name"),
+            product_name.label("product_name"),
+            match_rank.label("match_rank"),
+        )
+        .order_by(None)
+        .group_by(
+            ProductRow.id,
+            uncategorized,
+            root_sort,
+            root_name,
+            child_sort,
+            child_name,
+            product_name,
+        )
+    )
+    return grouped.order_by(
+        match_rank if normalized else uncategorized,
+        uncategorized,
+        root_sort,
+        root_name,
+        child_sort,
+        child_name,
+        product_name,
+        ProductRow.id,
+    )
+
+
+def list_public_product_ids_page(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    category: str | None,
+    tags: set[str],
+    page: int,
+    page_size: int,
+) -> list[UUID]:
+    statement = _public_product_id_statement(
+        session,
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        category=category,
+        tags=tags,
+    )
+    return [
+        row.product_id
+        for row in session.execute(
+            statement.offset((page - 1) * page_size).limit(page_size)
+        ).all()
+    ]
+
+
+def count_public_catalog_products(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    category: str | None,
+    tags: set[str],
+) -> int:
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        category=category,
+    )
+    statement = _with_catalog_tag_filters(session, statement, tags=tags)
+    matching_ids = (
+        statement.with_only_columns(ProductRow.id)
+        .order_by(None)
+        .distinct()
+        .subquery()
+    )
+    return int(
+        session.scalar(select(func.count()).select_from(matching_ids)) or 0
+    )
+
+
 def list_all_public_catalog_rows(
     session: Session,
     *,
@@ -376,6 +539,20 @@ def list_catalog_categories(
             .where(ProductCategoryRow.tenant_id == tenant_id)
             .order_by(ProductCategoryRow.sort_order, ProductCategoryRow.name)
         ).all()
+    )
+
+
+def get_catalog_category(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    category_id: UUID,
+) -> ProductCategoryRow | None:
+    return session.scalar(
+        select(ProductCategoryRow).where(
+            ProductCategoryRow.tenant_id == tenant_id,
+            ProductCategoryRow.id == category_id,
+        )
     )
 
 
@@ -469,6 +646,28 @@ def approved_image_map(
     for image in images:
         result.setdefault(image.product_id, image)
     return result
+
+
+def approved_image_for_product(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_id: UUID,
+) -> ProductImageRow | None:
+    return session.scalar(
+        select(ProductImageRow)
+        .where(
+            ProductImageRow.tenant_id == tenant_id,
+            ProductImageRow.product_id == product_id,
+            ProductImageRow.approval_status == "APPROVED",
+        )
+        .order_by(
+            case((ProductImageRow.image_role == "MAIN", 0), else_=1),
+            ProductImageRow.sort_order,
+            ProductImageRow.id,
+        )
+        .limit(1)
+    )
 
 
 def get_approved_public_image(

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .announcement_schemas import PublicAnnouncementResponse
+from .quote_template_schemas import QuoteExcelTemplateRenderSpec
 
 PUBLIC_DRAFT_DISCLAIMER = (
     "此文件仅为报价申请草稿和价格预估，当前状态为待人工确认；"
@@ -57,6 +58,8 @@ class PublicSkuResponse(BaseModel):
     image_url: str | None
     product_version: int
     sku_version: int
+    specification: str | None = None
+    option_values: dict[str, Any] = Field(default_factory=dict)
     source_locale: str = "zh-CN"
     locale: str = "zh-CN"
     translation_status: Literal["SOURCE", "TRANSLATED", "FALLBACK"] = "SOURCE"
@@ -71,6 +74,47 @@ class PublicSkuPage(BaseModel):
     categories: list[str]
     category_options: list[PublicCategoryOption] = Field(default_factory=list)
     tags: list[str]
+    source_locale: str = "zh-CN"
+    locale: str = "zh-CN"
+    all_products_position: int = Field(default=0, ge=0)
+
+
+class PublicProductSummary(BaseModel):
+    id: UUID
+    product_code: str | None
+    name: str
+    description: str | None
+    category: str | None
+    category_label: str | None = None
+    category_color: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    display_tag: str | None = None
+    tag_color: str | None = None
+    price_from: Decimal
+    price_to: Decimal
+    currency: str
+    unit_code: str
+    image_url: str | None
+    sku_count: int = Field(ge=1)
+    product_version: int
+    source_locale: str = "zh-CN"
+    locale: str = "zh-CN"
+    translation_status: Literal["SOURCE", "TRANSLATED", "FALLBACK"] = "SOURCE"
+
+
+class PublicProductDetail(PublicProductSummary):
+    skus: list[PublicSkuResponse]
+
+
+class PublicProductPage(BaseModel):
+    items: list[PublicProductSummary]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    categories: list[str]
+    category_options: list[PublicCategoryOption] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     source_locale: str = "zh-CN"
     locale: str = "zh-CN"
     all_products_position: int = Field(default=0, ge=0)
@@ -117,6 +161,8 @@ class PublicQuoteDraftItemResponse(BaseModel):
     sku_code_snapshot: str
     name_snapshot: str
     description_snapshot: str | None
+    specification_snapshot: str | None
+    option_values_snapshot: dict[str, Any]
     category_snapshot: str | None
     tags_snapshot: list[str]
     image_url_snapshot: str | None
@@ -171,3 +217,4 @@ class PublicQuoteDocument(BaseModel):
     contact_email: str | None
     contact_phone: str | None
     quote: PublicQuoteDraftResponse
+    excel_template: QuoteExcelTemplateRenderSpec | None = None
