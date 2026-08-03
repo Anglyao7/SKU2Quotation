@@ -236,6 +236,12 @@ def _ordered_public_catalog_statement(statement, *, query: str):
             SkuRow.id,
         )
     return statement.order_by(
+        # A merchant pin is a storefront-wide merchandising override.  Keep it
+        # ahead of category order so a product from a later category can still
+        # reach the first page of "all products".  A category filter naturally
+        # scopes the same rule to that category.
+        case((ProductRow.storefront_pinned_at.is_not(None), 0), else_=1),
+        ProductRow.storefront_pinned_at.desc(),
         # The category tree is also the storefront merchandising order.
         # Products without a category remain visible, but always come last.
         case((ProductCategoryRow.id.is_(None), 1), else_=0),
@@ -259,10 +265,6 @@ def _ordered_public_catalog_statement(statement, *, query: str):
             else_=ProductCategoryRow.sort_order,
         ),
         func.lower(func.coalesce(ProductCategoryRow.name, "")),
-        # Pinning is scoped to the product's own category so merchants keep
-        # their configured category order while promoting selected products.
-        case((ProductRow.storefront_pinned_at.is_not(None), 0), else_=1),
-        ProductRow.storefront_pinned_at.desc(),
         ProductRow.name,
         SkuRow.sku_code,
         SkuRow.id,
@@ -490,13 +492,13 @@ def _public_product_id_statement(
             )
         )
     return grouped.order_by(
+        pinned_rank,
+        pinned_at.desc(),
         uncategorized,
         root_sort,
         root_name,
         child_sort,
         child_name,
-        pinned_rank,
-        pinned_at.desc(),
         product_name,
         ProductRow.id,
     )

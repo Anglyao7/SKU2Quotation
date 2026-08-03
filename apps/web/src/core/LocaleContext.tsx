@@ -745,8 +745,8 @@ const english: Record<string, string> = {
   "下架所选 SKU？": "Unpublish the selected SKUs?",
   "所选 SKU 对应的商品会统一移动到目标分类；同一商品的其他 SKU 也会随商品归入该分类。":
     "Products represented by the selected SKUs will move to the destination category, including every other SKU under those products.",
-  "置顶状态按商品生效，并在商品所属分类内控制前台展示顺序。":
-    "Pinning applies at product level and controls storefront order within each product category.",
+  "置顶状态按商品生效，并在全部商品和所属分类中优先展示。":
+    "Pinning applies at product level and prioritizes pinned products in All Products and within their category.",
   "状态会应用到所选的 {count} 个 SKU，并立即影响商家前台是否展示。":
     "The status applies to {count} selected SKUs and immediately controls their storefront visibility.",
   "目标分类": "Destination category",

@@ -691,7 +691,7 @@ export function ProductsPage() {
   const bulkActionDescription = bulkAction === "category"
     ? t("所选 SKU 对应的商品会统一移动到目标分类；同一商品的其他 SKU 也会随商品归入该分类。")
     : bulkAction === "pin" || bulkAction === "unpin"
-    ? t("置顶状态按商品生效，并在商品所属分类内控制前台展示顺序。")
+    ? t("置顶状态按商品生效，并在全部商品和所属分类中优先展示。")
     : t("状态会应用到所选的 {count} 个 SKU，并立即影响商家前台是否展示。", { count: selectedSkuIds.size });
   return (
     <div className="core-workspace">

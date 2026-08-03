@@ -5238,7 +5238,7 @@ def test_batch_merchandising_updates_category_pin_status_and_storefront_order() 
                     sku_id=sku_id,
                     unit_price=Decimal("10"),
                     currency="CNY",
-                    tags=[],
+                    tags=[f"Bulk Pin {suffix}"],
                     publication_status="PUBLISHED",
                 )
                 for sku_id in sku_ids
@@ -5261,6 +5261,41 @@ def test_batch_merchandising_updates_category_pin_status_and_storefront_order() 
         assert alpha is not None
         assert alpha.category_id == target_category_id
         assert alpha.search_document_version == 0
+
+    pin_later_category = client.post(
+        "/api/v1/skus/batch-update-pinned",
+        json={"sku_ids": [str(alpha_sku_id)], "pinned": True},
+    )
+    assert pin_later_category.status_code == 200, pin_later_category.text
+    global_products = client.get(
+        "/api/store/demo/products",
+        params={
+            "tags": f"Bulk Pin {suffix}",
+            "include_facets": "false",
+        },
+    )
+    assert global_products.status_code == 200, global_products.text
+    assert [item["name"] for item in global_products.json()["items"]] == [
+        f"Alpha Product {suffix}",
+        f"Zulu Product {suffix}",
+    ]
+    global_skus = client.get(
+        "/api/store/demo/skus",
+        params={
+            "tags": f"Bulk Pin {suffix}",
+            "include_facets": "false",
+        },
+    )
+    assert global_skus.status_code == 200, global_skus.text
+    assert [item["product_id"] for item in global_skus.json()["items"][:2]] == [
+        str(alpha_product_id),
+        str(alpha_product_id),
+    ]
+    unpin_later_category = client.post(
+        "/api/v1/skus/batch-update-pinned",
+        json={"sku_ids": [str(alpha_sku_id)], "pinned": False},
+    )
+    assert unpin_later_category.status_code == 200, unpin_later_category.text
 
     listing = client.get(
         "/api/v1/product-center/skus",
