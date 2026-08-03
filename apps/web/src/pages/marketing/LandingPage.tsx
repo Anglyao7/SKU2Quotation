@@ -1,6 +1,7 @@
 import {
   ArrowRight,
   Buildings,
+  Check,
   CheckCircle,
   FilePdf,
   FileXls,
@@ -13,7 +14,13 @@ import {
   UploadSimple,
   X,
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { Link } from "react-router-dom";
 import { Brand } from "../../components/Brand";
 import styles from "./LandingPage.module.css";
@@ -67,6 +74,86 @@ const workflow = [
     description: "选中的商品与数量自然进入报价，生成 PDF 或 Excel，继续抵达客户。",
   },
 ];
+
+const pricingPlans = [
+  {
+    id: "standard",
+    code: "ATC / 01",
+    name: "Standard",
+    chineseName: "标准版",
+    billing: "基础订阅",
+    audience: "适合刚开始整理商品资料的团队",
+    recommended: false,
+    features: [
+      "所有基础图册功能",
+      "有限配额的向量化功能",
+      "基础模型的 AI 回复功能",
+      "单一主账号，不支持子账号",
+    ],
+  },
+  {
+    id: "silver",
+    code: "ATC / 02",
+    name: "Silver",
+    chineseName: "银辉版",
+    billing: "成长订阅",
+    audience: "适合持续扩充商品与协作规模的团队",
+    recommended: true,
+    features: [
+      "所有基础图册功能",
+      "更高配额的向量化功能",
+      "更优质模型的 AI 回复功能",
+      "完整库存管理",
+      "最多 3 个子账号",
+      "网站前台装修",
+    ],
+  },
+  {
+    id: "elite",
+    code: "ATC / 03",
+    name: "Elite",
+    chineseName: "鎏金版",
+    billing: "专属订阅",
+    audience: "适合需要完整能力与深度定制的团队",
+    recommended: false,
+    features: [
+      "所有基础图册功能",
+      "无限向量化功能",
+      "更优质模型的 AI 回复功能",
+      "最多 5 个子账号",
+      "系统全部独立模块",
+      "未来更新的所有独立模块",
+      "定制开发功能",
+      "网站前台装修",
+    ],
+  },
+] as const;
+
+const pricingCardToneClass = {
+  standard: styles.pricingCardStandard,
+  silver: styles.pricingCardSilver,
+  elite: styles.pricingCardElite,
+} as const;
+
+function updatePricingCardLight(event: ReactPointerEvent<HTMLElement>) {
+  if (event.pointerType !== "mouse") return;
+  const card = event.currentTarget;
+  const bounds = card.getBoundingClientRect();
+  const x = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
+  const y = Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height));
+  card.style.setProperty("--pricing-pointer-x", `${x * 100}%`);
+  card.style.setProperty("--pricing-pointer-y", `${y * 100}%`);
+  card.style.setProperty("--pricing-tilt-x", `${(0.5 - y) * 6}deg`);
+  card.style.setProperty("--pricing-tilt-y", `${(x - 0.5) * 8}deg`);
+}
+
+function resetPricingCardLight(event: ReactPointerEvent<HTMLElement>) {
+  const card = event.currentTarget;
+  card.style.setProperty("--pricing-pointer-x", "50%");
+  card.style.setProperty("--pricing-pointer-y", "18%");
+  card.style.setProperty("--pricing-tilt-x", "0deg");
+  card.style.setProperty("--pricing-tilt-y", "0deg");
+}
 
 const configuredStorefrontSlug = String(
   import.meta.env.VITE_PRIMARY_STOREFRONT_SLUG || "demo",
@@ -136,6 +223,7 @@ export function LandingPage() {
             <a href="#product">产品</a>
             <a href="#workflow">流程</a>
             <a href="#capabilities">能力</a>
+            <a href="#pricing">价格</a>
             <a href="#merchants">商家入口</a>
           </nav>
           <div className={styles.headerActions}>
@@ -160,6 +248,7 @@ export function LandingPage() {
             <a href="#product" onClick={closeMenu}>产品</a>
             <a href="#workflow" onClick={closeMenu}>流程</a>
             <a href="#capabilities" onClick={closeMenu}>能力</a>
+            <a href="#pricing" onClick={closeMenu}>价格</a>
             <a href="#merchants" onClick={closeMenu}>商家入口</a>
             <Link to="/login" onClick={closeMenu}>登录工作台</Link>
           </nav>
@@ -323,6 +412,71 @@ export function LandingPage() {
           </Reveal>
         </section>
 
+        <section className={styles.pricingSection} id="pricing">
+          <div className={styles.shell}>
+            <Reveal className={styles.pricingHeading}>
+              <div>
+                <span className={styles.sectionKicker}>Plans / 三种成长尺度</span>
+                <h2>能力不必一次买满，<br />但应当始终留有余地。</h2>
+              </div>
+              <div className={styles.pricingIntro}>
+                <p>从商品资料归整，到更深的智能检索、团队协作与独立模块，选择与你当下规模相称的版本。</p>
+                <span>具体金额按 SKU 规模与服务范围核定</span>
+              </div>
+            </Reveal>
+
+            <Reveal className={styles.pricingDeck}>
+              <div className={styles.pricingGrid} aria-label="智贸云订阅方案">
+                {pricingPlans.map((plan, index) => (
+                  <article
+                    key={plan.id}
+                    className={`${styles.pricingCard} ${pricingCardToneClass[plan.id]}`}
+                    onPointerMove={updatePricingCardLight}
+                    onPointerLeave={resetPricingCardLight}
+                    aria-labelledby={`pricing-${plan.id}`}
+                  >
+                    <div className={styles.pricingCardSurface}>
+                      <span className={styles.pricingMetalBorder} aria-hidden="true" />
+                      <span className={styles.pricingCursorLight} aria-hidden="true" />
+                      <span className={styles.pricingCardGhost} aria-hidden="true">{plan.name}</span>
+
+                      <div className={styles.pricingCardMeta}>
+                        <span>{plan.code}</span>
+                        {plan.recommended ? <strong>强烈推荐</strong> : <span>智贸云订阅</span>}
+                      </div>
+
+                      <div className={styles.pricingIdentity}>
+                        <span className={styles.pricingChip} aria-hidden="true"><i /><i /><i /></span>
+                        <div>
+                          <span>{plan.chineseName}</span>
+                          <h3 id={`pricing-${plan.id}`}>{plan.name}</h3>
+                        </div>
+                      </div>
+
+                      <div className={styles.pricingBilling}>
+                        <strong>{plan.billing}</strong>
+                        <span>联系定价</span>
+                      </div>
+
+                      <ul className={styles.pricingFeatures}>
+                        {plan.features.map((feature) => (
+                          <li key={feature}><Check size={16} weight="bold" />{feature}</li>
+                        ))}
+                      </ul>
+
+                      <div className={styles.pricingCardFooter}>
+                        <span>{plan.audience}</span>
+                        <span aria-hidden="true">0{index + 1}</span>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <p className={styles.pricingSwipeHint}>左右滑动，查看三个订阅方案</p>
+            </Reveal>
+          </div>
+        </section>
+
         <section className={styles.merchantSection} id="merchants">
           <div className={`${styles.shell} ${styles.merchantGrid}`}>
             <Reveal className={styles.merchantCopy}>
@@ -372,6 +526,7 @@ export function LandingPage() {
           <nav aria-label="页脚导航">
             <a href="#product">产品</a>
             <a href="#workflow">流程</a>
+            <a href="#pricing">价格</a>
             <Link to={primaryStorefrontPath}>查看商品前台</Link>
             <Link to="/login">登录工作台</Link>
             <Link to="/privacy">隐私政策</Link>

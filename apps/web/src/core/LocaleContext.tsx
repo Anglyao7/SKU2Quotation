@@ -171,6 +171,8 @@ const english: Record<string, string> = {
   "模板": "Templates",
   "报价设置": "Quotation settings",
   "报价单模板": "Quotation templates",
+  "下载系统默认模板": "Download system default template",
+  "默认报价模板下载失败": "Could not download the default quote template",
   "上传商家自己的 Excel 报价单，确认表头后把模板列映射到系统字段。客户下载时会自动沿用默认模板的原始版式。":
     "Upload your existing Excel quotation, confirm its header, and map each template column to a system field. Customer downloads will keep the original layout of the default template.",
   "上传 Excel": "Upload Excel",
@@ -206,10 +208,20 @@ const english: Record<string, string> = {
   "已智能匹配": "Suggested automatically",
   "暂无示例": "No sample",
   "不导出此列": "Leave this column blank",
+  "不填充数据（保留空列）": "Leave blank (keep this column)",
   "商品明细": "Product details",
+  "包装物流": "Packing and logistics",
   "报价数据": "Quote values",
   "报价信息": "Quote information",
+  "商品图片": "Product image",
   "商品规格": "Product specifications",
+  "装箱数量": "Packing quantity",
+  "装箱尺寸": "Carton dimensions",
+  "毛重（kg）": "Gross weight (kg)",
+  "立方（m³）": "Volume (m³)",
+  "总价": "Total price",
+  "总立方（m³）": "Total volume (m³)",
+  "总毛重（kg）": "Total gross weight (kg)",
   "至少映射一列后才能保存。": "Map at least one column before saving.",
   "保存后，新的报价下载会立即使用这套映射。":
     "New quotation downloads will use this mapping immediately after saving.",
@@ -224,6 +236,9 @@ const english: Record<string, string> = {
   "报价模板保存失败": "Could not save the quote template",
   "重新识别表头失败": "Could not detect the header again",
   "报价模板删除失败": "Could not delete the quote template",
+  "报价文件下载失败": "Could not download the quotation file",
+  "下载 PDF": "Download PDF",
+  "下载 Excel": "Download Excel",
   "这里只支持 .xlsx 格式的 Excel 报价单。": "Only .xlsx Excel quotations are supported here.",
   "平台": "Platform",
   "商家管理": "Merchants",
@@ -642,16 +657,18 @@ const english: Record<string, string> = {
     "Status refresh failed. The system will keep retrying.",
   "导入详情加载失败": "Could not load import details",
   "失败明细下载失败": "Could not download failure details",
-  "这里只接受固定格式的 .xlsx 商品模版。":
-    "Only the standard .xlsx product template is accepted.",
-  "文件签名与 XLSX 商品模版不一致，请重新选择。":
-    "The file signature does not match an XLSX product template.",
+  "这里只接受 .xlsx 商品文件。":
+    "Only .xlsx product files are accepted.",
+  "文件签名与 XLSX 格式不一致，请重新选择。":
+    "The file signature does not match the XLSX format.",
   "文件检测失败": "File validation failed",
   "当前账号没有导入商品的权限。":
     "Your account does not have permission to import products.",
   "商品导入失败": "Product import failed",
   "产品详情加载失败": "Could not load product details",
   "商品资料": "Product data",
+  "使用 Product 与 SKU 双表模板批量维护商品主数据，并在每个商品下管理不同 SKU、规格、价格与供应商。":
+    "Use the Product and SKU worksheets to maintain product master data and manage each product's SKUs, options, prices, and suppliers.",
   "所有商品从固定 Excel 模版进入这里，并直接按 SKU 管理名称、分类、价格、图片与上下架状态。":
     "Import products from the standard Excel template, then manage names, categories, prices, images, and status by SKU.",
   "搜索 SKU、商品名称或产品编码": "Search SKU, product name, or product code",
@@ -669,6 +686,8 @@ const english: Record<string, string> = {
     "Try a different keyword, category, or status.",
   "清除筛选": "Clear filters",
   "商品库还是空的": "The catalog is empty",
+  "先在 Product 表填写商品，再在 SKU 表用商品编码关联不同规格；导入后即可统一管理和发布。":
+    "Add products on the Product worksheet, then link variants on the SKU worksheet with the product code before importing and publishing.",
   "下载固定模版并填写商品资料，导入后即可按 SKU 管理和发布。":
     "Download the standard template, add product data, then import to manage and publish by SKU.",
   "共 {total} 个 SKU · 当前显示 {start}–{end}":
@@ -699,6 +718,43 @@ const english: Record<string, string> = {
   "SKU 详情": "SKU details",
   "批量删除": "Bulk delete",
   "批量删除 SKU": "Bulk delete SKUs",
+  "批量管理": "Bulk actions",
+  "分类和置顶会应用到所选 SKU 对应的商品。":
+    "Category and pinning apply to the products represented by the selected SKUs.",
+  "置顶": "Pin",
+  "取消置顶": "Unpin",
+  "修改分类": "Change category",
+  "上架": "Publish",
+  "下架": "Unpublish",
+  "已置顶": "Pinned",
+  "请选择要移动到的分类。": "Choose a destination category.",
+  "所选分类": "selected category",
+  "已将 {skus} 个 SKU 对应的 {products} 个商品移动到“{category}”。":
+    "Moved {products} products represented by {skus} SKUs to “{category}”.",
+  "已置顶 {products} 个商品。": "Pinned {products} products.",
+  "已取消置顶 {products} 个商品。": "Unpinned {products} products.",
+  "已上架 {count} 个 SKU。": "Published {count} SKUs.",
+  "已下架 {count} 个 SKU。": "Unpublished {count} SKUs.",
+  "{message} {failed} 个项目未能更新。":
+    "{message} {failed} items could not be updated.",
+  "批量更新失败，请稍后重试。": "Bulk update failed. Try again shortly.",
+  "批量修改商品分类": "Change product category",
+  "置顶所选商品？": "Pin the selected products?",
+  "取消置顶所选商品？": "Unpin the selected products?",
+  "上架所选 SKU？": "Publish the selected SKUs?",
+  "下架所选 SKU？": "Unpublish the selected SKUs?",
+  "所选 SKU 对应的商品会统一移动到目标分类；同一商品的其他 SKU 也会随商品归入该分类。":
+    "Products represented by the selected SKUs will move to the destination category, including every other SKU under those products.",
+  "置顶状态按商品生效，并在商品所属分类内控制前台展示顺序。":
+    "Pinning applies at product level and controls storefront order within each product category.",
+  "状态会应用到所选的 {count} 个 SKU，并立即影响商家前台是否展示。":
+    "The status applies to {count} selected SKUs and immediately controls their storefront visibility.",
+  "目标分类": "Destination category",
+  "请选择分类": "Choose a category",
+  "当前选择 {count} 个 SKU": "{count} SKUs selected",
+  "操作完成后，失败项目会继续保持选中，便于再次处理。":
+    "Failed items stay selected after the operation so they can be retried.",
+  "确认更新": "Confirm update",
   "已选择 {count} 个，最多 500 个":
     "{count} selected, up to 500",
   "已选择 {count} 个 SKU": "{count} SKUs selected",
@@ -747,12 +803,25 @@ const english: Record<string, string> = {
   "SKU 列表分页": "SKU pagination",
   "第 {page} / {pages} 页": "Page {page} of {pages}",
   "商品批量导入": "Bulk product import",
-  "上传填写完成的 XLSX 文件。系统会先完整校验，再按 SKU 增量合并到当前商品库。":
-    "Upload a completed XLSX file. The system validates the whole file, then incrementally merges it into the catalog by SKU.",
+  "上传 Product + SKU 双表 XLSX；也继续兼容历史单表模板。系统会先完整校验，再按 SKU 增量合并到当前商品库。":
+    "Upload the Product + SKU workbook. Legacy single-sheet templates remain supported. The whole file is validated before an incremental merge by SKU.",
+  "上传包含受支持商品列结构的 XLSX 文件，工作表名称不限。系统会先完整校验，再按 SKU 增量合并到当前商品库。":
+    "Upload an XLSX file with a supported product column layout; the worksheet name can be anything. The system validates the whole file, then incrementally merges it into the catalog by SKU.",
   "先下载标准模板": "Download the standard template first",
+  "Product 表中的商品编码和商品名称必填；SKU 表使用相同商品编码建立归属，SKU 编号作为增量更新的稳定标识。分类留空归入“未分类”，价格留空按 0 或继承商品价格处理。":
+    "Product code and product name are required on Product. Use the same product code on SKU, where the SKU code is the stable identity for incremental updates. Blank categories become Uncategorized; blank prices become zero or inherit the product price.",
+  "Product 表填写商品主数据；SKU 表每行最多定义三个规格，每个规格最多五个候选值，系统会自动组合成具体 SKU。SKU 编号作为组合编号的稳定前缀。":
+    "Enter product master data on Product. Each SKU row can define up to three options with five candidate values each; the system combines them into concrete SKUs, using the SKU code as the stable prefix.",
   "只有商品名称必填；型号留空会自动生成临时型号，但需要以后准确更新同一商品时，建议填写稳定型号。分类留空归入“未分类”且不进入智能索引，价格留空按 0 处理。":
     "Only the product name is required. A temporary model is generated when blank, but use a stable model when the same product must be updated accurately later. A blank category becomes “Uncategorized” and is excluded from the AI index; a blank price becomes zero.",
   "固定模版字段": "Template columns",
+  "Product 商品主表": "Product master worksheet",
+  "SKU 明细表": "SKU detail worksheet",
+  "商品与 SKU 编码关联": "Product-to-SKU code link",
+  "每个规格 5 个候选值": "Up to five values per option",
+  "候选值自动组合 SKU": "Automatically combine option values into SKUs",
+  "供应商、价格与包装": "Supplier, price, and packing fields",
+  "标签与图片1–10": "Tags and images 1–10",
   "商品名称": "Product name",
   "商品分类": "Product category",
   "商品型号": "Product model",
@@ -768,8 +837,10 @@ const english: Record<string, string> = {
   "格式已确认": "Format verified",
   "格式不一致": "Format mismatch",
   "选择商品文件": "Choose product file",
-  "上传使用标准模板填写完成的 XLSX 文件，单文件最大 250 MB":
-    "Upload an XLSX file completed with the standard template, up to 250 MB",
+  "上传包含受支持商品列结构的 XLSX 文件，工作表名称不限，单文件最大 250 MB":
+    "Upload an XLSX file with a supported product column layout; worksheet names are unrestricted; maximum 250 MB",
+  "上传最新版 Product + SKU 双表或受支持的历史 XLSX，单文件最大 250 MB":
+    "Upload the latest Product + SKU workbook or a supported legacy XLSX file, up to 250 MB",
   "正在检查文件": "Checking file",
   "正在上传商品文件": "Uploading product file",
   "文件上传完成，正在创建导入任务": "Upload complete; creating import job",
@@ -833,6 +904,8 @@ const english: Record<string, string> = {
   "商品模版映射": "Template mapping",
   "型号作为 SKU 编码；价格进入对客公开价；标签用于商品展示与 AI 搜索召回；图床链接作为商品图片。":
     "Models become SKU codes, prices become public prices, tags support display and AI retrieval, and hosted URLs become product images.",
+  "Product 表维护商品主数据与图片；SKU 表通过商品编码关联规格、供应商和价格。标签用于商品展示与 AI 搜索召回。":
+    "Product maintains product master data and images. SKU links options, suppliers, and prices through the product code. Tags support storefront display and AI retrieval.",
   "暂无活动记录": "No activity yet",
   "重要修改将在此处形成审计时间线。":
     "Important changes will appear here as an audit timeline.",
@@ -1075,8 +1148,8 @@ const english: Record<string, string> = {
   "下载分类模板": "Download category template",
   "导入分类": "Import categories",
   "分类批量导入": "Bulk category import",
-  "A 列填写一级分类，B 列填写二级分类；B 列留空时只创建一级分类。":
-    "Enter primary categories in column A and subcategories in column B. Leave column B blank to create only a primary category.",
+  "A 列填写一级分类，B 列填写二级分类；B 列留空时只创建一级分类。工作表名称不限。":
+    "Enter primary categories in column A and subcategories in column B. Leave column B blank to create only a primary category. The worksheet name can be anything.",
   "按两列模板增量合并": "Merge incrementally from two columns",
   "同一一级分类可以重复多行并包含多个二级分类；已有分类不会重复创建，未写入模板的分类也不会被删除。":
     "Repeat a primary category across rows to add multiple subcategories. Existing categories are not duplicated, and omitted categories are not deleted.",
@@ -1084,8 +1157,8 @@ const english: Record<string, string> = {
   "分类导入失败，请检查文件后重试。":
     "Category import failed. Check the file and try again.",
   "选择分类文件": "Choose category file",
-  "只支持使用分类模板填写的 .xlsx 文件":
-    "Use an .xlsx file completed from the category template",
+  "支持包含“一级分类、二级分类”两列的 .xlsx 文件，工作表名称不限":
+    "Use an .xlsx file containing the Primary category and Subcategory columns; the worksheet name can be anything",
   "选择文件": "Choose file",
   "正在导入…": "Importing…",
   "分类导入完成": "Category import complete",
@@ -1603,6 +1676,17 @@ const english: Record<string, string> = {
   "请输入对外展示的商家名称": "Enter the public merchant name",
   "中文可直接用于路径；空格和标点会自动整理。修改后已有链接仍然有效。":
     "Chinese characters can be used in the path. Spaces and punctuation are normalized, and existing links remain valid.",
+  "商家资料读取失败，请刷新后重试。":
+    "Merchant settings could not be loaded. Refresh the page and try again.",
+  "商品前台语言": "Storefront languages",
+  "勾选后才会出现在访客的语言菜单中；简体中文作为默认语言始终保留。":
+    "Only selected languages appear in the visitor language menu. Simplified Chinese always remains the default.",
+  "默认": "Default",
+  "爆款优先展示": "Prioritize bestsellers",
+  "开启后，访客进入“全部商品”时会优先看到近 90 天浏览与下单热度更高的商品；搜索和分类顺序不受影响。":
+    "When enabled, visitors see products with stronger views and orders from the last 90 days first in All products. Search and category ordering stay unchanged.",
+  "已开启": "Enabled",
+  "未开启": "Disabled",
   "当前商品前台": "Current storefront",
   "查看前台": "View storefront",
   "仅商家所有者或管理员可以修改。":
@@ -1610,6 +1694,8 @@ const english: Record<string, string> = {
   "保存商家资料": "Save merchant profile",
   "商家名称和前台地址已更新，旧地址会自动跳转到新地址。":
     "Merchant name and storefront address updated. The previous address now redirects automatically.",
+  "商家资料与商品前台设置已保存。商家名称变更后，旧地址仍会自动跳转。":
+    "Merchant details and storefront settings have been saved. Existing links continue to redirect after a merchant name change.",
   "该商家名称对应的前台地址已被使用，请换一个名称。":
     "That storefront address is already in use. Choose another merchant name.",
   "当前成员没有修改商家资料的权限。":

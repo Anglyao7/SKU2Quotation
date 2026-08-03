@@ -329,6 +329,12 @@ def process_file_worker_job(
                     "issues": issue_details,
                     "issue_total": len(issue_details),
                     "import_progress": 100,
+                    "processed_rows": (
+                        template_result.imported + template_result.skipped
+                    ),
+                    "total_rows": (
+                        template_result.imported + template_result.skipped
+                    ),
                     "import_stage": (
                         "COMPLETED"
                         if template_result.status == "published"

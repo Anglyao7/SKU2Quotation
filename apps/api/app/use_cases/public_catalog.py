@@ -58,6 +58,10 @@ from ..services.translation import (
     configured_catalog_translator,
 )
 from ..services.translation_memory import translate_values_with_memory
+from ..storefront_locales import (
+    effective_storefront_locales,
+    normalize_storefront_locale,
+)
 from . import announcements as announcement_use_cases
 from . import quote_templates as quote_template_use_cases
 
@@ -66,6 +70,143 @@ MONEY = Decimal("0.01")
 PUBLIC_TOKEN_SEPARATOR = "."
 logger = logging.getLogger(__name__)
 _CJK_TEXT_PATTERN = re.compile(r"[\u3400-\u9fff]")
+_LATIN_TEXT_PATTERN = re.compile(r"[A-Za-z]")
+_ENGLISH_FRAGMENT_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"[A-Za-z][A-Za-z'’.-]*"
+    r"(?:[ \t]+[A-Za-z][A-Za-z'’.-]*)*"
+    r"(?![A-Za-z0-9])"
+)
+_LATIN_OUTPUT_FRAGMENT_PATTERN = re.compile(
+    r"(?<![A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F0-9])"
+    r"[A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]"
+    r"[A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F'’.-]*"
+    r"(?:[ \t]+[A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]"
+    r"[A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F'’.-]*)*"
+    r"(?![A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F0-9])"
+)
+_PUBLIC_OPTION_INTERNAL_KEY = "_sku2quotation"
+_PUBLIC_OPTION_METADATA_KEYS = frozenset(
+    {
+        _PUBLIC_OPTION_INTERNAL_KEY,
+        "商品编码",
+        "商品型号",
+        "规格名称",
+        "备注",
+        "一箱个数",
+        "装箱数",
+        "毛重",
+        "起定数",
+        "是否是新品",
+    }
+)
+_NONLINGUISTIC_ENGLISH_FRAGMENTS = frozenset(
+    {
+        "cm",
+        "mm",
+        "m",
+        "km",
+        "g",
+        "kg",
+        "mg",
+        "ml",
+        "l",
+        "oz",
+        "lb",
+        "lbs",
+        "w",
+        "kw",
+        "v",
+        "mah",
+        "hz",
+        "pc",
+        "pcs",
+        "sku",
+        "upc",
+        "ean",
+        "url",
+    }
+)
+_REDUNDANT_BILINGUAL_FIELD_LABEL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"ITEM[ \t]*NO\.?|FOLDED[ \t]+SIZE|NET[ \t]+WEIGHT|"
+    r"GROSS[ \t]+WEIGHT|MATERIAL|MEAS(?:UREMENTS?)?\.?|"
+    r"QUANTITY|QTY\.?|SIZE|N\.?W\.?|G\.?W\.?)"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_ENGLISH_CATALOG_TERM_EXPANSIONS = {
+    "item no": "Item number",
+    "item number": "Item number",
+    "nw": "Net weight",
+    "n w": "Net weight",
+    "net weight": "Net weight",
+    "gw": "Gross weight",
+    "g w": "Gross weight",
+    "gross weight": "Gross weight",
+    "meas": "Carton dimensions",
+    "measurements": "Carton dimensions",
+    "qty": "Quantity",
+}
+_LIKELY_ENGLISH_CATALOG_WORDS = frozenset(
+    {
+        "and",
+        "automatic",
+        "backpack",
+        "bag",
+        "bear",
+        "bed",
+        "black",
+        "blue",
+        "bottle",
+        "box",
+        "carton",
+        "cat",
+        "collar",
+        "color",
+        "dog",
+        "doll",
+        "electric",
+        "feeder",
+        "folded",
+        "food",
+        "for",
+        "goods",
+        "green",
+        "gross",
+        "house",
+        "item",
+        "large",
+        "material",
+        "medium",
+        "normal",
+        "number",
+        "other",
+        "pack",
+        "pet",
+        "plastic",
+        "product",
+        "quantity",
+        "red",
+        "set",
+        "size",
+        "small",
+        "smart",
+        "stainless",
+        "steel",
+        "style",
+        "the",
+        "to",
+        "toy",
+        "travel",
+        "velvet",
+        "water",
+        "weight",
+        "white",
+        "with",
+        "without",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +224,8 @@ class PublicProductTranslation:
     tags: tuple[str, ...]
     display_tag: str | None
     specifications: dict[str, str]
+    option_labels: dict[str, str]
+    option_values: dict[str, str]
     complete: bool
 
 
@@ -175,20 +318,44 @@ def _category_path(category: object | None) -> str:
 
 
 def _normalized_locale(value: str | None, *, default: str = "zh-CN") -> str:
-    normalized = (value or default).strip().replace("_", "-")
-    aliases = {
-        "zh": "zh-CN",
-        "zh-cn": "zh-CN",
-        "en": "en-US",
-        "en-us": "en-US",
-    }
-    locale = aliases.get(normalized.casefold())
+    locale = normalize_storefront_locale(value or default)
     if locale is None:
         raise ApplicationError(
             "PUBLIC_LOCALE_UNSUPPORTED",
             "The requested storefront language is not supported.",
         )
     return locale
+
+
+def _available_storefront_locales(
+    tenant: object,
+    profile: object,
+) -> list[str]:
+    source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
+    configured = effective_storefront_locales(
+        getattr(profile, "storefront_locales", None),
+        source_locale=source_locale,
+    )
+    if catalog_translation_is_configured():
+        return configured
+    return [source_locale]
+
+
+def _requested_storefront_locale(
+    locale: str | None,
+    *,
+    tenant: object,
+    profile: object,
+) -> tuple[str, str, list[str]]:
+    source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
+    requested_locale = _normalized_locale(locale, default=source_locale)
+    available_locales = _available_storefront_locales(tenant, profile)
+    if requested_locale not in available_locales:
+        raise ApplicationError(
+            "PUBLIC_LOCALE_DISABLED",
+            "The requested storefront language is not enabled for this store.",
+        )
+    return source_locale, requested_locale, available_locales
 
 
 def _ordered_category_paths(
@@ -314,11 +481,13 @@ def get_store(
     locale: str | None = None,
 ) -> PublicStoreResponse:
     tenant, profile = _resolve_store(session, slug=slug)
-    source_locale = _normalized_locale(tenant.default_locale)
-    requested_locale = _normalized_locale(locale, default=source_locale)
-    available_locales = [source_locale]
-    if catalog_translation_is_configured() and source_locale != "en-US":
-        available_locales.append("en-US")
+    source_locale, requested_locale, available_locales = (
+        _requested_storefront_locale(
+            locale,
+            tenant=tenant,
+            profile=profile,
+        )
+    )
     return PublicStoreResponse(
         id=tenant.id,
         slug=tenant.slug,
@@ -332,6 +501,7 @@ def get_store(
         source_locale=source_locale,
         available_locales=available_locales,
         all_products_position=max(0, int(profile.all_products_position or 0)),
+        hot_products_enabled=bool(profile.hot_products_enabled),
         announcements=announcement_use_cases.public_announcements(
             session,
             tenant_id=tenant.id,
@@ -440,6 +610,395 @@ def _live_translation_provider(
         return None
 
 
+def _is_translatable_catalog_text(value: str) -> bool:
+    return bool(
+        value.strip()
+        and (
+            _CJK_TEXT_PATTERN.search(value)
+            or _LATIN_TEXT_PATTERN.search(value)
+        )
+    )
+
+
+def _is_nonlinguistic_english_fragment(value: str) -> bool:
+    letters = "".join(character for character in value if character.isalpha())
+    return (
+        value.casefold() in _NONLINGUISTIC_ENGLISH_FRAGMENTS
+        or (
+            bool(letters)
+            and len(letters) <= 4
+            and value.replace(".", "").isalpha()
+            and value.upper() == value
+        )
+    )
+
+
+def _latin_fragments(value: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            fragment
+            for match in _LATIN_OUTPUT_FRAGMENT_PATTERN.finditer(value)
+            if (
+                (fragment := match.group(0).strip())
+                and not _is_nonlinguistic_english_fragment(fragment)
+            )
+        )
+    )
+
+
+def _english_fragments(value: str) -> tuple[str, ...]:
+    """Return natural-language Latin fragments embedded in CJK catalog text.
+
+    DeepLX correctly translates the Chinese portion of mixed strings but can
+    leave labels such as ``ITEM NO`` untouched when the source language is
+    Chinese. Units and catalog identifiers are deliberately not treated as
+    prose; the lower-level translator already protects alpha-numeric codes.
+    """
+
+    if not _CJK_TEXT_PATTERN.search(value):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            fragment
+            for match in _ENGLISH_FRAGMENT_PATTERN.finditer(value)
+            if (
+                (fragment := match.group(0).strip())
+                and not _is_nonlinguistic_english_fragment(fragment)
+            )
+        )
+    )
+
+
+def _replace_english_fragment(
+    value: str,
+    *,
+    source: str,
+    translated: str,
+) -> str:
+    if not source or not translated or source.casefold() == translated.casefold():
+        return value
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9]){re.escape(source)}(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda _match: translated, value)
+
+
+def _prepare_catalog_translation_value(value: str) -> str:
+    if not _CJK_TEXT_PATTERN.search(value):
+        return value.strip()
+    prepared = _REDUNDANT_BILINGUAL_FIELD_LABEL_PATTERN.sub("", value)
+    prepared = re.sub(r"[ \t]+(?=[:：])", "", prepared)
+    prepared = re.sub(r"[ \t]{2,}", " ", prepared)
+    return prepared.strip()
+
+
+def _expanded_english_catalog_term(value: str) -> str:
+    normalized = re.sub(r"[.\s]+", " ", value).strip().casefold()
+    return _ENGLISH_CATALOG_TERM_EXPANSIONS.get(normalized, value)
+
+
+def _looks_likely_english_catalog_fragment(value: str) -> bool:
+    words = {
+        word.casefold()
+        for word in re.findall(r"[A-Za-z]{2,}", value)
+    }
+    return bool(words & _LIKELY_ENGLISH_CATALOG_WORDS)
+
+
+def _translate_english_catalog_fragments(
+    *,
+    tenant_id: UUID,
+    translator: TranslationProvider,
+    fragments: list[str],
+    target_locale: str,
+) -> dict[str, str]:
+    expanded_by_fragment = {
+        fragment: _expanded_english_catalog_term(fragment)
+        for fragment in fragments
+    }
+    translated_expansions = translate_values_with_memory(
+        tenant_id=tenant_id,
+        translator=translator,
+        values=list(dict.fromkeys(expanded_by_fragment.values())),
+        source_locale="en-US",
+        target_locale=target_locale,
+    )
+    return {
+        fragment: translated_expansions[expanded]
+        for fragment, expanded in expanded_by_fragment.items()
+        if expanded in translated_expansions
+    }
+
+
+def _translate_public_catalog_values(
+    *,
+    tenant_id: UUID,
+    translator: TranslationProvider,
+    values: list[str],
+    source_locale: str,
+    target_locale: str,
+    normalize_provider_output: bool = False,
+) -> tuple[dict[str, str], set[str]]:
+    """Translate Chinese, English and mixed storefront content completely.
+
+    Whole values retain their context and formatting. Pure English values are
+    translated with an English source language; mixed Chinese/English values
+    are translated as Chinese first, then any English fragment that survives
+    verbatim receives a small cached English-to-target repair pass.
+    """
+
+    source_values = list(
+        dict.fromkeys(
+            value.strip()
+            for value in values
+            if _is_translatable_catalog_text(value)
+        )
+    )
+    if not source_values:
+        return {}, set()
+    prepared_by_source = {
+        source_value: _prepare_catalog_translation_value(source_value)
+        for source_value in source_values
+    }
+    unique_values = list(dict.fromkeys(prepared_by_source.values()))
+
+    grouped_values: dict[str, list[str]] = {}
+    translated_values: dict[str, str] = {}
+    complete_values: set[str] = set()
+    for value in unique_values:
+        value_source_locale = (
+            source_locale
+            if _CJK_TEXT_PATTERN.search(value)
+            else "en-US"
+        )
+        if value_source_locale == target_locale:
+            translated_values[value] = value
+            complete_values.add(value)
+            continue
+        grouped_values.setdefault(value_source_locale, []).append(value)
+
+    for value_source_locale, source_values in grouped_values.items():
+        translated_group = translate_values_with_memory(
+            tenant_id=tenant_id,
+            translator=translator,
+            values=source_values,
+            source_locale=value_source_locale,
+            target_locale=target_locale,
+        )
+        translated_values.update(translated_group)
+        complete_values.update(translated_group)
+
+    if target_locale not in {"en", "en-US"}:
+        residual_fragments_by_value: dict[str, tuple[str, ...]] = {}
+        for source_value in unique_values:
+            translated_value = translated_values.get(source_value)
+            if translated_value is None:
+                continue
+            residuals = tuple(
+                fragment
+                for fragment in _english_fragments(source_value)
+                if re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(fragment)}(?![A-Za-z0-9])",
+                    translated_value,
+                    re.IGNORECASE,
+                )
+            )
+            if residuals:
+                residual_fragments_by_value[source_value] = residuals
+
+        residual_fragments = list(
+            dict.fromkeys(
+                fragment
+                for fragments in residual_fragments_by_value.values()
+                for fragment in fragments
+            )
+        )
+        fragment_translations = (
+            _translate_english_catalog_fragments(
+                tenant_id=tenant_id,
+                translator=translator,
+                fragments=residual_fragments,
+                target_locale=target_locale,
+            )
+            if residual_fragments
+            else {}
+        )
+        for source_value, residuals in residual_fragments_by_value.items():
+            localized = translated_values[source_value]
+            for fragment in sorted(residuals, key=len, reverse=True):
+                fragment_translation = fragment_translations.get(fragment)
+                if fragment_translation is None:
+                    complete_values.discard(source_value)
+                    continue
+                localized = _replace_english_fragment(
+                    localized,
+                    source=fragment,
+                    translated=fragment_translation,
+                )
+            translated_values[source_value] = localized
+
+        # DeepLX can occasionally translate a Chinese title into English even
+        # when another target language was requested (for example
+        # ``MC宠物包`` -> ``MC Pet Pack`` for Portuguese). Re-run the Latin
+        # phrases from the provider output as a compact English-to-target
+        # normalization pass. Phrases already written in the target language
+        # are returned unchanged by DeepLX and therefore remain untouched.
+        output_fragments_by_value = (
+            {
+                source_value: tuple(
+                    fragment
+                    for fragment in _latin_fragments(localized)
+                    if _looks_likely_english_catalog_fragment(fragment)
+                )
+                for source_value, localized in translated_values.items()
+                if any(
+                    _looks_likely_english_catalog_fragment(fragment)
+                    for fragment in _latin_fragments(localized)
+                )
+            }
+            if normalize_provider_output
+            else {}
+        )
+        output_fragments = list(
+            dict.fromkeys(
+                fragment
+                for fragments in output_fragments_by_value.values()
+                for fragment in fragments
+            )
+        )
+        output_fragment_translations = (
+            _translate_english_catalog_fragments(
+                tenant_id=tenant_id,
+                translator=translator,
+                fragments=output_fragments,
+                target_locale=target_locale,
+            )
+            if output_fragments
+            else {}
+        )
+        for source_value, fragments in output_fragments_by_value.items():
+            localized = translated_values[source_value]
+            for fragment in sorted(fragments, key=len, reverse=True):
+                fragment_translation = output_fragment_translations.get(fragment)
+                if fragment_translation is None:
+                    continue
+                localized = _replace_english_fragment(
+                    localized,
+                    source=fragment,
+                    translated=fragment_translation,
+                )
+            translated_values[source_value] = localized
+
+    localized_by_source = {
+        source_value: translated_values[prepared]
+        for source_value, prepared in prepared_by_source.items()
+        if prepared in translated_values
+    }
+    complete_sources = {
+        source_value
+        for source_value, prepared in prepared_by_source.items()
+        if prepared in complete_values
+    }
+    for original in values:
+        normalized = original.strip()
+        if original != normalized and normalized in localized_by_source:
+            localized_by_source[original] = localized_by_source[normalized]
+        if normalized in complete_sources:
+            complete_sources.add(original)
+    return localized_by_source, complete_sources
+
+
+def _public_option_text(value: object) -> str | None:
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, (str, int, float, Decimal)):
+        normalized = str(value).strip()
+        return normalized or None
+    return None
+
+
+def _public_variant_option_keys(rows: list[object]) -> tuple[str, ...]:
+    explicit: list[str] = []
+    for row in rows:
+        option_values = row[1].option_values or {}
+        marker = option_values.get(_PUBLIC_OPTION_INTERNAL_KEY)
+        marker_keys = (
+            marker.get("variant_option_keys", [])
+            if isinstance(marker, dict)
+            else []
+        )
+        for key in marker_keys:
+            normalized = str(key).strip() if isinstance(key, str) else ""
+            if normalized and normalized not in explicit:
+                explicit.append(normalized)
+    if explicit:
+        return tuple(explicit)
+
+    discovered: list[str] = []
+    for row in rows:
+        for key, value in (row[1].option_values or {}).items():
+            normalized = str(key).strip()
+            if (
+                normalized
+                and normalized not in _PUBLIC_OPTION_METADATA_KEYS
+                and not normalized.startswith("_")
+                and _public_option_text(value) is not None
+                and normalized not in discovered
+            ):
+                discovered.append(normalized)
+    return tuple(discovered)
+
+
+def _localized_public_option_values(
+    option_values: dict[str, object],
+    *,
+    translation: PublicProductTranslation | None,
+) -> dict[str, object]:
+    localized = dict(option_values)
+    if translation is None or not translation.option_labels:
+        return localized
+
+    marker = localized.get(_PUBLIC_OPTION_INTERNAL_KEY)
+    localized_marker = dict(marker) if isinstance(marker, dict) else None
+    marker_keys = (
+        [
+            str(key).strip()
+            for key in localized_marker.get("variant_option_keys", [])
+            if isinstance(key, str) and str(key).strip()
+        ]
+        if localized_marker is not None
+        else []
+    )
+    localized_key_by_source: dict[str, str] = {}
+    for source_key, translated_key in translation.option_labels.items():
+        if source_key not in localized:
+            continue
+        source_value = localized.pop(source_key)
+        destination_key = translated_key.strip() or source_key
+        if destination_key in localized:
+            destination_key = source_key
+        source_text = _public_option_text(source_value)
+        localized[destination_key] = (
+            translation.option_values.get(source_text, source_value)
+            if source_text is not None
+            else source_value
+        )
+        localized_key_by_source[source_key] = destination_key
+
+    if localized_marker is not None:
+        if marker_keys:
+            localized_marker["variant_option_keys"] = [
+                localized_key_by_source.get(
+                    marker_key,
+                    translation.option_labels.get(marker_key, marker_key),
+                )
+                for marker_key in marker_keys
+            ]
+        localized[_PUBLIC_OPTION_INTERNAL_KEY] = localized_marker
+    return localized
+
+
 def _live_sku_translation_map(
     rows: list[object],
     *,
@@ -455,7 +1014,7 @@ def _live_sku_translation_map(
     names = [source.name for source in sources]
     description_parts: list[list[tuple[str, str, bool]]] = []
     translation_values: list[str] = [
-        name for name in names if _CJK_TEXT_PATTERN.search(name)
+        name for name in names if _is_translatable_catalog_text(name)
     ]
     for source in sources:
         parts: list[tuple[str, str, bool]] = []
@@ -466,7 +1025,7 @@ def _live_sku_translation_map(
                 content, ending = raw_line[:-1], raw_line[-1:]
             else:
                 content, ending = raw_line, ""
-            needs_translation = bool(_CJK_TEXT_PATTERN.search(content))
+            needs_translation = _is_translatable_catalog_text(content)
             parts.append((content, ending, needs_translation))
             if needs_translation:
                 translation_values.append(content)
@@ -486,14 +1045,15 @@ def _live_sku_translation_map(
     translation_values.extend(
         value
         for value in metadata_candidates
-        if value and _CJK_TEXT_PATTERN.search(value)
+        if _is_translatable_catalog_text(value)
     )
-    translated_values = translate_values_with_memory(
+    translated_values, complete_values = _translate_public_catalog_values(
         tenant_id=tenant_id,
         translator=translator,
         values=list(dict.fromkeys(translation_values)),
         source_locale=source_locale,
         target_locale=target_locale,
+        normalize_provider_output=True,
     )
     names = [translated_values.get(name, name) for name in names]
 
@@ -554,7 +1114,7 @@ def _live_sku_translation_map(
                 *category_segments,
                 *source.tags,
             )
-            if value and _CJK_TEXT_PATTERN.search(value)
+            if _is_translatable_catalog_text(value)
         ]
         results[source.sku_id] = CatalogTranslationResult(
             sku_id=source.sku_id,
@@ -575,7 +1135,7 @@ def _live_sku_translation_map(
                 else translated_tags[0] if translated_tags else None
             ),
             complete=all(
-                value in translated_values
+                value.strip() in complete_values
                 for value in required_values
             ),
         )
@@ -600,13 +1160,13 @@ def _live_category_labels(
             if segment.strip()
         )
     )
-    translated_segments = translate_values_with_memory(
+    translated_segments, _complete_segments = _translate_public_catalog_values(
         tenant_id=tenant_id,
         translator=translator,
         values=[
             segment
             for segment in segments
-            if _CJK_TEXT_PATTERN.search(segment)
+            if _is_translatable_catalog_text(segment)
         ],
         source_locale=source_locale,
         target_locale=target_locale,
@@ -670,6 +1230,7 @@ def _live_product_translation_map(
     translator: TranslationProvider | None,
     source_locale: str,
     target_locale: str,
+    include_sku_options: bool = False,
 ) -> dict[UUID, PublicProductTranslation]:
     if translator is None or not groups:
         return {}
@@ -694,7 +1255,7 @@ def _live_product_translation_map(
                 content, ending = raw_line[:-1], raw_line[-1:]
             else:
                 content, ending = raw_line, ""
-            needs_translation = bool(_CJK_TEXT_PATTERN.search(content))
+            needs_translation = _is_translatable_catalog_text(content)
             description_parts.append((content, ending, needs_translation))
             if needs_translation:
                 translation_values.append(content)
@@ -707,14 +1268,33 @@ def _live_product_translation_map(
                 ).strip()
             )
         )
+        option_labels = (
+            _public_variant_option_keys(rows)
+            if include_sku_options
+            else ()
+        )
+        option_choice_values = tuple(
+            dict.fromkeys(
+                option_text
+                for row in rows
+                for option_label in option_labels
+                if (
+                    option_text := _public_option_text(
+                        (row[1].option_values or {}).get(option_label)
+                    )
+                )
+            )
+        )
         values = [
             str(product.name).strip(),
             *category_segments,
             *tags,
             *specifications,
+            *option_labels,
+            *option_choice_values,
         ]
         translation_values.extend(
-            value for value in values if _CJK_TEXT_PATTERN.search(value)
+            value for value in values if _is_translatable_catalog_text(value)
         )
         sources.append(
             {
@@ -726,15 +1306,18 @@ def _live_product_translation_map(
                 "tags": tags,
                 "display_tag": display_tag,
                 "specifications": specifications,
+                "option_labels": option_labels,
+                "option_choice_values": option_choice_values,
             }
         )
 
-    translated_values = translate_values_with_memory(
+    translated_values, complete_values = _translate_public_catalog_values(
         tenant_id=tenant_id,
         translator=translator,
         values=list(dict.fromkeys(translation_values)),
         source_locale=source_locale,
         target_locale=target_locale,
+        normalize_provider_output=True,
     )
     results: dict[UUID, PublicProductTranslation] = {}
     for source in sources:
@@ -745,6 +1328,8 @@ def _live_product_translation_map(
         tags = source["tags"]
         display_tag = source["display_tag"]
         specifications = source["specifications"]
+        option_labels = source["option_labels"]
+        option_choice_values = source["option_choice_values"]
         translated_tags = tuple(
             translated_values.get(tag, tag) for tag in tags
         )
@@ -768,8 +1353,10 @@ def _live_product_translation_map(
                 *category_segments,
                 *tags,
                 *specifications,
+                *option_labels,
+                *option_choice_values,
             )
-            if value and _CJK_TEXT_PATTERN.search(value)
+            if _is_translatable_catalog_text(value)
         ]
         results[source["product_id"]] = PublicProductTranslation(
             name=translated_values.get(name, name),
@@ -806,8 +1393,22 @@ def _live_product_translation_map(
                 )
                 for specification in specifications
             },
+            option_labels={
+                option_label: translated_values.get(
+                    option_label,
+                    option_label,
+                )
+                for option_label in option_labels
+            },
+            option_values={
+                option_value: translated_values.get(
+                    option_value,
+                    option_value,
+                )
+                for option_value in option_choice_values
+            },
             complete=all(
-                value in translated_values for value in required_values
+                value.strip() in complete_values for value in required_values
             ),
         )
     return results
@@ -1042,10 +1643,22 @@ def list_public_products(
     locale: str | None = None,
 ) -> PublicProductPage:
     tenant, profile = _resolve_store(session, slug=slug)
-    source_locale = _normalized_locale(tenant.default_locale)
-    requested_locale = _normalized_locale(locale, default=source_locale)
+    source_locale, requested_locale, _available_locales = (
+        _requested_storefront_locale(
+            locale,
+            tenant=tenant,
+            profile=profile,
+        )
+    )
     now = utcnow()
     wanted_tags = _normalize_tags(tags)
+    hot_sort_applied = bool(
+        profile.hot_products_enabled
+        and not query.strip()
+        and not (category or "").strip()
+        and not wanted_tags
+        and not semantic
+    )
     all_categories = (
         repository.list_catalog_categories(session, tenant_id=tenant.id)
         if include_facets
@@ -1104,6 +1717,7 @@ def list_public_products(
             tags=wanted_tags,
             page=page,
             page_size=page_size,
+            hot=hot_sort_applied,
         )
 
     selected_rows = repository.list_public_catalog_rows_by_product_ids(
@@ -1213,6 +1827,8 @@ def list_public_products(
             if include_facets
             else 0
         ),
+        hot_products_enabled=bool(profile.hot_products_enabled),
+        hot_sort_applied=hot_sort_applied,
     )
 
 
@@ -1223,9 +1839,14 @@ def get_public_product(
     product_id: UUID,
     locale: str | None = None,
 ) -> PublicProductDetail:
-    tenant, _profile = _resolve_store(session, slug=slug)
-    source_locale = _normalized_locale(tenant.default_locale)
-    requested_locale = _normalized_locale(locale, default=source_locale)
+    tenant, profile = _resolve_store(session, slug=slug)
+    source_locale, requested_locale, _available_locales = (
+        _requested_storefront_locale(
+            locale,
+            tenant=tenant,
+            profile=profile,
+        )
+    )
     rows = repository.list_public_catalog_rows_by_product_ids(
         session,
         tenant_id=tenant.id,
@@ -1264,6 +1885,7 @@ def get_public_product(
         translator=translator,
         source_locale=source_locale,
         target_locale=requested_locale,
+        include_sku_options=True,
     )
     product_translation = product_translations.get(product_id)
     summary = _product_summary_response(
@@ -1319,6 +1941,16 @@ def get_public_product(
             if product_translation is not None and source_specification
             else source_specification or None
         )
+        localized_option_values = _localized_public_option_values(
+            dict(row[1].option_values or {}),
+            translation=(
+                product_translation
+                if requested_locale != source_locale
+                else None
+            ),
+        )
+        if specification:
+            localized_option_values["规格名称"] = specification
         source_sku_tags = tuple(
             dict.fromkeys(
                 str(tag).strip()
@@ -1359,6 +1991,7 @@ def get_public_product(
                 "tags": localized_sku_tags,
                 "display_tag": localized_display_tag,
                 "specification": specification,
+                "option_values": localized_option_values,
                 "locale": requested_locale,
                 "translation_status": summary.translation_status,
             }
@@ -1384,8 +2017,13 @@ def list_public_skus(
     locale: str | None = None,
 ) -> PublicSkuPage:
     tenant, profile = _resolve_store(session, slug=slug)
-    source_locale = _normalized_locale(tenant.default_locale)
-    requested_locale = _normalized_locale(locale, default=source_locale)
+    source_locale, requested_locale, _available_locales = (
+        _requested_storefront_locale(
+            locale,
+            tenant=tenant,
+            profile=profile,
+        )
+    )
     now = utcnow()
     wanted_tags = _normalize_tags(tags)
     all_categories = (
@@ -1560,9 +2198,14 @@ def get_public_sku(
     sku_id: UUID,
     locale: str | None = None,
 ) -> PublicSkuResponse:
-    tenant, _profile = _resolve_store(session, slug=slug)
-    source_locale = _normalized_locale(tenant.default_locale)
-    requested_locale = _normalized_locale(locale, default=source_locale)
+    tenant, profile = _resolve_store(session, slug=slug)
+    source_locale, requested_locale, _available_locales = (
+        _requested_storefront_locale(
+            locale,
+            tenant=tenant,
+            profile=profile,
+        )
+    )
     rows = repository.list_public_catalog_rows_by_sku_ids(
         session,
         tenant_id=tenant.id,

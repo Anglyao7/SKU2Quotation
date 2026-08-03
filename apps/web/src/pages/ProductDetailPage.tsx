@@ -26,9 +26,19 @@ import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { money } from "../lib/format";
+import {
+  buildProductVariantModel,
+  selectedVariantValues,
+  skuIdForVariantChoice,
+} from "../lib/productVariantOptions";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
-import { storefrontText } from "../lib/storefrontLocale";
+import {
+  normalizeStorefrontLocale,
+  storefrontDirection,
+  storefrontLocaleQuery,
+  storefrontText,
+} from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
 import type {
   Sku,
@@ -61,18 +71,40 @@ function productViewEventId(locationKey: string, productId: string) {
 
 export function ProductDetailPage() {
   const { store, product } = useLoaderData() as ProductDetailLoaderData;
-  const locale: StorefrontLocale = store.locale === "en-US" ? "en-US" : "zh-CN";
+  const locale: StorefrontLocale = normalizeStorefrontLocale(store.locale);
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
-  const localeQuery = locale === "en-US" ? "?lang=en-US" : "";
+  const localeQuery = storefrontLocaleQuery(locale);
   const storefrontHome = `/${encodeURIComponent(store.slug)}${localeQuery}`;
   const location = useLocation();
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(store.slug),
   );
-  const [imageFailed, setImageFailed] = useState(!product.image_url);
+  const variantModel = useMemo(
+    () => buildProductVariantModel(product.skus, {
+      fallbackDimension: storefrontText(locale, "款式"),
+      fallbackValue: storefrontText(locale, "标准款"),
+    }),
+    [locale, product.skus],
+  );
+  const [selectedSkuId, setSelectedSkuId] = useState(
+    () => product.skus[0]?.id || "",
+  );
+  const selectedSku = product.skus.find((sku) => sku.id === selectedSkuId)
+    || product.skus[0];
+  const selectedValues = selectedVariantValues(
+    variantModel,
+    selectedSku?.id || "",
+  );
+  const selectedLabel = selectedSku?.specification?.trim()
+    || selectedSku?.name?.trim()
+    || t("标准款");
+  const selectedQuantity = selectedSku ? cart[selectedSku.id]?.quantity || 0 : 0;
+  const selectedImageUrl = selectedSku?.image_url || product.image_url;
+  const [imageFailed, setImageFailed] = useState(!selectedImageUrl);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [announcements, setAnnouncements] = useState(store.announcements || []);
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const description = product.description?.trim();
@@ -81,14 +113,8 @@ export function ProductDetailPage() {
     (location.state as { fromStorefrontCatalog?: boolean } | null)
       ?.fromStorefrontCatalog,
   );
-  const priceFrom = Number(product.price_from);
-  const priceTo = Number(product.price_to);
-  const priceLabel = (
-    Number.isFinite(priceFrom)
-    && Number.isFinite(priceTo)
-    && Math.abs(priceFrom - priceTo) > 0.0001
-  )
-    ? `${money(product.price_from, product.currency)} – ${money(product.price_to, product.currency)}`
+  const priceLabel = selectedSku
+    ? money(selectedSku.price, selectedSku.currency || product.currency)
     : money(product.price_from, product.currency);
 
   useEffect(() => {
@@ -100,8 +126,13 @@ export function ProductDetailPage() {
   }, [product.id]);
 
   useEffect(() => {
-    setImageFailed(!product.image_url);
-  }, [product.image_url]);
+    setSelectedSkuId(product.skus[0]?.id || "");
+    setDescriptionExpanded(false);
+  }, [product.id, product.skus]);
+
+  useEffect(() => {
+    setImageFailed(!selectedImageUrl);
+  }, [selectedImageUrl]);
 
   useEffect(() => {
     setAnnouncements(store.announcements || []);
@@ -127,11 +158,14 @@ export function ProductDetailPage() {
   useEffect(() => {
     const previousTitle = document.title;
     const previousLanguage = document.documentElement.lang;
+    const previousDirection = document.documentElement.dir;
     document.documentElement.lang = locale;
+    document.documentElement.dir = storefrontDirection(locale);
     document.title = `${product.name} | ${store.name}`;
     return () => {
       document.title = previousTitle;
       document.documentElement.lang = previousLanguage;
+      document.documentElement.dir = previousDirection;
     };
   }, [locale, product.name, store.name]);
 
@@ -156,6 +190,15 @@ export function ProductDetailPage() {
     }));
   };
 
+  const selectVariantChoice = (dimensionKey: string, value: string) => {
+    setSelectedSkuId((currentSkuId) => skuIdForVariantChoice(
+      variantModel,
+      currentSkuId,
+      dimensionKey,
+      value,
+    ));
+  };
+
   const returnToCatalog = () => {
     if (cameFromCatalog) {
       navigate(-1);
@@ -165,7 +208,10 @@ export function ProductDetailPage() {
   };
 
   return (
-    <div className={`store-shell sku-detail-shell${cartLines.length ? " has-cart" : ""}`}>
+    <div
+      className={`store-shell sku-detail-shell${cartLines.length ? " has-cart" : ""}`}
+      dir={storefrontDirection(locale)}
+    >
       <header className="store-header">
         <Container size="4" className="store-header-container">
           <div className="header-inner">
@@ -190,7 +236,10 @@ export function ProductDetailPage() {
               <span className="powered-by">{t("由智贸云提供")}</span>
             </div>
             <div className="header-actions">
-              <StorefrontLanguageSwitch locale={locale} />
+              <StorefrontLanguageSwitch
+                locale={locale}
+                availableLocales={store.available_locales}
+              />
               <ThemeToggle
                 labels={{
                   toDark: t("切换深色模式"),
@@ -230,10 +279,10 @@ export function ProductDetailPage() {
 
           <section className="sku-detail-layout" aria-labelledby="product-detail-title">
             <Card className="sku-detail-media" variant="surface">
-              {product.image_url && !imageFailed ? (
+              {selectedImageUrl && !imageFailed ? (
                 <img
-                  src={product.image_url}
-                  alt={product.name}
+                  src={selectedImageUrl}
+                  alt={`${product.name} · ${selectedLabel}`}
                   onError={() => setImageFailed(true)}
                 />
               ) : (
@@ -269,9 +318,21 @@ export function ProductDetailPage() {
                 <Text id="product-description-title" as="div" size="1" color="gray" weight="medium">
                   {t("商品描述")}
                 </Text>
-                <div className={`sku-detail-description-content${description ? "" : " is-empty"}`}>
+                <div
+                  className={`sku-detail-description-content${description ? "" : " is-empty"}${description && !descriptionExpanded ? " is-collapsed" : ""}`}
+                >
                   {description || t("商家暂未补充详细描述。")}
                 </div>
+                {description && description.length > 160 ? (
+                  <button
+                    type="button"
+                    className="sku-detail-description-toggle"
+                    aria-expanded={descriptionExpanded}
+                    onClick={() => setDescriptionExpanded((current) => !current)}
+                  >
+                    {descriptionExpanded ? t("收起描述") : t("查看完整描述")}
+                  </button>
+                ) : null}
               </section>
 
               {product.category ? (
@@ -292,89 +353,104 @@ export function ProductDetailPage() {
 
               <div className="sku-detail-price">
                 <Text size="1" color="gray">
-                  {product.sku_count > 1 ? t("参考价格区间") : t("参考单价")}
+                  {t("参考单价")}
                 </Text>
                 <strong>{priceLabel}</strong>
               </div>
               <Text size="1" color="gray">
-                {t("请选择下方具体 SKU 后加入报价清单。")}
+                {t("选择规格组合后即可加入报价清单。")}
               </Text>
-            </div>
-          </section>
 
-          <section className="product-variant-section" aria-labelledby="product-variant-title">
-            <div className="product-variant-heading">
-              <div>
-                <Text size="1" color="gray">{t("商品规格")}</Text>
-                <Heading id="product-variant-title" as="h2" size="5">
-                  {t("选择 SKU")}
-                </Heading>
-              </div>
-              <span>
-                <Stack size={17} weight="duotone" />
-                {t("共 {count} 个可选项", { count: product.sku_count })}
-              </span>
-            </div>
+              <section className="product-variant-section" aria-labelledby="product-variant-title">
+                <div className="product-variant-heading">
+                  <div>
+                    <Text size="1" color="gray">{t("商品规格")}</Text>
+                    <Heading id="product-variant-title" as="h2" size="4">
+                      {t("选择规格")}
+                    </Heading>
+                  </div>
+                  <span>
+                    <Stack size={17} weight="duotone" />
+                    {t("{count} 个 SKU", { count: product.sku_count })}
+                  </span>
+                </div>
 
-            <div className="product-variant-list">
-              {product.skus.map((sku) => {
-                const quantity = cart[sku.id]?.quantity || 0;
-                const label = sku.specification || t("标准款");
-                return (
-                  <article
-                    className={`product-variant-row${quantity ? " is-selected" : ""}`}
-                    key={sku.id}
-                  >
-                    <div className="product-variant-identity">
-                      <strong>{label}</strong>
-                      <span>SKU {sku.sku_code}</span>
+                <div className="product-option-groups">
+                  {variantModel.dimensions.map((dimension) => (
+                    <fieldset className="product-option-group" key={dimension.key}>
+                      <legend>
+                        <span>{dimension.label}</span>
+                      </legend>
+                      <div className="product-option-values">
+                        {dimension.choices.map((choice) => {
+                          const selected = selectedValues[dimension.key] === choice.value;
+                          return (
+                            <button
+                              type="button"
+                              className={`product-option-choice${selected ? " is-selected" : ""}`}
+                              key={choice.value}
+                              title={choice.label}
+                              aria-pressed={selected}
+                              aria-label={`${dimension.label}: ${choice.label}`}
+                              onClick={() => selectVariantChoice(dimension.key, choice.value)}
+                            >
+                              <span>{choice.label}</span>
+                              {selected ? <Check size={13} weight="bold" aria-hidden="true" /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </fieldset>
+                  ))}
+                </div>
+
+                {selectedSku ? (
+                  <div className="product-selection-bar">
+                    <div className="product-selection-identity">
+                      <small>{t("已选 SKU")}</small>
+                      <strong>{selectedLabel}</strong>
+                      <span>SKU {selectedSku.sku_code}</span>
                     </div>
-                    <div className="product-variant-price">
-                      <small>{t("参考单价")}</small>
-                      <strong>{money(sku.price, sku.currency)}</strong>
-                    </div>
-                    {quantity ? (
-                      <div className="sku-quantity-control" aria-label={t("{name} 已选数量", { name: label })}>
+                    {selectedQuantity ? (
+                      <div
+                        className="sku-quantity-control product-selection-quantity"
+                        aria-label={t("{name} 已选数量", { name: selectedLabel })}
+                      >
                         <IconButton
                           size="2"
                           variant="soft"
                           color="gray"
-                          onClick={() => updateQuantity(sku.id, quantity - 1)}
-                          aria-label={t("减少 {name} 数量", { name: label })}
+                          onClick={() => updateQuantity(selectedSku.id, selectedQuantity - 1)}
+                          aria-label={t("减少 {name} 数量", { name: selectedLabel })}
                         >
-                          {quantity <= 1 ? <Trash size={16} /> : <Minus size={16} />}
+                          {selectedQuantity <= 1 ? <Trash size={16} /> : <Minus size={16} />}
                         </IconButton>
                         <span>
                           <small>{t("已选")}</small>
-                          <strong>{quantity}</strong>
+                          <strong>{selectedQuantity}</strong>
                         </span>
                         <IconButton
                           size="2"
-                          onClick={() => addToCart(sku)}
-                          aria-label={t("增加 {name} 数量", { name: label })}
+                          onClick={() => addToCart(selectedSku)}
+                          aria-label={t("增加 {name} 数量", { name: selectedLabel })}
                         >
                           <Plus size={16} />
                         </IconButton>
                       </div>
                     ) : (
                       <Button
-                        size="2"
-                        onClick={() => addToCart(sku)}
-                        aria-label={t("将 {name} 加入报价清单", { name: label })}
+                        className="product-selection-add"
+                        size="3"
+                        onClick={() => addToCart(selectedSku)}
+                        aria-label={t("将 {name} 加入报价清单", { name: selectedLabel })}
                       >
-                        <Plus size={17} />
-                        {t("加入清单")}
+                        <Plus size={18} />
+                        {t("加入报价清单")}
                       </Button>
                     )}
-                    {quantity ? (
-                      <span className="product-variant-selected">
-                        <Check size={13} weight="bold" />
-                        {t("已加入")}
-                      </span>
-                    ) : null}
-                  </article>
-                );
-              })}
+                  </div>
+                ) : null}
+              </section>
             </div>
           </section>
         </Container>

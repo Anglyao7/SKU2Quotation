@@ -38,6 +38,30 @@ def list_quote_excel_templates(
         raise application_http_error(exc) from exc
 
 
+@router.get("/system-default.xlsx")
+def download_system_default_quote_template(
+    session: Session = Depends(get_authenticated_session),
+) -> Response:
+    context = current_context(session)
+    try:
+        content = use_cases.download_system_default_template(
+            permissions=context.permissions,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            **NO_STORE_HEADERS,
+            "Content-Disposition": (
+                'attachment; filename="system-default-quote-template.xlsx"'
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.post(
     "",
     response_model=QuoteExcelTemplateResponse,

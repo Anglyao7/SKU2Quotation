@@ -98,6 +98,7 @@ class SkuListItem(BaseModel):
     source_filename: str | None
     source_imported_at: datetime | None
     image_status: Literal["APPROVED", "SOURCE", "NONE"]
+    is_pinned: bool = False
 
 
 class SkuListPage(BaseModel):
@@ -468,14 +469,43 @@ class ProductDeleteAllRequest(BaseModel):
     password: SecretStr
 
 
-class ProductDeleteAllResponse(BaseModel):
-    deleted_product_count: int
-    deleted_sku_count: int
+class ProductDeleteAllJobResponse(BaseModel):
+    id: UUID
+    status: Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED"]
+    stage: Literal[
+        "QUEUED",
+        "COUNTING",
+        "HIDING_OFFERS",
+        "ARCHIVING_SKUS",
+        "ARCHIVING_PRODUCTS",
+        "FINALIZING",
+        "COMPLETED",
+        "FAILED",
+    ]
+    progress: int = Field(ge=0, le=100)
+    total_products: int = Field(ge=0)
+    total_skus: int = Field(ge=0)
+    deleted_product_count: int = Field(ge=0)
+    deleted_sku_count: int = Field(ge=0)
+    error_message: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 class SkuBatchUpdateStatusRequest(BaseModel):
     sku_ids: list[UUID] = Field(min_length=1, max_length=500)
     status: Literal["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"]
+
+
+class SkuBatchUpdateCategoryRequest(BaseModel):
+    sku_ids: list[UUID] = Field(min_length=1, max_length=500)
+    category_id: UUID | None = None
+
+
+class SkuBatchUpdatePinnedRequest(BaseModel):
+    sku_ids: list[UUID] = Field(min_length=1, max_length=500)
+    pinned: bool
 
 
 class SkuBatchOperationResponse(BaseModel):
@@ -484,3 +514,4 @@ class SkuBatchOperationResponse(BaseModel):
     total_count: int
     failed_items: list[dict[str, Any]] = Field(default_factory=list)
     applied_product_version: int | None = None
+    affected_product_count: int | None = None

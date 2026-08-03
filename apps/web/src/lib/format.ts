@@ -1,7 +1,17 @@
 export function money(value?: number | string | null, currency = "CNY") {
   const locale = document.documentElement.lang || "zh-CN";
   if (value === null || value === undefined || value === "") {
-    return locale.startsWith("en") ? "Price on request" : "价格面议";
+    const labels: Record<string, string> = {
+      "zh-CN": "价格面议",
+      "en-US": "Price on request",
+      es: "Precio a consultar",
+      tr: "Fiyat için iletişime geçin",
+      ar: "السعر عند الطلب",
+      ja: "価格はお問い合わせください",
+      ko: "가격 문의",
+      pt: "Preço sob consulta",
+    };
+    return labels[locale] || labels["en-US"];
   }
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return String(value);

@@ -12,6 +12,7 @@ import type {
   StoreProductDetail,
   StoreProductList,
   Storefront,
+  StorefrontLocale,
   Tenant,
   TenantPayload,
 } from "../types";
@@ -37,7 +38,7 @@ interface StoreSkuFilters {
   semantic?: boolean;
   includeFacets?: boolean;
   page?: number;
-  locale?: string;
+  locale?: StorefrontLocale;
 }
 
 const publicRequestCache = new Map<string, PublicCacheEntry>();
@@ -166,21 +167,21 @@ function primePublicRequestCache<T>(key: string, ttlMs: number, value: T) {
   prunePublicRequestCache();
 }
 
-function storePath(slug: string, locale?: string) {
+function storePath(slug: string, locale?: StorefrontLocale) {
   const params = new URLSearchParams();
   if (locale) params.set("locale", locale);
   const query = params.toString();
   return `/api/store/${encodeURIComponent(slug)}${query ? `?${query}` : ""}`;
 }
 
-function storeSkuPath(slug: string, skuId: string, locale?: string) {
+function storeSkuPath(slug: string, skuId: string, locale?: StorefrontLocale) {
   const params = new URLSearchParams();
   if (locale) params.set("locale", locale);
   const query = params.toString();
   return `/api/store/${encodeURIComponent(slug)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}`;
 }
 
-function storeProductPath(slug: string, productId: string, locale?: string) {
+function storeProductPath(slug: string, productId: string, locale?: StorefrontLocale) {
   const params = new URLSearchParams();
   if (locale) params.set("locale", locale);
   const query = params.toString();
@@ -267,10 +268,10 @@ async function getCachedStoreSkus(
         : undefined,
       tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : undefined,
       source_locale: typeof meta.source_locale === "string"
-        ? (meta.source_locale as "zh-CN" | "en-US")
+        ? (meta.source_locale as StorefrontLocale)
         : undefined,
       locale: typeof meta.locale === "string"
-        ? (meta.locale as "zh-CN" | "en-US")
+        ? (meta.locale as StorefrontLocale)
         : undefined,
       all_products_position: Number.isFinite(Number(meta.all_products_position))
         ? Number(meta.all_products_position)
@@ -337,16 +338,18 @@ async function getCachedStoreProducts(
           : undefined,
         tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : undefined,
         source_locale: typeof meta.source_locale === "string"
-          ? (meta.source_locale as "zh-CN" | "en-US")
+          ? (meta.source_locale as StorefrontLocale)
           : undefined,
         locale: typeof meta.locale === "string"
-          ? (meta.locale as "zh-CN" | "en-US")
+          ? (meta.locale as StorefrontLocale)
           : undefined,
         all_products_position: Number.isFinite(
           Number(meta.all_products_position),
         )
           ? Number(meta.all_products_position)
           : undefined,
+        hot_products_enabled: meta.hot_products_enabled === true,
+        hot_sort_applied: meta.hot_sort_applied === true,
       };
       if (filters.includeFacets !== false) {
         const withoutFacets = new URLSearchParams(params);
@@ -391,7 +394,7 @@ async function download(
 }
 
 export const api = {
-  getStore: (slug: string, locale?: string) => {
+  getStore: (slug: string, locale?: StorefrontLocale) => {
     const path = storePath(slug, locale);
     return cachedPublicRequest(
       publicCatalogCacheKey("store", path),
@@ -402,7 +405,7 @@ export const api = {
   async getStoreProduct(
     slug: string,
     productId: string,
-    locale?: string,
+    locale?: StorefrontLocale,
   ): Promise<StoreProductDetail> {
     const path = storeProductPath(slug, productId, locale);
     return cachedPublicRequest(
@@ -420,7 +423,7 @@ export const api = {
   prefetchStoreProduct: async (
     slug: string,
     productId: string,
-    locale?: string,
+    locale?: StorefrontLocale,
   ) => {
     await api.getStoreProduct(slug, productId, locale);
   },
@@ -436,7 +439,7 @@ export const api = {
   ) => {
     await getCachedStoreProducts(slug, filters);
   },
-  async getStoreSku(slug: string, skuId: string, locale?: string): Promise<Sku> {
+  async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale): Promise<Sku> {
     const path = storeSkuPath(slug, skuId, locale);
     return cachedPublicRequest(
       publicCatalogCacheKey("sku", path),

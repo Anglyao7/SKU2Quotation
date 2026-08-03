@@ -1,19 +1,31 @@
 import { Button, DropdownMenu } from "@radix-ui/themes";
 import { Check, Translate } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { storefrontText } from "../lib/storefrontLocale";
+import {
+  STOREFRONT_LANGUAGE_OPTIONS,
+  storefrontLanguage,
+  storefrontText,
+} from "../lib/storefrontLocale";
 import type { StorefrontLocale } from "../types";
 
 export function StorefrontLanguageSwitch({
   locale,
+  availableLocales,
   onBeforeLocaleChange,
 }: {
   locale: StorefrontLocale;
+  availableLocales?: StorefrontLocale[];
   onBeforeLocaleChange?: () => void;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
   const t = (source: string) => storefrontText(locale, source);
+  const languages = STOREFRONT_LANGUAGE_OPTIONS.filter((language) => (
+    (availableLocales || ["zh-CN", "en-US"]).includes(language.code)
+  ));
+  const currentLanguage = storefrontLanguage(locale);
+
+  if (languages.length < 2) return null;
 
   const selectLocale = (nextLocale: StorefrontLocale) => {
     if (nextLocale === locale) return;
@@ -43,22 +55,28 @@ export function StorefrontLanguageSwitch({
           aria-label={t("选择语言")}
         >
           <Translate size={17} />
-          <span>{locale === "en-US" ? "EN" : "中"}</span>
+          <span className="storefront-language-flag" aria-hidden="true">
+            {currentLanguage.flag}
+          </span>
+          <span>{currentLanguage.shortLabel}</span>
         </Button>
       </DropdownMenu.Trigger>
-      <DropdownMenu.Content align="end" sideOffset={8}>
-        <DropdownMenu.Item onSelect={() => selectLocale("zh-CN")}>
-          <span className="storefront-language-check">
-            {locale === "zh-CN" ? <Check /> : null}
-          </span>
-          中文
-        </DropdownMenu.Item>
-        <DropdownMenu.Item onSelect={() => selectLocale("en-US")}>
-          <span className="storefront-language-check">
-            {locale === "en-US" ? <Check /> : null}
-          </span>
-          English
-        </DropdownMenu.Item>
+      <DropdownMenu.Content align="end" sideOffset={8} className="storefront-language-menu">
+        {languages.map((language) => (
+          <DropdownMenu.Item
+            key={language.code}
+            onSelect={() => selectLocale(language.code)}
+            dir={language.direction}
+          >
+            <span className="storefront-language-check">
+              {locale === language.code ? <Check /> : null}
+            </span>
+            <span className="storefront-language-flag" aria-hidden="true">
+              {language.flag}
+            </span>
+            <span lang={language.code}>{language.label}</span>
+          </DropdownMenu.Item>
+        ))}
       </DropdownMenu.Content>
     </DropdownMenu.Root>
   );

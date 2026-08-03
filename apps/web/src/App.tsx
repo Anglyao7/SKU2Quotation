@@ -24,6 +24,7 @@ import { useCoreAuth } from "./core/AuthContext";
 import { useLocale } from "./core/LocaleContext";
 import { api, ApiError } from "./lib/api";
 import { readStorefrontViewState } from "./lib/storefrontViewState";
+import { normalizeStorefrontLocale } from "./lib/storefrontLocale";
 import {
   importWithChunkRecovery,
   isChunkLoadFailure,
@@ -140,9 +141,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
-  const locale = currentUrl.searchParams.get("lang") === "en-US"
-    ? "en-US"
-    : "zh-CN";
+  const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
   try {
     const savedView = readStorefrontViewState(tenantSlug);
     const category = savedView?.secondaryCategory || savedView?.primaryCategory;
@@ -161,6 +160,11 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     return store;
   }
   catch (error) {
+    if (error instanceof ApiError && error.status === 422 && currentUrl.searchParams.has("lang")) {
+      currentUrl.searchParams.delete("lang");
+      const query = currentUrl.searchParams.toString();
+      return redirect(`/${encodeURIComponent(tenantSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`);
+    }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
     throw error;
   }
@@ -171,9 +175,7 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   const productId = params.productId;
   if (!tenantSlug || !productId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
-  const locale = currentUrl.searchParams.get("lang") === "en-US"
-    ? "en-US"
-    : "zh-CN";
+  const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
   try {
     const [store, product] = await Promise.all([
       api.getStore(tenantSlug, locale),
@@ -187,6 +189,13 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
     return { store, product };
   }
   catch (error) {
+    if (error instanceof ApiError && error.status === 422 && currentUrl.searchParams.has("lang")) {
+      currentUrl.searchParams.delete("lang");
+      const query = currentUrl.searchParams.toString();
+      return redirect(
+        `/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(productId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+      );
+    }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
     throw error;
   }
@@ -197,9 +206,7 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   const skuId = params.skuId;
   if (!tenantSlug || !skuId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
-  const locale = currentUrl.searchParams.get("lang") === "en-US"
-    ? "en-US"
-    : "zh-CN";
+  const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
   try {
     const [store, sku] = await Promise.all([
       api.getStore(tenantSlug, locale),
@@ -213,6 +220,13 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
     return { store, sku };
   }
   catch (error) {
+    if (error instanceof ApiError && error.status === 422 && currentUrl.searchParams.has("lang")) {
+      currentUrl.searchParams.delete("lang");
+      const query = currentUrl.searchParams.toString();
+      return redirect(
+        `/${encodeURIComponent(tenantSlug)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+      );
+    }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
     throw error;
   }

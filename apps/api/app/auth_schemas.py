@@ -11,6 +11,7 @@ from pydantic import (
 )
 
 from .localization import UiLocale
+from .storefront_locales import StorefrontLocale
 
 
 class LoginRequest(BaseModel):
@@ -139,15 +140,36 @@ class MeResponse(BaseModel):
 class MerchantSettingsUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     business_mode: Literal["DOMESTIC", "EXPORT"] | None = None
+    hot_products_enabled: bool | None = None
+    storefront_locales: list[StorefrontLocale] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=7,
+    )
 
     @field_validator("name", mode="before")
     @classmethod
     def normalize_name(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("storefront_locales")
+    @classmethod
+    def normalize_storefront_locales(
+        cls,
+        value: list[StorefrontLocale] | None,
+    ) -> list[StorefrontLocale] | None:
+        if value is None:
+            return None
+        return list(dict.fromkeys(value))
+
     @model_validator(mode="after")
     def require_change(self) -> "MerchantSettingsUpdate":
-        if self.name is None and self.business_mode is None:
+        if (
+            self.name is None
+            and self.business_mode is None
+            and self.hot_products_enabled is None
+            and self.storefront_locales is None
+        ):
             raise ValueError("at least one merchant setting is required")
         return self
 
@@ -158,6 +180,8 @@ class MerchantSettingsResponse(BaseModel):
     storefront_path: str
     business_mode: Literal["DOMESTIC", "EXPORT"]
     default_currency: str
+    storefront_locales: list[StorefrontLocale]
+    hot_products_enabled: bool
 
 
 class UserPreferencesUpdate(BaseModel):

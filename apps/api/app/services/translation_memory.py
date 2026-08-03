@@ -445,6 +445,47 @@ def _translate_uncached_values(
                 "translation provider request failed"
             )
             failures.update((value, safe_error) for value in batch)
+
+    # A provider can damage one numeric boundary inside an otherwise valid
+    # batch. Retry only failed values in small sequential groups so one bad
+    # marker does not make an entire storefront page fall back to source text.
+    # Sequential recovery also avoids amplifying provider-side rate limits.
+    retry_values = [value for value in values if value in failures]
+    for retry_batch in _translation_batches(
+        retry_values,
+        max_items=6,
+        max_characters=600,
+    ):
+        try:
+            recovered = _translate_batch(
+                translator,
+                retry_batch,
+                source_locale=source_locale,
+                target_locale=target_locale,
+            )
+        except Exception as batch_error:
+            if len(retry_batch) == 1:
+                if isinstance(batch_error, TranslationProviderError):
+                    failures[retry_batch[0]] = batch_error
+                continue
+            for value in retry_batch:
+                try:
+                    recovered_value = _translate_batch(
+                        translator,
+                        [value],
+                        source_locale=source_locale,
+                        target_locale=target_locale,
+                    )[0]
+                except Exception as value_error:
+                    if isinstance(value_error, TranslationProviderError):
+                        failures[value] = value_error
+                    continue
+                successes[value] = recovered_value
+                failures.pop(value, None)
+            continue
+        successes.update(zip(retry_batch, recovered, strict=True))
+        for value in retry_batch:
+            failures.pop(value, None)
     return successes, failures
 
 

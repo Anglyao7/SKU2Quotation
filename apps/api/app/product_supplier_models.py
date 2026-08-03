@@ -77,6 +77,12 @@ class ProductRow(AuditTimestampMixin, Base):
         ),
         Index("ix_products_tenant_status_updated", "tenant_id", "status", "updated_at"),
         Index("ix_products_tenant_category", "tenant_id", "category_id"),
+        Index(
+            "ix_products_tenant_category_pinned",
+            "tenant_id",
+            "category_id",
+            "storefront_pinned_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -89,6 +95,9 @@ class ProductRow(AuditTimestampMixin, Base):
     default_unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
     current_version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
     search_document_version: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    storefront_pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_by: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

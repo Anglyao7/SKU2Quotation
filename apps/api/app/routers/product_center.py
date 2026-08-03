@@ -31,14 +31,16 @@ from ..product_center_schemas import (
     CategoryResponse,
     CategoryUpdateRequest,
     ProductCard,
+    ProductDeleteAllJobResponse,
     ProductDeleteAllRequest,
-    ProductDeleteAllResponse,
     ProductDetail,
     ProductReviewQueueItem,
     PublicCatalogOfferResponse,
     PublicCatalogOfferUpsertRequest,
     SkuBatchCreateRequest,
     SkuBatchDeleteRequest,
+    SkuBatchUpdateCategoryRequest,
+    SkuBatchUpdatePinnedRequest,
     SkuBatchUpdateStatusRequest,
     SkuBatchOperationResponse,
     SkuListPage,
@@ -58,6 +60,7 @@ from ..services.category_template_import import (
 )
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..use_cases import product_center as use_cases
+from ..use_cases import catalog_deletion
 from .errors import application_http_error
 
 
@@ -577,8 +580,8 @@ def batch_delete_skus(
 
 @router.post(
     "/product-center/products/delete-all",
-    response_model=ProductDeleteAllResponse,
-    status_code=status.HTTP_200_OK,
+    response_model=ProductDeleteAllJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def delete_all_products(
     payload: ProductDeleteAllRequest,
@@ -586,8 +589,8 @@ def delete_all_products(
     response: Response,
     session: Session = Depends(get_authenticated_session),
     auth_session: Session = Depends(get_auth_session),
-) -> ProductDeleteAllResponse:
-    """Delete only the active tenant's catalog after password confirmation."""
+) -> ProductDeleteAllJobResponse:
+    """Verify the password and enqueue deletion without holding the HTTP request."""
 
     context = _context(session)
     response.headers["Cache-Control"] = "no-store"
@@ -618,14 +621,38 @@ def delete_all_products(
             headers={"Cache-Control": "no-store"},
         ) from exc
     try:
-        result = use_cases.delete_all_products(
+        return catalog_deletion.start_catalog_delete_job(
             session,
+            organization_id=context.organization_id,
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             membership_id=context.membership_id,
             permissions=context.permissions,
         )
-        return ProductDeleteAllResponse(**result)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/product-center/products/delete-all/{job_id}",
+    response_model=ProductDeleteAllJobResponse,
+)
+def get_delete_all_products_job(
+    job_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> ProductDeleteAllJobResponse:
+    """Return progress for an asynchronous complete-catalog deletion."""
+
+    context = _context(session)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return catalog_deletion.get_catalog_delete_job(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            job_id=job_id,
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -646,6 +673,60 @@ def batch_update_sku_status(
             permissions=context.permissions,
             sku_ids=request.sku_ids,
             status=request.status,
+        )
+        return SkuBatchOperationResponse(**result)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/skus/batch-update-category",
+    response_model=SkuBatchOperationResponse,
+    status_code=status.HTTP_200_OK,
+)
+def batch_update_sku_category(
+    request: SkuBatchUpdateCategoryRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SkuBatchOperationResponse:
+    """批量修改所选 SKU 对应商品的分类。"""
+
+    context = _context(session)
+    try:
+        result = use_cases.batch_update_sku_category(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            sku_ids=request.sku_ids,
+            category_id=request.category_id,
+        )
+        return SkuBatchOperationResponse(**result)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/skus/batch-update-pinned",
+    response_model=SkuBatchOperationResponse,
+    status_code=status.HTTP_200_OK,
+)
+def batch_update_sku_pinned(
+    request: SkuBatchUpdatePinnedRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SkuBatchOperationResponse:
+    """批量置顶或取消置顶所选 SKU 对应的商品。"""
+
+    context = _context(session)
+    try:
+        result = use_cases.batch_update_sku_pinned(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            sku_ids=request.sku_ids,
+            pinned=request.pinned,
         )
         return SkuBatchOperationResponse(**result)
     except ApplicationError as exc:

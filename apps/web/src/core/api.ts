@@ -296,6 +296,45 @@ async function request<T>(path: string, init: RequestInit = {}, retrySession = t
   }
 }
 
+async function downloadCoreFile(
+  path: string,
+  filename: string,
+  retrySession = true,
+): Promise<void> {
+  const headers = new Headers();
+  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+  const response = await safeFetch(`${API_BASE}${path}`, {
+    headers,
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (response.status === 401 && retrySession) {
+    const restored = await refreshAuthSession();
+    if (restored) return downloadCoreFile(path, filename, false);
+    window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+  }
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json")
+      ? await response.json().catch(() => null)
+      : await response.text().catch(() => "");
+    throw new CoreApiError(
+      messageFromPayload(payload, `下载失败（${response.status}）`),
+      response.status,
+      payload,
+    );
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
 export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
   const payload = await request<{ data: ApiAuthTokenData }>("/auth/login", {
     method: "POST",
@@ -390,33 +429,52 @@ export async function getAuthBootstrap(): Promise<{ profile: CurrentUser; permis
   };
 }
 
-export async function updateMerchantSettings(input: {
-  name?: string;
-  businessMode?: "DOMESTIC" | "EXPORT";
-}): Promise<MerchantSettings> {
-  const row = await request<{
-    name: string;
-    slug: string;
-    storefront_path: string;
-    business_mode: "DOMESTIC" | "EXPORT";
-    default_currency: string;
-  }>(
-    "/me/merchant",
-    {
-      method: "PATCH",
-      body: JSON.stringify({
-        name: input.name,
-        business_mode: input.businessMode,
-      }),
-    },
-  );
+interface ApiMerchantSettings {
+  name: string;
+  slug: string;
+  storefront_path: string;
+  business_mode: "DOMESTIC" | "EXPORT";
+  default_currency: string;
+  storefront_locales: MerchantSettings["storefrontLocales"];
+  hot_products_enabled: boolean;
+}
+
+function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
   return {
     name: row.name,
     slug: row.slug,
     storefrontPath: row.storefront_path,
     businessMode: row.business_mode,
     defaultCurrency: row.default_currency,
+    storefrontLocales: row.storefront_locales,
+    hotProductsEnabled: row.hot_products_enabled,
   };
+}
+
+export async function getMerchantSettings(): Promise<MerchantSettings> {
+  return mapMerchantSettings(await request<ApiMerchantSettings>("/me/merchant"));
+}
+
+export async function updateMerchantSettings(input: {
+  name?: string;
+  businessMode?: "DOMESTIC" | "EXPORT";
+  storefrontLocales?: MerchantSettings["storefrontLocales"];
+  hotProductsEnabled?: boolean;
+}): Promise<MerchantSettings> {
+  const row = await request<ApiMerchantSettings>(
+    "/me/merchant",
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: input.name,
+        business_mode: input.businessMode,
+        storefront_locales: input.storefrontLocales,
+        hot_products_enabled: input.hotProductsEnabled,
+      }),
+    },
+  );
+  bumpPublicCatalogRevision();
+  return mapMerchantSettings(row);
 }
 
 export async function updateUserPreferences(locale: UiLocale): Promise<UiLocale> {
@@ -988,6 +1046,7 @@ interface ApiSkuListItem {
   source_filename?: string | null;
   source_imported_at?: string | null;
   image_status: SkuListItem["imageStatus"];
+  is_pinned: boolean;
 }
 
 interface ApiSkuListPage {
@@ -1086,6 +1145,7 @@ function mapSkuListItem(row: ApiSkuListItem): SkuListItem {
     sourceFilename: defined(row.source_filename),
     sourceImportedAt: defined(row.source_imported_at),
     imageStatus: row.image_status,
+    isPinned: Boolean(row.is_pinned),
   };
 }
 
@@ -1126,6 +1186,7 @@ export interface SkuBatchOperationResult {
   failedCount: number;
   totalCount: number;
   failedItems: Array<{ skuId: string; reason: string }>;
+  affectedProductCount?: number;
 }
 
 interface ApiSkuBatchOperationResult {
@@ -1133,14 +1194,12 @@ interface ApiSkuBatchOperationResult {
   failed_count: number;
   total_count: number;
   failed_items: Array<{ sku_id: string; reason: string }>;
+  affected_product_count?: number | null;
 }
 
-export async function batchDeleteSkus(skuIds: string[]): Promise<SkuBatchOperationResult> {
-  const row = await request<ApiSkuBatchOperationResult>("/skus/batch-delete", {
-    method: "POST",
-    body: JSON.stringify({ sku_ids: skuIds }),
-  });
-  bumpPublicCatalogRevision();
+function mapSkuBatchOperationResult(
+  row: ApiSkuBatchOperationResult,
+): SkuBatchOperationResult {
   return {
     successCount: row.success_count,
     failedCount: row.failed_count,
@@ -1149,27 +1208,109 @@ export async function batchDeleteSkus(skuIds: string[]): Promise<SkuBatchOperati
       skuId: item.sku_id,
       reason: item.reason,
     })),
+    affectedProductCount: row.affected_product_count ?? undefined,
   };
 }
 
-export interface ProductDeleteAllResult {
-  deletedProductCount: number;
-  deletedSkuCount: number;
+export async function batchDeleteSkus(skuIds: string[]): Promise<SkuBatchOperationResult> {
+  const row = await request<ApiSkuBatchOperationResult>("/skus/batch-delete", {
+    method: "POST",
+    body: JSON.stringify({ sku_ids: skuIds }),
+  });
+  bumpPublicCatalogRevision();
+  return mapSkuBatchOperationResult(row);
 }
 
-export async function deleteAllProducts(password: string): Promise<ProductDeleteAllResult> {
-  const row = await request<{
-    deleted_product_count: number;
-    deleted_sku_count: number;
-  }>("/product-center/products/delete-all", {
+export async function batchUpdateSkuStatus(
+  skuIds: string[],
+  status: "ACTIVE" | "INACTIVE",
+): Promise<SkuBatchOperationResult> {
+  const row = await request<ApiSkuBatchOperationResult>("/skus/batch-update-status", {
+    method: "POST",
+    body: JSON.stringify({ sku_ids: skuIds, status }),
+  });
+  bumpPublicCatalogRevision();
+  return mapSkuBatchOperationResult(row);
+}
+
+export async function batchUpdateSkuCategory(
+  skuIds: string[],
+  categoryId: string | null,
+): Promise<SkuBatchOperationResult> {
+  const row = await request<ApiSkuBatchOperationResult>("/skus/batch-update-category", {
+    method: "POST",
+    body: JSON.stringify({ sku_ids: skuIds, category_id: categoryId }),
+  });
+  bumpPublicCatalogRevision();
+  return mapSkuBatchOperationResult(row);
+}
+
+export async function batchUpdateSkuPinned(
+  skuIds: string[],
+  pinned: boolean,
+): Promise<SkuBatchOperationResult> {
+  const row = await request<ApiSkuBatchOperationResult>("/skus/batch-update-pinned", {
+    method: "POST",
+    body: JSON.stringify({ sku_ids: skuIds, pinned }),
+  });
+  bumpPublicCatalogRevision();
+  return mapSkuBatchOperationResult(row);
+}
+
+export interface ProductDeleteAllJob {
+  id: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  stage: "QUEUED" | "COUNTING" | "HIDING_OFFERS" | "ARCHIVING_SKUS" | "ARCHIVING_PRODUCTS" | "FINALIZING" | "COMPLETED" | "FAILED";
+  progress: number;
+  totalProductCount: number;
+  totalSkuCount: number;
+  deletedProductCount: number;
+  deletedSkuCount: number;
+  errorMessage?: string;
+}
+
+interface ApiProductDeleteAllJob {
+  id: string;
+  status: ProductDeleteAllJob["status"];
+  stage: ProductDeleteAllJob["stage"];
+  progress: number;
+  total_products: number;
+  total_skus: number;
+  deleted_product_count: number;
+  deleted_sku_count: number;
+  error_message?: string | null;
+}
+
+function mapProductDeleteAllJob(row: ApiProductDeleteAllJob): ProductDeleteAllJob {
+  return {
+    id: row.id,
+    status: row.status,
+    stage: row.stage,
+    progress: row.progress,
+    totalProductCount: row.total_products,
+    totalSkuCount: row.total_skus,
+    deletedProductCount: row.deleted_product_count,
+    deletedSkuCount: row.deleted_sku_count,
+    errorMessage: row.error_message ?? undefined,
+  };
+}
+
+export async function deleteAllProducts(password: string): Promise<ProductDeleteAllJob> {
+  const row = await request<ApiProductDeleteAllJob>("/product-center/products/delete-all", {
     method: "POST",
     body: JSON.stringify({ password }),
   });
-  bumpPublicCatalogRevision();
-  return {
-    deletedProductCount: row.deleted_product_count,
-    deletedSkuCount: row.deleted_sku_count,
-  };
+  return mapProductDeleteAllJob(row);
+}
+
+export async function getDeleteAllProductsJob(jobId: string): Promise<ProductDeleteAllJob> {
+  const row = await request<ApiProductDeleteAllJob>(
+    `/product-center/products/delete-all/${encodeURIComponent(jobId)}`,
+    { cache: "no-store" },
+  );
+  const job = mapProductDeleteAllJob(row);
+  if (job.status === "SUCCEEDED") bumpPublicCatalogRevision();
+  return job;
 }
 
 interface ApiKnowledgeIndexStatus {
@@ -1999,6 +2140,18 @@ export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteD
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(`/public-quote-drafts/${encodeURIComponent(draftId)}`));
 }
 
+export async function downloadPublicQuoteDraftDocument(
+  draftId: string,
+  quoteNumber: string,
+  type: "pdf" | "xlsx",
+): Promise<void> {
+  const safeQuoteNumber = quoteNumber.replace(/[^a-zA-Z0-9._-]+/g, "-") || "quotation";
+  await downloadCoreFile(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/${type}`,
+    `${safeQuoteNumber}.${type}`,
+  );
+}
+
 interface ApiQuoteExcelColumn {
   key: string;
   index: number;
@@ -2060,6 +2213,13 @@ export async function listQuoteExcelTemplates(): Promise<QuoteExcelTemplate[]> {
     "/quote-excel-templates",
   );
   return response.items.map(mapQuoteExcelTemplate);
+}
+
+export async function downloadSystemDefaultQuoteTemplate(): Promise<void> {
+  await downloadCoreFile(
+    "/quote-excel-templates/system-default.xlsx",
+    "系统默认报价单模板.xlsx",
+  );
 }
 
 export async function uploadQuoteExcelTemplate(

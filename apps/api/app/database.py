@@ -36,23 +36,49 @@ class Base(DeclarativeBase):
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    connect_args=(
+        {"check_same_thread": False, "timeout": 30}
+        if DATABASE_URL.startswith("sqlite")
+        else {}
+    ),
     pool_pre_ping=True,
 )
 
 auth_engine = (
     engine
     if AUTH_DATABASE_URL == DATABASE_URL
-    else create_engine(AUTH_DATABASE_URL, pool_pre_ping=True)
+    else create_engine(
+        AUTH_DATABASE_URL,
+        connect_args=(
+            {"check_same_thread": False, "timeout": 30}
+            if AUTH_DATABASE_URL.startswith("sqlite")
+            else {}
+        ),
+        pool_pre_ping=True,
+    )
 )
 
 
-if DATABASE_URL.startswith("sqlite"):
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection: object, _connection_record: object) -> None:
-        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+def _configure_sqlite_connection(
+    dbapi_connection: object,
+    _connection_record: object,
+) -> None:
+    """Keep local reads responsive while long catalog writes are in flight."""
+
+    cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=30000")
+    finally:
         cursor.close()
+
+
+if DATABASE_URL.startswith("sqlite"):
+    event.listen(engine, "connect", _configure_sqlite_connection)
+if AUTH_DATABASE_URL.startswith("sqlite") and auth_engine is not engine:
+    event.listen(auth_engine, "connect", _configure_sqlite_connection)
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

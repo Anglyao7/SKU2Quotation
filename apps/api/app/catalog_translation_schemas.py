@@ -6,7 +6,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-
 class CatalogTranslationFailure(BaseModel):
     sku_id: UUID | None = None
     sku_code: str | None = None
@@ -15,7 +14,7 @@ class CatalogTranslationFailure(BaseModel):
 
 
 class CatalogTranslationJobStartRequest(BaseModel):
-    target_locale: Literal["en-US"] = "en-US"
+    target_locale: Literal["en-US", "es", "tr", "ar", "ja", "ko", "pt"] = "en-US"
     mode: Literal["INCREMENTAL", "FULL_REBUILD"] = "INCREMENTAL"
     confirm_full_rebuild: bool = False
 

@@ -188,7 +188,7 @@ export function CategoriesPage() {
               <Text size="1" color="gray">{t("分类批量导入")}</Text>
               <Dialog.Title>{t("导入分类")}</Dialog.Title>
               <Dialog.Description>
-                {t("A 列填写一级分类，B 列填写二级分类；B 列留空时只创建一级分类。")}
+                {t("A 列填写一级分类，B 列填写二级分类；B 列留空时只创建一级分类。工作表名称不限。")}
               </Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" disabled={importing} onClick={() => setImportOpen(false)} aria-label={t("关闭")}><X /></Button>
@@ -226,7 +226,7 @@ export function CategoriesPage() {
               <small>
                 {importFile
                   ? `${(importFile.size / 1024).toFixed(importFile.size >= 1024 ? 0 : 1)} KB`
-                  : t("只支持使用分类模板填写的 .xlsx 文件")}
+                  : t("支持包含“一级分类、二级分类”两列的 .xlsx 文件，工作表名称不限")}
               </small>
             </span>
             <span>{t(importFile ? "重新选择" : "选择文件")}</span>

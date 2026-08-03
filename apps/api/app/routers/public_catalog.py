@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from uuid import UUID
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
@@ -26,6 +28,7 @@ from ..services.auth.dependencies import (
     get_authenticated_session,
 )
 from ..services.public_quote_documents import (
+    fetch_remote_quote_image,
     render_public_quote_draft_pdf,
     render_public_quote_draft_xlsx,
 )
@@ -40,6 +43,10 @@ NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PUBLIC_DETAIL_CACHE_HEADERS = {
     "Cache-Control": "public, max-age=30, stale-while-revalidate=120",
 }
+_PUBLIC_QUOTE_MEDIA_PATTERN = re.compile(
+    r"^/api/store/(?P<slug>[^/]+)/media/"
+    r"(?P<image_id>[0-9a-fA-F-]{36})$"
+)
 
 
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
@@ -367,7 +374,36 @@ def _document_headers(*, quote_number: str, extension: str) -> dict[str, str]:
     }
 
 
-def _render_quote_xlsx(document) -> bytes:
+def _quote_image_loader(session: Session):
+    cache: dict[str, bytes | None] = {}
+
+    def load(image_url: str) -> bytes | None:
+        if image_url in cache:
+            return cache[image_url]
+        content: bytes | None = None
+        match = _PUBLIC_QUOTE_MEDIA_PATTERN.fullmatch(image_url)
+        try:
+            if match is not None:
+                content, _content_type = use_cases.get_public_media(
+                    session,
+                    slug=unquote(match.group("slug")),
+                    image_id=UUID(match.group("image_id")),
+                )
+            elif image_url.startswith(("https://", "http://")):
+                content = fetch_remote_quote_image(image_url)
+        except Exception:
+            logger.info(
+                "quote image could not be embedded",
+                extra={"image_url": image_url[:500]},
+            )
+        cache[image_url] = content
+        return content
+
+    return load
+
+
+def _render_quote_xlsx(document, *, session: Session) -> bytes:
+    image_loader = _quote_image_loader(session)
     template = document.excel_template
     if template is not None:
         try:
@@ -375,13 +411,17 @@ def _render_quote_xlsx(document) -> bytes:
                 return render_public_quote_draft_xlsx(
                     document,
                     template_path=path,
+                    image_loader=image_loader,
                 )
         except Exception:
             logger.exception(
                 "custom quote Excel rendering failed; using the standard template",
                 extra={"quote_number": document.quote.quote_number},
             )
-    return render_public_quote_draft_xlsx(document)
+    return render_public_quote_draft_xlsx(
+        document,
+        image_loader=image_loader,
+    )
 
 
 @router.get("/api/quotes/{quote_draft_id}/pdf")
@@ -442,7 +482,7 @@ def download_public_quote_draft_xlsx(
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return Response(
-        content=_render_quote_xlsx(document),
+        content=_render_quote_xlsx(document, session=session),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=_document_headers(
             quote_number=document.quote.quote_number, extension="xlsx"
@@ -510,7 +550,7 @@ def download_tenant_quote_draft_xlsx(
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return Response(
-        content=_render_quote_xlsx(document),
+        content=_render_quote_xlsx(document, session=session),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=_document_headers(
             quote_number=document.quote.quote_number, extension="xlsx"

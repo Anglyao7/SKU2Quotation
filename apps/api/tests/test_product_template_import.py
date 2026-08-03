@@ -1,15 +1,24 @@
 from decimal import Decimal
 import hashlib
 from pathlib import Path
+import re
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
 
 from app.services.product_template_import import (
+    PRODUCT_MASTER_TEMPLATE_HEADERS,
+    PRODUCT_MASTER_TEMPLATE_HEADERS_V3,
+    PRODUCT_MASTER_TEMPLATE_SHEET,
     PRODUCT_TEMPLATE_HEADERS,
     PRODUCT_TEMPLATE_SHEET,
     PRODUCT_VARIANT_TEMPLATE_HEADERS,
+    SKU_DETAIL_TEMPLATE_HEADERS,
+    SKU_DETAIL_TEMPLATE_HEADERS_V3,
+    SKU_DETAIL_TEMPLATE_HEADERS_V4,
+    SKU_DETAIL_TEMPLATE_SHEET,
     ProductTemplateValidationError,
     parse_product_template,
 )
@@ -24,6 +33,361 @@ def _write_workbook(path: Path, rows: list[list[object]], *, headers=None) -> No
         sheet.append(row)
     workbook.save(path)
     workbook.close()
+
+
+def _write_product_sku_workbook(
+    path: Path,
+    *,
+    product_rows: list[list[object]],
+    sku_rows: list[list[object]],
+    product_sheet_name: str = PRODUCT_MASTER_TEMPLATE_SHEET,
+    sku_sheet_name: str = SKU_DETAIL_TEMPLATE_SHEET,
+) -> None:
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = product_sheet_name
+    product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS))
+    for row in product_rows:
+        product_sheet.append(row)
+    sku_sheet = workbook.create_sheet(sku_sheet_name)
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS))
+    for row in sku_rows:
+        sku_sheet.append(row)
+    workbook.save(path)
+    workbook.close()
+
+
+def test_product_sku_template_groups_multiple_skus_under_one_product(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "商品导入模板.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_rows=[[
+            "PET-BOWL",
+            "可调节宠物碗",
+            "宠物用品/食具",
+            "BOWL-2026",
+            18,
+            "高度可调节，适合猫犬。",
+            "支持定制包装",
+            "新品, 防滑",
+            "https://img.example.com/pet-bowl.jpg",
+            *([None] * 9),
+        ]],
+        sku_rows=[[
+            "PET-BOWL",
+            "PET-BOWL",
+            "宠物碗",
+            "尺寸",
+            "小号",
+            "中号",
+            *([None] * 3),
+            "颜色",
+            "红色",
+            "绿色",
+            *([None] * 3),
+            "材质",
+            "不锈钢",
+            *([None] * 4),
+            "宠物用品供应商",
+            20,
+            "1.25",
+            12,
+            24,
+        ]],
+    )
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 4
+    assert {row.product_key for row in result.rows} == {"PRODUCT:PET-BOWL"}
+    assert len({row.sku_code for row in result.rows}) == 4
+    assert all(row.sku_code.startswith("PET-BOWL-") for row in result.rows)
+    assert {row.specification for row in result.rows} == {
+        "小号 / 红色 / 不锈钢",
+        "小号 / 绿色 / 不锈钢",
+        "中号 / 红色 / 不锈钢",
+        "中号 / 绿色 / 不锈钢",
+    }
+    assert {row.sku_name for row in result.rows} == {
+        f"宠物碗 · {specification}"
+        for specification in {
+            "小号 / 红色 / 不锈钢",
+            "小号 / 绿色 / 不锈钢",
+            "中号 / 红色 / 不锈钢",
+            "中号 / 绿色 / 不锈钢",
+        }
+    }
+    assert {
+        row.variant_options for row in result.rows
+    } == {
+        (("尺寸", size), ("颜色", color), ("材质", "不锈钢"))
+        for size in ("小号", "中号")
+        for color in ("红色", "绿色")
+    }
+    assert all(row.unit_price == Decimal("20.00") for row in result.rows)
+    assert all(row.gross_weight == Decimal("1.250000") for row in result.rows)
+    assert all(row.default_moq == Decimal("12.000000") for row in result.rows)
+    assert all(row.supplier_name == "宠物用品供应商" for row in result.rows)
+    assert all(row.units_per_carton == "24" for row in result.rows)
+    assert result.rows[0].tags == ("新品", "防滑")
+    assert result.rows[0].image_urls == (
+        "https://img.example.com/pet-bowl.jpg",
+    )
+    assert result.rows[0].schema_version == 5
+    assert any("1 个商品，4 个 SKU" in warning for warning in result.warnings)
+    assert result.warnings[-1] == "已将 1 行规格候选值自动组合为具体 SKU。"
+    repeated = parse_product_template(path)
+    assert [row.sku_code for row in repeated.rows] == [
+        row.sku_code for row in result.rows
+    ]
+
+
+def test_product_sku_template_is_detected_by_headers_after_sheet_rename(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "客户双表.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_sheet_name="商品主数据",
+        sku_sheet_name="规格明细",
+        product_rows=[[
+            "RENAMED-001",
+            "改名工作表商品",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            *([None] * 10),
+        ]],
+        sku_rows=[[
+            "RENAMED-001",
+            "RENAMED-SKU-001",
+            *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 2)),
+        ]],
+    )
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert result.rows[0].sku_code == "RENAMED-SKU-001"
+    assert result.warnings[0] == "已根据列结构将工作表“商品主数据”识别为 Product。"
+    assert result.warnings[1] == "已根据列结构将工作表“规格明细”识别为 SKU。"
+
+
+def test_product_sku_template_without_cached_dimensions_is_imported(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "有尺寸信息.xlsx"
+    path = tmp_path / "缺少尺寸信息.xlsx"
+    _write_product_sku_workbook(
+        source_path,
+        product_rows=[[
+            "NO-DIMENSION-PRODUCT",
+            "缺少缓存尺寸的商品",
+            "测试分类",
+            *([None] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 3)),
+        ]],
+        sku_rows=[[
+            "NO-DIMENSION-PRODUCT",
+            "NO-DIMENSION-SKU",
+            *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 2)),
+        ]],
+    )
+
+    dimension_pattern = re.compile(br"<dimension\s+[^>]*/>")
+    with ZipFile(source_path, "r") as source_archive, ZipFile(
+        path,
+        "w",
+        compression=ZIP_DEFLATED,
+    ) as target_archive:
+        for archive_entry in source_archive.infolist():
+            content = source_archive.read(archive_entry.filename)
+            if archive_entry.filename in {
+                "xl/worksheets/sheet1.xml",
+                "xl/worksheets/sheet2.xml",
+            }:
+                content, replacements = dimension_pattern.subn(
+                    b"",
+                    content,
+                    count=1,
+                )
+                assert replacements == 1
+            target_archive.writestr(archive_entry, content)
+
+    unsized_workbook = load_workbook(path, read_only=True, data_only=False)
+    try:
+        assert unsized_workbook[PRODUCT_MASTER_TEMPLATE_SHEET].max_row is None
+        assert unsized_workbook[PRODUCT_MASTER_TEMPLATE_SHEET].max_column is None
+        assert unsized_workbook[SKU_DETAIL_TEMPLATE_SHEET].max_row is None
+        assert unsized_workbook[SKU_DETAIL_TEMPLATE_SHEET].max_column is None
+    finally:
+        unsized_workbook.close()
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert result.rows[0].product_key == "PRODUCT:NO-DIMENSION-PRODUCT"
+    assert result.rows[0].sku_code == "NO-DIMENSION-SKU"
+
+
+def test_previous_product_sku_template_remains_compatible(tmp_path: Path) -> None:
+    path = tmp_path / "上一版双表.xlsx"
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = "旧商品表"
+    product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS_V3))
+    product_sheet.append([
+        "LEGACY-PRODUCT",
+        "上一版商品",
+        "历史分类",
+        None,
+        8,
+        None,
+        None,
+        "经典",
+        "是",
+        *([None] * 10),
+    ])
+    sku_sheet = workbook.create_sheet("旧规格表")
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS_V3))
+    sku_sheet.append([
+        "LEGACY-PRODUCT",
+        "LEGACY-SKU",
+        None,
+        None,
+        "颜色",
+        "蓝色",
+        *([None] * 4),
+        None,
+        None,
+        24,
+    ])
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert result.rows[0].schema_version == 3
+    assert result.rows[0].units_per_carton == "24"
+    assert result.rows[0].tags == ("经典", "新品")
+    assert result.rows[0].gross_weight is None
+    assert "历史 Product + SKU" in result.warnings[-2]
+
+
+def test_product_sku_template_rejects_negative_logistics_values(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "错误物流数据.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_rows=[[
+            "PRODUCT-NEGATIVE",
+            "错误物流商品",
+            *([None] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 2)),
+        ]],
+        sku_rows=[[
+            "PRODUCT-NEGATIVE",
+            "SKU-NEGATIVE",
+            *([None] * 21),
+            -1,
+            -2,
+            -3,
+        ]],
+    )
+
+    with pytest.raises(ProductTemplateValidationError) as captured:
+        parse_product_template(path)
+
+    assert {
+        (issue.column, issue.code)
+        for issue in captured.value.issues
+    } == {
+        ("毛重", "QUANTITY_INVALID"),
+        ("起定数", "QUANTITY_INVALID"),
+        ("装箱数", "QUANTITY_INVALID"),
+    }
+
+
+def test_v4_five_dimension_template_remains_compatible(tmp_path: Path) -> None:
+    path = tmp_path / "v4双表.xlsx"
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS))
+    product_sheet.append([
+        "V4-PRODUCT",
+        "V4 兼容商品",
+        "历史分类",
+        None,
+        9,
+        None,
+        None,
+        "兼容",
+        *([None] * 10),
+    ])
+    sku_sheet = workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS_V4))
+    sku_sheet.append([
+        "V4-PRODUCT",
+        "V4-SKU",
+        None,
+        None,
+        "尺寸",
+        "小号",
+        *([None] * 8),
+        None,
+        None,
+        1.2,
+        6,
+        24,
+    ])
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert result.rows[0].schema_version == 4
+    assert result.rows[0].sku_code == "V4-SKU"
+    assert result.rows[0].variant_options == (("尺寸", "小号"),)
+    assert result.rows[0].gross_weight == Decimal("1.200000")
+    assert result.rows[0].default_moq == Decimal("6.000000")
+    assert result.rows[0].units_per_carton == "24"
+    assert any("历史 Product + SKU" in warning for warning in result.warnings)
+
+
+def test_product_sku_template_rejects_missing_product_reference(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "错误关联.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_rows=[[
+            "PRODUCT-001",
+            "已有商品",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            *([None] * 10),
+        ]],
+        sku_rows=[[
+            "NOT-FOUND",
+            "SKU-001",
+            *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 2)),
+        ]],
+    )
+
+    with pytest.raises(ProductTemplateValidationError) as captured:
+        parse_product_template(path)
+
+    assert captured.value.issues[0].code == "PRODUCT_REFERENCE_MISSING"
+    assert captured.value.issues[0].column == "商品编码"
 
 
 def test_fixed_template_keeps_note_without_creating_a_moq(tmp_path: Path) -> None:
@@ -150,7 +514,81 @@ def test_alternate_sheet_name_is_auto_detected_without_grouping_skus(
     assert [row.sku_code for row in result.rows] == ["STYLE-001", "STYLE-002"]
     assert [row.name for row in result.rows] == ["同名商品", "同名商品"]
     assert result.warnings == (
-        "已自动识别工作表“Sheet1”作为商品列表；每一行仍按一个 SKU 导入。",
+        "已根据列结构识别工作表“Sheet1”；每一行仍按一个 SKU 导入。",
+    )
+
+
+def test_product_sheet_selection_does_not_prefer_a_reserved_title(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "两个商品页.xlsx"
+    workbook = Workbook()
+    named_sheet = workbook.active
+    named_sheet.title = PRODUCT_TEMPLATE_SHEET
+    named_sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    named_sheet.append([
+        "命名页商品",
+        "分类",
+        "NAMED-001",
+        None,
+        None,
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    alternate_sheet = workbook.create_sheet("客户数据")
+    alternate_sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    alternate_sheet.append([
+        "客户页商品",
+        "分类",
+        "CUSTOM-001",
+        None,
+        None,
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(ProductTemplateValidationError, match="多个符合商品列结构") as caught:
+        parse_product_template(path)
+
+    assert caught.value.issues[0].code == "SHEET_AMBIGUOUS"
+    assert "工作表名称不限" in (caught.value.issues[0].suggestion or "")
+
+
+def test_product_sheet_selection_ignores_an_empty_compatible_copy(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "带空模板副本.xlsx"
+    workbook = Workbook()
+    empty_sheet = workbook.active
+    empty_sheet.title = PRODUCT_TEMPLATE_SHEET
+    empty_sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    data_sheet = workbook.create_sheet("本次商品")
+    data_sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    data_sheet.append([
+        "客户页商品",
+        "分类",
+        "CUSTOM-002",
+        None,
+        None,
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert [row.sku_code for row in result.rows] == ["CUSTOM-002"]
+    assert result.warnings == (
+        "已根据列结构识别工作表“本次商品”；每一行仍按一个 SKU 导入。",
     )
 
 
@@ -232,7 +670,7 @@ def test_product_variant_template_groups_rows_and_generates_stable_skus(
     assert first.rows[0].tags == ("新品",)
     assert first.rows[0].units_per_carton == "12"
     assert first.rows[2].sku_code == "CAMERA-3333"
-    assert first.warnings[0].startswith("已自动识别工作表")
+    assert first.warnings[0].startswith("已根据列结构识别工作表")
     assert "商品+规格模板" in first.warnings[1]
 
 
@@ -362,7 +800,7 @@ def test_sequential_image_columns_can_extend_beyond_ten(
     assert result.rows[0].image_url_columns == (18,)
     assert [image.image_column for image in result.rows[0].embedded_images] == [17]
     assert result.warnings == (
-        "已自动识别工作表“Sheet1”作为商品列表；每一行仍按一个 SKU 导入。",
+        "已根据列结构识别工作表“Sheet1”；每一行仍按一个 SKU 导入。",
     )
 
 

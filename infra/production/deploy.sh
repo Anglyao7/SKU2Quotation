@@ -151,7 +151,7 @@ git checkout --detach "${resolved_commit}"
 
 export ATC_COMMIT_SHA="${resolved_commit}"
 export ATC_RELEASE="production-$(date -u +%Y%m%dT%H%M%SZ)-${resolved_commit:0:12}"
-export ATC_MIGRATION_HEAD="20260801_0047"
+export ATC_MIGRATION_HEAD="20260802_0051"
 export ATC_CONFIG_VERSION="production-v1-${resolved_commit:0:12}"
 export ATC_IMAGE_DIGEST="sha256:$(printf '%064d' 0)"
 export ATC_ENABLE_WORKERS="${ATC_ENABLE_WORKERS:-false}"

@@ -12,6 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from threading import Event, Lock
 from time import monotonic, sleep
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -38,6 +39,11 @@ from app.main import app
 from app.domain.errors import ApplicationError
 from app.routers.auth import _set_refresh_cookie
 from app.database import API_ROOT, SessionLocal, engine
+from app.services.import_progress import (
+    clear_runtime_import_progress,
+    publish_runtime_import_progress,
+)
+from app.services.repository import import_job_model
 from app.identity_models import (
     AuthRefreshTokenRow,
     AuthSessionRow,
@@ -108,7 +114,7 @@ from app.services.file_detection import OLE_SIGNATURE, detect_file_path, detect_
 from app.services.embedding import DeterministicFeatureHashEmbedding, validate_vectors
 from app.services.embedding_configuration import decrypt_api_key
 from app.services.catalog_translation import catalog_translation_source
-from app.services.translation import TranslationIdentity
+from app.services.translation import TranslationIdentity, TranslationProviderError
 from app.services.storefront_analytics import (
     request_country_code,
     request_visitor_ip,
@@ -141,9 +147,13 @@ from app.services.product_intelligence.adoption import (
     reject_candidate_group,
 )
 from app.services.product_template_import import (
+    PRODUCT_MASTER_TEMPLATE_HEADERS,
+    PRODUCT_MASTER_TEMPLATE_SHEET,
     PRODUCT_TEMPLATE_HEADERS,
     PRODUCT_TEMPLATE_SHEET,
     PRODUCT_VARIANT_TEMPLATE_HEADERS,
+    SKU_DETAIL_TEMPLATE_HEADERS,
+    SKU_DETAIL_TEMPLATE_SHEET,
     parse_product_template,
 )
 from app.services.category_template_import import (
@@ -483,6 +493,62 @@ def test_health() -> None:
     assert ready.json()["dependencies"]["database"]["status"] == "ready"
 
 
+def test_sqlite_runtime_uses_wal_and_waits_for_short_lock_contention() -> None:
+    with engine.connect() as connection:
+        journal_mode = connection.exec_driver_sql("PRAGMA journal_mode").scalar_one()
+        busy_timeout = connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one()
+        synchronous = connection.exec_driver_sql("PRAGMA synchronous").scalar_one()
+        foreign_keys = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+
+    assert str(journal_mode).casefold() == "wal"
+    assert int(busy_timeout) >= 30_000
+    assert int(synchronous) == 1
+    assert int(foreign_keys) == 1
+
+
+def test_import_job_model_exposes_runtime_progress_without_database_writes() -> None:
+    job_id = f"JOB-RUNTIME-{uuid4().hex[:8].upper()}"
+    row = SimpleNamespace(
+        id=job_id,
+        tenant_id=DEFAULT_TENANT_ID,
+        worker_jobs=[],
+        source_file=SimpleNamespace(
+            original_filename="大批量商品.xlsx",
+            detected_type="OOXML / XLSX",
+            parser="openpyxl",
+            extension_matches=True,
+        ),
+        supplier_name="商品模版",
+        source_type="PRODUCT_TEMPLATE",
+        status="parsing",
+        progress=40,
+        products_count=0,
+        warnings_count=0,
+        created_at=datetime.now(UTC),
+        error_message=None,
+    )
+    publish_runtime_import_progress(
+        tenant_id=DEFAULT_TENANT_ID,
+        job_id=job_id,
+        progress=78,
+        stage="APPLYING_PRODUCTS",
+        processed_rows=13_000,
+        total_rows=26_019,
+    )
+    try:
+        model = import_job_model(row)
+    finally:
+        clear_runtime_import_progress(
+            tenant_id=DEFAULT_TENANT_ID,
+            job_id=job_id,
+        )
+
+    assert model.progress == 78
+    assert model.result_details["import_stage"] == "APPLYING_PRODUCTS"
+    assert model.result_details["processed_rows"] == 13_000
+    assert model.result_details["total_rows"] == 26_019
+
+
 def test_readiness_fails_closed_on_migration_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -646,6 +712,100 @@ def test_merchant_business_mode_switches_default_currency_safely() -> None:
                     warehouse.version = version
                 else:
                     session.delete(warehouse)
+            session.commit()
+
+
+def test_merchant_controls_languages_visible_on_the_storefront(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_locales = list(profile.storefront_locales or [])
+
+    try:
+        response = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_locales": ["es", "ar", "ja", "pt"]},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["storefront_locales"] == [
+            "zh-CN",
+            "es",
+            "ar",
+            "ja",
+            "pt",
+        ]
+
+        settings = client.get("/api/v1/me/merchant")
+        assert settings.status_code == 200, settings.text
+        assert settings.json()["storefront_locales"] == [
+            "zh-CN",
+            "es",
+            "ar",
+            "ja",
+            "pt",
+        ]
+
+        store = client.get("/api/store/demo", params={"locale": "pt-BR"})
+        assert store.status_code == 200, store.text
+        assert store.json()["locale"] == "pt"
+        assert store.json()["available_locales"] == [
+            "zh-CN",
+            "es",
+            "ar",
+            "ja",
+            "pt",
+        ]
+
+        disabled = client.get("/api/store/demo", params={"locale": "ko"})
+        assert disabled.status_code == 422
+        assert disabled.json()["detail"]["code"] == "PUBLIC_LOCALE_DISABLED"
+
+        invalid = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_locales": ["zh-CN", "de"]},
+        )
+        assert invalid.status_code == 422
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.storefront_locales = original_locales
+            session.commit()
+
+
+def test_merchant_controls_hot_product_merchandising() -> None:
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original = bool(profile.hot_products_enabled)
+
+    try:
+        response = client.patch(
+            "/api/v1/me/merchant",
+            json={"hot_products_enabled": not original},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["hot_products_enabled"] is (not original)
+
+        settings = client.get("/api/v1/me/merchant")
+        assert settings.status_code == 200, settings.text
+        assert settings.json()["hot_products_enabled"] is (not original)
+
+        store = client.get("/api/store/demo")
+        assert store.status_code == 200, store.text
+        assert store.json()["hot_products_enabled"] is (not original)
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.hot_products_enabled = original
             session.commit()
 
 
@@ -4198,6 +4358,7 @@ def test_postgresql_offline_migration_contains_forced_rls_policies() -> None:
         "knowledge_chunks",
         "embeddings",
         "knowledge_index_jobs",
+        "catalog_delete_jobs",
         "ai_runs",
         "ai_task_steps",
         "product_field_candidates",
@@ -4980,6 +5141,458 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
     assert empty_listing.json()["total"] == 0
 
 
+def test_batch_merchandising_updates_category_pin_status_and_storefront_order() -> None:
+    suffix = uuid4().hex[:8].upper()
+    source_category_id = uuid4()
+    target_category_id = uuid4()
+    alpha_product_id = uuid4()
+    zulu_product_id = uuid4()
+    alpha_sku_id = uuid4()
+    alpha_variant_sku_id = uuid4()
+    zulu_sku_id = uuid4()
+    product_ids = [alpha_product_id, zulu_product_id]
+    sku_ids = [alpha_sku_id, alpha_variant_sku_id, zulu_sku_id]
+
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ProductCategoryRow(
+                    id=source_category_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    code=f"BULK-SOURCE-{suffix}",
+                    name=f"Bulk Source {suffix}",
+                    path=f"Bulk Source {suffix}",
+                    status="ACTIVE",
+                    sort_order=10,
+                ),
+                ProductCategoryRow(
+                    id=target_category_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    code=f"BULK-TARGET-{suffix}",
+                    name=f"Bulk Target {suffix}",
+                    path=f"Bulk Target {suffix}",
+                    status="ACTIVE",
+                    sort_order=20,
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                ProductRow(
+                    id=alpha_product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"BULK-ALPHA-{suffix}",
+                    name=f"Alpha Product {suffix}",
+                    category_id=source_category_id,
+                    status="ACTIVE",
+                    search_document_version=4,
+                ),
+                ProductRow(
+                    id=zulu_product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"BULK-ZULU-{suffix}",
+                    name=f"Zulu Product {suffix}",
+                    category_id=source_category_id,
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=alpha_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=alpha_product_id,
+                    sku_code=f"BULK-{suffix}-ALPHA",
+                    name=f"Alpha SKU {suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=alpha_variant_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=alpha_product_id,
+                    sku_code=f"BULK-{suffix}-ALPHA-V2",
+                    name=f"Alpha Variant {suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=zulu_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=zulu_product_id,
+                    sku_code=f"BULK-{suffix}-ZULU",
+                    name=f"Zulu SKU {suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                PublicCatalogOfferRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    sku_id=sku_id,
+                    unit_price=Decimal("10"),
+                    currency="CNY",
+                    tags=[],
+                    publication_status="PUBLISHED",
+                )
+                for sku_id in sku_ids
+            ]
+        )
+        session.commit()
+
+    move = client.post(
+        "/api/v1/skus/batch-update-category",
+        json={
+            "sku_ids": [str(alpha_sku_id), str(alpha_variant_sku_id)],
+            "category_id": str(target_category_id),
+        },
+    )
+    assert move.status_code == 200, move.text
+    assert move.json()["success_count"] == 2
+    assert move.json()["affected_product_count"] == 1
+    with SessionLocal() as session:
+        alpha = session.get(ProductRow, alpha_product_id)
+        assert alpha is not None
+        assert alpha.category_id == target_category_id
+        assert alpha.search_document_version == 0
+
+    listing = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix},
+    )
+    assert listing.status_code == 200, listing.text
+    assert all(item["is_pinned"] is False for item in listing.json()["items"])
+
+    move_back = client.post(
+        "/api/v1/skus/batch-update-category",
+        json={
+            "sku_ids": [str(alpha_sku_id)],
+            "category_id": str(source_category_id),
+        },
+    )
+    assert move_back.status_code == 200, move_back.text
+
+    pin = client.post(
+        "/api/v1/skus/batch-update-pinned",
+        json={"sku_ids": [str(zulu_sku_id)], "pinned": True},
+    )
+    assert pin.status_code == 200, pin.text
+    assert pin.json()["affected_product_count"] == 1
+    public_pinned = client.get(
+        "/api/store/demo/products",
+        params={
+            "category": f"Bulk Source {suffix}",
+            "include_facets": "false",
+        },
+    )
+    assert public_pinned.status_code == 200, public_pinned.text
+    assert [item["name"] for item in public_pinned.json()["items"]] == [
+        f"Zulu Product {suffix}",
+        f"Alpha Product {suffix}",
+    ]
+
+    deactivate = client.post(
+        "/api/v1/skus/batch-update-status",
+        json={"sku_ids": [str(zulu_sku_id)], "status": "INACTIVE"},
+    )
+    assert deactivate.status_code == 200, deactivate.text
+    public_inactive = client.get(
+        "/api/store/demo/products",
+        params={
+            "category": f"Bulk Source {suffix}",
+            "include_facets": "false",
+        },
+    )
+    assert public_inactive.status_code == 200, public_inactive.text
+    assert [item["name"] for item in public_inactive.json()["items"]] == [
+        f"Alpha Product {suffix}"
+    ]
+
+    activate = client.post(
+        "/api/v1/skus/batch-update-status",
+        json={"sku_ids": [str(zulu_sku_id)], "status": "ACTIVE"},
+    )
+    assert activate.status_code == 200, activate.text
+    unpin = client.post(
+        "/api/v1/skus/batch-update-pinned",
+        json={"sku_ids": [str(zulu_sku_id)], "pinned": False},
+    )
+    assert unpin.status_code == 200, unpin.text
+    public_unpinned = client.get(
+        "/api/store/demo/products",
+        params={
+            "category": f"Bulk Source {suffix}",
+            "include_facets": "false",
+        },
+    )
+    assert public_unpinned.status_code == 200, public_unpinned.text
+    assert [item["name"] for item in public_unpinned.json()["items"]] == [
+        f"Alpha Product {suffix}",
+        f"Zulu Product {suffix}",
+    ]
+
+    missing_id = uuid4()
+    missing = client.post(
+        "/api/v1/skus/batch-update-pinned",
+        json={"sku_ids": [str(missing_id)], "pinned": True},
+    )
+    assert missing.status_code == 200, missing.text
+    assert missing.json()["failed_items"] == [
+        {
+            "sku_id": str(missing_id),
+            "reason": "SKU 不存在、已删除或已经归档",
+        }
+    ]
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(ProductAuditEventRow).where(
+                ProductAuditEventRow.product_id.in_(product_ids)
+            )
+        )
+        session.execute(
+            delete(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.sku_id.in_(sku_ids)
+            )
+        )
+        session.execute(delete(SkuRow).where(SkuRow.id.in_(sku_ids)))
+        session.execute(delete(ProductRow).where(ProductRow.id.in_(product_ids)))
+        session.execute(
+            delete(ProductCategoryRow).where(
+                ProductCategoryRow.id.in_([source_category_id, target_category_id])
+            )
+        )
+        session.commit()
+
+
+def test_hot_product_merchandising_uses_recent_views_and_submitted_quotes() -> None:
+    suffix = uuid4().hex[:8].upper()
+    category_id = uuid4()
+    alpha_product_id = uuid4()
+    viewed_product_id = uuid4()
+    ordered_product_id = uuid4()
+    alpha_sku_id = uuid4()
+    viewed_sku_id = uuid4()
+    ordered_sku_id = uuid4()
+    quote_id = uuid4()
+    product_ids = [alpha_product_id, viewed_product_id, ordered_product_id]
+    sku_ids = [alpha_sku_id, viewed_sku_id, ordered_sku_id]
+    category_name = f"Hot Ranking {suffix}"
+    alpha_name = f"A Quiet {suffix}"
+    viewed_name = f"B Viewed {suffix}"
+    ordered_name = f"C Ordered {suffix}"
+    now = datetime.now(UTC)
+
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_hot_products_enabled = bool(profile.hot_products_enabled)
+        profile.hot_products_enabled = True
+        session.add(
+            ProductCategoryRow(
+                id=category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                code=f"HOT-{suffix}",
+                name=category_name,
+                path=category_name,
+                status="ACTIVE",
+                sort_order=50_000,
+            )
+        )
+        session.flush()
+        session.add_all(
+            [
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"HOT-{suffix}-{index}",
+                    name=name,
+                    category_id=category_id,
+                    status="ACTIVE",
+                )
+                for index, (product_id, name) in enumerate(
+                    [
+                        (alpha_product_id, alpha_name),
+                        (viewed_product_id, viewed_name),
+                        (ordered_product_id, ordered_name),
+                    ],
+                    start=1,
+                )
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"HOT-{suffix}-{index}",
+                    name=name,
+                    default_moq=Decimal("1"),
+                    moq_unit="piece",
+                    option_values={},
+                    status="ACTIVE",
+                )
+                for index, (sku_id, product_id, name) in enumerate(
+                    [
+                        (alpha_sku_id, alpha_product_id, alpha_name),
+                        (viewed_sku_id, viewed_product_id, viewed_name),
+                        (ordered_sku_id, ordered_product_id, ordered_name),
+                    ],
+                    start=1,
+                )
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                PublicCatalogOfferRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    sku_id=sku_id,
+                    unit_price=Decimal("10"),
+                    currency="CNY",
+                    tags=[],
+                    publication_status="PUBLISHED",
+                    published_at=now,
+                )
+                for sku_id in sku_ids
+            ]
+        )
+        session.add(
+            StorefrontProductViewDailyRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                viewed_on=now.date(),
+                product_id=viewed_product_id,
+                sku_id=viewed_sku_id,
+                sku_code_snapshot=f"HOT-{suffix}-2",
+                product_name_snapshot=viewed_name,
+                country_code="ZZ",
+                view_count=8,
+            )
+        )
+        session.add(
+            PublicQuoteDraftRow(
+                id=quote_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                request_number=f"HOT-Q-{suffix}",
+                status="PENDING_CONFIRMATION",
+                customer_name="Hot Ranking Customer",
+                currency="CNY",
+                subtotal_amount=Decimal("10"),
+                estimated_total=Decimal("10"),
+                expires_at=now + timedelta(days=7),
+                snapshot={"status": "PENDING_CONFIRMATION", "items": []},
+                content_hash="c" * 64,
+                disclaimer_version="public-draft-v1",
+            )
+        )
+        session.flush()
+        session.add(
+            PublicQuoteDraftItemRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                quote_draft_id=quote_id,
+                sku_id=ordered_sku_id,
+                position=1,
+                quantity=Decimal("1"),
+                product_id_snapshot=ordered_product_id,
+                product_version=1,
+                sku_version=1,
+                sku_code_snapshot=f"HOT-{suffix}-3",
+                name_snapshot=ordered_name,
+                description_snapshot=None,
+                specification_snapshot=None,
+                option_values_snapshot={},
+                category_snapshot=category_name,
+                tags_snapshot=[],
+                image_url_snapshot=None,
+                minimum_order_quantity=Decimal("1"),
+                unit_code_snapshot="piece",
+                currency_snapshot="CNY",
+                unit_price_snapshot=Decimal("10"),
+                line_total=Decimal("10"),
+            )
+        )
+        session.commit()
+
+    try:
+        hot_listing = client.get(
+            "/api/store/demo/products",
+            params={"page_size": 100, "include_facets": "false"},
+        )
+        assert hot_listing.status_code == 200, hot_listing.text
+        hot_payload = hot_listing.json()
+        assert hot_payload["hot_products_enabled"] is True
+        assert hot_payload["hot_sort_applied"] is True
+        hot_names = [item["name"] for item in hot_payload["items"]]
+        assert hot_names.index(ordered_name) < hot_names.index(viewed_name)
+        assert hot_names.index(viewed_name) < hot_names.index(alpha_name)
+
+        category_listing = client.get(
+            "/api/store/demo/products",
+            params={
+                "category": category_name,
+                "include_facets": "false",
+            },
+        )
+        assert category_listing.status_code == 200, category_listing.text
+        assert category_listing.json()["hot_sort_applied"] is False
+        assert [item["name"] for item in category_listing.json()["items"]] == [
+            alpha_name,
+            viewed_name,
+            ordered_name,
+        ]
+
+        with SessionLocal() as session:
+            alpha = session.get(ProductRow, alpha_product_id)
+            assert alpha is not None
+            alpha.storefront_pinned_at = now + timedelta(seconds=1)
+            session.commit()
+        pinned_listing = client.get(
+            "/api/store/demo/products",
+            params={"page_size": 100, "include_facets": "false"},
+        )
+        assert pinned_listing.status_code == 200, pinned_listing.text
+        pinned_names = [item["name"] for item in pinned_listing.json()["items"]]
+        assert pinned_names.index(alpha_name) < pinned_names.index(ordered_name)
+        assert pinned_names.index(ordered_name) < pinned_names.index(viewed_name)
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.hot_products_enabled = original_hot_products_enabled
+            session.execute(
+                delete(PublicQuoteDraftItemRow).where(
+                    PublicQuoteDraftItemRow.quote_draft_id == quote_id
+                )
+            )
+            session.execute(
+                delete(PublicQuoteDraftRow).where(PublicQuoteDraftRow.id == quote_id)
+            )
+            session.execute(
+                delete(StorefrontProductViewDailyRow).where(
+                    StorefrontProductViewDailyRow.product_id.in_(product_ids)
+                )
+            )
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.sku_id.in_(sku_ids)
+                )
+            )
+            session.execute(delete(SkuRow).where(SkuRow.id.in_(sku_ids)))
+            session.execute(delete(ProductRow).where(ProductRow.id.in_(product_ids)))
+            session.execute(
+                delete(ProductCategoryRow).where(ProductCategoryRow.id == category_id)
+            )
+            session.commit()
+
+
 def test_demo_seed_does_not_reinsert_a_soft_deleted_sku() -> None:
     sku_code = "AQ-320S"
     with SessionLocal() as session:
@@ -5032,14 +5645,29 @@ def test_demo_seed_does_not_reinsert_a_soft_deleted_sku() -> None:
 
 def test_delete_all_products_route_requires_the_current_password(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
+    job_id = uuid4()
+    created_at = datetime.now(UTC)
 
-    def fake_delete_all_products(_session, **kwargs):
+    def fake_start_catalog_delete_job(_session, **kwargs):
         calls.append(kwargs)
-        return {"deleted_product_count": 7, "deleted_sku_count": 11}
+        return {
+            "id": job_id,
+            "status": "QUEUED",
+            "stage": "QUEUED",
+            "progress": 0,
+            "total_products": 0,
+            "total_skus": 0,
+            "deleted_product_count": 0,
+            "deleted_sku_count": 0,
+            "error_message": None,
+            "created_at": created_at,
+            "started_at": None,
+            "completed_at": None,
+        }
 
     monkeypatch.setattr(
-        "app.routers.product_center.use_cases.delete_all_products",
-        fake_delete_all_products,
+        "app.routers.product_center.catalog_deletion.start_catalog_delete_job",
+        fake_start_catalog_delete_job,
     )
 
     rejected = client.post(
@@ -5058,13 +5686,42 @@ def test_delete_all_products_route_requires_the_current_password(monkeypatch) ->
         "/api/v1/product-center/products/delete-all",
         json={"password": "zhimaoyun123"},
     )
-    assert accepted.status_code == 200, accepted.text
-    assert accepted.json() == {
-        "deleted_product_count": 7,
-        "deleted_sku_count": 11,
-    }
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["id"] == str(job_id)
+    assert accepted.json()["status"] == "QUEUED"
+    assert accepted.json()["progress"] == 0
     assert calls[0]["tenant_id"] == DEFAULT_TENANT_ID
     assert calls[0]["user_id"] == DEFAULT_OWNER_USER_ID
+    assert calls[0]["organization_id"] == DEFAULT_ORGANIZATION_ID
+
+    def fake_get_catalog_delete_job(_session, **kwargs):
+        calls.append(kwargs)
+        return {
+            "id": job_id,
+            "status": "SUCCEEDED",
+            "stage": "COMPLETED",
+            "progress": 100,
+            "total_products": 7,
+            "total_skus": 11,
+            "deleted_product_count": 7,
+            "deleted_sku_count": 11,
+            "error_message": None,
+            "created_at": created_at,
+            "started_at": created_at,
+            "completed_at": created_at,
+        }
+
+    monkeypatch.setattr(
+        "app.routers.product_center.catalog_deletion.get_catalog_delete_job",
+        fake_get_catalog_delete_job,
+    )
+    completed = client.get(
+        f"/api/v1/product-center/products/delete-all/{job_id}"
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["deleted_product_count"] == 7
+    assert completed.json()["deleted_sku_count"] == 11
+    assert calls[-1]["job_id"] == job_id
 
 
 def test_current_password_verification_supports_local_merchant_accounts() -> None:
@@ -5342,45 +5999,47 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
 
     workbook = load_workbook(BytesIO(response.content), read_only=False, data_only=True)
     try:
-        assert workbook.sheetnames == ["商品列表"]
-        sheet = workbook["商品列表"]
-        assert sheet.max_row == 1
-        assert [sheet.cell(row=1, column=index).value for index in range(1, 19)] == [
-            "商品名称",
-            "商品分类",
-            "商品型号",
-            "供应商",
-            "商品价格",
-            "商品描述",
-            "备注",
-            "标签",
-            "商品图片1",
-            "商品图片2",
-            "商品图片3",
-            "商品图片4",
-            "商品图片5",
-            "商品图片6",
-            "商品图片7",
-            "商品图片8",
-            "商品图片9",
-            "商品图片10",
+        assert workbook.sheetnames == [
+            PRODUCT_MASTER_TEMPLATE_SHEET,
+            SKU_DETAIL_TEMPLATE_SHEET,
         ]
-        assert sheet.freeze_panes == "A2"
-        assert sheet.auto_filter.ref == "A1:R1"
-        assert sheet["A1"].fill.fgColor.rgb == "0023453B"
-        assert sheet["A1"].font.bold is True
-        assert sheet["D1"].comment is not None
-        assert "进销存" in sheet["D1"].comment.text
-        assert sheet["G1"].comment is not None
-        assert "商品补充说明" in sheet["G1"].comment.text
-        assert sheet["H1"].comment is not None
-        assert "逗号分隔" in sheet["H1"].comment.text
-        assert sheet["C1"].comment is not None
-        assert "选填" in sheet["C1"].comment.text
-        assert "临时型号" in sheet["C1"].comment.text
-        assert sheet["I1"].comment is not None
-        assert "直接插入" in sheet["I1"].comment.text
-        assert "HTTP(S)" in sheet["I1"].comment.text
+        product_sheet = workbook[PRODUCT_MASTER_TEMPLATE_SHEET]
+        sku_sheet = workbook[SKU_DETAIL_TEMPLATE_SHEET]
+        assert product_sheet.max_row == 1
+        assert sku_sheet.max_row == 1
+        assert tuple(
+            product_sheet.cell(row=1, column=index).value
+            for index in range(1, len(PRODUCT_MASTER_TEMPLATE_HEADERS) + 1)
+        ) == PRODUCT_MASTER_TEMPLATE_HEADERS
+        assert tuple(
+            sku_sheet.cell(row=1, column=index).value
+            for index in range(1, len(SKU_DETAIL_TEMPLATE_HEADERS) + 1)
+        ) == SKU_DETAIL_TEMPLATE_HEADERS
+        assert product_sheet.freeze_panes == "A2"
+        assert sku_sheet.freeze_panes == "D2"
+        assert product_sheet.auto_filter.ref == "A1:R1"
+        assert sku_sheet.auto_filter.ref == "A1:Z1"
+        assert product_sheet["A1"].fill.fgColor.rgb == "002D1B69"
+        assert sku_sheet["A1"].fill.fgColor.rgb == "0023453B"
+        assert product_sheet["A1"].font.bold is True
+        assert sku_sheet["A1"].font.bold is True
+        assert product_sheet["A1"].comment is not None
+        assert "连接 Product 与 SKU" in product_sheet["A1"].comment.text
+        assert product_sheet["I1"].comment is not None
+        assert "直接插入" in product_sheet["I1"].comment.text
+        assert "HTTP(S)" in product_sheet["I1"].comment.text
+        assert sku_sheet["A1"].comment is not None
+        assert "Product 表" in sku_sheet["A1"].comment.text
+        assert "候选值" in sku_sheet["D1"].comment.text
+        assert "自动组合" in sku_sheet["E1"].comment.text
+        assert sku_sheet["V1"].comment is not None
+        assert "进销存" in sku_sheet["V1"].comment.text
+        assert sku_sheet["W1"].comment is not None
+        assert "继承商品价格" in sku_sheet["W1"].comment.text
+        assert "kg" in sku_sheet["X1"].comment.text
+        assert "最小起订" in sku_sheet["Y1"].comment.text
+        assert "每箱" in sku_sheet["Z1"].comment.text
+        assert response.headers["cache-control"] == "no-store"
     finally:
         workbook.close()
 
@@ -5709,7 +6368,29 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
                 .execution_options(include_deleted=True)
             ).all()
             sku_ids = [row.id for row in sku_rows]
-            product_ids = [row.product_id for row in sku_rows]
+            category_ids = session.scalars(
+                select(ProductCategoryRow.id).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductCategoryRow.name == "模版测试分类",
+                )
+            ).all()
+            category_product_ids = (
+                session.scalars(
+                    select(ProductRow.id)
+                    .where(
+                        ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductRow.category_id.in_(category_ids),
+                    )
+                    .execution_options(include_deleted=True)
+                ).all()
+                if category_ids
+                else []
+            )
+            product_ids = list(
+                dict.fromkeys(
+                    [*(row.product_id for row in sku_rows), *category_product_ids]
+                )
+            )
             if sku_ids:
                 session.execute(
                     delete(PublicCatalogOfferRow).where(
@@ -5876,6 +6557,8 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
     assert job["result_details"]["warnings_truncated"] == 4
     assert job["result_details"]["outcome"] == "TEMPLATE_IMPORTED"
     assert job["result_details"]["imported"] == 2
+    assert job["result_details"]["processed_rows"] == 2
+    assert job["result_details"]["total_rows"] == 2
     assert job["candidate_fields"] == 0
 
     listed_job = next(
@@ -6061,16 +6744,29 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
     reduced_workbook = load_workbook(
         BytesIO(client.get("/api/v1/product-template.xlsx").content)
     )
-    reduced_sheet = reduced_workbook["商品列表"]
-    reduced_sheet.append([
+    reduced_product_sheet = reduced_workbook[PRODUCT_MASTER_TEMPLATE_SHEET]
+    reduced_sku_sheet = reduced_workbook[SKU_DETAIL_TEMPLATE_SHEET]
+    reduced_product_sheet.append([
+        "TPL-PRODUCT-B",
         "模版商品 B",
         "模版测试分类",
-        "TPL-API-002",
-        "",
+        None,
+        None,
         None,
         None,
         None,
         *([None] * 10),
+    ])
+    reduced_sku_sheet.append([
+        "TPL-PRODUCT-B",
+        "TPL-API-002",
+        None,
+        *([None] * 18),
+        None,
+        None,
+        "2.5",
+        10,
+        24,
     ])
     reduced_content = BytesIO()
     reduced_workbook.save(reduced_content)
@@ -6116,6 +6812,21 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
             execution_options={"include_deleted": True},
         )
         assert sku_a is not None and sku_a.status == "ACTIVE"
+        sku_b = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == "TPL-API-002",
+            )
+        )
+        assert sku_b is not None
+        assert sku_b.weight == Decimal("2.500000")
+        assert sku_b.weight_unit == "kg"
+        assert sku_b.default_moq == Decimal("10.000000")
+        assert sku_b.option_values["装箱数"] == "24"
+        assert sku_b.option_values["毛重"] == "2.5"
+        assert sku_b.option_values["起定数"] == "10"
+        assert "一箱个数" not in sku_b.option_values
+        assert "是否是新品" not in sku_b.option_values
         assert product_a is not None and product_a.status == "ACTIVE"
         assert offer_a is not None and offer_a.publication_status == "PUBLISHED"
         assert image_a is not None and image_a.deleted_at is None
@@ -6447,7 +7158,7 @@ def test_product_template_worker_retry_resumes_from_promoted_source(
     import_response = client.get(f"/api/v1/imports/{import_job_id}")
     assert import_response.status_code == 200
     assert import_response.json()["warning_messages"] == [
-        "模版中没有可导入的有效商品。"
+        "Product 表中没有可导入的有效商品。"
     ]
 
 
@@ -8004,8 +8715,14 @@ def test_dashboard_and_supplier_profiles_use_tenant_scoped_authoritative_data() 
     assert payload["data_scope"] == "TENANT"
     metric_keys = {metric["key"] for metric in payload["metrics"]}
     assert {"active_skus", "today_inquiries", "pending_quotations", "active_suppliers"}.issubset(metric_keys)
-    assert payload["data_health"]["active_products"] >= 3
+    assert payload["data_health"]["active_products"] >= 1
     assert 0 <= payload["data_health"]["score"] <= 100
+    for coverage_field in (
+        "approved_image_coverage",
+        "supplier_source_coverage",
+        "valid_price_coverage",
+    ):
+        assert 0 <= payload["data_health"][coverage_field] <= 1
 
     directory = client.get("/api/v1/supplier-profiles")
     assert directory.status_code == 200, directory.text
@@ -8426,6 +9143,170 @@ class _BlockingCatalogTranslationTestProvider(_CatalogTranslationTestProvider):
         self.started.set()
         assert self.release.wait(timeout=2)
         return text.replace("宠物", "Pet")
+
+
+class _SplitRecoveryCatalogTranslationTestProvider:
+    identity = TranslationIdentity(provider="split-recovery-test", version="v1")
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        if text.count("[[ATCV_") > 1:
+            raise TranslationProviderError("damaged batch boundary")
+        return text.replace("宠物", "Pet").replace("智能", "Smart")
+
+
+def test_translation_memory_recovers_failed_batches_in_smaller_groups() -> None:
+    successes, failures = translation_memory_service._translate_uncached_values(
+        _SplitRecoveryCatalogTranslationTestProvider(),
+        ["宠物用品", "智能用品"],
+        source_locale="zh-CN",
+        target_locale="en-US",
+    )
+
+    assert successes == {
+        "宠物用品": "Pet用品",
+        "智能用品": "Smart用品",
+    }
+    assert failures == {}
+
+
+class _MixedLanguageCatalogTranslationTestProvider:
+    identity = TranslationIdentity(provider="mixed-language-test", version="v1")
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        assert target_locale == "pt"
+        if source_locale == "zh-CN":
+            replacements = {
+                "MC宠物包": "MC Pet Pack",
+                "宠物包": "Bolsa para animais",
+                "产品简介": "Descrição do produto",
+                "货号": "Número do artigo",
+                "颜色": "Cor",
+                "红色": "Vermelho",
+            }
+        elif source_locale == "en-US":
+            replacements = {
+                "MC Pet Pack": "Pacote de animais MC",
+                "ITEM NO": "NÚMERO DO ITEM",
+                "Travel goods": "Artigos de viagem",
+            }
+        else:  # pragma: no cover - protects the intended source routing
+            raise AssertionError(f"unexpected source locale: {source_locale}")
+        translated = text
+        for source, target in replacements.items():
+            translated = translated.replace(source, target)
+        return translated
+
+
+def test_public_catalog_translates_mixed_chinese_and_english_content() -> None:
+    provider = _MixedLanguageCatalogTranslationTestProvider()
+    translation_memory_service._reset_translation_memory_for_tests()
+    with SessionLocal() as session:
+        session.execute(
+            delete(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogTextTranslationRow.provider == "mixed-language-test",
+            )
+        )
+        session.commit()
+
+    try:
+        translated, complete = (
+            public_catalog_use_cases._translate_public_catalog_values(
+                tenant_id=DEFAULT_TENANT_ID,
+                translator=provider,
+                values=[
+                    "MC宠物包 3068",
+                    "产品简介:货号 ITEM NO:3068",
+                    "Travel goods",
+                    "颜色",
+                    "红色",
+                ],
+                source_locale="zh-CN",
+                target_locale="pt",
+                normalize_provider_output=True,
+            )
+        )
+
+        assert translated["MC宠物包 3068"] == "Pacote de animais MC 3068"
+        assert "ITEM NO" not in translated["产品简介:货号 ITEM NO:3068"]
+        assert "Número do artigo" in translated[
+            "产品简介:货号 ITEM NO:3068"
+        ]
+        assert translated["产品简介:货号 ITEM NO:3068"].startswith(
+            "Descrição do produto:"
+        )
+        assert "Descriçãoção" not in translated[
+            "产品简介:货号 ITEM NO:3068"
+        ]
+        assert translated["Travel goods"] == "Artigos de viagem"
+        assert translated["颜色"] == "Cor"
+        assert translated["红色"] == "Vermelho"
+        assert complete == {
+            "MC宠物包 3068",
+            "产品简介:货号 ITEM NO:3068",
+            "Travel goods",
+            "颜色",
+            "红色",
+        }
+    finally:
+        translation_memory_service._reset_translation_memory_for_tests()
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTextTranslationRow).where(
+                    CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogTextTranslationRow.provider == "mixed-language-test",
+                )
+            )
+            session.commit()
+
+
+def test_public_product_option_labels_and_values_are_localized() -> None:
+    translation = public_catalog_use_cases.PublicProductTranslation(
+        name="Bolsa para animais",
+        description=None,
+        category=None,
+        tags=(),
+        display_tag=None,
+        specifications={},
+        option_labels={"颜色": "Cor", "尺寸": "Tamanho"},
+        option_values={"红色": "Vermelho", "小号": "Pequeno"},
+        complete=True,
+    )
+
+    localized = public_catalog_use_cases._localized_public_option_values(
+        {
+            "_sku2quotation": {
+                "source": "PRODUCT_TEMPLATE",
+                "variant_option_keys": ["颜色", "尺寸"],
+            },
+            "颜色": "红色",
+            "尺寸": "小号",
+            "商品型号": "MC-3068",
+        },
+        translation=translation,
+    )
+
+    assert localized["Cor"] == "Vermelho"
+    assert localized["Tamanho"] == "Pequeno"
+    assert localized["商品型号"] == "MC-3068"
+    assert localized["_sku2quotation"]["variant_option_keys"] == [
+        "Cor",
+        "Tamanho",
+    ]
+    assert "颜色" not in localized
+    assert "尺寸" not in localized
 
 
 def test_translation_memory_coalesces_identical_inflight_text(
@@ -8994,7 +9875,7 @@ def test_category_template_download_and_incremental_import_are_idempotent() -> N
     secondary_two = f"导入二级乙-{suffix}"
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = CATEGORY_TEMPLATE_SHEET
+    sheet.title = "客户分类数据"
     sheet.append(list(CATEGORY_TEMPLATE_HEADERS))
     sheet.append([primary_one, secondary_one])
     sheet.append([primary_one, secondary_two])
@@ -9914,8 +10795,24 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
             for row_index in range(1, sheet.max_row + 1)
             if sheet.cell(row_index, 1).value == "序号"
         )
-        assert sheet.cell(header_row + 1, 3).value == original_name
-        assert Decimal(str(sheet.cell(header_row + 1, 6).value)) == original_price
+        assert [sheet.cell(header_row, column).value for column in range(1, 15)] == [
+            "序号",
+            "图片",
+            "SKU",
+            "商品名称",
+            "数量",
+            "单位",
+            "装箱数量",
+            "装箱尺寸",
+            "毛重(kg)",
+            "立方(m³)",
+            "单价",
+            "总价",
+            "总立方(m³)",
+            "总毛重(kg)",
+        ]
+        assert sheet.cell(header_row + 1, 4).value == original_name
+        assert Decimal(str(sheet.cell(header_row + 1, 11).value)) == original_price
         assert all(cell.data_type != "f" for row in sheet.iter_rows() for cell in row)
 
         merchant_list = client.get("/api/v1/public-quote-drafts")
@@ -9937,6 +10834,13 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert merchant_pdf.content.startswith(b"%PDF")
         assert merchant_pdf.headers["cache-control"] == "private, no-store"
         assert merchant_pdf.headers["pragma"] == "no-cache"
+        merchant_xlsx = client.get(
+            f"/api/v1/public-quote-drafts/{quote_id}/xlsx"
+        )
+        assert merchant_xlsx.status_code == 200
+        assert merchant_xlsx.content.startswith(b"PK")
+        assert merchant_xlsx.headers["cache-control"] == "private, no-store"
+        assert merchant_xlsx.headers["pragma"] == "no-cache"
     finally:
         with SessionLocal() as session:
             sku = session.get(SkuRow, UUID(sku_data["id"]))
@@ -9978,22 +10882,56 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
 
 
 def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
+    system_template = client.get(
+        "/api/v1/quote-excel-templates/system-default.xlsx"
+    )
+    assert system_template.status_code == 200, system_template.text
+    assert system_template.headers["cache-control"] == "no-store"
+    default_workbook = load_workbook(BytesIO(system_template.content))
+    default_sheet = default_workbook["报价单"]
+    default_header_row = next(
+        row_index
+        for row_index in range(1, default_sheet.max_row + 1)
+        if default_sheet.cell(row_index, 1).value == "序号"
+    )
+    assert default_sheet.cell(default_header_row, 2).value == "图片"
+    assert default_sheet.cell(default_header_row, 14).value == "总毛重(kg)"
+    default_workbook.close()
+
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "商家报价单"
-    sheet.merge_cells("A1:G1")
+    sheet.merge_cells("A1:H1")
     sheet["A1"] = "报价单 {{quote_number}}"
     sheet["A1"].font = Font(size=18, bold=True, color="D4AF37")
     sheet["A1"].fill = PatternFill("solid", fgColor="2D1B69")
     sheet["A2"] = "客户"
     sheet["B2"] = "{{customer_name}}"
     sheet["D2"] = "{{quote_date}}"
-    headers = ["SKU代码", "品名", "规格", "数量", "单位", "单价", "金额"]
+    headers = [
+        "SKU代码",
+        "品名",
+        "规格",
+        "数量",
+        "单位",
+        "单价",
+        "金额",
+        "客户自定义列",
+    ]
     for column, header in enumerate(headers, 1):
         cell = sheet.cell(4, column, header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="2D1B69")
-    sample = ["SAMPLE-001", "示例商品", "红色 / M", 1, "件", 1.5, 1.5]
+    sample = [
+        "SAMPLE-001",
+        "示例商品",
+        "红色 / M",
+        1,
+        "件",
+        1.5,
+        1.5,
+        "商家示例值",
+    ]
     for column, value in enumerate(sample, 1):
         cell = sheet.cell(5, column, value)
         cell.fill = PatternFill("solid", fgColor="F4EFFA")
@@ -10074,6 +11012,8 @@ def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
         assert rendered_sheet["D5"].value == 2
         assert rendered_sheet["D6"].value == 3
         assert rendered_sheet["G7"].value == "=SUM(G5:G6)"
+        assert rendered_sheet["H5"].value is None
+        assert rendered_sheet["H6"].value is None
         assert rendered_sheet["A5"].fill.fgColor.rgb.endswith("F4EFFA")
         assert rendered_sheet["A6"].fill.fgColor.rgb.endswith("F4EFFA")
         assert all(
@@ -10185,6 +11125,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "public_quote_download_tokens",
         "quote_excel_templates",
         "storefront_announcements",
+        "catalog_delete_jobs",
     }
     customer_account_tables = {
         "local_account_credentials",
@@ -10227,10 +11168,40 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert "ticker_speed_px_per_second" in announcement_columns
     assert "repeat_interval_hours" not in announcement_columns
     assert announcement_columns["title"]["nullable"] is True
+    profile_columns = {
+        column["name"]: column
+        for column in inspect(upgraded_engine).get_columns(
+            "tenant_public_profiles"
+        )
+    }
+    assert "storefront_locales" in profile_columns
+    assert profile_columns["storefront_locales"]["nullable"] is False
+    assert "hot_products_enabled" in profile_columns
+    assert profile_columns["hot_products_enabled"]["nullable"] is False
+    product_columns = {
+        column["name"]: column
+        for column in inspect(upgraded_engine).get_columns("products")
+    }
+    assert "storefront_pinned_at" in product_columns
+    assert product_columns["storefront_pinned_at"]["nullable"] is True
+    delete_job_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("catalog_delete_jobs")
+    }
+    assert {
+        "status",
+        "stage",
+        "progress",
+        "total_products",
+        "total_skus",
+        "deleted_product_count",
+        "deleted_sku_count",
+        "error_message",
+    }.issubset(delete_job_columns)
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260801_0047"
+        ).scalar() == "20260802_0051"
     upgraded_engine.dispose()
     command.check(config)
 

@@ -1,4 +1,4 @@
-import { Avatar, Badge, Button, Callout, Card, Heading, Text, TextField } from "@radix-ui/themes";
+import { Avatar, Badge, Button, Callout, Card, Checkbox, Heading, Switch, Text, TextField } from "@radix-ui/themes";
 import {
   CheckCircle,
   Circle,
@@ -6,8 +6,10 @@ import {
   Buildings,
   Eye,
   EyeSlash,
+  Fire,
   Info,
   LockKey,
+  Translate,
   ShieldCheck,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -16,6 +18,7 @@ import { useCoreAuth } from "../AuthContext";
 import {
   changePassword,
   CoreApiError,
+  getMerchantSettings,
   updateMerchantSettings,
 } from "../api";
 import {
@@ -27,6 +30,8 @@ import {
 import { CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import { initials } from "../../lib/format";
+import { STOREFRONT_LANGUAGE_OPTIONS } from "../../lib/storefrontLocale";
+import type { StorefrontLocale } from "../../types";
 import "./AccountSettingsPage.css";
 
 const strengthCopy = {
@@ -56,6 +61,18 @@ export function AccountSettingsPage() {
   const [merchantError, setMerchantError] = useState("");
   const [merchantSuccess, setMerchantSuccess] = useState("");
   const [merchantSubmitting, setMerchantSubmitting] = useState(false);
+  const [merchantSettingsLoading, setMerchantSettingsLoading] = useState(true);
+  const [merchantSettingsReady, setMerchantSettingsReady] = useState(false);
+  const [storefrontLocales, setStorefrontLocales] = useState<StorefrontLocale[]>([
+    "zh-CN",
+    "en-US",
+  ]);
+  const [savedStorefrontLocales, setSavedStorefrontLocales] = useState<StorefrontLocale[]>([
+    "zh-CN",
+    "en-US",
+  ]);
+  const [hotProductsEnabled, setHotProductsEnabled] = useState(false);
+  const [savedHotProductsEnabled, setSavedHotProductsEnabled] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -90,6 +107,54 @@ export function AccountSettingsPage() {
     setMerchantName(profile?.context.tenantName ?? "");
     setMerchantSlug(profile?.context.tenantSlug ?? "");
   }, [profile?.context.tenantName, profile?.context.tenantSlug]);
+
+  useEffect(() => {
+    if (!profile?.context.tenantId) return;
+    let active = true;
+    setMerchantSettingsLoading(true);
+    setMerchantSettingsReady(false);
+    void getMerchantSettings()
+      .then((settings) => {
+        if (!active) return;
+        setMerchantName(settings.name);
+        setMerchantSlug(settings.slug);
+        setStorefrontLocales(settings.storefrontLocales);
+        setSavedStorefrontLocales(settings.storefrontLocales);
+        setHotProductsEnabled(settings.hotProductsEnabled);
+        setSavedHotProductsEnabled(settings.hotProductsEnabled);
+        setMerchantSettingsReady(true);
+      })
+      .catch(() => {
+        if (active) setMerchantError(t("商家资料读取失败，请刷新后重试。"));
+      })
+      .finally(() => {
+        if (active) setMerchantSettingsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [profile?.context.tenantId, t]);
+
+  const storefrontLocalesChanged = storefrontLocales.join(",")
+    !== savedStorefrontLocales.join(",");
+  const hotProductsChanged = hotProductsEnabled !== savedHotProductsEnabled;
+
+  const toggleStorefrontLocale = (
+    code: StorefrontLocale,
+    checked: boolean,
+  ) => {
+    if (code === "zh-CN") return;
+    setStorefrontLocales((current) => {
+      const selected = new Set(current);
+      if (checked) selected.add(code);
+      else selected.delete(code);
+      return STOREFRONT_LANGUAGE_OPTIONS
+        .map((language) => language.code)
+        .filter((locale) => selected.has(locale));
+    });
+    setMerchantError("");
+    setMerchantSuccess("");
+  };
 
   const clearFeedback = (field: keyof PasswordChangeValidation) => {
     setFieldErrors((current) => {
@@ -152,16 +217,33 @@ export function AccountSettingsPage() {
   const submitMerchant = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalized = merchantName.trim();
-    if (!canManageMerchant || merchantSubmitting || !normalized) return;
+    if (
+      !canManageMerchant
+      || !merchantSettingsReady
+      || merchantSubmitting
+      || !normalized
+    ) return;
+    const nameChanged = normalized !== profile?.context.tenantName;
+    if (!nameChanged && !storefrontLocalesChanged && !hotProductsChanged) return;
     setMerchantSubmitting(true);
     setMerchantError("");
     setMerchantSuccess("");
     try {
-      const updated = await updateMerchantSettings({ name: normalized });
+      const updated = await updateMerchantSettings({
+        name: nameChanged ? normalized : undefined,
+        storefrontLocales: storefrontLocalesChanged
+          ? storefrontLocales
+          : undefined,
+        hotProductsEnabled: hotProductsChanged ? hotProductsEnabled : undefined,
+      });
       setMerchantName(updated.name);
       setMerchantSlug(updated.slug);
+      setStorefrontLocales(updated.storefrontLocales);
+      setSavedStorefrontLocales(updated.storefrontLocales);
+      setHotProductsEnabled(updated.hotProductsEnabled);
+      setSavedHotProductsEnabled(updated.hotProductsEnabled);
       await reloadProfile();
-      setMerchantSuccess(t("商家名称和前台地址已更新，旧地址会自动跳转到新地址。"));
+      setMerchantSuccess(t("商家资料与商品前台设置已保存。商家名称变更后，旧地址仍会自动跳转。"));
     } catch (caught) {
       if (caught instanceof CoreApiError && caught.status === 409) {
         setMerchantError(
@@ -262,6 +344,90 @@ export function AccountSettingsPage() {
                 </Text>
               </div>
 
+              <section className="account-storefront-languages" aria-labelledby="account-storefront-languages-title">
+                <div className="account-storefront-languages-heading">
+                  <span><Translate size={19} weight="duotone" /></span>
+                  <div>
+                    <Text id="account-storefront-languages-title" size="2" weight="bold">
+                      {t("商品前台语言")}
+                    </Text>
+                    <Text size="1" color="gray">
+                      {t("勾选后才会出现在访客的语言菜单中；简体中文作为默认语言始终保留。")}
+                    </Text>
+                  </div>
+                </div>
+                <div className="account-language-options">
+                  {STOREFRONT_LANGUAGE_OPTIONS.map((language) => {
+                    const locked = language.code === "zh-CN";
+                    const checked = storefrontLocales.includes(language.code);
+                    return (
+                      <label
+                        key={language.code}
+                        className={`account-language-option${checked ? " is-selected" : ""}`}
+                        lang={language.code}
+                        dir={language.direction}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          disabled={
+                            locked
+                            || !canManageMerchant
+                            || merchantSettingsLoading
+                            || !merchantSettingsReady
+                          }
+                          onCheckedChange={(value) => (
+                            toggleStorefrontLocale(language.code, value === true)
+                          )}
+                        />
+                        <span className="account-language-flag" aria-hidden="true">
+                          {language.flag}
+                        </span>
+                        <span className="account-language-copy">
+                          <strong>{language.label}</strong>
+                          <small>{locked ? t("默认") : language.shortLabel}</small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section
+                className={`account-hot-products-setting${hotProductsEnabled ? " is-enabled" : ""}`}
+                aria-labelledby="account-hot-products-title"
+              >
+                <span className="account-hot-products-icon">
+                  <Fire size={20} weight="duotone" aria-hidden="true" />
+                </span>
+                <div className="account-hot-products-copy">
+                  <Text id="account-hot-products-title" size="2" weight="bold">
+                    {t("爆款优先展示")}
+                  </Text>
+                  <Text size="1" color="gray">
+                    {t("开启后，访客进入“全部商品”时会优先看到近 90 天浏览与下单热度更高的商品；搜索和分类顺序不受影响。")}
+                  </Text>
+                </div>
+                <div className="account-hot-products-control">
+                  <Badge color={hotProductsEnabled ? "amber" : "gray"} variant="soft">
+                    {t(hotProductsEnabled ? "已开启" : "未开启")}
+                  </Badge>
+                  <Switch
+                    checked={hotProductsEnabled}
+                    disabled={
+                      !canManageMerchant
+                      || merchantSettingsLoading
+                      || !merchantSettingsReady
+                    }
+                    onCheckedChange={(checked) => {
+                      setHotProductsEnabled(checked);
+                      setMerchantError("");
+                      setMerchantSuccess("");
+                    }}
+                    aria-label={t("爆款优先展示")}
+                  />
+                </div>
+              </section>
+
               {storefrontUrl ? (
                 <div className="account-storefront-preview">
                   <div>
@@ -300,8 +466,14 @@ export function AccountSettingsPage() {
                   disabled={
                     !canManageMerchant
                     || merchantSubmitting
+                    || merchantSettingsLoading
+                    || !merchantSettingsReady
                     || !merchantName.trim()
-                    || merchantName.trim() === profile?.context.tenantName
+                    || (
+                      merchantName.trim() === profile?.context.tenantName
+                      && !storefrontLocalesChanged
+                      && !hotProductsChanged
+                    )
                   }
                 >
                   {t("保存商家资料")}

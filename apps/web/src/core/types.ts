@@ -1,3 +1,5 @@
+import type { StorefrontLocale } from "../types";
+
 export type UiLocale = "zh-CN" | "en-US";
 export type BusinessMode = "DOMESTIC" | "EXPORT";
 
@@ -53,6 +55,8 @@ export interface MerchantSettings {
   storefrontPath: string;
   businessMode: BusinessMode;
   defaultCurrency: string;
+  storefrontLocales: StorefrontLocale[];
+  hotProductsEnabled: boolean;
 }
 
 export interface PermissionSet {
@@ -326,6 +330,7 @@ export interface SkuListItem {
   sourceFilename?: string;
   sourceImportedAt?: string;
   imageStatus: "SOURCE" | "APPROVED" | "NONE";
+  isPinned: boolean;
 }
 
 export interface SkuListPage {
@@ -763,10 +768,17 @@ export type QuoteTemplateField =
   | "specification"
   | "category"
   | "tags"
+  | "product_image"
   | "quantity"
   | "unit_code"
+  | "packing_quantity"
+  | "carton_dimensions"
+  | "gross_weight"
+  | "carton_volume"
   | "unit_price"
   | "line_total"
+  | "total_volume"
+  | "total_gross_weight"
   | "currency"
   | "quote_number"
   | "quote_date"

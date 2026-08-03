@@ -31,6 +31,7 @@ class PublicStoreResponse(BaseModel):
     source_locale: str = "zh-CN"
     available_locales: list[str] = Field(default_factory=lambda: ["zh-CN"])
     all_products_position: int = Field(default=0, ge=0)
+    hot_products_enabled: bool = False
     announcements: list[PublicAnnouncementResponse] = Field(default_factory=list)
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
 
@@ -118,6 +119,8 @@ class PublicProductPage(BaseModel):
     source_locale: str = "zh-CN"
     locale: str = "zh-CN"
     all_products_position: int = Field(default=0, ge=0)
+    hot_products_enabled: bool = False
+    hot_sort_applied: bool = False
 
 
 class PublicCartItem(BaseModel):

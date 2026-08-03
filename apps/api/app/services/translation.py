@@ -15,6 +15,19 @@ SUPPORTED_LOCALE_CODES = {
     "zh-CN": "ZH",
     "en": "EN",
     "en-US": "EN",
+    "es": "ES",
+    "es-ES": "ES",
+    "tr": "TR",
+    "tr-TR": "TR",
+    "ar": "AR",
+    "ar-SA": "AR",
+    "ja": "JA",
+    "ja-JP": "JA",
+    "ko": "KO",
+    "ko-KR": "KO",
+    "pt": "PT",
+    "pt-PT": "PT",
+    "pt-BR": "PT",
 }
 
 
@@ -78,7 +91,10 @@ def _provider_locale(locale: str) -> str:
 class DeepLXTranslator:
     """Small DeepLX adapter with a stable, provider-neutral contract."""
 
-    identity = TranslationIdentity(provider="deeplx", version="v1")
+    # v4 invalidates older translation-memory rows that were allowed to keep
+    # English fragments, untranslated CJK text, or unchanged marker-batch
+    # output and stray provider-added marker brackets in storefront responses.
+    identity = TranslationIdentity(provider="deeplx", version="v4")
 
     def __init__(
         self,

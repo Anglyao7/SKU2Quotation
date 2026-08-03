@@ -1,7 +1,7 @@
 import { Badge, Button, Card, Dialog, Heading, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
-import { CheckCircle, FileText, PencilSimple, ShieldCheck, ShoppingCartSimple, X } from "@phosphor-icons/react";
+import { CheckCircle, FilePdf, FileText, FileXls, PencilSimple, ShieldCheck, ShoppingCartSimple, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CoreApiError, decideQuotation, getPublicQuoteDraft, getQuotation, listPublicQuoteDrafts, listQuotations, reviseQuotation } from "../api";
+import { CoreApiError, decideQuotation, downloadPublicQuoteDraftDocument, getPublicQuoteDraft, getQuotation, listPublicQuoteDrafts, listQuotations, reviseQuotation } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
@@ -107,5 +107,18 @@ function OfficialQuoteDetail({ quote, drafts, setDrafts, changeReason, setChange
 
 function PublicDraftDetail({ draft, onClose }: { draft: PublicQuoteDraft; onClose: () => void }) {
   const { t } = useLocale();
-  return <><div className="core-dialog-heading"><div><Text size="1" color="gray">{t("客户前台提交 · 只读意向快照")}</Text><Dialog.Title>{draft.quoteNumber}</Dialog.Title><Dialog.Description>{draft.customerCompany || draft.customerName} · {coreDate(draft.createdAt)}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}><X /></Button></div><Card className="core-warning"><ShieldCheck /><div><Text weight="bold" as="div">{t("这不是正式 Quotation")}</Text><Text size="2">{t("客户草稿必须由内部成员核对客户、库存、采购价和利润规则后，才能进入正式询盘与报价流程。")}</Text></div></Card><div className="core-master-grid"><Card><Text size="1" color="gray">{t("联系人")}</Text><Heading size="3">{draft.customerName}</Heading><Text size="1">{draft.customerEmail ?? draft.customerPhone ?? "—"}</Text></Card><Card><Text size="1" color="gray">{t("客户草稿总额")}</Text><Heading size="3">{draft.currency} {draft.total.toFixed(2)}</Heading></Card><Card><Text size="1" color="gray">{t("有效至")}</Text><Heading size="3">{coreDate(draft.validUntil)}</Heading></Card><Card><Text size="1" color="gray">{t("内容快照")}</Text><code>{draft.contentHash.slice(0, 18)}…</code></Card></div><Heading size="4">{t("客户选择的商品快照")}</Heading><div className="core-list">{draft.items.map((item) => <div className="core-list-row" key={item.id}><ShoppingCartSimple /><div><Text weight="bold" as="div">{item.name}</Text><Text size="1" color="gray">{item.skuCode} · {t("产品")} v{item.productVersion} / SKU v{item.skuVersion}</Text></div><Text size="2">{item.quantity} {item.unitCode}</Text><Text weight="bold">{item.currency} {item.lineTotal.toFixed(2)}</Text></div>)}</div>{draft.notes ? <Card><Text size="1" color="gray">{t("客户备注")}</Text><Text as="div">{draft.notes}</Text></Card> : null}<Text size="1" color="gray">{draft.disclaimer}</Text></>;
+  const [downloading, setDownloading] = useState<"pdf" | "xlsx" | null>(null);
+  const [downloadError, setDownloadError] = useState("");
+  const download = async (type: "pdf" | "xlsx") => {
+    setDownloading(type);
+    setDownloadError("");
+    try {
+      await downloadPublicQuoteDraftDocument(draft.id, draft.quoteNumber, type);
+    } catch (reason) {
+      setDownloadError(reason instanceof Error ? reason.message : t("报价文件下载失败"));
+    } finally {
+      setDownloading(null);
+    }
+  };
+  return <><div className="core-dialog-heading"><div><Text size="1" color="gray">{t("客户前台提交 · 只读意向快照")}</Text><Dialog.Title>{draft.quoteNumber}</Dialog.Title><Dialog.Description>{draft.customerCompany || draft.customerName} · {coreDate(draft.createdAt)}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}><X /></Button></div><Card className="core-warning"><ShieldCheck /><div><Text weight="bold" as="div">{t("这不是正式 Quotation")}</Text><Text size="2">{t("客户草稿必须由内部成员核对客户、库存、采购价和利润规则后，才能进入正式询盘与报价流程。")}</Text></div></Card><div className="core-dialog-actions"><Button variant="soft" color="gray" loading={downloading === "pdf"} onClick={() => void download("pdf")}><FilePdf />{t("下载 PDF")}</Button><Button loading={downloading === "xlsx"} onClick={() => void download("xlsx")}><FileXls />{t("下载 Excel")}</Button></div>{downloadError ? <Text size="2" color="red">{downloadError}</Text> : null}<div className="core-master-grid"><Card><Text size="1" color="gray">{t("联系人")}</Text><Heading size="3">{draft.customerName}</Heading><Text size="1">{draft.customerEmail ?? draft.customerPhone ?? "—"}</Text></Card><Card><Text size="1" color="gray">{t("客户草稿总额")}</Text><Heading size="3">{draft.currency} {draft.total.toFixed(2)}</Heading></Card><Card><Text size="1" color="gray">{t("有效至")}</Text><Heading size="3">{coreDate(draft.validUntil)}</Heading></Card><Card><Text size="1" color="gray">{t("内容快照")}</Text><code>{draft.contentHash.slice(0, 18)}…</code></Card></div><Heading size="4">{t("客户选择的商品快照")}</Heading><div className="core-list">{draft.items.map((item) => <div className="core-list-row" key={item.id}><ShoppingCartSimple /><div><Text weight="bold" as="div">{item.name}</Text><Text size="1" color="gray">{item.skuCode} · {t("产品")} v{item.productVersion} / SKU v{item.skuVersion}</Text></div><Text size="2">{item.quantity} {item.unitCode}</Text><Text weight="bold">{item.currency} {item.lineTotal.toFixed(2)}</Text></div>)}</div>{draft.notes ? <Card><Text size="1" color="gray">{t("客户备注")}</Text><Text as="div">{draft.notes}</Text></Card> : null}<Text size="1" color="gray">{draft.disclaimer}</Text></>;
 }

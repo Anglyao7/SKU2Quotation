@@ -11,6 +11,9 @@
         <string>-m</string>
         <string>uvicorn</string>
         <string>app.main:app</string>
+        <string>--reload</string>
+        <string>--reload-dir</string>
+        <string>/Users/ricardo/SKU2Quotation/apps/api/app</string>
         <string>--env-file</string>
         <string>/Users/ricardo/SKU2Quotation/.env</string>
         <string>--host</string>

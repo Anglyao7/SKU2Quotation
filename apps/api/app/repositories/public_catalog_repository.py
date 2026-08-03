@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import Text, case, cast, exists, func, or_, select
@@ -16,6 +16,7 @@ from ..public_catalog_models import (
     PublicQuoteDraftRow,
     TenantPublicProfileRow,
 )
+from ..storefront_analytics_models import StorefrontProductViewDailyRow
 
 ParentProductCategoryRow = aliased(
     ProductCategoryRow,
@@ -258,6 +259,10 @@ def _ordered_public_catalog_statement(statement, *, query: str):
             else_=ProductCategoryRow.sort_order,
         ),
         func.lower(func.coalesce(ProductCategoryRow.name, "")),
+        # Pinning is scoped to the product's own category so merchants keep
+        # their configured category order while promoting selected products.
+        case((ProductRow.storefront_pinned_at.is_not(None), 0), else_=1),
+        ProductRow.storefront_pinned_at.desc(),
         ProductRow.name,
         SkuRow.sku_code,
         SkuRow.id,
@@ -338,6 +343,7 @@ def _public_product_id_statement(
     query: str,
     category: str | None,
     tags: set[str],
+    hot: bool = False,
 ):
     statement = _public_catalog_statement(
         tenant_id=tenant_id,
@@ -365,6 +371,8 @@ def _public_product_id_statement(
         else_=ProductCategoryRow.sort_order,
     )
     child_name = func.lower(func.coalesce(ProductCategoryRow.name, ""))
+    pinned_rank = case((ProductRow.storefront_pinned_at.is_not(None), 0), else_=1)
+    pinned_at = ProductRow.storefront_pinned_at
     product_name = func.lower(ProductRow.name)
     normalized = query.casefold().strip()
     match_rank = func.min(
@@ -382,6 +390,8 @@ def _public_product_id_statement(
             root_name.label("root_name"),
             child_sort.label("child_sort"),
             child_name.label("child_name"),
+            pinned_rank.label("pinned_rank"),
+            pinned_at.label("pinned_at"),
             product_name.label("product_name"),
             match_rank.label("match_rank"),
         )
@@ -393,16 +403,100 @@ def _public_product_id_statement(
             root_name,
             child_sort,
             child_name,
+            pinned_rank,
+            pinned_at,
             product_name,
         )
     )
+    if normalized:
+        return grouped.order_by(
+            match_rank,
+            uncategorized,
+            root_sort,
+            root_name,
+            child_sort,
+            child_name,
+            product_name,
+            ProductRow.id,
+        )
+    if hot:
+        catalog_products = grouped.subquery("public_catalog_products")
+        view_totals = (
+            select(
+                StorefrontProductViewDailyRow.product_id.label("product_id"),
+                func.sum(StorefrontProductViewDailyRow.view_count).label(
+                    "view_count"
+                ),
+            )
+            .where(
+                StorefrontProductViewDailyRow.tenant_id == tenant_id,
+                StorefrontProductViewDailyRow.viewed_on
+                >= (now - timedelta(days=90)).date(),
+            )
+            .group_by(StorefrontProductViewDailyRow.product_id)
+            .subquery("hot_product_views")
+        )
+        order_totals = (
+            select(
+                PublicQuoteDraftItemRow.product_id_snapshot.label("product_id"),
+                func.count(
+                    func.distinct(PublicQuoteDraftItemRow.quote_draft_id)
+                ).label("order_count"),
+            )
+            .join(
+                PublicQuoteDraftRow,
+                (PublicQuoteDraftRow.tenant_id == PublicQuoteDraftItemRow.tenant_id)
+                & (PublicQuoteDraftRow.id == PublicQuoteDraftItemRow.quote_draft_id),
+            )
+            .where(
+                PublicQuoteDraftItemRow.tenant_id == tenant_id,
+                PublicQuoteDraftItemRow.deleted_at.is_(None),
+                PublicQuoteDraftRow.tenant_id == tenant_id,
+                PublicQuoteDraftRow.deleted_at.is_(None),
+                PublicQuoteDraftRow.status.in_(
+                    ("PENDING_CONFIRMATION", "CONFIRMED")
+                ),
+                PublicQuoteDraftRow.created_at >= now - timedelta(days=90),
+            )
+            .group_by(PublicQuoteDraftItemRow.product_id_snapshot)
+            .subquery("hot_product_orders")
+        )
+        view_count = func.coalesce(view_totals.c.view_count, 0)
+        order_count = func.coalesce(order_totals.c.order_count, 0)
+        hot_score = view_count + order_count * 20
+        return (
+            select(catalog_products.c.product_id)
+            .outerjoin(
+                view_totals,
+                view_totals.c.product_id == catalog_products.c.product_id,
+            )
+            .outerjoin(
+                order_totals,
+                order_totals.c.product_id == catalog_products.c.product_id,
+            )
+            .order_by(
+                catalog_products.c.pinned_rank,
+                catalog_products.c.pinned_at.desc(),
+                hot_score.desc(),
+                order_count.desc(),
+                view_count.desc(),
+                catalog_products.c.uncategorized,
+                catalog_products.c.root_sort,
+                catalog_products.c.root_name,
+                catalog_products.c.child_sort,
+                catalog_products.c.child_name,
+                catalog_products.c.product_name,
+                catalog_products.c.product_id,
+            )
+        )
     return grouped.order_by(
-        match_rank if normalized else uncategorized,
         uncategorized,
         root_sort,
         root_name,
         child_sort,
         child_name,
+        pinned_rank,
+        pinned_at.desc(),
         product_name,
         ProductRow.id,
     )
@@ -418,6 +512,7 @@ def list_public_product_ids_page(
     tags: set[str],
     page: int,
     page_size: int,
+    hot: bool = False,
 ) -> list[UUID]:
     statement = _public_product_id_statement(
         session,
@@ -426,6 +521,7 @@ def list_public_product_ids_page(
         query=query,
         category=category,
         tags=tags,
+        hot=hot,
     )
     return [
         row.product_id

@@ -45,8 +45,42 @@ def dashboard_snapshot(
     ).all()
 
     active_products = int(session.scalar(select(func.count()).select_from(ProductRow).where(ProductRow.tenant_id == tenant_id, ProductRow.status == "ACTIVE")) or 0)
-    approved_images = int(session.scalar(select(func.count(func.distinct(ProductImageRow.product_id))).where(ProductImageRow.tenant_id == tenant_id, ProductImageRow.approval_status == "APPROVED")) or 0)
-    sourced_products = int(session.scalar(select(func.count(func.distinct(SupplierProductRow.product_id))).where(SupplierProductRow.tenant_id == tenant_id, SupplierProductRow.status == "ACTIVE")) or 0)
+    approved_images = int(
+        session.scalar(
+            select(func.count(func.distinct(ProductImageRow.product_id)))
+            .join(
+                ProductRow,
+                and_(
+                    ProductRow.tenant_id == ProductImageRow.tenant_id,
+                    ProductRow.id == ProductImageRow.product_id,
+                ),
+            )
+            .where(
+                ProductImageRow.tenant_id == tenant_id,
+                ProductImageRow.approval_status == "APPROVED",
+                ProductRow.status == "ACTIVE",
+            )
+        )
+        or 0
+    )
+    sourced_products = int(
+        session.scalar(
+            select(func.count(func.distinct(SupplierProductRow.product_id)))
+            .join(
+                ProductRow,
+                and_(
+                    ProductRow.tenant_id == SupplierProductRow.tenant_id,
+                    ProductRow.id == SupplierProductRow.product_id,
+                ),
+            )
+            .where(
+                SupplierProductRow.tenant_id == tenant_id,
+                SupplierProductRow.status == "ACTIVE",
+                ProductRow.status == "ACTIVE",
+            )
+        )
+        or 0
+    )
     priced_products = int(session.scalar(
         select(func.count(func.distinct(SkuRow.product_id)))
         .join(

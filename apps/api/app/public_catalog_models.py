@@ -64,6 +64,16 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
     all_products_position: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
+    storefront_locales: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=lambda: ["zh-CN", "en-US"],
+        nullable=False,
+    )
+    hot_products_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
 
 
 class PublicCatalogOfferRow(AuditTimestampMixin, Base):

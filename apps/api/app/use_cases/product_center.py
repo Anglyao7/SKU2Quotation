@@ -42,9 +42,6 @@ from ..product_center_schemas import (
     ProductReviewQueueItem,
     ReviewQueueField,
     SkuBatchCreateRequest,
-    SkuBatchDeleteRequest,
-    SkuBatchUpdateStatusRequest,
-    SkuBatchOperationResponse,
     SkuListItem,
     SkuListPage,
     SkuResponse,
@@ -468,6 +465,7 @@ def list_skus(
                 source_filename=row.source_filename,
                 source_imported_at=row.source_imported_at,
                 image_status=image_status,
+                is_pinned=row.product.storefront_pinned_at is not None,
             )
         )
 
@@ -1949,6 +1947,40 @@ def batch_delete_skus(
     }
 
 
+def _load_batch_sku_selection(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    sku_ids: list[UUID],
+) -> tuple[list[UUID], list[SkuRow], list[dict[str, Any]]]:
+    """Load a de-duplicated, tenant-scoped SKU selection with stable failures."""
+
+    requested_ids = list(dict.fromkeys(sku_ids))
+    rows = session.scalars(
+        select(SkuRow)
+        .where(
+            SkuRow.tenant_id == tenant_id,
+            SkuRow.id.in_(requested_ids),
+        )
+        .execution_options(include_deleted=True)
+    ).all()
+    rows_by_id = {row.id: row for row in rows}
+    selected_rows: list[SkuRow] = []
+    failed_items: list[dict[str, Any]] = []
+    for sku_id in requested_ids:
+        row = rows_by_id.get(sku_id)
+        if row is None or row.deleted_at is not None or row.status == "ARCHIVED":
+            failed_items.append(
+                {
+                    "sku_id": str(sku_id),
+                    "reason": "SKU 不存在、已删除或已经归档",
+                }
+            )
+            continue
+        selected_rows.append(row)
+    return requested_ids, selected_rows, failed_items
+
+
 def delete_all_products(
     session: Session,
     *,
@@ -2076,61 +2108,275 @@ def batch_update_sku_status(
     sku_ids: list[UUID],
     status: str,
 ) -> dict[str, Any]:
-    """批量更新 SKU 状态"""
+    """Batch publish or unpublish SKUs with tenant isolation and audit history."""
     _require(permissions, "product.edit")
 
     if status not in SKU_STATUSES:
         raise ApplicationError(
             "INVALID_STATUS",
             f"Invalid status: {status}",
-            kind="validation_failed"
+            kind="validation_failed",
         )
 
-    success_count = 0
-    failed_count = 0
-    failed_items: list[dict[str, Any]] = []
+    requested_ids, selected_rows, failed_items = _load_batch_sku_selection(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=sku_ids,
+    )
+    if not selected_rows:
+        return {
+            "success_count": 0,
+            "failed_count": len(failed_items),
+            "total_count": len(requested_ids),
+            "failed_items": failed_items,
+            "affected_product_count": 0,
+        }
+
     now = utcnow()
+    product_ids = list(dict.fromkeys(row.product_id for row in selected_rows))
+    supplier_ids = {
+        row.supplier_id for row in selected_rows if row.supplier_id is not None
+    }
+    for sku in selected_rows:
+        previous_status = sku.status
+        previous_version = sku.version
+        sku.status = status
+        sku.updated_at = now
+        sku.updated_by_user_id = user_id
+        sku.version += 1
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=sku.product_id,
+                entity_type="SKU",
+                entity_id=str(sku.id),
+                action="sku.status_batch_updated",
+                before={"status": previous_status, "version": previous_version},
+                after={"status": status, "version": sku.version},
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            )
+        )
 
-    for sku_id in sku_ids:
-        try:
-            sku = session.query(SkuRow).filter(
-                SkuRow.tenant_id == tenant_id,
-                SkuRow.id == sku_id,
-            ).first()
+    products = session.scalars(
+        select(ProductRow).where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.id.in_(product_ids),
+            ProductRow.deleted_at.is_(None),
+        )
+    ).all()
+    for product in products:
+        product.current_version += 1
+        product.search_document_version = 0
+        product.updated_by = user_id
+        product.updated_at = now
+        if status == "ACTIVE":
+            product.status = "ACTIVE"
+            product.archived_at = None
 
-            if not sku:
-                failed_count += 1
-                failed_items.append({
-                    "sku_id": str(sku_id),
-                    "reason": "SKU not found"
-                })
-                continue
+    session.flush()
+    if supplier_ids:
+        active_counts = dict(
+            session.execute(
+                select(SkuRow.supplier_id, func.count(SkuRow.id))
+                .where(
+                    SkuRow.tenant_id == tenant_id,
+                    SkuRow.supplier_id.in_(supplier_ids),
+                    SkuRow.status == "ACTIVE",
+                    SkuRow.deleted_at.is_(None),
+                )
+                .group_by(SkuRow.supplier_id)
+            ).all()
+        )
+        suppliers = session.scalars(
+            select(SupplierRow).where(
+                SupplierRow.tenant_id == tenant_id,
+                SupplierRow.id.in_(supplier_ids),
+                SupplierRow.deleted_at.is_(None),
+            )
+        ).all()
+        for supplier in suppliers:
+            supplier.active_skus = int(active_counts.get(supplier.id, 0))
+            supplier.updated_at = now
 
-            sku.status = status
-            sku.updated_at = now
-            sku.updated_by_user_id = user_id
-            sku.version += 1
-            success_count += 1
-        except Exception as exc:
-            failed_count += 1
-            failed_items.append({
-                "sku_id": str(sku_id),
-                "reason": str(exc)
-            })
-
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise ApplicationError(
-            "BATCH_UPDATE_FAILED",
-            "批量更新失败",
-            kind="conflict"
-        ) from exc
+    _commit(
+        session,
+        conflict_code="BATCH_UPDATE_FAILED",
+        conflict_message="批量更新 SKU 状态失败，请刷新商品库后重试。",
+    )
 
     return {
-        "success_count": success_count,
-        "failed_count": failed_count,
-        "total_count": len(sku_ids),
+        "success_count": len(selected_rows),
+        "failed_count": len(failed_items),
+        "total_count": len(requested_ids),
         "failed_items": failed_items,
+        "affected_product_count": len(products),
+    }
+
+
+def batch_update_sku_category(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    sku_ids: list[UUID],
+    category_id: UUID | None,
+) -> dict[str, Any]:
+    """Move the products represented by selected SKUs into one category."""
+
+    _require(permissions, "product.edit")
+    category = None
+    if category_id is not None:
+        category = session.scalar(
+            select(ProductCategoryRow).where(
+                ProductCategoryRow.tenant_id == tenant_id,
+                ProductCategoryRow.id == category_id,
+                ProductCategoryRow.deleted_at.is_(None),
+                ProductCategoryRow.status != "ARCHIVED",
+            )
+        )
+        if category is None:
+            raise ApplicationError(
+                "CATEGORY_NOT_FOUND",
+                "分类不存在或已经归档。",
+                kind="not_found",
+            )
+
+    requested_ids, selected_rows, failed_items = _load_batch_sku_selection(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=sku_ids,
+    )
+    product_ids = list(dict.fromkeys(row.product_id for row in selected_rows))
+    products = session.scalars(
+        select(ProductRow).where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.id.in_(product_ids),
+            ProductRow.deleted_at.is_(None),
+            ProductRow.status != "ARCHIVED",
+        )
+    ).all()
+    products_by_id = {row.id: row for row in products}
+    valid_rows: list[SkuRow] = []
+    for sku in selected_rows:
+        if sku.product_id not in products_by_id:
+            failed_items.append(
+                {"sku_id": str(sku.id), "reason": "所属商品不存在或已经归档"}
+            )
+        else:
+            valid_rows.append(sku)
+
+    now = utcnow()
+    for product in products:
+        previous_category_id = product.category_id
+        product.category_id = category_id
+        product.current_version += 1
+        product.search_document_version = 0
+        product.updated_by = user_id
+        product.updated_at = now
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                entity_type="PRODUCT",
+                entity_id=str(product.id),
+                action="product.category_batch_updated",
+                before={
+                    "category_id": str(previous_category_id)
+                    if previous_category_id
+                    else None
+                },
+                after={"category_id": str(category_id) if category_id else None},
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            )
+        )
+
+    if products:
+        _commit(
+            session,
+            conflict_code="BATCH_CATEGORY_UPDATE_FAILED",
+            conflict_message="批量修改分类失败，请刷新商品库后重试。",
+        )
+    return {
+        "success_count": len(valid_rows),
+        "failed_count": len(failed_items),
+        "total_count": len(requested_ids),
+        "failed_items": failed_items,
+        "affected_product_count": len(products),
+    }
+
+
+def batch_update_sku_pinned(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    sku_ids: list[UUID],
+    pinned: bool,
+) -> dict[str, Any]:
+    """Pin or unpin the products represented by selected SKUs."""
+
+    _require(permissions, "product.edit")
+    requested_ids, selected_rows, failed_items = _load_batch_sku_selection(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=sku_ids,
+    )
+    product_ids = list(dict.fromkeys(row.product_id for row in selected_rows))
+    products = session.scalars(
+        select(ProductRow).where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.id.in_(product_ids),
+            ProductRow.deleted_at.is_(None),
+            ProductRow.status != "ARCHIVED",
+        )
+    ).all()
+    products_by_id = {row.id: row for row in products}
+    valid_rows: list[SkuRow] = []
+    for sku in selected_rows:
+        if sku.product_id not in products_by_id:
+            failed_items.append(
+                {"sku_id": str(sku.id), "reason": "所属商品不存在或已经归档"}
+            )
+        else:
+            valid_rows.append(sku)
+
+    now = utcnow()
+    for product in products:
+        was_pinned = product.storefront_pinned_at is not None
+        product.storefront_pinned_at = now if pinned else None
+        product.current_version += 1
+        product.updated_by = user_id
+        product.updated_at = now
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                entity_type="PRODUCT",
+                entity_id=str(product.id),
+                action="product.storefront_pin_updated",
+                before={"pinned": was_pinned},
+                after={"pinned": pinned},
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            )
+        )
+
+    if products:
+        _commit(
+            session,
+            conflict_code="BATCH_PIN_UPDATE_FAILED",
+            conflict_message="批量置顶失败，请刷新商品库后重试。",
+        )
+    return {
+        "success_count": len(valid_rows),
+        "failed_count": len(failed_items),
+        "total_count": len(requested_ids),
+        "failed_items": failed_items,
+        "affected_product_count": len(products),
     }

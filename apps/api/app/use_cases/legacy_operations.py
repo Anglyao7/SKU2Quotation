@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,8 @@ from openpyxl import Workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from sqlalchemy import select
+from openpyxl.worksheet.datavalidation import DataValidation
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, set_request_context
@@ -41,8 +43,10 @@ from ..services.file_detection import detect_file_path, detect_file_type
 from ..services.import_processing import new_id
 from ..services.pricing import calculate_price
 from ..services.product_template_import import (
-    PRODUCT_TEMPLATE_HEADERS,
-    PRODUCT_TEMPLATE_SHEET,
+    PRODUCT_MASTER_TEMPLATE_HEADERS,
+    PRODUCT_MASTER_TEMPLATE_SHEET,
+    SKU_DETAIL_TEMPLATE_HEADERS,
+    SKU_DETAIL_TEMPLATE_SHEET,
 )
 from ..services.repository import (
     get_import_job,
@@ -54,6 +58,12 @@ from ..services.repository import (
 )
 from ..services.storage import UploadTooLargeError, store_upload
 from ..workers.file_processing import inline_worker_enabled, process_file_worker_job
+
+
+_deferred_import_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="local-import-worker",
+)
 
 
 def _require_permission(permissions: frozenset[str], code: str) -> None:
@@ -130,7 +140,7 @@ async def create_import(
     ):
         raise ApplicationError(
             "PRODUCT_TEMPLATE_FORMAT_INVALID",
-            "商品库只接受固定格式的 .xlsx 商品模版。",
+            "商品库只接受 .xlsx 商品文件。",
         )
     supplier = (
         find_supplier(session, tenant_id=tenant_id, supplier_id=supplier_id)
@@ -287,12 +297,23 @@ def process_deferred_import(*, tenant_id: UUID, import_job_id: str) -> None:
             tenant_id=tenant_id,
             user_id=UUID(int=0),
         )
+        now = utcnow()
         worker_job_id = session.scalar(
             select(WorkerJobRow.id)
             .where(
                 WorkerJobRow.tenant_id == tenant_id,
                 WorkerJobRow.import_job_id == import_job_id,
-                WorkerJobRow.status.in_(("PENDING", "RETRY")),
+                or_(
+                    and_(
+                        WorkerJobRow.status.in_(("PENDING", "RETRY")),
+                        WorkerJobRow.available_at <= now,
+                    ),
+                    and_(
+                        WorkerJobRow.status == "RUNNING",
+                        WorkerJobRow.lease_expires_at.is_not(None),
+                        WorkerJobRow.lease_expires_at <= now,
+                    ),
+                ),
             )
             .order_by(WorkerJobRow.created_at.desc())
             .limit(1)
@@ -309,61 +330,203 @@ def process_deferred_import(*, tenant_id: UUID, import_job_id: str) -> None:
         )
 
 
-def build_product_template_workbook() -> bytes:
-    """Build the canonical, blank product-import workbook.
+def resume_deferred_imports() -> int:
+    """Resume interrupted inline-profile imports after a local API restart."""
 
-    The importer remains the source of truth for the worksheet and header
-    contract; this download mirrors those constants exactly.
-    """
+    with SessionLocal() as session:
+        if not inline_import_worker_enabled(session):
+            return 0
+        now = utcnow()
+        queued = session.execute(
+            select(WorkerJobRow.tenant_id, WorkerJobRow.import_job_id)
+            .where(
+                WorkerJobRow.import_job_id.is_not(None),
+                or_(
+                    and_(
+                        WorkerJobRow.status.in_(("PENDING", "RETRY")),
+                        WorkerJobRow.available_at <= now,
+                    ),
+                    and_(
+                        WorkerJobRow.status == "RUNNING",
+                        WorkerJobRow.lease_expires_at.is_not(None),
+                        WorkerJobRow.lease_expires_at <= now,
+                    ),
+                ),
+            )
+            .order_by(WorkerJobRow.available_at, WorkerJobRow.created_at)
+        ).all()
+        session.rollback()
+
+    for tenant_id, import_job_id in queued:
+        if import_job_id is None:
+            continue
+        _deferred_import_executor.submit(
+            process_deferred_import,
+            tenant_id=tenant_id,
+            import_job_id=import_job_id,
+        )
+    return len(queued)
+
+
+def build_product_template_workbook() -> bytes:
+    """Build the canonical Product + SKU workbook used by new imports."""
 
     workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = PRODUCT_TEMPLATE_SHEET
-    sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+    product_sheet = workbook.active
+    product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    sku_sheet = workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
+    product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS))
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS))
 
-    header_fill = PatternFill(fill_type="solid", fgColor="23453B")
     header_font = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFF")
-    header_border = Border(bottom=Side(style="medium", color="D18B67"))
-    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    instructions = {
-        "商品名称": "必填。面向客户展示的商品名称。",
-        "商品分类": "选填。填写“一级分类”或“一级分类/二级分类”，最多两级；留空自动归入“未分类”，且不会进入智能索引。",
-        "商品型号": "选填。留空时系统根据商品名称、分类和供应商生成临时型号；填写时作为 SKU 唯一标识，重复型号只保留首次出现的行。",
-        "供应商": "选填。用于关联进销存；同名供应商自动复用，不存在时自动创建。",
-        "商品价格": "选填。留空时按 0.00 处理，商品仍会正常发布到前台。",
-        "商品描述": "选填。商品详情说明。",
-        "备注": "选填，仅作为商品补充说明。",
-        "标签": "选填。多个标签使用中文或英文逗号分隔，最多 20 个。",
-    }
-    image_instruction = (
-        "选填。可把真实图片直接插入对应单元格位置，"
-        "也可填写可公开访问的 HTTP(S) 商品图片地址。"
+    header_border = Border(bottom=Side(style="medium", color="D4AF37"))
+    header_alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+        wrap_text=True,
     )
-    widths = (28, 18, 22, 28, 14, 44, 24, 24, *([38] * 10))
-
-    for index, (header, width) in enumerate(
-        zip(PRODUCT_TEMPLATE_HEADERS, widths, strict=True),
+    product_instructions = {
+        "商品编码": "必填且唯一。用于连接 Product 与 SKU 两张表；后续增量更新时请保持不变。",
+        "商品名称": "必填。面向客户展示的商品名称；一个商品可以关联多个 SKU。",
+        "商品分类": "选填。填写“一级分类”或“一级分类/二级分类”，最多两级；留空归入“未分类”且不进入智能索引。",
+        "商品型号": "选填。商品级型号，会写入该商品下各 SKU 的商品信息。",
+        "商品价格": "选填。作为该商品下 SKU 的默认价格；SKU 表填写 SKU 价格时以 SKU 价格为准，均留空按 0.00 处理。",
+        "商品描述": "选填。展示在商品详情页，并参与智能搜索内容构建。",
+        "备注": "选填。商品级补充说明。",
+        "标签": "选填。多个标签使用中文或英文逗号分隔，最多 20 个，并应用到该商品下全部 SKU。",
+    }
+    sku_instructions = {
+        "商品编码": "必填。必须与 Product 表中的商品编码一致，用于确定该 SKU 属于哪个商品。",
+        "SKU编号": "必填且全表唯一。没有候选规格时直接作为 SKU 编号；填写多个候选值时作为稳定编号前缀，系统会为每种组合生成独立 SKU。",
+        "SKU名称": "选填。作为生成后 SKU 的名称前缀；每个具体 SKU 会自动附加所选规格值。留空时使用商品名称。",
+        "供应商": "选填。用于关联进销存；同名供应商自动复用，不存在时自动创建。",
+        "SKU价格": "选填。填写时覆盖 Product 表的商品价格；留空时继承商品价格。",
+        "毛重": "选填。该 SKU 的毛重，单位为 kg；填写大于等于 0 的数字。",
+        "起定数": "选填。该 SKU 的最小起订数量；填写大于等于 0 的数字。",
+        "装箱数": "选填。每箱装入的 SKU 数量，例如 24。",
+    }
+    option_examples = (
+        ("尺寸", "小号"),
+        ("颜色", "红色"),
+        ("材质", "不锈钢"),
+    )
+    for option_number, (option_name, option_value) in enumerate(
+        option_examples,
         start=1,
     ):
-        cell = sheet.cell(row=1, column=index)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.border = header_border
-        cell.alignment = header_alignment
-        cell.comment = Comment(
-            instructions.get(header, image_instruction),
-            "智贸云",
+        sku_instructions[f"规格{option_number}名称"] = (
+            f"选填。该组候选值的规格名称，例如“{option_name}”。填写名称后至少填写一个候选值。"
         )
-        sheet.column_dimensions[get_column_letter(index)].width = width
+        for value_number in range(1, 6):
+            sku_instructions[f"规格{option_number}值（{value_number}）"] = (
+                f"选填。规格“{option_name}”的第 {value_number} 个候选值"
+                f"；例如“{option_value}”。系统会与其他规格组自动组合。"
+            )
+    image_instruction = (
+        "选填。可把真实图片直接插入对应单元格位置，"
+        "也可填写可公开访问的 HTTP(S) 商品图片地址。图片属于 Product，"
+        "会供该商品下全部 SKU 共用。"
+    )
 
-    sheet.row_dimensions[1].height = 34
-    sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:{get_column_letter(len(PRODUCT_TEMPLATE_HEADERS))}1"
-    sheet.sheet_view.showGridLines = False
-    sheet.sheet_properties.pageSetUpPr.fitToPage = True
-    sheet.page_setup.fitToWidth = 1
-    sheet.page_setup.fitToHeight = 0
-    sheet.print_title_rows = "1:1"
+    def style_sheet(
+        sheet: object,
+        *,
+        headers: tuple[str, ...],
+        widths: tuple[int, ...],
+        instructions: dict[str, str],
+        header_color: str,
+        tab_color: str,
+    ) -> None:
+        header_fill = PatternFill(fill_type="solid", fgColor=header_color)
+        for index, (header, width) in enumerate(
+            zip(headers, widths, strict=True),
+            start=1,
+        ):
+            cell = sheet.cell(row=1, column=index)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.border = header_border
+            cell.alignment = header_alignment
+            cell.comment = Comment(
+                instructions.get(header, image_instruction),
+                "智贸云",
+            )
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        sheet.row_dimensions[1].height = 36
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+        sheet.sheet_view.showGridLines = False
+        sheet.sheet_view.zoomScale = 90
+        sheet.sheet_properties.tabColor = tab_color
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 0
+        sheet.print_title_rows = "1:1"
+
+    style_sheet(
+        product_sheet,
+        headers=PRODUCT_MASTER_TEMPLATE_HEADERS,
+        widths=(18, 28, 22, 20, 14, 44, 28, 26, *([38] * 10)),
+        instructions=product_instructions,
+        header_color="2D1B69",
+        tab_color="D4AF37",
+    )
+    style_sheet(
+        sku_sheet,
+        headers=SKU_DETAIL_TEMPLATE_HEADERS,
+        widths=(
+            18, 22, 30,
+            18, 16, 16, 16, 16, 16,
+            18, 16, 16, 16, 16, 16,
+            18, 16, 16, 16, 16, 16,
+            28, 14, 14, 14, 14,
+        ),
+        instructions=sku_instructions,
+        header_color="23453B",
+        tab_color="42A58B",
+    )
+    sku_sheet.freeze_panes = "D2"
+    for start_column, end_column, color in (
+        (4, 9, "4B3A79"),
+        (10, 15, "285D61"),
+        (16, 21, "755A28"),
+    ):
+        group_fill = PatternFill(fill_type="solid", fgColor=color)
+        for column in range(start_column, end_column + 1):
+            sku_sheet.cell(row=1, column=column).fill = group_fill
+
+    for sheet, cell_range, title in (
+        (product_sheet, f"E2:E{20_001}", "商品价格格式错误"),
+        (sku_sheet, f"W2:W{20_001}", "SKU 价格格式错误"),
+    ):
+        price_validation = DataValidation(
+            type="decimal",
+            operator="greaterThanOrEqual",
+            formula1="0",
+            allow_blank=True,
+        )
+        price_validation.error = "价格必须是大于或等于 0 的数字，也可以留空。"
+        price_validation.errorTitle = title
+        price_validation.showErrorMessage = True
+        sheet.add_data_validation(price_validation)
+        price_validation.add(cell_range)
+
+    for cell_range, title in (
+        (f"X2:X{20_001}", "毛重格式错误"),
+        (f"Y2:Y{20_001}", "起定数格式错误"),
+        (f"Z2:Z{20_001}", "装箱数格式错误"),
+    ):
+        quantity_validation = DataValidation(
+            type="decimal",
+            operator="greaterThanOrEqual",
+            formula1="0",
+            allow_blank=True,
+        )
+        quantity_validation.error = "请填写大于或等于 0 的数字，也可以留空。"
+        quantity_validation.errorTitle = title
+        quantity_validation.showErrorMessage = True
+        sku_sheet.add_data_validation(quantity_validation)
+        quantity_validation.add(cell_range)
 
     output = BytesIO()
     workbook.save(output)

@@ -1,4 +1,65 @@
 import type { StorefrontLocale } from "../types";
+import { localizedStorefrontMessages } from "./storefrontMessages";
+
+export interface StorefrontLanguageOption {
+  code: StorefrontLocale;
+  label: string;
+  shortLabel: string;
+  flag: string;
+  direction: "ltr" | "rtl";
+}
+
+export const STOREFRONT_LANGUAGE_OPTIONS: readonly StorefrontLanguageOption[] = [
+  { code: "zh-CN", label: "简体中文", shortLabel: "中", flag: "🇨🇳", direction: "ltr" },
+  { code: "en-US", label: "English", shortLabel: "EN", flag: "🇺🇸", direction: "ltr" },
+  { code: "es", label: "Español", shortLabel: "ES", flag: "🇪🇸", direction: "ltr" },
+  { code: "tr", label: "Türkçe", shortLabel: "TR", flag: "🇹🇷", direction: "ltr" },
+  { code: "ar", label: "العربية", shortLabel: "ع", flag: "🇸🇦", direction: "rtl" },
+  { code: "ja", label: "日本語", shortLabel: "日", flag: "🇯🇵", direction: "ltr" },
+  { code: "ko", label: "한국어", shortLabel: "한", flag: "🇰🇷", direction: "ltr" },
+  { code: "pt", label: "Português", shortLabel: "PT", flag: "🇵🇹", direction: "ltr" },
+] as const;
+
+const languageByCode = new Map(
+  STOREFRONT_LANGUAGE_OPTIONS.map((language) => [language.code, language]),
+);
+
+const localeAliases: Record<string, StorefrontLocale> = {
+  zh: "zh-CN",
+  "zh-cn": "zh-CN",
+  en: "en-US",
+  "en-us": "en-US",
+  es: "es",
+  "es-es": "es",
+  tr: "tr",
+  "tr-tr": "tr",
+  ar: "ar",
+  "ar-sa": "ar",
+  ja: "ja",
+  "ja-jp": "ja",
+  ko: "ko",
+  "ko-kr": "ko",
+  pt: "pt",
+  "pt-pt": "pt",
+  "pt-br": "pt",
+};
+
+export function normalizeStorefrontLocale(value?: string | null): StorefrontLocale {
+  return localeAliases[String(value || "").replaceAll("_", "-").toLocaleLowerCase()]
+    ?? "zh-CN";
+}
+
+export function storefrontLocaleQuery(locale: StorefrontLocale) {
+  return locale === "zh-CN" ? "" : `?lang=${encodeURIComponent(locale)}`;
+}
+
+export function storefrontDirection(locale: StorefrontLocale): "ltr" | "rtl" {
+  return languageByCode.get(locale)?.direction ?? "ltr";
+}
+
+export function storefrontLanguage(locale: StorefrontLocale) {
+  return languageByCode.get(locale) ?? STOREFRONT_LANGUAGE_OPTIONS[0];
+}
 
 const english: Record<string, string> = {
   "SKU 商品目录": "SKU Catalog",
@@ -23,6 +84,9 @@ const english: Record<string, string> = {
   "暂无二级分类": "No subcategories",
   "商品分类": "Categories",
   "筛选结果": "Filtered results",
+  "爆款优先": "Bestsellers first",
+  "根据近 90 天浏览与下单热度优先展示，手动置顶商品仍排在最前。":
+    "Prioritized by views and orders from the last 90 days. Manually pinned products remain first.",
   "全部 SKU": "All SKUs",
   "点击商品查看可选规格与 SKU。": "Open a product to view its available options and SKUs.",
   "在商品卡片上直接加入清单或调整数量。": "Add products to your quote list or adjust quantities directly.",
@@ -72,12 +136,15 @@ const english: Record<string, string> = {
   "商品": "Product",
   "{count} 个 SKU": "{count} SKUs",
   "商家暂未补充详细描述。": "No detailed description has been provided yet.",
+  "查看完整描述": "View full description",
+  "收起描述": "Collapse description",
   "商品标签": "Product tags",
   "参考价格区间": "Reference price range",
-  "请选择下方具体 SKU 后加入报价清单。": "Choose a specific SKU below before adding it to your quote list.",
   "商品规格": "Product options",
-  "选择 SKU": "Choose an SKU",
-  "共 {count} 个可选项": "{count} options available",
+  "款式": "Style",
+  "选择规格": "Choose options",
+  "选择规格组合后即可加入报价清单。": "Choose an option combination, then add it to your quote list.",
+  "已选 SKU": "Selected SKU",
   "标准款": "Standard",
   "已加入": "Added",
   "已选 {quantity} 件，再加一件": "{quantity} selected — add one more",
@@ -139,7 +206,11 @@ export function storefrontText(
   source: string,
   values: Record<string, string | number> = {},
 ) {
-  let result = locale === "en-US" ? english[source] ?? source : source;
+  let result = locale === "zh-CN"
+    ? source
+    : locale === "en-US"
+      ? english[source] ?? source
+      : localizedStorefrontMessages[source]?.[locale] ?? english[source] ?? source;
   for (const [key, value] of Object.entries(values)) {
     result = result.replaceAll(`{${key}}`, String(value));
   }

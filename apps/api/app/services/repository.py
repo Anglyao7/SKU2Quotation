@@ -6,6 +6,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..db_models import ImportJobRow, ReviewItemRow, SupplierRow
 from ..models import ImportJob, JobStatus, ReviewField, ReviewItem, Supplier
+from .import_progress import (
+    clear_runtime_import_progress,
+    get_runtime_import_progress,
+)
 
 
 SEED_SUPPLIERS = (
@@ -70,6 +74,26 @@ def import_job_model(
         else None
     )
     result_details = dict(latest_worker.checkpoint) if latest_worker else {}
+    runtime_progress = get_runtime_import_progress(
+        tenant_id=row.tenant_id,
+        job_id=row.id,
+    )
+    try:
+        persisted_progress = int(result_details.get("import_progress", 0) or 0)
+    except (TypeError, ValueError):
+        persisted_progress = 0
+    if (
+        runtime_progress is not None
+        and runtime_progress.progress >= persisted_progress
+    ):
+        result_details.update(
+            {
+                "import_progress": runtime_progress.progress,
+                "import_stage": runtime_progress.stage,
+                "processed_rows": runtime_progress.processed_rows,
+                "total_rows": runtime_progress.total_rows,
+            }
+        )
     raw_warnings = result_details.get("warnings", [])
     all_warning_messages = (
         [str(warning) for warning in raw_warnings]
@@ -122,7 +146,7 @@ def import_job_model(
         )
     except (TypeError, ValueError):
         observable_progress = row.progress
-    return ImportJob(
+    model = ImportJob(
         id=row.id,
         filename=row.source_file.original_filename,
         supplier=row.supplier_name,
@@ -139,6 +163,9 @@ def import_job_model(
         warning_messages=warning_messages,
         result_details=result_details,
     )
+    if row.status in {JobStatus.PUBLISHED.value, JobStatus.FAILED.value}:
+        clear_runtime_import_progress(tenant_id=row.tenant_id, job_id=row.id)
+    return model
 
 
 def get_import_job(

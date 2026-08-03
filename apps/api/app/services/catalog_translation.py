@@ -17,18 +17,19 @@ _IDENTIFIER_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._/+%\-\uFF0D]*"
 )
 _FIELD_MARKER_PATTERN = re.compile(
-    r"\[\[\s*ATCF[\s_-]*(?P<item>\d{3})[\s_-]+"
-    r"(?P<field>\d{3})\s*\]\]",
+    r"\[+\s*ATCF[\s_-]*(?P<item>\d{3})[\s_-]+"
+    r"(?P<field>\d{3})\s*\]+",
     re.IGNORECASE,
 )
 _VALUE_MARKER_PATTERN = re.compile(
-    r"\[\[\s*ATCV[\s_-]*(?P<item>\d{3})\s*\]\]",
+    r"\[+\s*ATCV[\s_-]*(?P<item>\d{3})\s*\]+",
     re.IGNORECASE,
 )
 _PROTECTED_MARKER_PATTERN = re.compile(
-    r"\[\[\s*ATCK[\s_-]*(?P<item>\d{5})\s*\]\]",
+    r"\[+\s*ATCK[\s_-]*(?P<item>\d{5})\s*\]+",
     re.IGNORECASE,
 )
+_TRANSLATABLE_PROSE_PATTERN = re.compile(r"[A-Za-z]{2,}|[\u3400-\u9fff]")
 
 
 @dataclass(frozen=True)
@@ -357,4 +358,37 @@ def translate_catalog_values(
         raise TranslationProviderError(
             "translation provider did not preserve the catalog value structure"
         )
-    return [translated[item_index].strip() for item_index in range(len(values))]
+    results = [
+        translated[item_index].strip()
+        for item_index in range(len(values))
+    ]
+    if source_locale != target_locale:
+        for item_index, (source_value, translated_value) in enumerate(
+            zip(values, results, strict=True)
+        ):
+            normalized_source = source_value.strip()
+            if (
+                not _TRANSLATABLE_PROSE_PATTERN.search(normalized_source)
+                or translated_value.casefold() != normalized_source.casefold()
+            ):
+                continue
+            direct_protected: dict[str, str] = {}
+            direct_source = _protect_identifiers(
+                normalized_source,
+                protected=direct_protected,
+            )
+            try:
+                direct_translation = translator.translate(
+                    direct_source,
+                    source_locale=source_locale,
+                    target_locale=target_locale,
+                )
+            except TranslationProviderError:
+                continue
+            restored = _restore_identifiers(
+                direct_translation,
+                protected=direct_protected,
+            )
+            if restored:
+                results[item_index] = restored
+    return results

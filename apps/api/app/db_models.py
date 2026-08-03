@@ -280,6 +280,8 @@ from .catalog_translation_models import (  # noqa: E402,F401
     CatalogTranslationJobRow,
 )
 
+from .catalog_operation_models import CatalogDeleteJobRow  # noqa: E402,F401
+
 from .storefront_analytics_models import (  # noqa: E402,F401
     StorefrontProductViewDailyRow,
     StorefrontProductViewEventRow,

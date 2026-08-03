@@ -37,10 +37,19 @@ export interface Storefront {
   category_options?: StorefrontCategoryOption[];
   tags?: string[];
   all_products_position?: number;
+  hot_products_enabled?: boolean;
   announcements?: PublicAnnouncement[];
 }
 
-export type StorefrontLocale = "zh-CN" | "en-US";
+export type StorefrontLocale =
+  | "zh-CN"
+  | "en-US"
+  | "es"
+  | "tr"
+  | "ar"
+  | "ja"
+  | "ko"
+  | "pt";
 
 export type AnnouncementDisplayType = "TICKER" | "MODAL";
 export type AnnouncementBlockType =
@@ -166,6 +175,8 @@ export interface StoreProductList {
   source_locale?: StorefrontLocale;
   locale?: StorefrontLocale;
   all_products_position?: number;
+  hot_products_enabled?: boolean;
+  hot_sort_applied?: boolean;
 }
 
 export interface ProductTag {

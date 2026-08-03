@@ -43,7 +43,7 @@ router = APIRouter(prefix="/api/v1", tags=["legacy-operations"])
 
 @router.get("/product-template.xlsx")
 def download_product_template() -> Response:
-    filename = "商品模版.xlsx"
+    filename = "商品导入模板.xlsx"
     return Response(
         content=use_cases.build_product_template_workbook(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -52,7 +52,7 @@ def download_product_template() -> Response:
                 'attachment; filename="product-template.xlsx"; '
                 f"filename*=UTF-8''{quote(filename)}"
             ),
-            "Cache-Control": "public, max-age=300",
+            "Cache-Control": "no-store",
         },
     )
 

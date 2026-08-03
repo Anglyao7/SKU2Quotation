@@ -1,4 +1,3 @@
-"""智贸云 API composition root; business logic lives outside this module."""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -27,6 +26,7 @@ from .runtime_config import cors_origins, validate_startup_configuration
 from .saas_seed import demo_seed_enabled, seed_saas_foundation
 from .product_center_seed import seed_product_center_demo
 from .services.repository import seed_suppliers
+from .use_cases.legacy_operations import resume_deferred_imports
 
 def _initialize_runtime() -> None:
     validate_startup_configuration()
@@ -36,6 +36,7 @@ def _initialize_runtime() -> None:
             seed_saas_foundation(session)
             seed_suppliers(session)
             seed_product_center_demo(session)
+    resume_deferred_imports()
 
 
 def create_app() -> FastAPI:
@@ -75,6 +76,5 @@ def create_app() -> FastAPI:
     ):
         application.include_router(router)
     return application
-
 _initialize_runtime()
 app = create_app()

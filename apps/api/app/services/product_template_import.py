@@ -11,6 +11,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
+from itertools import product as cartesian_product
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -29,6 +30,7 @@ from ..model_mixins import utcnow
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY, SkuRow
 from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
 from ..public_catalog_models import PublicCatalogOfferRow
+from .import_progress import publish_runtime_import_progress
 
 
 PRODUCT_TEMPLATE_SHEET = "商品列表"
@@ -66,13 +68,98 @@ PRODUCT_VARIANT_TEMPLATE_HEADERS = (
     "规格价格",
     "商品图片",
 )
+PRODUCT_MASTER_TEMPLATE_SHEET = "Product"
+SKU_DETAIL_TEMPLATE_SHEET = "SKU"
+PRODUCT_MASTER_TEMPLATE_HEADERS_V3 = (
+    "商品编码",
+    "商品名称",
+    "商品分类",
+    "商品型号",
+    "商品价格",
+    "商品描述",
+    "备注",
+    "标签",
+    "是否是新品",
+    *(f"商品图片{index}" for index in range(1, 11)),
+)
+SKU_DETAIL_TEMPLATE_HEADERS_V3 = (
+    "商品编码",
+    "SKU编号",
+    "SKU名称",
+    "规格名称",
+    "规格1名称",
+    "规格1值",
+    "规格2名称",
+    "规格2值",
+    "规格3名称",
+    "规格3值",
+    "供应商",
+    "SKU价格",
+    "一箱个数",
+)
+PRODUCT_MASTER_TEMPLATE_HEADERS = (
+    "商品编码",
+    "商品名称",
+    "商品分类",
+    "商品型号",
+    "商品价格",
+    "商品描述",
+    "备注",
+    "标签",
+    *(f"商品图片{index}" for index in range(1, 11)),
+)
+PRODUCT_MASTER_TEMPLATE_HEADERS_V4 = PRODUCT_MASTER_TEMPLATE_HEADERS
+SKU_DETAIL_TEMPLATE_HEADERS_V4 = (
+    "商品编码",
+    "SKU编号",
+    "SKU名称",
+    "规格名称",
+    "规格1名称",
+    "规格1值",
+    "规格2名称",
+    "规格2值",
+    "规格3名称",
+    "规格3值",
+    "规格4名称",
+    "规格4值",
+    "规格5名称",
+    "规格5值",
+    "供应商",
+    "SKU价格",
+    "毛重",
+    "起定数",
+    "装箱数",
+)
+SKU_DETAIL_TEMPLATE_HEADERS = (
+    "商品编码",
+    "SKU编号",
+    "SKU名称",
+    "规格1名称",
+    *(f"规格1值（{index}）" for index in range(1, 6)),
+    "规格2名称",
+    *(f"规格2值（{index}）" for index in range(1, 6)),
+    "规格3名称",
+    *(f"规格3值（{index}）" for index in range(1, 6)),
+    "供应商",
+    "SKU价格",
+    "毛重",
+    "起定数",
+    "装箱数",
+)
 TEMPLATE_LAYOUT_SKU_ROWS = "SKU_ROWS"
 TEMPLATE_LAYOUT_PRODUCT_VARIANTS = "PRODUCT_VARIANTS"
+TEMPLATE_LAYOUT_PRODUCT_SKUS = "PRODUCT_SKUS"
 MAX_TEMPLATE_ROWS = 20_000
+# One source row can intentionally define several concrete variants. Keep a
+# separate, bounded expansion ceiling so near-limit catalogs are not rejected
+# merely because valid color/size candidates expand beyond the source row count.
+MAX_EXPANDED_SKUS = 50_000
 MAX_ARCHIVE_ENTRIES = 5_000
 MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
 PRICE_QUANTUM = Decimal("0.01")
 MAX_UNIT_PRICE = Decimal("999999999999999999.99")
+QUANTITY_QUANTUM = Decimal("0.000001")
+MAX_SKU_QUANTITY = Decimal("99999999999999.999999")
 MAX_TAGS = 20
 MAX_TAG_LENGTH = 80
 MAX_CATEGORY_NAME_LENGTH = 200
@@ -158,6 +245,23 @@ class ProductVariantTemplateCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ProductMasterTemplateCandidate:
+    row_number: int
+    product_code: str
+    name: str
+    category: str
+    product_model: str | None
+    product_price: Decimal
+    description: str | None
+    note: str | None
+    tags: tuple[str, ...]
+    is_new: bool
+    image_urls: tuple[str, ...]
+    image_url_columns: tuple[int, ...]
+    embedded_images: tuple[EmbeddedTemplateImage, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ProductTemplateRow:
     row_number: int
     name: str
@@ -175,7 +279,9 @@ class ProductTemplateRow:
     description: str | None
     note: str | None
     tags: tuple[str, ...]
+    variant_options: tuple[tuple[str, str], ...]
     default_moq: Decimal | None
+    gross_weight: Decimal | None
     image_urls: tuple[str, ...]
     image_url_columns: tuple[int, ...]
     embedded_images: tuple[EmbeddedTemplateImage, ...]
@@ -303,6 +409,53 @@ def _decimal(value: object, *, field: str, row_number: int) -> Decimal:
             f"第 {row_number} 行的{field}超出 Numeric(20,2) 可存储范围。"
         )
     return number
+
+
+def _sku_quantity_decimal(
+    value: object,
+    *,
+    field: str,
+    row_number: int,
+) -> Decimal:
+    """Parse non-negative SKU measurements stored as Numeric(20,6)."""
+
+    text = _cell_text(value).replace(",", "")
+    if len(text) > 64:
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的{field}超出 Numeric(20,6) 可存储范围。"
+        )
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的{field}不是有效数字。"
+        ) from exc
+    if not number.is_finite() or number < 0:
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的{field}必须是大于或等于 0 的数字。"
+        )
+    if number >= MAX_SKU_QUANTITY + Decimal("0.0000005"):
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的{field}超出 Numeric(20,6) 可存储范围。"
+        )
+    try:
+        with localcontext() as context:
+            context.prec = 32
+            number = number.quantize(QUANTITY_QUANTUM, rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的{field}超出 Numeric(20,6) 可存储范围。"
+        ) from exc
+    if number > MAX_SKU_QUANTITY:
+        raise ProductTemplateValidationError(
+            f"第 {row_number} 行的{field}超出 Numeric(20,6) 可存储范围。"
+        )
+    return number
+
+
+def _decimal_option_text(value: Decimal) -> str:
+    normalized = format(value, "f").rstrip("0").rstrip(".")
+    return normalized or "0"
 
 
 def _normalize_sku_code(value: object) -> str:
@@ -779,58 +932,148 @@ def _product_template_layout(sheet: object | None) -> ProductTemplateLayout | No
     )
 
 
+def _product_sheet_has_data(
+    sheet: object,
+    layout: ProductTemplateLayout,
+) -> bool:
+    max_row = getattr(sheet, "max_row", None) or 1
+    if max_row < 2:
+        return False
+    return any(
+        any(_cell_text(value) for value in row)
+        for row in sheet.iter_rows(
+            min_row=2,
+            max_row=max_row,
+            max_col=len(layout.headers),
+            values_only=True,
+        )
+    )
+
+
+def _closest_product_sheet(
+    workbook: object,
+) -> tuple[object, ProductTemplateLayout] | None:
+    """Find one near-compatible sheet so header errors stay field-specific."""
+
+    scored_candidates: list[tuple[int, object, ProductTemplateLayout]] = []
+    for sheet in workbook.worksheets:
+        max_column = getattr(sheet, "max_column", None) or 1
+        header_values = tuple(
+            _cell_text(sheet.cell(row=1, column=index).value)
+            for index in range(1, max_column + 1)
+        )
+        last_header_index = next(
+            (
+                index
+                for index in range(len(header_values), 0, -1)
+                if header_values[index - 1]
+            ),
+            0,
+        )
+        possible_image_count = last_header_index - len(PRODUCT_TEMPLATE_BASE_HEADERS)
+        sku_image_count = (
+            possible_image_count
+            if PRODUCT_IMAGE_COLUMN_COUNT
+            <= possible_image_count
+            <= MAX_PRODUCT_IMAGE_COLUMN_COUNT
+            else PRODUCT_IMAGE_COLUMN_COUNT
+        )
+        layouts = (
+            ProductTemplateLayout(
+                kind=TEMPLATE_LAYOUT_SKU_ROWS,
+                headers=PRODUCT_TEMPLATE_BASE_HEADERS
+                + tuple(
+                    f"商品图片{index}"
+                    for index in range(1, sku_image_count + 1)
+                ),
+                image_column_offset=PRODUCT_IMAGE_COLUMN_OFFSET,
+                image_column_count=sku_image_count,
+            ),
+            ProductTemplateLayout(
+                kind=TEMPLATE_LAYOUT_PRODUCT_VARIANTS,
+                headers=PRODUCT_VARIANT_TEMPLATE_HEADERS,
+                image_column_offset=10,
+                image_column_count=1,
+            ),
+        )
+        for layout in layouts:
+            score = sum(
+                actual == expected
+                for actual, expected in zip(
+                    header_values,
+                    layout.headers,
+                    strict=False,
+                )
+            )
+            if score >= max(3, len(layout.headers) // 2):
+                scored_candidates.append((score, sheet, layout))
+
+    best_score = max((score for score, _sheet, _layout in scored_candidates), default=0)
+    best_candidates = [
+        (sheet, layout)
+        for score, sheet, layout in scored_candidates
+        if score == best_score
+    ]
+    if len(best_candidates) == 1:
+        return best_candidates[0]
+    return None
+
+
 def _select_product_sheet(
     workbook: object,
 ) -> tuple[object, ProductTemplateLayout, str | None]:
-    """Select a uniquely identifiable supported product worksheet."""
-
-    preferred_sheet = (
-        workbook[PRODUCT_TEMPLATE_SHEET]
-        if PRODUCT_TEMPLATE_SHEET in workbook.sheetnames
-        else None
-    )
-    preferred_layout = _product_template_layout(preferred_sheet)
-    if preferred_sheet is not None and preferred_layout is not None:
-        return preferred_sheet, preferred_layout, None
+    """Select a supported product worksheet by structure, never by title."""
 
     compatible_sheets = [
         (sheet, layout)
         for sheet in workbook.worksheets
         if (layout := _product_template_layout(sheet)) is not None
     ]
-    if len(compatible_sheets) == 1:
-        sheet, layout = compatible_sheets[0]
+    populated_sheets = [
+        (sheet, layout)
+        for sheet, layout in compatible_sheets
+        if _product_sheet_has_data(sheet, layout)
+    ]
+    candidates = populated_sheets or compatible_sheets
+    if len(candidates) == 1:
+        sheet, layout = candidates[0]
         behavior = (
             "相同商品的多行规格会合并为一个商品，并生成独立 SKU。"
             if layout.kind == TEMPLATE_LAYOUT_PRODUCT_VARIANTS
             else "每一行仍按一个 SKU 导入。"
         )
+        sheet_warning = (
+            None
+            if sheet.title == PRODUCT_TEMPLATE_SHEET
+            else f"已根据列结构识别工作表“{sheet.title}”；{behavior}"
+        )
         return (
             sheet,
             layout,
-            f"已自动识别工作表“{sheet.title}”作为商品列表；{behavior}",
+            sheet_warning,
         )
-    if len(compatible_sheets) > 1:
+    if len(candidates) > 1:
         sheet_names = "、".join(
-            f"“{sheet.title}”" for sheet, _layout in compatible_sheets
+            f"“{sheet.title}”" for sheet, _layout in candidates
         )
         issue = _issue(
             row_number=None,
             column="工作表",
             code="SHEET_AMBIGUOUS",
-            message=f"发现多个可导入的商品工作表：{sheet_names}。",
-            suggestion="请只保留一个商品数据页，或将目标页重命名为“商品列表”。",
+            message=f"发现多个符合商品列结构的数据页：{sheet_names}。",
+            suggestion=(
+                "请只保留一个商品数据页，或拆分为多个文件分别导入；"
+                "工作表名称不限。"
+            ),
         )
         raise ProductTemplateValidationError(issue.message, issues=(issue,))
-    if preferred_sheet is not None:
+
+    closest_sheet = _closest_product_sheet(workbook)
+    if closest_sheet is not None:
+        sheet, layout = closest_sheet
         return (
-            preferred_sheet,
-            ProductTemplateLayout(
-                kind=TEMPLATE_LAYOUT_SKU_ROWS,
-                headers=PRODUCT_TEMPLATE_HEADERS,
-                image_column_offset=PRODUCT_IMAGE_COLUMN_OFFSET,
-                image_column_count=PRODUCT_IMAGE_COLUMN_COUNT,
-            ),
+            sheet,
+            layout,
             None,
         )
 
@@ -842,13 +1085,14 @@ def _select_product_sheet(
         column="工作表",
         code="SHEET_MISSING",
         message=(
-            f"未找到符合商品模板表头的数据页。现有工作表："
+            f"未找到包含受支持商品列结构的数据页。现有工作表："
             f"{available_sheets or '无'}。"
         ),
         suggestion=(
-            "请使用下载模板，或使用“商品名称、分类名称、商品型号、"
-            "商品价格、商品描述、备注、是否是新品、一箱个数、"
-            "规格名称、规格价格、商品图片”的多规格模板。"
+            "工作表名称不限。请保留第一行的商品列名与顺序；支持标准 SKU "
+            "列结构，或“商品名称、分类名称、商品型号、商品价格、商品描述、"
+            "备注、是否是新品、一箱个数、规格名称、规格价格、商品图片”"
+            "的多规格列结构。"
         ),
     )
     raise ProductTemplateValidationError(issue.message, issues=(issue,))
@@ -1289,7 +1533,9 @@ def _parse_product_variant_rows(
                     description=candidate.description or first.description,
                     note=candidate.note,
                     tags=("新品",) if candidate.is_new else (),
+                    variant_options=(),
                     default_moq=None,
+                    gross_weight=None,
                     image_urls=candidate.image_urls,
                     image_url_columns=candidate.image_url_columns,
                     embedded_images=candidate.embedded_images,
@@ -1326,13 +1572,1220 @@ def _parse_product_variant_rows(
     )
 
 
+def _effective_sheet_headers(sheet: object) -> tuple[str, ...]:
+    max_column = getattr(sheet, "max_column", None) or 1
+    headers = tuple(
+        _cell_text(sheet.cell(row=1, column=index).value)
+        for index in range(1, max_column + 1)
+    )
+    last_header_index = next(
+        (
+            index
+            for index in range(len(headers), 0, -1)
+            if headers[index - 1]
+        ),
+        0,
+    )
+    return headers[:last_header_index]
+
+
+def _resolve_read_only_sheet_dimensions(workbook: object) -> None:
+    """Recover worksheet bounds when an XLSX omits cached dimension metadata.
+
+    Some spreadsheet exporters write valid cells without a ``dimension`` entry.
+    OpenPyXL leaves ``max_row`` and ``max_column`` unset for those worksheets in
+    read-only mode, which previously made the header detector inspect only A1.
+    Calculating the bounds keeps the memory-safe streaming reader while making
+    these otherwise valid workbooks importable.
+    """
+
+    for sheet in workbook.worksheets:
+        if (
+            getattr(sheet, "max_row", None) is not None
+            and getattr(sheet, "max_column", None) is not None
+        ):
+            continue
+
+        # A completely empty auxiliary worksheet cannot be a supported data
+        # sheet and OpenPyXL cannot calculate bounds for it reliably.
+        if sheet.cell(row=1, column=1).value is None:
+            continue
+
+        calculate_dimension = getattr(sheet, "calculate_dimension", None)
+        if not callable(calculate_dimension):
+            continue
+        try:
+            calculate_dimension(force=True)
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            UnboundLocalError,
+            ET.ParseError,
+        ) as exc:
+            issue = _issue(
+                row_number=None,
+                column="工作表",
+                code="SHEET_DIMENSION_INVALID",
+                message=f"工作表“{sheet.title}”的有效数据范围无法识别。",
+                suggestion="请使用 Excel 或 WPS 将文件另存为 XLSX 后重新导入。",
+            )
+            raise ProductTemplateValidationError(
+                issue.message,
+                issues=(issue,),
+            ) from exc
+
+        if (
+            getattr(sheet, "max_row", None) is None
+            or getattr(sheet, "max_column", None) is None
+        ):
+            issue = _issue(
+                row_number=None,
+                column="工作表",
+                code="SHEET_DIMENSION_INVALID",
+                message=f"工作表“{sheet.title}”的有效数据范围无法识别。",
+                suggestion="请使用 Excel 或 WPS 将文件另存为 XLSX 后重新导入。",
+            )
+            raise ProductTemplateValidationError(
+                issue.message,
+                issues=(issue,),
+            )
+
+
+def _dual_sheet_header_issues(
+    sheet: object,
+    *,
+    expected_headers: tuple[str, ...],
+) -> list[ProductTemplateIssue]:
+    actual_headers = _effective_sheet_headers(sheet)
+    issues: list[ProductTemplateIssue] = []
+    for index, expected in enumerate(expected_headers, start=1):
+        actual = actual_headers[index - 1] if index <= len(actual_headers) else ""
+        if actual == expected:
+            continue
+        issues.append(
+            _issue(
+                row_number=1,
+                column=expected,
+                code="HEADER_MISMATCH",
+                message=(
+                    f"工作表“{sheet.title}”第 {index} 列应为“{expected}”，"
+                    f"实际为“{actual or '空白'}”。"
+                ),
+                value=actual,
+                suggestion="请下载最新模板，不要修改第一行的列名或列顺序。",
+            )
+        )
+    for index, actual in enumerate(
+        actual_headers[len(expected_headers) :],
+        start=len(expected_headers) + 1,
+    ):
+        if not actual:
+            continue
+        issues.append(
+            _issue(
+                row_number=1,
+                column=f"第 {index} 列",
+                code="UNEXPECTED_HEADER",
+                message=f"工作表“{sheet.title}”包含模板之外的额外列“{actual}”。",
+                value=actual,
+                suggestion="请删除额外列；需要补充的内容可填写在备注或规格列。",
+            )
+        )
+    return issues
+
+
+def _select_product_sku_sheets(
+    workbook: object,
+) -> tuple[object, object, tuple[str, ...], int] | None:
+    """Select a Product + SKU pair by structure while retaining v3 support."""
+
+    contracts = (
+        (5, PRODUCT_MASTER_TEMPLATE_HEADERS, SKU_DETAIL_TEMPLATE_HEADERS),
+        (
+            4,
+            PRODUCT_MASTER_TEMPLATE_HEADERS_V4,
+            SKU_DETAIL_TEMPLATE_HEADERS_V4,
+        ),
+        (3, PRODUCT_MASTER_TEMPLATE_HEADERS_V3, SKU_DETAIL_TEMPLATE_HEADERS_V3),
+    )
+    matches: list[tuple[int, object, object]] = []
+    all_product_candidates: list[object] = []
+    all_sku_candidates: list[object] = []
+    for schema_version, product_headers, sku_headers in contracts:
+        product_candidates = [
+            sheet
+            for sheet in workbook.worksheets
+            if _effective_sheet_headers(sheet) == product_headers
+        ]
+        sku_candidates = [
+            sheet
+            for sheet in workbook.worksheets
+            if _effective_sheet_headers(sheet) == sku_headers
+        ]
+        all_product_candidates.extend(product_candidates)
+        all_sku_candidates.extend(sku_candidates)
+        if len(product_candidates) > 1 or len(sku_candidates) > 1:
+            names = "、".join(
+                f"“{sheet.title}”"
+                for sheet in (*product_candidates, *sku_candidates)
+            )
+            issue = _issue(
+                row_number=None,
+                column="工作表",
+                code="SHEET_AMBIGUOUS",
+                message=f"发现重复的 Product 或 SKU 数据页：{names}。",
+                suggestion="请只保留一张商品主表和一张 SKU 明细表；工作表名称可以修改。",
+            )
+            raise ProductTemplateValidationError(issue.message, issues=(issue,))
+        if len(product_candidates) == 1 and len(sku_candidates) == 1:
+            matches.append(
+                (schema_version, product_candidates[0], sku_candidates[0])
+            )
+
+    if len(matches) > 1:
+        names = "、".join(
+            f"“{sheet.title}”"
+            for _schema, product_sheet, sku_sheet in matches
+            for sheet in (product_sheet, sku_sheet)
+        )
+        issue = _issue(
+            row_number=None,
+            column="工作表",
+            code="SHEET_AMBIGUOUS",
+            message=f"发现重复的 Product 或 SKU 数据页：{names}。",
+            suggestion="请只保留一张商品主表和一张 SKU 明细表；工作表名称可以修改。",
+        )
+        raise ProductTemplateValidationError(issue.message, issues=(issue,))
+    if len(matches) == 1:
+        schema_version, product_sheet, sku_sheet = matches[0]
+        warnings: list[str] = []
+        if product_sheet.title != PRODUCT_MASTER_TEMPLATE_SHEET:
+            warnings.append(
+                f"已根据列结构将工作表“{product_sheet.title}”识别为 Product。"
+            )
+        if sku_sheet.title != SKU_DETAIL_TEMPLATE_SHEET:
+            warnings.append(
+                f"已根据列结构将工作表“{sku_sheet.title}”识别为 SKU。"
+            )
+        if schema_version < 5:
+            warnings.append("已按历史 Product + SKU 双表结构兼容导入。")
+        return product_sheet, sku_sheet, tuple(warnings), schema_version
+
+    product_named = next(
+        (
+            sheet
+            for sheet in workbook.worksheets
+            if sheet.title.casefold() == PRODUCT_MASTER_TEMPLATE_SHEET.casefold()
+        ),
+        None,
+    )
+    sku_named = next(
+        (
+            sheet
+            for sheet in workbook.worksheets
+            if sheet.title.casefold() == SKU_DETAIL_TEMPLATE_SHEET.casefold()
+        ),
+        None,
+    )
+    if (
+        not all_product_candidates
+        and not all_sku_candidates
+        and product_named is None
+        and sku_named is None
+    ):
+        return None
+
+    candidate_headers = {
+        _effective_sheet_headers(sheet)
+        for sheet in (*all_product_candidates, *all_sku_candidates)
+    }
+    if candidate_headers.intersection(
+        {PRODUCT_MASTER_TEMPLATE_HEADERS_V3, SKU_DETAIL_TEMPLATE_HEADERS_V3}
+    ):
+        schema_version = 3
+        expected_product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS_V3
+        expected_sku_headers = SKU_DETAIL_TEMPLATE_HEADERS_V3
+    elif SKU_DETAIL_TEMPLATE_HEADERS_V4 in candidate_headers:
+        schema_version = 4
+        expected_product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS_V4
+        expected_sku_headers = SKU_DETAIL_TEMPLATE_HEADERS_V4
+    else:
+        schema_version = 5
+        expected_product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS
+        expected_sku_headers = SKU_DETAIL_TEMPLATE_HEADERS
+
+    issues: list[ProductTemplateIssue] = []
+    if all_product_candidates:
+        product_sheet = all_product_candidates[0]
+        if _effective_sheet_headers(product_sheet) != expected_product_headers:
+            issues.extend(
+                _dual_sheet_header_issues(
+                    product_sheet,
+                    expected_headers=expected_product_headers,
+                )
+            )
+    elif product_named is not None:
+        issues.extend(
+            _dual_sheet_header_issues(
+                product_named,
+                expected_headers=expected_product_headers,
+            )
+        )
+    else:
+        issues.append(
+            _issue(
+                row_number=None,
+                column="Product",
+                code="SHEET_MISSING",
+                message="缺少包含商品主数据列结构的 Product 数据页。",
+                suggestion="请保留最新版模板中的 Product 与 SKU 两张数据页。",
+            )
+        )
+    if all_sku_candidates:
+        sku_sheet = all_sku_candidates[0]
+        if _effective_sheet_headers(sku_sheet) != expected_sku_headers:
+            issues.extend(
+                _dual_sheet_header_issues(
+                    sku_sheet,
+                    expected_headers=expected_sku_headers,
+                )
+            )
+    elif sku_named is not None:
+        issues.extend(
+            _dual_sheet_header_issues(
+                sku_named,
+                expected_headers=expected_sku_headers,
+            )
+        )
+    else:
+        issues.append(
+            _issue(
+                row_number=None,
+                column="SKU",
+                code="SHEET_MISSING",
+                message="缺少包含 SKU 明细列结构的 SKU 数据页。",
+                suggestion="请保留最新版模板中的 Product 与 SKU 两张数据页。",
+            )
+        )
+    raise ProductTemplateValidationError(
+        _validation_summary(issues),
+        issues=tuple(issues),
+    )
+
+
+def _parse_product_sku_rows(
+    path: Path,
+    *,
+    product_sheet: object,
+    sku_sheet: object,
+    sheet_warnings: tuple[str, ...],
+    schema_version: int,
+    progress_callback: Callable[[int, int], None] | None,
+) -> ProductTemplateParseResult:
+    if schema_version >= 5:
+        product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS
+        sku_headers = SKU_DETAIL_TEMPLATE_HEADERS
+    elif schema_version == 4:
+        product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS_V4
+        sku_headers = SKU_DETAIL_TEMPLATE_HEADERS_V4
+    else:
+        product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS_V3
+        sku_headers = SKU_DETAIL_TEMPLATE_HEADERS_V3
+    product_image_offset = 8 if schema_version >= 4 else 9
+    product_rows_total = max(0, (product_sheet.max_row or 1) - 1)
+    sku_rows_total = max(0, (sku_sheet.max_row or 1) - 1)
+    if product_rows_total > MAX_TEMPLATE_ROWS or sku_rows_total > MAX_TEMPLATE_ROWS:
+        raise ProductTemplateValidationError(
+            f"Product 与 SKU 工作表分别最多填写 {MAX_TEMPLATE_ROWS} 行。"
+        )
+
+    embedded_images_by_row, embedded_image_warnings = (
+        _extract_embedded_template_images(
+            path,
+            sheet_name=product_sheet.title,
+            image_column_offset=product_image_offset,
+            image_column_count=PRODUCT_IMAGE_COLUMN_COUNT,
+        )
+    )
+    products: dict[str, ProductMasterTemplateCandidate] = {}
+    issues: list[ProductTemplateIssue] = []
+    visited_product_rows: set[int] = set()
+    for row_number, raw_values in enumerate(
+        product_sheet.iter_rows(
+            min_row=2,
+            max_col=len(product_headers),
+            values_only=True,
+        ),
+        start=2,
+    ):
+        values = tuple(raw_values)
+        embedded_images = embedded_images_by_row.get(row_number, ())
+        if not any(_cell_text(value) for value in values) and not embedded_images:
+            continue
+        visited_product_rows.add(row_number)
+        row_issues: list[ProductTemplateIssue] = []
+        formula_indexes = {
+            index
+            for index, value in enumerate(values)
+            if isinstance(value, str) and value.lstrip().startswith("=")
+        }
+        for index in sorted(formula_indexes):
+            column = product_headers[index]
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column=column,
+                    code="FORMULA_NOT_ALLOWED",
+                    message=f"Product 第 {row_number} 行的{column}包含公式。",
+                    value=values[index],
+                    suggestion="请复制计算结果并粘贴为固定值后重新导入。",
+                )
+            )
+
+        product_code = _normalize_sku_code(values[0])
+        name = _cell_text(values[1])
+        if not product_code and 0 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"Product 第 {row_number} 行缺少商品编码。",
+                    suggestion="请填写稳定且唯一的商品编码，SKU 表将使用它关联商品。",
+                )
+            )
+        elif len(product_code) > 160 and 0 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="VALUE_TOO_LONG",
+                    message=f"Product 第 {row_number} 行的商品编码超过 160 个字符。",
+                    value=values[0],
+                    suggestion="请将商品编码缩短至 160 个字符以内。",
+                )
+            )
+        if not name and 1 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品名称",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"Product 第 {row_number} 行缺少商品名称。",
+                    suggestion="请填写面向客户展示的商品名称。",
+                )
+            )
+        elif len(name) > 500 and 1 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品名称",
+                    code="VALUE_TOO_LONG",
+                    message=f"Product 第 {row_number} 行的商品名称超过 500 个字符。",
+                    value=values[1],
+                    suggestion="请缩短商品名称，详细信息放入商品描述。",
+                )
+            )
+
+        category = UNCATEGORIZED_CATEGORY_NAME
+        if _cell_text(values[2]) and 2 not in formula_indexes:
+            try:
+                category = "/".join(
+                    _normalize_category_path(values[2], row_number=row_number)
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="商品分类",
+                        code="CATEGORY_INVALID",
+                        message=str(exc),
+                        value=values[2],
+                        suggestion="请填写“一级分类”或“一级分类/二级分类”，最多两级。",
+                    )
+                )
+
+        product_model = _cell_text(values[3]) or None
+        if product_model and len(product_model) > 160 and 3 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品型号",
+                    code="VALUE_TOO_LONG",
+                    message=f"Product 第 {row_number} 行的商品型号超过 160 个字符。",
+                    value=values[3],
+                    suggestion="请将商品型号缩短至 160 个字符以内。",
+                )
+            )
+
+        product_price = Decimal("0.00")
+        if _cell_text(values[4]) and 4 not in formula_indexes:
+            try:
+                product_price = _decimal(
+                    values[4],
+                    field="商品价格",
+                    row_number=row_number,
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="商品价格",
+                        code="PRICE_INVALID",
+                        message=str(exc),
+                        value=values[4],
+                        suggestion="商品价格可以留空（按 0 处理），或填写大于等于 0 的数字。",
+                    )
+                )
+
+        tags: tuple[str, ...] = ()
+        if _cell_text(values[7]) and 7 not in formula_indexes:
+            try:
+                tags = _normalize_tags(values[7], row_number=row_number)
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="标签",
+                        code="TAGS_INVALID",
+                        message=str(exc),
+                        value=values[7],
+                        suggestion=f"最多填写 {MAX_TAGS} 个标签，使用逗号分隔。",
+                    )
+                )
+
+        is_new = False
+        if schema_version == 3 and 8 not in formula_indexes:
+            try:
+                is_new = _new_product_flag(values[8], row_number=row_number)
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="是否是新品",
+                        code="NEW_PRODUCT_FLAG_INVALID",
+                        message=str(exc),
+                        value=values[8],
+                        suggestion="可以留空；需要标记新品时填写“是”，否则填写“否”。",
+                    )
+                )
+
+        image_urls: list[str] = []
+        image_url_columns: list[int] = []
+        for image_index, value in enumerate(
+            values[product_image_offset:],
+            start=1,
+        ):
+            value_index = image_index + product_image_offset - 1
+            if not _cell_text(value) or value_index in formula_indexes:
+                continue
+            image_url = _valid_image_url(value)
+            if image_url is None:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column=f"商品图片{image_index}",
+                        code="IMAGE_URL_INVALID",
+                        message=(
+                            f"Product 第 {row_number} 行商品图片{image_index}"
+                            "不是有效的 HTTP(S) 链接。"
+                        ),
+                        value=value,
+                        suggestion=(
+                            "图片可以留空或直接插入对应单元格；"
+                            "填写文本时请使用可公开访问的 HTTP(S) 地址。"
+                        ),
+                    )
+                )
+            elif image_url not in image_urls:
+                image_urls.append(image_url)
+                image_url_columns.append(image_index)
+
+        if product_code and product_code in products:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="PRODUCT_CODE_DUPLICATE",
+                    message=(
+                        f"Product 第 {row_number} 行商品编码“{product_code}”与第 "
+                        f"{products[product_code].row_number} 行重复。"
+                    ),
+                    value=values[0],
+                    suggestion="Product 表中的商品编码必须唯一。",
+                )
+            )
+        if row_issues:
+            issues.extend(row_issues)
+            continue
+        products[product_code] = ProductMasterTemplateCandidate(
+            row_number=row_number,
+            product_code=product_code,
+            name=name,
+            category=category,
+            product_model=product_model,
+            product_price=product_price,
+            description=_cell_text(values[5]) or None,
+            note=_cell_text(values[6]) or None,
+            tags=tags,
+            is_new=is_new,
+            image_urls=tuple(image_urls),
+            image_url_columns=tuple(image_url_columns),
+            embedded_images=embedded_images,
+        )
+
+    rows: list[ProductTemplateRow] = []
+    first_row_by_sku: dict[str, int] = {}
+    first_row_by_sku_definition: dict[str, int] = {}
+    expanded_definition_rows = 0
+    referenced_product_codes: set[str] = set()
+    progress_interval = max(100, sku_rows_total // 100) if sku_rows_total else 100
+    reserved_option_keys = {
+        TEMPLATE_SOURCE_KEY.casefold(),
+        "商品编码".casefold(),
+        "商品型号".casefold(),
+        "规格名称".casefold(),
+        "一箱个数".casefold(),
+        "装箱数".casefold(),
+        "毛重".casefold(),
+        "起定数".casefold(),
+        "是否是新品".casefold(),
+        "备注".casefold(),
+    }
+    for row_number, raw_values in enumerate(
+        sku_sheet.iter_rows(
+            min_row=2,
+            max_col=len(sku_headers),
+            values_only=True,
+        ),
+        start=2,
+    ):
+        values = tuple(raw_values)
+        processed_rows = row_number - 1
+        if progress_callback is not None and (
+            processed_rows == 1
+            or processed_rows % progress_interval == 0
+            or processed_rows == sku_rows_total
+        ):
+            progress_callback(processed_rows, sku_rows_total)
+        if not any(_cell_text(value) for value in values):
+            continue
+
+        row_issues: list[ProductTemplateIssue] = []
+        formula_indexes = {
+            index
+            for index, value in enumerate(values)
+            if isinstance(value, str) and value.lstrip().startswith("=")
+        }
+        for index in sorted(formula_indexes):
+            column = sku_headers[index]
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column=column,
+                    code="FORMULA_NOT_ALLOWED",
+                    message=f"SKU 第 {row_number} 行的{column}包含公式。",
+                    value=values[index],
+                    suggestion="请复制计算结果并粘贴为固定值后重新导入。",
+                )
+            )
+
+        product_code = _normalize_sku_code(values[0])
+        sku_code = _normalize_sku_code(values[1])
+        if not product_code and 0 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"SKU 第 {row_number} 行缺少商品编码。",
+                    suggestion="请填写 Product 表中已存在的商品编码。",
+                )
+            )
+        product = products.get(product_code)
+        if product_code and product is None and 0 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="PRODUCT_REFERENCE_MISSING",
+                    message=(
+                        f"SKU 第 {row_number} 行引用的商品编码“{product_code}”"
+                        "在 Product 表中不存在。"
+                    ),
+                    value=values[0],
+                    suggestion="请先在 Product 表中新增相同商品编码，或修正拼写。",
+                )
+            )
+        if not sku_code and 1 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="SKU编号",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"SKU 第 {row_number} 行缺少 SKU 编号。",
+                    suggestion="请填写稳定且唯一的 SKU 编号，以便后续增量更新。",
+                )
+            )
+        elif len(sku_code) > 160 and 1 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="SKU编号",
+                    code="VALUE_TOO_LONG",
+                    message=f"SKU 第 {row_number} 行的 SKU 编号超过 160 个字符。",
+                    value=values[1],
+                    suggestion="请将 SKU 编号缩短至 160 个字符以内。",
+                )
+            )
+        identity_rows = (
+            first_row_by_sku_definition
+            if schema_version >= 5
+            else first_row_by_sku
+        )
+        if sku_code and sku_code in identity_rows:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="SKU编号",
+                    code="SKU_IDENTITY_DUPLICATE",
+                    message=(
+                        f"SKU 第 {row_number} 行编号“{sku_code}”与第 "
+                        f"{identity_rows[sku_code]} 行重复。"
+                    ),
+                    value=values[1],
+                    suggestion="SKU 表中的 SKU 编号必须唯一。",
+                )
+            )
+
+        explicit_specification: str | None = None
+        variant_combinations: list[tuple[tuple[str, str], ...]] = [()]
+        seen_option_keys: set[str] = set()
+        if schema_version >= 5:
+            option_dimensions: list[tuple[str, tuple[str, ...]]] = []
+            option_groups = (
+                (1, 3, tuple(range(4, 9))),
+                (2, 9, tuple(range(10, 15))),
+                (3, 15, tuple(range(16, 21))),
+            )
+            for option_number, name_index, value_indexes in option_groups:
+                option_name = _cell_text(values[name_index])
+                option_values = [
+                    _cell_text(values[value_index])
+                    for value_index in value_indexes
+                    if _cell_text(values[value_index])
+                ]
+                if not option_name and option_values:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}名称",
+                            code="VARIANT_OPTION_NAME_MISSING",
+                            message=(
+                                f"SKU 第 {row_number} 行填写了规格{option_number}值，"
+                                "但没有填写对应的规格名称。"
+                            ),
+                            suggestion="请填写规格名称，例如“尺寸”或“颜色”。",
+                        )
+                    )
+                    continue
+                if option_name and not option_values:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}值（1）",
+                            code="VARIANT_OPTION_VALUE_MISSING",
+                            message=(
+                                f"SKU 第 {row_number} 行填写了规格{option_number}名称"
+                                f"“{option_name}”，但没有填写任何候选值。"
+                            ),
+                            suggestion="请至少填写一个候选值，或将规格名称一并留空。",
+                        )
+                    )
+                    continue
+                if not option_name:
+                    continue
+                normalized_option_name = option_name.casefold()
+                if normalized_option_name in reserved_option_keys:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}名称",
+                            code="VARIANT_OPTION_RESERVED",
+                            message=(
+                                f"SKU 第 {row_number} 行规格名称“{option_name}”"
+                                "与系统字段冲突。"
+                            ),
+                            value=option_name,
+                            suggestion="请使用“颜色”“尺寸”“材质”等业务规格名称。",
+                        )
+                    )
+                    continue
+                if normalized_option_name in seen_option_keys:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}名称",
+                            code="VARIANT_OPTION_DUPLICATE",
+                            message=(
+                                f"SKU 第 {row_number} 行重复填写规格名称“{option_name}”。"
+                            ),
+                            value=option_name,
+                            suggestion="同一个 SKU 定义中的规格名称不能重复。",
+                        )
+                    )
+                    continue
+                normalized_values: set[str] = set()
+                duplicate_value: str | None = None
+                for option_value in option_values:
+                    normalized_value = option_value.casefold()
+                    if normalized_value in normalized_values:
+                        duplicate_value = option_value
+                        break
+                    normalized_values.add(normalized_value)
+                if duplicate_value is not None:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}值",
+                            code="VARIANT_VALUE_DUPLICATE",
+                            message=(
+                                f"SKU 第 {row_number} 行规格“{option_name}”"
+                                f"重复填写候选值“{duplicate_value}”。"
+                            ),
+                            value=duplicate_value,
+                            suggestion="同一规格下的候选值不能重复。",
+                        )
+                    )
+                    continue
+                if len(option_name) > 100 or any(
+                    len(option_value) > 500 for option_value in option_values
+                ):
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}",
+                            code="VALUE_TOO_LONG",
+                            message=f"SKU 第 {row_number} 行的规格名称或规格值过长。",
+                            suggestion="规格名称最多 100 个字符，规格值最多 500 个字符。",
+                        )
+                    )
+                    continue
+                seen_option_keys.add(normalized_option_name)
+                option_dimensions.append((option_name, tuple(option_values)))
+            if option_dimensions:
+                variant_combinations = [
+                    tuple(
+                        (option_dimensions[index][0], option_value)
+                        for index, option_value in enumerate(combination)
+                    )
+                    for combination in cartesian_product(
+                        *(values for _name, values in option_dimensions)
+                    )
+                ]
+        else:
+            explicit_specification = _cell_text(values[3]) or None
+            if explicit_specification and len(explicit_specification) > 500:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="规格名称",
+                        code="VALUE_TOO_LONG",
+                        message=f"SKU 第 {row_number} 行的规格名称超过 500 个字符。",
+                        value=values[3],
+                        suggestion="请缩短规格名称。",
+                    )
+                )
+            variant_options: list[tuple[str, str]] = []
+            option_indexes = (
+                ((4, 5), (6, 7), (8, 9), (10, 11), (12, 13))
+                if schema_version == 4
+                else ((4, 5), (6, 7), (8, 9))
+            )
+            for option_number, (name_index, value_index) in enumerate(
+                option_indexes,
+                start=1,
+            ):
+                option_name = _cell_text(values[name_index])
+                option_value = _cell_text(values[value_index])
+                if bool(option_name) != bool(option_value):
+                    missing = "值" if option_name else "名称"
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}{missing}",
+                            code="VARIANT_OPTION_INCOMPLETE",
+                            message=(
+                                f"SKU 第 {row_number} 行的规格{option_number}"
+                                "名称和值需要成对填写。"
+                            ),
+                            value=values[
+                                value_index if option_name else name_index
+                            ],
+                            suggestion="请同时填写规格名称和规格值，或同时留空。",
+                        )
+                    )
+                    continue
+                if not option_name:
+                    continue
+                normalized_option_name = option_name.casefold()
+                if normalized_option_name in reserved_option_keys:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}名称",
+                            code="VARIANT_OPTION_RESERVED",
+                            message=(
+                                f"SKU 第 {row_number} 行规格名称“{option_name}”"
+                                "与系统字段冲突。"
+                            ),
+                            value=option_name,
+                            suggestion="请使用“颜色”“尺寸”“材质”等业务规格名称。",
+                        )
+                    )
+                elif normalized_option_name in seen_option_keys:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}名称",
+                            code="VARIANT_OPTION_DUPLICATE",
+                            message=(
+                                f"SKU 第 {row_number} 行重复填写规格名称“{option_name}”。"
+                            ),
+                            value=option_name,
+                            suggestion="同一个 SKU 的规格名称不能重复。",
+                        )
+                    )
+                elif len(option_name) > 100 or len(option_value) > 500:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=f"规格{option_number}",
+                            code="VALUE_TOO_LONG",
+                            message=f"SKU 第 {row_number} 行的规格名称或规格值过长。",
+                            suggestion="规格名称最多 100 个字符，规格值最多 500 个字符。",
+                        )
+                    )
+                else:
+                    seen_option_keys.add(normalized_option_name)
+                    variant_options.append((option_name, option_value))
+            variant_combinations = [tuple(variant_options)]
+
+        if schema_version >= 5:
+            supplier_index = 21
+            price_index = 22
+        elif schema_version == 4:
+            supplier_index = 14
+            price_index = 15
+        else:
+            supplier_index = 10
+            price_index = 11
+        supplier_name: str | None = None
+        if (
+            _cell_text(values[supplier_index])
+            and supplier_index not in formula_indexes
+        ):
+            try:
+                supplier_name = _normalize_supplier_name(
+                    values[supplier_index], row_number=row_number
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="供应商",
+                        code="SUPPLIER_INVALID",
+                        message=str(exc),
+                        value=values[supplier_index],
+                        suggestion="供应商可以留空；填写时请使用简洁、稳定的名称。",
+                    )
+                )
+
+        unit_price = product.product_price if product is not None else Decimal("0.00")
+        if _cell_text(values[price_index]) and price_index not in formula_indexes:
+            try:
+                unit_price = _decimal(
+                    values[price_index], field="SKU价格", row_number=row_number
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="SKU价格",
+                        code="PRICE_INVALID",
+                        message=str(exc),
+                        value=values[price_index],
+                        suggestion="SKU 价格可以留空并继承商品价格，或填写大于等于 0 的数字。",
+                    )
+                )
+
+        gross_weight: Decimal | None = None
+        default_moq: Decimal | None = None
+        if schema_version >= 4:
+            gross_weight_index = 23 if schema_version >= 5 else 16
+            default_moq_index = 24 if schema_version >= 5 else 17
+            units_per_carton_index = 25 if schema_version >= 5 else 18
+            for value_index, field in (
+                (gross_weight_index, "毛重"),
+                (default_moq_index, "起定数"),
+            ):
+                if not _cell_text(values[value_index]) or value_index in formula_indexes:
+                    continue
+                try:
+                    parsed_value = _sku_quantity_decimal(
+                        values[value_index],
+                        field=field,
+                        row_number=row_number,
+                    )
+                    if field == "毛重":
+                        gross_weight = parsed_value
+                    else:
+                        default_moq = parsed_value
+                except ProductTemplateValidationError as exc:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column=field,
+                            code="QUANTITY_INVALID",
+                            message=str(exc),
+                            value=values[value_index],
+                            suggestion=f"{field}可以留空，或填写大于等于 0 的数字。",
+                        )
+                    )
+            units_per_carton = None
+            if (
+                _cell_text(values[units_per_carton_index])
+                and units_per_carton_index not in formula_indexes
+            ):
+                try:
+                    units_per_carton = _decimal_option_text(
+                        _sku_quantity_decimal(
+                            values[units_per_carton_index],
+                            field="装箱数",
+                            row_number=row_number,
+                        )
+                    )
+                except ProductTemplateValidationError as exc:
+                    row_issues.append(
+                        _issue(
+                            row_number=row_number,
+                            column="装箱数",
+                            code="QUANTITY_INVALID",
+                            message=str(exc),
+                            value=values[units_per_carton_index],
+                            suggestion="装箱数可以留空，或填写大于等于 0 的数字。",
+                        )
+                    )
+        else:
+            units_per_carton = _cell_text(values[12]) or None
+            if units_per_carton and len(units_per_carton) > 100:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="一箱个数",
+                        code="VALUE_TOO_LONG",
+                        message=f"SKU 第 {row_number} 行的一箱个数超过 100 个字符。",
+                        value=values[12],
+                        suggestion="请填写简洁的装箱数量，例如 24。",
+                    )
+                )
+
+        sku_name = _cell_text(values[2]) or None
+        if sku_name and len(sku_name) > 500:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="SKU名称",
+                    code="VALUE_TOO_LONG",
+                    message=f"SKU 第 {row_number} 行的 SKU 名称超过 500 个字符。",
+                    value=values[2],
+                    suggestion="请缩短 SKU 名称。",
+                )
+            )
+
+        if row_issues:
+            issues.extend(row_issues)
+            continue
+        assert product is not None
+        tags = list(product.tags)
+        if schema_version == 3 and product.is_new and "新品".casefold() not in {
+            tag.casefold() for tag in tags
+        }:
+            tags.append("新品")
+        if len(rows) + len(variant_combinations) > MAX_EXPANDED_SKUS:
+            issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="规格候选值",
+                    code="SKU_EXPANSION_LIMIT_EXCEEDED",
+                    message=(
+                        f"SKU 第 {row_number} 行展开后会使本次导入超过 "
+                        f"{MAX_EXPANDED_SKUS} 个 SKU。"
+                    ),
+                    suggestion="请减少候选值数量，或拆分为多个文件分批导入。",
+                )
+            )
+            continue
+        prepared_rows: list[
+            tuple[str, str, str | None, tuple[tuple[str, str], ...]]
+        ] = []
+        generated_codes: set[str] = set()
+        base_sku_name = sku_name or product.name
+        for variant_options in variant_combinations:
+            specification = explicit_specification or (
+                " / ".join(value for _name, value in variant_options) or None
+            )
+            generated_sku_code = (
+                _variant_sku_code(
+                    product_key=f"PRODUCT:{product.product_code}",
+                    product_model=sku_code,
+                    specification=specification,
+                )
+                if schema_version >= 5 and specification
+                else sku_code
+            )
+            if generated_sku_code in generated_codes:
+                issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="规格候选值",
+                        code="SKU_IDENTITY_DUPLICATE",
+                        message=(
+                            f"SKU 第 {row_number} 行的候选值生成了重复 SKU 编号"
+                            f"“{generated_sku_code}”。"
+                        ),
+                        suggestion="请删除重复候选值或调整 SKU 编号前缀。",
+                    )
+                )
+                continue
+            if generated_sku_code in first_row_by_sku:
+                issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="SKU编号",
+                        code="SKU_IDENTITY_DUPLICATE",
+                        message=(
+                            f"SKU 第 {row_number} 行生成的编号“{generated_sku_code}”"
+                            f"与第 {first_row_by_sku[generated_sku_code]} 行重复。"
+                        ),
+                        suggestion="请使用不同的 SKU 编号前缀或候选值组合。",
+                    )
+                )
+                continue
+            generated_codes.add(generated_sku_code)
+            final_sku_name = (
+                f"{base_sku_name} · {specification}"
+                if schema_version >= 5 and specification
+                else (
+                    sku_name
+                    or (
+                        f"{product.name} · {specification}"
+                        if specification
+                        else product.name
+                    )
+                )
+            )
+            prepared_rows.append(
+                (
+                    generated_sku_code,
+                    final_sku_name,
+                    specification,
+                    tuple(variant_options),
+                )
+            )
+        if len(prepared_rows) != len(variant_combinations):
+            continue
+        if schema_version >= 5:
+            first_row_by_sku_definition[sku_code] = row_number
+            if len(prepared_rows) > 1:
+                expanded_definition_rows += 1
+        referenced_product_codes.add(product_code)
+        for (
+            generated_sku_code,
+            final_sku_name,
+            specification,
+            variant_options,
+        ) in prepared_rows:
+            first_row_by_sku[generated_sku_code] = row_number
+            rows.append(
+                ProductTemplateRow(
+                    row_number=row_number,
+                    name=product.name,
+                    category=product.category,
+                    product_key=f"PRODUCT:{product.product_code}",
+                    product_model=product.product_model,
+                    sku_code=generated_sku_code,
+                    sku_name=final_sku_name,
+                    specification=specification,
+                    units_per_carton=units_per_carton,
+                    is_new=product.is_new,
+                    schema_version=schema_version,
+                    supplier_name=supplier_name,
+                    unit_price=unit_price,
+                    description=product.description,
+                    note=product.note,
+                    tags=tuple(tags),
+                    variant_options=variant_options,
+                    default_moq=default_moq,
+                    gross_weight=gross_weight,
+                    image_urls=product.image_urls,
+                    image_url_columns=product.image_url_columns,
+                    embedded_images=product.embedded_images,
+                )
+            )
+
+    if issues:
+        raise ProductTemplateValidationError(
+            _validation_summary(issues),
+            issues=tuple(issues),
+        )
+    if not products:
+        raise ProductTemplateValidationError("Product 表中没有可导入的有效商品。")
+    if not rows:
+        raise ProductTemplateValidationError("SKU 表中没有可导入的有效 SKU。")
+
+    warnings = [
+        *sheet_warnings,
+        *embedded_image_warnings,
+        (
+            f"已识别 Product + SKU 双表模板："
+            f"{len(products)} 个商品，{len(rows)} 个 SKU。"
+        ),
+    ]
+    if expanded_definition_rows:
+        warnings.append(
+            f"已将 {expanded_definition_rows} 行规格候选值自动组合为具体 SKU。"
+        )
+    unreferenced_products = sorted(set(products) - referenced_product_codes)
+    if unreferenced_products:
+        warnings.append(
+            f"Product 表中有 {len(unreferenced_products)} 个商品没有 SKU，"
+            "本次不会创建这些空商品。"
+        )
+    unmatched_embedded_images = sum(
+        len(images)
+        for row_number, images in embedded_images_by_row.items()
+        if row_number not in visited_product_rows
+    )
+    if unmatched_embedded_images:
+        warnings.append(
+            f"有 {unmatched_embedded_images} 张内嵌图片未对应到有效 Product 行，已忽略。"
+        )
+    return ProductTemplateParseResult(
+        rows=tuple(rows),
+        warnings=tuple(warnings),
+        skipped_rows=0,
+    )
+
+
 def parse_product_template(
     path: Path,
     *,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> ProductTemplateParseResult:
     if path.suffix.lower() != ".xlsx":
-        raise ProductTemplateValidationError("只支持固定格式的 .xlsx 商品模版。")
+        raise ProductTemplateValidationError("只支持 .xlsx 商品文件。")
     _inspect_archive(path)
     try:
         workbook = load_workbook(path, read_only=True, data_only=False)
@@ -1340,6 +2793,20 @@ def parse_product_template(
         raise ProductTemplateValidationError("商品模版无法读取，请重新导出为 XLSX。") from exc
 
     try:
+        _resolve_read_only_sheet_dimensions(workbook)
+        product_sku_sheets = _select_product_sku_sheets(workbook)
+        if product_sku_sheets is not None:
+            product_sheet, sku_sheet, sheet_warnings, schema_version = (
+                product_sku_sheets
+            )
+            return _parse_product_sku_rows(
+                path,
+                product_sheet=product_sheet,
+                sku_sheet=sku_sheet,
+                sheet_warnings=sheet_warnings,
+                schema_version=schema_version,
+                progress_callback=progress_callback,
+            )
         sheet, layout, sheet_warning = _select_product_sheet(workbook)
         effective_headers = layout.headers
         received_headers = tuple(
@@ -1669,7 +3136,9 @@ def parse_product_template(
                     description=_cell_text(values[5]) or None,
                     note=note,
                     tags=tags,
+                    variant_options=(),
                     default_moq=None,
+                    gross_weight=None,
                     image_urls=tuple(image_urls),
                     image_url_columns=tuple(image_url_columns),
                     embedded_images=embedded_images,
@@ -1740,10 +3209,26 @@ def _template_option_values(
     # must not erase variant attributes maintained elsewhere in the product
     # center (for example color or size).
     values: dict[str, object] = dict(existing or {})
-    values[TEMPLATE_SOURCE_KEY] = {
+    previous_marker = values.get(TEMPLATE_SOURCE_KEY)
+    previous_variant_keys = (
+        previous_marker.get("variant_option_keys", [])
+        if isinstance(previous_marker, dict)
+        else []
+    )
+    for key in previous_variant_keys:
+        if isinstance(key, str):
+            values.pop(key, None)
+    marker: dict[str, object] = {
         "source": TEMPLATE_SOURCE_VALUE,
         "schema": row.schema_version,
     }
+    if row.schema_version >= 3:
+        marker["product_code"] = row.product_key.removeprefix("PRODUCT:")
+        marker["variant_option_keys"] = [key for key, _value in row.variant_options]
+        for key, value in row.variant_options:
+            values[key] = value
+    values.pop("商品编码", None)
+    values[TEMPLATE_SOURCE_KEY] = marker
     if row.note:
         values["备注"] = row.note
     else:
@@ -1757,14 +3242,33 @@ def _template_option_values(
             values["规格名称"] = row.specification
         else:
             values.pop("规格名称", None)
-        if row.units_per_carton:
-            values["一箱个数"] = row.units_per_carton
-        else:
+        if row.schema_version >= 4:
             values.pop("一箱个数", None)
-        if row.is_new:
-            values["是否是新品"] = True
-        else:
             values.pop("是否是新品", None)
+            if row.units_per_carton:
+                values["装箱数"] = row.units_per_carton
+            else:
+                values.pop("装箱数", None)
+            if row.gross_weight is not None:
+                values["毛重"] = _decimal_option_text(row.gross_weight)
+            else:
+                values.pop("毛重", None)
+            if row.default_moq is not None:
+                values["起定数"] = _decimal_option_text(row.default_moq)
+            else:
+                values.pop("起定数", None)
+        else:
+            values.pop("装箱数", None)
+            values.pop("毛重", None)
+            values.pop("起定数", None)
+            if row.units_per_carton:
+                values["一箱个数"] = row.units_per_carton
+            else:
+                values.pop("一箱个数", None)
+            if row.is_new:
+                values["是否是新品"] = True
+            else:
+                values.pop("是否是新品", None)
     else:
         # Keep the historical SKU-row template contract unchanged. These keys
         # belong to the product/variant template and must not be reintroduced
@@ -1772,6 +3276,9 @@ def _template_option_values(
         values.pop("商品型号", None)
         values.pop("规格名称", None)
         values.pop("一箱个数", None)
+        values.pop("装箱数", None)
+        values.pop("毛重", None)
+        values.pop("起定数", None)
         values.pop("是否是新品", None)
     return values
 
@@ -1795,8 +3302,24 @@ def _record_import_progress(
 ) -> None:
     """Publish observable progress without committing the catalog transaction."""
 
+    publish_runtime_import_progress(
+        job_id=job_id,
+        tenant_id=tenant_id,
+        progress=progress,
+        stage=stage,
+        processed_rows=processed_rows,
+        total_rows=total_rows,
+    )
     try:
         with SessionLocal() as progress_session:
+            if (
+                progress_session.bind is not None
+                and progress_session.bind.dialect.name == "sqlite"
+            ):
+                # SQLite only permits one writer. The catalog transaction must
+                # remain atomic, so local progress is served from the in-process
+                # registry instead of waiting repeatedly on the same write lock.
+                return
             set_request_context(
                 progress_session,
                 organization_id=UUID(int=0),
@@ -2650,6 +4173,10 @@ def process_product_template_import(
                     option_values=_template_option_values(template_row),
                     default_moq=template_row.default_moq,
                     moq_unit=None,
+                    weight=template_row.gross_weight,
+                    weight_unit=(
+                        "kg" if template_row.gross_weight is not None else None
+                    ),
                     status="ACTIVE",
                     created_by_user_id=user_id,
                     updated_by_user_id=user_id,
@@ -2675,6 +4202,10 @@ def process_product_template_import(
                     ),
                     "default_moq": template_row.default_moq,
                     "moq_unit": None,
+                    "weight": template_row.gross_weight,
+                    "weight_unit": (
+                        "kg" if template_row.gross_weight is not None else None
+                    ),
                     "status": "ACTIVE",
                     "deleted_at": None,
                 }

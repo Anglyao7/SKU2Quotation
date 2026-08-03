@@ -11,6 +11,7 @@ import {
 import {
   ArrowsClockwise,
   CheckCircle,
+  DownloadSimple,
   FileArrowUp,
   FileXls,
   FloppyDisk,
@@ -23,6 +24,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteQuoteExcelTemplate,
+  downloadSystemDefaultQuoteTemplate,
   listQuoteExcelTemplates,
   reparseQuoteExcelTemplate,
   updateQuoteExcelTemplate,
@@ -47,10 +49,17 @@ const systemFields: Array<{ value: QuoteTemplateField; label: string; group: str
   { value: "specification", label: "商品规格", group: "商品明细" },
   { value: "category", label: "商品分类", group: "商品明细" },
   { value: "tags", label: "商品标签", group: "商品明细" },
+  { value: "product_image", label: "商品图片", group: "商品明细" },
   { value: "quantity", label: "数量", group: "报价数据" },
   { value: "unit_code", label: "单位", group: "报价数据" },
+  { value: "packing_quantity", label: "装箱数量", group: "包装物流" },
+  { value: "carton_dimensions", label: "装箱尺寸", group: "包装物流" },
+  { value: "gross_weight", label: "毛重（kg）", group: "包装物流" },
+  { value: "carton_volume", label: "立方（m³）", group: "包装物流" },
   { value: "unit_price", label: "单价", group: "报价数据" },
-  { value: "line_total", label: "小计", group: "报价数据" },
+  { value: "line_total", label: "总价", group: "报价数据" },
+  { value: "total_volume", label: "总立方（m³）", group: "包装物流" },
+  { value: "total_gross_weight", label: "总毛重（kg）", group: "包装物流" },
   { value: "currency", label: "币种", group: "报价数据" },
   { value: "quote_number", label: "报价单号", group: "报价信息" },
   { value: "quote_date", label: "报价日期", group: "报价信息" },
@@ -91,6 +100,7 @@ export function QuoteTemplatesPage() {
   const [draft, setDraft] = useState<EditorDraft>();
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [downloadingDefault, setDownloadingDefault] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reparsing, setReparsing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -153,6 +163,18 @@ export function QuoteTemplatesPage() {
     } finally {
       setUploading(false);
       if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const downloadDefault = async () => {
+    setDownloadingDefault(true);
+    setError("");
+    try {
+      await downloadSystemDefaultQuoteTemplate();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("默认报价模板下载失败"));
+    } finally {
+      setDownloadingDefault(false);
     }
   };
 
@@ -220,6 +242,9 @@ export function QuoteTemplatesPage() {
           accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           onChange={(event) => void upload(event.target.files?.[0])}
         />
+        <Button size="3" variant="soft" color="gray" loading={downloadingDefault} onClick={() => void downloadDefault()}>
+          <DownloadSimple />{t("下载系统默认模板")}
+        </Button>
         <Button size="3" loading={uploading} onClick={() => inputRef.current?.click()}>
           <FileArrowUp />{t(uploading ? "正在解析" : "上传 Excel")}
         </Button>
@@ -316,7 +341,7 @@ export function QuoteTemplatesPage() {
                 }}>
                   <Select.Trigger className="quote-template-field-select" />
                   <Select.Content position="popper">
-                    <Select.Item value={UNMAPPED}>{t("不导出此列")}</Select.Item>
+                    <Select.Item value={UNMAPPED}>{t("不填充数据（保留空列）")}</Select.Item>
                     {Array.from(new Set(systemFields.map((field) => field.group))).map((group) => <Select.Group key={group}>
                       <Select.Label>{t(group)}</Select.Label>
                       {systemFields.filter((field) => field.group === group).map((field) => <Select.Item key={field.value} value={field.value}>{t(field.label)}</Select.Item>)}

@@ -24,6 +24,7 @@ from ..services.quote_excel_templates import (
     QuoteTemplateParseError,
     inspect_quote_excel_template,
 )
+from ..services.public_quote_documents import render_default_quote_template_xlsx
 from ..services.storage import UploadTooLargeError, store_upload
 
 
@@ -102,6 +103,11 @@ def list_templates(
         for row in repository.list_for_tenant(session, tenant_id=tenant_id)
     ]
     return QuoteExcelTemplateListResponse(items=items, total=len(items))
+
+
+def download_system_default_template(*, permissions: frozenset[str]) -> bytes:
+    _require_manage(permissions)
+    return render_default_quote_template_xlsx()
 
 
 async def upload_template(

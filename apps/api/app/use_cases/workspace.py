@@ -77,7 +77,13 @@ def get_dashboard(
     data_health = None
     if "product.view" in permissions:
         def coverage(value: object) -> float:
-            return round(int(value) / active_products, 4) if active_products else 0.0
+            if not active_products:
+                return 0.0
+            # Historical imports can leave auxiliary rows behind after a
+            # product is archived. The repository scopes those rows to active
+            # products, and this clamp keeps one inconsistent legacy row from
+            # turning the whole dashboard into a 500 response.
+            return min(1.0, max(0.0, round(int(value) / active_products, 4)))
 
         image_coverage = coverage(data["approved_images"])
         source_coverage = coverage(data["sourced_products"])

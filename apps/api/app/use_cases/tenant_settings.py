@@ -11,6 +11,7 @@ from ..inventory_models import WarehouseRow
 from ..public_catalog_models import TenantPublicProfileRow
 from ..services.auth.dependencies import RequestContext
 from ..services.storefront_paths import allocate_storefront_slug
+from ..storefront_locales import effective_storefront_locales
 from ..tenant_slugs import storefront_slug_from_name
 
 
@@ -23,7 +24,10 @@ def _require_settings_permission(context: RequestContext) -> None:
         )
 
 
-def _response(tenant: TenantRow) -> MerchantSettingsResponse:
+def _response(
+    tenant: TenantRow,
+    profile: TenantPublicProfileRow | None,
+) -> MerchantSettingsResponse:
     return MerchantSettingsResponse(
         name=tenant.name,
         slug=tenant.slug,
@@ -32,6 +36,13 @@ def _response(tenant: TenantRow) -> MerchantSettingsResponse:
             "EXPORT" if tenant.default_currency.upper() == "USD" else "DOMESTIC"
         ),
         default_currency=tenant.default_currency.upper(),
+        storefront_locales=effective_storefront_locales(
+            profile.storefront_locales if profile is not None else None,
+            source_locale=tenant.default_locale,
+        ),
+        hot_products_enabled=(
+            bool(profile.hot_products_enabled) if profile is not None else False
+        ),
     )
 
 
@@ -110,7 +121,13 @@ def get_merchant_settings(
         raise ApplicationError(
             "TENANT_NOT_FOUND", "Merchant workspace was not found.", kind="not_found"
         )
-    return _response(tenant)
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant.id,
+            TenantPublicProfileRow.deleted_at.is_(None),
+        )
+    )
+    return _response(tenant, profile)
 
 
 def update_merchant_settings(
@@ -130,6 +147,26 @@ def update_merchant_settings(
         raise ApplicationError(
             "TENANT_NOT_FOUND", "Merchant workspace was not found.", kind="not_found"
         )
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant.id,
+            TenantPublicProfileRow.deleted_at.is_(None),
+        )
+    )
+    if profile is None and (
+        request.name is not None
+        or request.storefront_locales is not None
+        or request.hot_products_enabled is not None
+    ):
+        profile = TenantPublicProfileRow(
+            tenant_id=tenant.id,
+            slug=tenant.slug,
+            publication_status=(
+                "PUBLISHED" if tenant.status == "active" else "SUSPENDED"
+            ),
+        )
+        session.add(profile)
+        session.flush()
     if request.name is not None:
         try:
             base_slug = storefront_slug_from_name(request.name)
@@ -144,22 +181,7 @@ def update_merchant_settings(
             exclude_tenant_id=tenant.id,
         )
 
-        profile = session.scalar(
-            select(TenantPublicProfileRow).where(
-                TenantPublicProfileRow.tenant_id == tenant.id,
-                TenantPublicProfileRow.deleted_at.is_(None),
-            )
-        )
-        if profile is None:
-            profile = TenantPublicProfileRow(
-                tenant_id=tenant.id,
-                slug=tenant.slug,
-                publication_status=(
-                    "PUBLISHED" if tenant.status == "active" else "SUSPENDED"
-                ),
-            )
-            session.add(profile)
-            session.flush()
+        assert profile is not None
 
         if new_slug != tenant.slug:
             aliases: list[str] = []
@@ -178,6 +200,17 @@ def update_merchant_settings(
             profile.slug = new_slug
         tenant.name = request.name
 
+    if request.storefront_locales is not None:
+        assert profile is not None
+        profile.storefront_locales = effective_storefront_locales(
+            request.storefront_locales,
+            source_locale=tenant.default_locale,
+        )
+
+    if request.hot_products_enabled is not None:
+        assert profile is not None
+        profile.hot_products_enabled = request.hot_products_enabled
+
     if request.business_mode is not None:
         _activate_mode_warehouse(
             session,
@@ -195,4 +228,4 @@ def update_merchant_settings(
             "Merchant settings could not be updated because they conflict.",
             kind="conflict",
         ) from exc
-    return _response(tenant)
+    return _response(tenant, profile)

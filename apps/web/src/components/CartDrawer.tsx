@@ -80,6 +80,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
     [lines],
   );
   const currency = lines[0]?.sku.currency || "CNY";
+  const isChinese = locale === "zh-CN";
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
@@ -273,19 +274,19 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
                 <span>
                   {t("我已阅读并理解")}
                   <Link to="/privacy" target="_blank" rel="noreferrer">
-                    {locale === "en-US" ? t("隐私政策") : "《隐私政策》"}
+                    {isChinese ? "《隐私政策》" : t("隐私政策")}
                   </Link>
-                  {locale === "en-US" ? ". " : "；"}
+                  {isChinese ? "；" : ". "}
                   {t("我填写的信息将提供给 {store}，仅用于生成和跟进本次报价", { store: storeName })}
                   {contactEmail ? (
                     <>
-                      {locale === "en-US" ? " (" : "（"}
+                      {isChinese ? "（" : " ("}
                       {t("联系邮箱：{email}", { email: "" })}
                       <a href={`mailto:${contactEmail}`}>{contactEmail}</a>
-                      {locale === "en-US" ? ")" : "）"}
+                      {isChinese ? "）" : ")"}
                     </>
                   ) : null}
-                  {locale === "en-US" ? "." : "。"}
+                  {isChinese ? "。" : "."}
                 </span>
               </label>
             </div>

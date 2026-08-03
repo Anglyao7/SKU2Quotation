@@ -24,7 +24,12 @@ import { api } from "../lib/api";
 import { money } from "../lib/format";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
-import { storefrontText } from "../lib/storefrontLocale";
+import {
+  normalizeStorefrontLocale,
+  storefrontDirection,
+  storefrontLocaleQuery,
+  storefrontText,
+} from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
 import type { Sku, Storefront, StorefrontLocale } from "../types";
 
@@ -52,11 +57,11 @@ function storefrontViewEventId(locationKey: string, skuId: string) {
 
 export function SkuDetailPage() {
   const { store, sku } = useLoaderData() as SkuDetailLoaderData;
-  const locale: StorefrontLocale = store.locale === "en-US" ? "en-US" : "zh-CN";
+  const locale: StorefrontLocale = normalizeStorefrontLocale(store.locale);
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
-  const localeQuery = locale === "en-US" ? "?lang=en-US" : "";
+  const localeQuery = storefrontLocaleQuery(locale);
   const storefrontHome = `/${encodeURIComponent(store.slug)}${localeQuery}`;
   const location = useLocation();
   const navigate = useNavigate();
@@ -106,11 +111,14 @@ export function SkuDetailPage() {
   useEffect(() => {
     const previousTitle = document.title;
     const previousLanguage = document.documentElement.lang;
+    const previousDirection = document.documentElement.dir;
     document.documentElement.lang = locale;
+    document.documentElement.dir = storefrontDirection(locale);
     document.title = `${sku.name} | ${store.name}`;
     return () => {
       document.title = previousTitle;
       document.documentElement.lang = previousLanguage;
+      document.documentElement.dir = previousDirection;
     };
   }, [sku.name, store.name, locale]);
 
@@ -142,7 +150,10 @@ export function SkuDetailPage() {
   };
 
   return (
-    <div className={`store-shell sku-detail-shell${cartLines.length ? " has-cart" : ""}`}>
+    <div
+      className={`store-shell sku-detail-shell${cartLines.length ? " has-cart" : ""}`}
+      dir={storefrontDirection(locale)}
+    >
       <header className="store-header">
         <Container size="4" className="store-header-container">
           <div className="header-inner">
@@ -167,7 +178,10 @@ export function SkuDetailPage() {
               <span className="powered-by">{t("由智贸云提供")}</span>
             </div>
             <div className="header-actions">
-              <StorefrontLanguageSwitch locale={locale} />
+              <StorefrontLanguageSwitch
+                locale={locale}
+                availableLocales={store.available_locales}
+              />
               <ThemeToggle
                 labels={{
                   toDark: t("切换深色模式"),

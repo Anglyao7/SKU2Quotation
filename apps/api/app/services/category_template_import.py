@@ -147,6 +147,97 @@ def _validate_name(
     return name, None
 
 
+def _category_sheet_headers(sheet: object) -> tuple[str, str]:
+    return tuple(
+        _cell_text(sheet.cell(row=1, column=index).value)
+        for index in range(1, len(CATEGORY_TEMPLATE_HEADERS) + 1)
+    )
+
+
+def _category_sheet_has_data(sheet: object) -> bool:
+    max_row = getattr(sheet, "max_row", None) or 1
+    if max_row < 2:
+        return False
+    return any(
+        any(_cell_text(value) for value in row)
+        for row in sheet.iter_rows(
+            min_row=2,
+            max_row=max_row,
+            min_col=1,
+            max_col=2,
+            values_only=True,
+        )
+    )
+
+
+def _select_category_sheet(workbook: object) -> object:
+    """Select a category data sheet by columns, never by worksheet title."""
+
+    compatible_sheets = [
+        sheet
+        for sheet in workbook.worksheets
+        if _category_sheet_headers(sheet) == CATEGORY_TEMPLATE_HEADERS
+    ]
+    populated_sheets = [
+        sheet for sheet in compatible_sheets if _category_sheet_has_data(sheet)
+    ]
+    candidates = populated_sheets or compatible_sheets
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        sheet_names = "、".join(f"“{sheet.title}”" for sheet in candidates)
+        issue = CategoryTemplateIssue(
+            row_number=None,
+            column="工作表",
+            code="CATEGORY_SHEET_AMBIGUOUS",
+            message=f"发现多个包含分类列结构的数据页：{sheet_names}。",
+            value=None,
+        )
+        raise CategoryTemplateValidationError(
+            "一个文件中只能有一个分类数据页；请删除空白副本，或将多个数据页分别导入。工作表名称不限。",
+            issues=(issue,),
+        )
+
+    # Preserve field-level header feedback for a uniquely identifiable sheet
+    # that is close to the two-column contract (for example, one renamed
+    # header). This remains title-independent.
+    scored_sheets = [
+        (
+            sum(
+                actual == expected
+                for actual, expected in zip(
+                    _category_sheet_headers(sheet),
+                    CATEGORY_TEMPLATE_HEADERS,
+                    strict=True,
+                )
+            ),
+            sheet,
+        )
+        for sheet in workbook.worksheets
+    ]
+    best_score = max((score for score, _sheet in scored_sheets), default=0)
+    closest_sheets = [
+        sheet for score, sheet in scored_sheets if score == best_score and score > 0
+    ]
+    if len(closest_sheets) == 1:
+        return closest_sheets[0]
+
+    available_sheets = "、".join(
+        f"“{sheet.title}”" for sheet in workbook.worksheets
+    )
+    issue = CategoryTemplateIssue(
+        row_number=1,
+        column="表头",
+        code="CATEGORY_SHEET_MISSING",
+        message="未找到 A 列为“一级分类”、B 列为“二级分类”的数据页。",
+        value=available_sheets or None,
+    )
+    raise CategoryTemplateValidationError(
+        "未识别到分类数据页。工作表名称不限，但第一行需要包含 A 列“一级分类”和 B 列“二级分类”。",
+        issues=(issue,),
+    )
+
+
 def parse_category_template(content: bytes) -> CategoryTemplateParseResult:
     if not content:
         raise CategoryTemplateValidationError("分类模板为空，请重新选择文件。")
@@ -168,11 +259,7 @@ def parse_category_template(content: bytes) -> CategoryTemplateParseResult:
         ) from exc
 
     try:
-        if CATEGORY_TEMPLATE_SHEET not in workbook.sheetnames:
-            raise CategoryTemplateValidationError(
-                f"缺少工作表“{CATEGORY_TEMPLATE_SHEET}”，请使用下载的分类模板导入。"
-            )
-        sheet = workbook[CATEGORY_TEMPLATE_SHEET]
+        sheet = _select_category_sheet(workbook)
         if sheet.max_row is None or sheet.max_column is None:
             sheet.calculate_dimension(force=True)
         max_row = sheet.max_row or 1

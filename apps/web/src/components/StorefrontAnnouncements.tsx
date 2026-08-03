@@ -6,7 +6,7 @@ import {
   announcementDismissedForVisit,
   dismissAnnouncementForVisit,
 } from "../lib/storefrontAnnouncementVisit";
-import { storefrontText } from "../lib/storefrontLocale";
+import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
 import type {
   AnnouncementContentBlock,
   PublicAnnouncement,
@@ -50,7 +50,7 @@ function productDetailPath(
   productId: string,
   locale: StorefrontLocale,
 ) {
-  const query = locale === "en-US" ? "?lang=en-US" : "";
+  const query = storefrontLocaleQuery(locale);
   return `/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(productId)}${query}`;
 }
 

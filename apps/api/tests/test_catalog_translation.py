@@ -46,6 +46,39 @@ def test_deeplx_adapter_uses_json_contract_and_returns_safe_text() -> None:
     ) == "Smart Pet Feeder"
 
 
+@pytest.mark.parametrize(
+    ("target_locale", "provider_code"),
+    [
+        ("es", "ES"),
+        ("tr", "TR"),
+        ("ar", "AR"),
+        ("ja", "JA"),
+        ("ko", "KO"),
+        ("pt", "PT"),
+    ],
+)
+def test_deeplx_adapter_supports_storefront_target_languages(
+    target_locale: str,
+    provider_code: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        assert payload["source_lang"] == "ZH"
+        assert payload["target_lang"] == provider_code
+        return httpx.Response(200, json={"code": 200, "data": "translated"})
+
+    translator = DeepLXTranslator(
+        endpoint="https://translation.example/secret-token/translate",
+        production=True,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert translator.translate(
+        "商品",
+        source_locale="zh-CN",
+        target_locale=target_locale,
+    ) == "translated"
+
+
 def test_deeplx_adapter_never_exposes_secret_endpoint_on_failure() -> None:
     translator = DeepLXTranslator(
         endpoint="https://translation.example/do-not-leak/translate",
@@ -157,3 +190,59 @@ def test_catalog_value_translation_preserves_category_segments() -> None:
     )
 
     assert translated == ["Pet supplies", "Smart feeding"]
+
+
+class _MangledMarkerTranslator:
+    identity = TranslationIdentity(provider="test", version="mangled-markers")
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        assert "[[ATCK_00000]]" in text
+        return (
+            "[ATCV_000]]\nPrimeiro\n"
+            "[[ATCV_001]]\nSegundo [ATCV_002]] [ATCV_002]]\n"
+            "[[[ATCV_002]]]\nTerceiro [[[ATCK_00000]]]"
+        )
+
+
+def test_catalog_value_translation_tolerates_provider_mangled_markers() -> None:
+    translated = translate_catalog_values(
+        _MangledMarkerTranslator(),
+        ["第一", "第二", "型号 AQ-320S"],
+        source_locale="zh-CN",
+        target_locale="pt",
+    )
+
+    assert translated == ["Primeiro", "Segundo", "Terceiro AQ-320S"]
+
+
+class _UnchangedBatchTranslator:
+    identity = TranslationIdentity(provider="test", version="unchanged-batch")
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        if text.startswith("[[ATCV_"):
+            return text
+        assert text == "MC Pet Pack"
+        return "Pacote de animais MC"
+
+
+def test_catalog_value_translation_retries_unchanged_prose_without_markers() -> None:
+    translated = translate_catalog_values(
+        _UnchangedBatchTranslator(),
+        ["MC Pet Pack"],
+        source_locale="en-US",
+        target_locale="pt",
+    )
+
+    assert translated == ["Pacote de animais MC"]

@@ -72,9 +72,51 @@ def test_category_template_rejects_hierarchy_separators_and_formulas(
     assert caught.value.issues[0].code == expected_code
 
 
-def test_category_template_requires_the_fixed_sheet_name() -> None:
-    with pytest.raises(CategoryTemplateValidationError, match="缺少工作表"):
-        parse_category_template(_workbook_bytes([["宠物用品", None]], sheet_name="Sheet1"))
+def test_category_template_accepts_any_worksheet_name() -> None:
+    parsed = parse_category_template(
+        _workbook_bytes([["宠物用品", None]], sheet_name="客户分类")
+    )
+
+    assert parsed.processed_rows == 1
+    assert parsed.groups[0].primary_name == "宠物用品"
+
+
+def test_category_template_ignores_explanation_sheet_and_detects_data_sheet() -> None:
+    workbook = Workbook()
+    explanation = workbook.active
+    explanation.title = "填写说明"
+    explanation.append(["这里可以写任意说明"])
+    data_sheet = workbook.create_sheet("2026 新分类")
+    data_sheet.append(list(CATEGORY_TEMPLATE_HEADERS))
+    data_sheet.append(["宠物用品", "宠物服饰"])
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+
+    parsed = parse_category_template(output.getvalue())
+
+    assert parsed.groups[0].primary_name == "宠物用品"
+    assert parsed.groups[0].secondary_names == ("宠物服饰",)
+
+
+def test_category_template_rejects_multiple_populated_category_sheets() -> None:
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "第一批"
+    first.append(list(CATEGORY_TEMPLATE_HEADERS))
+    first.append(["宠物用品", None])
+    second = workbook.create_sheet("第二批")
+    second.append(list(CATEGORY_TEMPLATE_HEADERS))
+    second.append(["家居用品", None])
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+
+    with pytest.raises(CategoryTemplateValidationError, match="只能有一个分类数据页") as caught:
+        parse_category_template(output.getvalue())
+
+    assert caught.value.issues[0].code == "CATEGORY_SHEET_AMBIGUOUS"
+    assert "工作表名称不限" in str(caught.value)
 
 
 def test_downloadable_category_template_has_the_expected_contract() -> None:

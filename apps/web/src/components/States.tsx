@@ -47,12 +47,11 @@ export function ProductGridSkeleton({ count = 8 }: { count?: number }) {
         <Card key={index} className="sku-card skeleton-card">
           <Skeleton className="skeleton-image" />
           <div className="skeleton-body">
-            <Skeleton height="14px" width="38%" />
             <Skeleton height="20px" width="84%" />
-            <Skeleton height="16px" width="62%" />
+            <Skeleton height="20px" width="62%" />
             <div className="skeleton-row">
-              <Skeleton height="32px" width="58%" />
-              <Skeleton height="32px" width="34%" />
+              <Skeleton height="20px" width="54%" />
+              <Skeleton height="32px" width="32px" />
             </div>
           </div>
         </Card>

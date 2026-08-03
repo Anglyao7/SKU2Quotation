@@ -1,14 +1,18 @@
 import { Badge, Button, Card, Checkbox, Dialog, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowsClockwise, CaretRight, CheckCircle, ClockCounterClockwise, DownloadSimple, FileArrowUp, FileXls, ImageSquare, MagnifyingGlass, Plus, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, ArrowsClockwise, CaretRight, CheckCircle, ClockCounterClockwise, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   batchDeleteSkus,
+  batchUpdateSkuCategory,
+  batchUpdateSkuPinned,
+  batchUpdateSkuStatus,
   createAttributeDefinition,
   createProductTemplateImport,
   createSkus,
   deleteAllProducts,
   detectFile,
+  getDeleteAllProductsJob,
   getImport,
   getProduct,
   listAttributeDefinitions,
@@ -30,6 +34,8 @@ const splitValues = (value: string) => value.split(/[,，;；、|\n]/).map((item
 const emptySkuPage: SkuListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
 const SKU_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 const SKU_PAGE_SIZE_STORAGE_KEY = "ai-trade-cloud:sku-page-size";
+const UNCLASSIFIED_CATEGORY_VALUE = "__unclassified__";
+type BulkSkuAction = "pin" | "unpin" | "activate" | "deactivate" | "category";
 
 function initialSkuPageSize() {
   if (typeof window === "undefined") return 50;
@@ -69,6 +75,21 @@ const importStageLabel: Record<string, string> = {
   VALIDATION_FAILED: "数据校验未通过",
   FAILED: "商品导入失败",
 };
+
+const deleteAllStageLabel: Record<string, string> = {
+  QUEUED: "删除任务已排队",
+  COUNTING: "正在统计商品数据",
+  HIDING_OFFERS: "正在停止前台展示",
+  ARCHIVING_SKUS: "正在归档 SKU",
+  ARCHIVING_PRODUCTS: "正在归档商品",
+  FINALIZING: "正在完成删除",
+  COMPLETED: "全部商品删除完成",
+  FAILED: "全部商品删除失败",
+};
+
+const waitForDeletePoll = () => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, 900);
+});
 
 function exportImportIssues(job: ImportJob) {
   const escape = (value: string | number | undefined) => {
@@ -145,7 +166,8 @@ function skuSourceLabel(row: SkuListItem) {
 export function ProductsPage() {
   const { hasPermission } = useCoreAuth();
   const { locale, t } = useLocale();
-  const canDelete = hasPermission("product.edit");
+  const canEdit = hasPermission("product.edit");
+  const canDelete = canEdit;
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
     && hasPermission("catalog.publish");
@@ -182,10 +204,15 @@ export function ProductsPage() {
   );
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [bulkAction, setBulkAction] = useState<BulkSkuAction>();
+  const [bulkCategoryId, setBulkCategoryId] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);
   const [deleteAllPassword, setDeleteAllPassword] = useState("");
   const [deleteAllBusy, setDeleteAllBusy] = useState(false);
   const [deleteAllError, setDeleteAllError] = useState("");
+  const [deleteAllProgress, setDeleteAllProgress] = useState(0);
+  const [deleteAllStage, setDeleteAllStage] = useState("QUEUED");
   const [bulkError, setBulkError] = useState("");
   const [bulkNotice, setBulkNotice] = useState("");
   const loadSequence = useRef(0);
@@ -224,6 +251,7 @@ export function ProductsPage() {
   useEffect(() => {
     setSelectedSkuIds(new Set());
     setDeleteDialogOpen(false);
+    setBulkAction(undefined);
     setBulkError("");
   }, [categoryId, debouncedQuery, primaryCategoryId, status]);
 
@@ -316,7 +344,7 @@ export function ProductsPage() {
     setPendingFile(file);
     if (!file.name.toLowerCase().endsWith(".xlsx")) {
       setDetection(undefined);
-      setImportError(t("这里只接受固定格式的 .xlsx 商品模版。"));
+      setImportError(t("这里只接受 .xlsx 商品文件。"));
       if (importInputRef.current) importInputRef.current.value = "";
       return;
     }
@@ -329,7 +357,7 @@ export function ProductsPage() {
         nextDetection.detected_type !== "OOXML / XLSX"
         || !nextDetection.extension_matches
       ) {
-        setImportError(t("文件签名与 XLSX 商品模版不一致，请重新选择。"));
+        setImportError(t("文件签名与 XLSX 格式不一致，请重新选择。"));
       }
     } catch (reason) {
       setDetection(undefined);
@@ -449,7 +477,72 @@ export function ProductsPage() {
   const clearSkuSelection = () => {
     setSelectedSkuIds(new Set());
     setDeleteDialogOpen(false);
+    setBulkAction(undefined);
     setBulkError("");
+  };
+  const openBulkAction = (action: BulkSkuAction) => {
+    if (!canEdit || !selectedSkuIds.size) return;
+    setBulkError("");
+    if (action === "category") setBulkCategoryId("");
+    setBulkAction(action);
+  };
+  const applyBulkAction = async () => {
+    if (!canEdit || !selectedSkuIds.size || !bulkAction) return;
+    if (bulkAction === "category" && !bulkCategoryId) {
+      setBulkError(t("请选择要移动到的分类。"));
+      return;
+    }
+    setBulkBusy(true);
+    setBulkError("");
+    try {
+      const selectedIds = [...selectedSkuIds];
+      const response = bulkAction === "category"
+        ? await batchUpdateSkuCategory(
+            selectedIds,
+            bulkCategoryId === UNCLASSIFIED_CATEGORY_VALUE ? null : bulkCategoryId,
+          )
+        : bulkAction === "pin" || bulkAction === "unpin"
+        ? await batchUpdateSkuPinned(selectedIds, bulkAction === "pin")
+        : await batchUpdateSkuStatus(
+            selectedIds,
+            bulkAction === "activate" ? "ACTIVE" : "INACTIVE",
+          );
+      const failedIds = new Set(response.failedItems.map((item) => item.skuId));
+      const affectedProducts = response.affectedProductCount ?? response.successCount;
+      const categoryName = bulkCategoryId === UNCLASSIFIED_CATEGORY_VALUE
+        ? t("未分类")
+        : categories.find((item) => item.id === bulkCategoryId)?.name ?? t("所选分类");
+      const successMessage = bulkAction === "category"
+        ? t("已将 {skus} 个 SKU 对应的 {products} 个商品移动到“{category}”。", {
+            skus: response.successCount,
+            products: affectedProducts,
+            category: categoryName,
+          })
+        : bulkAction === "pin"
+        ? t("已置顶 {products} 个商品。", { products: affectedProducts })
+        : bulkAction === "unpin"
+        ? t("已取消置顶 {products} 个商品。", { products: affectedProducts })
+        : bulkAction === "activate"
+        ? t("已上架 {count} 个 SKU。", { count: response.successCount })
+        : t("已下架 {count} 个 SKU。", { count: response.successCount });
+      setSelectedSkuIds(failedIds);
+      setBulkNotice(
+        response.failedCount
+          ? t("{message} {failed} 个项目未能更新。", {
+              message: successMessage,
+              failed: response.failedCount,
+            })
+          : successMessage,
+      );
+      setBulkAction(undefined);
+      await load();
+    } catch (reason) {
+      setBulkError(
+        reason instanceof Error ? reason.message : t("批量更新失败，请稍后重试。"),
+      );
+    } finally {
+      setBulkBusy(false);
+    }
   };
   const deleteSelectedSkus = async () => {
     if (!canDelete || !selectedSkuIds.size) return;
@@ -489,13 +582,38 @@ export function ProductsPage() {
     setDeleteAllDialogOpen(open);
     setDeleteAllPassword("");
     setDeleteAllError("");
+    setDeleteAllProgress(0);
+    setDeleteAllStage("QUEUED");
   };
   const deleteEveryProduct = async () => {
     if (!canDelete || !deleteAllPassword) return;
     setDeleteAllBusy(true);
     setDeleteAllError("");
     try {
-      const response = await deleteAllProducts(deleteAllPassword);
+      let response = await deleteAllProducts(deleteAllPassword);
+      setDeleteAllProgress(response.progress);
+      setDeleteAllStage(response.stage);
+      let consecutivePollingFailures = 0;
+      while (["QUEUED", "RUNNING"].includes(response.status)) {
+        await waitForDeletePoll();
+        try {
+          response = await getDeleteAllProductsJob(response.id);
+          consecutivePollingFailures = 0;
+          setDeleteAllProgress(response.progress);
+          setDeleteAllStage(response.stage);
+        } catch (reason) {
+          consecutivePollingFailures += 1;
+          if (consecutivePollingFailures < 5) continue;
+          throw new Error(
+            reason instanceof Error
+              ? t("删除任务已提交，但暂时无法读取进度：{message}", { message: reason.message })
+              : t("删除任务已提交，但暂时无法读取进度，请稍后再次打开此操作查看。"),
+          );
+        }
+      }
+      if (response.status === "FAILED") {
+        throw new Error(response.errorMessage || t("全部商品删除失败，数据未被完整提交，请稍后重试。"));
+      }
       setSelectedSkuIds(new Set());
       setDeleteDialogOpen(false);
       setDeleteAllDialogOpen(false);
@@ -541,22 +659,48 @@ export function ProductsPage() {
     window.localStorage.setItem(SKU_PAGE_SIZE_STORAGE_KEY, String(next));
   };
   const rootCategories = useMemo(
-    () => categories.filter((item) => !item.parentId && item.status !== "ARCHIVED"),
-    [categories],
+    () => categories
+      .filter((item) => !item.parentId && item.status !== "ARCHIVED")
+      .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, locale)),
+    [categories, locale],
+  );
+  const bulkCategoryOptions = useMemo(
+    () => rootCategories.flatMap((root) => [
+      { id: root.id, label: root.name },
+      ...categories
+        .filter((item) => item.parentId === root.id && item.status !== "ARCHIVED")
+        .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, locale))
+        .map((child) => ({ id: child.id, label: `${root.name} / ${child.name}` })),
+    ]),
+    [categories, locale, rootCategories],
   );
   const secondaryCategories = useMemo(
     () => categories.filter((item) => item.parentId === primaryCategoryId && item.status !== "ARCHIVED"),
     [categories, primaryCategoryId],
   );
   const hasActiveFilters = Boolean(query.trim() || primaryCategoryId || categoryId || status);
+  const bulkActionTitle = bulkAction === "category"
+    ? t("批量修改商品分类")
+    : bulkAction === "pin"
+    ? t("置顶所选商品？")
+    : bulkAction === "unpin"
+    ? t("取消置顶所选商品？")
+    : bulkAction === "activate"
+    ? t("上架所选 SKU？")
+    : t("下架所选 SKU？");
+  const bulkActionDescription = bulkAction === "category"
+    ? t("所选 SKU 对应的商品会统一移动到目标分类；同一商品的其他 SKU 也会随商品归入该分类。")
+    : bulkAction === "pin" || bulkAction === "unpin"
+    ? t("置顶状态按商品生效，并在商品所属分类内控制前台展示顺序。")
+    : t("状态会应用到所选的 {count} 个 SKU，并立即影响商家前台是否展示。", { count: selectedSkuIds.size });
   return (
     <div className="core-workspace">
       <CorePageHeading
         eyebrow={t("商品资料")}
         title={t("SKU 商品库")}
-        description={t("所有商品从固定 Excel 模版进入这里，并直接按 SKU 管理名称、分类、价格、图片与上下架状态。")}
+        description={t("使用 Product 与 SKU 双表模板批量维护商品主数据，并在每个商品下管理不同 SKU、规格、价格与供应商。")}
         actions={<>
-          {canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}
+          {canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}
           {canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}
           {canDelete ? <Button variant="soft" color="red" onClick={() => setDeleteAllOpen(true)}><Trash />{t("删除全部商品")}</Button> : null}
         </>}
@@ -581,17 +725,23 @@ export function ProductsPage() {
           <Button size="1" variant="ghost" color="gray" onClick={() => setBulkNotice("")} aria-label={t("关闭")}><X /></Button>
         </Card>
       ) : null}
-      {canDelete && selectedSkuIds.size > 0 ? (
+      {canEdit && selectedSkuIds.size > 0 ? (
         <Card className="core-sku-bulk-bar">
           <div>
-            <Text size="1" color="gray">{t("批量删除 SKU")}</Text>
+            <Text size="1" color="gray">{t("批量管理")}</Text>
             <Text size="2" weight="bold">{t("已选择 {count} 个，最多 500 个", { count: selectedSkuIds.size })}</Text>
+            <Text size="1" color="gray">{t("分类和置顶会应用到所选 SKU 对应的商品。")}</Text>
           </div>
           <div className="core-sku-bulk-actions">
-            <Button size="2" variant="soft" color="gray" onClick={clearSkuSelection}>{t("清除选择")}</Button>
+            <Button size="2" variant="soft" onClick={() => openBulkAction("pin")}><PushPin />{t("置顶")}</Button>
+            <Button size="2" variant="soft" color="gray" onClick={() => openBulkAction("unpin")}><PushPinSlash />{t("取消置顶")}</Button>
+            <Button size="2" variant="soft" color="gray" onClick={() => openBulkAction("category")}><Folders />{t("修改分类")}</Button>
+            <Button size="2" variant="soft" color="jade" onClick={() => openBulkAction("activate")}><ArrowUp />{t("上架")}</Button>
+            <Button size="2" variant="soft" color="amber" onClick={() => openBulkAction("deactivate")}><ArrowDown />{t("下架")}</Button>
             <Button size="2" color="red" disabled={!selectedSkuIds.size || deleteBusy} onClick={() => setDeleteDialogOpen(true)}>
               <Trash />{t("删除已选 {count} 项", { count: selectedSkuIds.size })}
             </Button>
+            <Button size="2" variant="ghost" color="gray" onClick={clearSkuSelection}>{t("清除选择")}</Button>
           </div>
         </Card>
       ) : null}
@@ -602,8 +752,8 @@ export function ProductsPage() {
           ? <CoreEmpty title={t("没有符合条件的 SKU")} description={t("尝试更换关键词、分类或状态。")} action={<Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button>} />
           : <CoreEmpty
               title={t("商品库还是空的")}
-              description={t("下载固定模版并填写商品资料，导入后即可按 SKU 管理和发布。")}
-              action={canImport ? <div className="core-empty-actions"><Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载模板")}</a></Button><Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button></div> : undefined}
+              description={t("先在 Product 表填写商品，再在 SKU 表用商品编码关联不同规格；导入后即可统一管理和发布。")}
+              action={canImport ? <div className="core-empty-actions"><Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button><Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button></div> : undefined}
             />
       ) : null}
       {result.items.length ? (
@@ -658,7 +808,10 @@ export function ProductsPage() {
                     <span><strong className="core-tabular">{sku.skuCode}</strong><small>{sku.name || sku.productName}</small></span>
                   </span>
                   <span className="core-sku-category-cell">
-                    <strong>{primaryCategoryLabel(sku.category?.name) || t("未分类")}</strong>
+                    <span className="core-sku-category-heading">
+                      <strong>{primaryCategoryLabel(sku.category?.name) || t("未分类")}</strong>
+                      {sku.isPinned ? <Badge color="amber" variant="soft"><PushPin weight="fill" />{t("已置顶")}</Badge> : null}
+                    </span>
                     {sku.supplierSummary.primarySupplierName ? <small>{t("供应商")}：{sku.supplierSummary.primarySupplierName}</small> : null}
                     <span className="core-chip-row">{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
                   </span>
@@ -688,7 +841,7 @@ export function ProductsPage() {
                   </label>
                 ) : null}
                 <button type="button" className="core-sku-mobile-open" onClick={() => void openProduct(sku.productId, "skus")} aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}>
-                  <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge></span>
+                  <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><span className="core-sku-mobile-badges">{sku.isPinned ? <Badge color="amber" variant="soft"><PushPin weight="fill" />{t("已置顶")}</Badge> : null}<Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge></span></span>
                   <span className="core-sku-mobile-facts">
                     <span><small>{t("公开价")}</small><strong className="core-tabular">{t(skuPrice(sku))}</strong></span>
                     <span><small>{t("图片")}</small><strong>{t(imageStatusLabel(sku.imageStatus))}</strong></span>
@@ -720,6 +873,56 @@ export function ProductsPage() {
           </nav>
         </>
       ) : null}
+
+      <Dialog.Root
+        open={Boolean(bulkAction)}
+        onOpenChange={(open) => {
+          if (!open && !bulkBusy) {
+            setBulkAction(undefined);
+            setBulkError("");
+          }
+        }}
+      >
+        <Dialog.Content className="core-sku-bulk-dialog">
+          <div className="core-dialog-heading">
+            <div>
+              <Text size="1" color="gray">{t("批量管理")}</Text>
+              <Dialog.Title>{bulkActionTitle}</Dialog.Title>
+              <Dialog.Description>{bulkActionDescription}</Dialog.Description>
+            </div>
+            <Button variant="ghost" color="gray" disabled={bulkBusy} onClick={() => { setBulkAction(undefined); setBulkError(""); }} aria-label={t("关闭")}><X /></Button>
+          </div>
+          {bulkAction === "category" ? (
+            <label className="core-bulk-category-field">
+              <Text size="2" weight="medium">{t("目标分类")}</Text>
+              <select value={bulkCategoryId} onChange={(event) => { setBulkCategoryId(event.target.value); setBulkError(""); }} disabled={bulkBusy} autoFocus>
+                <option value="" disabled>{t("请选择分类")}</option>
+                <option value={UNCLASSIFIED_CATEGORY_VALUE}>{t("未分类")}</option>
+                {bulkCategoryOptions.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
+              </select>
+            </label>
+          ) : null}
+          <Card className="core-notice">
+            {bulkAction === "category" ? <Folders size={22} /> : bulkAction === "pin" || bulkAction === "unpin" ? <PushPin size={22} /> : bulkAction === "activate" ? <ArrowUp size={22} /> : <ArrowDown size={22} />}
+            <div>
+              <Text weight="bold" as="div">{t("当前选择 {count} 个 SKU", { count: selectedSkuIds.size })}</Text>
+              <Text size="2" color="gray">{t("操作完成后，失败项目会继续保持选中，便于再次处理。")}</Text>
+            </div>
+          </Card>
+          {bulkError ? <div className="core-form-error" role="alert">{bulkError}</div> : null}
+          <div className="core-dialog-actions">
+            <Button variant="soft" color="gray" disabled={bulkBusy} onClick={() => { setBulkAction(undefined); setBulkError(""); }}>{t("取消")}</Button>
+            <Button
+              color={bulkAction === "deactivate" ? "amber" : bulkAction === "activate" ? "jade" : undefined}
+              disabled={bulkBusy || !selectedSkuIds.size || (bulkAction === "category" && !bulkCategoryId)}
+              onClick={() => void applyBulkAction()}
+            >
+              {bulkAction === "category" ? <Folders /> : bulkAction === "pin" ? <PushPin /> : bulkAction === "unpin" ? <PushPinSlash /> : bulkAction === "activate" ? <ArrowUp /> : <ArrowDown />}
+              {t(bulkBusy ? "正在更新…" : "确认更新")}
+            </Button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Root>
 
       <Dialog.Root open={deleteDialogOpen} onOpenChange={(open) => { if (!deleteBusy) { setDeleteDialogOpen(open); if (!open) setBulkError(""); } }}>
         <Dialog.Content className="core-sku-delete-dialog">
@@ -781,11 +984,21 @@ export function ProductsPage() {
                 autoFocus
               />
             </label>
+            {deleteAllBusy ? (
+              <Card className="core-delete-all-progress" aria-live="polite">
+                <div>
+                  <Text size="2" weight="medium">{t(deleteAllStageLabel[deleteAllStage] ?? "正在删除全部商品")}</Text>
+                  <Text size="1" color="gray" className="core-tabular">{deleteAllProgress}%</Text>
+                </div>
+                <Progress value={deleteAllProgress} color="red" />
+                <Text size="1" color="gray">{t("任务已在后台执行，页面通过短请求刷新进度，不会再因长时间等待而超时。")}</Text>
+              </Card>
+            ) : null}
             {deleteAllError ? <div className="core-form-error" role="alert">{deleteAllError}</div> : null}
             <div className="core-dialog-actions">
               <Button type="button" variant="soft" color="gray" disabled={deleteAllBusy} onClick={() => setDeleteAllOpen(false)}>{t("取消")}</Button>
               <Button type="submit" color="red" disabled={deleteAllBusy || !deleteAllPassword}>
-                <Trash />{t(deleteAllBusy ? "正在删除全部商品…" : "确认删除全部商品")}
+                <Trash />{t(deleteAllBusy ? "后台删除中 {progress}%" : "确认删除全部商品", { progress: deleteAllProgress })}
               </Button>
             </div>
           </form>
@@ -798,7 +1011,7 @@ export function ProductsPage() {
             <div>
               <Text size="1" color="gray">{t("商品批量导入")}</Text>
               <Dialog.Title>{t("导入商品")}</Dialog.Title>
-              <Dialog.Description>{t("上传填写完成的 XLSX 文件。系统会先完整校验，再按 SKU 增量合并到当前商品库。")}</Dialog.Description>
+              <Dialog.Description>{t("上传 Product + SKU 双表 XLSX；也继续兼容历史单表模板。系统会先完整校验，再按 SKU 增量合并到当前商品库。")}</Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" onClick={() => setImportDialogOpen(false)} aria-label={t("关闭")}><X /></Button>
           </div>
@@ -807,13 +1020,13 @@ export function ProductsPage() {
             <span className="core-row-icon"><FileXls /></span>
             <div>
               <Text weight="bold" as="div">{t("先下载标准模板")}</Text>
-              <Text size="2" color="gray">{t("只有商品名称必填；型号留空会自动生成临时型号，但需要以后准确更新同一商品时，建议填写稳定型号。分类留空归入“未分类”且不进入智能索引，价格留空按 0 处理。")}</Text>
+              <Text size="2" color="gray">{t("Product 表填写商品主数据；SKU 表每行最多定义三个规格，每个规格最多五个候选值，系统会自动组合成具体 SKU。SKU 编号作为组合编号的稳定前缀。")}</Text>
               <div className="core-chip-row" aria-label={t("固定模版字段")}>
-                {["商品名称", "商品分类", "商品型号", "供应商", "商品价格", "商品描述", "备注", "标签", "商品图片1–10"].map((field) => <Badge color="gray" key={field}>{t(field)}</Badge>)}
+                {["Product 商品主表", "SKU 明细表", "商品与 SKU 编码关联", "每个规格 5 个候选值", "候选值自动组合 SKU", "供应商、价格与包装", "标签与图片1–10"].map((field) => <Badge color="gray" key={field}>{t(field)}</Badge>)}
               </div>
               <div>
                 <Button asChild size="1" variant="soft" color="gray">
-                  <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品模版.xlsx"><DownloadSimple />{t("下载模板")}</a>
+                  <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a>
                 </Button>
               </div>
             </div>
@@ -848,7 +1061,7 @@ export function ProductsPage() {
             <button className="core-template-dropzone" type="button" disabled={importBusy} onClick={() => importInputRef.current?.click()}>
               <FileArrowUp size={30} />
               <strong>{t("选择商品文件")}</strong>
-              <span>{t("上传使用标准模板填写完成的 XLSX 文件，单文件最大 250 MB")}</span>
+              <span>{t("上传最新版 Product + SKU 双表或受支持的历史 XLSX，单文件最大 250 MB")}</span>
             </button>
           )}
 
@@ -1029,7 +1242,7 @@ function ProductDetailPanel({ product, initialTab, onChanged, onClose }: { produ
       <div className="core-dialog-heading"><div><Text size="1" color="gray">{t("权威产品记录")} · v{product.currentVersion}</Text><Dialog.Title>{product.name}</Dialog.Title><Dialog.Description>{product.productCode ?? t("产品")} · {primaryCategoryLabel(product.category) || t("未分类")}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}><X /></Button></div>
       <Tabs.Root key={`${product.id}:${initialTab}`} defaultValue={initialTab}>
         <Tabs.List><Tabs.Trigger value="overview">{t("主数据")}</Tabs.Trigger><Tabs.Trigger value="skus">SKU ({product.skus.length})</Tabs.Trigger><Tabs.Trigger value="attributes">{t("分类属性")}</Tabs.Trigger><Tabs.Trigger value="activity">{t("活动")}</Tabs.Trigger></Tabs.List>
-        <Tabs.Content value="overview"><div className="core-master-grid"><Fact label={t("状态")} value={t(product.status)} /><Fact label={t("产品版本")} value={`v${product.currentVersion}`} /><Fact label={t("图片状态")} value={t(product.imageStatus)} /><Fact label="SKU" value={String(product.skuCount)} /><section><Text size="1" color="gray">{t("标准描述")}</Text><p>{product.description || t("尚未维护标准描述。")}</p></section><section><Text size="1" color="gray">{t("商品模版映射")}</Text><p>{t("型号作为 SKU 编码；价格进入对客公开价；标签用于商品展示与 AI 搜索召回；图床链接作为商品图片。")}</p></section></div></Tabs.Content>
+        <Tabs.Content value="overview"><div className="core-master-grid"><Fact label={t("状态")} value={t(product.status)} /><Fact label={t("产品版本")} value={`v${product.currentVersion}`} /><Fact label={t("图片状态")} value={t(product.imageStatus)} /><Fact label="SKU" value={String(product.skuCount)} /><section><Text size="1" color="gray">{t("标准描述")}</Text><p>{product.description || t("尚未维护标准描述。")}</p></section><section><Text size="1" color="gray">{t("商品模版映射")}</Text><p>{t("Product 表维护商品主数据与图片；SKU 表通过商品编码关联规格、供应商和价格。标签用于商品展示与 AI 搜索召回。")}</p></section></div></Tabs.Content>
         <Tabs.Content value="skus"><SkuPanel product={product} onChanged={onChanged} /></Tabs.Content>
         <Tabs.Content value="attributes"><AttributePanel product={product} onChanged={onChanged} /></Tabs.Content>
         <Tabs.Content value="activity"><div className="core-list">{product.activity.map((row) => <div className="core-list-row" key={row.id}><ClockCounterClockwise /><div><Text weight="medium" as="div">{t(row.action)}</Text><Text size="1" color="gray">{t(row.entityType)} · {coreDate(row.occurredAt)}</Text></div></div>)}{!product.activity.length ? <CoreEmpty title={t("暂无活动记录")} description={t("重要修改将在此处形成审计时间线。")} /> : null}</div></Tabs.Content>

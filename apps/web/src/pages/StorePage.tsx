@@ -14,6 +14,7 @@ import {
   CaretLeft,
   CaretRight,
   Columns,
+  Fire,
   MagnifyingGlass,
   Rows,
   Storefront as StoreIcon,
@@ -32,7 +33,12 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
-import { storefrontText } from "../lib/storefrontLocale";
+import {
+  normalizeStorefrontLocale,
+  storefrontDirection,
+  storefrontLocaleQuery,
+  storefrontText,
+} from "../lib/storefrontLocale";
 import { readStorefrontViewState, writeStorefrontViewState } from "../lib/storefrontViewState";
 import type { StoreProduct, Storefront, StorefrontLocale } from "../types";
 
@@ -152,7 +158,7 @@ function CategoryScrollTrack({
         <button
           type="button"
           className="category-browser-scroll-button is-left"
-          aria-label={locale === "en-US" ? `View earlier ${ariaLabel}` : `向左查看更多${ariaLabel}`}
+          aria-label={`${storefrontText(locale, "上一页")} · ${ariaLabel}`}
           onClick={() => scrollByItem(-1)}
         >
           <CaretLeft weight="bold" />
@@ -165,7 +171,7 @@ function CategoryScrollTrack({
         <button
           type="button"
           className="category-browser-scroll-button is-right"
-          aria-label={locale === "en-US" ? `View more ${ariaLabel}` : `向右查看更多${ariaLabel}`}
+          aria-label={`${storefrontText(locale, "下一页")} · ${ariaLabel}`}
           onClick={() => scrollByItem(1)}
         >
           <CaretRight weight="bold" />
@@ -178,14 +184,14 @@ function CategoryScrollTrack({
 export function StorePage() {
   const loadedStore = useLoaderData() as Storefront;
   const tenantSlug = loadedStore.slug;
-  const locale: StorefrontLocale = loadedStore.locale === "en-US" ? "en-US" : "zh-CN";
+  const locale: StorefrontLocale = normalizeStorefrontLocale(loadedStore.locale);
   const t = useCallback(
     (source: string, values?: Record<string, string | number>) => (
       storefrontText(locale, source, values)
     ),
     [locale],
   );
-  const localeQuery = locale === "en-US" ? "?lang=en-US" : "";
+  const localeQuery = storefrontLocaleQuery(locale);
   const storefrontHome = `/${encodeURIComponent(tenantSlug)}${localeQuery}`;
   const [initialView] = useState(() => readStorefrontViewState(loadedStore.slug));
   const [store, setStore] = useState<Storefront>(loadedStore);
@@ -257,11 +263,14 @@ export function StorePage() {
   useEffect(() => {
     const previousTitle = document.title;
     const previousLanguage = document.documentElement.lang;
+    const previousDirection = document.documentElement.dir;
     document.documentElement.lang = locale;
+    document.documentElement.dir = storefrontDirection(locale);
     document.title = `${loadedStore.name} | 智贸云`;
     return () => {
       document.title = previousTitle;
       document.documentElement.lang = previousLanguage;
+      document.documentElement.dir = previousDirection;
     };
   }, [loadedStore.name, locale]);
 
@@ -296,6 +305,9 @@ export function StorePage() {
         all_products_position: includeFacets
           ? data.all_products_position ?? current.all_products_position ?? 0
           : current.all_products_position,
+        hot_products_enabled: data.hot_products_enabled
+          ?? current.hot_products_enabled
+          ?? false,
       } : current);
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
@@ -513,6 +525,7 @@ export function StorePage() {
     [categoryTree, primaryCategory],
   );
   const hasFilters = Boolean(search || category);
+  const hotSortActive = Boolean(store.hot_products_enabled && !hasFilters);
   const searchPending = Boolean(search.trim()) && (
     search.trim() !== deferredSearch || loading
   );
@@ -566,7 +579,10 @@ export function StorePage() {
   };
 
   return (
-    <div className={`store-shell${cartSkuCount > 0 ? " has-cart" : ""}`}>
+    <div
+      className={`store-shell${cartSkuCount > 0 ? " has-cart" : ""}`}
+      dir={storefrontDirection(locale)}
+    >
       <header className="store-header">
         <Container size="4" className="store-header-container">
           <div className="header-inner">
@@ -591,6 +607,7 @@ export function StorePage() {
             <div className="header-actions">
               <StorefrontLanguageSwitch
                 locale={locale}
+                availableLocales={store.available_locales}
                 onBeforeLocaleChange={rememberCatalogPosition}
               />
               <ThemeToggle
@@ -823,8 +840,22 @@ export function StorePage() {
               <div className="results-main">
             <div className="results-header" ref={resultsHeaderRef}>
               <div>
-                <Heading as="h2" size="5">{t(hasFilters ? "筛选结果" : "全部商品")}</Heading>
-                <Text size="2" color="gray">{t("点击商品查看可选规格与 SKU。")}</Text>
+                <div className="results-title-row">
+                  <Heading as="h2" size="5">{t(hasFilters ? "筛选结果" : "全部商品")}</Heading>
+                  {hotSortActive ? (
+                    <Badge color="amber" variant="soft">
+                      <Fire size={14} weight="fill" aria-hidden="true" />
+                      {t("爆款优先")}
+                    </Badge>
+                  ) : null}
+                </div>
+                <Text size="2" color="gray">
+                  {t(
+                    hotSortActive
+                      ? "根据近 90 天浏览与下单热度优先展示，手动置顶商品仍排在最前。"
+                      : "点击商品查看可选规格与 SKU。",
+                  )}
+                </Text>
               </div>
               <Badge color={hasFilters ? "jade" : "gray"} variant="soft" aria-live="polite">
                 {searchPending
