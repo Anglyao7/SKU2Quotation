@@ -149,7 +149,7 @@ SKU_DETAIL_TEMPLATE_HEADERS = (
 TEMPLATE_LAYOUT_SKU_ROWS = "SKU_ROWS"
 TEMPLATE_LAYOUT_PRODUCT_VARIANTS = "PRODUCT_VARIANTS"
 TEMPLATE_LAYOUT_PRODUCT_SKUS = "PRODUCT_SKUS"
-MAX_TEMPLATE_ROWS = 20_000
+MAX_TEMPLATE_ROWS = 50_000
 # One source row can intentionally define several concrete variants. Keep a
 # separate, bounded expansion ceiling so near-limit catalogs are not rejected
 # merely because valid color/size candidates expand beyond the source row count.
