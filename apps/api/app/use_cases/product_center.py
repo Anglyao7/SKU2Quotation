@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -31,6 +32,7 @@ from ..product_center_schemas import (
     CategoryReorderRequest,
     CategoryResponse,
     CategoryUpdateRequest,
+    ManualProductCreateRequest,
     ProductAttributeResponse,
     ProductAuditEventResponse,
     ProductCard,
@@ -50,7 +52,12 @@ from ..product_center_schemas import (
     SupplierPriceCreateRequest,
     SupplierPriceResponse,
 )
-from ..product_supplier_models import ProductAttributeRow, ProductCategoryRow, ProductRow
+from ..product_supplier_models import (
+    ProductAttributeRow,
+    ProductCategoryRow,
+    ProductImageRow,
+    ProductRow,
+)
 from ..identity_models import TenantRow
 from ..public_catalog_models import PublicCatalogOfferRow, TenantPublicProfileRow
 from ..repositories import product_center_repository as repository
@@ -528,6 +535,216 @@ def get_product(
             )
             for row in audit
         ],
+    )
+
+
+def create_manual_product(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    request: ManualProductCreateRequest,
+) -> ProductDetail:
+    _require(permissions, "product.view")
+    _require(permissions, "product.edit")
+    _require(permissions, "catalog.publish")
+
+    category = repository.get_category(
+        session,
+        tenant_id=tenant_id,
+        category_id=request.category_id,
+    )
+    if request.category_id is not None and category is None:
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND",
+            "Product category was not found.",
+            kind="not_found",
+        )
+    if category is not None and category.status != "ACTIVE":
+        raise ApplicationError(
+            "CATEGORY_NOT_ACTIVE",
+            "Archived or inactive categories cannot receive new products.",
+            kind="conflict",
+        )
+    if request.product_code and repository.product_code_exists(
+        session,
+        tenant_id=tenant_id,
+        product_code=request.product_code,
+    ):
+        raise ApplicationError(
+            "PRODUCT_CODE_CONFLICT",
+            "Product code already exists.",
+            kind="conflict",
+        )
+
+    sku_code = request.sku_code
+    if sku_code is None:
+        sku_code = f"MAN-{uuid4().hex[:12].upper()}"
+        while repository.sku_code_exists(
+            session,
+            tenant_id=tenant_id,
+            sku_code=sku_code,
+        ):
+            sku_code = f"MAN-{uuid4().hex[:12].upper()}"
+    elif repository.sku_code_exists(
+        session,
+        tenant_id=tenant_id,
+        sku_code=sku_code,
+    ):
+        raise ApplicationError(
+            "SKU_CODE_CONFLICT",
+            f"SKU code already exists: {sku_code}",
+            kind="conflict",
+        )
+
+    now = utcnow()
+    product_status = "ACTIVE" if request.publish_to_storefront else "DRAFT"
+    sku_status = "ACTIVE" if request.publish_to_storefront else "DRAFT"
+    offer_status = "PUBLISHED" if request.publish_to_storefront else "DRAFT"
+    product = ProductRow(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        product_code=request.product_code,
+        name=request.name,
+        description=request.description,
+        category_id=category.id if category is not None else None,
+        status=product_status,
+        default_unit=request.default_unit,
+        search_document_version=0,
+        created_by=user_id,
+        updated_by=user_id,
+    )
+    session.add(product)
+    session.flush()
+
+    sku = SkuRow(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        product_id=product.id,
+        sku_code=sku_code,
+        name=request.sku_name or request.name,
+        option_values={},
+        barcode=request.barcode,
+        default_moq=request.default_moq,
+        moq_unit=request.moq_unit,
+        weight=request.weight,
+        weight_unit=request.weight_unit,
+        status=sku_status,
+        created_by_user_id=user_id,
+        updated_by_user_id=user_id,
+    )
+    session.add(sku)
+    session.flush()
+
+    offer = PublicCatalogOfferRow(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        sku_id=sku.id,
+        unit_price=request.unit_price,
+        currency=request.currency,
+        tags=request.tags,
+        display_tag=request.display_tag,
+        tag_color=request.tag_color,
+        publication_status=offer_status,
+        published_at=now if offer_status == "PUBLISHED" else None,
+    )
+    session.add(offer)
+
+    if request.image_url:
+        session.add(
+            ProductImageRow(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                product_id=product.id,
+                storage_provider="EXTERNAL",
+                bucket="external",
+                object_key=request.image_url,
+                original_filename=None,
+                content_type="image/remote",
+                byte_size=0,
+                sha256=sha256(request.image_url.encode("utf-8")).hexdigest(),
+                image_role="MAIN",
+                sort_order=0,
+                approval_status="APPROVED",
+                alt_text=request.name,
+                created_by=user_id,
+            )
+        )
+
+    request_snapshot = request.model_dump(mode="json")
+    session.add_all(
+        [
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                entity_type="PRODUCT",
+                entity_id=str(product.id),
+                action="product.created",
+                before={},
+                after={
+                    "name": product.name,
+                    "product_code": product.product_code,
+                    "description": product.description,
+                    "category_id": str(product.category_id) if product.category_id else None,
+                    "status": product.status,
+                    "default_unit": product.default_unit,
+                    "image_url": request.image_url,
+                },
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            ),
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                entity_type="SKU",
+                entity_id=str(sku.id),
+                action="sku.created",
+                before={},
+                after={
+                    "sku_code": sku.sku_code,
+                    "name": sku.name,
+                    "barcode": sku.barcode,
+                    "default_moq": request_snapshot["default_moq"],
+                    "moq_unit": sku.moq_unit,
+                    "weight": request_snapshot["weight"],
+                    "weight_unit": sku.weight_unit,
+                    "status": sku.status,
+                },
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            ),
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                entity_type="SKU",
+                entity_id=str(sku.id),
+                action=f"public_offer.{offer_status.casefold()}",
+                before={},
+                after={
+                    "unit_price": request_snapshot["unit_price"],
+                    "currency": offer.currency,
+                    "tags": offer.tags,
+                    "display_tag": offer.display_tag,
+                    "tag_color": offer.tag_color,
+                    "publication_status": offer.publication_status,
+                },
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            ),
+        ]
+    )
+    _commit(
+        session,
+        conflict_code="MANUAL_PRODUCT_CONFLICT",
+        conflict_message="Product or SKU code already exists.",
+    )
+    return get_product(
+        session,
+        tenant_id=tenant_id,
+        permissions=permissions,
+        product_id=product.id,
     )
 
 

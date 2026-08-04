@@ -64,6 +64,7 @@ from ..storefront_locales import (
 )
 from . import announcements as announcement_use_cases
 from . import quote_templates as quote_template_use_cases
+from . import support as support_use_cases
 
 
 MONEY = Decimal("0.01")
@@ -506,6 +507,7 @@ def get_store(
             session,
             tenant_id=tenant.id,
         ),
+        support_widget=support_use_cases.public_widget(profile),
     )
 
 

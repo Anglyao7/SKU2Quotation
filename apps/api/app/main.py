@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from .database import SessionLocal, init_database
 from .routers.auth import router as auth_router
 from .routers.announcements import router as announcements_router
@@ -15,6 +14,7 @@ from .routers.product_center import router as product_center_router
 from .routers.platform_admin import router as platform_admin_router
 from .routers.system import router as system_router
 from .routers.storefront_analytics import router as storefront_analytics_router
+from .routers.support import router as support_router
 from .routers.tags import router as tags_router
 from .routers.trade_flow import router as trade_flow_router
 from .routers.public_catalog import router as public_catalog_router
@@ -27,7 +27,6 @@ from .saas_seed import demo_seed_enabled, seed_saas_foundation
 from .product_center_seed import seed_product_center_demo
 from .services.repository import seed_suppliers
 from .use_cases.legacy_operations import resume_deferred_imports
-
 def _initialize_runtime() -> None:
     validate_startup_configuration()
     init_database()
@@ -72,6 +71,7 @@ def create_app() -> FastAPI:
         knowledge_search_router,
         system_router,
         storefront_analytics_router,
+        support_router,
         tags_router,
     ):
         application.include_router(router)

@@ -22,6 +22,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
+import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
@@ -455,6 +456,13 @@ export function ProductDetailPage() {
           </section>
         </Container>
       </main>
+
+      <StorefrontSupportWidget
+        tenantSlug={store.slug}
+        storeName={store.name}
+        locale={locale}
+        config={store.support_widget}
+      />
 
       <footer className="store-footer">
         <Container size="4">

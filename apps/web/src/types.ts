@@ -39,6 +39,42 @@ export interface Storefront {
   all_products_position?: number;
   hot_products_enabled?: boolean;
   announcements?: PublicAnnouncement[];
+  support_widget?: PublicSupportWidget;
+}
+
+export interface StorefrontSupportAction {
+  slot: 2 | 3;
+  visible: boolean;
+  label?: string | null;
+  target_url?: string | null;
+  external_image_url?: string | null;
+  image_url?: string | null;
+  has_uploaded_image?: boolean;
+}
+
+export interface PublicSupportWidget {
+  enabled: boolean;
+  title: string;
+  welcome_message: string;
+  ai_enabled: boolean;
+  custom_actions: StorefrontSupportAction[];
+}
+
+export type SupportSenderType = "VISITOR" | "MERCHANT" | "SYSTEM" | "AI";
+
+export interface PublicSupportMessage {
+  id: string;
+  sender_type: SupportSenderType;
+  body: string;
+  created_at: string;
+}
+
+export interface PublicSupportConversation {
+  id: string;
+  reference_number: string;
+  status: "OPEN" | "CLOSED";
+  messages: PublicSupportMessage[];
+  access_token?: string | null;
 }
 
 export type StorefrontLocale =

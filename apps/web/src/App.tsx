@@ -57,6 +57,7 @@ const PermissionsPage = recoverableLazy(() => import("./core/pages/PermissionsPa
 const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMonitoringPage").then((module) => ({ default: module.SystemMonitoringPage })));
 const StorefrontAnalyticsPage = recoverableLazy(() => import("./core/pages/StorefrontAnalyticsPage").then((module) => ({ default: module.StorefrontAnalyticsPage })));
 const AnnouncementsPage = recoverableLazy(() => import("./core/pages/AnnouncementsPage").then((module) => ({ default: module.AnnouncementsPage })));
+const SupportCenterPage = recoverableLazy(() => import("./core/pages/SupportCenterPage").then((module) => ({ default: module.SupportCenterPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
 const QuoteTemplatesPage = recoverableLazy(() => import("./core/pages/QuoteTemplatesPage").then((module) => ({ default: module.QuoteTemplatesPage })));
@@ -281,6 +282,7 @@ const router = createBrowserRouter([{
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "analytics", element: <PermissionGate anyOf={["analytics.view"]}><StorefrontAnalyticsPage /></PermissionGate> },
         { path: "announcements", element: <PermissionGate anyOf={["announcement.manage"]}><AnnouncementsPage /></PermissionGate> },
+        { path: "support", element: <PermissionGate anyOf={["support.view", "support.settings_manage"]}><SupportCenterPage /></PermissionGate> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
         { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },

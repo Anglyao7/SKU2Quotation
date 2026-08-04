@@ -358,6 +358,29 @@ def _issue(
     )
 
 
+def _effective_row_limit_error(
+    *,
+    sheet_label: str,
+    record_label: str,
+    excluded_rows: str = "表头和空白行",
+) -> ProductTemplateValidationError:
+    message = (
+        f"{sheet_label}最多允许 {MAX_TEMPLATE_ROWS} 条有效{record_label}数据"
+        f"（不含{excluded_rows}）。"
+    )
+    issue = _issue(
+        row_number=None,
+        column=sheet_label,
+        code="ROW_LIMIT_EXCEEDED",
+        message=message,
+        suggestion=(
+            f"请保留不超过 {MAX_TEMPLATE_ROWS} 条有效数据；"
+            "更多数据可拆分为多个文件分批导入。"
+        ),
+    )
+    return ProductTemplateValidationError(message, issues=(issue,))
+
+
 def _validation_summary(issues: list[ProductTemplateIssue]) -> str:
     affected_rows = {
         issue.row_number for issue in issues if issue.row_number is not None
@@ -1181,6 +1204,7 @@ def _parse_product_variant_rows(
     skipped_rows = 0
     generated_model_rows = 0
     visited_rows: set[int] = set()
+    effective_data_rows = 0
     total_rows = max(0, (sheet.max_row or 1) - 1)
     progress_interval = max(100, total_rows // 100) if total_rows else 100
 
@@ -1200,10 +1224,6 @@ def _parse_product_variant_rows(
             or processed_rows == total_rows
         ):
             progress_callback(processed_rows, total_rows)
-        if row_number > MAX_TEMPLATE_ROWS + 1:
-            raise ProductTemplateValidationError(
-                f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
-            )
         embedded_images = embedded_images_by_row.get(row_number, ())
         if not any(_cell_text(value) for value in values) and not embedded_images:
             continue
@@ -1211,6 +1231,13 @@ def _parse_product_variant_rows(
         if _is_variant_template_instruction_row(values):
             skipped_rows += 1
             continue
+        effective_data_rows += 1
+        if effective_data_rows > MAX_TEMPLATE_ROWS:
+            raise _effective_row_limit_error(
+                sheet_label="商品工作表",
+                record_label="商品",
+                excluded_rows="表头、说明行和空白行",
+            )
 
         row_issues: list[ProductTemplateIssue] = []
         formula_indexes = {
@@ -1895,10 +1922,6 @@ def _parse_product_sku_rows(
     product_image_offset = 8 if schema_version >= 4 else 9
     product_rows_total = max(0, (product_sheet.max_row or 1) - 1)
     sku_rows_total = max(0, (sku_sheet.max_row or 1) - 1)
-    if product_rows_total > MAX_TEMPLATE_ROWS or sku_rows_total > MAX_TEMPLATE_ROWS:
-        raise ProductTemplateValidationError(
-            f"Product 与 SKU 工作表分别最多填写 {MAX_TEMPLATE_ROWS} 行。"
-        )
 
     embedded_images_by_row, embedded_image_warnings = (
         _extract_embedded_template_images(
@@ -1911,6 +1934,7 @@ def _parse_product_sku_rows(
     products: dict[str, ProductMasterTemplateCandidate] = {}
     issues: list[ProductTemplateIssue] = []
     visited_product_rows: set[int] = set()
+    effective_product_rows = 0
     for row_number, raw_values in enumerate(
         product_sheet.iter_rows(
             min_row=2,
@@ -1923,6 +1947,12 @@ def _parse_product_sku_rows(
         embedded_images = embedded_images_by_row.get(row_number, ())
         if not any(_cell_text(value) for value in values) and not embedded_images:
             continue
+        effective_product_rows += 1
+        if effective_product_rows > MAX_TEMPLATE_ROWS:
+            raise _effective_row_limit_error(
+                sheet_label="Product 工作表",
+                record_label="商品",
+            )
         visited_product_rows.add(row_number)
         row_issues: list[ProductTemplateIssue] = []
         formula_indexes = {
@@ -2140,6 +2170,7 @@ def _parse_product_sku_rows(
     first_row_by_sku_definition: dict[str, int] = {}
     expanded_definition_rows = 0
     referenced_product_codes: set[str] = set()
+    effective_sku_rows = 0
     progress_interval = max(100, sku_rows_total // 100) if sku_rows_total else 100
     reserved_option_keys = {
         TEMPLATE_SOURCE_KEY.casefold(),
@@ -2171,6 +2202,12 @@ def _parse_product_sku_rows(
             progress_callback(processed_rows, sku_rows_total)
         if not any(_cell_text(value) for value in values):
             continue
+        effective_sku_rows += 1
+        if effective_sku_rows > MAX_TEMPLATE_ROWS:
+            raise _effective_row_limit_error(
+                sheet_label="SKU 工作表",
+                record_label=" SKU ",
+            )
 
         row_issues: list[ProductTemplateIssue] = []
         formula_indexes = {
@@ -2853,11 +2890,6 @@ def parse_product_template(
                 f"表头与固定商品模版不一致。{_validation_summary(header_issues)}",
                 issues=tuple(header_issues),
             )
-        if sheet.max_row is not None and max(0, sheet.max_row - 1) > MAX_TEMPLATE_ROWS:
-            raise ProductTemplateValidationError(
-                f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
-            )
-
         embedded_images_by_row, embedded_image_warnings = (
             _extract_embedded_template_images(
                 path,
@@ -2886,6 +2918,7 @@ def parse_product_template(
         generated_sku_count = 0
         skipped_rows = 0
         visited_rows: set[int] = set()
+        effective_data_rows = 0
         total_rows = max(0, (sheet.max_row or 1) - 1)
         progress_interval = max(100, total_rows // 100) if total_rows else 100
         for row_number, values in enumerate(
@@ -2903,13 +2936,15 @@ def parse_product_template(
                 or processed_rows == total_rows
             ):
                 progress_callback(processed_rows, total_rows)
-            if row_number > MAX_TEMPLATE_ROWS + 1:
-                raise ProductTemplateValidationError(
-                    f"单次最多导入 {MAX_TEMPLATE_ROWS} 行商品。"
-                )
             embedded_images = embedded_images_by_row.get(row_number, ())
             if not any(_cell_text(value) for value in values) and not embedded_images:
                 continue
+            effective_data_rows += 1
+            if effective_data_rows > MAX_TEMPLATE_ROWS:
+                raise _effective_row_limit_error(
+                    sheet_label="商品工作表",
+                    record_label="商品",
+                )
             visited_rows.add(row_number)
 
             row_issues: list[ProductTemplateIssue] = []

@@ -30,6 +30,7 @@ from ..product_center_schemas import (
     CategoryReorderRequest,
     CategoryResponse,
     CategoryUpdateRequest,
+    ManualProductCreateRequest,
     ProductCard,
     ProductDeleteAllJobResponse,
     ProductDeleteAllRequest,
@@ -117,6 +118,29 @@ def list_products(
             statuses=product_status,
             approved_images_only=approved_images_only,
             limit=limit,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/products",
+    response_model=ProductDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_manual_product(
+    request: ManualProductCreateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> ProductDetail:
+    context = _context(session)
+    try:
+        return use_cases.create_manual_product(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            request=request,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

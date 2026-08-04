@@ -64,6 +64,24 @@ PERMISSION_SEEDS = (
         "manage",
         "Create, schedule, publish, and remove storefront announcements",
     ),
+    PermissionSeed(
+        "support.view",
+        "support",
+        "view",
+        "View storefront customer-service conversations",
+    ),
+    PermissionSeed(
+        "support.reply",
+        "support",
+        "reply",
+        "Reply to and close storefront customer-service conversations",
+    ),
+    PermissionSeed(
+        "support.settings_manage",
+        "support",
+        "settings_manage",
+        "Manage storefront support floating actions and welcome content",
+    ),
     PermissionSeed("order.view", "order", "view", "View orders"),
     PermissionSeed("order.manage", "order", "manage", "Manage orders"),
     PermissionSeed("inventory.view", "inventory", "view", "View inventory and stock movements"),
@@ -113,7 +131,7 @@ ROLE_SEEDS = {
         "product.view", "product.import", "supplier.view", "customer.view", "customer.manage",
         "inquiry.view", "inquiry.manage", "quotation.view", "quotation.create",
         "catalog.view", "catalog.publish", "announcement.manage", "order.view",
-        "inventory.view", "inventory.sale",
+        "inventory.view", "inventory.sale", "support.view", "support.reply",
     },
     "PURCHASING": {
         "product.view", "product.create", "product.edit", "product.import", "product.review",

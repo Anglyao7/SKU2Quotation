@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Font, PatternFill
+from PIL import Image
 from sqlalchemy import MetaData, create_engine, delete, func, inspect, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
@@ -1004,6 +1005,111 @@ def test_merchant_can_schedule_ticker_and_safe_rich_popup_announcements() -> Non
                 )
             )
         ).all() == []
+
+
+def test_storefront_support_settings_and_human_conversation_flow() -> None:
+    settings = client.get("/api/v1/support/settings")
+    assert settings.status_code == 200, settings.text
+    assert [row["slot"] for row in settings.json()["custom_actions"]] == [2, 3]
+
+    saved = client.patch(
+        "/api/v1/support/settings",
+        json={
+            "welcome_message": "Tell us which product you are looking for.",
+            "custom_actions": [
+                {
+                    "slot": 2,
+                    "visible": True,
+                    "label": "WhatsApp",
+                    "target_url": "https://example.test/contact",
+                    "external_image_url": "https://example.test/whatsapp.png",
+                },
+                {"slot": 3, "visible": False},
+            ],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["custom_actions"][0]["visible"] is True
+
+    action_image = BytesIO()
+    Image.new("RGBA", (24, 24), (20, 180, 140, 255)).save(action_image, "PNG")
+    uploaded = client.post(
+        "/api/v1/support/settings/actions/2/image",
+        files={"image": ("contact.png", action_image.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["custom_actions"][0]["has_uploaded_image"] is True
+    public_image = client.get("/api/store/demo/support/actions/2/image")
+    assert public_image.status_code == 200, public_image.text
+    assert public_image.headers["content-type"] == "image/webp"
+
+    storefront = client.get("/api/store/demo")
+    assert storefront.status_code == 200, storefront.text
+    widget = storefront.json()["support_widget"]
+    assert widget["ai_enabled"] is False
+    assert widget["welcome_message"].startswith("Tell us")
+    assert [row["slot"] for row in widget["custom_actions"]] == [2]
+
+    created = client.post(
+        "/api/store/demo/support/conversations",
+        json={
+            "message": "Do you have this item in blue?",
+            "client_message_id": str(uuid4()),
+            "locale": "en-US",
+        },
+    )
+    assert created.status_code == 201, created.text
+    conversation_id = created.json()["id"]
+    support_token = created.json()["access_token"]
+    assert support_token
+    assert created.json()["messages"][0]["sender_type"] == "VISITOR"
+
+    second_message_id = str(uuid4())
+    for _ in range(2):
+        sent = client.post(
+            "/api/store/demo/support/conversations/current/messages",
+            headers={"X-Support-Token": support_token},
+            json={
+                "message": "A medium size, please.",
+                "client_message_id": second_message_id,
+            },
+        )
+        assert sent.status_code == 200, sent.text
+    assert len(sent.json()["messages"]) == 2
+
+    listed = client.get("/api/v1/support/conversations")
+    assert listed.status_code == 200, listed.text
+    assert conversation_id in {row["id"] for row in listed.json()["items"]}
+
+    detail = client.get(f"/api/v1/support/conversations/{conversation_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["unread"] is False
+
+    replied = client.post(
+        f"/api/v1/support/conversations/{conversation_id}/messages",
+        json={"message": "Yes, blue is available."},
+    )
+    assert replied.status_code == 200, replied.text
+    assert replied.json()["messages"][-1]["sender_type"] == "MERCHANT"
+
+    public_detail = client.get(
+        "/api/store/demo/support/conversations/current",
+        headers={"X-Support-Token": support_token},
+    )
+    assert public_detail.status_code == 200, public_detail.text
+    assert public_detail.json()["messages"][-1]["body"].startswith("Yes")
+
+    closed = client.patch(
+        f"/api/v1/support/conversations/{conversation_id}",
+        json={"status": "CLOSED"},
+    )
+    assert closed.status_code == 200, closed.text
+    rejected = client.post(
+        "/api/store/demo/support/conversations/current/messages",
+        headers={"X-Support-Token": support_token},
+        json={"message": "One more question"},
+    )
+    assert rejected.status_code == 409, rejected.text
 
 
 def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4359,6 +4465,8 @@ def test_postgresql_offline_migration_contains_forced_rls_policies() -> None:
         "embeddings",
         "knowledge_index_jobs",
         "catalog_delete_jobs",
+        "storefront_chat_conversations",
+        "storefront_chat_messages",
         "ai_runs",
         "ai_task_steps",
         "product_field_candidates",
@@ -8466,6 +8574,122 @@ def test_acg008_through_acg010_migrations_are_reversible(tmp_path: Path) -> None
     command.check(config)
 
 
+def test_manual_product_creation_builds_product_sku_offer_and_audit(
+    request: pytest.FixtureRequest,
+) -> None:
+    created_product_ids: list[UUID] = []
+
+    def cleanup() -> None:
+        if not created_product_ids:
+            return
+        with SessionLocal() as session:
+            sku_ids = select(SkuRow.id).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.product_id.in_(created_product_ids),
+            )
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                    PublicCatalogOfferRow.sku_id.in_(sku_ids),
+                )
+            )
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductAuditEventRow.product_id.in_(created_product_ids),
+                )
+            )
+            session.execute(
+                delete(ProductImageRow).where(
+                    ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductImageRow.product_id.in_(created_product_ids),
+                )
+            )
+            session.execute(
+                delete(SkuRow).where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.product_id.in_(created_product_ids),
+                )
+            )
+            session.execute(
+                delete(ProductRow).where(
+                    ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductRow.id.in_(created_product_ids),
+                )
+            )
+            session.commit()
+
+    request.addfinalizer(cleanup)
+    category_id = client.get(
+        "/api/v1/products/71000000-0000-0000-0000-000000000002"
+    ).json()["category"]["id"]
+    prefix = uuid4().hex[:10].upper()
+    payload = {
+        "name": f"Manual product {prefix}",
+        "product_code": f"MP-{prefix}",
+        "description": "Created from the single-product form.",
+        "category_id": category_id,
+        "default_unit": "piece",
+        "image_url": f"https://cdn.example.com/catalog/{prefix}.jpg",
+        "sku_code": f"MS-{prefix}",
+        "sku_name": f"Manual SKU {prefix}",
+        "barcode": f"BC-{prefix}",
+        "default_moq": "12",
+        "moq_unit": "piece",
+        "weight": "0.75",
+        "weight_unit": "kg",
+        "unit_price": "19.90",
+        "currency": "usd",
+        "tags": ["manual", "new", "manual"],
+        "display_tag": "manual",
+        "tag_color": "#336699",
+        "publish_to_storefront": True,
+    }
+
+    created = client.post("/api/v1/products", json=payload)
+    assert created.status_code == 201, created.text
+    detail = created.json()
+    created_product_ids.append(UUID(detail["id"]))
+    assert detail["product_code"] == payload["product_code"]
+    assert detail["name"] == payload["name"]
+    assert detail["description"] == payload["description"]
+    assert detail["status"] == "ACTIVE"
+    assert detail["image_status"] == "APPROVED"
+    assert len(detail["skus"]) == 1
+    assert detail["skus"][0]["sku_code"] == payload["sku_code"]
+    assert detail["skus"][0]["status"] == "ACTIVE"
+    assert Decimal(detail["skus"][0]["default_moq"]) == Decimal("12")
+
+    offers = client.get(f"/api/v1/products/{detail['id']}/public-offers")
+    assert offers.status_code == 200, offers.text
+    assert Decimal(offers.json()[0]["unit_price"]) == Decimal("19.90")
+    assert offers.json()[0]["currency"] == "USD"
+    assert offers.json()[0]["tags"] == ["manual", "new"]
+    assert offers.json()[0]["publication_status"] == "PUBLISHED"
+
+    listed = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": payload["sku_code"], "page": 1, "page_size": 20},
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["total"] == 1
+    assert listed.json()["items"][0]["source_type"] == "MANUAL"
+    assert Decimal(listed.json()["items"][0]["public_price"]) == Decimal("19.90")
+    assert listed.json()["items"][0]["public_currency"] == "USD"
+    assert {
+        "product.created",
+        "sku.created",
+        "public_offer.published",
+    }.issubset({event["action"] for event in detail["activity"]})
+
+    duplicate = client.post(
+        "/api/v1/products",
+        json={**payload, "sku_code": f"MS-{uuid4().hex[:10].upper()}"},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "PRODUCT_CODE_CONFLICT"
+
+
 def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
     product_id = UUID("71000000-0000-0000-0000-000000000002")
     detail_response = client.get(f"/api/v1/products/{product_id}")
@@ -11161,6 +11385,8 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "quote_excel_templates",
         "storefront_announcements",
         "catalog_delete_jobs",
+        "storefront_chat_conversations",
+        "storefront_chat_messages",
     }
     customer_account_tables = {
         "local_account_credentials",
@@ -11213,6 +11439,8 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert profile_columns["storefront_locales"]["nullable"] is False
     assert "hot_products_enabled" in profile_columns
     assert profile_columns["hot_products_enabled"]["nullable"] is False
+    assert "support_widget_config" in profile_columns
+    assert profile_columns["support_widget_config"]["nullable"] is False
     product_columns = {
         column["name"]: column
         for column in inspect(upgraded_engine).get_columns("products")
@@ -11236,7 +11464,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260802_0051"
+        ).scalar() == "20260803_0052"
     upgraded_engine.dispose()
     command.check(config)
 

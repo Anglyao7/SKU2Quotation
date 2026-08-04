@@ -667,6 +667,44 @@ const english: Record<string, string> = {
   "商品导入失败": "Product import failed",
   "产品详情加载失败": "Could not load product details",
   "商品资料": "Product data",
+  "新建商品": "New product",
+  "一次创建商品资料、首个 SKU 和公开价格；保存后仍可继续添加更多规格。":
+    "Create the product, its first SKU, and public price together. You can add more variants after saving.",
+  "商品名称为必填项，其余内容可以稍后完善。":
+    "Product name is required. Everything else can be completed later.",
+  "商品编码": "Product code",
+  "选填，用于关联多个 SKU": "Optional; use it to link multiple SKUs",
+  "计量单位": "Unit of measure",
+  "例如 多功能宠物旅行包": "e.g. Multi-purpose pet travel bag",
+  "填写材质、用途、尺寸或卖点，后续也会参与 AI 搜索。":
+    "Add materials, use cases, dimensions, or selling points. This text will also support AI search.",
+  "主图链接": "Main image URL",
+  "选填 HTTPS 图片地址；未填写时商品会先使用无图状态。":
+    "Optional HTTPS image URL. If omitted, the product starts without an image.",
+  "首个 SKU": "First SKU",
+  "SKU 编码可以留空，系统会自动生成稳定编码。":
+    "Leave the SKU code blank to have the system generate a stable code.",
+  "留空自动生成": "Leave blank to generate automatically",
+  "SKU 名称": "SKU name",
+  "留空则使用商品名称": "Leave blank to use the product name",
+  "条码": "Barcode",
+  "起订数": "MOQ",
+  "起订单位": "MOQ unit",
+  "毛重": "Gross weight",
+  "重量单位": "Weight unit",
+  "例如 多功能，便携，旅行用品": "e.g. multi-purpose, portable, travel gear",
+  "使用逗号分隔；第一个标签默认显示在商品图片左上角，并参与 AI 搜索。":
+    "Separate tags with commas. The first tag appears on the product image and also supports AI search.",
+  "创建后立即上架": "Publish immediately",
+  "关闭后将保存为草稿，不会出现在商家前台。":
+    "Turn this off to save a draft that does not appear on the storefront.",
+  "创建商品": "Create product",
+  "正在创建…": "Creating…",
+  "商品创建失败，请稍后重试。": "Could not create the product. Try again shortly.",
+  "价格、起订数和重量必须是大于或等于 0 的数字。":
+    "Price, MOQ, and weight must be numbers greater than or equal to zero.",
+  "商品“{name}”已创建，可以继续添加更多 SKU。":
+    "Product “{name}” was created. You can now add more SKUs.",
   "使用 Product 与 SKU 双表模板批量维护商品主数据，并在每个商品下管理不同 SKU、规格、价格与供应商。":
     "Use the Product and SKU worksheets to maintain product master data and manage each product's SKUs, options, prices, and suppliers.",
   "所有商品从固定 Excel 模版进入这里，并直接按 SKU 管理名称、分类、价格、图片与上下架状态。":

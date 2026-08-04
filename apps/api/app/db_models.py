@@ -288,3 +288,8 @@ from .storefront_analytics_models import (  # noqa: E402,F401
 )
 
 from .announcement_models import StorefrontAnnouncementRow  # noqa: E402,F401
+
+from .support_models import (  # noqa: E402,F401
+    StorefrontChatConversationRow,
+    StorefrontChatMessageRow,
+)

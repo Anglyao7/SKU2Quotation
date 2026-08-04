@@ -12,6 +12,7 @@ import {
   FileText,
   FileXls,
   GlobeHemisphereWest,
+  Headset,
   Key,
   Megaphone,
   Pulse,
@@ -66,6 +67,7 @@ const navigationGroups = [
     items: [
       { to: "/console/inventory", label: "进销存", mobileLabel: "库存", icon: Warehouse, permissions: ["inventory.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/announcements", label: "公告管理", mobileLabel: "公告", icon: Megaphone, permissions: ["announcement.manage"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/support", label: "客服管理", mobileLabel: "客服", icon: Headset, permissions: ["support.view", "support.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {

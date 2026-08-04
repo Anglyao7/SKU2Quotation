@@ -74,6 +74,11 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         default=False,
         nullable=False,
     )
+    support_widget_config: Mapped[dict[str, Any]] = mapped_column(
+        JSON_DOCUMENT,
+        default=dict,
+        nullable=False,
+    )
 
 
 class PublicCatalogOfferRow(AuditTimestampMixin, Base):

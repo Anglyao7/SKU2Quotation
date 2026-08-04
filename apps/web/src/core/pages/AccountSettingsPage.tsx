@@ -365,7 +365,7 @@ export function AccountSettingsPage() {
                         key={language.code}
                         className={`account-language-option${checked ? " is-selected" : ""}`}
                         lang={language.code}
-                        dir={language.direction}
+                        dir="ltr"
                       >
                         <Checkbox
                           checked={checked}
@@ -383,7 +383,7 @@ export function AccountSettingsPage() {
                           {language.flag}
                         </span>
                         <span className="account-language-copy">
-                          <strong>{language.label}</strong>
+                          <strong lang={language.code} dir={language.direction}>{language.label}</strong>
                           <small>{locked ? t("默认") : language.shortLabel}</small>
                         </span>
                       </label>

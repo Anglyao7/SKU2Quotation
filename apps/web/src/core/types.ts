@@ -294,11 +294,33 @@ export interface ProductSku {
   name?: string;
   optionValues: Record<string, string | number | boolean>;
   barcode?: string;
+  defaultMoq?: number;
+  moqUnit?: string;
   weight?: number;
   weightUnit?: string;
   status: "DRAFT" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
   version: number;
   updatedAt: string;
+}
+
+export interface ManualProductCreateInput {
+  name: string;
+  productCode?: string;
+  description?: string;
+  categoryId?: string;
+  defaultUnit: string;
+  imageUrl?: string;
+  skuCode?: string;
+  skuName?: string;
+  barcode?: string;
+  defaultMoq?: number;
+  moqUnit?: string;
+  weight?: number;
+  weightUnit?: string;
+  unitPrice: number;
+  currency: string;
+  tags: string[];
+  publishToStorefront: boolean;
 }
 
 export interface SkuListItem {
@@ -518,6 +540,55 @@ export interface AnnouncementPayload {
   tickerSpeedPxPerSecond: number;
   publicationStatus: AnnouncementStatus;
   relatedSkuIds: string[];
+}
+
+export interface SupportActionSettings {
+  slot: 2 | 3;
+  visible: boolean;
+  label?: string;
+  targetUrl?: string;
+  externalImageUrl?: string;
+  imageUrl?: string;
+  hasUploadedImage: boolean;
+}
+
+export interface SupportSettings {
+  welcomeMessage: string;
+  customActions: SupportActionSettings[];
+}
+
+export type SupportConversationStatus = "OPEN" | "CLOSED";
+export type SupportMessageSender = "VISITOR" | "MERCHANT" | "SYSTEM" | "AI";
+
+export interface SupportMessage {
+  id: string;
+  senderType: SupportMessageSender;
+  body: string;
+  createdAt: string;
+}
+
+export interface SupportConversationSummary {
+  id: string;
+  referenceNumber: string;
+  visitorName?: string;
+  visitorEmail?: string;
+  locale: string;
+  status: SupportConversationStatus;
+  lastMessagePreview: string;
+  lastMessageAt: string;
+  unread: boolean;
+}
+
+export interface SupportConversationDetail extends SupportConversationSummary {
+  messages: SupportMessage[];
+}
+
+export interface SupportConversationPage {
+  items: SupportConversationSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
 }
 
 export interface AttributeDefinition {

@@ -7,7 +7,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.styles import PatternFill
 
+from app.services import product_template_import as product_template_import_service
 from app.services.product_template_import import (
     PRODUCT_MASTER_TEMPLATE_HEADERS,
     PRODUCT_MASTER_TEMPLATE_HEADERS_V3,
@@ -55,6 +57,86 @@ def _write_product_sku_workbook(
         sku_sheet.append(row)
     workbook.save(path)
     workbook.close()
+
+
+def test_product_sku_template_allows_limit_effective_rows_and_ignores_formatted_blanks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(product_template_import_service, "MAX_TEMPLATE_ROWS", 2)
+    path = tmp_path / "有效行边界.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_rows=[
+            [
+                "PRODUCT-1",
+                "商品一",
+                *([None] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 2)),
+            ],
+            [
+                "PRODUCT-2",
+                "商品二",
+                *([None] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 2)),
+            ],
+        ],
+        sku_rows=[
+            [
+                "PRODUCT-1",
+                "SKU-1",
+                *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 2)),
+            ],
+            [
+                "PRODUCT-2",
+                "SKU-2",
+                *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 2)),
+            ],
+        ],
+    )
+    workbook = load_workbook(path)
+    blank_style = PatternFill(fill_type="solid", fgColor="FFF4CC")
+    workbook[PRODUCT_MASTER_TEMPLATE_SHEET]["A50"].fill = blank_style
+    workbook[SKU_DETAIL_TEMPLATE_SHEET]["A60"].fill = blank_style
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert [row.sku_code for row in result.rows] == ["SKU-1", "SKU-2"]
+
+
+def test_product_sku_template_rejects_only_after_effective_row_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(product_template_import_service, "MAX_TEMPLATE_ROWS", 2)
+    path = tmp_path / "有效行超限.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_rows=[[
+            "PRODUCT-1",
+            "商品一",
+            *([None] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 2)),
+        ]],
+        sku_rows=[
+            [
+                "PRODUCT-1",
+                f"SKU-{index}",
+                *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 2)),
+            ]
+            for index in range(1, 4)
+        ],
+    )
+
+    with pytest.raises(
+        ProductTemplateValidationError,
+        match="SKU 工作表最多允许 2 条有效 SKU 数据",
+    ) as captured:
+        parse_product_template(path)
+
+    assert captured.value.issues[0].code == "ROW_LIMIT_EXCEEDED"
+    assert captured.value.issues[0].suggestion == (
+        "请保留不超过 2 条有效数据；更多数据可拆分为多个文件分批导入。"
+    )
 
 
 def test_product_sku_template_groups_multiple_skus_under_one_product(

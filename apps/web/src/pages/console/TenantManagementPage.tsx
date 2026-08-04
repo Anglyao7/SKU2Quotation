@@ -15,6 +15,7 @@ import {
 import {
   CheckCircle,
   Eye,
+  EyeSlash,
   NotePencil,
   Plus,
   Trash,
@@ -51,6 +52,35 @@ function tenantLoginEmail(tenant: Tenant): string {
     || tenant.contact_email
     || tenant.owner_account?.login_identifier
     || ""
+  );
+}
+
+function InitialPasswordField() {
+  const { t } = useLocale();
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <TextField.Root
+      name="password"
+      type={visible ? "text" : "password"}
+      required
+      minLength={8}
+      maxLength={128}
+      autoComplete="new-password"
+      placeholder={t("至少 8 位，包含字母和数字")}
+    >
+      <TextField.Slot side="right">
+        <button
+          type="button"
+          className="login-password-toggle"
+          aria-label={t(visible ? "隐藏密码" : "显示密码")}
+          aria-pressed={visible}
+          onClick={() => setVisible((current) => !current)}
+        >
+          {visible ? <EyeSlash size={18} /> : <Eye size={18} />}
+        </button>
+      </TextField.Slot>
+    </TextField.Root>
   );
 }
 
@@ -427,15 +457,7 @@ function MerchantOwnerDialog({
             </label>
             <label className="field-group">
               <Text size="2" weight="medium">{t("初始密码")} *</Text>
-              <TextField.Root
-                name="password"
-                type="password"
-                required
-                minLength={8}
-                maxLength={128}
-                autoComplete="new-password"
-                placeholder={t("至少 8 位，包含字母和数字")}
-              />
+              <InitialPasswordField />
             </label>
             {error ? (
               <Callout.Root color="red">
@@ -626,15 +648,7 @@ function TenantFormDialog({
                 </label>
                 <label className="field-group">
                   <Text size="2" weight="medium">{t("初始密码")} *</Text>
-                  <TextField.Root
-                    name="password"
-                    type="password"
-                    required
-                    minLength={8}
-                    maxLength={128}
-                    autoComplete="new-password"
-                    placeholder={t("至少 8 位，包含字母和数字")}
-                  />
+                  <InitialPasswordField />
                 </label>
               </>
             )}

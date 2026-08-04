@@ -1,6 +1,6 @@
 import { Badge, Button, Card, Checkbox, Dialog, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
 import { ArrowDown, ArrowUp, ArrowsClockwise, CaretRight, CheckCircle, ClockCounterClockwise, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   batchDeleteSkus,
@@ -8,6 +8,7 @@ import {
   batchUpdateSkuPinned,
   batchUpdateSkuStatus,
   createAttributeDefinition,
+  createManualProduct,
   createProductTemplateImport,
   createSkus,
   deleteAllProducts,
@@ -164,13 +165,14 @@ function skuSourceLabel(row: SkuListItem) {
 }
 
 export function ProductsPage() {
-  const { hasPermission } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
   const canEdit = hasPermission("product.edit");
   const canDelete = canEdit;
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
     && hasPermission("catalog.publish");
+  const canCreate = canEdit && hasPermission("catalog.publish");
   const [params, setParams] = useSearchParams();
   const importInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -190,6 +192,7 @@ export function ProductsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
   const [importOpen, setImportOpen] = useState(canImport && params.get("import") === "1");
+  const [createOpen, setCreateOpen] = useState(false);
   const [pendingFile, setPendingFile] = useState<File>();
   const [detection, setDetection] = useState<FileDetection>();
   const [lastImport, setLastImport] = useState<ImportJob>();
@@ -445,6 +448,20 @@ export function ProductsPage() {
     setStatus("");
     setPage(1);
   };
+  const handleManualCreated = (product: ProductDetail) => {
+    setCreateOpen(false);
+    resetFilters();
+    setSelected(product);
+    setDetailInitialTab("overview");
+    setBulkNotice(t("商品“{name}”已创建，可以继续添加更多 SKU。", { name: product.name }));
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("product", product.id);
+      next.delete("view");
+      return next;
+    }, { replace: true });
+    void load();
+  };
   const currentPageSkuIds = result.items.map((sku) => sku.id);
   const currentPageSelected = currentPageSkuIds.filter((id) => selectedSkuIds.has(id));
   const allCurrentPageSelected = currentPageSkuIds.length > 0
@@ -674,6 +691,18 @@ export function ProductsPage() {
     ]),
     [categories, locale, rootCategories],
   );
+  const createCategoryOptions = useMemo(
+    () => rootCategories
+      .filter((root) => root.status === "ACTIVE")
+      .flatMap((root) => [
+        { id: root.id, label: root.name },
+        ...categories
+          .filter((item) => item.parentId === root.id && item.status === "ACTIVE")
+          .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, locale))
+          .map((child) => ({ id: child.id, label: `${root.name} / ${child.name}` })),
+      ]),
+    [categories, locale, rootCategories],
+  );
   const secondaryCategories = useMemo(
     () => categories.filter((item) => item.parentId === primaryCategoryId && item.status !== "ARCHIVED"),
     [categories, primaryCategoryId],
@@ -700,8 +729,9 @@ export function ProductsPage() {
         title={t("SKU 商品库")}
         description={t("使用 Product 与 SKU 双表模板批量维护商品主数据，并在每个商品下管理不同 SKU、规格、价格与供应商。")}
         actions={<>
+          {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}
           {canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}
-          {canImport ? <Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}
+          {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}
           {canDelete ? <Button variant="soft" color="red" onClick={() => setDeleteAllOpen(true)}><Trash />{t("删除全部商品")}</Button> : null}
         </>}
       />
@@ -753,7 +783,7 @@ export function ProductsPage() {
           : <CoreEmpty
               title={t("商品库还是空的")}
               description={t("先在 Product 表填写商品，再在 SKU 表用商品编码关联不同规格；导入后即可统一管理和发布。")}
-              action={canImport ? <div className="core-empty-actions"><Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button><Button onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button></div> : undefined}
+              action={canCreate || canImport ? <div className="core-empty-actions">{canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}{canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}{canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}</div> : undefined}
             />
       ) : null}
       {result.items.length ? (
@@ -1005,6 +1035,16 @@ export function ProductsPage() {
         </Dialog.Content>
       </Dialog.Root>
 
+      {canCreate ? (
+        <ManualProductDialog
+          open={createOpen}
+          categories={createCategoryOptions}
+          defaultCurrency={profile?.context.defaultCurrency ?? "CNY"}
+          onOpenChange={setCreateOpen}
+          onCreated={handleManualCreated}
+        />
+      ) : null}
+
       {canImport ? <Dialog.Root open={importOpen} onOpenChange={setImportDialogOpen}>
         <Dialog.Content className="core-template-dialog">
           <div className="core-dialog-heading">
@@ -1232,6 +1272,207 @@ export function ProductsPage() {
         </Dialog.Content>
       </Dialog.Root>
     </div>
+  );
+}
+
+function ManualProductDialog({
+  open,
+  categories,
+  defaultCurrency,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean;
+  categories: Array<{ id: string; label: string }>;
+  defaultCurrency: string;
+  onOpenChange: (open: boolean) => void;
+  onCreated: (product: ProductDetail) => void;
+}) {
+  const { t } = useLocale();
+  const [publishToStorefront, setPublishToStorefront] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setPublishToStorefront(true);
+    setError("");
+  }, [open]);
+
+  const setOpen = (next: boolean) => {
+    if (saving) return;
+    if (!next) setError("");
+    onOpenChange(next);
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const value = (name: string) => String(data.get(name) ?? "").trim();
+    const optionalNumber = (name: string) => {
+      const raw = value(name);
+      return raw ? Number(raw) : undefined;
+    };
+    const unitPrice = Number(value("unit_price") || "0");
+    const defaultMoq = optionalNumber("default_moq");
+    const weight = optionalNumber("weight");
+    if (
+      !Number.isFinite(unitPrice)
+      || unitPrice < 0
+      || (defaultMoq !== undefined && (!Number.isFinite(defaultMoq) || defaultMoq < 0))
+      || (weight !== undefined && (!Number.isFinite(weight) || weight < 0))
+    ) {
+      setError(t("价格、起订数和重量必须是大于或等于 0 的数字。"));
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      const created = await createManualProduct({
+        name: value("name"),
+        productCode: value("product_code") || undefined,
+        description: value("description") || undefined,
+        categoryId: value("category_id") || undefined,
+        defaultUnit: value("default_unit") || "piece",
+        imageUrl: value("image_url") || undefined,
+        skuCode: value("sku_code") || undefined,
+        skuName: value("sku_name") || undefined,
+        barcode: value("barcode") || undefined,
+        defaultMoq,
+        moqUnit: defaultMoq === undefined ? undefined : value("moq_unit") || undefined,
+        weight,
+        weightUnit: weight === undefined ? undefined : value("weight_unit") || undefined,
+        unitPrice,
+        currency: value("currency") || defaultCurrency,
+        tags: splitValues(value("tags")),
+        publishToStorefront,
+      });
+      onCreated(created);
+    } catch (reason) {
+      setError(reason instanceof Error ? t(reason.message) : t("商品创建失败，请稍后重试。"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Content className="core-product-create-dialog">
+        <div className="core-dialog-heading">
+          <div>
+            <Text size="1" color="gray">{t("手工录入")}</Text>
+            <Dialog.Title>{t("新建商品")}</Dialog.Title>
+            <Dialog.Description>{t("一次创建商品资料、首个 SKU 和公开价格；保存后仍可继续添加更多规格。")}</Dialog.Description>
+          </div>
+          <Button type="button" variant="ghost" color="gray" disabled={saving} onClick={() => setOpen(false)} aria-label={t("关闭")}><X /></Button>
+        </div>
+
+        <form className="core-product-create-form" onSubmit={submit}>
+          <div className="core-product-create-fields">
+            <section className="core-product-create-section" aria-labelledby="manual-product-section-title">
+              <div className="core-product-create-section-heading">
+                <span><ImageSquare weight="duotone" /></span>
+                <div><Heading id="manual-product-section-title" size="3">{t("商品资料")}</Heading><Text size="1" color="gray">{t("商品名称为必填项，其余内容可以稍后完善。")}</Text></div>
+              </div>
+              <div className="core-product-create-grid">
+                <label>
+                  <Text size="2" weight="medium">{t("商品名称")} *</Text>
+                  <TextField.Root name="name" required maxLength={500} autoFocus placeholder={t("例如 多功能宠物旅行包")} />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("商品编码")}</Text>
+                  <TextField.Root name="product_code" maxLength={100} placeholder={t("选填，用于关联多个 SKU")} />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("商品分类")}</Text>
+                  <select name="category_id" defaultValue="">
+                    <option value="">{t("未分类")}</option>
+                    {categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("计量单位")}</Text>
+                  <TextField.Root name="default_unit" defaultValue="piece" maxLength={32} placeholder="piece" />
+                </label>
+                <label className="is-wide">
+                  <Text size="2" weight="medium">{t("商品描述")}</Text>
+                  <TextArea name="description" resize="vertical" maxLength={20000} placeholder={t("填写材质、用途、尺寸或卖点，后续也会参与 AI 搜索。")}/>
+                </label>
+                <label className="is-wide">
+                  <Text size="2" weight="medium">{t("主图链接")}</Text>
+                  <TextField.Root name="image_url" type="url" maxLength={2048} placeholder="https://cdn.example.com/product.jpg" />
+                  <Text size="1" color="gray">{t("选填 HTTPS 图片地址；未填写时商品会先使用无图状态。")}</Text>
+                </label>
+              </div>
+            </section>
+
+            <section className="core-product-create-section" aria-labelledby="manual-sku-section-title">
+              <div className="core-product-create-section-heading">
+                <span><Tag weight="duotone" /></span>
+                <div><Heading id="manual-sku-section-title" size="3">{t("首个 SKU")}</Heading><Text size="1" color="gray">{t("SKU 编码可以留空，系统会自动生成稳定编码。")}</Text></div>
+              </div>
+              <div className="core-product-create-grid">
+                <label>
+                  <Text size="2" weight="medium">{t("SKU 编码")}</Text>
+                  <TextField.Root name="sku_code" maxLength={160} placeholder={t("留空自动生成")} />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("SKU 名称")}</Text>
+                  <TextField.Root name="sku_name" maxLength={500} placeholder={t("留空则使用商品名称")} />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("条码")}</Text>
+                  <TextField.Root name="barcode" maxLength={120} />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("公开售价")}</Text>
+                  <TextField.Root name="unit_price" type="number" min="0" step="0.000001" defaultValue="0" inputMode="decimal" required />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("计价币种")}</Text>
+                  <select name="currency" defaultValue={defaultCurrency}>
+                    {[defaultCurrency, "CNY", "USD", "EUR", "GBP", "JPY", "KRW"].filter((item, index, values) => values.indexOf(item) === index).map((currency) => <option key={currency} value={currency}>{currency}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("起订数")}</Text>
+                  <TextField.Root name="default_moq" type="number" min="0" step="0.000001" inputMode="decimal" />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("起订单位")}</Text>
+                  <TextField.Root name="moq_unit" maxLength={32} placeholder="piece" />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("毛重")}</Text>
+                  <TextField.Root name="weight" type="number" min="0" step="0.000001" inputMode="decimal" />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("重量单位")}</Text>
+                  <TextField.Root name="weight_unit" maxLength={32} placeholder="kg" />
+                </label>
+                <label className="is-wide">
+                  <Text size="2" weight="medium">{t("标签")}</Text>
+                  <TextField.Root name="tags" maxLength={500} placeholder={t("例如 多功能，便携，旅行用品")} />
+                  <Text size="1" color="gray">{t("使用逗号分隔；第一个标签默认显示在商品图片左上角，并参与 AI 搜索。")}</Text>
+                </label>
+              </div>
+            </section>
+
+            <label className="core-product-create-publish">
+              <Checkbox checked={publishToStorefront} onCheckedChange={(value) => setPublishToStorefront(value === true)} />
+              <span><strong>{t("创建后立即上架")}</strong><small>{t("关闭后将保存为草稿，不会出现在商家前台。")}</small></span>
+            </label>
+          </div>
+
+          {error ? <div className="core-form-error" role="alert">{error}</div> : null}
+          <div className="core-dialog-actions core-product-create-actions">
+            <Button type="button" variant="soft" color="gray" disabled={saving} onClick={() => setOpen(false)}>{t("取消")}</Button>
+            <Button type="submit" loading={saving}><Plus />{t(saving ? "正在创建…" : "创建商品")}</Button>
+          </div>
+        </form>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 

@@ -21,7 +21,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 
-EXPECTED_HEAD = "20260802_0051"
+EXPECTED_HEAD = "20260803_0052"
 EXPECTED_POSTGRES_MAJOR = 16
 EXPECTED_INDEXES = {
     "ix_embeddings_phase3b_hnsw_384",

@@ -5,6 +5,7 @@ import type {
   ProductTag,
   ProductTagList,
   ProductTagPayload,
+  PublicSupportConversation,
   Quote,
   Sku,
   SkuList,
@@ -476,6 +477,38 @@ export const api = {
       `quotation-${quoteId}.${type}`,
       token ? { headers: { "X-Quote-Download-Token": token } } : {},
     ),
+  createSupportConversation: (
+    slug: string,
+    payload: {
+      message: string;
+      client_message_id: string;
+      locale: StorefrontLocale;
+    },
+  ) => request<PublicSupportConversation>(
+    `/api/store/${encodeURIComponent(slug)}/support/conversations`,
+    { method: "POST", body: JSON.stringify(payload), cache: "no-store" },
+  ),
+  getSupportConversation: (slug: string, token: string) =>
+    request<PublicSupportConversation>(
+      `/api/store/${encodeURIComponent(slug)}/support/conversations/current`,
+      {
+        cache: "no-store",
+        headers: { "X-Support-Token": token },
+      },
+    ),
+  sendSupportMessage: (
+    slug: string,
+    token: string,
+    payload: { message: string; client_message_id: string },
+  ) => request<PublicSupportConversation>(
+    `/api/store/${encodeURIComponent(slug)}/support/conversations/current/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      cache: "no-store",
+      headers: { "X-Support-Token": token },
+    },
+  ),
 
   getProductTags(category = "", limit = 200, offset = 0) {
     const params = new URLSearchParams({

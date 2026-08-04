@@ -199,6 +199,21 @@ const english: Record<string, string> = {
   "请先阅读并确认隐私政策。": "Please read and accept the Privacy Policy.",
   "报价单生成失败，请稍后重试。": "The quotation could not be created. Please try again.",
   "文件下载失败，请稍后重试。": "The file could not be downloaded. Please try again.",
+  "在线客服": "Customer support",
+  "AI 智能客服": "AI Customer Support",
+  "AI 自动回复筹备中 · 当前由商家人工回复": "AI replies are coming soon · A merchant agent will reply for now",
+  "关闭客服窗口": "Close support",
+  "打开 AI 智能客服": "Open AI customer support",
+  "消息加载失败，请稍后重试。": "Messages could not be loaded. Please try again.",
+  "消息发送失败，请稍后重试。": "Your message could not be sent. Please try again.",
+  "本次会话已结束。": "This conversation has ended.",
+  "发起新的咨询": "Start a new conversation",
+  "请输入您想咨询的商品或问题…": "Ask about a product or enter your question…",
+  "客服消息": "Support message",
+  "发送消息": "Send message",
+  "消息会发送给商家客服，回复可能需要一些时间。": "Your message is sent to the merchant. A reply may take some time.",
+  "我": "Me",
+  "商家快捷入口": "Merchant shortcut",
 };
 
 export function storefrontText(

@@ -215,7 +215,7 @@ img { display: block; max-width: 100%; }
 }
 .storefront-language-menu { min-width: 178px; }
 .storefront-language-menu .rt-DropdownMenuItem { gap: 9px; }
-.store-shell[dir="rtl"] .storefront-language-menu .rt-DropdownMenuItem { text-align: right; }
+.storefront-language-menu [dir="rtl"] { text-align: right; }
 .store-shell[dir="rtl"] input,
 .store-shell[dir="rtl"] textarea { text-align: right; }
 .header-count { min-width: 22px; height: 22px; padding-inline: 6px; display: inline-grid; place-items: center; border-radius: 10px; background: rgba(245, 250, 248, 0.16); font-size: 11px; font-weight: 700; }

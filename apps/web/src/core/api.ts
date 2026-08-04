@@ -27,6 +27,7 @@ import type {
   InventoryStockPage,
   KnowledgeIndexStatus,
   KnowledgeIndexJob,
+  ManualProductCreateInput,
   MembershipSummary,
   MerchantSettings,
   PermissionSet,
@@ -52,6 +53,11 @@ import type {
   SkuListPage,
   StorefrontAnalyticsSnapshot,
   StorefrontAnnouncement,
+  SupportActionSettings,
+  SupportConversationDetail,
+  SupportConversationPage,
+  SupportConversationStatus,
+  SupportSettings,
   SystemMonitoringSnapshot,
   TenantMember,
   TenantPermission,
@@ -1014,7 +1020,9 @@ interface ApiSku {
   name?: string | null;
   option_values: Record<string, string | number | boolean>;
   barcode?: string | null;
-  weight?: number | null;
+  default_moq?: number | string | null;
+  moq_unit?: string | null;
+  weight?: number | string | null;
   weight_unit?: string | null;
   status: ProductSku["status"];
   version: number;
@@ -1111,7 +1119,9 @@ function mapSku(row: ApiSku): ProductSku {
     name: defined(row.name),
     optionValues: row.option_values,
     barcode: defined(row.barcode),
-    weight: defined(row.weight),
+    defaultMoq: row.default_moq == null ? undefined : Number(row.default_moq),
+    moqUnit: defined(row.moq_unit),
+    weight: row.weight == null ? undefined : Number(row.weight),
     weightUnit: defined(row.weight_unit),
     status: row.status,
     version: row.version,
@@ -1155,6 +1165,18 @@ function mapActivity(row: ApiProductDetail["activity"][number]): ProductActivity
 
 function mapAttribute(row: ApiProductDetail["attributes"][number]): ProductAttribute {
   return { id: row.id, definitionId: defined(row.definition_id), key: row.key, value: row.value, unitCode: defined(row.unit_code), reviewStatus: row.review_status };
+}
+
+function mapProductDetail(row: ApiProductDetail): ProductDetail {
+  return {
+    ...mapProduct(row),
+    description: defined(row.description),
+    defaultUnit: defined(row.default_unit),
+    attributes: row.attributes.map(mapAttribute),
+    skus: row.skus.map(mapSku),
+    sources: row.sources.map(mapOffer),
+    activity: row.activity.map(mapActivity),
+  };
 }
 
 export async function listSkus(params: {
@@ -1476,7 +1498,36 @@ export async function updateEmbeddingSettings(input: {
 
 export async function getProduct(productId: string): Promise<ProductDetail> {
   const row = await request<ApiProductDetail>(`/products/${encodeURIComponent(productId)}`);
-  return { ...mapProduct(row), description: defined(row.description), defaultUnit: defined(row.default_unit), attributes: row.attributes.map(mapAttribute), skus: row.skus.map(mapSku), sources: row.sources.map(mapOffer), activity: row.activity.map(mapActivity) };
+  return mapProductDetail(row);
+}
+
+export async function createManualProduct(
+  input: ManualProductCreateInput,
+): Promise<ProductDetail> {
+  const row = await request<ApiProductDetail>("/products", {
+    method: "POST",
+    body: JSON.stringify({
+      name: input.name,
+      product_code: input.productCode,
+      description: input.description,
+      category_id: input.categoryId,
+      default_unit: input.defaultUnit,
+      image_url: input.imageUrl,
+      sku_code: input.skuCode,
+      sku_name: input.skuName,
+      barcode: input.barcode,
+      default_moq: input.defaultMoq,
+      moq_unit: input.moqUnit,
+      weight: input.weight,
+      weight_unit: input.weightUnit,
+      unit_price: input.unitPrice,
+      currency: input.currency,
+      tags: input.tags,
+      publish_to_storefront: input.publishToStorefront,
+    }),
+  });
+  bumpPublicCatalogRevision();
+  return mapProductDetail(row);
 }
 
 export async function createSkus(productId: string, items: Array<{ skuCode: string; name?: string; optionValues: Record<string, string>; status?: ProductSku["status"] }>) {
@@ -2007,6 +2058,197 @@ export async function deleteAnnouncement(
     { method: "DELETE" },
   );
   bumpPublicCatalogRevision();
+}
+
+interface ApiSupportActionSettings {
+  slot: 2 | 3;
+  visible: boolean;
+  label?: string | null;
+  target_url?: string | null;
+  external_image_url?: string | null;
+  image_url?: string | null;
+  has_uploaded_image: boolean;
+}
+
+interface ApiSupportSettings {
+  welcome_message: string;
+  custom_actions: ApiSupportActionSettings[];
+}
+
+interface ApiSupportConversationSummary {
+  id: string;
+  reference_number: string;
+  visitor_name?: string | null;
+  visitor_email?: string | null;
+  locale: string;
+  status: SupportConversationStatus;
+  last_message_preview: string;
+  last_message_at: string;
+  unread: boolean;
+}
+
+interface ApiSupportConversationDetail extends ApiSupportConversationSummary {
+  messages: Array<{
+    id: string;
+    sender_type: "VISITOR" | "MERCHANT" | "SYSTEM" | "AI";
+    body: string;
+    created_at: string;
+  }>;
+}
+
+function mapSupportAction(row: ApiSupportActionSettings): SupportActionSettings {
+  return {
+    slot: row.slot,
+    visible: row.visible,
+    label: defined(row.label),
+    targetUrl: defined(row.target_url),
+    externalImageUrl: defined(row.external_image_url),
+    imageUrl: defined(row.image_url),
+    hasUploadedImage: row.has_uploaded_image,
+  };
+}
+
+function mapSupportSettings(row: ApiSupportSettings): SupportSettings {
+  return {
+    welcomeMessage: row.welcome_message,
+    customActions: (row.custom_actions || []).map(mapSupportAction),
+  };
+}
+
+function mapSupportSummary(
+  row: ApiSupportConversationSummary,
+): SupportConversationDetail | SupportConversationPage["items"][number] {
+  const summary = {
+    id: row.id,
+    referenceNumber: row.reference_number,
+    visitorName: defined(row.visitor_name),
+    visitorEmail: defined(row.visitor_email),
+    locale: row.locale,
+    status: row.status,
+    lastMessagePreview: row.last_message_preview,
+    lastMessageAt: row.last_message_at,
+    unread: row.unread,
+  };
+  if ("messages" in row) {
+    const detail = row as ApiSupportConversationDetail;
+    return {
+      ...summary,
+      messages: detail.messages.map((message) => ({
+        id: message.id,
+        senderType: message.sender_type,
+        body: message.body,
+        createdAt: message.created_at,
+      })),
+    };
+  }
+  return summary;
+}
+
+export async function getSupportSettings(): Promise<SupportSettings> {
+  return mapSupportSettings(
+    await request<ApiSupportSettings>("/support/settings", { cache: "no-store" }),
+  );
+}
+
+export async function updateSupportSettings(
+  input: SupportSettings,
+): Promise<SupportSettings> {
+  const saved = mapSupportSettings(
+    await request<ApiSupportSettings>("/support/settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        welcome_message: input.welcomeMessage,
+        custom_actions: input.customActions.map((action) => ({
+          slot: action.slot,
+          visible: action.visible,
+          label: action.label || null,
+          target_url: action.targetUrl || null,
+          external_image_url: action.externalImageUrl || null,
+        })),
+      }),
+    }),
+  );
+  bumpPublicCatalogRevision();
+  return saved;
+}
+
+export async function uploadSupportActionImage(
+  slot: 2 | 3,
+  image: File,
+): Promise<SupportSettings> {
+  const body = new FormData();
+  body.append("image", image);
+  const saved = mapSupportSettings(
+    await request<ApiSupportSettings>(`/support/settings/actions/${slot}/image`, {
+      method: "POST",
+      body,
+    }),
+  );
+  bumpPublicCatalogRevision();
+  return saved;
+}
+
+export async function listSupportConversations(input: {
+  page?: number;
+  pageSize?: number;
+  status?: SupportConversationStatus | "";
+  query?: string;
+} = {}): Promise<SupportConversationPage> {
+  const params = new URLSearchParams({
+    page: String(input.page || 1),
+    page_size: String(input.pageSize || 30),
+  });
+  if (input.status) params.set("status", input.status);
+  if (input.query?.trim()) params.set("q", input.query.trim());
+  const row = await request<{
+    items: ApiSupportConversationSummary[];
+    total: number;
+    page: number;
+    page_size: number;
+    pages: number;
+  }>(`/support/conversations?${params}`, { cache: "no-store" });
+  return {
+    items: row.items.map((item) => mapSupportSummary(item) as SupportConversationPage["items"][number]),
+    total: row.total,
+    page: row.page,
+    pageSize: row.page_size,
+    pages: row.pages,
+  };
+}
+
+export async function getSupportConversation(
+  conversationId: string,
+): Promise<SupportConversationDetail> {
+  return mapSupportSummary(
+    await request<ApiSupportConversationDetail>(
+      `/support/conversations/${encodeURIComponent(conversationId)}`,
+      { cache: "no-store" },
+    ),
+  ) as SupportConversationDetail;
+}
+
+export async function replySupportConversation(
+  conversationId: string,
+  message: string,
+): Promise<SupportConversationDetail> {
+  return mapSupportSummary(
+    await request<ApiSupportConversationDetail>(
+      `/support/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { method: "POST", body: JSON.stringify({ message }) },
+    ),
+  ) as SupportConversationDetail;
+}
+
+export async function updateSupportConversationStatus(
+  conversationId: string,
+  status: SupportConversationStatus,
+): Promise<SupportConversationDetail> {
+  return mapSupportSummary(
+    await request<ApiSupportConversationDetail>(
+      `/support/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "PATCH", body: JSON.stringify({ status }) },
+    ),
+  ) as SupportConversationDetail;
 }
 
 export async function listAttributeDefinitions(categoryId?: string): Promise<AttributeDefinition[]> {

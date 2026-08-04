@@ -52,6 +52,7 @@ export function StorefrontLanguageSwitch({
           size="2"
           variant="soft"
           color="gray"
+          dir="ltr"
           aria-label={t("选择语言")}
         >
           <Translate size={17} />
@@ -66,7 +67,7 @@ export function StorefrontLanguageSwitch({
           <DropdownMenu.Item
             key={language.code}
             onSelect={() => selectLocale(language.code)}
-            dir={language.direction}
+            dir="ltr"
           >
             <span className="storefront-language-check">
               {locale === language.code ? <Check /> : null}
@@ -74,7 +75,7 @@ export function StorefrontLanguageSwitch({
             <span className="storefront-language-flag" aria-hidden="true">
               {language.flag}
             </span>
-            <span lang={language.code}>{language.label}</span>
+            <span lang={language.code} dir={language.direction}>{language.label}</span>
           </DropdownMenu.Item>
         ))}
       </DropdownMenu.Content>

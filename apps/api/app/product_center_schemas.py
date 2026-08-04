@@ -229,6 +229,117 @@ class PublicCatalogOfferResponse(PublicCatalogOfferUpsertRequest):
     updated_at: datetime
 
 
+class ManualProductCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=500)
+    product_code: str | None = Field(default=None, max_length=100)
+    description: str | None = None
+    category_id: UUID | None = None
+    default_unit: str = Field(default="piece", min_length=1, max_length=32)
+    image_url: str | None = Field(
+        default=None,
+        max_length=2048,
+        pattern=r"^https?://[^\s]+$",
+    )
+    sku_code: str | None = Field(default=None, max_length=160)
+    sku_name: str | None = Field(default=None, max_length=500)
+    barcode: str | None = Field(default=None, max_length=120)
+    default_moq: Decimal | None = Field(default=None, ge=0)
+    moq_unit: str | None = Field(default=None, max_length=32)
+    weight: Decimal | None = Field(default=None, ge=0)
+    weight_unit: str | None = Field(default=None, max_length=32)
+    unit_price: Decimal = Field(default=Decimal("0"), ge=0)
+    currency: str = Field(default="CNY", pattern=r"^[A-Za-z]{3}$")
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    display_tag: str | None = Field(default=None, max_length=80)
+    tag_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    publish_to_storefront: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def normalize_manual_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("product name must not be blank")
+        return normalized
+
+    @field_validator(
+        "product_code",
+        "description",
+        "image_url",
+        "sku_name",
+        "barcode",
+        "moq_unit",
+        "weight_unit",
+        "display_tag",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_manual_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("default_unit")
+    @classmethod
+    def normalize_default_unit(cls, value: str) -> str:
+        return value.strip() or "piece"
+
+    @field_validator("sku_code", mode="before")
+    @classmethod
+    def normalize_manual_sku_code(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        return normalized or None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_manual_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("tag_color", mode="before")
+    @classmethod
+    def normalize_manual_tag_color(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized.upper() if normalized else None
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_manual_tags(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            tag = value.strip()
+            key = tag.casefold()
+            if not tag or key in seen:
+                continue
+            if len(tag) > 80:
+                raise ValueError("product tags must not exceed 80 characters")
+            seen.add(key)
+            normalized.append(tag)
+        return normalized
+
+    @model_validator(mode="after")
+    def normalize_manual_display_tag(self) -> "ManualProductCreateRequest":
+        if not self.tags:
+            self.display_tag = None
+            return self
+        if self.display_tag is None:
+            self.display_tag = self.tags[0]
+            return self
+        selected = next(
+            (tag for tag in self.tags if tag.casefold() == self.display_tag.casefold()),
+            None,
+        )
+        if selected is None:
+            raise ValueError("display_tag must be one of the product tags")
+        self.display_tag = selected
+        return self
+
+
 class AttributeDefinitionCreateRequest(BaseModel):
     category_id: UUID | None = None
     attribute_key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,99}$")

@@ -28,6 +28,7 @@ import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
+import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
@@ -965,6 +966,12 @@ export function StorePage() {
           </Container>
         </section>
       </main>
+      <StorefrontSupportWidget
+        tenantSlug={tenantSlug}
+        storeName={store.name}
+        locale={locale}
+        config={store.support_widget}
+      />
       <footer className="store-footer">
         <Container size="4">
           <div className="store-footer-inner">
