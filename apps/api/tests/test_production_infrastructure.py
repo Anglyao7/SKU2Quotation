@@ -257,6 +257,7 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
     assert environment["OBJECT_STORAGE_BACKEND"] == "local"
     assert environment["FILE_SCANNER_PROFILE"] == "restricted"
     assert environment["FILE_WORKER_INLINE"] == "true"
+    assert "atc_scheduler:" in environment["TENANT_DIRECTORY_DATABASE_URL"]
     assert environment["OUTBOX_PUBLISHER_PROFILE"] == "inline_database"
     assert environment["AUTH_PROFILE"] == "enterprise_oidc"
     assert environment["OIDC_ISSUER"].startswith("https://auth.")

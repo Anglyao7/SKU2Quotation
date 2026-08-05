@@ -76,10 +76,18 @@ def test_compact_runtime_keeps_managed_security_and_accepts_local_infrastructure
         FILE_SCANNER_PROFILE="restricted",
         CLAMAV_HOST="",
         FILE_WORKER_INLINE="true",
+        TENANT_DIRECTORY_DATABASE_URL=(
+            "postgresql+psycopg://atc_scheduler:secret@postgres/atc"
+        ),
         OUTBOX_PUBLISHER_PROFILE="inline_database",
         RABBITMQ_URL="",
     )
     assert startup_configuration_errors(values) == ()
+
+    missing_directory = startup_configuration_errors(
+        {**values, "TENANT_DIRECTORY_DATABASE_URL": ""}
+    )
+    assert "TENANT_DIRECTORY_DATABASE_URL_REQUIRED" in missing_directory
 
     errors = startup_configuration_errors(
         {

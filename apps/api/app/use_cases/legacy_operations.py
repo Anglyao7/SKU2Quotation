@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import psycopg
 from openpyxl import Workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -64,6 +65,7 @@ _deferred_import_executor = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="local-import-worker",
 )
+_ZERO_IDENTITY = UUID(int=0)
 
 
 def _require_permission(permissions: frozenset[str], code: str) -> None:
@@ -287,6 +289,32 @@ def inline_import_worker_enabled(session: Session) -> bool:
     return inline_worker_enabled(database_dialect=dialect)
 
 
+def _inline_import_tenant_ids(session: Session) -> tuple[UUID, ...]:
+    """Discover tenants without weakening tenant-scoped worker access."""
+
+    dialect = session.bind.dialect.name if session.bind is not None else "unknown"
+    if dialect != "postgresql":
+        return tuple(
+            session.scalars(select(WorkerJobRow.tenant_id).distinct()).all()
+        )
+
+    directory_url = os.getenv("TENANT_DIRECTORY_DATABASE_URL", "").strip()
+    if not directory_url:
+        return ()
+    psycopg_url = directory_url.replace(
+        "postgresql+psycopg://",
+        "postgresql://",
+        1,
+    )
+    with psycopg.connect(psycopg_url, connect_timeout=5) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM tenants "
+                "WHERE status = 'active' AND deleted_at IS NULL ORDER BY id"
+            )
+            return tuple(UUID(str(row[0])) for row in cursor.fetchall())
+
+
 def process_deferred_import(*, tenant_id: UUID, import_job_id: str) -> None:
     """Run an inline-profile job after the HTTP response has been sent."""
 
@@ -336,48 +364,63 @@ def resume_deferred_imports() -> int:
     with SessionLocal() as session:
         if not inline_import_worker_enabled(session):
             return 0
-        now = utcnow()
+        tenant_ids = _inline_import_tenant_ids(session)
+        session.rollback()
 
-        # In the inline profile, all import workers live inside this API
-        # process. A RUNNING lease found during startup therefore belongs to
-        # the process that just stopped (for example after an OOM restart),
-        # even when its short lease has not expired yet. Expire it now so the
-        # durable worker can reclaim the job during this startup instead of
-        # leaving the progress indicator permanently stuck.
-        interrupted = session.scalars(
-            select(WorkerJobRow).where(
-                WorkerJobRow.import_job_id.is_not(None),
-                WorkerJobRow.status == "RUNNING",
+    queued: list[tuple[UUID, str]] = []
+    for tenant_id in tenant_ids:
+        with SessionLocal() as session:
+            set_request_context(
+                session,
+                organization_id=_ZERO_IDENTITY,
+                tenant_id=tenant_id,
+                user_id=_ZERO_IDENTITY,
             )
-        ).all()
-        for worker_job in interrupted:
-            worker_job.lease_expires_at = now
-        if interrupted:
-            session.flush()
+            now = utcnow()
 
-        queued = session.execute(
-            select(WorkerJobRow.tenant_id, WorkerJobRow.import_job_id)
-            .where(
-                WorkerJobRow.import_job_id.is_not(None),
-                or_(
-                    and_(
-                        WorkerJobRow.status.in_(("PENDING", "RETRY")),
-                        WorkerJobRow.available_at <= now,
+            # In the inline profile, all import workers live inside this API
+            # process. A RUNNING lease found during startup therefore belongs
+            # to the process that just stopped (for example after an OOM
+            # restart), even when its short lease has not expired yet.
+            interrupted = session.scalars(
+                select(WorkerJobRow).where(
+                    WorkerJobRow.tenant_id == tenant_id,
+                    WorkerJobRow.import_job_id.is_not(None),
+                    WorkerJobRow.status == "RUNNING",
+                )
+            ).all()
+            for worker_job in interrupted:
+                worker_job.lease_expires_at = now
+            if interrupted:
+                session.flush()
+
+            tenant_queue = session.execute(
+                select(WorkerJobRow.tenant_id, WorkerJobRow.import_job_id)
+                .where(
+                    WorkerJobRow.tenant_id == tenant_id,
+                    WorkerJobRow.import_job_id.is_not(None),
+                    or_(
+                        and_(
+                            WorkerJobRow.status.in_(("PENDING", "RETRY")),
+                            WorkerJobRow.available_at <= now,
+                        ),
+                        and_(
+                            WorkerJobRow.status == "RUNNING",
+                            WorkerJobRow.lease_expires_at.is_not(None),
+                            WorkerJobRow.lease_expires_at <= now,
+                        ),
                     ),
-                    and_(
-                        WorkerJobRow.status == "RUNNING",
-                        WorkerJobRow.lease_expires_at.is_not(None),
-                        WorkerJobRow.lease_expires_at <= now,
-                    ),
-                ),
+                )
+                .order_by(WorkerJobRow.available_at, WorkerJobRow.created_at)
+            ).all()
+            queued.extend(
+                (queued_tenant_id, import_job_id)
+                for queued_tenant_id, import_job_id in tenant_queue
+                if import_job_id is not None
             )
-            .order_by(WorkerJobRow.available_at, WorkerJobRow.created_at)
-        ).all()
-        session.commit()
+            session.commit()
 
     for tenant_id, import_job_id in queued:
-        if import_job_id is None:
-            continue
         _deferred_import_executor.submit(
             process_deferred_import,
             tenant_id=tenant_id,

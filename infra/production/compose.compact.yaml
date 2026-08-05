@@ -25,6 +25,7 @@ x-api-environment: &api-environment
   AUTH_TEST_BYPASS: "false"
   DATABASE_URL: postgresql+psycopg://atc_app:${ATC_APP_DB_PASSWORD:?ATC_APP_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
   AUTH_DATABASE_URL: postgresql+psycopg://atc_auth:${ATC_AUTH_DB_PASSWORD:?ATC_AUTH_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
+  TENANT_DIRECTORY_DATABASE_URL: postgresql+psycopg://atc_scheduler:${ATC_SCHEDULER_DB_PASSWORD:?ATC_SCHEDULER_DB_PASSWORD is required}@postgres:5432/ai_trade_cloud
   AUTH_PROFILE: enterprise_oidc
   AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
   AUTH_TOKEN_PEPPER: ${AUTH_TOKEN_PEPPER:?AUTH_TOKEN_PEPPER is required}

@@ -325,6 +325,15 @@ def startup_configuration_errors(
             or _is_explicit_false(inline_file_worker)
         ):
             errors.append("FILE_WORKER_INLINE_INVALID")
+        if _is_true(inline_file_worker):
+            tenant_directory_url = _value(
+                values,
+                "TENANT_DIRECTORY_DATABASE_URL",
+            )
+            if not tenant_directory_url.startswith("postgresql+psycopg://"):
+                errors.append("TENANT_DIRECTORY_DATABASE_URL_REQUIRED")
+            elif tenant_directory_url == database_url:
+                errors.append("TENANT_DIRECTORY_DATABASE_ROLE_SEPARATION_REQUIRED")
         if outbox_profile not in {"inline_database", "rabbitmq"}:
             errors.append("COMPACT_OUTBOX_REQUIRED")
         if (
