@@ -150,6 +150,7 @@ TEMPLATE_LAYOUT_SKU_ROWS = "SKU_ROWS"
 TEMPLATE_LAYOUT_PRODUCT_VARIANTS = "PRODUCT_VARIANTS"
 TEMPLATE_LAYOUT_PRODUCT_SKUS = "PRODUCT_SKUS"
 MAX_TEMPLATE_ROWS = 50_000
+IMPORT_FLUSH_BATCH_SIZE = 500
 # One source row can intentionally define several concrete variants. Keep a
 # separate, bounded expansion ceiling so near-limit catalogs are not rejected
 # merely because valid color/size candidates expand beyond the source row count.
@@ -4385,6 +4386,14 @@ def process_product_template_import(
             if changed and product.status == "ACTIVE":
                 product.search_document_version = 0
                 dirty_product_ids.add(product.id)
+
+            # Keep one atomic transaction for the whole import, but send
+            # accumulated SQL to the database in bounded batches. Without
+            # this flush, SQLAlchemy retains the change history for every
+            # imported SKU until the final commit; large catalogs can then
+            # exceed the API container's memory limit during finalization.
+            if row_index % IMPORT_FLUSH_BATCH_SIZE == 0:
+                session.flush()
 
         for previous_product_id in moved_from_product_ids:
             previous_product = products_by_id.get(previous_product_id)

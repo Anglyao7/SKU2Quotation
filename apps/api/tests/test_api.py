@@ -187,6 +187,7 @@ from app.adapters.outbox_publisher import InMemoryOutboxPublisher, get_outbox_pu
 from app.services.outbox_consumer import consume_product_committed_message
 from app.workers.file_processing import process_file_worker_job
 import app.workers.file_processing as file_processing_worker
+import app.use_cases.legacy_operations as legacy_operations_use_cases
 from app.workers.outbox_relay import relay_one_outbox_event
 from app.use_cases.product_center import list_products as list_authoritative_products
 from app.use_cases.product_center import delete_all_products as delete_all_products_use_case
@@ -7090,6 +7091,89 @@ def test_malware_marker_stays_quarantined_and_never_reaches_parser() -> None:
                 AITaskRow.business_entity_id == source.id
             )
         ) == 0
+
+
+def test_inline_startup_immediately_resumes_worker_from_stopped_api_process(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    monkeypatch.setenv("FILE_WORKER_INLINE", "false")
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "restart-recovery.csv",
+                b"name,model\nRestart Recovery,RESTART-RECOVERY-1\n",
+                "text/csv",
+            )
+        },
+        data={"supplier_id": "SUP-001", "source_type": "SUPPLIER_QUOTE"},
+    )
+    assert response.status_code == 201, response.text
+    import_job_id = response.json()["id"]
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=[import_job_id],
+            sku_codes=[],
+            category_names=[],
+        )
+    )
+
+    future_lease = datetime.now(UTC) + timedelta(minutes=10)
+    with SessionLocal() as session:
+        worker_job = session.scalar(
+            select(WorkerJobRow).where(
+                WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                WorkerJobRow.import_job_id == import_job_id,
+            )
+        )
+        assert worker_job is not None
+        worker_job.status = "RUNNING"
+        worker_job.attempt_count = 1
+        worker_job.lease_owner = "stopped-api-process"
+        worker_job.lease_expires_at = future_lease
+        session.commit()
+
+    submitted: list[tuple[object, UUID, str]] = []
+
+    def capture_submit(
+        function: object,
+        *,
+        tenant_id: UUID,
+        import_job_id: str,
+    ) -> SimpleNamespace:
+        submitted.append((function, tenant_id, import_job_id))
+        return SimpleNamespace()
+
+    monkeypatch.setenv("FILE_WORKER_INLINE", "true")
+    monkeypatch.setattr(
+        legacy_operations_use_cases._deferred_import_executor,
+        "submit",
+        capture_submit,
+    )
+
+    resumed = legacy_operations_use_cases.resume_deferred_imports()
+
+    assert resumed >= 1
+    assert (
+        legacy_operations_use_cases.process_deferred_import,
+        DEFAULT_TENANT_ID,
+        import_job_id,
+    ) in submitted
+    with SessionLocal() as session:
+        worker_job = session.scalar(
+            select(WorkerJobRow).where(
+                WorkerJobRow.tenant_id == DEFAULT_TENANT_ID,
+                WorkerJobRow.import_job_id == import_job_id,
+            )
+        )
+        assert worker_job is not None
+        assert worker_job.status == "RUNNING"
+        assert worker_job.lease_expires_at is not None
+        recovered_lease = worker_job.lease_expires_at
+        if recovered_lease.tzinfo is None:
+            recovered_lease = recovered_lease.replace(tzinfo=UTC)
+        assert recovered_lease < future_lease
 
 
 def test_persistent_file_worker_recovers_scanner_failure_and_expired_lease(

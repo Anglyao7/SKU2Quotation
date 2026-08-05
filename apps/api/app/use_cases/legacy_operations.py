@@ -337,6 +337,24 @@ def resume_deferred_imports() -> int:
         if not inline_import_worker_enabled(session):
             return 0
         now = utcnow()
+
+        # In the inline profile, all import workers live inside this API
+        # process. A RUNNING lease found during startup therefore belongs to
+        # the process that just stopped (for example after an OOM restart),
+        # even when its short lease has not expired yet. Expire it now so the
+        # durable worker can reclaim the job during this startup instead of
+        # leaving the progress indicator permanently stuck.
+        interrupted = session.scalars(
+            select(WorkerJobRow).where(
+                WorkerJobRow.import_job_id.is_not(None),
+                WorkerJobRow.status == "RUNNING",
+            )
+        ).all()
+        for worker_job in interrupted:
+            worker_job.lease_expires_at = now
+        if interrupted:
+            session.flush()
+
         queued = session.execute(
             select(WorkerJobRow.tenant_id, WorkerJobRow.import_job_id)
             .where(
@@ -355,7 +373,7 @@ def resume_deferred_imports() -> int:
             )
             .order_by(WorkerJobRow.available_at, WorkerJobRow.created_at)
         ).all()
-        session.rollback()
+        session.commit()
 
     for tenant_id, import_job_id in queued:
         if import_job_id is None:

@@ -202,9 +202,9 @@ services:
       resources:
         limits:
           cpus: "1.25"
-          memory: 640M
+          memory: 2G
         reservations:
-          memory: 192M
+          memory: 512M
     networks: [app, data, identity-admin, egress]
 
   postgres:
