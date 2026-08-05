@@ -124,6 +124,33 @@ function imageStatusLabel(status: SkuListItem["imageStatus"]) {
   return "暂无图片";
 }
 
+function SkuThumbnail({ sku, label }: { sku: SkuListItem; label: string }) {
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [sku.thumbnailUrl]);
+
+  return (
+    <span
+      className={`core-sku-image-state ${sku.imageStatus.toLowerCase()}`}
+      title={label}
+    >
+      {sku.thumbnailUrl && !imageFailed ? (
+        <img
+          src={sku.thumbnailUrl}
+          alt={`${sku.name || sku.productName} · ${sku.skuCode}`}
+          loading="lazy"
+          decoding="async"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <ImageSquare aria-hidden="true" />
+      )}
+    </span>
+  );
+}
+
 function skuStatusColor(status: ProductSku["status"]): "jade" | "amber" | "gray" {
   if (status === "ACTIVE") return "jade";
   if (status === "DRAFT") return "amber";
@@ -180,6 +207,7 @@ export function ProductsPage() {
   const [primaryCategoryId, setPrimaryCategoryId] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [status, setStatus] = useState<"" | ProductSku["status"]>("");
+  const [missingImagesOnly, setMissingImagesOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(initialSkuPageSize);
   const [result, setResult] = useState<SkuListPage>(emptySkuPage);
@@ -229,6 +257,7 @@ export function ProductsPage() {
         q: debouncedQuery.trim() || undefined,
         categoryId: categoryId || primaryCategoryId || undefined,
         statuses: status ? [status] : undefined,
+        missingImagesOnly,
         page,
         pageSize,
       });
@@ -240,7 +269,7 @@ export function ProductsPage() {
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [categoryId, debouncedQuery, page, pageSize, primaryCategoryId, status, t]);
+  }, [categoryId, debouncedQuery, missingImagesOnly, page, pageSize, primaryCategoryId, status, t]);
 
   const loadCategories = useCallback(async () => {
     setCategories(await listCategories());
@@ -256,7 +285,7 @@ export function ProductsPage() {
     setDeleteDialogOpen(false);
     setBulkAction(undefined);
     setBulkError("");
-  }, [categoryId, debouncedQuery, primaryCategoryId, status]);
+  }, [categoryId, debouncedQuery, missingImagesOnly, primaryCategoryId, status]);
 
   const refreshCurrentImport = useCallback(async () => {
     if (!lastImport?.id) return undefined;
@@ -446,6 +475,7 @@ export function ProductsPage() {
     setPrimaryCategoryId("");
     setCategoryId("");
     setStatus("");
+    setMissingImagesOnly(false);
     setPage(1);
   };
   const handleManualCreated = (product: ProductDetail) => {
@@ -707,7 +737,7 @@ export function ProductsPage() {
     () => categories.filter((item) => item.parentId === primaryCategoryId && item.status !== "ARCHIVED"),
     [categories, primaryCategoryId],
   );
-  const hasActiveFilters = Boolean(query.trim() || primaryCategoryId || categoryId || status);
+  const hasActiveFilters = Boolean(query.trim() || primaryCategoryId || categoryId || status || missingImagesOnly);
   const bulkActionTitle = bulkAction === "category"
     ? t("批量修改商品分类")
     : bulkAction === "pin"
@@ -746,6 +776,10 @@ export function ProductsPage() {
           <option value="INACTIVE">{t("已下架")}</option>
           <option value="ARCHIVED">{t("已归档")}</option>
         </select>
+        <select value={missingImagesOnly ? "missing" : ""} onChange={(event) => { setMissingImagesOnly(event.target.value === "missing"); setPage(1); }} aria-label={t("按图片状态筛选")}>
+          <option value="">{t("全部图片")}</option>
+          <option value="missing">{t("未上传图片")}</option>
+        </select>
         <Button variant="soft" color="gray" disabled={loading} onClick={() => void load()}><ArrowsClockwise />{t("刷新")}</Button>
       </Card>
       {bulkNotice ? (
@@ -779,7 +813,7 @@ export function ProductsPage() {
       {loading && !result.items.length ? <CoreLoading label={t("正在读取 SKU 商品库")} /> : null}
       {!loading && !result.items.length && !error ? (
         hasActiveFilters
-          ? <CoreEmpty title={t("没有符合条件的 SKU")} description={t("尝试更换关键词、分类或状态。")} action={<Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button>} />
+          ? <CoreEmpty title={t("没有符合条件的 SKU")} description={t("尝试更换关键词、分类、状态或图片条件。")} action={<Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button>} />
           : <CoreEmpty
               title={t("商品库还是空的")}
               description={t("先在 Product 表填写商品，再在 SKU 表用商品编码关联不同规格；导入后即可统一管理和发布。")}
@@ -834,7 +868,10 @@ export function ProductsPage() {
                     </span>
                   ) : null}
                   <span className="core-sku-name-cell">
-                    <span className={`core-sku-image-state ${sku.imageStatus.toLowerCase()}`} title={t(sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片")}><ImageSquare /></span>
+                    <SkuThumbnail
+                      sku={sku}
+                      label={t(sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片")}
+                    />
                     <span><strong className="core-tabular">{sku.skuCode}</strong><small>{sku.name || sku.productName}</small></span>
                   </span>
                   <span className="core-sku-category-cell">

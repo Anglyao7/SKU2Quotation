@@ -161,13 +161,27 @@ def get_category(
 
 
 def list_categories(session: Session, *, tenant_id: UUID) -> list[ProductCategoryRow]:
-    return list(
+    rows = list(
         session.scalars(
             select(ProductCategoryRow)
             .where(ProductCategoryRow.tenant_id == tenant_id)
-            .order_by(ProductCategoryRow.path, ProductCategoryRow.sort_order, ProductCategoryRow.name)
         ).all()
     )
+    rows_by_id = {row.id: row for row in rows}
+
+    def hierarchy_order(row: ProductCategoryRow):
+        parent = rows_by_id.get(row.parent_id) if row.parent_id else None
+        root = parent or row
+        return (
+            root.sort_order,
+            root.name.casefold(),
+            1 if parent is not None else 0,
+            row.sort_order,
+            row.name.casefold(),
+            str(row.id),
+        )
+
+    return sorted(rows, key=hierarchy_order)
 
 
 def list_categories_by_ids(
@@ -286,6 +300,7 @@ def list_sku_page_rows(
     query: str,
     category_id: UUID | None,
     statuses: list[str],
+    missing_images_only: bool,
     page: int,
     page_size: int,
 ) -> tuple[list[SkuListRow], int]:
@@ -310,6 +325,16 @@ def list_sku_page_rows(
                         ProductCategoryRow.parent_id == category_id,
                     )
                 ),
+            )
+        )
+    if missing_images_only:
+        conditions.append(
+            ~exists(
+                select(ProductImageRow.id).where(
+                    ProductImageRow.tenant_id == tenant_id,
+                    ProductImageRow.product_id == ProductRow.id,
+                    ProductImageRow.deleted_at.is_(None),
+                )
             )
         )
 
@@ -487,26 +512,31 @@ def list_suppliers_by_ids(
     )
 
 
-def list_image_statuses_for_products(
+def list_images_for_products(
     session: Session,
     *,
     tenant_id: UUID,
     product_ids: set[UUID],
-) -> list[tuple[UUID, str]]:
+) -> list[ProductImageRow]:
     if not product_ids:
         return []
-    return [
-        (product_id, approval_status)
-        for product_id, approval_status in session.execute(
-            select(ProductImageRow.product_id, ProductImageRow.approval_status)
+    return list(
+        session.scalars(
+            select(ProductImageRow)
             .where(
                 ProductImageRow.tenant_id == tenant_id,
                 ProductImageRow.product_id.in_(product_ids),
                 ProductImageRow.deleted_at.is_(None),
             )
-            .order_by(ProductImageRow.product_id, ProductImageRow.sort_order, ProductImageRow.id)
+            .order_by(
+                ProductImageRow.product_id,
+                case((ProductImageRow.approval_status == "APPROVED", 0), else_=1),
+                case((ProductImageRow.image_role == "MAIN", 0), else_=1),
+                ProductImageRow.sort_order,
+                ProductImageRow.id,
+            )
         ).all()
-    ]
+    )
 
 
 def get_sku(session: Session, *, tenant_id: UUID, sku_id: UUID) -> SkuRow | None:

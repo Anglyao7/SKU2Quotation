@@ -4874,6 +4874,7 @@ def test_product_query_and_image_filter() -> None:
 def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
     suffix = uuid4().hex[:8].upper()
     product_id = uuid4()
+    product_image_id = uuid4()
     first_sku_id = uuid4()
     second_sku_id = uuid4()
     other_tenant_id = uuid4()
@@ -4925,6 +4926,7 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
         )
         session.add(
             ProductImageRow(
+                id=product_image_id,
                 tenant_id=DEFAULT_TENANT_ID,
                 product_id=product_id,
                 storage_provider="TEST",
@@ -5053,6 +5055,14 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
     assert active["source_filename"] is None
     assert active["source_imported_at"] is None
     assert active["image_status"] == "APPROVED"
+    assert active["thumbnail_url"] == f"/api/store/demo/media/{product_image_id}"
+
+    no_missing_images = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": suffix, "missing_images_only": "true"},
+    )
+    assert no_missing_images.status_code == 200
+    assert no_missing_images.json()["total"] == 0
 
     without_suppliers = client.get(
         "/api/v1/product-center/skus",
@@ -5108,6 +5118,40 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
                 page_size=50,
             )
         assert denied.value.code == "PERMISSION_REQUIRED"
+
+    with SessionLocal() as session:
+        image = session.get(ProductImageRow, product_image_id)
+        assert image is not None
+        mark_deleted(image)
+        session.commit()
+    try:
+        missing_images = client.get(
+            "/api/v1/product-center/skus",
+            params={"q": suffix, "missing_images_only": "true"},
+        )
+        assert missing_images.status_code == 200
+        assert missing_images.json()["total"] == 2
+        assert {
+            item["sku_code"] for item in missing_images.json()["items"]
+        } == {f"{suffix}-ACTIVE", f"{suffix}-DRAFT"}
+        assert all(
+            item["image_status"] == "NONE"
+            for item in missing_images.json()["items"]
+        )
+        assert all(
+            item["thumbnail_url"] is None
+            for item in missing_images.json()["items"]
+        )
+    finally:
+        with SessionLocal() as session:
+            image = session.scalar(
+                select(ProductImageRow)
+                .where(ProductImageRow.id == product_image_id)
+                .execution_options(include_deleted=True)
+            )
+            assert image is not None
+            restore_deleted(image)
+            session.commit()
 
 
 def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
@@ -10212,6 +10256,25 @@ def test_category_template_download_and_incremental_import_are_idempotent() -> N
         downloaded_workbook.close()
 
     suffix = uuid4().hex[:10].upper()
+    original_category_state: dict[UUID, tuple[int, int]] = {}
+    original_reorder_event_ids: set[UUID] = set()
+    with SessionLocal() as session:
+        original_category_state = {
+            row.id: (row.sort_order, row.version)
+            for row in session.scalars(
+                select(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            ).all()
+        }
+        original_reorder_event_ids = set(
+            session.scalars(
+                select(ProductAuditEventRow.id).where(
+                    ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductAuditEventRow.action == "category.import_reordered",
+                )
+            ).all()
+        )
     primary_one = f"导入一级甲-{suffix}"
     primary_two = f"导入一级乙-{suffix}"
     secondary_one = f"导入二级甲-{suffix}"
@@ -10268,6 +10331,32 @@ def test_category_template_download_and_incremental_import_are_idempotent() -> N
         assert second.json()["primary_existing"] == 2
         assert second.json()["secondary_existing"] == 2
 
+        reordered_workbook = Workbook()
+        reordered_sheet = reordered_workbook.active
+        reordered_sheet.title = "客户分类新顺序"
+        reordered_sheet.append(list(CATEGORY_TEMPLATE_HEADERS))
+        reordered_sheet.append([primary_two, None])
+        reordered_sheet.append([primary_one, secondary_two])
+        reordered_sheet.append([primary_one, secondary_one])
+        reordered_content = BytesIO()
+        reordered_workbook.save(reordered_content)
+        reordered_workbook.close()
+        reordered = client.post(
+            "/api/v1/categories/import",
+            files={
+                "file": (
+                    "分类新顺序.xlsx",
+                    reordered_content.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert reordered.status_code == 200, reordered.text
+        assert reordered.json()["primary_created"] == 0
+        assert reordered.json()["secondary_created"] == 0
+        assert reordered.json()["primary_existing"] == 2
+        assert reordered.json()["secondary_existing"] == 2
+
         with SessionLocal() as session:
             imported = list(
                 session.scalars(
@@ -10285,14 +10374,37 @@ def test_category_template_download_and_incremental_import_are_idempotent() -> N
             }
             children = [row for row in imported if row.parent_id is not None]
             assert set(root_by_name) == {primary_one, primary_two}
+            assert [
+                row.name
+                for row in sorted(
+                    root_by_name.values(), key=lambda row: row.sort_order
+                )
+            ] == [primary_two, primary_one]
             assert {row.name for row in children} == {secondary_one, secondary_two}
             assert all(row.parent_id == root_by_name[primary_one].id for row in children)
             assert [row.name for row in sorted(children, key=lambda row: row.sort_order)] == [
-                secondary_one,
                 secondary_two,
+                secondary_one,
             ]
     finally:
         with SessionLocal() as session:
+            current_reorder_event_ids = set(
+                session.scalars(
+                    select(ProductAuditEventRow.id).where(
+                        ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductAuditEventRow.action == "category.import_reordered",
+                    )
+                ).all()
+            )
+            new_reorder_event_ids = (
+                current_reorder_event_ids - original_reorder_event_ids
+            )
+            if new_reorder_event_ids:
+                session.execute(
+                    delete(ProductAuditEventRow).where(
+                        ProductAuditEventRow.id.in_(new_reorder_event_ids)
+                    )
+                )
             if not created_ids:
                 created_ids = [
                     str(value)
@@ -10325,13 +10437,21 @@ def test_category_template_download_and_incremental_import_are_idempotent() -> N
                         ProductCategoryRow.id.in_(category_ids)
                     )
                 )
-                session.commit()
+            if original_category_state:
+                original_rows = session.scalars(
+                    select(ProductCategoryRow).where(
+                        ProductCategoryRow.id.in_(list(original_category_state))
+                    )
+                ).all()
+                for row in original_rows:
+                    row.sort_order, row.version = original_category_state[row.id]
+            session.commit()
 
 
 def test_category_delete_cascades_children_without_deleting_products() -> None:
     suffix = uuid4().hex[:10].upper()
     category_ids: list[str] = []
-    product_ids = [uuid4(), uuid4()]
+    product_ids = [uuid4(), uuid4(), uuid4()]
     definition_id = uuid4()
     attribute_id = uuid4()
     try:
@@ -10388,6 +10508,19 @@ def test_category_delete_cascades_children_without_deleting_products() -> None:
                         default_unit="PCS",
                         current_version=1,
                         search_document_version=9,
+                        created_by=DEFAULT_OWNER_USER_ID,
+                        updated_by=DEFAULT_OWNER_USER_ID,
+                    ),
+                    ProductRow(
+                        id=product_ids[2],
+                        tenant_id=DEFAULT_TENANT_ID,
+                        product_code=f"DELETE-CATEGORY-ARCHIVED-{suffix}",
+                        name=f"已归档历史商品-{suffix}",
+                        category_id=UUID(children[0]["id"]),
+                        status="ARCHIVED",
+                        default_unit="PCS",
+                        current_version=1,
+                        search_document_version=0,
                         created_by=DEFAULT_OWNER_USER_ID,
                         updated_by=DEFAULT_OWNER_USER_ID,
                     ),
@@ -10467,7 +10600,7 @@ def test_category_delete_cascades_children_without_deleting_products() -> None:
                     .order_by(ProductRow.product_code)
                 ).all()
             )
-            assert len(products) == 2
+            assert len(products) == 3
             assert all(product.category_id is None for product in products)
             assert all(product.search_document_version == 0 for product in products)
             assert session.get(AttributeDefinitionRow, definition_id) is None

@@ -1054,6 +1054,7 @@ interface ApiSkuListItem {
   source_filename?: string | null;
   source_imported_at?: string | null;
   image_status: SkuListItem["imageStatus"];
+  thumbnail_url?: string | null;
   is_pinned: boolean;
 }
 
@@ -1155,6 +1156,7 @@ function mapSkuListItem(row: ApiSkuListItem): SkuListItem {
     sourceFilename: defined(row.source_filename),
     sourceImportedAt: defined(row.source_imported_at),
     imageStatus: row.image_status,
+    thumbnailUrl: defined(row.thumbnail_url),
     isPinned: Boolean(row.is_pinned),
   };
 }
@@ -1183,6 +1185,7 @@ export async function listSkus(params: {
   q?: string;
   categoryId?: string;
   statuses?: ProductSku["status"][];
+  missingImagesOnly?: boolean;
   page?: number;
   pageSize?: number;
 } = {}): Promise<SkuListPage> {
@@ -1190,6 +1193,7 @@ export async function listSkus(params: {
   if (params.q) query.set("q", params.q);
   if (params.categoryId) query.set("category_id", params.categoryId);
   for (const status of params.statuses ?? []) query.append("status", status);
+  if (params.missingImagesOnly) query.set("missing_images_only", "true");
   query.set("page", String(params.page ?? 1));
   query.set("page_size", String(params.pageSize ?? 50));
   query.set("include_supplier_summary", "false");

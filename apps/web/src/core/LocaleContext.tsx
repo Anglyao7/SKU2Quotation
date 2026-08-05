@@ -718,10 +718,13 @@ const english: Record<string, string> = {
   "请先选择一级分类": "Select a primary category first",
   "按 SKU 状态筛选": "Filter by SKU status",
   "全部状态": "All statuses",
+  "按图片状态筛选": "Filter by image status",
+  "全部图片": "All images",
+  "未上传图片": "Missing images",
   "正在读取 SKU 商品库": "Loading SKU catalog",
   "没有符合条件的 SKU": "No matching SKUs",
-  "尝试更换关键词、分类或状态。":
-    "Try a different keyword, category, or status.",
+  "尝试更换关键词、分类、状态或图片条件。":
+    "Try a different keyword, category, status, or image filter.",
   "清除筛选": "Clear filters",
   "商品库还是空的": "The catalog is empty",
   "先在 Product 表填写商品，再在 SKU 表用商品编码关联不同规格；导入后即可统一管理和发布。":
@@ -1188,9 +1191,9 @@ const english: Record<string, string> = {
   "分类批量导入": "Bulk category import",
   "A 列填写一级分类，B 列填写二级分类；B 列留空时只创建一级分类。工作表名称不限。":
     "Enter primary categories in column A and subcategories in column B. Leave column B blank to create only a primary category. The worksheet name can be anything.",
-  "按两列模板增量合并": "Merge incrementally from two columns",
-  "同一一级分类可以重复多行并包含多个二级分类；已有分类不会重复创建，未写入模板的分类也不会被删除。":
-    "Repeat a primary category across rows to add multiple subcategories. Existing categories are not duplicated, and omitted categories are not deleted.",
+  "按文件顺序增量合并": "Merge incrementally in file order",
+  "文件内分类会按从上到下的顺序展示；已有分类不会重复创建，未写入模板的分类不会删除，并顺延到文件内分类之后。":
+    "Categories in the file are displayed from top to bottom. Existing categories are not duplicated; omitted categories remain and follow the imported categories.",
   "分类导入只支持 .xlsx 文件。": "Category import only supports .xlsx files.",
   "分类导入失败，请检查文件后重试。":
     "Category import failed. Check the file and try again.",
@@ -1200,8 +1203,8 @@ const english: Record<string, string> = {
   "选择文件": "Choose file",
   "正在导入…": "Importing…",
   "分类导入完成": "Category import complete",
-  "新增 {primary} 个一级分类、{secondary} 个二级分类；已有 {existing} 个分类自动跳过。":
-    "Created {primary} primary categories and {secondary} subcategories; skipped {existing} existing categories.",
+  "新增 {primary} 个一级分类、{secondary} 个二级分类；已有 {existing} 个分类已按文件顺序更新。":
+    "Created {primary} primary categories and {secondary} subcategories; reordered {existing} existing categories to match the file.",
   "另有 {count} 行重复记录已忽略。":
     "Ignored {count} additional duplicate rows.",
   "文件": "File",

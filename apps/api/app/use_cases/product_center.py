@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select, update
@@ -78,6 +80,28 @@ FIELD_LABELS = {
     "packing": "包装",
     "description": "产品描述",
 }
+
+
+def _sku_thumbnail_url(
+    image: ProductImageRow,
+    *,
+    storefront_slug: str | None,
+) -> str | None:
+    object_key = str(image.object_key or "").strip()
+    if not object_key:
+        return None
+    if object_key.startswith(("https://", "http://")):
+        return object_key
+
+    media_base_url = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
+    if media_base_url:
+        return f"{media_base_url}/{quote(object_key.lstrip('/'), safe='/')}"
+
+    # The public media endpoint deliberately serves approved images only.
+    # Source images without a public storage URL keep the existing placeholder.
+    if image.approval_status != "APPROVED" or not storefront_slug:
+        return None
+    return f"/api/store/{quote(storefront_slug, safe='')}/media/{image.id}"
 
 SKU_STATUSES = frozenset({"DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"})
 
@@ -344,6 +368,7 @@ def list_skus(
     page: int,
     page_size: int,
     include_supplier_summary: bool = True,
+    missing_images_only: bool = False,
 ) -> SkuListPage:
     _require(permissions, "product.view")
     normalized_statuses = sorted(
@@ -362,6 +387,7 @@ def list_skus(
         query=query,
         category_id=category_id,
         statuses=normalized_statuses,
+        missing_images_only=missing_images_only,
         page=page,
         page_size=page_size,
     )
@@ -396,13 +422,32 @@ def list_skus(
             )
             target.append((source, supplier))
 
+    storefront_slug = session.scalar(
+        select(TenantPublicProfileRow.slug).where(
+            TenantPublicProfileRow.tenant_id == tenant_id
+        )
+    )
+    if not storefront_slug:
+        tenant = session.get(TenantRow, tenant_id)
+        storefront_slug = tenant.slug if tenant is not None else None
+
     image_statuses_by_product: dict[UUID, set[str]] = {}
-    for product_id, approval_status in repository.list_image_statuses_for_products(
+    thumbnail_urls_by_product: dict[UUID, str] = {}
+    for image in repository.list_images_for_products(
         session,
         tenant_id=tenant_id,
         product_ids=product_ids,
     ):
-        image_statuses_by_product.setdefault(product_id, set()).add(approval_status)
+        image_statuses_by_product.setdefault(image.product_id, set()).add(
+            image.approval_status
+        )
+        if image.product_id not in thumbnail_urls_by_product:
+            thumbnail_url = _sku_thumbnail_url(
+                image,
+                storefront_slug=storefront_slug,
+            )
+            if thumbnail_url:
+                thumbnail_urls_by_product[image.product_id] = thumbnail_url
 
     items: list[SkuListItem] = []
     for row in rows:
@@ -472,6 +517,7 @@ def list_skus(
                 source_filename=row.source_filename,
                 source_imported_at=row.source_imported_at,
                 image_status=image_status,
+                thumbnail_url=thumbnail_urls_by_product.get(row.product.id),
                 is_pinned=row.product.storefront_pinned_at is not None,
             )
         )
@@ -1170,6 +1216,23 @@ def import_categories(
 ) -> CategoryImportResponse:
     _require(permissions, "product.edit")
     existing_categories = repository.list_categories(session, tenant_id=tenant_id)
+    existing_category_ids = {row.id for row in existing_categories}
+    existing_roots_in_order = sorted(
+        (row for row in existing_categories if row.parent_id is None),
+        key=lambda row: (row.sort_order, category_name_key(row.name), str(row.id)),
+    )
+    existing_children_in_order: dict[UUID, list[ProductCategoryRow]] = {}
+    for row in existing_categories:
+        if row.parent_id is not None:
+            existing_children_in_order.setdefault(row.parent_id, []).append(row)
+    for rows in existing_children_in_order.values():
+        rows.sort(
+            key=lambda row: (
+                row.sort_order,
+                category_name_key(row.name),
+                str(row.id),
+            )
+        )
     roots_by_name = {
         category_name_key(row.name): row
         for row in existing_categories
@@ -1183,21 +1246,17 @@ def import_categories(
             category_name_key(row.name)
         ] = row
 
-    next_root_order = max(
-        (row.sort_order for row in existing_categories if row.parent_id is None),
-        default=-1,
-    ) + 1
-    next_child_order = {
-        parent_id: max((row.sort_order for row in children.values()), default=-1) + 1
-        for parent_id, children in children_by_parent.items()
-    }
     primary_created = 0
     secondary_created = 0
     primary_existing = 0
     secondary_existing = 0
 
-    for group in parsed.groups:
+    uploaded_root_keys: list[str] = []
+    uploaded_child_keys: dict[UUID, list[str]] = {}
+
+    for root_position, group in enumerate(parsed.groups):
         root_key = category_name_key(group.primary_name)
+        uploaded_root_keys.append(root_key)
         root = roots_by_name.get(root_key)
         if root is None:
             root_id = uuid4()
@@ -1208,15 +1267,13 @@ def import_categories(
                 code=f"IMP-{root_id.hex.upper()}",
                 name=group.primary_name,
                 path=group.primary_name,
-                sort_order=next_root_order,
+                sort_order=root_position,
                 display_color=None,
                 status="ACTIVE",
             )
-            next_root_order += 1
             session.add(root)
             roots_by_name[root_key] = root
             children_by_parent[root.id] = {}
-            next_child_order[root.id] = 0
             primary_created += 1
             session.add(
                 ProductAuditEventRow(
@@ -1240,12 +1297,10 @@ def import_categories(
             primary_existing += 1
 
         child_rows = children_by_parent.setdefault(root.id, {})
-        child_sort_order = next_child_order.setdefault(
-            root.id,
-            max((row.sort_order for row in child_rows.values()), default=-1) + 1,
-        )
-        for secondary_name in group.secondary_names:
+        uploaded_child_keys[root.id] = []
+        for child_position, secondary_name in enumerate(group.secondary_names):
             child_key = category_name_key(secondary_name)
+            uploaded_child_keys[root.id].append(child_key)
             if child_key in child_rows:
                 secondary_existing += 1
                 continue
@@ -1257,11 +1312,10 @@ def import_categories(
                 code=f"IMP-{child_id.hex.upper()}",
                 name=secondary_name,
                 path=f"{root.name}/{secondary_name}",
-                sort_order=child_sort_order,
+                sort_order=child_position,
                 display_color=None,
                 status="ACTIVE",
             )
-            child_sort_order += 1
             session.add(child)
             child_rows[child_key] = child
             secondary_created += 1
@@ -1283,7 +1337,54 @@ def import_categories(
                     actor_membership_id=membership_id,
                 )
             )
-        next_child_order[root.id] = child_sort_order
+
+    def apply_import_order(row: ProductCategoryRow, position: int) -> None:
+        if row.sort_order == position:
+            return
+        previous = row.sort_order
+        row.sort_order = position
+        if row.id not in existing_category_ids:
+            return
+        row.version += 1
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=None,
+                entity_type="CATEGORY",
+                entity_id=str(row.id),
+                action="category.import_reordered",
+                before={"sort_order": previous},
+                after={
+                    "sort_order": position,
+                    "source": "CATEGORY_TEMPLATE",
+                },
+                actor_membership_id=membership_id,
+            )
+        )
+
+    uploaded_root_key_set = set(uploaded_root_keys)
+    ordered_roots = [roots_by_name[key] for key in uploaded_root_keys]
+    ordered_roots.extend(
+        row
+        for row in existing_roots_in_order
+        if category_name_key(row.name) not in uploaded_root_key_set
+    )
+    for position, root in enumerate(ordered_roots):
+        apply_import_order(root, position)
+
+    for root_key in uploaded_root_keys:
+        root = roots_by_name[root_key]
+        child_rows = children_by_parent.get(root.id, {})
+        child_keys = uploaded_child_keys.get(root.id, [])
+        uploaded_child_key_set = set(child_keys)
+        ordered_children = [child_rows[key] for key in child_keys]
+        ordered_children.extend(
+            row
+            for row in existing_children_in_order.get(root.id, [])
+            if category_name_key(row.name) not in uploaded_child_key_set
+        )
+        for position, child in enumerate(ordered_children):
+            apply_import_order(child, position)
 
     _commit(
         session,
@@ -1510,6 +1611,8 @@ def _category_delete_counts(
             select(func.count(ProductRow.id)).where(
                 ProductRow.tenant_id == tenant_id,
                 ProductRow.category_id.in_(category_ids),
+                ProductRow.deleted_at.is_(None),
+                ProductRow.status != "ARCHIVED",
             )
         )
         or 0

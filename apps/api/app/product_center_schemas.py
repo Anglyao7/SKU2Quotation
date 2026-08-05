@@ -98,6 +98,7 @@ class SkuListItem(BaseModel):
     source_filename: str | None
     source_imported_at: datetime | None
     image_status: Literal["APPROVED", "SOURCE", "NONE"]
+    thumbnail_url: str | None = None
     is_pinned: bool = False
 
 

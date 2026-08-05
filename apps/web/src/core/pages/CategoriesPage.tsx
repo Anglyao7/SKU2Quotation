@@ -149,7 +149,7 @@ export function CategoriesPage() {
           <div>
             <Text weight="bold" as="div">{t("分类导入完成")}</Text>
             <Text size="2" color="gray">
-              {t("新增 {primary} 个一级分类、{secondary} 个二级分类；已有 {existing} 个分类自动跳过。", {
+              {t("新增 {primary} 个一级分类、{secondary} 个二级分类；已有 {existing} 个分类已按文件顺序更新。", {
                 primary: importResult.primaryCreated,
                 secondary: importResult.secondaryCreated,
                 existing: importResult.primaryExisting + importResult.secondaryExisting,
@@ -197,9 +197,9 @@ export function CategoriesPage() {
           <Card className="core-category-import-rules">
             <FileXls size={28} />
             <div>
-              <Text weight="bold" as="div">{t("按两列模板增量合并")}</Text>
+              <Text weight="bold" as="div">{t("按文件顺序增量合并")}</Text>
               <Text size="2" color="gray">
-                {t("同一一级分类可以重复多行并包含多个二级分类；已有分类不会重复创建，未写入模板的分类也不会被删除。")}
+                {t("文件内分类会按从上到下的顺序展示；已有分类不会重复创建，未写入模板的分类不会删除，并顺延到文件内分类之后。")}
               </Text>
             </div>
           </Card>

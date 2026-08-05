@@ -352,6 +352,7 @@ export interface SkuListItem {
   sourceFilename?: string;
   sourceImportedAt?: string;
   imageStatus: "SOURCE" | "APPROVED" | "NONE";
+  thumbnailUrl?: string;
   isPinned: boolean;
 }
 
