@@ -10,7 +10,6 @@ import {
   Table,
   Text,
   TextField,
-  TextArea,
 } from "@radix-ui/themes";
 import {
   Plus,
@@ -18,7 +17,6 @@ import {
   Trash,
   NotePencil,
   WarningCircle,
-  CheckCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
@@ -30,13 +28,11 @@ import type { ConsoleOutletContext } from "./ConsoleLayout";
 
 interface TagPayload {
   name: string;
-  description: string;
   category: string;
 }
 
 const emptyPayload: TagPayload = {
   name: "",
-  description: "",
   category: "",
 };
 
@@ -92,7 +88,6 @@ export function TagManagementPage() {
   const openEdit = (tag: ProductTag) => {
     setPayload({
       name: tag.name,
-      description: tag.description || "",
       category: tag.category || "",
     });
     setEditing(tag);
@@ -112,13 +107,12 @@ export function TagManagementPage() {
       if (editing === "new") {
         await api.createProductTag({
           name: payload.name.trim(),
-          description: payload.description.trim() || null,
+          description: null,
           category: payload.category.trim() || null,
         });
       } else if (editing && typeof editing !== "string") {
         await api.updateProductTag(editing.id, {
           name: payload.name.trim() || undefined,
-          description: payload.description.trim() || null,
           category: payload.category.trim() || null,
         });
       }
@@ -163,9 +157,6 @@ export function TagManagementPage() {
       <div className="page-heading-row">
         <div>
           <Heading as="h1" size="6">标签管理</Heading>
-          <Text color="gray" size="2">
-            统一管理产品标签，支持按分类组织，用于 AI 搜索和商品筛选
-          </Text>
         </div>
         <Button onClick={openCreate}>
           <Plus weight="bold" />
@@ -214,7 +205,6 @@ export function TagManagementPage() {
             <Table.Row>
               <Table.ColumnHeaderCell>标签名称</Table.ColumnHeaderCell>
               <Table.ColumnHeaderCell>分类</Table.ColumnHeaderCell>
-              <Table.ColumnHeaderCell>说明</Table.ColumnHeaderCell>
               <Table.ColumnHeaderCell>使用次数</Table.ColumnHeaderCell>
               <Table.ColumnHeaderCell width="100px">操作</Table.ColumnHeaderCell>
             </Table.Row>
@@ -234,11 +224,6 @@ export function TagManagementPage() {
                   ) : (
                     <Text color="gray" size="2">—</Text>
                   )}
-                </Table.Cell>
-                <Table.Cell>
-                  <Text size="2" color="gray">
-                    {tag.description || "—"}
-                  </Text>
                 </Table.Cell>
                 <Table.Cell>
                   <Badge color={tag.usage_count > 0 ? "jade" : "gray"} variant="soft">
@@ -309,28 +294,6 @@ export function TagManagementPage() {
                   </Select.Content>
                 </Select.Root>
               </label>
-
-              <label>
-                <Text size="2" weight="medium" as="div" mb="1">
-                  标签说明
-                </Text>
-                <TextArea
-                  value={payload.description}
-                  onChange={(e) => setPayload({ ...payload, description: e.target.value })}
-                  placeholder="简要说明这个标签的用途和适用场景"
-                  maxLength={500}
-                  rows={3}
-                />
-              </label>
-
-              <Callout.Root color="blue" size="1">
-                <Callout.Icon>
-                  <CheckCircle weight="fill" />
-                </Callout.Icon>
-                <Callout.Text>
-                  标签会在 Excel 导入时自动创建，也可以在 RAG 搜索中起到语义匹配作用
-                </Callout.Text>
-              </Callout.Root>
 
               <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end", marginTop: "8px" }}>
                 <Dialog.Close>

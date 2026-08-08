@@ -3,10 +3,10 @@ import { ArrowClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useLocale } from "./LocaleContext";
 
-export function CorePageHeading({ eyebrow, title, description, actions }: {
+export function CorePageHeading({ eyebrow, title, actions }: {
   eyebrow: string;
   title: string;
-  description: string;
+  description?: string;
   actions?: ReactNode;
 }) {
   return (
@@ -14,7 +14,6 @@ export function CorePageHeading({ eyebrow, title, description, actions }: {
       <div>
         <Text size="2" color="gray">{eyebrow}</Text>
         <Heading size="7">{title}</Heading>
-        <Text size="2" color="gray">{description}</Text>
       </div>
       {actions ? <div className="core-heading-actions">{actions}</div> : null}
     </div>
