@@ -75,7 +75,7 @@
 }
 
 .personal-welcome-field > span,
-.personal-action-settings-card label > span:not(.sr-only) {
+.personal-action-settings-card label > span {
   font-size: 12px;
   font-weight: 700;
 }

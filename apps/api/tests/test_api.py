@@ -1027,6 +1027,15 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     assert settings.status_code == 200, settings.text
     assert [row["slot"] for row in settings.json()["custom_actions"]] == [2, 3]
 
+    action_image = BytesIO()
+    Image.new("RGBA", (24, 24), (20, 180, 140, 255)).save(action_image, "PNG")
+    uploaded = client.post(
+        "/api/v1/support/settings/actions/2/image",
+        files={"image": ("contact.png", action_image.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["custom_actions"][0]["has_uploaded_image"] is True
+
     saved = client.patch(
         "/api/v1/support/settings",
         json={
@@ -1036,7 +1045,6 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
                     "slot": 2,
                     "visible": True,
                     "label": "WhatsApp",
-                    "external_image_url": "https://example.test/whatsapp.png",
                 },
                 {"slot": 3, "visible": False},
             ],
@@ -1044,15 +1052,8 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     )
     assert saved.status_code == 200, saved.text
     assert saved.json()["custom_actions"][0]["visible"] is True
+    assert saved.json()["custom_actions"][0]["has_uploaded_image"] is True
 
-    action_image = BytesIO()
-    Image.new("RGBA", (24, 24), (20, 180, 140, 255)).save(action_image, "PNG")
-    uploaded = client.post(
-        "/api/v1/support/settings/actions/2/image",
-        files={"image": ("contact.png", action_image.getvalue(), "image/png")},
-    )
-    assert uploaded.status_code == 200, uploaded.text
-    assert uploaded.json()["custom_actions"][0]["has_uploaded_image"] is True
     public_image = client.get("/api/store/demo/support/actions/2/image")
     assert public_image.status_code == 200, public_image.text
     assert public_image.headers["content-type"] == "image/webp"

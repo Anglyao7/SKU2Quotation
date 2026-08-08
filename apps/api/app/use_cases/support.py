@@ -243,14 +243,21 @@ def upload_action_image(
     profile = _profile(session, tenant_id=tenant_id)
     media_id = uuid4()
     object_key = f"tenants/{tenant_id}/support/actions/{media_id}.webp"
-    with tempfile.NamedTemporaryFile(suffix=".webp") as temporary:
-        temporary.write(processed)
-        temporary.flush()
-        get_object_storage().put_file(
-            Path(temporary.name),
-            object_key=object_key,
-            content_type="image/webp",
-        )
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".webp") as temporary:
+            temporary.write(processed)
+            temporary.flush()
+            get_object_storage().put_file(
+                Path(temporary.name),
+                object_key=object_key,
+                content_type="image/webp",
+            )
+    except Exception as exc:
+        raise ApplicationError(
+            "SUPPORT_IMAGE_STORAGE_UNAVAILABLE",
+            "图片上传到对象存储失败，请检查 Cloudflare R2 配置。",
+            kind="unavailable",
+        ) from exc
     media = MediaObjectRow(
         id=media_id,
         tenant_id=tenant_id,

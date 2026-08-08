@@ -102,9 +102,22 @@ export function PersonalCenterPage() {
     setError("");
     setSaved(false);
     try {
-      await updateSupportSettings(settings);
-      setSettings(normalizeSettings(await uploadSupportActionImage(slot, file)));
-      setSaved(true);
+      const uploaded = normalizeSettings(await uploadSupportActionImage(slot, file));
+      const uploadedAction = uploaded.customActions.find((action) => action.slot === slot);
+      const nextSettings: SupportSettings = {
+        ...settings,
+        customActions: settings.customActions.map((action) => (
+          action.slot === slot && uploadedAction
+            ? {
+                ...action,
+                imageUrl: uploadedAction.imageUrl,
+                hasUploadedImage: uploadedAction.hasUploadedImage,
+          }
+            : action
+        )),
+      };
+      setSettings(normalizeSettings(nextSettings));
+      setSaved(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("图片上传失败"));
     } finally {
@@ -171,8 +184,12 @@ export function PersonalCenterPage() {
                       <small>{action.visible ? t("前台已显示") : t("前台已隐藏")}</small>
                     </div>
                     <label className="personal-visibility-switch">
-                      <span className="sr-only">{t("自定义悬浮球 {slot}", { slot: action.slot })}</span>
-                      <input type="checkbox" checked={action.visible} onChange={(event) => updateAction(action.slot, { visible: event.target.checked })} />
+                      <input
+                        type="checkbox"
+                        checked={action.visible}
+                        aria-label={t("自定义悬浮球 {slot}", { slot: action.slot })}
+                        onChange={(event) => updateAction(action.slot, { visible: event.target.checked })}
+                      />
                       <i />
                     </label>
                   </header>

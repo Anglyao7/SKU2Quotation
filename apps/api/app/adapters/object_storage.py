@@ -10,6 +10,14 @@ from typing import Iterator
 from ..ports.object_storage import ObjectStoragePort
 
 
+def _first_environment(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return None
+
+
 def _safe_key(object_key: str) -> str:
     path = PurePosixPath(object_key)
     if path.is_absolute() or ".." in path.parts or not path.parts:
@@ -72,6 +80,8 @@ class S3ObjectStorageAdapter:
         bucket: str,
         endpoint_url: str | None = None,
         region_name: str | None = None,
+        access_key_id: str | None = None,
+        secret_access_key: str | None = None,
     ) -> None:
         try:
             import boto3
@@ -82,6 +92,8 @@ class S3ObjectStorageAdapter:
             "s3",
             endpoint_url=endpoint_url,
             region_name=region_name,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
         )
 
     def put_file(self, source: Path, *, object_key: str, content_type: str | None) -> None:
@@ -156,5 +168,15 @@ def get_object_storage() -> ObjectStoragePort:
             bucket=bucket,
             endpoint_url=os.getenv("OBJECT_STORAGE_ENDPOINT_URL"),
             region_name=os.getenv("OBJECT_STORAGE_REGION"),
+            access_key_id=_first_environment(
+                "OBJECT_STORAGE_ACCESS_KEY_ID",
+                "OBJECT_STORAGE_ACCESS_KEY",
+                "AWS_ACCESS_KEY_ID",
+            ),
+            secret_access_key=_first_environment(
+                "OBJECT_STORAGE_SECRET_ACCESS_KEY",
+                "OBJECT_STORAGE_SECRET_KEY",
+                "AWS_SECRET_ACCESS_KEY",
+            ),
         )
     raise RuntimeError(f"unsupported object storage backend: {backend}")

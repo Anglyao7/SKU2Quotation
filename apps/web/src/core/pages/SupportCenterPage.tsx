@@ -333,9 +333,9 @@ export function SupportCenterPage() {
                       <span>{storefrontLanguage(operatorLocale).shortLabel}</span>
                       <ArrowsLeftRight aria-hidden="true" />
                       <label>
-                        <span className="sr-only">{t("目标语言")}</span>
                         <select
                           value={replyTargetLocale}
+                          aria-label={t("目标语言")}
                           disabled={!canReply || detail.status === "CLOSED" || translationBusy}
                           onChange={(event) => {
                             setReplyTargetLocale(event.target.value as StorefrontLocale);
