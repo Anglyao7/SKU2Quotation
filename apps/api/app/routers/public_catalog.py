@@ -22,6 +22,7 @@ from ..public_catalog_schemas import (
     PublicSkuResponse,
     PublicStoreResponse,
 )
+from ..catalog_translation_schemas import CatalogLanguagePackResponse
 from ..services.auth.dependencies import (
     bearer,
     current_context,
@@ -34,6 +35,8 @@ from ..services.public_quote_documents import (
 )
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..use_cases import public_catalog as use_cases
+from ..use_cases import catalog_translations as translation_use_cases
+from ..services.language_package_storage import IMMUTABLE_CACHE_CONTROL
 from .errors import application_http_error
 
 
@@ -61,6 +64,57 @@ def get_public_store(
         return use_cases.get_store(session, slug=tenant_slug, locale=locale)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/store/{tenant_slug}/language-packages/{target_locale}",
+    response_model=CatalogLanguagePackResponse,
+)
+def get_public_language_package(
+    tenant_slug: str,
+    target_locale: str,
+    response: Response,
+    session: Session = Depends(get_session),
+) -> CatalogLanguagePackResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    try:
+        return translation_use_cases.public_language_pack(
+            session,
+            slug=tenant_slug,
+            target_locale=target_locale,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/store/{tenant_slug}/language-packages/{target_locale}/versions/{version}",
+)
+def download_public_language_package(
+    tenant_slug: str,
+    target_locale: str,
+    version: int,
+    session: Session = Depends(get_session),
+) -> Response:
+    try:
+        content, pack = translation_use_cases.public_language_pack_content(
+            session,
+            slug=tenant_slug,
+            target_locale=target_locale,
+            version=version,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Encoding": "gzip",
+            "Cache-Control": IMMUTABLE_CACHE_CONTROL,
+            "ETag": f'"{pack.content_sha256}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/api/store/{tenant_slug}/skus", response_model=PublicSkuPage)

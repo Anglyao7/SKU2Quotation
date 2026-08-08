@@ -274,7 +274,12 @@ from .embedding_management_models import (  # noqa: E402,F401
     KnowledgeIndexJobRow,
 )
 
+from .translation_management_models import (  # noqa: E402,F401
+    TranslationProviderSettingsRow,
+)
+
 from .catalog_translation_models import (  # noqa: E402,F401
+    CatalogLanguagePackRow,
     CatalogSkuTranslationRow,
     CatalogTextTranslationRow,
     CatalogTranslationJobRow,

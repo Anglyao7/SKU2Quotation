@@ -21,6 +21,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
+import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
@@ -281,9 +282,11 @@ export function ProductDetailPage() {
           <section className="sku-detail-layout" aria-labelledby="product-detail-title">
             <Card className="sku-detail-media" variant="surface">
               {selectedImageUrl && !imageFailed ? (
-                <img
+                <ProductImagePreview
                   src={selectedImageUrl}
                   alt={`${product.name} · ${selectedLabel}`}
+                  openLabel={t("点击查看大图")}
+                  closeLabel={t("关闭图片预览")}
                   onError={() => setImageFailed(true)}
                 />
               ) : (

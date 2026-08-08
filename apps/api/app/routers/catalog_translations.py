@@ -110,3 +110,41 @@ def get_translation_job(
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/jobs/{job_id}/pause",
+    response_model=CatalogTranslationJobResponse,
+)
+def pause_translation_job(
+    job_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogTranslationJobResponse:
+    context = current_context(session)
+    try:
+        return use_cases.pause_translation_job(
+            session,
+            context=context,
+            job_id=job_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/jobs/{job_id}/resume",
+    response_model=CatalogTranslationJobResponse,
+)
+def resume_translation_job(
+    job_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogTranslationJobResponse:
+    context = current_context(session)
+    try:
+        return use_cases.resume_translation_job(
+            session,
+            context=context,
+            job_id=job_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc

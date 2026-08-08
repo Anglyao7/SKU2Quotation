@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -16,11 +17,23 @@ from ..adapters.object_storage import get_object_storage
 from ..database import set_public_tenant_context
 from ..domain.errors import ApplicationError
 from ..file_security_models import MediaObjectRow
+from ..identity_models import TenantRow
 from ..model_mixins import utcnow
 from ..public_catalog_models import TenantPublicProfileRow
 from ..repositories import public_catalog_repository
 from ..repositories import support_repository as repository
 from ..services.auth.tokens import hash_secret, new_secret
+from ..services.translation import (
+    TranslationProviderError,
+    catalog_translation_is_configured,
+    configured_catalog_translator,
+)
+from ..services.translation_memory import translate_values_with_memory
+from ..services.translation_configuration import (
+    resolved_catalog_translator,
+    translation_provider_is_configured,
+)
+from ..storefront_locales import StorefrontLocale, normalize_storefront_locale
 from ..support_models import (
     StorefrontChatConversationRow,
     StorefrontChatMessageRow,
@@ -29,6 +42,7 @@ from ..support_schemas import (
     PublicChatConversationCreate,
     PublicChatConversationResponse,
     PublicChatMessageWrite,
+    PublicSupportChatMessageResponse,
     PublicSupportWidgetResponse,
     SupportChatMessageResponse,
     SupportConversationDetailResponse,
@@ -39,11 +53,14 @@ from ..support_schemas import (
     SupportMerchantMessageWrite,
     SupportSettingsResponse,
     SupportSettingsUpdate,
+    SupportTranslationPreviewResponse,
+    SupportTranslationPreviewWrite,
 )
 
 
 DEFAULT_WELCOME_MESSAGE = "您好，请告诉我们您正在寻找什么商品，我们会尽快回复。"
 MAX_ACTION_IMAGE_BYTES = 5 * 1024 * 1024
+TRANSLATION_RETRY_DELAY = timedelta(minutes=2)
 
 
 def _require(permissions: frozenset[str], permission: str) -> None:
@@ -339,13 +356,143 @@ def get_public_action_image(
         ) from exc
 
 
-def _message_response(row: StorefrontChatMessageRow) -> SupportChatMessageResponse:
-    return SupportChatMessageResponse(
+def _public_message_response(
+    row: StorefrontChatMessageRow,
+) -> PublicSupportChatMessageResponse:
+    return PublicSupportChatMessageResponse(
         id=row.id,
         sender_type=row.sender_type,
         body=row.body,
         created_at=row.created_at,
     )
+
+
+def _message_response(row: StorefrontChatMessageRow) -> SupportChatMessageResponse:
+    return SupportChatMessageResponse(
+        id=row.id,
+        sender_type=row.sender_type,
+        body=row.body,
+        draft_body=row.draft_body,
+        translated_body=row.translated_body,
+        translation_source_locale=row.translation_source_locale,
+        translation_target_locale=row.translation_target_locale,
+        translation_status=row.translation_status,
+        created_at=row.created_at,
+    )
+
+
+def _merchant_reading_locale(
+    session: Session,
+    *,
+    tenant_id: UUID,
+) -> StorefrontLocale:
+    tenant = session.get(TenantRow, tenant_id)
+    if tenant is not None and str(tenant.default_currency).upper() == "USD":
+        return "en-US"
+    return "zh-CN"
+
+
+def _visitor_locale(row: StorefrontChatConversationRow) -> StorefrontLocale:
+    return normalize_storefront_locale(row.locale) or "zh-CN"
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _translate_visitor_messages(
+    session: Session,
+    *,
+    conversation: StorefrontChatConversationRow,
+    messages: list[StorefrontChatMessageRow],
+    force: bool = False,
+) -> None:
+    target_locale = _merchant_reading_locale(
+        session,
+        tenant_id=conversation.tenant_id,
+    )
+    fallback_source = _visitor_locale(conversation)
+    now = utcnow()
+    candidates: list[StorefrontChatMessageRow] = []
+    changed = False
+    provider_configured = translation_provider_is_configured(
+        session,
+        environment_check=catalog_translation_is_configured,
+    )
+
+    for message in messages:
+        if message.sender_type != "VISITOR":
+            continue
+        source_locale = (
+            normalize_storefront_locale(message.translation_source_locale)
+            or fallback_source
+        )
+        metadata_changed = (
+            message.translation_source_locale != source_locale
+            or message.translation_target_locale != target_locale
+        )
+        if metadata_changed:
+            message.translation_source_locale = source_locale
+            message.translation_target_locale = target_locale
+            message.translated_body = None
+            message.translation_status = "PENDING"
+            changed = True
+
+        if source_locale == target_locale:
+            if (
+                message.translation_status != "NOT_REQUIRED"
+                or message.translated_body is not None
+            ):
+                message.translation_status = "NOT_REQUIRED"
+                message.translated_body = None
+                changed = True
+            continue
+        if message.translation_status == "READY" and message.translated_body:
+            continue
+        if (
+            not force
+            and message.translation_status == "FAILED"
+            and now - _as_utc(message.updated_at) < TRANSLATION_RETRY_DELAY
+        ):
+            continue
+        if not provider_configured:
+            if message.translation_status != "UNAVAILABLE":
+                message.translation_status = "UNAVAILABLE"
+                changed = True
+            continue
+        candidates.append(message)
+
+    if candidates:
+        try:
+            translator = resolved_catalog_translator(
+                session,
+                environment_factory=configured_catalog_translator,
+            )
+        except TranslationProviderError:
+            for message in candidates:
+                message.translation_status = "UNAVAILABLE"
+                changed = True
+        else:
+            for message in candidates:
+                translations = translate_values_with_memory(
+                    tenant_id=conversation.tenant_id,
+                    translator=translator,
+                    values=[message.body],
+                    source_locale="auto",
+                    target_locale=target_locale,
+                )
+                translated = translations.get(message.body, "").strip()
+                if translated:
+                    message.translated_body = translated
+                    message.translation_status = "READY"
+                else:
+                    message.translated_body = None
+                    message.translation_status = "FAILED"
+                changed = True
+    if changed:
+        session.commit()
 
 
 def _public_conversation_response(
@@ -359,7 +506,7 @@ def _public_conversation_response(
         reference_number=row.reference_number,
         status=row.status,
         messages=[
-            _message_response(message)
+            _public_message_response(message)
             for message in repository.list_messages(
                 session,
                 tenant_id=row.tenant_id,
@@ -398,9 +545,21 @@ def create_public_conversation(
         sender_type="VISITOR",
         client_message_id=request.client_message_id,
         body=request.message,
+        translation_source_locale=normalize_storefront_locale(request.locale),
+        translation_target_locale=_merchant_reading_locale(
+            session,
+            tenant_id=tenant.id,
+        ),
+        translation_status="PENDING",
     )
     session.add_all([row, message])
     session.commit()
+    _translate_visitor_messages(
+        session,
+        conversation=row,
+        messages=[message],
+        force=True,
+    )
     session.refresh(row)
     return _public_conversation_response(session, row, access_token=token)
 
@@ -464,18 +623,31 @@ def send_public_message(
     )
     if existing is None:
         now = utcnow()
-        session.add(
-            StorefrontChatMessageRow(
+        source_locale = request.locale or _visitor_locale(row)
+        existing = StorefrontChatMessageRow(
+            tenant_id=row.tenant_id,
+            conversation_id=row.id,
+            sender_type="VISITOR",
+            client_message_id=request.client_message_id,
+            body=request.message,
+            translation_source_locale=source_locale,
+            translation_target_locale=_merchant_reading_locale(
+                session,
                 tenant_id=row.tenant_id,
-                conversation_id=row.id,
-                sender_type="VISITOR",
-                client_message_id=request.client_message_id,
-                body=request.message,
-            )
+            ),
+            translation_status="PENDING",
         )
+        session.add(existing)
         row.last_message_at = now
         row.last_visitor_message_at = now
+        row.locale = source_locale
         session.commit()
+        _translate_visitor_messages(
+            session,
+            conversation=row,
+            messages=[existing],
+            force=True,
+        )
         session.refresh(row)
     return _public_conversation_response(session, row)
 
@@ -515,6 +687,7 @@ def list_conversations(
         page_size=page_size,
         status=status,
         query=query,
+        preview_locale=_merchant_reading_locale(session, tenant_id=tenant_id),
     )
     return SupportConversationPageResponse(
         items=[_summary(row, preview) for row, preview in rows],
@@ -550,7 +723,21 @@ def get_conversation(
         tenant_id=tenant_id,
         conversation_id=row.id,
     )
-    preview = messages[-1].body if messages else ""
+    _translate_visitor_messages(
+        session,
+        conversation=row,
+        messages=messages,
+    )
+    last_message = messages[-1] if messages else None
+    preview = (
+        last_message.translated_body
+        if last_message is not None
+        and last_message.translation_status == "READY"
+        and last_message.translation_target_locale
+        == _merchant_reading_locale(session, tenant_id=tenant_id)
+        and last_message.translated_body
+        else last_message.body if last_message is not None else ""
+    )
     session.commit()
     summary = _summary(row, preview)
     return SupportConversationDetailResponse(
@@ -587,6 +774,18 @@ def send_merchant_message(
             kind="conflict",
         )
     now = utcnow()
+    source_locale = _merchant_reading_locale(session, tenant_id=tenant_id)
+    target_locale = source_locale
+    translation_status = "NOT_REQUIRED"
+    if request.draft_message is not None:
+        if request.source_locale != source_locale:
+            raise ApplicationError(
+                "SUPPORT_TRANSLATION_SOURCE_MISMATCH",
+                "回复原文语言与当前内外贸版本不一致，请重新翻译。",
+                kind="conflict",
+            )
+        target_locale = request.target_locale or _visitor_locale(row)
+        translation_status = "READY"
     session.add(
         StorefrontChatMessageRow(
             tenant_id=tenant_id,
@@ -594,6 +793,10 @@ def send_merchant_message(
             sender_type="MERCHANT",
             sender_user_id=user_id,
             body=request.message,
+            draft_body=request.draft_message,
+            translation_source_locale=source_locale,
+            translation_target_locale=target_locale,
+            translation_status=translation_status,
         )
     )
     row.last_message_at = now
@@ -605,6 +808,79 @@ def send_merchant_message(
         tenant_id=tenant_id,
         conversation_id=row.id,
         permissions=frozenset({"support.view"}),
+    )
+
+
+def preview_merchant_message_translation(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    conversation_id: UUID,
+    permissions: frozenset[str],
+    request: SupportTranslationPreviewWrite,
+) -> SupportTranslationPreviewResponse:
+    _require(permissions, "support.reply")
+    row = repository.get_conversation(
+        session,
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+    )
+    if row is None:
+        raise ApplicationError(
+            "SUPPORT_CONVERSATION_NOT_FOUND",
+            "客服会话不存在。",
+            kind="not_found",
+        )
+    if row.status != "OPEN":
+        raise ApplicationError(
+            "SUPPORT_CONVERSATION_CLOSED",
+            "会话已结束，请先重新打开。",
+            kind="conflict",
+        )
+    source_locale = _merchant_reading_locale(session, tenant_id=tenant_id)
+    target_locale = request.target_locale
+    if source_locale == target_locale:
+        translated = request.message
+    else:
+        if not translation_provider_is_configured(
+            session,
+            environment_check=catalog_translation_is_configured,
+        ):
+            raise ApplicationError(
+                "SUPPORT_TRANSLATION_UNAVAILABLE",
+                "翻译服务尚未配置，请联系平台管理员。",
+                kind="unavailable",
+            )
+        try:
+            translator = resolved_catalog_translator(
+                session,
+                environment_factory=configured_catalog_translator,
+            )
+        except TranslationProviderError as exc:
+            raise ApplicationError(
+                "SUPPORT_TRANSLATION_UNAVAILABLE",
+                "翻译服务暂不可用，请稍后重试。",
+                kind="unavailable",
+            ) from exc
+        translations = translate_values_with_memory(
+            tenant_id=tenant_id,
+            translator=translator,
+            values=[request.message],
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+        translated = translations.get(request.message, "").strip()
+        if not translated:
+            raise ApplicationError(
+                "SUPPORT_TRANSLATION_FAILED",
+                "这条回复暂时无法翻译，请稍后重试或直接编辑后发送。",
+                kind="unavailable",
+            )
+    return SupportTranslationPreviewResponse(
+        source_locale=source_locale,
+        target_locale=target_locale,
+        original_message=request.message,
+        translated_message=translated,
     )
 
 

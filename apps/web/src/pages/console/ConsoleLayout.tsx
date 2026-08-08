@@ -60,6 +60,7 @@ const navigationGroups = [
       { to: "/console/products", label: "SKU 商品库", mobileLabel: "SKU", icon: Cube, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/products/categories", label: "分类管理", mobileLabel: "分类", icon: TreeStructure, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/products/tags", label: "标签管理", mobileLabel: "标签", icon: Tag, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/languages", label: "多语言", mobileLabel: "语言", icon: Translate, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {
@@ -83,6 +84,7 @@ const navigationGroups = [
     items: [
       { to: "/console/tenants", label: "商家管理", mobileLabel: "商家", icon: StoreIcon, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/monitoring", label: "系统监控", mobileLabel: "监控", icon: Pulse, permissions: [], platformAdminOnly: true, mobilePrimary: false },
+      { to: "/console/system/translation", label: "翻译 API", mobileLabel: "翻译 API", icon: Translate, permissions: [], platformAdminOnly: true, mobilePrimary: false },
     ],
   },
   {

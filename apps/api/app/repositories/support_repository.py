@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..support_models import (
@@ -87,6 +87,7 @@ def list_conversations(
     page_size: int,
     status: str | None,
     query: str,
+    preview_locale: str,
 ) -> tuple[list[tuple[StorefrontChatConversationRow, str]], int]:
     predicate = [StorefrontChatConversationRow.tenant_id == tenant_id]
     if status:
@@ -108,7 +109,22 @@ def list_conversations(
         or 0
     )
     latest_body = (
-        select(StorefrontChatMessageRow.body)
+        select(
+            case(
+                (
+                    (
+                        StorefrontChatMessageRow.translation_status == "READY"
+                    )
+                    & (
+                        StorefrontChatMessageRow.translation_target_locale
+                        == preview_locale
+                    )
+                    & StorefrontChatMessageRow.translated_body.is_not(None),
+                    StorefrontChatMessageRow.translated_body,
+                ),
+                else_=StorefrontChatMessageRow.body,
+            )
+        )
         .where(
             StorefrontChatMessageRow.tenant_id
             == StorefrontChatConversationRow.tenant_id,

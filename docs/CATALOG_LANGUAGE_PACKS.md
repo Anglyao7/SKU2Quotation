@@ -1,0 +1,124 @@
+# 商品多语言包架构
+
+## 目标
+
+商品翻译不再发生在访客请求链路中。商家在“多语言”模块选择前台语言，按语言执行全量或增量翻译；服务端完成翻译后生成一个不可变的 gzip JSON 文件，上传到 Cloudflare R2，最后才原子切换数据库中的当前版本指针。
+
+前台每次打开只请求一个很小的版本清单。版本没有变化时直接读取 IndexedDB；版本变化时只下载一次新语言包，并保留当前版本和一个旧版本用于网络失败时降级。
+
+## 数据流
+
+```text
+商品 / SKU / 分类 / 标签变更
+            │
+            ▼
+后台“多语言”模块 ── 全量翻译 / 翻译新增与变更
+            │
+            ▼
+翻译 API + PostgreSQL 60 天字段翻译记忆
+            │
+            ▼
+生成 catalog-v{version}-{sha}.json.gz
+            │
+            ▼
+上传 Cloudflare R2（immutable, 1 year）
+            │
+            ▼
+数据库原子切换当前语言包版本
+            │
+            ▼
+版本清单 → 浏览器 IndexedDB → 商品/分类本地覆盖
+```
+
+如果翻译、打包或上传任一步骤失败，数据库不会切换，访客继续使用旧语言包。语言包文件名包含版本号和内容哈希，因此不会覆盖正在被使用的对象，也不会受到 CDN 旧缓存污染。
+
+## 全量翻译
+
+全量任务忽略上一份包中的条目复用，重新核对当前公开商品、SKU、分类、标签、描述、规格名称和规格值。字段级翻译记忆仍可避免对完全相同的文本重复调用供应商 API；全量的含义是重新构建完整结果，而不是故意重复付费。
+
+适合以下情况：
+
+- 首次发布某个语言；
+- 更换翻译模型或翻译规则；
+- 怀疑历史翻译质量或语言包损坏；
+- 需要强制生成一个全新的基线版本。
+
+## 增量翻译
+
+每个语言包记录 `source_cutoff_at`，每个 Product 和 SKU 条目记录 `source_updated_at` 与 `source_hash`。时间戳用于快速解释和定位“上次发布后发生了什么变化”，内容哈希是最终正确性判断：
+
+1. 读取当前公开目录，形成稳定来源快照；一万到两万 SKU 的纯数据库扫描成本很低。
+2. `updated_at` 晚于上次截止时间的记录是明显的变更候选。
+3. 对所有条目比较内容哈希，防止批量脚本未正确更新时间、分类/标签关联变化或时间精度造成漏检。
+4. 哈希相同的 Product/SKU 直接复用上一版本结果；哈希不同的条目才进入翻译记忆和翻译 API。
+5. 对删除的条目，以当前快照为准，不写入新包，因此不会残留在下一版本。
+6. 整包计算 `source_digest`；新增、删除、修改以及模型版本变化都会让后台显示“有变更待发布”。
+
+因此不能只使用时间戳。单独依赖时间戳会漏掉关联分类变化、错误导入时间和同一秒内的覆盖更新；时间戳加哈希兼顾速度和正确性。
+
+## 浏览器缓存与降级
+
+- IndexedDB 键由 `商家路径 + 语言 + 版本 + SHA-256` 组成，不会串商家或串语言。
+- 清单每 60 秒最多检查一次；语言包只在版本或哈希变化时下载。
+- 下载后校验 JSON schema、语言、版本和 SHA-256，校验失败不会污染缓存。
+- 当前版本下载失败时，使用该商家和语言最后一个有效本地版本。
+- 每个商家/语言保留当前版本和一个旧版本，避免无限占用浏览器空间。
+- 浏览器清理站点数据、无痕模式退出或用户手动清除缓存后需要重新下载，这是浏览器的正常隐私边界。
+
+## Cloudflare R2 配置
+
+服务端使用 R2 的 S3 兼容接口。生产环境至少配置：
+
+```dotenv
+TRANSLATION_PACKAGE_STORAGE_BACKEND=s3
+TRANSLATION_PACKAGE_BUCKET=atc-language-packages
+TRANSLATION_PACKAGE_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+TRANSLATION_PACKAGE_REGION=auto
+TRANSLATION_PACKAGE_ACCESS_KEY_ID=<R2_ACCESS_KEY_ID>
+TRANSLATION_PACKAGE_SECRET_ACCESS_KEY=<R2_SECRET_ACCESS_KEY>
+TRANSLATION_PACKAGE_PUBLIC_BASE_URL=https://languages.example.com
+```
+
+`TRANSLATION_PACKAGE_PUBLIC_BASE_URL` 应绑定 R2 自定义域名。若暂时不配置，前台仍可通过应用 API 代理下载，但不会获得 R2 边缘缓存的全部收益。
+
+R2 CORS 示例（语言包是公开只读文件，可以允许任意来源 GET；若只使用一个官网域名，可把 `*` 换成该域名）：
+
+```json
+[
+  {
+    "AllowedOrigins": ["*"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["Range", "If-None-Match"],
+    "ExposeHeaders": ["ETag", "Content-Length", "Content-Encoding"],
+    "MaxAgeSeconds": 86400
+  }
+]
+```
+
+还需要为自定义域名创建 Cache Rule，使 `translations/*/*.json.gz` 可以在边缘缓存。对象响应已经写入：
+
+```text
+Cache-Control: public, max-age=31536000, immutable
+Content-Type: application/json; charset=utf-8
+Content-Encoding: gzip
+```
+
+建议在 R2 设置生命周期规则，保留历史版本 30 天后删除。当前版本始终由数据库清单指向；30 天足够覆盖 CDN 传播、浏览器旧清单和人工回滚窗口。
+
+## 运维与故障行为
+
+- 翻译任务阶段：核对变更、调用 API、整理语言包、上传 R2、发布完成。
+- API 进程重启会把超过 30 分钟未更新的任务标记为失败，可重新执行增量翻译；已发布版本不受影响。
+- R2 暂时不可用时，现有浏览器缓存仍可工作；无缓存访客会回退到原文或应用代理的最后可用结果。
+- 切换翻译模型会改变 `provider_version`，后台会将现有包标记为过期。
+- 存储后端、R2 bucket、endpoint 或公开域名变化会改变不含密钥的存储指纹；下一次增量任务会把语言包重新发布到新位置，不要求重新付费翻译全部 SKU。
+- R2 密钥只存在服务端环境变量，不写入数据库语言包、响应或前端代码。
+
+## 验收清单
+
+1. 为一个语言执行全量翻译，确认任务到达“发布完成”。
+2. 打开商家前台，确认 Product、SKU、描述、分类、标签和规格均来自语言包。
+3. 断开网络后刷新已访问页面，确认 IndexedDB 中的语言包仍可读取。
+4. 修改一个 SKU 名称，执行增量翻译，确认新版本只处理变更条目并发布。
+5. 删除一个 SKU，执行增量翻译，确认新包不再包含该 SKU。
+6. 模拟 R2 上传失败，确认当前数据库版本和访客页面仍保持旧包。

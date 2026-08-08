@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .storefront_locales import StorefrontLocale, normalize_storefront_locale
+
 
 SupportConversationStatus = Literal["OPEN", "CLOSED"]
 SupportSenderType = Literal["VISITOR", "MERCHANT", "SYSTEM", "AI"]
@@ -101,17 +103,28 @@ class PublicSupportWidgetResponse(BaseModel):
 class PublicChatMessageWrite(BaseModel):
     message: str = Field(min_length=1, max_length=4_000)
     client_message_id: str | None = Field(default=None, max_length=80)
+    locale: StorefrontLocale | None = None
 
     @field_validator("message", mode="before")
     @classmethod
     def normalize_message(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("locale", mode="before")
+    @classmethod
+    def normalize_locale(cls, value: object) -> object:
+        if value is None:
+            return None
+        locale = normalize_storefront_locale(str(value))
+        if locale is None:
+            raise ValueError("请选择系统支持的客服语言")
+        return locale
+
 
 class PublicChatConversationCreate(PublicChatMessageWrite):
     visitor_name: str | None = Field(default=None, max_length=120)
     visitor_email: str | None = Field(default=None, max_length=320)
-    locale: str = Field(default="zh-CN", max_length=20)
+    locale: StorefrontLocale = "zh-CN"
 
     @field_validator("visitor_name", mode="before")
     @classmethod
@@ -129,18 +142,35 @@ class PublicChatConversationCreate(PublicChatMessageWrite):
         return normalized or None
 
 
-class SupportChatMessageResponse(BaseModel):
+class PublicSupportChatMessageResponse(BaseModel):
     id: UUID
     sender_type: SupportSenderType
     body: str
     created_at: datetime
 
 
+SupportTranslationStatus = Literal[
+    "PENDING",
+    "READY",
+    "FAILED",
+    "UNAVAILABLE",
+    "NOT_REQUIRED",
+]
+
+
+class SupportChatMessageResponse(PublicSupportChatMessageResponse):
+    draft_body: str | None = None
+    translated_body: str | None = None
+    translation_source_locale: str | None = None
+    translation_target_locale: str | None = None
+    translation_status: SupportTranslationStatus = "PENDING"
+
+
 class PublicChatConversationResponse(BaseModel):
     id: UUID
     reference_number: str
     status: SupportConversationStatus
-    messages: list[SupportChatMessageResponse]
+    messages: list[PublicSupportChatMessageResponse]
     access_token: str | None = None
 
 
@@ -170,11 +200,45 @@ class SupportConversationPageResponse(BaseModel):
 
 class SupportMerchantMessageWrite(BaseModel):
     message: str = Field(min_length=1, max_length=4_000)
+    draft_message: str | None = Field(default=None, max_length=4_000)
+    source_locale: StorefrontLocale | None = None
+    target_locale: StorefrontLocale | None = None
 
     @field_validator("message", mode="before")
     @classmethod
     def normalize_message(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("draft_message", mode="before")
+    @classmethod
+    def normalize_draft_message(cls, value: object) -> object:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def complete_translation_metadata(self) -> "SupportMerchantMessageWrite":
+        values = (self.draft_message, self.source_locale, self.target_locale)
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("译文发送需要完整的原文和语言信息")
+        return self
+
+
+class SupportTranslationPreviewWrite(BaseModel):
+    message: str = Field(min_length=1, max_length=4_000)
+    target_locale: StorefrontLocale
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def normalize_message(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class SupportTranslationPreviewResponse(BaseModel):
+    source_locale: StorefrontLocale
+    target_locale: StorefrontLocale
+    original_message: str
+    translated_message: str
 
 
 class SupportConversationStatusUpdate(BaseModel):

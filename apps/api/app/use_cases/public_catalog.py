@@ -42,9 +42,14 @@ from ..public_catalog_schemas import (
     PublicStoreResponse,
 )
 from ..repositories import public_catalog_repository as repository
+from ..repositories import catalog_translation_repository
 from ..services.catalog_translation import (
     CatalogTranslationResult,
     catalog_translation_source,
+)
+from ..services.catalog_language_packages import (
+    catalog_product_package_source_hash,
+    catalog_sku_package_source_hash,
 )
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
@@ -58,6 +63,10 @@ from ..services.translation import (
     configured_catalog_translator,
 )
 from ..services.translation_memory import translate_values_with_memory
+from ..services.translation_configuration import (
+    resolved_catalog_translator,
+    translation_provider_is_configured,
+)
 from ..storefront_locales import (
     effective_storefront_locales,
     normalize_storefront_locale,
@@ -285,6 +294,16 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+def _catalog_row_updated_at(row: object) -> datetime:
+    values = [
+        _as_utc(value)
+        for item in row
+        if item is not None
+        if (value := getattr(item, "updated_at", None)) is not None
+    ]
+    return max(values, default=datetime(1970, 1, 1, tzinfo=UTC))
+
+
 def _normalize_tags(values: list[str]) -> set[str]:
     result: set[str] = set()
     for value in values:
@@ -329,6 +348,7 @@ def _normalized_locale(value: str | None, *, default: str = "zh-CN") -> str:
 
 
 def _available_storefront_locales(
+    session: Session,
     tenant: object,
     profile: object,
 ) -> list[str]:
@@ -337,12 +357,26 @@ def _available_storefront_locales(
         getattr(profile, "storefront_locales", None),
         source_locale=source_locale,
     )
-    if catalog_translation_is_configured():
+    if translation_provider_is_configured(
+        session,
+        environment_check=catalog_translation_is_configured,
+    ):
         return configured
-    return [source_locale]
+    published = set(
+        catalog_translation_repository.available_language_pack_locales(
+            session,
+            tenant_id=tenant.id,
+        )
+    )
+    return [
+        locale
+        for locale in configured
+        if locale == source_locale or locale in published
+    ]
 
 
 def _requested_storefront_locale(
+    session: Session,
     locale: str | None,
     *,
     tenant: object,
@@ -350,7 +384,7 @@ def _requested_storefront_locale(
 ) -> tuple[str, str, list[str]]:
     source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
     requested_locale = _normalized_locale(locale, default=source_locale)
-    available_locales = _available_storefront_locales(tenant, profile)
+    available_locales = _available_storefront_locales(session, tenant, profile)
     if requested_locale not in available_locales:
         raise ApplicationError(
             "PUBLIC_LOCALE_DISABLED",
@@ -484,6 +518,7 @@ def get_store(
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, available_locales = (
         _requested_storefront_locale(
+            session,
             locale,
             tenant=tenant,
             profile=profile,
@@ -581,6 +616,8 @@ def _sku_response(
         image_url=_public_image_url(image, slug=slug),
         product_version=product.current_version,
         sku_version=sku.version,
+        source_updated_at=_catalog_row_updated_at(row),
+        translation_source_hash=catalog_sku_package_source_hash(row),
         specification=(
             str((sku.option_values or {}).get("规格名称") or "").strip()
             or None
@@ -599,6 +636,7 @@ def _sku_response(
 
 
 def _live_translation_provider(
+    session: Session,
     *,
     source_locale: str,
     target_locale: str,
@@ -606,7 +644,10 @@ def _live_translation_provider(
     if target_locale == source_locale:
         return None
     try:
-        return configured_catalog_translator()
+        return resolved_catalog_translator(
+            session,
+            environment_factory=configured_catalog_translator,
+        )
     except TranslationProviderError as exc:
         logger.warning("live catalog translation is unavailable: %s", exc)
         return None
@@ -745,9 +786,9 @@ def _translate_public_catalog_values(
     """Translate Chinese, English and mixed storefront content completely.
 
     Whole values retain their context and formatting. Pure English values are
-    translated with an English source language; mixed Chinese/English values
-    are translated as Chinese first, then any English fragment that survives
-    verbatim receives a small cached English-to-target repair pass.
+    translated with an English source language. Providers without native
+    mixed-language support receive a cached English-to-target repair pass;
+    capable LLM providers translate mixed text once to avoid duplicate work.
     """
 
     source_values = list(
@@ -791,7 +832,10 @@ def _translate_public_catalog_values(
         translated_values.update(translated_group)
         complete_values.update(translated_group)
 
-    if target_locale not in {"en", "en-US"}:
+    requires_english_repair = not bool(
+        getattr(translator, "translates_mixed_language_text", False)
+    )
+    if target_locale not in {"en", "en-US"} and requires_english_repair:
         residual_fragments_by_value: dict[str, tuple[str, ...]] = {}
         for source_value in unique_values:
             translated_value = translated_values.get(source_value)
@@ -1477,6 +1521,8 @@ def _product_summary_response(
         image_url=_public_image_url(image, slug=slug),
         sku_count=len({row[1].id for row in rows}),
         product_version=product.current_version,
+        source_updated_at=max(_catalog_row_updated_at(row) for row in rows),
+        translation_source_hash=catalog_product_package_source_hash(rows),
         source_locale=source_locale,
         locale=locale,
         translation_status=(
@@ -1647,6 +1693,7 @@ def list_public_products(
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
+            session,
             locale,
             tenant=tenant,
             profile=profile,
@@ -1764,6 +1811,7 @@ def list_public_products(
         product_ids=set(selected_product_ids),
     )
     translator = _live_translation_provider(
+        session,
         source_locale=source_locale,
         target_locale=requested_locale,
     )
@@ -1844,6 +1892,7 @@ def get_public_product(
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
+            session,
             locale,
             tenant=tenant,
             profile=profile,
@@ -1878,6 +1927,7 @@ def get_public_product(
         product_id=product_id,
     )
     translator = _live_translation_provider(
+        session,
         source_locale=source_locale,
         target_locale=requested_locale,
     )
@@ -2021,6 +2071,7 @@ def list_public_skus(
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
+            session,
             locale,
             tenant=tenant,
             profile=profile,
@@ -2117,6 +2168,7 @@ def list_public_skus(
         product_ids={row[2].id for row in selected},
     )
     translator = _live_translation_provider(
+        session,
         source_locale=source_locale,
         target_locale=requested_locale,
     )
@@ -2203,6 +2255,7 @@ def get_public_sku(
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
+            session,
             locale,
             tenant=tenant,
             profile=profile,
@@ -2237,6 +2290,7 @@ def get_public_sku(
         product_ids={row[2].id},
     )
     translator = _live_translation_provider(
+        session,
         source_locale=source_locale,
         target_locale=requested_locale,
     )

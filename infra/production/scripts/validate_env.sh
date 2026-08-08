@@ -103,6 +103,22 @@ if [[ "${ATC_ENABLE_LEGACY_WWW}" == "true" ]]; then
   required_values+=(ATC_LEGACY_WWW_UPSTREAM ATC_LEGACY_WWW_NETWORK)
 fi
 
+translation_package_backend="${TRANSLATION_PACKAGE_STORAGE_BACKEND:-}"
+translation_package_backend="${translation_package_backend,,}"
+if [[ -n "${translation_package_backend}" ]]; then
+  [[ "${translation_package_backend}" =~ ^(local|s3|r2)$ ]] \
+    || die "TRANSLATION_PACKAGE_STORAGE_BACKEND must be local, s3, or r2"
+fi
+if [[ "${translation_package_backend}" =~ ^(s3|r2)$ ]]; then
+  required_values+=(
+    TRANSLATION_PACKAGE_BUCKET
+    TRANSLATION_PACKAGE_ENDPOINT_URL
+    TRANSLATION_PACKAGE_ACCESS_KEY_ID
+    TRANSLATION_PACKAGE_SECRET_ACCESS_KEY
+    TRANSLATION_PACKAGE_PUBLIC_BASE_URL
+  )
+fi
+
 for name in "${required_values[@]}"; do
   [[ -n "${!name:-}" ]] || die "${name} is required"
   value="${!name}"
@@ -125,6 +141,13 @@ done
   || die "PRIVACY_CONTACT_EMAIL must be a real mailbox"
 [[ "${PRIVACY_EFFECTIVE_DATE:-2026-07-23}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
   || die "PRIVACY_EFFECTIVE_DATE must use YYYY-MM-DD"
+
+if [[ "${translation_package_backend}" =~ ^(s3|r2)$ ]]; then
+  [[ "${TRANSLATION_PACKAGE_ENDPOINT_URL}" =~ ^https://[^[:space:]]+$ ]] \
+    || die "TRANSLATION_PACKAGE_ENDPOINT_URL must use HTTPS"
+  [[ "${TRANSLATION_PACKAGE_PUBLIC_BASE_URL}" =~ ^https://[^[:space:]]+$ ]] \
+    || die "TRANSLATION_PACKAGE_PUBLIC_BASE_URL must use HTTPS"
+fi
 
 if [[ "${ATC_ENABLE_SMTP}" == "true" ]]; then
   [[ "${KEYCLOAK_SMTP_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}$ ]] \

@@ -55,6 +55,8 @@ const InquiryPage = recoverableLazy(() => import("./core/pages/InquiryPage").the
 const InventoryPage = recoverableLazy(() => import("./core/pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
 const PermissionsPage = recoverableLazy(() => import("./core/pages/PermissionsPage").then((module) => ({ default: module.PermissionsPage })));
 const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMonitoringPage").then((module) => ({ default: module.SystemMonitoringPage })));
+const TranslationApiSettingsPage = recoverableLazy(() => import("./core/pages/TranslationApiSettingsPage").then((module) => ({ default: module.TranslationApiSettingsPage })));
+const LanguagePackagesPage = recoverableLazy(() => import("./core/pages/LanguagePackagesPage").then((module) => ({ default: module.LanguagePackagesPage })));
 const StorefrontAnalyticsPage = recoverableLazy(() => import("./core/pages/StorefrontAnalyticsPage").then((module) => ({ default: module.StorefrontAnalyticsPage })));
 const AnnouncementsPage = recoverableLazy(() => import("./core/pages/AnnouncementsPage").then((module) => ({ default: module.AnnouncementsPage })));
 const SupportCenterPage = recoverableLazy(() => import("./core/pages/SupportCenterPage").then((module) => ({ default: module.SupportCenterPage })));
@@ -270,6 +272,7 @@ const router = createBrowserRouter([{
         { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
+        { path: "languages", element: <PermissionGate anyOf={["product.view"]}><LanguagePackagesPage /></PermissionGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
         { path: "suppliers", element: <Navigate to="/console/products" replace /> },
@@ -280,6 +283,7 @@ const router = createBrowserRouter([{
         { path: "account", element: <AccountSettingsPage /> },
         { path: "system/permissions", element: <PermissionsPage /> },
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
+        { path: "system/translation", element: <PlatformAdminGate><TranslationApiSettingsPage /></PlatformAdminGate> },
         { path: "analytics", element: <PermissionGate anyOf={["analytics.view"]}><StorefrontAnalyticsPage /></PermissionGate> },
         { path: "announcements", element: <PermissionGate anyOf={["announcement.manage"]}><AnnouncementsPage /></PermissionGate> },
         { path: "support", element: <PermissionGate anyOf={["support.view", "support.settings_manage"]}><SupportCenterPage /></PermissionGate> },

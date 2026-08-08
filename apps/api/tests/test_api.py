@@ -2,6 +2,7 @@ import atexit
 import hashlib
 import io
 import os
+import re
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -65,7 +66,9 @@ from app.embedding_management_models import (
     EmbeddingProviderSettingsRow,
     KnowledgeIndexJobRow,
 )
+from app.translation_management_models import TranslationProviderSettingsRow
 from app.catalog_translation_models import (
+    CatalogLanguagePackRow,
     CatalogSkuTranslationRow,
     CatalogTextTranslationRow,
     CatalogTranslationJobRow,
@@ -114,6 +117,11 @@ from app.saas_seed import (
 from app.services.file_detection import OLE_SIGNATURE, detect_file_path, detect_file_type
 from app.services.embedding import DeterministicFeatureHashEmbedding, validate_vectors
 from app.services.embedding_configuration import decrypt_api_key
+from app.services.translation_configuration import (
+    decrypt_translation_api_key,
+    resolved_catalog_translator,
+    translation_provider_is_configured,
+)
 from app.services.catalog_translation import catalog_translation_source
 from app.services.translation import TranslationIdentity, TranslationProviderError
 from app.services.storefront_analytics import (
@@ -163,7 +171,13 @@ from app.services.category_template_import import (
 )
 from app.services.product_intelligence.normalization import normalize_product_field
 from app.services.rbac import has_permission, list_permissions
-from app.services.auth.tokens import REFRESH_COOKIE_NAME, hash_secret
+from app.services.auth.tokens import (
+    ACCESS_TTL_SECONDS,
+    REFRESH_COOKIE_NAME,
+    REFRESH_TTL_SECONDS,
+    SESSION_TTL_SECONDS,
+    hash_secret,
+)
 from app.services.auth.contracts import IdentityClaim, IdentityProviderError
 from app.services.auth.oidc_provider import OidcIdentityProviderAdapter
 from app.services.auth.local_credentials import new_local_password_material
@@ -1113,6 +1127,156 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     assert rejected.status_code == 409, rejected.text
 
 
+class _SupportTranslationTestProvider:
+    identity = TranslationIdentity(provider="support-translation-test", version="v1")
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        if source_locale == "auto" and target_locale == "zh-CN":
+            replacements = {
+                "¿Tienen este producto en azul?": "这个商品有蓝色吗？",
+            }
+        elif source_locale == "auto" and target_locale == "en-US":
+            replacements = {
+                "Este produto está disponível?": "Is this product available?",
+            }
+        else:
+            replacements = {
+                ("zh-CN", "es"): {
+                    "蓝色有库存，可以立即报价。":
+                    "El azul está disponible y podemos cotizarlo ahora.",
+                },
+            }.get((source_locale, target_locale))
+        if replacements is None:
+            raise AssertionError(
+                f"unexpected support translation: {source_locale} -> {target_locale}"
+            )
+        translated = text
+        for source, target in replacements.items():
+            translated = translated.replace(source, target)
+        return translated
+
+
+def test_support_conversation_bidirectional_translation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.use_cases import support as support_use_cases
+
+    provider = _SupportTranslationTestProvider()
+    translation_memory_service._reset_translation_memory_for_tests()
+    monkeypatch.setattr(
+        support_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        support_use_cases,
+        "configured_catalog_translator",
+        lambda: provider,
+    )
+    with SessionLocal() as session:
+        tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+        assert tenant is not None
+        original_currency = tenant.default_currency
+        tenant.default_currency = "CNY"
+        session.execute(
+            delete(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogTextTranslationRow.provider == provider.identity.provider,
+            )
+        )
+        session.commit()
+
+    try:
+        created = client.post(
+            "/api/store/demo/support/conversations",
+            json={
+                "message": "¿Tienen este producto en azul?",
+                "client_message_id": str(uuid4()),
+                "locale": "es",
+            },
+        )
+        assert created.status_code == 201, created.text
+        public_message = created.json()["messages"][0]
+        assert public_message["body"] == "¿Tienen este producto en azul?"
+        assert "translated_body" not in public_message
+
+        conversation_id = created.json()["id"]
+        support_token = created.json()["access_token"]
+        detail = client.get(f"/api/v1/support/conversations/{conversation_id}")
+        assert detail.status_code == 200, detail.text
+        visitor_message = detail.json()["messages"][0]
+        assert visitor_message["translated_body"] == "这个商品有蓝色吗？"
+        assert visitor_message["translation_source_locale"] == "es"
+        assert visitor_message["translation_target_locale"] == "zh-CN"
+        assert visitor_message["translation_status"] == "READY"
+
+        preview = client.post(
+            f"/api/v1/support/conversations/{conversation_id}/translation-preview",
+            json={
+                "message": "蓝色有库存，可以立即报价。",
+                "target_locale": "es",
+            },
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["translated_message"].startswith("El azul")
+
+        final_reply = "El azul está disponible; podemos cotizarlo hoy."
+        replied = client.post(
+            f"/api/v1/support/conversations/{conversation_id}/messages",
+            json={
+                "message": final_reply,
+                "draft_message": "蓝色有库存，可以立即报价。",
+                "source_locale": "zh-CN",
+                "target_locale": "es",
+            },
+        )
+        assert replied.status_code == 200, replied.text
+        merchant_message = replied.json()["messages"][-1]
+        assert merchant_message["body"] == final_reply
+        assert merchant_message["draft_body"] == "蓝色有库存，可以立即报价。"
+
+        public_detail = client.get(
+            "/api/store/demo/support/conversations/current",
+            headers={"X-Support-Token": support_token},
+        )
+        assert public_detail.status_code == 200, public_detail.text
+        assert public_detail.json()["messages"][-1]["body"] == final_reply
+        assert "draft_body" not in public_detail.json()["messages"][-1]
+
+        with SessionLocal() as session:
+            tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+            assert tenant is not None
+            tenant.default_currency = "USD"
+            session.commit()
+        export_conversation = client.post(
+            "/api/store/demo/support/conversations",
+            json={
+                "message": "Este produto está disponível?",
+                "client_message_id": str(uuid4()),
+                "locale": "pt",
+            },
+        )
+        assert export_conversation.status_code == 201, export_conversation.text
+        export_detail = client.get(
+            f"/api/v1/support/conversations/{export_conversation.json()['id']}"
+        )
+        export_message = export_detail.json()["messages"][0]
+        assert export_message["translated_body"] == "Is this product available?"
+        assert export_message["translation_target_locale"] == "en-US"
+    finally:
+        with SessionLocal() as session:
+            tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+            assert tenant is not None
+            tenant.default_currency = original_currency
+            session.commit()
+
+
 def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
     assert client.get("/api/v1/suppliers").status_code == 401
@@ -1141,6 +1305,8 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     assert token_data["permission_version"] == 1
     assert "product.view" in token_data["permissions"]
     assert "announcement.manage" in token_data["permissions"]
+    assert ACCESS_TTL_SECONDS == 10 * 60
+    assert token_data["expires_in"] == ACCESS_TTL_SECONDS
     access_token = token_data["access_token"]
     csrf_token = token_data["csrf_token"]
     raw_refresh = login_response.cookies.get(REFRESH_COOKIE_NAME)
@@ -1159,6 +1325,10 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
             )
         )
         assert stored_refresh is not None
+        assert SESSION_TTL_SECONDS == 7 * 24 * 60 * 60
+        assert REFRESH_TTL_SECONDS == 7 * 24 * 60 * 60
+        assert auth_session.expires_at - auth_session.issued_at == timedelta(days=7)
+        assert stored_refresh.expires_at - stored_refresh.issued_at == timedelta(days=7)
         assert stored_refresh.token_hash == hash_secret(raw_refresh)
         assert stored_refresh.token_hash != raw_refresh
 
@@ -2602,6 +2772,15 @@ def test_platform_admin_routes_reject_regular_members(
             denied_system_monitoring.json()["detail"]["code"]
             == "PLATFORM_ADMIN_REQUIRED"
         )
+        denied_translation_settings = regular_client.get(
+            "/api/v1/system/translation/settings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_translation_settings.status_code == 403
+        assert (
+            denied_translation_settings.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
 
 
 def test_system_monitoring_reports_server_resources_without_caching() -> None:
@@ -2726,6 +2905,7 @@ def test_refresh_cookie_is_secure_in_staging(monkeypatch: pytest.MonkeyPatch) ->
     assert "httponly" in cookie
     assert "secure" in cookie
     assert "samesite=lax" in cookie
+    assert "max-age=604800" in cookie
 
 
 def test_multi_tenant_session_requires_server_validated_tenant_switch(
@@ -4168,6 +4348,202 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
             session.commit()
 
 
+def test_platform_admin_manages_encrypted_translation_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.use_cases import translation_management as management_use_cases
+
+    raw_api_key = "sk-translation-test-never-return-4321"
+    with SessionLocal() as session:
+        session.execute(delete(TranslationProviderSettingsRow))
+        session.commit()
+
+    class TestTranslationProvider:
+        identity = TranslationIdentity(
+            provider="openai-compatible",
+            version="test-v1",
+        )
+
+        def translate(
+            self,
+            text: str,
+            *,
+            source_locale: str,
+            target_locale: str,
+        ) -> str:
+            assert text == "智能宠物喂食器 SF-6L20"
+            assert source_locale == "zh-CN"
+            assert target_locale == "en-US"
+            return "Smart pet feeder SF-6L20"
+
+    try:
+        initial = client.get("/api/v1/system/translation/settings")
+        assert initial.status_code == 200, initial.text
+        assert initial.headers["cache-control"] == "no-store"
+        assert "api_key" not in initial.json()
+
+        saved = client.put(
+            "/api/v1/system/translation/settings",
+            json={
+                "enabled": True,
+                "base_url": "https://translation.example.test/v1",
+                "api_key": raw_api_key,
+                "model_name": "translation-test-model",
+                "timeout_seconds": 25,
+                "max_tokens": 8192,
+                "reasoning_effort": "low",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        payload = saved.json()
+        assert payload["source"] == "database"
+        assert payload["enabled"] is True
+        assert payload["api_key_configured"] is True
+        assert payload["api_key_hint"] == "••••4321"
+        assert raw_api_key not in saved.text
+        assert "api_key_ciphertext" not in payload
+
+        with SessionLocal() as session:
+            row = session.get(
+                TranslationProviderSettingsRow,
+                "CATALOG_TRANSLATION",
+            )
+            assert row is not None
+            assert row.api_key_ciphertext is not None
+            assert raw_api_key not in row.api_key_ciphertext
+            assert (
+                decrypt_translation_api_key(row.api_key_ciphertext)
+                == raw_api_key
+            )
+            original_ciphertext = row.api_key_ciphertext
+
+        retained = client.put(
+            "/api/v1/system/translation/settings",
+            json={
+                "enabled": True,
+                "base_url": "https://translation.example.test/v1",
+                "model_name": "translation-test-model-v2",
+                "timeout_seconds": 20,
+                "max_tokens": 16384,
+                "reasoning_effort": "minimal",
+            },
+        )
+        assert retained.status_code == 200, retained.text
+        with SessionLocal() as session:
+            row = session.get(
+                TranslationProviderSettingsRow,
+                "CATALOG_TRANSLATION",
+            )
+            assert row is not None
+            assert row.api_key_ciphertext == original_ciphertext
+            provider = resolved_catalog_translator(
+                session,
+                environment_factory=lambda: (_ for _ in ()).throw(
+                    AssertionError("database settings must win")
+                ),
+            )
+            assert provider.identity.provider == "openai-compatible"
+            assert "translation-test-model-v2" in provider.identity.version
+
+        monkeypatch.setattr(
+            management_use_cases,
+            "candidate_translation_provider",
+            lambda *_args, **_kwargs: TestTranslationProvider(),
+        )
+        tested = client.post(
+            "/api/v1/system/translation/settings/test",
+            json={
+                "base_url": "https://translation.example.test/v1",
+                "model_name": "translation-test-model-v2",
+                "timeout_seconds": 20,
+                "max_tokens": 16384,
+                "reasoning_effort": "minimal",
+            },
+        )
+        assert tested.status_code == 200, tested.text
+        assert tested.json()["translated_text"] == "Smart pet feeder SF-6L20"
+        assert tested.json()["latency_ms"] >= 0
+        assert raw_api_key not in tested.text
+
+        disabled = client.put(
+            "/api/v1/system/translation/settings",
+            json={
+                "enabled": False,
+                "base_url": "https://translation.example.test/v1",
+                "model_name": "translation-test-model-v2",
+                "timeout_seconds": 20,
+                "max_tokens": 16384,
+                "reasoning_effort": "minimal",
+            },
+        )
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["enabled"] is False
+        with SessionLocal() as session:
+            assert translation_provider_is_configured(
+                session,
+                environment_check=lambda: True,
+            ) is False
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(TranslationProviderSettingsRow))
+            session.commit()
+
+
+def test_platform_admin_manages_aliyun_translation_credentials() -> None:
+    access_key_id = "LTAI-test-access-id-7788"
+    access_key_secret = "aliyun-secret-never-return-9900"
+    with SessionLocal() as session:
+        session.execute(delete(TranslationProviderSettingsRow))
+        session.commit()
+
+    try:
+        saved = client.put(
+            "/api/v1/system/translation/settings",
+            json={
+                "provider": "aliyun-alimt",
+                "enabled": True,
+                "base_url": "mt.cn-hangzhou.aliyuncs.com",
+                "access_key_id": access_key_id,
+                "api_key": access_key_secret,
+                "model_name": "translate_standard",
+                "region_id": "cn-hangzhou",
+                "timeout_seconds": 20,
+                "max_tokens": 16384,
+                "reasoning_effort": "none",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        payload = saved.json()
+        assert payload["provider"] == "aliyun-alimt"
+        assert payload["region_id"] == "cn-hangzhou"
+        assert payload["access_key_id_configured"] is True
+        assert payload["access_key_id_hint"] == "••••7788"
+        assert payload["api_key_hint"] == "••••9900"
+        assert access_key_id not in saved.text
+        assert access_key_secret not in saved.text
+
+        with SessionLocal() as session:
+            row = session.get(
+                TranslationProviderSettingsRow,
+                "CATALOG_TRANSLATION",
+            )
+            assert row is not None
+            assert row.access_key_id_ciphertext is not None
+            assert row.api_key_ciphertext is not None
+            assert (
+                decrypt_translation_api_key(row.access_key_id_ciphertext)
+                == access_key_id
+            )
+            assert (
+                decrypt_translation_api_key(row.api_key_ciphertext)
+                == access_key_secret
+            )
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(TranslationProviderSettingsRow))
+            session.commit()
+
+
 def test_phase3b_tenant_boundaries_apply_to_links_and_retrieval() -> None:
     organization_id = uuid4()
     tenant_b = uuid4()
@@ -4468,6 +4844,7 @@ def test_postgresql_offline_migration_contains_forced_rls_policies() -> None:
         "catalog_delete_jobs",
         "storefront_chat_conversations",
         "storefront_chat_messages",
+        "catalog_language_packs",
         "ai_runs",
         "ai_task_steps",
         "product_field_candidates",
@@ -9506,7 +9883,25 @@ class _CatalogTranslationTestProvider:
         assert source_locale == "zh-CN"
         assert target_locale == "en-US"
         self.calls += 1
-        return text.replace("宠物", "Pet").replace("智能", "Smart")
+        translated = text
+        for source, target in (
+            ("宠物缓存失效测试", "Pet cache invalidation test"),
+            ("宠物无线饮水机（不锈钢款）", "Stainless-steel wireless pet fountain"),
+            ("八片带门宠物围栏", "Eight-panel pet fence with door"),
+            ("智能宠物喂食器 6L", "Smart 6L pet feeder"),
+            ("饮水与喂食", "Water and feeding"),
+            ("围栏与玩具", "Fences and toys"),
+            ("智能硬件", "Smart hardware"),
+            ("宠物饮水", "Pet drinking"),
+            ("宠物围栏", "Pet fence"),
+            ("智能喂食", "Smart feeding"),
+            ("宠物用品", "Pet supplies"),
+            ("智能用品", "Smart supplies"),
+            ("不锈钢", "Stainless steel"),
+            ("钢材", "Steel"),
+        ):
+            translated = translated.replace(source, target)
+        return re.sub(r"[\u3400-\u9fff]+", "Translated", translated)
 
 
 class _BlockingCatalogTranslationTestProvider(_CatalogTranslationTestProvider):
@@ -9529,7 +9924,7 @@ class _BlockingCatalogTranslationTestProvider(_CatalogTranslationTestProvider):
             self.calls += 1
         self.started.set()
         assert self.release.wait(timeout=2)
-        return text.replace("宠物", "Pet")
+        return text.replace("宠物用品", "Pet supplies")
 
 
 class _SplitRecoveryCatalogTranslationTestProvider:
@@ -9543,8 +9938,14 @@ class _SplitRecoveryCatalogTranslationTestProvider:
         target_locale: str,
     ) -> str:
         if text.count("[[ATCV_") > 1:
-            raise TranslationProviderError("damaged batch boundary")
-        return text.replace("宠物", "Pet").replace("智能", "Smart")
+            raise TranslationProviderError(
+                "damaged batch boundary",
+                recover_with_smaller_batches=True,
+            )
+        return text.replace("宠物用品", "Pet supplies").replace(
+            "智能用品",
+            "Smart supplies",
+        )
 
 
 def test_translation_memory_recovers_failed_batches_in_smaller_groups() -> None:
@@ -9556,10 +9957,78 @@ def test_translation_memory_recovers_failed_batches_in_smaller_groups() -> None:
     )
 
     assert successes == {
-        "宠物用品": "Pet用品",
-        "智能用品": "Smart用品",
+        "宠物用品": "Pet supplies",
+        "智能用品": "Smart supplies",
     }
     assert failures == {}
+
+
+class _NonRecoverableCatalogTranslationTestProvider:
+    identity = TranslationIdentity(provider="provider-failure-test", version="v1")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        self.calls += 1
+        raise TranslationProviderError("translation provider returned HTTP 429")
+
+
+def test_translation_memory_does_not_amplify_provider_failures() -> None:
+    translator = _NonRecoverableCatalogTranslationTestProvider()
+
+    successes, failures = translation_memory_service._translate_uncached_values(
+        translator,
+        ["宠物用品", "智能用品"],
+        source_locale="zh-CN",
+        target_locale="en-US",
+    )
+
+    assert successes == {}
+    assert set(failures) == {"宠物用品", "智能用品"}
+    assert translator.calls == 1
+
+
+def test_translation_memory_chunks_large_database_reads_and_writes() -> None:
+    provider = "large-memory-test"
+    values = [f"批量翻译字段 {index}" for index in range(1_205)]
+    translated = {value: f"Translated field {index}" for index, value in enumerate(values)}
+    try:
+        translation_memory_service._database_store_many(
+            tenant_id=DEFAULT_TENANT_ID,
+            source_locale="zh-CN",
+            target_locale="en-US",
+            provider=provider,
+            provider_version="v1",
+            translations=translated,
+        )
+        loaded = translation_memory_service._database_get_many(
+            tenant_id=DEFAULT_TENANT_ID,
+            source_locale="zh-CN",
+            target_locale="en-US",
+            provider=provider,
+            provider_version="v1",
+            sources_by_hash={
+                translation_memory_service.translation_source_hash(value): value
+                for value in values
+            },
+        )
+        assert loaded == translated
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTextTranslationRow).where(
+                    CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogTextTranslationRow.provider == provider,
+                )
+            )
+            session.commit()
 
 
 class _MixedLanguageCatalogTranslationTestProvider:
@@ -9659,6 +10128,53 @@ def test_public_catalog_translates_mixed_chinese_and_english_content() -> None:
             session.commit()
 
 
+def test_mixed_language_capable_provider_skips_english_repair_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _CatalogTranslationTestProvider()
+    provider.translates_mixed_language_text = True
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def translate_once(**kwargs):
+        source_locale = kwargs["source_locale"]
+        values = tuple(kwargs["values"])
+        calls.append((source_locale, values))
+        return {
+            value: (
+                "Descrição do produto: Número do item:3068 "
+                "Tamanho do produto:42x33x28.5"
+            )
+            for value in values
+        }
+
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "translate_values_with_memory",
+        translate_once,
+    )
+    source_value = (
+        "产品简介:货号 ITEM NO:3068 产品尺寸SIZE:42x33x28.5"
+    )
+
+    translated, complete = (
+        public_catalog_use_cases._translate_public_catalog_values(
+            tenant_id=DEFAULT_TENANT_ID,
+            translator=provider,
+            values=[source_value],
+            source_locale="zh-CN",
+            target_locale="pt",
+            normalize_provider_output=True,
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] == "zh-CN"
+    localized = translated[source_value]
+    assert "ITEM NO" not in localized
+    assert "SIZE" not in localized
+    assert source_value in complete
+
+
 def test_public_product_option_labels_and_values_are_localized() -> None:
     translation = public_catalog_use_cases.PublicProductTranslation(
         name="Bolsa para animais",
@@ -9726,8 +10242,8 @@ def test_translation_memory_coalesces_identical_inflight_text(
             second = executor.submit(translate)
             sleep(0.05)
             provider.release.set()
-            assert first.result(timeout=2)["宠物用品"] == "Pet用品"
-            assert second.result(timeout=2)["宠物用品"] == "Pet用品"
+            assert first.result(timeout=2)["宠物用品"] == "Pet supplies"
+            assert second.result(timeout=2)["宠物用品"] == "Pet supplies"
         assert provider.calls == 1
     finally:
         provider.release.set()
@@ -9945,8 +10461,12 @@ def test_public_product_detail_reuses_one_product_translation_batch(
 
 def test_catalog_translation_job_reports_progress_and_caches_results(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     provider = _CatalogTranslationTestProvider()
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.delenv("TRANSLATION_PACKAGE_PUBLIC_BASE_URL", raising=False)
     monkeypatch.setattr(
         catalog_translation_use_cases,
         "catalog_translation_is_configured",
@@ -9970,6 +10490,7 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         assert initial.status_code == 200, initial.text
         initial_payload = initial.json()
         assert initial_payload["provider_configured"] is True
+        assert initial_payload["package_storage_configured"] is True
         assert initial_payload["pending_skus"] == initial_payload["total_skus"] == 3
 
         started = client.post(
@@ -9992,14 +10513,55 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         assert finished_payload["processed_skus"] == 3
         assert finished_payload["failed_skus"] == 0
         assert finished_payload["progress_percent"] == 100.0
+        assert finished_payload["stage"] == "PUBLISHED"
+        assert finished_payload["package_published"] is True
+        assert finished_payload["package_version"] == 1
 
         final = client.get("/api/v1/catalog/translations/status")
         assert final.status_code == 200, final.text
         assert final.json()["pending_skus"] == 0
         assert final.json()["translated_skus"] == 3
+        assert final.json()["package_outdated"] is False
+        package = final.json()["package"]
+        assert package["version"] == 1
+        assert package["sku_count"] == 3
+        assert package["product_count"] >= 1
+
+        manifest = client.get("/api/store/demo/language-packages/en-US")
+        assert manifest.status_code == 200, manifest.text
+        assert manifest.json()["content_sha256"] == package["content_sha256"]
+        download = client.get(manifest.json()["download_url"])
+        assert download.status_code == 200, download.text
+        assert download.headers["cache-control"].endswith("immutable")
+        language_payload = download.json()
+        assert language_payload["schema"] == "atc-catalog-language-pack"
+        assert language_payload["version"] == 1
+        source_products = client.get(
+            "/api/store/demo/products",
+            params={"page": 1, "page_size": 24},
+        )
+        assert source_products.status_code == 200, source_products.text
+        for product in source_products.json()["items"]:
+            assert product["translation_source_hash"] == (
+                language_payload["products"][product["id"]]["source_hash"]
+            )
+        source_skus = client.get(
+            "/api/store/demo/skus",
+            params={"page": 1, "page_size": 24},
+        )
+        assert source_skus.status_code == 200, source_skus.text
+        for sku in source_skus.json()["items"]:
+            assert sku["translation_source_hash"] == (
+                language_payload["skus"][sku["id"]]["source_hash"]
+            )
 
     finally:
         with SessionLocal() as session:
+            session.execute(
+                delete(CatalogLanguagePackRow).where(
+                    CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
             session.execute(
                 delete(CatalogSkuTranslationRow).where(
                     CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
@@ -10008,6 +10570,107 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
             session.execute(
                 delete(CatalogTranslationJobRow).where(
                     CatalogTranslationJobRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.commit()
+
+
+def test_catalog_translation_job_can_pause_and_resume_at_safe_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = _CatalogTranslationTestProvider()
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "configured_catalog_translator",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **_kwargs: None,
+    )
+
+    started = client.post(
+        "/api/v1/catalog/translations/jobs",
+        json={
+            "target_locale": "es",
+            "mode": "FULL_REBUILD",
+            "confirm_full_rebuild": True,
+        },
+    )
+    assert started.status_code == 202, started.text
+    job_id = UUID(started.json()["id"])
+
+    try:
+        with SessionLocal() as session:
+            row = session.get(CatalogTranslationJobRow, job_id)
+            assert row is not None
+            assert len(row.remaining_sku_ids) == row.total_skus == 3
+            row.status = "RUNNING"
+            row.stage = "TRANSLATING"
+            session.commit()
+
+        requested = client.post(
+            f"/api/v1/catalog/translations/jobs/{job_id}/pause"
+        )
+        assert requested.status_code == 200, requested.text
+        assert requested.json()["status"] == "RUNNING"
+        assert requested.json()["pause_requested"] is True
+
+        with SessionLocal() as session:
+            row = session.get(CatalogTranslationJobRow, job_id)
+            assert row is not None
+            assert catalog_translation_use_cases._pause_at_safe_checkpoint(
+                session,
+                row,
+            ) is True
+
+        paused = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}"
+        )
+        assert paused.status_code == 200, paused.text
+        assert paused.json()["status"] == "PAUSED"
+        assert paused.json()["stage"] == "PAUSED"
+        assert paused.json()["pause_requested"] is False
+        assert paused.json()["paused_at"] is not None
+
+        duplicate = client.post(
+            "/api/v1/catalog/translations/jobs",
+            json={
+                "target_locale": "es",
+                "mode": "INCREMENTAL",
+                "confirm_full_rebuild": False,
+            },
+        )
+        assert duplicate.status_code == 202, duplicate.text
+        assert duplicate.json()["id"] == str(job_id)
+        assert duplicate.json()["status"] == "PAUSED"
+
+        resumed = client.post(
+            f"/api/v1/catalog/translations/jobs/{job_id}/resume"
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["status"] == "QUEUED"
+        assert resumed.json()["pause_requested"] is False
+
+        paused_again = client.post(
+            f"/api/v1/catalog/translations/jobs/{job_id}/pause"
+        )
+        assert paused_again.status_code == 200, paused_again.text
+        assert paused_again.json()["status"] == "PAUSED"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTranslationJobRow).where(
+                    CatalogTranslationJobRow.id == job_id
                 )
             )
             session.commit()
@@ -11678,10 +12341,26 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "deleted_sku_count",
         "error_message",
     }.issubset(delete_job_columns)
+    translation_job_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns(
+            "catalog_translation_jobs"
+        )
+    }
+    assert {
+        "stage",
+        "package_version",
+        "package_published",
+        "package_byte_size",
+        "source_cutoff_at",
+        "remaining_sku_ids",
+        "pause_requested_at",
+        "paused_at",
+    }.issubset(translation_job_columns)
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260803_0052"
+        ).scalar() == "20260808_0057"
     upgraded_engine.dispose()
     command.check(config)
 

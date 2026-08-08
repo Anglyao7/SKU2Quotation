@@ -84,6 +84,11 @@ class StorefrontChatMessageRow(AuditTimestampMixin, Base):
             "sender_type IN ('VISITOR', 'MERCHANT', 'SYSTEM', 'AI')",
             name="sender_type_allowed",
         ),
+        CheckConstraint(
+            "translation_status IN "
+            "('PENDING', 'READY', 'FAILED', 'UNAVAILABLE', 'NOT_REQUIRED')",
+            name="translation_status_allowed",
+        ),
         UniqueConstraint(
             "tenant_id",
             "id",
@@ -125,3 +130,18 @@ class StorefrontChatMessageRow(AuditTimestampMixin, Base):
     )
     client_message_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    draft_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    translated_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    translation_source_locale: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+    translation_target_locale: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+    translation_status: Mapped[str] = mapped_column(
+        String(20),
+        default="PENDING",
+        nullable=False,
+    )

@@ -1,4 +1,6 @@
 import type {
+  CatalogLanguagePack,
+  CatalogLanguagePackDescriptor,
   CreateQuoteInput,
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
@@ -13,12 +15,21 @@ import type {
   StoreProductDetail,
   StoreProductList,
   Storefront,
+  StorefrontCategoryOption,
   StorefrontLocale,
   Tenant,
   TenantPayload,
 } from "../types";
 import { clearCoreAuthSession, getCoreAccessToken } from "../core/api";
 import { publicCatalogCacheKey } from "./publicCatalogRevision";
+import {
+  cachedLanguagePack,
+  latestCachedLanguagePack,
+  localizeCategoryOptions,
+  localizeProduct,
+  localizeProductDetail,
+  localizeSku,
+} from "./storefrontLanguagePack";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const PUBLIC_CACHE_MAX_ENTRIES = 160;
@@ -26,6 +37,7 @@ const PUBLIC_STORE_CACHE_TTL_MS = 60_000;
 const PUBLIC_CATALOG_CACHE_TTL_MS = 2 * 60_000;
 const PUBLIC_SKU_CACHE_TTL_MS = 2 * 60_000;
 const PUBLIC_PRODUCT_CACHE_TTL_MS = 2 * 60_000;
+const LANGUAGE_PACK_DESCRIPTOR_TTL_MS = 60_000;
 
 interface PublicCacheEntry {
   expiresAt: number;
@@ -67,6 +79,27 @@ export const authStorage = {
 
 function apiUrl(path: string) {
   return `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+async function storefrontLanguagePack(
+  slug: string,
+  locale?: StorefrontLocale,
+): Promise<CatalogLanguagePack | undefined> {
+  if (!locale || locale === "zh-CN") return undefined;
+  const descriptorPath = `/api/store/${encodeURIComponent(slug)}/language-packages/${encodeURIComponent(locale)}`;
+  try {
+    const descriptor = await cachedPublicRequest(
+      publicCatalogCacheKey("language-pack-descriptor", descriptorPath),
+      LANGUAGE_PACK_DESCRIPTOR_TTL_MS,
+      () => request<CatalogLanguagePackDescriptor>(descriptorPath),
+    );
+    const downloadUrl = descriptor.download_url.startsWith("http")
+      ? descriptor.download_url
+      : apiUrl(descriptor.download_url);
+    return await cachedLanguagePack(slug, descriptor, downloadUrl);
+  } catch {
+    return latestCachedLanguagePack(slug, locale);
+  }
 }
 
 function getMessage(payload: unknown, fallback: string) {
@@ -135,6 +168,7 @@ function cachedPublicRequest<T>(
   key: string,
   ttlMs: number,
   loader: () => Promise<T>,
+  shouldCache: (value: T) => boolean = () => true,
 ): Promise<T> {
   const now = Date.now();
   const existing = publicRequestCache.get(key);
@@ -145,12 +179,19 @@ function cachedPublicRequest<T>(
   }
   if (existing) publicRequestCache.delete(key);
 
-  const promise = loader().catch((error) => {
-    if (publicRequestCache.get(key)?.promise === promise) {
-      publicRequestCache.delete(key);
-    }
-    throw error;
-  });
+  const promise = loader()
+    .then((value) => {
+      if (!shouldCache(value) && publicRequestCache.get(key)?.promise === promise) {
+        publicRequestCache.delete(key);
+      }
+      return value;
+    })
+    .catch((error) => {
+      if (publicRequestCache.get(key)?.promise === promise) {
+        publicRequestCache.delete(key);
+      }
+      throw error;
+    });
   publicRequestCache.set(key, {
     expiresAt: now + ttlMs,
     promise,
@@ -216,6 +257,35 @@ function normalizeStoreProduct(raw: StoreProduct): StoreProduct {
   };
 }
 
+function hasCompleteStorefrontTranslation(
+  value: { translation_status?: "SOURCE" | "TRANSLATED" | "FALLBACK" },
+) {
+  return value.translation_status !== "FALLBACK";
+}
+
+const CJK_STOREFRONT_TEXT = /[\u3400-\u9fff]/;
+
+function hasCompleteCategoryOptionsTranslation(value: {
+  locale?: StorefrontLocale;
+  category_options?: StorefrontCategoryOption[];
+}) {
+  const locale = (value.locale || "zh-CN").toLowerCase();
+  if (locale.startsWith("zh") || locale.startsWith("ja")) return true;
+  return (value.category_options || []).every(
+    (option) => !CJK_STOREFRONT_TEXT.test(option.label),
+  );
+}
+
+function hasCompleteProductListTranslation(value: StoreProductList) {
+  return value.items.every(hasCompleteStorefrontTranslation)
+    && hasCompleteCategoryOptionsTranslation(value);
+}
+
+function hasCompleteSkuListTranslation(value: SkuList) {
+  return value.items.every(hasCompleteStorefrontTranslation)
+    && hasCompleteCategoryOptionsTranslation(value);
+}
+
 function normalizeTenant(raw: Tenant): Tenant {
   return { ...raw, status: raw.active === false ? "inactive" : "active" };
 }
@@ -240,19 +310,22 @@ async function getCachedStoreSkus(
   slug: string,
   filters: StoreSkuFilters = {},
 ): Promise<SkuList> {
+  const languagePack = await storefrontLanguagePack(slug, filters.locale);
   const params = new URLSearchParams();
   if (filters.q) params.set("q", filters.q);
   if (filters.category) params.set("category", filters.category);
   if (filters.tags?.length) params.set("tags", filters.tags.join(","));
   if (filters.semantic) params.set("semantic", "true");
   if (filters.includeFacets === false) params.set("include_facets", "false");
-  if (filters.locale) params.set("locale", filters.locale);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
   params.sort();
   const query = params.toString();
   const path = `/api/store/${encodeURIComponent(slug)}/skus${query ? `?${query}` : ""}`;
-  return cachedPublicRequest(publicCatalogCacheKey("catalog", path), PUBLIC_CATALOG_CACHE_TTL_MS, async () => {
+  const cachePath = languagePack
+    ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
+    : path;
+  return cachedPublicRequest(publicCatalogCacheKey("catalog", cachePath), PUBLIC_CATALOG_CACHE_TTL_MS, async () => {
     const raw = await request<unknown>(path);
     const list = normalizeList<Sku>(raw);
     const meta = raw && typeof raw === "object" && !Array.isArray(raw)
@@ -278,47 +351,66 @@ async function getCachedStoreSkus(
         ? Number(meta.all_products_position)
         : undefined,
     };
+    if (languagePack) {
+      result.items = result.items.map((sku) => localizeSku(sku, languagePack));
+      result.category_options = localizeCategoryOptions(
+        result.category_options,
+        languagePack,
+      );
+      result.source_locale = languagePack.source_locale;
+      result.locale = languagePack.target_locale;
+    }
     for (const sku of result.items) {
-      const detailPath = storeSkuPath(slug, sku.id, filters.locale);
+      if (languagePack) continue;
+      if (!hasCompleteStorefrontTranslation(sku)) continue;
+      const detailPath = storeSkuPath(slug, sku.id);
       primePublicRequestCache(
         publicCatalogCacheKey("sku", detailPath),
         PUBLIC_SKU_CACHE_TTL_MS,
         sku,
       );
     }
-    if (filters.includeFacets !== false) {
+    if (filters.includeFacets !== false && hasCompleteSkuListTranslation(result)) {
       const withoutFacets = new URLSearchParams(params);
       withoutFacets.set("include_facets", "false");
       withoutFacets.sort();
       const compactPath = `/api/store/${encodeURIComponent(slug)}/skus?${withoutFacets.toString()}`;
       primePublicRequestCache(
-        publicCatalogCacheKey("catalog", compactPath),
+        publicCatalogCacheKey(
+          "catalog",
+          languagePack
+            ? `${compactPath}#language-pack=${languagePack.target_locale}:${languagePack.version}`
+            : compactPath,
+        ),
         PUBLIC_CATALOG_CACHE_TTL_MS,
         result,
       );
     }
     return result;
-  });
+  }, hasCompleteSkuListTranslation);
 }
 
 async function getCachedStoreProducts(
   slug: string,
   filters: StoreSkuFilters = {},
 ): Promise<StoreProductList> {
+  const languagePack = await storefrontLanguagePack(slug, filters.locale);
   const params = new URLSearchParams();
   if (filters.q) params.set("q", filters.q);
   if (filters.category) params.set("category", filters.category);
   if (filters.tags?.length) params.set("tags", filters.tags.join(","));
   if (filters.semantic) params.set("semantic", "true");
   if (filters.includeFacets === false) params.set("include_facets", "false");
-  if (filters.locale) params.set("locale", filters.locale);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
   params.sort();
   const query = params.toString();
   const path = `/api/store/${encodeURIComponent(slug)}/products${query ? `?${query}` : ""}`;
+  const cachePath = languagePack
+    ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
+    : path;
   return cachedPublicRequest(
-    publicCatalogCacheKey("products", path),
+    publicCatalogCacheKey("products", cachePath),
     PUBLIC_CATALOG_CACHE_TTL_MS,
     async () => {
       const raw = await request<unknown>(path);
@@ -352,19 +444,39 @@ async function getCachedStoreProducts(
         hot_products_enabled: meta.hot_products_enabled === true,
         hot_sort_applied: meta.hot_sort_applied === true,
       };
-      if (filters.includeFacets !== false) {
+      if (languagePack) {
+        result.items = result.items.map((product) => (
+          localizeProduct(product, languagePack)
+        ));
+        result.category_options = localizeCategoryOptions(
+          result.category_options,
+          languagePack,
+        );
+        result.source_locale = languagePack.source_locale;
+        result.locale = languagePack.target_locale;
+      }
+      if (
+        filters.includeFacets !== false
+        && hasCompleteProductListTranslation(result)
+      ) {
         const withoutFacets = new URLSearchParams(params);
         withoutFacets.set("include_facets", "false");
         withoutFacets.sort();
         const compactPath = `/api/store/${encodeURIComponent(slug)}/products?${withoutFacets.toString()}`;
         primePublicRequestCache(
-          publicCatalogCacheKey("products", compactPath),
+          publicCatalogCacheKey(
+            "products",
+            languagePack
+              ? `${compactPath}#language-pack=${languagePack.target_locale}:${languagePack.version}`
+              : compactPath,
+          ),
           PUBLIC_CATALOG_CACHE_TTL_MS,
           result,
         );
       }
       return result;
     },
+    hasCompleteProductListTranslation,
   );
 }
 
@@ -395,12 +507,28 @@ async function download(
 }
 
 export const api = {
-  getStore: (slug: string, locale?: StorefrontLocale) => {
-    const path = storePath(slug, locale);
+  getStore: async (slug: string, locale?: StorefrontLocale) => {
+    const languagePack = await storefrontLanguagePack(slug, locale);
+    const path = storePath(slug);
+    const cachePath = languagePack
+      ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
+      : path;
     return cachedPublicRequest(
-      publicCatalogCacheKey("store", path),
+      publicCatalogCacheKey("store", cachePath),
       PUBLIC_STORE_CACHE_TTL_MS,
-      () => request<Storefront>(path),
+      async () => {
+        const store = await request<Storefront>(path);
+        if (!languagePack) return store;
+        return {
+          ...store,
+          category_options: localizeCategoryOptions(
+            store.category_options,
+            languagePack,
+          ),
+          source_locale: languagePack.source_locale,
+          locale: languagePack.target_locale,
+        };
+      },
     );
   },
   async getStoreProduct(
@@ -408,17 +536,28 @@ export const api = {
     productId: string,
     locale?: StorefrontLocale,
   ): Promise<StoreProductDetail> {
-    const path = storeProductPath(slug, productId, locale);
+    const languagePack = await storefrontLanguagePack(slug, locale);
+    const path = storeProductPath(slug, productId);
+    const cachePath = languagePack
+      ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
+      : path;
     return cachedPublicRequest(
-      publicCatalogCacheKey("product", path),
+      publicCatalogCacheKey("product", cachePath),
       PUBLIC_PRODUCT_CACHE_TTL_MS,
       async () => {
         const product = await request<StoreProductDetail>(path);
-        return {
+        const normalized = {
           ...normalizeStoreProduct(product),
           skus: (product.skus || []).map(normalizeSku),
         };
+        return languagePack
+          ? localizeProductDetail(normalized, languagePack)
+          : normalized;
       },
+      (product) => (
+        hasCompleteStorefrontTranslation(product)
+        && product.skus.every(hasCompleteStorefrontTranslation)
+      ),
     );
   },
   prefetchStoreProduct: async (
@@ -441,11 +580,19 @@ export const api = {
     await getCachedStoreProducts(slug, filters);
   },
   async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale): Promise<Sku> {
-    const path = storeSkuPath(slug, skuId, locale);
+    const languagePack = await storefrontLanguagePack(slug, locale);
+    const path = storeSkuPath(slug, skuId);
+    const cachePath = languagePack
+      ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
+      : path;
     return cachedPublicRequest(
-      publicCatalogCacheKey("sku", path),
+      publicCatalogCacheKey("sku", cachePath),
       PUBLIC_SKU_CACHE_TTL_MS,
-      async () => normalizeSku(await request<Sku>(path)),
+      async () => {
+        const sku = normalizeSku(await request<Sku>(path));
+        return languagePack ? localizeSku(sku, languagePack) : sku;
+      },
+      hasCompleteStorefrontTranslation,
     );
   },
   recordStoreSkuView: (slug: string, skuId: string, eventId: string) =>
@@ -499,7 +646,7 @@ export const api = {
   sendSupportMessage: (
     slug: string,
     token: string,
-    payload: { message: string; client_message_id: string },
+    payload: { message: string; client_message_id: string; locale?: StorefrontLocale },
   ) => request<PublicSupportConversation>(
     `/api/store/${encodeURIComponent(slug)}/support/conversations/current/messages`,
     {

@@ -24,7 +24,17 @@ class CatalogTranslationJobResponse(BaseModel):
     source_locale: str
     target_locale: str
     mode: Literal["INCREMENTAL", "FULL_REBUILD"]
-    status: Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED"]
+    status: Literal["QUEUED", "RUNNING", "PAUSED", "SUCCEEDED", "FAILED"]
+    stage: Literal[
+        "QUEUED",
+        "PREPARING",
+        "TRANSLATING",
+        "PACKAGING",
+        "UPLOADING",
+        "PAUSED",
+        "PUBLISHED",
+        "FAILED",
+    ] = "QUEUED"
     total_skus: int = Field(ge=0)
     processed_skus: int = Field(ge=0)
     failed_skus: int = Field(ge=0)
@@ -35,9 +45,35 @@ class CatalogTranslationJobResponse(BaseModel):
     provider_version: str
     failure_details: list[CatalogTranslationFailure] = Field(default_factory=list)
     error_message: str | None = None
+    package_version: int | None = Field(default=None, ge=1)
+    package_published: bool = False
+    package_byte_size: int | None = Field(default=None, ge=0)
+    source_cutoff_at: datetime | None = None
+    pause_requested: bool = False
+    pause_requested_at: datetime | None = None
+    paused_at: datetime | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class CatalogLanguagePackResponse(BaseModel):
+    source_locale: str
+    target_locale: str
+    version: int = Field(ge=1)
+    download_url: str
+    content_sha256: str = Field(min_length=64, max_length=64)
+    source_digest: str = Field(min_length=64, max_length=64)
+    content_encoding: str = "gzip"
+    byte_size: int = Field(ge=0)
+    product_count: int = Field(ge=0)
+    sku_count: int = Field(ge=0)
+    category_count: int = Field(ge=0)
+    provider: str
+    provider_version: str
+    source_cutoff_at: datetime
+    published_at: datetime
+    last_full_translation_at: datetime | None = None
 
 
 class CatalogTranslationStatusResponse(BaseModel):
@@ -50,5 +86,9 @@ class CatalogTranslationStatusResponse(BaseModel):
     translated_skus: int = Field(ge=0)
     stale_skus: int = Field(ge=0)
     pending_skus: int = Field(ge=0)
+    package_outdated: bool = False
+    package_storage_backend: str
+    package_storage_configured: bool
     available_locales: list[str]
+    package: CatalogLanguagePackResponse | None = None
     latest_job: CatalogTranslationJobResponse | None = None

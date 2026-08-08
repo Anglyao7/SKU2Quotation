@@ -87,6 +87,70 @@ export type StorefrontLocale =
   | "ko"
   | "pt";
 
+export interface CatalogLanguagePackDescriptor {
+  source_locale: StorefrontLocale;
+  target_locale: StorefrontLocale;
+  version: number;
+  download_url: string;
+  content_sha256: string;
+  source_digest: string;
+  content_encoding: "gzip" | string;
+  byte_size: number;
+  product_count: number;
+  sku_count: number;
+  category_count: number;
+  provider: string;
+  provider_version: string;
+  source_cutoff_at: string;
+  published_at: string;
+  last_full_translation_at?: string | null;
+}
+
+export interface CatalogLanguagePackProduct {
+  source_hash: string;
+  source_updated_at: string;
+  product_version: number;
+  name: string;
+  description?: string | null;
+  category_label?: string | null;
+  tags: string[];
+  display_tag?: string | null;
+  specifications: Record<string, string>;
+  option_labels: Record<string, string>;
+  option_values: Record<string, string>;
+}
+
+export interface CatalogLanguagePackSku {
+  source_hash: string;
+  source_updated_at: string;
+  product_version: number;
+  sku_version: number;
+  product_id: string;
+  name: string;
+  description?: string | null;
+  category_label?: string | null;
+  tags: string[];
+  display_tag?: string | null;
+  specification?: string | null;
+}
+
+export interface CatalogLanguagePack {
+  schema: "atc-catalog-language-pack";
+  schema_version: 1;
+  tenant_id: string;
+  source_locale: StorefrontLocale;
+  target_locale: StorefrontLocale;
+  version: number;
+  provider: string;
+  provider_version: string;
+  generated_at: string;
+  source_cutoff_at: string;
+  source_digest: string;
+  products: Record<string, CatalogLanguagePackProduct>;
+  skus: Record<string, CatalogLanguagePackSku>;
+  categories: Record<string, string>;
+}
+
 export type AnnouncementDisplayType = "TICKER" | "MODAL";
 export type AnnouncementBlockType =
   | "heading"
@@ -153,6 +217,10 @@ export interface Sku {
   status?: "active" | "inactive";
   created_at?: string;
   updated_at?: string;
+  product_version?: number;
+  sku_version?: number;
+  source_updated_at?: string;
+  translation_source_hash?: string;
   source_locale?: StorefrontLocale;
   locale?: StorefrontLocale;
   translation_status?: "SOURCE" | "TRANSLATED" | "FALLBACK";
@@ -191,6 +259,8 @@ export interface StoreProduct {
   image_url?: string | null;
   sku_count: number;
   product_version: number;
+  source_updated_at?: string;
+  translation_source_hash?: string;
   source_locale?: StorefrontLocale;
   locale?: StorefrontLocale;
   translation_status?: "SOURCE" | "TRANSLATED" | "FALLBACK";

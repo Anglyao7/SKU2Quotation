@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -133,6 +134,81 @@ class CatalogTextTranslationRow(AuditTimestampMixin, Base):
     )
 
 
+class CatalogLanguagePackRow(AuditTimestampMixin, Base):
+    """Currently published immutable storefront language package."""
+
+    __tablename__ = "catalog_language_packs"
+    __table_args__ = (
+        CheckConstraint(
+            "source_locale <> target_locale",
+            name="source_target_locale_different",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(
+            "length(content_sha256) = 64",
+            name="content_sha256_length",
+        ),
+        CheckConstraint(
+            "length(source_digest) = 64",
+            name="source_digest_length",
+        ),
+        CheckConstraint(
+            "length(storage_fingerprint) = 64",
+            name="storage_fingerprint_length",
+        ),
+        CheckConstraint("byte_size >= 0", name="byte_size_nonnegative"),
+        CheckConstraint("product_count >= 0", name="product_count_nonnegative"),
+        CheckConstraint("sku_count >= 0", name="sku_count_nonnegative"),
+        CheckConstraint("category_count >= 0", name="category_count_nonnegative"),
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_catalog_language_packs_tenant_identity",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "target_locale",
+            name="uq_catalog_language_packs_tenant_locale",
+        ),
+        Index(
+            "ix_catalog_language_packs_tenant_published",
+            "tenant_id",
+            "published_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    source_locale: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_locale: Mapped[str] = mapped_column(String(20), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_key: Mapped[str] = mapped_column(String(1000), nullable=False)
+    public_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_encoding: Mapped[str] = mapped_column(
+        String(20), default="gzip", nullable=False
+    )
+    byte_size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    product_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sku_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    category_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    provider: Mapped[str] = mapped_column(String(60), nullable=False)
+    provider_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_cutoff_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_full_translation_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class CatalogTranslationJobRow(AuditTimestampMixin, Base):
     """Tenant-scoped progress record for an explicit catalog translation run."""
 
@@ -143,8 +219,13 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
             name="mode_allowed",
         ),
         CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED')",
+            "status IN ('QUEUED', 'RUNNING', 'PAUSED', 'SUCCEEDED', 'FAILED')",
             name="status_allowed",
+        ),
+        CheckConstraint(
+            "stage IN ('QUEUED', 'PREPARING', 'TRANSLATING', 'PACKAGING', "
+            "'UPLOADING', 'PAUSED', 'PUBLISHED', 'FAILED')",
+            name="stage_allowed",
         ),
         CheckConstraint("total_skus >= 0", name="total_skus_nonnegative"),
         CheckConstraint(
@@ -178,10 +259,10 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
             "target_locale",
             unique=True,
             postgresql_where=text(
-                "status IN ('QUEUED', 'RUNNING') AND deleted_at IS NULL"
+                "status IN ('QUEUED', 'RUNNING', 'PAUSED') AND deleted_at IS NULL"
             ),
             sqlite_where=text(
-                "status IN ('QUEUED', 'RUNNING') AND deleted_at IS NULL"
+                "status IN ('QUEUED', 'RUNNING', 'PAUSED') AND deleted_at IS NULL"
             ),
         ),
     )
@@ -198,6 +279,7 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
     target_locale: Mapped[str] = mapped_column(String(20), nullable=False)
     mode: Mapped[str] = mapped_column(String(30), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", nullable=False)
+    stage: Mapped[str] = mapped_column(String(30), default="QUEUED", nullable=False)
     total_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     processed_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failed_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -210,8 +292,27 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
         default=list,
         nullable=False,
     )
+    remaining_sku_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=list,
+        nullable=False,
+    )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    package_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    package_published: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    package_byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_cutoff_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pause_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paused_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     completed_at: Mapped[datetime | None] = mapped_column(

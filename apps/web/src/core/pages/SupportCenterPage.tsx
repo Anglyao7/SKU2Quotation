@@ -1,5 +1,6 @@
 import { Badge, Button, Text, TextArea, TextField } from "@radix-ui/themes";
 import {
+  ArrowsLeftRight,
   ArrowClockwise,
   ChatCircleDots,
   CheckCircle,
@@ -7,6 +8,7 @@ import {
   MagnifyingGlass,
   PaperPlaneTilt,
   SlidersHorizontal,
+  Translate,
   UserCircle,
   XCircle,
 } from "@phosphor-icons/react";
@@ -16,6 +18,7 @@ import {
   getSupportConversation,
   getSupportSettings,
   listSupportConversations,
+  previewSupportReplyTranslation,
   replySupportConversation,
   updateSupportConversationStatus,
   updateSupportSettings,
@@ -23,6 +26,12 @@ import {
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import {
+  normalizeStorefrontLocale,
+  STOREFRONT_LANGUAGE_OPTIONS,
+  storefrontLanguage,
+} from "../../lib/storefrontLocale";
+import type { StorefrontLocale } from "../../types";
 import type {
   SupportActionSettings,
   SupportConversationDetail,
@@ -57,7 +66,7 @@ function normalizeSettings(settings: SupportSettings): SupportSettings {
 }
 
 export function SupportCenterPage() {
-  const { hasPermission } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
   const canReply = hasPermission("support.reply");
   const canManageSettings = hasPermission("support.settings_manage");
@@ -72,12 +81,19 @@ export function SupportCenterPage() {
   const [error, setError] = useState("");
   const [reply, setReply] = useState("");
   const [replyBusy, setReplyBusy] = useState(false);
+  const [translationBusy, setTranslationBusy] = useState(false);
+  const [translationError, setTranslationError] = useState("");
+  const [translatedReply, setTranslatedReply] = useState("");
+  const [replyTargetLocale, setReplyTargetLocale] = useState<StorefrontLocale>("en-US");
   const [settings, setSettings] = useState<SupportSettings>();
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [settingsError, setSettingsError] = useState("");
   const [settingsSaved, setSettingsSaved] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const operatorLocale: StorefrontLocale = profile?.context.businessMode === "EXPORT"
+    ? "en-US"
+    : "zh-CN";
 
   const loadList = useCallback(async (quiet = false) => {
     if (!quiet) setListLoading(true);
@@ -144,6 +160,19 @@ export function SupportCenterPage() {
     messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
   }, [detail?.messages.length]);
 
+  useEffect(() => {
+    if (!detail) return;
+    setReply("");
+    setTranslatedReply("");
+    setTranslationError("");
+    setReplyTargetLocale(normalizeStorefrontLocale(detail.locale));
+  }, [detail?.id]);
+
+  useEffect(() => {
+    if (!detail || translatedReply) return;
+    setReplyTargetLocale(normalizeStorefrontLocale(detail.locale));
+  }, [detail?.locale, translatedReply]);
+
   const loadSettings = useCallback(async () => {
     if (!canManageSettings) return;
     setSettingsLoading(true);
@@ -162,19 +191,54 @@ export function SupportCenterPage() {
   }, [canManageSettings, loadSettings, settings, tab]);
 
   const sendReply = async () => {
-    const message = reply.trim();
+    const originalMessage = reply.trim();
+    const translatedMessage = translatedReply.trim();
+    const message = translatedMessage || originalMessage;
     if (!detail || !message || replyBusy) return;
     setReplyBusy(true);
     setError("");
     try {
-      setDetail(await replySupportConversation(detail.id, message));
+      setDetail(await replySupportConversation(detail.id, {
+        message,
+        draftMessage: translatedMessage ? originalMessage : undefined,
+        sourceLocale: translatedMessage ? operatorLocale : undefined,
+        targetLocale: translatedMessage ? replyTargetLocale : undefined,
+      }));
       setReply("");
+      setTranslatedReply("");
+      setTranslationError("");
       await loadList(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("回复发送失败"));
     } finally {
       setReplyBusy(false);
     }
+  };
+
+  const translateReply = async () => {
+    const message = reply.trim();
+    if (!detail || !message || translationBusy) return;
+    setTranslationBusy(true);
+    setTranslationError("");
+    try {
+      const preview = await previewSupportReplyTranslation(
+        detail.id,
+        message,
+        replyTargetLocale,
+      );
+      setTranslatedReply(preview.translatedMessage);
+    } catch (caught) {
+      setTranslatedReply("");
+      setTranslationError(caught instanceof Error ? caught.message : t("回复翻译失败"));
+    } finally {
+      setTranslationBusy(false);
+    }
+  };
+
+  const updateReply = (value: string) => {
+    setReply(value);
+    if (translatedReply) setTranslatedReply("");
+    if (translationError) setTranslationError("");
   };
 
   const changeStatus = async (status: SupportConversationStatus) => {
@@ -291,7 +355,7 @@ export function SupportCenterPage() {
               </select>
             </div>
             <div className="support-inbox-list">
-              {listLoading ? <CoreLoading label="正在加载会话" /> : null}
+              {listLoading ? <CoreLoading label={t("正在加载会话")} /> : null}
               {!listLoading && !items.length ? <CoreEmpty title={t("还没有客户咨询")} description={t("客户从商品前台发送消息后，会话会出现在这里。 ")} /> : null}
               {!listLoading && items.map((item) => (
                 <button type="button" className={`${item.id === selectedId ? "is-selected" : ""}${item.unread ? " is-unread" : ""}`} onClick={() => setSelectedId(item.id)} key={item.id}>
@@ -314,7 +378,7 @@ export function SupportCenterPage() {
           <article className="support-thread">
             {error ? <CoreError message={error} onRetry={() => selectedId ? void loadDetail(selectedId) : void loadList()} /> : null}
             {!error && !selectedId ? <CoreEmpty title={t("选择一条会话")} description={t("在左侧选择客户后即可查看消息并回复。 ")} /> : null}
-            {!error && detailLoading && !detail ? <CoreLoading label="正在加载消息" /> : null}
+            {!error && detailLoading && !detail ? <CoreLoading label={t("正在加载消息")} /> : null}
             {!error && detail ? (
               <>
                 <header className="support-thread-header">
@@ -333,32 +397,111 @@ export function SupportCenterPage() {
                   </div>
                 </header>
                 <div className="support-thread-messages" ref={messagesRef}>
-                  {detail.messages.map((message) => (
-                    <div className={`support-thread-message ${message.senderType === "VISITOR" ? "is-visitor" : "is-merchant"}`} key={message.id}>
-                      <span>{message.body}</span>
-                      <small>{message.senderType === "VISITOR" ? t("客户") : t("商家客服")} · {dateTime(message.createdAt, locale)}</small>
-                    </div>
-                  ))}
+                  {detail.messages.map((message) => {
+                    const isVisitor = message.senderType === "VISITOR";
+                    const hasIncomingTranslation = isVisitor
+                      && message.translationStatus === "READY"
+                      && Boolean(message.translatedBody);
+                    return (
+                      <div className={`support-thread-message ${isVisitor ? "is-visitor" : "is-merchant"}`} key={message.id}>
+                        <div className="support-thread-bubble">
+                          <span>{hasIncomingTranslation ? message.translatedBody : message.body}</span>
+                          {hasIncomingTranslation ? (
+                            <details className="support-message-original">
+                              <summary>{t("查看客户原文")}</summary>
+                              <p dir="auto">{message.body}</p>
+                            </details>
+                          ) : null}
+                          {!isVisitor && message.draftBody ? (
+                            <details className="support-message-original">
+                              <summary>{t("查看回复原稿")}</summary>
+                              <p>{message.draftBody}</p>
+                            </details>
+                          ) : null}
+                          {isVisitor && ["FAILED", "UNAVAILABLE"].includes(message.translationStatus) ? (
+                            <small className="support-message-translation-note">
+                              {message.translationStatus === "UNAVAILABLE"
+                                ? t("翻译服务暂不可用，当前显示客户原文。")
+                                : t("自动翻译失败，系统稍后会重试。")}
+                            </small>
+                          ) : null}
+                        </div>
+                        <small>
+                          {isVisitor ? t("客户") : t("商家客服")}
+                          {hasIncomingTranslation ? ` · ${t("已译为{language}", { language: storefrontLanguage(message.translationTargetLocale || operatorLocale).label })}` : ""}
+                          {" · "}{dateTime(message.createdAt, locale)}
+                        </small>
+                      </div>
+                    );
+                  })}
                 </div>
                 <footer className="support-thread-composer">
-                  <TextArea value={reply} onChange={(event) => setReply(event.target.value)} maxLength={4_000} disabled={!canReply || detail.status === "CLOSED"} placeholder={detail.status === "CLOSED" ? t("重新打开会话后才能回复") : t("输入回复，Enter 发送，Shift + Enter 换行")} onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void sendReply();
-                    }
-                  }} />
-                  <Button onClick={() => void sendReply()} disabled={!canReply || !reply.trim() || replyBusy || detail.status === "CLOSED"}>
-                    <PaperPlaneTilt weight="fill" />{replyBusy ? t("发送中") : t("发送回复")}
-                  </Button>
+                  <div className="support-composer-fields">
+                    <label>
+                      <span>{t("回复原文")} · {storefrontLanguage(operatorLocale).flag} {storefrontLanguage(operatorLocale).label}</span>
+                      <TextArea value={reply} onChange={(event) => updateReply(event.target.value)} maxLength={4_000} disabled={!canReply || detail.status === "CLOSED"} placeholder={detail.status === "CLOSED" ? t("重新打开会话后才能回复") : t("输入回复内容，可直接发送或先翻译")} onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey && (translatedReply || replyTargetLocale === operatorLocale)) {
+                          event.preventDefault();
+                          void sendReply();
+                        }
+                      }} />
+                    </label>
+
+                    <div className="support-translation-toolbar">
+                      <span>{storefrontLanguage(operatorLocale).shortLabel}</span>
+                      <ArrowsLeftRight aria-hidden="true" />
+                      <label>
+                        <span className="sr-only">{t("目标语言")}</span>
+                        <select
+                          value={replyTargetLocale}
+                          disabled={!canReply || detail.status === "CLOSED" || translationBusy}
+                          onChange={(event) => {
+                            setReplyTargetLocale(event.target.value as StorefrontLocale);
+                            setTranslatedReply("");
+                            setTranslationError("");
+                          }}
+                        >
+                          {STOREFRONT_LANGUAGE_OPTIONS.map((language) => (
+                            <option value={language.code} key={language.code}>{language.flag} {language.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <Button type="button" variant="soft" color="gray" onClick={() => void translateReply()} disabled={!canReply || !reply.trim() || detail.status === "CLOSED" || translationBusy}>
+                        <Translate />{translationBusy ? t("翻译中") : t("翻译回复")}
+                      </Button>
+                    </div>
+
+                    {translationError ? <p className="support-translation-error" role="alert">{translationError}</p> : null}
+                    {translatedReply ? (
+                      <label className="support-translated-preview">
+                        <span>{t("发送前译文，可继续编辑")} · {storefrontLanguage(replyTargetLocale).flag} {storefrontLanguage(replyTargetLocale).label}</span>
+                        <TextArea value={translatedReply} onChange={(event) => setTranslatedReply(event.target.value)} maxLength={4_000} disabled={!canReply || detail.status === "CLOSED"} dir={storefrontLanguage(replyTargetLocale).direction} />
+                      </label>
+                    ) : (
+                      <small className="support-translation-hint">
+                        {replyTargetLocale === operatorLocale
+                          ? t("当前目标语言与回复语言相同，可直接发送。")
+                          : t("翻译后会先显示译文，确认或修改后再发送给客户。")}
+                      </small>
+                    )}
+                  </div>
+                  <div className="support-composer-actions">
+                    {translatedReply ? (
+                      <button type="button" onClick={() => setTranslatedReply("")}>{t("取消译文")}</button>
+                    ) : null}
+                    <Button onClick={() => void sendReply()} disabled={!canReply || !(translatedReply.trim() || reply.trim()) || replyBusy || detail.status === "CLOSED"}>
+                      <PaperPlaneTilt weight="fill" />{replyBusy ? t("发送中") : translatedReply ? t("发送译文") : t("发送回复")}
+                    </Button>
+                  </div>
                 </footer>
               </>
             ) : null}
-            {!detail && selectedSummary && !detailLoading ? <CoreLoading label="正在打开会话" /> : null}
+            {!detail && selectedSummary && !detailLoading ? <CoreLoading label={t("正在打开会话")} /> : null}
           </article>
         </section>
       ) : (
         <section className="support-settings-panel">
-          {settingsLoading ? <CoreLoading label="正在加载悬浮球设置" /> : null}
+          {settingsLoading ? <CoreLoading label={t("正在加载悬浮球设置")} /> : null}
           {settingsError ? <CoreError message={settingsError} onRetry={() => void loadSettings()} /> : null}
           {!settingsLoading && settings ? (
             <>

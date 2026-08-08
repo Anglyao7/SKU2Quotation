@@ -144,6 +144,7 @@ export function StorefrontSupportWidget({
         ? await api.sendSupportMessage(tenantSlug, token, {
             message,
             client_message_id: clientMessageId,
+            locale,
           })
         : await api.createSupportConversation(tenantSlug, {
             message,

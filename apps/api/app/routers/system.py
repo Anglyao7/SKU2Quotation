@@ -4,11 +4,71 @@ from sqlalchemy.orm import Session
 from ..domain.errors import ApplicationError
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..system_schemas import OutboxMetricsResponse, SystemMonitoringResponse
-from ..use_cases import system_operations
+from ..translation_management_schemas import (
+    TranslationSettingsResponse,
+    TranslationSettingsTestRequest,
+    TranslationSettingsTestResponse,
+    TranslationSettingsUpdateRequest,
+)
+from ..use_cases import system_operations, translation_management
 from .errors import application_http_error
 
 
 router = APIRouter(prefix="/api/v1/system", tags=["system"])
+
+
+@router.get(
+    "/translation/settings",
+    response_model=TranslationSettingsResponse,
+)
+def get_translation_settings(
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> TranslationSettingsResponse:
+    context = current_context(session)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return translation_management.get_settings(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/translation/settings",
+    response_model=TranslationSettingsResponse,
+)
+def update_translation_settings(
+    payload: TranslationSettingsUpdateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> TranslationSettingsResponse:
+    context = current_context(session)
+    try:
+        return translation_management.update_settings(
+            session,
+            context=context,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/translation/settings/test",
+    response_model=TranslationSettingsTestResponse,
+)
+def test_translation_settings(
+    payload: TranslationSettingsTestRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> TranslationSettingsTestResponse:
+    context = current_context(session)
+    try:
+        return translation_management.test_settings(
+            session,
+            context=context,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
 
 
 @router.get("/metrics", response_model=SystemMonitoringResponse)

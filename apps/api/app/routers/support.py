@@ -31,6 +31,8 @@ from ..support_schemas import (
     SupportMerchantMessageWrite,
     SupportSettingsResponse,
     SupportSettingsUpdate,
+    SupportTranslationPreviewResponse,
+    SupportTranslationPreviewWrite,
 )
 from ..use_cases import support as use_cases
 from .errors import application_http_error
@@ -172,6 +174,30 @@ def reply_support_conversation(
             session,
             tenant_id=context.tenant_id,
             user_id=context.user_id,
+            conversation_id=conversation_id,
+            permissions=context.permissions,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/support/conversations/{conversation_id}/translation-preview",
+    response_model=SupportTranslationPreviewResponse,
+)
+def preview_support_reply_translation(
+    conversation_id: UUID,
+    payload: SupportTranslationPreviewWrite,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportTranslationPreviewResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.preview_merchant_message_translation(
+            session,
+            tenant_id=context.tenant_id,
             conversation_id=conversation_id,
             permissions=context.permissions,
             request=payload,

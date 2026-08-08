@@ -1,5 +1,5 @@
 import { Badge, Button, Card, Checkbox, Dialog, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowDown, ArrowUp, ArrowsClockwise, CaretRight, CheckCircle, ClockCounterClockwise, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, ArrowsClockwise, CaretLeft, CaretRight, CheckCircle, ClockCounterClockwise, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -118,12 +118,6 @@ function exportImportIssues(job: ImportJob) {
   URL.revokeObjectURL(url);
 }
 
-function imageStatusLabel(status: SkuListItem["imageStatus"]) {
-  if (status === "APPROVED") return "图片已就绪";
-  if (status === "SOURCE") return "图片待确认";
-  return "暂无图片";
-}
-
 function SkuThumbnail({ sku, label }: { sku: SkuListItem; label: string }) {
   const [imageFailed, setImageFailed] = useState(false);
 
@@ -189,6 +183,20 @@ function skuSourceLabel(row: SkuListItem) {
   if (row.sourceFilename) return row.sourceFilename;
   if (row.sourceType === "LEGACY_IMPORT") return "历史导入";
   return "手工录入";
+}
+
+type PaginationItem = number | "leading-ellipsis" | "trailing-ellipsis";
+
+function skuPaginationItems(page: number, pages: number): PaginationItem[] {
+  if (pages <= 7) return Array.from({ length: pages }, (_, index) => index + 1);
+  const items: PaginationItem[] = [1];
+  const start = Math.max(2, page - 1);
+  const end = Math.min(pages - 1, page + 1);
+  if (start > 2) items.push("leading-ellipsis");
+  for (let current = start; current <= end; current += 1) items.push(current);
+  if (end < pages - 1) items.push("trailing-ellipsis");
+  items.push(pages);
+  return items;
 }
 
 export function ProductsPage() {
@@ -698,6 +706,10 @@ export function ProductsPage() {
   };
   const rangeStart = result.total ? (result.page - 1) * result.pageSize + 1 : 0;
   const rangeEnd = Math.min(result.page * result.pageSize, result.total);
+  const paginationItems = useMemo(
+    () => skuPaginationItems(result.page, result.pages),
+    [result.page, result.pages],
+  );
   const changePageSize = (value: string) => {
     const next = SKU_PAGE_SIZE_OPTIONS.find((option) => option === Number(value));
     if (!next || next === pageSize) return;
@@ -821,124 +833,196 @@ export function ProductsPage() {
             />
       ) : null}
       {result.items.length ? (
-        <>
-          <div className="core-sku-list-meta" aria-live="polite">
-            <Text size="2" color="gray">{t("共 {total} 个 SKU · 当前显示 {start}–{end}", { total: result.total.toLocaleString(locale), start: rangeStart, end: rangeEnd })}</Text>
-            <div className="core-sku-list-meta-actions">
-              {loading ? <Text size="1" color="gray">{t("正在更新结果…")}</Text> : <Text size="1" color="gray">{t("每页 {count} 条", { count: result.pageSize })}</Text>}
-              {canDelete ? <Text size="1" color={selectedSkuIds.size ? undefined : "gray"}>{t("已选择 {count} 个 SKU", { count: selectedSkuIds.size })}</Text> : null}
-            </div>
-          </div>
-          <Card className="core-sku-table-card">
-            <div className={canDelete ? "core-sku-table selection-enabled" : "core-sku-table"} role="table" aria-label={t("SKU 商品列表")}>
-              <div className="core-sku-table-head" role="row">
-                {canDelete ? (
-                  <span className="core-sku-checkbox-cell">
-                    <Checkbox
-                      checked={allCurrentPageSelected ? true : currentPageSelected.length ? "indeterminate" : false}
-                      onCheckedChange={toggleCurrentPageSelection}
-                      aria-label={t(allCurrentPageSelected ? "取消选择本页全部 SKU" : "选择本页全部 SKU")}
-                    />
-                  </span>
-                ) : null}
-                <span>{t("SKU / 商品")}</span><span>{t("分类与标签")}</span><span>{t("公开价")}</span><span>{t("状态")}</span><span>{t("源文件 / 导入时间")}</span><span>{t("更新时间")}</span><span aria-hidden="true" />
-              </div>
-              {result.items.map((sku) => {
-                const isSelected = selectedSkuIds.has(sku.id);
-                return (
-                <div
-                  className="core-sku-table-row"
-                  role="row"
-                  tabIndex={0}
-                  key={sku.id}
-                  data-selected={isSelected || undefined}
-                  onClick={() => void openProduct(sku.productId, "skus")}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void openProduct(sku.productId, "skus");
-                  }}
-                  aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}
-                >
-                  {canDelete ? (
-                    <span className="core-sku-checkbox-cell" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-                      <Checkbox
-                        checked={isSelected}
-                        onCheckedChange={() => toggleSkuSelection(sku.id)}
-                        aria-label={t(isSelected ? "取消选择 SKU {code}" : "选择 SKU {code}", { code: sku.skuCode })}
-                      />
-                    </span>
-                  ) : null}
-                  <span className="core-sku-name-cell">
-                    <SkuThumbnail
-                      sku={sku}
-                      label={t(sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片")}
-                    />
-                    <span><strong className="core-tabular">{sku.skuCode}</strong><small>{sku.name || sku.productName}</small></span>
-                  </span>
-                  <span className="core-sku-category-cell">
-                    <span className="core-sku-category-heading">
-                      <strong>{primaryCategoryLabel(sku.category?.name) || t("未分类")}</strong>
-                      {sku.isPinned ? <Badge color="amber" variant="soft"><PushPin weight="fill" />{t("已置顶")}</Badge> : null}
-                    </span>
-                    {sku.supplierSummary.primarySupplierName ? <small>{t("供应商")}：{sku.supplierSummary.primarySupplierName}</small> : null}
-                    <span className="core-chip-row">{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
-                  </span>
-                  <span className="core-tabular"><strong>{t(skuPrice(sku))}</strong><small>{t(sku.publicOfferStatus ? offerStatusLabel[sku.publicOfferStatus] : "尚无公开报价")}</small></span>
-                  <Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge>
-                  <span className="core-sku-source-cell" title={sku.sourceFilename}><strong>{t(skuSourceLabel(sku))}</strong><small>{sku.sourceImportedAt ? skuImportDateTime(sku.sourceImportedAt) : t(sku.sourceType === "LEGACY_IMPORT" ? "历史数据暂无文件记录" : "非文件导入")}</small></span>
-                  <span><strong>{skuUpdatedDate(sku.updatedAt)}</strong><small>v{sku.version}</small></span>
-                  <CaretRight aria-hidden="true" />
-                </div>
-                );
+        <section className="core-sku-data-panel" aria-label={t("SKU 商品列表")}>
+          <header className="core-sku-table-summary" aria-live="polite">
+            <Text size="2">
+              {t("共 {total} 个 SKU · 当前显示 {start}–{end}", {
+                total: result.total.toLocaleString(locale),
+                start: rangeStart,
+                end: rangeEnd,
               })}
+            </Text>
+            <div>
+              {loading ? <Text size="1" color="gray">{t("正在更新结果…")}</Text> : null}
+              {canDelete ? (
+                <Text size="1" color={selectedSkuIds.size ? undefined : "gray"}>
+                  {t("已选择 {count} 个 SKU", { count: selectedSkuIds.size })}
+                </Text>
+              ) : null}
             </div>
-          </Card>
-          <div className="core-sku-mobile-list">
-            {result.items.map((sku) => {
-              const isSelected = selectedSkuIds.has(sku.id);
-              return (
-              <article className="core-sku-mobile-card" key={sku.id} data-selected={isSelected || undefined}>
-                {canDelete ? (
-                  <label className="core-sku-mobile-selection">
-                    <Checkbox
-                      checked={isSelected}
-                      onCheckedChange={() => toggleSkuSelection(sku.id)}
-                      aria-label={t(isSelected ? "取消选择 SKU {code}" : "选择 SKU {code}", { code: sku.skuCode })}
-                    />
-                    <span>{t(isSelected ? "已选择" : "选择此 SKU")}</span>
-                  </label>
-                ) : null}
-                <button type="button" className="core-sku-mobile-open" onClick={() => void openProduct(sku.productId, "skus")} aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}>
-                  <span className="core-sku-mobile-heading"><span><small className="core-tabular">{sku.skuCode}</small><strong>{sku.name || sku.productName}</strong></span><span className="core-sku-mobile-badges">{sku.isPinned ? <Badge color="amber" variant="soft"><PushPin weight="fill" />{t("已置顶")}</Badge> : null}<Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge></span></span>
-                  <span className="core-sku-mobile-facts">
-                    <span><small>{t("公开价")}</small><strong className="core-tabular">{t(skuPrice(sku))}</strong></span>
-                    <span><small>{t("图片")}</small><strong>{t(imageStatusLabel(sku.imageStatus))}</strong></span>
-                    <span><small>{t("供应商")}</small><strong>{sku.supplierSummary.primarySupplierName || t("未关联")}</strong></span>
-                  </span>
-                  <span className="core-chip-row"><Badge color="gray">{primaryCategoryLabel(sku.category?.name) || t("未分类")}</Badge>{sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span>
-                  <span className="core-sku-mobile-source">
-                    <span><small>{t("源文件")}</small><strong title={sku.sourceFilename}>{t(skuSourceLabel(sku))}</strong></span>
-                    <span><small>{t("导入时间")}</small><strong>{skuImportDateTime(sku.sourceImportedAt)}</strong></span>
-                  </span>
-                  <span className="core-sku-mobile-footer"><small>{t("更新于 {date}", { date: skuUpdatedDate(sku.updatedAt) })}</small><span>{t("SKU 详情")}<CaretRight /></span></span>
-                </button>
-              </article>
-              );
-            })}
+          </header>
+          <div className={`core-sku-table-scroll${loading ? " is-loading" : ""}`}>
+            <table className="core-sku-data-table">
+              <thead>
+                <tr>
+                  {canDelete ? (
+                    <th className="core-sku-select-column" scope="col">
+                      <Checkbox
+                        checked={allCurrentPageSelected ? true : currentPageSelected.length ? "indeterminate" : false}
+                        onCheckedChange={toggleCurrentPageSelection}
+                        aria-label={t(allCurrentPageSelected ? "取消选择本页全部 SKU" : "选择本页全部 SKU")}
+                      />
+                    </th>
+                  ) : null}
+                  <th className="core-sku-image-column" scope="col">{t("图片")}</th>
+                  <th className="core-sku-code-column" scope="col">{t("SKU 编号")}</th>
+                  <th className="core-sku-product-column" scope="col">{t("商品 / 规格")}</th>
+                  <th className="core-sku-category-column" scope="col">{t("分类")}</th>
+                  <th className="core-sku-tags-column" scope="col">{t("标签")}</th>
+                  <th className="core-sku-price-column" scope="col">{t("公开价")}</th>
+                  <th className="core-sku-status-column" scope="col">{t("状态")}</th>
+                  <th className="core-sku-supplier-column" scope="col">{t("供应商")}</th>
+                  <th className="core-sku-source-column" scope="col">{t("来源 / 导入时间")}</th>
+                  <th className="core-sku-updated-column" scope="col">{t("更新时间")}</th>
+                  <th className="core-sku-action-column" scope="col">{t("操作")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.items.map((sku) => {
+                  const isSelected = selectedSkuIds.has(sku.id);
+                  const skuDisplayName = sku.name && sku.name !== sku.productName
+                    ? sku.name
+                    : sku.productCode;
+                  return (
+                    <tr
+                      key={sku.id}
+                      tabIndex={0}
+                      data-selected={isSelected || undefined}
+                      onClick={() => void openProduct(sku.productId, "skus")}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void openProduct(sku.productId, "skus");
+                      }}
+                      aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}
+                    >
+                      {canDelete ? (
+                        <td
+                          className="core-sku-select-column"
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <Checkbox
+                            checked={isSelected}
+                            onCheckedChange={() => toggleSkuSelection(sku.id)}
+                            aria-label={t(isSelected ? "取消选择 SKU {code}" : "选择 SKU {code}", { code: sku.skuCode })}
+                          />
+                        </td>
+                      ) : null}
+                      <td className="core-sku-image-column">
+                        <SkuThumbnail
+                          sku={sku}
+                          label={t(sku.imageStatus === "APPROVED" ? "图片已批准" : sku.imageStatus === "SOURCE" ? "仅来源图" : "暂无图片")}
+                        />
+                      </td>
+                      <td className="core-sku-code-column">
+                        <strong className="core-tabular" title={sku.skuCode}>{sku.skuCode}</strong>
+                        {sku.isPinned ? <small className="core-sku-pinned"><PushPin weight="fill" />{t("已置顶")}</small> : null}
+                      </td>
+                      <td className="core-sku-product-column">
+                        <strong title={sku.productName}>{sku.productName}</strong>
+                        {skuDisplayName ? <small title={skuDisplayName}>{skuDisplayName}</small> : null}
+                      </td>
+                      <td className="core-sku-category-column" title={sku.category?.name}>
+                        {sku.category?.name || t("未分类")}
+                      </td>
+                      <td className="core-sku-tags-column">
+                        {sku.tags.length ? (
+                          <span className="core-sku-table-tags">
+                            {sku.tags.slice(0, 2).map((tag) => <Badge key={tag} color="gray" title={tag}>{tag}</Badge>)}
+                            {sku.tags.length > 2 ? <small>+{sku.tags.length - 2}</small> : null}
+                          </span>
+                        ) : <span className="core-sku-table-empty">—</span>}
+                      </td>
+                      <td className="core-sku-price-column core-tabular">
+                        <strong>{t(skuPrice(sku))}</strong>
+                        <small>{t(sku.publicOfferStatus ? offerStatusLabel[sku.publicOfferStatus] : "尚无公开报价")}</small>
+                      </td>
+                      <td className="core-sku-status-column">
+                        <Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge>
+                      </td>
+                      <td className="core-sku-supplier-column" title={sku.supplierSummary.names.join("、")}>
+                        <strong>{sku.supplierSummary.primarySupplierName || t("未关联")}</strong>
+                        {sku.supplierSummary.count > 1 ? <small>+{sku.supplierSummary.count - 1}</small> : null}
+                      </td>
+                      <td className="core-sku-source-column" title={sku.sourceFilename}>
+                        <strong>{t(skuSourceLabel(sku))}</strong>
+                        <small>{sku.sourceImportedAt
+                          ? skuImportDateTime(sku.sourceImportedAt)
+                          : t(sku.sourceType === "LEGACY_IMPORT" ? "历史数据暂无文件记录" : "非文件导入")}</small>
+                      </td>
+                      <td className="core-sku-updated-column">
+                        <strong>{skuUpdatedDate(sku.updatedAt)}</strong>
+                        <small>v{sku.version}</small>
+                      </td>
+                      <td
+                        className="core-sku-action-column"
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <Button
+                          size="1"
+                          variant="ghost"
+                          onClick={() => void openProduct(sku.productId, "skus")}
+                          aria-label={t("打开 SKU {code} 的编辑详情", { code: sku.skuCode })}
+                        >
+                          {t("查看")}
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
           <nav className="core-sku-pagination" aria-label={t("SKU 列表分页")}>
-            <label className="core-sku-page-size-control">
-              <span>{t("每页显示")}</span>
-              <select value={pageSize} onChange={(event) => changePageSize(event.target.value)} disabled={loading}>
-                {SKU_PAGE_SIZE_OPTIONS.map((option) => <option key={option} value={option}>{t("{count} 条", { count: option })}</option>)}
-              </select>
-            </label>
+            <div className="core-sku-pagination-summary">
+              <Text size="1" color="gray">
+                {t("第 {page} / {pages} 页", { page: result.page, pages: result.pages })}
+              </Text>
+              <label className="core-sku-page-size-control">
+                <span>{t("每页显示")}</span>
+                <select value={pageSize} onChange={(event) => changePageSize(event.target.value)} disabled={loading}>
+                  {SKU_PAGE_SIZE_OPTIONS.map((option) => <option key={option} value={option}>{t("{count} 条", { count: option })}</option>)}
+                </select>
+              </label>
+            </div>
             <div className="core-sku-pagination-controls">
-              <Button variant="soft" color="gray" disabled={loading || result.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>{t("上一页")}</Button>
-              <Text size="2" color="gray">{t("第 {page} / {pages} 页", { page: result.page, pages: result.pages })}</Text>
-              <Button variant="soft" color="gray" disabled={loading || result.page >= result.pages} onClick={() => setPage((current) => Math.min(result.pages, current + 1))}>{t("下一页")}</Button>
+              <Button
+                size="2"
+                variant="soft"
+                color="gray"
+                disabled={loading || result.page <= 1}
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                aria-label={t("上一页")}
+              >
+                <CaretLeft />
+              </Button>
+              {paginationItems.map((item) => typeof item === "number" ? (
+                <Button
+                  key={item}
+                  size="2"
+                  variant={item === result.page ? "solid" : "soft"}
+                  color={item === result.page ? undefined : "gray"}
+                  disabled={loading}
+                  onClick={() => setPage(item)}
+                  aria-current={item === result.page ? "page" : undefined}
+                  aria-label={t("第 {page} 页", { page: item })}
+                >
+                  {item}
+                </Button>
+              ) : <span className="core-sku-pagination-ellipsis" key={item}>…</span>)}
+              <Button
+                size="2"
+                variant="soft"
+                color="gray"
+                disabled={loading || result.page >= result.pages}
+                onClick={() => setPage((current) => Math.min(result.pages, current + 1))}
+                aria-label={t("下一页")}
+              >
+                <CaretRight />
+              </Button>
             </div>
           </nav>
-        </>
+        </section>
       ) : null}
 
       <Dialog.Root

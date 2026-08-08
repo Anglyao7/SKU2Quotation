@@ -61,6 +61,8 @@ class PublicSkuResponse(BaseModel):
     image_url: str | None
     product_version: int
     sku_version: int
+    source_updated_at: datetime
+    translation_source_hash: str = Field(min_length=64, max_length=64)
     specification: str | None = None
     option_values: dict[str, Any] = Field(default_factory=dict)
     source_locale: str = "zh-CN"
@@ -100,6 +102,8 @@ class PublicProductSummary(BaseModel):
     image_url: str | None
     sku_count: int = Field(ge=1)
     product_version: int
+    source_updated_at: datetime
+    translation_source_hash: str = Field(min_length=64, max_length=64)
     source_locale: str = "zh-CN"
     locale: str = "zh-CN"
     translation_status: Literal["SOURCE", "TRANSLATED", "FALLBACK"] = "SOURCE"

@@ -560,12 +560,25 @@ export interface SupportSettings {
 
 export type SupportConversationStatus = "OPEN" | "CLOSED";
 export type SupportMessageSender = "VISITOR" | "MERCHANT" | "SYSTEM" | "AI";
+export type SupportTranslationStatus = "PENDING" | "READY" | "FAILED" | "UNAVAILABLE" | "NOT_REQUIRED";
 
 export interface SupportMessage {
   id: string;
   senderType: SupportMessageSender;
   body: string;
+  draftBody?: string;
+  translatedBody?: string;
+  translationSourceLocale?: StorefrontLocale;
+  translationTargetLocale?: StorefrontLocale;
+  translationStatus: SupportTranslationStatus;
   createdAt: string;
+}
+
+export interface SupportTranslationPreview {
+  sourceLocale: StorefrontLocale;
+  targetLocale: StorefrontLocale;
+  originalMessage: string;
+  translatedMessage: string;
 }
 
 export interface SupportConversationSummary {
@@ -685,6 +698,121 @@ export interface EmbeddingSettings {
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
   updatedAt?: string;
+}
+
+export type TranslationReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high";
+
+export type TranslationProviderKind =
+  | "openai-compatible"
+  | "aliyun-alimt";
+
+export interface TranslationApiSettings {
+  source: "database" | "environment" | "disabled";
+  provider: TranslationProviderKind | "deeplx";
+  enabled: boolean;
+  baseUrl?: string;
+  modelName?: string;
+  regionId?: string;
+  timeoutSeconds: number;
+  maxTokens: number;
+  reasoningEffort: TranslationReasoningEffort;
+  apiKeyConfigured: boolean;
+  apiKeyHint?: string;
+  accessKeyIdConfigured: boolean;
+  accessKeyIdHint?: string;
+  updatedAt?: string;
+}
+
+export interface TranslationApiTestResult {
+  provider: string;
+  modelName: string;
+  latencyMs: number;
+  translatedText: string;
+}
+
+export type CatalogTranslationJobStage =
+  | "QUEUED"
+  | "PREPARING"
+  | "TRANSLATING"
+  | "PACKAGING"
+  | "UPLOADING"
+  | "PAUSED"
+  | "PUBLISHED"
+  | "FAILED";
+
+export interface CatalogLanguagePackInfo {
+  sourceLocale: StorefrontLocale;
+  targetLocale: StorefrontLocale;
+  version: number;
+  downloadUrl: string;
+  contentSha256: string;
+  sourceDigest: string;
+  byteSize: number;
+  productCount: number;
+  skuCount: number;
+  categoryCount: number;
+  provider: string;
+  providerVersion: string;
+  sourceCutoffAt: string;
+  publishedAt: string;
+  lastFullTranslationAt?: string;
+}
+
+export interface CatalogTranslationJob {
+  id: string;
+  sourceLocale: StorefrontLocale;
+  targetLocale: StorefrontLocale;
+  mode: "INCREMENTAL" | "FULL_REBUILD";
+  status: "QUEUED" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
+  stage: CatalogTranslationJobStage;
+  totalSkus: number;
+  processedSkus: number;
+  failedSkus: number;
+  progressPercent: number;
+  currentSkuId?: string;
+  currentSkuName?: string;
+  provider: string;
+  providerVersion: string;
+  failureDetails: Array<{
+    skuId?: string;
+    skuCode?: string;
+    name?: string;
+    message: string;
+  }>;
+  errorMessage?: string;
+  packageVersion?: number;
+  packagePublished: boolean;
+  packageByteSize?: number;
+  sourceCutoffAt?: string;
+  pauseRequested: boolean;
+  pauseRequestedAt?: string;
+  pausedAt?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface CatalogTranslationStatus {
+  sourceLocale: StorefrontLocale;
+  targetLocale: StorefrontLocale;
+  provider: string;
+  providerVersion: string;
+  providerConfigured: boolean;
+  totalSkus: number;
+  translatedSkus: number;
+  staleSkus: number;
+  pendingSkus: number;
+  packageOutdated: boolean;
+  packageStorageBackend: string;
+  packageStorageConfigured: boolean;
+  availableLocales: StorefrontLocale[];
+  package?: CatalogLanguagePackInfo;
+  latestJob?: CatalogTranslationJob;
 }
 
 export interface InquiryItem {

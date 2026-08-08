@@ -15,8 +15,12 @@ import jwt
 ISSUER = "ai-trade-cloud"
 AUDIENCE = "ai-trade-cloud-api"
 ACCESS_TTL_SECONDS = int(os.getenv("AUTH_ACCESS_TTL_SECONDS", "600"))
-SESSION_TTL_SECONDS = int(os.getenv("AUTH_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
-REFRESH_TTL_SECONDS = int(os.getenv("AUTH_REFRESH_TTL_SECONDS", str(30 * 24 * 60 * 60)))
+SESSION_TTL_SECONDS = int(
+    os.getenv("AUTH_SESSION_TTL_SECONDS", str(7 * 24 * 60 * 60))
+)
+REFRESH_TTL_SECONDS = int(
+    os.getenv("AUTH_REFRESH_TTL_SECONDS", str(7 * 24 * 60 * 60))
+)
 REFRESH_COOKIE_NAME = "atc_refresh"
 DEFAULT_REFRESH_RETRY_GRACE_SECONDS = 5
 _EPHEMERAL_JWT_SECRET = secrets.token_urlsafe(48)

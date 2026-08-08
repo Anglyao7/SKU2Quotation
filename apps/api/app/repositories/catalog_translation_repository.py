@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..catalog_translation_models import CatalogSkuTranslationRow
+from ..catalog_translation_models import (
+    CatalogLanguagePackRow,
+    CatalogSkuTranslationRow,
+)
 from ..services.catalog_translation import (
     CatalogTranslationResult,
     CatalogTranslationSource,
@@ -89,6 +93,111 @@ def count_translations(
         )
         or 0
     )
+
+
+def language_pack(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+) -> CatalogLanguagePackRow | None:
+    return session.scalar(
+        select(CatalogLanguagePackRow).where(
+            CatalogLanguagePackRow.tenant_id == tenant_id,
+            CatalogLanguagePackRow.target_locale == target_locale,
+            CatalogLanguagePackRow.deleted_at.is_(None),
+        )
+    )
+
+
+def available_language_pack_locales(
+    session: Session,
+    *,
+    tenant_id: UUID,
+) -> list[str]:
+    return list(
+        session.scalars(
+            select(CatalogLanguagePackRow.target_locale)
+            .where(
+                CatalogLanguagePackRow.tenant_id == tenant_id,
+                CatalogLanguagePackRow.deleted_at.is_(None),
+            )
+            .order_by(CatalogLanguagePackRow.target_locale)
+        ).all()
+    )
+
+
+def save_language_pack(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    source_locale: str,
+    target_locale: str,
+    version: int,
+    object_key: str,
+    public_url: str | None,
+    content_sha256: str,
+    source_digest: str,
+    storage_fingerprint: str,
+    byte_size: int,
+    product_count: int,
+    sku_count: int,
+    category_count: int,
+    provider: str,
+    provider_version: str,
+    source_cutoff_at: datetime,
+    published_at: datetime,
+    full_rebuild: bool,
+) -> CatalogLanguagePackRow:
+    row = language_pack(
+        session,
+        tenant_id=tenant_id,
+        target_locale=target_locale,
+    )
+    if row is None:
+        row = CatalogLanguagePackRow(
+            tenant_id=tenant_id,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            version=version,
+            object_key=object_key,
+            public_url=public_url,
+            content_sha256=content_sha256,
+            source_digest=source_digest,
+            storage_fingerprint=storage_fingerprint,
+            content_encoding="gzip",
+            byte_size=byte_size,
+            product_count=product_count,
+            sku_count=sku_count,
+            category_count=category_count,
+            provider=provider,
+            provider_version=provider_version,
+            source_cutoff_at=source_cutoff_at,
+            published_at=published_at,
+            last_full_translation_at=published_at if full_rebuild else None,
+        )
+        session.add(row)
+        return row
+
+    row.source_locale = source_locale
+    row.version = version
+    row.object_key = object_key
+    row.public_url = public_url
+    row.content_sha256 = content_sha256
+    row.source_digest = source_digest
+    row.storage_fingerprint = storage_fingerprint
+    row.content_encoding = "gzip"
+    row.byte_size = byte_size
+    row.product_count = product_count
+    row.sku_count = sku_count
+    row.category_count = category_count
+    row.provider = provider
+    row.provider_version = provider_version
+    row.source_cutoff_at = source_cutoff_at
+    row.published_at = published_at
+    if full_rebuild:
+        row.last_full_translation_at = published_at
+    return row
 
 
 def save_translation(

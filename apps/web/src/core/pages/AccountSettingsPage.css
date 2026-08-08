@@ -137,95 +137,6 @@
   gap: 18px;
 }
 
-.account-storefront-languages {
-  display: grid;
-  gap: 13px;
-  padding: 15px;
-  border: 1px solid var(--core-line);
-  border-radius: 13px;
-  background: var(--core-soft);
-}
-
-.account-storefront-languages-heading {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-}
-
-.account-storefront-languages-heading > span {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  color: var(--core-accent);
-  background: var(--accent-soft);
-}
-
-.account-storefront-languages-heading > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.account-language-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.account-language-option {
-  min-width: 0;
-  min-height: 48px;
-  padding: 9px 11px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--core-line);
-  border-radius: 10px;
-  color: var(--core-muted);
-  background: var(--core-surface);
-  cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
-}
-
-.account-language-option:hover,
-.account-language-option.is-selected {
-  border-color: color-mix(in srgb, var(--core-accent) 42%, var(--core-line));
-  color: var(--core-ink);
-  background: color-mix(in srgb, var(--accent-soft) 68%, var(--core-surface));
-}
-
-.account-language-flag {
-  flex: 0 0 auto;
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-  font-size: 18px;
-  font-style: normal;
-  line-height: 1;
-}
-
-.account-language-copy {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  flex: 1;
-}
-
-.account-language-option strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-}
-
-.account-language-option small {
-  color: var(--core-muted);
-  font-size: 10px;
-}
-
 .account-hot-products-setting {
   min-width: 0;
   padding: 14px 15px;
@@ -463,10 +374,6 @@
   }
 
   .account-password-rules {
-    grid-template-columns: 1fr;
-  }
-
-  .account-language-options {
     grid-template-columns: 1fr;
   }
 

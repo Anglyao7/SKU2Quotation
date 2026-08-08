@@ -1,4 +1,4 @@
-import { Avatar, Badge, Button, Callout, Card, Checkbox, Heading, Switch, Text, TextField } from "@radix-ui/themes";
+import { Avatar, Badge, Button, Callout, Card, Heading, Switch, Text, TextField } from "@radix-ui/themes";
 import {
   CheckCircle,
   Circle,
@@ -9,7 +9,6 @@ import {
   Fire,
   Info,
   LockKey,
-  Translate,
   ShieldCheck,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -30,8 +29,6 @@ import {
 import { CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import { initials } from "../../lib/format";
-import { STOREFRONT_LANGUAGE_OPTIONS } from "../../lib/storefrontLocale";
-import type { StorefrontLocale } from "../../types";
 import "./AccountSettingsPage.css";
 
 const strengthCopy = {
@@ -63,14 +60,6 @@ export function AccountSettingsPage() {
   const [merchantSubmitting, setMerchantSubmitting] = useState(false);
   const [merchantSettingsLoading, setMerchantSettingsLoading] = useState(true);
   const [merchantSettingsReady, setMerchantSettingsReady] = useState(false);
-  const [storefrontLocales, setStorefrontLocales] = useState<StorefrontLocale[]>([
-    "zh-CN",
-    "en-US",
-  ]);
-  const [savedStorefrontLocales, setSavedStorefrontLocales] = useState<StorefrontLocale[]>([
-    "zh-CN",
-    "en-US",
-  ]);
   const [hotProductsEnabled, setHotProductsEnabled] = useState(false);
   const [savedHotProductsEnabled, setSavedHotProductsEnabled] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -118,8 +107,6 @@ export function AccountSettingsPage() {
         if (!active) return;
         setMerchantName(settings.name);
         setMerchantSlug(settings.slug);
-        setStorefrontLocales(settings.storefrontLocales);
-        setSavedStorefrontLocales(settings.storefrontLocales);
         setHotProductsEnabled(settings.hotProductsEnabled);
         setSavedHotProductsEnabled(settings.hotProductsEnabled);
         setMerchantSettingsReady(true);
@@ -135,26 +122,7 @@ export function AccountSettingsPage() {
     };
   }, [profile?.context.tenantId, t]);
 
-  const storefrontLocalesChanged = storefrontLocales.join(",")
-    !== savedStorefrontLocales.join(",");
   const hotProductsChanged = hotProductsEnabled !== savedHotProductsEnabled;
-
-  const toggleStorefrontLocale = (
-    code: StorefrontLocale,
-    checked: boolean,
-  ) => {
-    if (code === "zh-CN") return;
-    setStorefrontLocales((current) => {
-      const selected = new Set(current);
-      if (checked) selected.add(code);
-      else selected.delete(code);
-      return STOREFRONT_LANGUAGE_OPTIONS
-        .map((language) => language.code)
-        .filter((locale) => selected.has(locale));
-    });
-    setMerchantError("");
-    setMerchantSuccess("");
-  };
 
   const clearFeedback = (field: keyof PasswordChangeValidation) => {
     setFieldErrors((current) => {
@@ -224,22 +192,17 @@ export function AccountSettingsPage() {
       || !normalized
     ) return;
     const nameChanged = normalized !== profile?.context.tenantName;
-    if (!nameChanged && !storefrontLocalesChanged && !hotProductsChanged) return;
+    if (!nameChanged && !hotProductsChanged) return;
     setMerchantSubmitting(true);
     setMerchantError("");
     setMerchantSuccess("");
     try {
       const updated = await updateMerchantSettings({
         name: nameChanged ? normalized : undefined,
-        storefrontLocales: storefrontLocalesChanged
-          ? storefrontLocales
-          : undefined,
         hotProductsEnabled: hotProductsChanged ? hotProductsEnabled : undefined,
       });
       setMerchantName(updated.name);
       setMerchantSlug(updated.slug);
-      setStorefrontLocales(updated.storefrontLocales);
-      setSavedStorefrontLocales(updated.storefrontLocales);
       setHotProductsEnabled(updated.hotProductsEnabled);
       setSavedHotProductsEnabled(updated.hotProductsEnabled);
       await reloadProfile();
@@ -344,54 +307,6 @@ export function AccountSettingsPage() {
                 </Text>
               </div>
 
-              <section className="account-storefront-languages" aria-labelledby="account-storefront-languages-title">
-                <div className="account-storefront-languages-heading">
-                  <span><Translate size={19} weight="duotone" /></span>
-                  <div>
-                    <Text id="account-storefront-languages-title" size="2" weight="bold">
-                      {t("商品前台语言")}
-                    </Text>
-                    <Text size="1" color="gray">
-                      {t("勾选后才会出现在访客的语言菜单中；简体中文作为默认语言始终保留。")}
-                    </Text>
-                  </div>
-                </div>
-                <div className="account-language-options">
-                  {STOREFRONT_LANGUAGE_OPTIONS.map((language) => {
-                    const locked = language.code === "zh-CN";
-                    const checked = storefrontLocales.includes(language.code);
-                    return (
-                      <label
-                        key={language.code}
-                        className={`account-language-option${checked ? " is-selected" : ""}`}
-                        lang={language.code}
-                        dir="ltr"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          disabled={
-                            locked
-                            || !canManageMerchant
-                            || merchantSettingsLoading
-                            || !merchantSettingsReady
-                          }
-                          onCheckedChange={(value) => (
-                            toggleStorefrontLocale(language.code, value === true)
-                          )}
-                        />
-                        <span className="account-language-flag" aria-hidden="true">
-                          {language.flag}
-                        </span>
-                        <span className="account-language-copy">
-                          <strong lang={language.code} dir={language.direction}>{language.label}</strong>
-                          <small>{locked ? t("默认") : language.shortLabel}</small>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </section>
-
               <section
                 className={`account-hot-products-setting${hotProductsEnabled ? " is-enabled" : ""}`}
                 aria-labelledby="account-hot-products-title"
@@ -471,7 +386,6 @@ export function AccountSettingsPage() {
                     || !merchantName.trim()
                     || (
                       merchantName.trim() === profile?.context.tenantName
-                      && !storefrontLocalesChanged
                       && !hotProductsChanged
                     )
                   }

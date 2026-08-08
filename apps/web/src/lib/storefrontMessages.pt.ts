@@ -57,6 +57,8 @@ export const portugueseStorefrontMessages: Record<string, string> = {
   "1 个 SKU": "1 SKU",
   "查看规格": "Ver opções",
   "暂无图片": "Sem imagem",
+  "点击查看大图": "Ver imagem ampliada",
+  "关闭图片预览": "Fechar pré-visualização da imagem",
   "已选 {quantity}": "{quantity} selecionados",
   "参考单价": "Preço unitário de referência",
   "{name} 已选数量": "Quantidade selecionada de {name}",

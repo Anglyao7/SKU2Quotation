@@ -21,7 +21,10 @@ from sqlalchemy.orm import Session
 from ..catalog_translation_models import CatalogTextTranslationRow
 from ..database import SessionLocal, set_public_tenant_context
 from ..model_mixins import utcnow
-from .catalog_translation import translate_catalog_values
+from .catalog_translation import (
+    catalog_translation_value_is_complete,
+    translate_catalog_values,
+)
 from .translation import TranslationProvider, TranslationProviderError
 
 
@@ -123,20 +126,33 @@ def _redis_get_many(
     if client is None or not memory_keys_by_source:
         return {}
     sources = list(memory_keys_by_source)
+    translated_by_source: dict[str, str] = {}
     try:
-        values = client.mget(
-            [_redis_key(memory_keys_by_source[source]) for source in sources]
-        )
+        for offset in range(0, len(sources), 1_000):
+            source_batch = sources[offset : offset + 1_000]
+            values = client.mget(
+                [
+                    _redis_key(memory_keys_by_source[source])
+                    for source in source_batch
+                ]
+            )
+            translated_by_source.update(
+                {
+                    source: translated
+                    for source, translated in zip(
+                        source_batch,
+                        values,
+                        strict=True,
+                    )
+                    if isinstance(translated, str) and translated.strip()
+                }
+            )
     except Exception:
         with _REDIS_LOCK:
             _redis_client = None
             _redis_disabled_until = monotonic() + 30
         return {}
-    return {
-        source: translated
-        for source, translated in zip(sources, values, strict=True)
-        if isinstance(translated, str) and translated.strip()
-    }
+    return translated_by_source
 
 
 def _redis_store_many(
@@ -153,14 +169,16 @@ def _redis_store_many(
         maximum=604_800,
     )
     try:
-        pipeline = client.pipeline(transaction=False)
-        for source, translated in translations.items():
-            pipeline.set(
-                _redis_key(memory_keys_by_source[source]),
-                translated,
-                ex=ttl_seconds,
-            )
-        pipeline.execute()
+        entries = list(translations.items())
+        for offset in range(0, len(entries), 1_000):
+            pipeline = client.pipeline(transaction=False)
+            for source, translated in entries[offset : offset + 1_000]:
+                pipeline.set(
+                    _redis_key(memory_keys_by_source[source]),
+                    translated,
+                    ex=ttl_seconds,
+                )
+            pipeline.execute()
     except Exception:
         with _REDIS_LOCK:
             _redis_client = None
@@ -181,19 +199,23 @@ def _database_get_many(
     try:
         with SessionLocal() as session:
             set_public_tenant_context(session, tenant_id=tenant_id)
-            rows = list(
-                session.scalars(
-                    select(CatalogTextTranslationRow).where(
-                        CatalogTextTranslationRow.tenant_id == tenant_id,
-                        CatalogTextTranslationRow.source_locale == source_locale,
-                        CatalogTextTranslationRow.target_locale == target_locale,
-                        CatalogTextTranslationRow.provider == provider,
-                        CatalogTextTranslationRow.provider_version
-                        == provider_version,
-                        CatalogTextTranslationRow.source_hash.in_(sources_by_hash),
-                    )
-                ).all()
-            )
+            rows: list[CatalogTextTranslationRow] = []
+            source_hashes = list(sources_by_hash)
+            for offset in range(0, len(source_hashes), 1_000):
+                hash_batch = source_hashes[offset : offset + 1_000]
+                rows.extend(
+                    session.scalars(
+                        select(CatalogTextTranslationRow).where(
+                            CatalogTextTranslationRow.tenant_id == tenant_id,
+                            CatalogTextTranslationRow.source_locale == source_locale,
+                            CatalogTextTranslationRow.target_locale == target_locale,
+                            CatalogTextTranslationRow.provider == provider,
+                            CatalogTextTranslationRow.provider_version
+                            == provider_version,
+                            CatalogTextTranslationRow.source_hash.in_(hash_batch),
+                        )
+                    ).all()
+                )
             now = utcnow()
             stale_touch_before = now - timedelta(hours=24)
             stale_ids = [
@@ -201,15 +223,17 @@ def _database_get_many(
                 for row in rows
                 if _as_utc(row.last_accessed_at) < stale_touch_before
             ]
-            if stale_ids:
+            for offset in range(0, len(stale_ids), 1_000):
+                stale_batch = stale_ids[offset : offset + 1_000]
                 session.execute(
                     update(CatalogTextTranslationRow)
                     .where(
                         CatalogTextTranslationRow.tenant_id == tenant_id,
-                        CatalogTextTranslationRow.id.in_(stale_ids),
+                        CatalogTextTranslationRow.id.in_(stale_batch),
                     )
                     .values(last_accessed_at=now, updated_at=now)
                 )
+            if stale_ids:
                 session.commit()
             return {
                 row.source_text: row.translated_text
@@ -266,38 +290,44 @@ def _database_store_many(
         with SessionLocal() as session:
             set_public_tenant_context(session, tenant_id=tenant_id)
             dialect = session.get_bind().dialect.name
-            if dialect == "postgresql":
-                statement = postgresql_insert(CatalogTextTranslationRow).values(
-                    records
-                )
-                statement = statement.on_conflict_do_update(
-                    index_elements=conflict_columns,
-                    set_={
-                        "source_text": statement.excluded.source_text,
-                        "translated_text": statement.excluded.translated_text,
-                        "last_accessed_at": statement.excluded.last_accessed_at,
-                        "updated_at": statement.excluded.updated_at,
-                        "deleted_at": None,
-                    },
-                )
-                session.execute(statement)
-            elif dialect == "sqlite":
-                statement = sqlite_insert(CatalogTextTranslationRow).values(records)
-                statement = statement.on_conflict_do_update(
-                    index_elements=conflict_columns,
-                    set_={
-                        "source_text": statement.excluded.source_text,
-                        "translated_text": statement.excluded.translated_text,
-                        "last_accessed_at": statement.excluded.last_accessed_at,
-                        "updated_at": statement.excluded.updated_at,
-                        "deleted_at": None,
-                    },
-                )
-                session.execute(statement)
-            else:  # pragma: no cover - supported deployments use PostgreSQL/SQLite
-                session.add_all(
-                    CatalogTextTranslationRow(**record) for record in records
-                )
+            write_batch_size = 100 if dialect == "sqlite" else 500
+            for offset in range(0, len(records), write_batch_size):
+                record_batch = records[offset : offset + write_batch_size]
+                if dialect == "postgresql":
+                    statement = postgresql_insert(CatalogTextTranslationRow).values(
+                        record_batch
+                    )
+                    statement = statement.on_conflict_do_update(
+                        index_elements=conflict_columns,
+                        set_={
+                            "source_text": statement.excluded.source_text,
+                            "translated_text": statement.excluded.translated_text,
+                            "last_accessed_at": statement.excluded.last_accessed_at,
+                            "updated_at": statement.excluded.updated_at,
+                            "deleted_at": None,
+                        },
+                    )
+                    session.execute(statement)
+                elif dialect == "sqlite":
+                    statement = sqlite_insert(CatalogTextTranslationRow).values(
+                        record_batch
+                    )
+                    statement = statement.on_conflict_do_update(
+                        index_elements=conflict_columns,
+                        set_={
+                            "source_text": statement.excluded.source_text,
+                            "translated_text": statement.excluded.translated_text,
+                            "last_accessed_at": statement.excluded.last_accessed_at,
+                            "updated_at": statement.excluded.updated_at,
+                            "deleted_at": None,
+                        },
+                    )
+                    session.execute(statement)
+                else:  # pragma: no cover - supported deployments use PostgreSQL/SQLite
+                    session.add_all(
+                        CatalogTextTranslationRow(**record)
+                        for record in record_batch
+                    )
             session.commit()
             try:
                 _cleanup_stale_rows(session, tenant_id=tenant_id, now=now)
@@ -419,6 +449,7 @@ def _translate_uncached_values(
     )
     successes: dict[str, str] = {}
     failures: dict[str, TranslationProviderError] = {}
+    recoverable_sources: set[str] = set()
     futures = {
         _TRANSLATION_EXECUTOR.submit(
             _translate_batch,
@@ -439,6 +470,8 @@ def _translate_uncached_values(
         except TranslationProviderError as exc:
             logger.warning("catalog translation batch failed: %s", exc)
             failures.update((value, exc) for value in batch)
+            if len(batch) > 1 and exc.recover_with_smaller_batches:
+                recoverable_sources.update(batch)
         except Exception:
             logger.exception("unexpected catalog translation batch failure")
             safe_error = TranslationProviderError(
@@ -446,46 +479,29 @@ def _translate_uncached_values(
             )
             failures.update((value, safe_error) for value in batch)
 
-    # A provider can damage one numeric boundary inside an otherwise valid
-    # batch. Retry only failed values in small sequential groups so one bad
-    # marker does not make an entire storefront page fall back to source text.
-    # Sequential recovery also avoids amplifying provider-side rate limits.
-    retry_values = [value for value in values if value in failures]
-    for retry_batch in _translation_batches(
-        retry_values,
-        max_items=6,
-        max_characters=600,
-    ):
+    # Some OpenAI-compatible gateways reject one particular combination of
+    # otherwise valid values while accepting every value independently. Go
+    # straight to sequential single-value recovery: retrying the same small
+    # group first only repeats the failure and adds another full timeout.
+    retry_values = [
+        value
+        for value in values
+        if value in failures and value in recoverable_sources
+    ]
+    for value in retry_values:
         try:
-            recovered = _translate_batch(
+            recovered_value = _translate_batch(
                 translator,
-                retry_batch,
+                [value],
                 source_locale=source_locale,
                 target_locale=target_locale,
-            )
-        except Exception as batch_error:
-            if len(retry_batch) == 1:
-                if isinstance(batch_error, TranslationProviderError):
-                    failures[retry_batch[0]] = batch_error
-                continue
-            for value in retry_batch:
-                try:
-                    recovered_value = _translate_batch(
-                        translator,
-                        [value],
-                        source_locale=source_locale,
-                        target_locale=target_locale,
-                    )[0]
-                except Exception as value_error:
-                    if isinstance(value_error, TranslationProviderError):
-                        failures[value] = value_error
-                    continue
-                successes[value] = recovered_value
-                failures.pop(value, None)
+            )[0]
+        except Exception as value_error:
+            if isinstance(value_error, TranslationProviderError):
+                failures[value] = value_error
             continue
-        successes.update(zip(retry_batch, recovered, strict=True))
-        for value in retry_batch:
-            failures.pop(value, None)
+        successes[value] = recovered_value
+        failures.pop(value, None)
     return successes, failures
 
 
@@ -525,6 +541,16 @@ def translate_values_with_memory(
         for source in unique_sources
     }
     translations = _redis_get_many(memory_keys_by_source)
+    translations = {
+        source: translated
+        for source, translated in translations.items()
+        if catalog_translation_value_is_complete(
+            source,
+            translated,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+    }
     database_sources = [
         source for source in unique_sources if source not in translations
     ]
@@ -540,6 +566,16 @@ def translate_values_with_memory(
                 for source in database_sources
             },
         )
+        database_hits = {
+            source: translated
+            for source, translated in database_hits.items()
+            if catalog_translation_value_is_complete(
+                source,
+                translated,
+                source_locale=source_locale,
+                target_locale=target_locale,
+            )
+        }
         translations.update(database_hits)
         _redis_store_many(memory_keys_by_source, database_hits)
 

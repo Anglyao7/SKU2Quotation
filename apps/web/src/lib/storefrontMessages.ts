@@ -66,6 +66,8 @@ const localizedStorefrontMessagesBase: Record<
   "1 个 SKU": { es: "1 SKU", tr: "1 SKU", ar: "وحدة SKU واحدة", ja: "SKU 1件", ko: "SKU 1개" },
   "查看规格": { es: "Ver opciones", tr: "Seçenekleri görüntüle", ar: "عرض الخيارات", ja: "仕様を見る", ko: "옵션 보기" },
   "暂无图片": { es: "Sin imagen", tr: "Görsel yok", ar: "لا توجد صورة", ja: "画像なし", ko: "이미지 없음" },
+  "点击查看大图": { es: "Ver imagen ampliada", tr: "Büyük görseli görüntüle", ar: "عرض الصورة بحجم أكبر", ja: "画像を拡大表示", ko: "큰 이미지 보기" },
+  "关闭图片预览": { es: "Cerrar vista previa", tr: "Görsel önizlemeyi kapat", ar: "إغلاق معاينة الصورة", ja: "画像プレビューを閉じる", ko: "이미지 미리보기 닫기" },
   "已选 {quantity}": { es: "{quantity} seleccionados", tr: "{quantity} seçildi", ar: "تم اختيار {quantity}", ja: "{quantity}点選択済み", ko: "{quantity}개 선택됨" },
   "参考单价": { es: "Precio de referencia", tr: "Referans birim fiyat", ar: "سعر الوحدة المرجعي", ja: "参考単価", ko: "참고 단가" },
   "{name} 已选数量": { es: "Cantidad seleccionada de {name}", tr: "{name} için seçilen miktar", ar: "الكمية المحددة من {name}", ja: "{name}の選択数量", ko: "{name} 선택 수량" },

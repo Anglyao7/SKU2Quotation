@@ -121,6 +121,8 @@ const english: Record<string, string> = {
   "1 个 SKU": "1 SKU",
   "查看规格": "View options",
   "暂无图片": "No image",
+  "点击查看大图": "View larger image",
+  "关闭图片预览": "Close image preview",
   "已选 {quantity}": "{quantity} selected",
   "参考单价": "Reference price",
   "{name} 已选数量": "Selected quantity for {name}",

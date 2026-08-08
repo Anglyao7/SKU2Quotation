@@ -30,6 +30,38 @@ _PROTECTED_MARKER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TRANSLATABLE_PROSE_PATTERN = re.compile(r"[A-Za-z]{2,}|[\u3400-\u9fff]")
+_CJK_PROSE_PATTERN = re.compile(r"[\u3400-\u9fff]")
+
+
+def catalog_translation_value_is_complete(
+    source_value: str,
+    translated_value: str,
+    *,
+    source_locale: str,
+    target_locale: str,
+) -> bool:
+    """Reject visibly partial storefront translations.
+
+    Product codes and dimensions may remain unchanged, but Chinese prose must
+    not leak into Latin, Arabic, or Korean storefronts. Japanese legitimately
+    uses Han characters, so for Japanese we only reject a wholly unchanged
+    Chinese value. This check is also used when reading translation memory so
+    an older partial response cannot remain stuck in the storefront cache.
+    """
+
+    source = source_value.strip()
+    translated = translated_value.strip()
+    if not translated:
+        return False
+    if source_locale == target_locale or not _CJK_PROSE_PATTERN.search(source):
+        return True
+
+    normalized_target = target_locale.strip().replace("_", "-").casefold()
+    if normalized_target in {"zh", "zh-cn"}:
+        return True
+    if normalized_target in {"ja", "ja-jp"}:
+        return translated.casefold() != source.casefold()
+    return not _CJK_PROSE_PATTERN.search(translated)
 
 
 @dataclass(frozen=True)
@@ -261,7 +293,8 @@ def translate_catalog_sources(
         ]
         if missing:
             raise TranslationProviderError(
-                "translation provider did not preserve the catalog field structure"
+                "translation provider did not preserve the catalog field structure",
+                recover_with_smaller_batches=True,
             )
         name = translated_fields[(item_index, "NAME")].strip()
         description = (
@@ -356,7 +389,8 @@ def translate_catalog_values(
     ]
     if missing:
         raise TranslationProviderError(
-            "translation provider did not preserve the catalog value structure"
+            "translation provider did not preserve the catalog value structure",
+            recover_with_smaller_batches=True,
         )
     results = [
         translated[item_index].strip()
@@ -367,10 +401,19 @@ def translate_catalog_values(
             zip(values, results, strict=True)
         ):
             normalized_source = source_value.strip()
-            if (
-                not _TRANSLATABLE_PROSE_PATTERN.search(normalized_source)
-                or translated_value.casefold() != normalized_source.casefold()
-            ):
+            needs_direct_retry = (
+                _TRANSLATABLE_PROSE_PATTERN.search(normalized_source)
+                and (
+                    translated_value.casefold() == normalized_source.casefold()
+                    or not catalog_translation_value_is_complete(
+                        normalized_source,
+                        translated_value,
+                        source_locale=source_locale,
+                        target_locale=target_locale,
+                    )
+                )
+            )
+            if not needs_direct_retry:
                 continue
             direct_protected: dict[str, str] = {}
             direct_source = _protect_identifiers(
@@ -391,4 +434,21 @@ def translate_catalog_values(
             )
             if restored:
                 results[item_index] = restored
+        incomplete = [
+            item_index
+            for item_index, (source_value, translated_value) in enumerate(
+                zip(values, results, strict=True)
+            )
+            if not catalog_translation_value_is_complete(
+                source_value,
+                translated_value,
+                source_locale=source_locale,
+                target_locale=target_locale,
+            )
+        ]
+        if incomplete:
+            raise TranslationProviderError(
+                "translation provider left source-language catalog text untranslated",
+                recover_with_smaller_batches=True,
+            )
     return results

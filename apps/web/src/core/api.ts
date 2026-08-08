@@ -58,13 +58,22 @@ import type {
   SupportConversationPage,
   SupportConversationStatus,
   SupportSettings,
+  SupportTranslationPreview,
   SystemMonitoringSnapshot,
   TenantMember,
   TenantPermission,
   TenantRole,
+  TranslationApiSettings,
+  TranslationApiTestResult,
+  TranslationProviderKind,
+  TranslationReasoningEffort,
+  CatalogLanguagePackInfo,
+  CatalogTranslationJob,
+  CatalogTranslationStatus,
   UiLocale,
   Warehouse,
 } from "./types";
+import type { StorefrontLocale } from "../types";
 import { buildPasswordChangePayload } from "./accountPassword";
 import { buildPasswordLoginPayload } from "./authCredentials";
 import { normalizeAnnouncementTickerSpeed } from "./announcementSpeed";
@@ -1285,7 +1294,7 @@ export async function batchUpdateSkuPinned(
 
 export interface ProductDeleteAllJob {
   id: string;
-  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  status: "QUEUED" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
   stage: "QUEUED" | "COUNTING" | "HIDING_OFFERS" | "ARCHIVING_SKUS" | "ARCHIVING_PRODUCTS" | "FINALIZING" | "COMPLETED" | "FAILED";
   progress: number;
   totalProductCount: number;
@@ -1497,6 +1506,324 @@ export async function updateEmbeddingSettings(input: {
         timeout_seconds: input.timeoutSeconds,
       }),
     }),
+  );
+}
+
+interface ApiTranslationSettings {
+  source: "database" | "environment" | "disabled";
+  provider: TranslationProviderKind | "deeplx";
+  enabled: boolean;
+  base_url?: string | null;
+  model_name?: string | null;
+  region_id?: string | null;
+  timeout_seconds: number;
+  max_tokens: number;
+  reasoning_effort: TranslationReasoningEffort;
+  api_key_configured: boolean;
+  api_key_hint?: string | null;
+  access_key_id_configured: boolean;
+  access_key_id_hint?: string | null;
+  updated_at?: string | null;
+}
+
+interface ApiTranslationSettingsTestResult {
+  success: true;
+  provider: string;
+  model_name: string;
+  latency_ms: number;
+  translated_text: string;
+}
+
+function mapTranslationSettings(
+  row: ApiTranslationSettings,
+): TranslationApiSettings {
+  return {
+    source: row.source,
+    provider: row.provider,
+    enabled: row.enabled,
+    baseUrl: defined(row.base_url),
+    modelName: defined(row.model_name),
+    regionId: defined(row.region_id),
+    timeoutSeconds: row.timeout_seconds,
+    maxTokens: row.max_tokens,
+    reasoningEffort: row.reasoning_effort,
+    apiKeyConfigured: row.api_key_configured,
+    apiKeyHint: defined(row.api_key_hint),
+    accessKeyIdConfigured: row.access_key_id_configured,
+    accessKeyIdHint: defined(row.access_key_id_hint),
+    updatedAt: defined(row.updated_at),
+  };
+}
+
+export interface TranslationSettingsWriteInput {
+  provider: TranslationProviderKind;
+  baseUrl: string;
+  apiKey?: string;
+  accessKeyId?: string;
+  modelName: string;
+  regionId?: string;
+  timeoutSeconds: number;
+  maxTokens: number;
+  reasoningEffort: TranslationReasoningEffort;
+}
+
+function translationSettingsBody(input: TranslationSettingsWriteInput) {
+  return {
+    provider: input.provider,
+    base_url: input.baseUrl,
+    api_key: input.apiKey || undefined,
+    access_key_id: input.accessKeyId || undefined,
+    model_name: input.modelName,
+    region_id: input.regionId || undefined,
+    timeout_seconds: input.timeoutSeconds,
+    max_tokens: input.maxTokens,
+    reasoning_effort: input.reasoningEffort,
+  };
+}
+
+export async function getTranslationSettings(): Promise<TranslationApiSettings> {
+  return mapTranslationSettings(
+    await request<ApiTranslationSettings>("/system/translation/settings"),
+  );
+}
+
+export async function updateTranslationSettings(
+  input: TranslationSettingsWriteInput & { enabled: boolean },
+): Promise<TranslationApiSettings> {
+  return mapTranslationSettings(
+    await request<ApiTranslationSettings>("/system/translation/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        ...translationSettingsBody(input),
+        enabled: input.enabled,
+      }),
+    }),
+  );
+}
+
+export async function testTranslationSettings(
+  input: TranslationSettingsWriteInput,
+): Promise<TranslationApiTestResult> {
+  const row = await request<ApiTranslationSettingsTestResult>(
+    "/system/translation/settings/test",
+    {
+      method: "POST",
+      body: JSON.stringify(translationSettingsBody(input)),
+    },
+  );
+  return {
+    provider: row.provider,
+    modelName: row.model_name,
+    latencyMs: row.latency_ms,
+    translatedText: row.translated_text,
+  };
+}
+
+interface ApiCatalogLanguagePack {
+  source_locale: StorefrontLocale;
+  target_locale: StorefrontLocale;
+  version: number;
+  download_url: string;
+  content_sha256: string;
+  source_digest: string;
+  byte_size: number;
+  product_count: number;
+  sku_count: number;
+  category_count: number;
+  provider: string;
+  provider_version: string;
+  source_cutoff_at: string;
+  published_at: string;
+  last_full_translation_at?: string | null;
+}
+
+interface ApiCatalogTranslationJob {
+  id: string;
+  source_locale: StorefrontLocale;
+  target_locale: StorefrontLocale;
+  mode: "INCREMENTAL" | "FULL_REBUILD";
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  stage: CatalogTranslationJob["stage"];
+  total_skus: number;
+  processed_skus: number;
+  failed_skus: number;
+  progress_percent: number;
+  current_sku_id?: string | null;
+  current_sku_name?: string | null;
+  provider: string;
+  provider_version: string;
+  failure_details: Array<{
+    sku_id?: string | null;
+    sku_code?: string | null;
+    name?: string | null;
+    message: string;
+  }>;
+  error_message?: string | null;
+  package_version?: number | null;
+  package_published: boolean;
+  package_byte_size?: number | null;
+  source_cutoff_at?: string | null;
+  pause_requested: boolean;
+  pause_requested_at?: string | null;
+  paused_at?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+interface ApiCatalogTranslationStatus {
+  source_locale: StorefrontLocale;
+  target_locale: StorefrontLocale;
+  provider: string;
+  provider_version: string;
+  provider_configured: boolean;
+  total_skus: number;
+  translated_skus: number;
+  stale_skus: number;
+  pending_skus: number;
+  package_outdated: boolean;
+  package_storage_backend: string;
+  package_storage_configured: boolean;
+  available_locales: StorefrontLocale[];
+  package?: ApiCatalogLanguagePack | null;
+  latest_job?: ApiCatalogTranslationJob | null;
+}
+
+function mapCatalogLanguagePack(row: ApiCatalogLanguagePack): CatalogLanguagePackInfo {
+  return {
+    sourceLocale: row.source_locale,
+    targetLocale: row.target_locale,
+    version: row.version,
+    downloadUrl: row.download_url,
+    contentSha256: row.content_sha256,
+    sourceDigest: row.source_digest,
+    byteSize: row.byte_size,
+    productCount: row.product_count,
+    skuCount: row.sku_count,
+    categoryCount: row.category_count,
+    provider: row.provider,
+    providerVersion: row.provider_version,
+    sourceCutoffAt: row.source_cutoff_at,
+    publishedAt: row.published_at,
+    lastFullTranslationAt: defined(row.last_full_translation_at),
+  };
+}
+
+function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTranslationJob {
+  return {
+    id: row.id,
+    sourceLocale: row.source_locale,
+    targetLocale: row.target_locale,
+    mode: row.mode,
+    status: row.status,
+    stage: row.stage,
+    totalSkus: row.total_skus,
+    processedSkus: row.processed_skus,
+    failedSkus: row.failed_skus,
+    progressPercent: row.progress_percent,
+    currentSkuId: defined(row.current_sku_id),
+    currentSkuName: defined(row.current_sku_name),
+    provider: row.provider,
+    providerVersion: row.provider_version,
+    failureDetails: row.failure_details.map((failure) => ({
+      skuId: defined(failure.sku_id),
+      skuCode: defined(failure.sku_code),
+      name: defined(failure.name),
+      message: failure.message,
+    })),
+    errorMessage: defined(row.error_message),
+    packageVersion: row.package_version ?? undefined,
+    packagePublished: row.package_published,
+    packageByteSize: row.package_byte_size ?? undefined,
+    sourceCutoffAt: defined(row.source_cutoff_at),
+    pauseRequested: row.pause_requested,
+    pauseRequestedAt: defined(row.pause_requested_at),
+    pausedAt: defined(row.paused_at),
+    createdAt: row.created_at,
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+  };
+}
+
+function mapCatalogTranslationStatus(
+  row: ApiCatalogTranslationStatus,
+): CatalogTranslationStatus {
+  return {
+    sourceLocale: row.source_locale,
+    targetLocale: row.target_locale,
+    provider: row.provider,
+    providerVersion: row.provider_version,
+    providerConfigured: row.provider_configured,
+    totalSkus: row.total_skus,
+    translatedSkus: row.translated_skus,
+    staleSkus: row.stale_skus,
+    pendingSkus: row.pending_skus,
+    packageOutdated: row.package_outdated,
+    packageStorageBackend: row.package_storage_backend,
+    packageStorageConfigured: row.package_storage_configured,
+    availableLocales: row.available_locales,
+    package: row.package ? mapCatalogLanguagePack(row.package) : undefined,
+    latestJob: row.latest_job ? mapCatalogTranslationJob(row.latest_job) : undefined,
+  };
+}
+
+export async function getCatalogTranslationStatus(
+  targetLocale: StorefrontLocale,
+): Promise<CatalogTranslationStatus> {
+  return mapCatalogTranslationStatus(
+    await request<ApiCatalogTranslationStatus>(
+      `/catalog/translations/status?target_locale=${encodeURIComponent(targetLocale)}`,
+      { cache: "no-store" },
+    ),
+  );
+}
+
+export async function startCatalogTranslationJob(
+  targetLocale: StorefrontLocale,
+  fullRebuild = false,
+): Promise<CatalogTranslationJob> {
+  return mapCatalogTranslationJob(
+    await request<ApiCatalogTranslationJob>("/catalog/translations/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        target_locale: targetLocale,
+        mode: fullRebuild ? "FULL_REBUILD" : "INCREMENTAL",
+        confirm_full_rebuild: fullRebuild,
+      }),
+    }),
+  );
+}
+
+export async function getCatalogTranslationJob(
+  jobId: string,
+): Promise<CatalogTranslationJob> {
+  return mapCatalogTranslationJob(
+    await request<ApiCatalogTranslationJob>(
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}`,
+      { cache: "no-store" },
+    ),
+  );
+}
+
+export async function pauseCatalogTranslationJob(
+  jobId: string,
+): Promise<CatalogTranslationJob> {
+  return mapCatalogTranslationJob(
+    await request<ApiCatalogTranslationJob>(
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/pause`,
+      { method: "POST" },
+    ),
+  );
+}
+
+export async function resumeCatalogTranslationJob(
+  jobId: string,
+): Promise<CatalogTranslationJob> {
+  return mapCatalogTranslationJob(
+    await request<ApiCatalogTranslationJob>(
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/resume`,
+      { method: "POST" },
+    ),
   );
 }
 
@@ -2096,8 +2423,20 @@ interface ApiSupportConversationDetail extends ApiSupportConversationSummary {
     id: string;
     sender_type: "VISITOR" | "MERCHANT" | "SYSTEM" | "AI";
     body: string;
+    draft_body?: string | null;
+    translated_body?: string | null;
+    translation_source_locale?: StorefrontLocale | null;
+    translation_target_locale?: StorefrontLocale | null;
+    translation_status: "PENDING" | "READY" | "FAILED" | "UNAVAILABLE" | "NOT_REQUIRED";
     created_at: string;
   }>;
+}
+
+interface ApiSupportTranslationPreview {
+  source_locale: StorefrontLocale;
+  target_locale: StorefrontLocale;
+  original_message: string;
+  translated_message: string;
 }
 
 function mapSupportAction(row: ApiSupportActionSettings): SupportActionSettings {
@@ -2141,6 +2480,11 @@ function mapSupportSummary(
         id: message.id,
         senderType: message.sender_type,
         body: message.body,
+        draftBody: defined(message.draft_body),
+        translatedBody: defined(message.translated_body),
+        translationSourceLocale: defined(message.translation_source_locale),
+        translationTargetLocale: defined(message.translation_target_locale),
+        translationStatus: message.translation_status,
         createdAt: message.created_at,
       })),
     };
@@ -2233,14 +2577,47 @@ export async function getSupportConversation(
 
 export async function replySupportConversation(
   conversationId: string,
-  message: string,
+  input: {
+    message: string;
+    draftMessage?: string;
+    sourceLocale?: StorefrontLocale;
+    targetLocale?: StorefrontLocale;
+  },
 ): Promise<SupportConversationDetail> {
   return mapSupportSummary(
     await request<ApiSupportConversationDetail>(
       `/support/conversations/${encodeURIComponent(conversationId)}/messages`,
-      { method: "POST", body: JSON.stringify({ message }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          message: input.message,
+          draft_message: input.draftMessage || null,
+          source_locale: input.sourceLocale || null,
+          target_locale: input.targetLocale || null,
+        }),
+      },
     ),
   ) as SupportConversationDetail;
+}
+
+export async function previewSupportReplyTranslation(
+  conversationId: string,
+  message: string,
+  targetLocale: StorefrontLocale,
+): Promise<SupportTranslationPreview> {
+  const row = await request<ApiSupportTranslationPreview>(
+    `/support/conversations/${encodeURIComponent(conversationId)}/translation-preview`,
+    {
+      method: "POST",
+      body: JSON.stringify({ message, target_locale: targetLocale }),
+    },
+  );
+  return {
+    sourceLocale: row.source_locale,
+    targetLocale: row.target_locale,
+    originalMessage: row.original_message,
+    translatedMessage: row.translated_message,
+  };
 }
 
 export async function updateSupportConversationStatus(
