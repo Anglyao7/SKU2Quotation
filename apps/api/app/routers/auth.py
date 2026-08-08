@@ -53,13 +53,27 @@ from .errors import application_http_error
 
 router = APIRouter(prefix="/api/v1", tags=["authentication"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+TERMINAL_REFRESH_ERROR_CODES = {
+    "AUTH_SESSION_EXPIRED",
+    "AUTH_REFRESH_REUSE_DETECTED",
+}
 
 
-def _http_error(exc: AuthError) -> HTTPException:
+def _http_error(
+    exc: AuthError,
+    *,
+    clear_refresh_cookie: bool = False,
+) -> HTTPException:
+    headers = dict(NO_STORE_HEADERS)
+    if clear_refresh_cookie:
+        expired_cookie = Response()
+        expired_cookie.delete_cookie(REFRESH_COOKIE_NAME, path="/api/v1/auth")
+        if set_cookie := expired_cookie.headers.get("set-cookie"):
+            headers["Set-Cookie"] = set_cookie
     return HTTPException(
         status_code=exc.status_code,
         detail={"code": exc.code, "message": exc.message},
-        headers=NO_STORE_HEADERS,
+        headers=headers,
     )
 
 
@@ -303,8 +317,10 @@ def refresh_endpoint(
     try:
         result = refresh(session, refresh_token=raw_refresh, csrf_token=csrf_token)
     except AuthError as exc:
-        response.delete_cookie(REFRESH_COOKIE_NAME, path="/api/v1/auth")
-        raise _http_error(exc) from exc
+        raise _http_error(
+            exc,
+            clear_refresh_cookie=exc.code in TERMINAL_REFRESH_ERROR_CODES,
+        ) from exc
     _set_refresh_cookie(response, result.refresh_token)
     return _token_response(result, business_session=business_session)
 

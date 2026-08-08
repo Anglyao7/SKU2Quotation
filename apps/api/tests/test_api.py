@@ -1381,6 +1381,21 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
         membership.status = "active"
         session.commit()
 
+    # A stale tab can temporarily pair the current shared refresh cookie with
+    # its previous CSRF token. This is recoverable and must not erase the valid
+    # cookie; the browser can retry after reading the CSRF value shared by the
+    # tab that completed rotation.
+    invalid_csrf_response = client.post(
+        "/api/v1/auth/refresh",
+        headers={"X-CSRF-Token": "stale-tab-csrf-token"},
+    )
+    assert invalid_csrf_response.status_code == 403
+    assert invalid_csrf_response.json()["detail"]["code"] == "AUTH_CSRF_INVALID"
+    assert REFRESH_COOKIE_NAME not in invalid_csrf_response.headers.get(
+        "set-cookie", ""
+    )
+    assert client.cookies.get(REFRESH_COOKIE_NAME) == raw_refresh
+
     refresh_response = client.post(
         "/api/v1/auth/refresh",
         headers={"X-CSRF-Token": csrf_token},
@@ -1441,6 +1456,9 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
         )
     assert replay_response.status_code == 401
     assert replay_response.json()["detail"]["code"] == "AUTH_REFRESH_REUSE_DETECTED"
+    replay_cookie = replay_response.headers.get("set-cookie", "").lower()
+    assert REFRESH_COOKIE_NAME in replay_cookie
+    assert "max-age=0" in replay_cookie
     assert client.get(
         "/api/v1/me",
         headers={"Authorization": f"Bearer {rotated_data['access_token']}"},
@@ -4391,6 +4409,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "model_name": "translation-test-model",
                 "timeout_seconds": 25,
                 "max_tokens": 8192,
+                "requests_per_minute": 12,
                 "reasoning_effort": "low",
             },
         )
@@ -4400,6 +4419,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
         assert payload["enabled"] is True
         assert payload["api_key_configured"] is True
         assert payload["api_key_hint"] == "••••4321"
+        assert payload["requests_per_minute"] == 12
         assert raw_api_key not in saved.text
         assert "api_key_ciphertext" not in payload
 
@@ -4410,6 +4430,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             )
             assert row is not None
             assert row.api_key_ciphertext is not None
+            assert row.requests_per_minute == 12
             assert raw_api_key not in row.api_key_ciphertext
             assert (
                 decrypt_translation_api_key(row.api_key_ciphertext)
@@ -4425,6 +4446,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "model_name": "translation-test-model-v2",
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
+                "requests_per_minute": 24,
                 "reasoning_effort": "minimal",
             },
         )
@@ -4436,6 +4458,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             )
             assert row is not None
             assert row.api_key_ciphertext == original_ciphertext
+            assert row.requests_per_minute == 24
             provider = resolved_catalog_translator(
                 session,
                 environment_factory=lambda: (_ for _ in ()).throw(
@@ -4457,6 +4480,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "model_name": "translation-test-model-v2",
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
+                "requests_per_minute": 24,
                 "reasoning_effort": "minimal",
             },
         )
@@ -4473,6 +4497,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "model_name": "translation-test-model-v2",
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
+                "requests_per_minute": 24,
                 "reasoning_effort": "minimal",
             },
         )
@@ -4509,6 +4534,7 @@ def test_platform_admin_manages_aliyun_translation_credentials() -> None:
                 "region_id": "cn-hangzhou",
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
+                "requests_per_minute": 90,
                 "reasoning_effort": "none",
             },
         )
@@ -4519,6 +4545,7 @@ def test_platform_admin_manages_aliyun_translation_credentials() -> None:
         assert payload["access_key_id_configured"] is True
         assert payload["access_key_id_hint"] == "••••7788"
         assert payload["api_key_hint"] == "••••9900"
+        assert payload["requests_per_minute"] == 90
         assert access_key_id not in saved.text
         assert access_key_secret not in saved.text
 
@@ -9927,6 +9954,32 @@ class _BlockingCatalogTranslationTestProvider(_CatalogTranslationTestProvider):
         return text.replace("宠物用品", "Pet supplies")
 
 
+class _CheckpointCatalogTranslationTestProvider(_CatalogTranslationTestProvider):
+    """Succeed once, then emulate an outage until the test restores it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.outage_after_first = True
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        if self.outage_after_first and self.calls >= 1:
+            self.calls += 1
+            raise TranslationProviderError(
+                "translation provider returned HTTP 429"
+            )
+        return super().translate(
+            text,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+
+
 class _SplitRecoveryCatalogTranslationTestProvider:
     identity = TranslationIdentity(provider="split-recovery-test", version="v1")
 
@@ -10592,10 +10645,11 @@ def test_catalog_translation_job_can_pause_and_resume_at_safe_checkpoint(
         "configured_catalog_translator",
         lambda: provider,
     )
+    dispatches: list[dict[str, object]] = []
     monkeypatch.setattr(
         catalog_translation_use_cases,
         "_dispatch_translation_job",
-        lambda **_kwargs: None,
+        lambda **kwargs: dispatches.append(kwargs),
     )
 
     started = client.post(
@@ -10608,6 +10662,7 @@ def test_catalog_translation_job_can_pause_and_resume_at_safe_checkpoint(
     )
     assert started.status_code == 202, started.text
     job_id = UUID(started.json()["id"])
+    assert len(dispatches) == 1
 
     try:
         with SessionLocal() as session:
@@ -10660,12 +10715,176 @@ def test_catalog_translation_job_can_pause_and_resume_at_safe_checkpoint(
         assert resumed.status_code == 200, resumed.text
         assert resumed.json()["status"] == "QUEUED"
         assert resumed.json()["pause_requested"] is False
+        assert len(dispatches) == 2
+
+        duplicate_resume = client.post(
+            f"/api/v1/catalog/translations/jobs/{job_id}/resume"
+        )
+        assert duplicate_resume.status_code == 409, duplicate_resume.text
+        assert len(dispatches) == 2
 
         paused_again = client.post(
             f"/api/v1/catalog/translations/jobs/{job_id}/pause"
         )
         assert paused_again.status_code == 200, paused_again.text
         assert paused_again.json()["status"] == "PAUSED"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTranslationJobRow).where(
+                    CatalogTranslationJobRow.id == job_id
+                )
+            )
+            session.commit()
+
+
+def test_catalog_translation_job_resumes_failed_provider_from_last_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = _CheckpointCatalogTranslationTestProvider()
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.setenv("CATALOG_TRANSLATION_BATCH_SIZE", "1")
+    monkeypatch.setenv("CATALOG_TRANSLATION_PROVIDER_RETRIES", "1")
+    monkeypatch.setattr(catalog_translation_use_cases.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "configured_catalog_translator",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **kwargs: catalog_translation_use_cases._run_translation_job(
+            **kwargs
+        ),
+    )
+
+    started = client.post(
+        "/api/v1/catalog/translations/jobs",
+        json={
+            "target_locale": "en-US",
+            "mode": "FULL_REBUILD",
+            "confirm_full_rebuild": True,
+        },
+    )
+    assert started.status_code == 202, started.text
+    job_id = UUID(started.json()["id"])
+
+    try:
+        interrupted = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}"
+        )
+        assert interrupted.status_code == 200, interrupted.text
+        interrupted_payload = interrupted.json()
+        assert interrupted_payload["status"] == "FAILED"
+        assert interrupted_payload["processed_skus"] == 1
+        assert interrupted_payload["remaining_skus"] == 2
+        assert interrupted_payload["resumable"] is True
+        assert "断点" in interrupted_payload["error_message"]
+        assert provider.calls == 3
+
+        provider.outage_after_first = False
+        resumed = client.post(
+            f"/api/v1/catalog/translations/jobs/{job_id}/resume"
+        )
+        assert resumed.status_code == 200, resumed.text
+
+        finished = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}"
+        )
+        assert finished.status_code == 200, finished.text
+        finished_payload = finished.json()
+        assert finished_payload["status"] == "SUCCEEDED"
+        assert finished_payload["processed_skus"] == 3
+        assert finished_payload["remaining_skus"] == 0
+        assert finished_payload["resumable"] is False
+        assert finished_payload["package_published"] is True
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogLanguagePackRow).where(
+                    CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogSkuTranslationRow).where(
+                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogTranslationJobRow).where(
+                    CatalogTranslationJobRow.id == job_id
+                )
+            )
+            session.commit()
+
+
+def test_catalog_translation_startup_recovery_preserves_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = _CatalogTranslationTestProvider()
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "configured_catalog_translator",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **_kwargs: None,
+    )
+
+    started = client.post(
+        "/api/v1/catalog/translations/jobs",
+        json={
+            "target_locale": "en-US",
+            "mode": "FULL_REBUILD",
+            "confirm_full_rebuild": True,
+        },
+    )
+    assert started.status_code == 202, started.text
+    job_id = UUID(started.json()["id"])
+
+    try:
+        with SessionLocal() as session:
+            row = session.get(CatalogTranslationJobRow, job_id)
+            assert row is not None
+            row.status = "RUNNING"
+            row.stage = "TRANSLATING"
+            row.started_at = datetime.now(UTC)
+            row.processed_skus = 1
+            row.remaining_sku_ids = row.remaining_sku_ids[1:]
+            session.commit()
+
+        recovered = (
+            catalog_translation_use_cases.recover_interrupted_translation_jobs()
+        )
+        assert recovered >= 1
+
+        payload = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}"
+        ).json()
+        assert payload["status"] == "PAUSED"
+        assert payload["stage"] == "PAUSED"
+        assert payload["processed_skus"] == 1
+        assert payload["remaining_skus"] == 2
+        assert payload["resumable"] is True
+        assert "服务重启" in payload["error_message"]
     finally:
         with SessionLocal() as session:
             session.execute(
@@ -12357,10 +12576,17 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "pause_requested_at",
         "paused_at",
     }.issubset(translation_job_columns)
+    translation_settings_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns(
+            "translation_provider_settings"
+        )
+    }
+    assert "requests_per_minute" in translation_settings_columns
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260808_0057"
+        ).scalar() == "20260809_0058"
     upgraded_engine.dispose()
     command.check(config)
 

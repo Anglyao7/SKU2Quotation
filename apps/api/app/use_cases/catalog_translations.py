@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from uuid import UUID
 
+import psycopg
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -34,6 +36,7 @@ from ..repositories import catalog_translation_repository as translation_reposit
 from ..repositories import public_catalog_repository
 from ..services.auth.dependencies import RequestContext
 from ..services.catalog_translation import (
+    CatalogTranslationResult,
     CatalogTranslationSource,
     catalog_translation_source,
     translate_catalog_sources,
@@ -50,6 +53,7 @@ from ..services.language_package_storage import (
     language_package_storage_status,
 )
 from ..services.translation import (
+    TranslationProvider,
     TranslationProviderError,
     catalog_translation_is_configured,
     configured_catalog_translator,
@@ -72,6 +76,23 @@ _translation_executor = ThreadPoolExecutor(
 _stale_job_after = timedelta(minutes=30)
 _SOURCE_LOCALE = "zh-CN"
 _FAILURE_DETAIL_LIMIT = 100
+_ZERO_IDENTITY = UUID(int=0)
+_TRANSIENT_TRANSLATION_ERRORS = (
+    "timed out",
+    "request failed",
+    "temporarily",
+    "rate limit",
+    "throttl",
+    "too many requests",
+    "http 408",
+    "http 409",
+    "http 425",
+    "http 429",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+)
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -162,6 +183,12 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
             failures.append(CatalogTranslationFailure.model_validate(raw))
         except ValueError:
             continue
+    remaining_skus = len(_remaining_sku_ids(job))
+    if remaining_skus == 0 and job.processed_skus < job.total_skus:
+        # Older failed jobs cleared their JSON checkpoint. The resume path
+        # safely recomputes pending rows, so expose the truthful remaining
+        # count instead of misleading users with zero.
+        remaining_skus = job.total_skus - job.processed_skus
     return CatalogTranslationJobResponse(
         id=job.id,
         source_locale=job.source_locale,
@@ -172,6 +199,7 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
         total_skus=job.total_skus,
         processed_skus=job.processed_skus,
         failed_skus=job.failed_skus,
+        remaining_skus=remaining_skus,
         progress_percent=progress,
         current_sku_id=job.current_sku_id,
         current_sku_name=job.current_sku_name,
@@ -189,6 +217,12 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
         ),
         pause_requested_at=job.pause_requested_at,
         paused_at=job.paused_at,
+        resumable=job.status in {"PAUSED", "FAILED"},
+        checkpoint_at=(
+            job.updated_at
+            if job.started_at is not None or job.processed_skus > 0
+            else None
+        ),
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
@@ -236,13 +270,15 @@ def _expire_stale_job(
         job.current_sku_name = None
         session.commit()
         return
-    job.status = "FAILED"
-    job.stage = "FAILED"
+    job.status = "PAUSED"
+    job.stage = "PAUSED"
     job.failed_skus = max(0, job.total_skus - job.processed_skus)
-    job.error_message = "翻译任务因服务中断而停止，请重新发起。"
+    job.error_message = "翻译服务曾中断，已保留最近批次的断点，可继续翻译。"
     job.current_sku_id = None
     job.current_sku_name = None
-    job.completed_at = utcnow()
+    job.pause_requested_at = None
+    job.paused_at = utcnow()
+    job.completed_at = None
     session.commit()
 
 
@@ -548,8 +584,8 @@ def public_language_pack_content(
 
 def _safe_job_error(exc: Exception) -> str:
     if isinstance(exc, TranslationProviderError):
-        return str(exc)
-    return "商品翻译任务执行失败，请检查翻译服务配置或服务日志。"
+        return f"{str(exc).rstrip('。')}。已保存翻译断点，可稍后继续。"
+    return "商品翻译任务执行中断，已保存翻译断点，可稍后继续。"
 
 
 def _failure_detail(
@@ -562,6 +598,54 @@ def _failure_detail(
         "name": source.name,
         "message": message,
     }
+
+
+def _transient_translation_error(exc: TranslationProviderError) -> bool:
+    message = str(exc).casefold()
+    return any(token in message for token in _TRANSIENT_TRANSLATION_ERRORS)
+
+
+def _translate_batch_with_retry(
+    translator: TranslationProvider,
+    batch: list[CatalogTranslationSource],
+    *,
+    source_locale: str,
+    target_locale: str,
+) -> list[CatalogTranslationResult]:
+    """Retry only transient provider failures before yielding the checkpoint."""
+
+    max_retries = _positive_environment(
+        "CATALOG_TRANSLATION_PROVIDER_RETRIES",
+        2,
+        maximum=5,
+    )
+    base_delay = _positive_environment(
+        "CATALOG_TRANSLATION_RETRY_BASE_SECONDS",
+        2,
+        maximum=30,
+    )
+    attempt = 0
+    while True:
+        try:
+            return translate_catalog_sources(
+                translator,
+                batch,
+                source_locale=source_locale,
+                target_locale=target_locale,
+            )
+        except TranslationProviderError as exc:
+            if attempt >= max_retries or not _transient_translation_error(exc):
+                raise
+            delay = min(base_delay * (2**attempt), 30)
+            attempt += 1
+            logger.warning(
+                "catalog translation provider retry %s/%s in %ss: %s",
+                attempt,
+                max_retries,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
 
 
 def _remaining_sku_ids(job: CatalogTranslationJobRow) -> list[UUID]:
@@ -617,9 +701,10 @@ def _run_translation_job(
             select(CatalogTranslationJobRow).where(
                 CatalogTranslationJobRow.tenant_id == tenant_id,
                 CatalogTranslationJobRow.id == job_id,
-            )
+                CatalogTranslationJobRow.status == "QUEUED",
+            ).with_for_update(skip_locked=True)
         )
-        if job is None or job.status != "QUEUED":
+        if job is None:
             return
         try:
             first_run = job.started_at is None
@@ -652,13 +737,38 @@ def _run_translation_job(
             )
             sources_by_id = {source.sku_id: source for source in sources}
             stored_remaining = _remaining_sku_ids(job)
-            preserve_progress = not first_run and not provider_changed
-            if preserve_progress or (stored_remaining and not provider_changed):
+            preserve_progress = (
+                not first_run
+                and not provider_changed
+                and (
+                    bool(stored_remaining)
+                    or job.processed_skus >= job.total_skus
+                )
+            )
+            if preserve_progress:
                 candidates = [
                     sources_by_id[sku_id]
                     for sku_id in stored_remaining
                     if sku_id in sources_by_id
                 ]
+                # A long-running checkpoint may span later imports or edits.
+                # Merge newly missing/stale rows into the same resume without
+                # redoing translations already committed by this job.
+                newly_pending, _stale = _pending_sources(
+                    session,
+                    tenant_id=tenant_id,
+                    target_locale=job.target_locale,
+                    sources=sources,
+                    provider=translator.identity.provider,
+                    provider_version=translator.identity.version,
+                    full_rebuild=False,
+                )
+                candidate_ids = {source.sku_id for source in candidates}
+                candidates.extend(
+                    source
+                    for source in newly_pending
+                    if source.sku_id not in candidate_ids
+                )
             else:
                 candidates, _stale = _pending_sources(
                     session,
@@ -708,7 +818,9 @@ def _run_translation_job(
             processed = job.processed_skus
             failures: list[dict[str, str]] = list(job.failure_details or [])
             remaining_ids = [str(source.sku_id) for source in candidates]
-            for batch in batches:
+            batch_index = 0
+            while batch_index < len(batches):
+                batch = batches[batch_index]
                 if _pause_at_safe_checkpoint(session, job):
                     return
                 job.current_sku_id = batch[0].sku_id
@@ -716,7 +828,7 @@ def _run_translation_job(
                 job.updated_at = utcnow()
                 session.commit()
                 try:
-                    results = translate_catalog_sources(
+                    results = _translate_batch_with_retry(
                         translator,
                         batch,
                         source_locale=job.source_locale,
@@ -724,26 +836,25 @@ def _run_translation_job(
                     )
                 except TranslationProviderError as exc:
                     if (
-                        len(batch) == 1
-                        or "field structure" not in str(exc)
+                        _transient_translation_error(exc)
+                        or not exc.recover_with_smaller_batches
                     ):
                         raise
-                    results = []
-                    for source in batch:
-                        try:
-                            results.extend(
-                                translate_catalog_sources(
-                                    translator,
-                                    [source],
-                                    source_locale=job.source_locale,
-                                    target_locale=job.target_locale,
-                                )
-                            )
-                        except TranslationProviderError as item_exc:
-                            if len(failures) < _FAILURE_DETAIL_LIMIT:
-                                failures.append(
-                                    _failure_detail(source, str(item_exc))
-                                )
+                    if len(batch) > 1:
+                        midpoint = max(1, len(batch) // 2)
+                        batches[batch_index : batch_index + 1] = [
+                            batch[:midpoint],
+                            batch[midpoint:],
+                        ]
+                        continue
+                    if len(failures) < _FAILURE_DETAIL_LIMIT:
+                        failures.append(_failure_detail(batch[0], str(exc)))
+                    job.failed_skus += 1
+                    job.failure_details = failures
+                    job.updated_at = utcnow()
+                    session.commit()
+                    batch_index += 1
+                    continue
 
                 source_by_id = {source.sku_id: source for source in batch}
                 translated_ids: set[UUID] = set()
@@ -774,6 +885,7 @@ def _run_translation_job(
                 job.remaining_sku_ids = remaining_ids
                 job.updated_at = utcnow()
                 session.commit()
+                batch_index += 1
 
                 if _pause_at_safe_checkpoint(session, job):
                     return
@@ -877,7 +989,6 @@ def _run_translation_job(
             failed_job.error_message = _safe_job_error(exc)
             failed_job.current_sku_id = None
             failed_job.current_sku_name = None
-            failed_job.remaining_sku_ids = []
             failed_job.pause_requested_at = None
             failed_job.paused_at = None
             failed_job.completed_at = utcnow()
@@ -900,18 +1011,122 @@ def _dispatch_translation_job(
     )
 
 
+def _translation_job_tenant_ids(session: Session) -> tuple[UUID, ...]:
+    """Discover tenants through the privileged read-only directory connection."""
+
+    dialect = session.bind.dialect.name if session.bind is not None else "unknown"
+    if dialect != "postgresql":
+        return tuple(
+            session.scalars(
+                select(CatalogTranslationJobRow.tenant_id)
+                .where(
+                    CatalogTranslationJobRow.status.in_(("QUEUED", "RUNNING")),
+                    CatalogTranslationJobRow.deleted_at.is_(None),
+                )
+                .distinct()
+            ).all()
+        )
+
+    directory_url = os.getenv("TENANT_DIRECTORY_DATABASE_URL", "").strip()
+    if not directory_url:
+        logger.warning(
+            "translation checkpoint recovery skipped: tenant directory is not configured"
+        )
+        return ()
+    psycopg_url = directory_url.replace(
+        "postgresql+psycopg://",
+        "postgresql://",
+        1,
+    )
+    try:
+        with psycopg.connect(psycopg_url, connect_timeout=5) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM tenants "
+                    "WHERE status = 'active' AND deleted_at IS NULL ORDER BY id"
+                )
+                return tuple(UUID(str(row[0])) for row in cursor.fetchall())
+    except psycopg.Error:
+        logger.exception(
+            "translation checkpoint recovery could not read tenant directory"
+        )
+        return ()
+
+
+def recover_interrupted_translation_jobs() -> int:
+    """Convert process-owned unfinished jobs into resumable checkpoints.
+
+    Translation workers currently run inside the API process. Any QUEUED or
+    RUNNING row found during process startup therefore belongs to the previous
+    process and cannot still be executing. Keeping it PAUSED avoids duplicate
+    provider calls and lets the merchant continue from persisted translations.
+    """
+
+    with SessionLocal() as session:
+        tenant_ids = _translation_job_tenant_ids(session)
+        session.rollback()
+
+    recovered = 0
+    for tenant_id in tenant_ids:
+        try:
+            with SessionLocal() as session:
+                set_request_context(
+                    session,
+                    organization_id=_ZERO_IDENTITY,
+                    tenant_id=tenant_id,
+                    user_id=_ZERO_IDENTITY,
+                )
+                interrupted = list(
+                    session.scalars(
+                        select(CatalogTranslationJobRow).where(
+                            CatalogTranslationJobRow.tenant_id == tenant_id,
+                            CatalogTranslationJobRow.status.in_(("QUEUED", "RUNNING")),
+                            CatalogTranslationJobRow.deleted_at.is_(None),
+                        )
+                    ).all()
+                )
+                if not interrupted:
+                    session.rollback()
+                    continue
+                now = utcnow()
+                for job in interrupted:
+                    job.status = "PAUSED"
+                    job.stage = "PAUSED"
+                    job.pause_requested_at = None
+                    job.paused_at = now
+                    job.current_sku_id = None
+                    job.current_sku_name = None
+                    job.error_message = (
+                        "服务重启前的翻译进度已保存，可从最近完成的批次继续。"
+                    )
+                    job.completed_at = None
+                    job.updated_at = now
+                session.commit()
+                recovered += len(interrupted)
+        except Exception:
+            logger.exception(
+                "translation checkpoint recovery failed for tenant %s",
+                tenant_id,
+            )
+    return recovered
+
+
 def _managed_job(
     session: Session,
     *,
     tenant_id: UUID,
     job_id: UUID,
+    for_update: bool = False,
 ) -> CatalogTranslationJobRow:
-    job = session.scalar(
+    statement = (
         select(CatalogTranslationJobRow).where(
             CatalogTranslationJobRow.tenant_id == tenant_id,
             CatalogTranslationJobRow.id == job_id,
         )
     )
+    if for_update:
+        statement = statement.with_for_update()
+    job = session.scalar(statement)
     if job is None:
         raise ApplicationError(
             "CATALOG_TRANSLATION_JOB_NOT_FOUND",
@@ -932,6 +1147,7 @@ def pause_translation_job(
         session,
         tenant_id=context.tenant_id,
         job_id=job_id,
+        for_update=True,
     )
     if job.status == "PAUSED":
         return _job_response(job)
@@ -970,15 +1186,27 @@ def resume_translation_job(
         session,
         tenant_id=context.tenant_id,
         job_id=job_id,
+        for_update=True,
     )
     if job.status == "RUNNING" and job.pause_requested_at is not None:
         job.pause_requested_at = None
         session.commit()
         return _job_response(job)
-    if job.status != "PAUSED":
+    if job.status not in {"PAUSED", "FAILED"}:
         raise ApplicationError(
             "CATALOG_TRANSLATION_JOB_NOT_RESUMABLE",
-            "只有已暂停的翻译任务可以继续。",
+            "只有已暂停或中断的翻译任务可以继续。",
+            kind="conflict",
+        )
+    existing = _active_job(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=job.target_locale,
+    )
+    if existing is not None and existing.id != job.id:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_JOB_CONFLICT",
+            "当前语言已有另一个翻译任务正在运行。",
             kind="conflict",
         )
     job.status = "QUEUED"
@@ -989,7 +1217,15 @@ def resume_translation_job(
     job.failure_details = []
     job.error_message = None
     job.completed_at = None
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_JOB_CONFLICT",
+            "当前语言已有另一个翻译任务正在运行。",
+            kind="conflict",
+        ) from exc
     try:
         _dispatch_translation_job(
             job_id=job.id,

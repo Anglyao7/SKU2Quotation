@@ -38,6 +38,7 @@ class CatalogTranslationJobResponse(BaseModel):
     total_skus: int = Field(ge=0)
     processed_skus: int = Field(ge=0)
     failed_skus: int = Field(ge=0)
+    remaining_skus: int = Field(ge=0)
     progress_percent: float = Field(ge=0, le=100)
     current_sku_id: UUID | None = None
     current_sku_name: str | None = None
@@ -52,6 +53,8 @@ class CatalogTranslationJobResponse(BaseModel):
     pause_requested: bool = False
     pause_requested_at: datetime | None = None
     paused_at: datetime | None = None
+    resumable: bool = False
+    checkpoint_at: datetime | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None

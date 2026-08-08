@@ -103,6 +103,9 @@ export function LanguagePackagesPage() {
   const activeJob = job && ["QUEUED", "RUNNING", "PAUSED"].includes(job.status)
     ? job
     : undefined;
+  const controllableJob = activeJob ?? (
+    job?.status === "FAILED" && job.resumable ? job : undefined
+  );
   const pollableJob = job && (
     ["QUEUED", "RUNNING"].includes(job.status) || job.pauseRequested
   ) ? job : undefined;
@@ -236,21 +239,21 @@ export function LanguagePackagesPage() {
   };
 
   const controlTranslationJob = async (action: "pause" | "resume") => {
-    if (!canEditProducts || !activeJob || controllingJob) return;
+    if (!canEditProducts || !controllableJob || controllingJob) return;
     setControllingJob(true);
     setError("");
     setSuccess("");
     try {
       const next = action === "pause"
-        ? await pauseCatalogTranslationJob(activeJob.id)
-        : await resumeCatalogTranslationJob(activeJob.id);
+        ? await pauseCatalogTranslationJob(controllableJob.id)
+        : await resumeCatalogTranslationJob(controllableJob.id);
       setJob(next);
       if (action === "pause") {
         setSuccess(next.status === "PAUSED"
           ? t("翻译已暂停，已完成的内容会保留。")
           : t("正在完成当前翻译批次，随后会安全暂停。"));
       } else {
-        setSuccess(t("翻译任务已继续，将从剩余商品开始处理。"));
+        setSuccess(t("翻译任务已从断点继续，只会处理剩余商品。"));
       }
     } catch (caught) {
       setError(caught instanceof Error
@@ -276,14 +279,6 @@ export function LanguagePackagesPage() {
             {t("集中管理前台语言、翻译任务与 Cloudflare 语言包。访客下载一次后会保存在当前浏览器。")}
           </Text>
         </div>
-        <Badge size="2" color={status?.packageStorageConfigured ? "green" : "red"} variant="soft">
-          <CloudArrowUp />
-          {status?.packageStorageBackend === "r2"
-            ? "Cloudflare R2"
-            : status?.packageStorageBackend === "s3"
-              ? t("S3 兼容存储")
-              : t("本地对象存储")}
-        </Badge>
       </div>
 
       {error ? (
@@ -424,24 +419,26 @@ export function LanguagePackagesPage() {
                 </div>
               </AlertDialog.Content>
             </AlertDialog.Root>
-            {activeJob ? (
+            {controllableJob ? (
               <Button
                 size="3"
                 variant="soft"
-                color={activeJob.status === "PAUSED" ? "green" : "amber"}
+                color={controllableJob.status === "PAUSED" || controllableJob.status === "FAILED" ? "green" : "amber"}
                 loading={controllingJob}
                 disabled={
                   controllingJob
-                  || (activeJob.status !== "PAUSED" && activeJob.pauseRequested)
+                  || (controllableJob.status !== "PAUSED" && controllableJob.pauseRequested)
                 }
                 onClick={() => void controlTranslationJob(
-                  activeJob.status === "PAUSED" ? "resume" : "pause",
+                  controllableJob.status === "PAUSED" || controllableJob.status === "FAILED" ? "resume" : "pause",
                 )}
               >
-                {activeJob.status === "PAUSED" ? <Play weight="fill" /> : <Pause weight="fill" />}
-                {t(activeJob.status === "PAUSED"
-                  ? "继续翻译"
-                  : activeJob.pauseRequested
+                {controllableJob.status === "PAUSED" || controllableJob.status === "FAILED" ? <Play weight="fill" /> : <Pause weight="fill" />}
+                {t(controllableJob.status === "FAILED"
+                  ? "从断点继续"
+                  : controllableJob.status === "PAUSED"
+                    ? "继续翻译"
+                  : controllableJob.pauseRequested
                     ? "正在暂停"
                     : "暂停翻译")}
               </Button>
@@ -498,7 +495,11 @@ export function LanguagePackagesPage() {
           <div className="language-job-header">
             <div>
               <Text size="1" color="gray">{t("最近任务")}</Text>
-              <Heading size="4">{t(stageCopy[job.stage])}</Heading>
+              <Heading size="4">
+                {t(job.status === "FAILED" && job.resumable
+                  ? "任务中断，断点已保存"
+                  : stageCopy[job.stage])}
+              </Heading>
             </div>
             <Badge color={job.status === "FAILED"
               ? "red"
@@ -521,6 +522,14 @@ export function LanguagePackagesPage() {
           />
           <div className="language-job-copy">
             <span>{t("已处理 {done} / {total} 个 SKU", { done: job.processedSkus, total: job.totalSkus })}</span>
+            {job.resumable ? (
+              <span>
+                {t("剩余 {remaining} 个 SKU · 断点 {time}", {
+                  remaining: job.remainingSkus,
+                  time: formatDate(job.checkpointAt),
+                })}
+              </span>
+            ) : null}
             {job.currentSkuName ? <span>{job.currentSkuName}</span> : null}
             {job.status === "PAUSED" ? <span>{t("继续后将从剩余商品开始")}</span> : null}
             {job.packagePublished ? <span>{t("已发布语言包 v{version}", { version: job.packageVersion ?? "—" })}</span> : null}

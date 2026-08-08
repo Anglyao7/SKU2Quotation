@@ -72,6 +72,7 @@ export function TranslationApiSettingsPage() {
   const [regionId, setRegionId] = useState(ALIYUN_REGION);
   const [timeoutSeconds, setTimeoutSeconds] = useState("20");
   const [maxTokens, setMaxTokens] = useState("16384");
+  const [requestsPerMinute, setRequestsPerMinute] = useState("60");
   const [reasoningEffort, setReasoningEffort] =
     useState<TranslationReasoningEffort>("low");
 
@@ -88,6 +89,7 @@ export function TranslationApiSettingsPage() {
     setRegionId(next.regionId ?? ALIYUN_REGION);
     setTimeoutSeconds(String(next.timeoutSeconds));
     setMaxTokens(String(next.maxTokens));
+    setRequestsPerMinute(String(next.requestsPerMinute));
     setReasoningEffort(next.reasoningEffort);
     setApiKey("");
     setAccessKeyId("");
@@ -128,6 +130,7 @@ export function TranslationApiSettingsPage() {
     regionId: regionId.trim() || undefined,
     timeoutSeconds: Number(timeoutSeconds),
     maxTokens: Number(maxTokens),
+    requestsPerMinute: Number(requestsPerMinute),
     reasoningEffort,
   }), [
     accessKeyId,
@@ -136,6 +139,7 @@ export function TranslationApiSettingsPage() {
     maxTokens,
     modelName,
     provider,
+    requestsPerMinute,
     reasoningEffort,
     regionId,
     timeoutSeconds,
@@ -153,6 +157,9 @@ export function TranslationApiSettingsPage() {
       || (storedCredentialsMatch && settings?.accessKeyIdConfigured)
       || !enabled,
   );
+  const validRpm = Number.isInteger(input.requestsPerMinute)
+    && input.requestsPerMinute >= 1
+    && input.requestsPerMinute <= 10_000;
 
   const formValid = Boolean(
     input.baseUrl
@@ -160,6 +167,7 @@ export function TranslationApiSettingsPage() {
       && Number.isInteger(input.timeoutSeconds)
       && input.timeoutSeconds >= 1
       && input.timeoutSeconds <= 120
+      && validRpm
       && (isAliyun || (
         Number.isInteger(input.maxTokens)
         && input.maxTokens >= 512
@@ -170,6 +178,7 @@ export function TranslationApiSettingsPage() {
   );
   const canTest = Boolean(
     input.baseUrl
+      && validRpm
       && (isAliyun ? input.regionId : input.modelName)
       && (input.apiKey || (storedCredentialsMatch && settings?.apiKeyConfigured))
       && (!isAliyun || (
@@ -488,6 +497,26 @@ export function TranslationApiSettingsPage() {
                   }}
                   required
                 />
+              </label>
+
+              <label>
+                <Text size="1" color="gray">
+                  {t("每分钟最大请求数（RPM）")}
+                </Text>
+                <TextField.Root
+                  type="number"
+                  min="1"
+                  max="10000"
+                  value={requestsPerMinute}
+                  onChange={(event) => {
+                    clearResult();
+                    setRequestsPerMinute(event.target.value);
+                  }}
+                  required
+                />
+                <Text size="1" color="gray">
+                  {t("达到上限后请求会排队等待，已完成的翻译和断点不会丢失。")}
+                </Text>
               </label>
 
               {!isAliyun ? (

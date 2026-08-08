@@ -11,6 +11,10 @@ from ..services.translation_configuration import (
     save_managed_translation_settings,
     translation_configuration_snapshot,
 )
+from ..services.translation_rate_limit import (
+    configure_translation_requests_per_minute,
+    rate_limited_translation_provider,
+)
 from ..translation_management_schemas import (
     TranslationSettingsResponse,
     TranslationSettingsTestRequest,
@@ -60,6 +64,7 @@ def update_settings(
             region_id=request.region_id,
             timeout_seconds=request.timeout_seconds,
             max_tokens=request.max_tokens,
+            requests_per_minute=request.requests_per_minute,
             reasoning_effort=request.reasoning_effort,
             api_key=(
                 request.api_key.get_secret_value()
@@ -75,6 +80,9 @@ def update_settings(
             updated_by_user_id=context.user_id,
         )
         session.commit()
+        configure_translation_requests_per_minute(
+            request.requests_per_minute
+        )
         snapshot = translation_configuration_snapshot(session)
     except (ValueError, TranslationProviderError) as exc:
         session.rollback()
@@ -93,25 +101,30 @@ def test_settings(
 ) -> TranslationSettingsTestResponse:
     _require_platform_admin(context)
     try:
-        provider = candidate_translation_provider(
-            session,
-            provider=request.provider,
-            base_url=request.base_url,
-            api_key=(
-                request.api_key.get_secret_value()
-                if request.api_key is not None
-                else None
+        provider = rate_limited_translation_provider(
+            candidate_translation_provider(
+                session,
+                provider=request.provider,
+                base_url=request.base_url,
+                api_key=(
+                    request.api_key.get_secret_value()
+                    if request.api_key is not None
+                    else None
+                ),
+                access_key_id=(
+                    request.access_key_id.get_secret_value()
+                    if request.access_key_id is not None
+                    else None
+                ),
+                model_name=request.model_name,
+                region_id=request.region_id,
+                timeout_seconds=request.timeout_seconds,
+                max_tokens=request.max_tokens,
+                requests_per_minute=request.requests_per_minute,
+                reasoning_effort=request.reasoning_effort,
             ),
-            access_key_id=(
-                request.access_key_id.get_secret_value()
-                if request.access_key_id is not None
-                else None
-            ),
-            model_name=request.model_name,
-            region_id=request.region_id,
-            timeout_seconds=request.timeout_seconds,
-            max_tokens=request.max_tokens,
-            reasoning_effort=request.reasoning_effort,
+            requests_per_minute=request.requests_per_minute,
+            synchronize_limit=False,
         )
         started_at = monotonic()
         translated = provider.translate(

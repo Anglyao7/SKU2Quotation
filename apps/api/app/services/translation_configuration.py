@@ -23,6 +23,11 @@ from .translation import (
     aliyun_alimt_translation_provider,
     openai_compatible_translation_provider,
 )
+from .translation_rate_limit import (
+    environment_translation_requests_per_minute,
+    normalized_translation_requests_per_minute,
+    rate_limited_translation_provider,
+)
 
 
 SETTINGS_ID = "CATALOG_TRANSLATION"
@@ -44,6 +49,7 @@ class TranslationConfigurationSnapshot:
     region_id: str | None
     timeout_seconds: int
     max_tokens: int
+    requests_per_minute: int
     reasoning_effort: str
     api_key_configured: bool
     api_key_hint: str | None
@@ -204,6 +210,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             region_id=None,
             timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
             max_tokens=DEFAULT_MAX_TOKENS,
+            requests_per_minute=environment_translation_requests_per_minute(),
             reasoning_effort=DEFAULT_REASONING_EFFORT,
             api_key_configured=False,
             api_key_hint=None,
@@ -229,6 +236,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             region_id=None,
             timeout_seconds=timeout_seconds,
             max_tokens=DEFAULT_MAX_TOKENS,
+            requests_per_minute=environment_translation_requests_per_minute(),
             reasoning_effort="none",
             api_key_configured=configured,
             api_key_hint=None,
@@ -262,6 +270,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             ).strip(),
             timeout_seconds=timeout_seconds,
             max_tokens=DEFAULT_MAX_TOKENS,
+            requests_per_minute=environment_translation_requests_per_minute(),
             reasoning_effort="none",
             api_key_configured=bool(raw_api_key),
             api_key_hint=f"••••{raw_api_key[-4:]}" if raw_api_key else None,
@@ -298,6 +307,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
         region_id=None,
         timeout_seconds=timeout_seconds,
         max_tokens=max_tokens,
+        requests_per_minute=environment_translation_requests_per_minute(),
         reasoning_effort=_normalized_reasoning_effort(
             os.getenv(
                 "OPENAI_TRANSLATION_REASONING_EFFORT",
@@ -327,6 +337,7 @@ def translation_configuration_snapshot(
         region_id=settings.region_id,
         timeout_seconds=settings.timeout_seconds,
         max_tokens=settings.max_tokens,
+        requests_per_minute=settings.requests_per_minute,
         reasoning_effort=settings.reasoning_effort,
         api_key_configured=bool(settings.api_key_ciphertext),
         api_key_hint=(
@@ -366,7 +377,10 @@ def resolved_catalog_translator(
 ) -> TranslationProvider:
     settings = get_managed_translation_settings(session)
     if settings is None:
-        return environment_factory()
+        return rate_limited_translation_provider(
+            environment_factory(),
+            requests_per_minute=environment_translation_requests_per_minute(),
+        )
     if not settings.is_active:
         raise TranslationProviderError("catalog translation provider is disabled")
     if not settings.api_key_ciphertext:
@@ -376,16 +390,19 @@ def resolved_catalog_translator(
         if settings.access_key_id_ciphertext
         else None
     )
-    return _validated_provider(
-        provider=settings.provider,
-        base_url=settings.base_url,
-        api_key=decrypt_translation_api_key(settings.api_key_ciphertext),
-        access_key_id=access_key_id,
-        model_name=settings.model_name,
-        region_id=settings.region_id,
-        timeout_seconds=settings.timeout_seconds,
-        max_tokens=settings.max_tokens,
-        reasoning_effort=settings.reasoning_effort,
+    return rate_limited_translation_provider(
+        _validated_provider(
+            provider=settings.provider,
+            base_url=settings.base_url,
+            api_key=decrypt_translation_api_key(settings.api_key_ciphertext),
+            access_key_id=access_key_id,
+            model_name=settings.model_name,
+            region_id=settings.region_id,
+            timeout_seconds=settings.timeout_seconds,
+            max_tokens=settings.max_tokens,
+            reasoning_effort=settings.reasoning_effort,
+        ),
+        requests_per_minute=settings.requests_per_minute,
     )
 
 
@@ -438,8 +455,10 @@ def candidate_translation_provider(
     region_id: str | None,
     timeout_seconds: int,
     max_tokens: int,
+    requests_per_minute: int,
     reasoning_effort: str,
 ) -> TranslationProvider:
+    normalized_translation_requests_per_minute(requests_per_minute)
     normalized_provider = _normalized_provider(provider)
     resolved_key = _resolved_api_key(
         session,
@@ -481,6 +500,7 @@ def save_managed_translation_settings(
     region_id: str | None,
     timeout_seconds: int,
     max_tokens: int,
+    requests_per_minute: int,
     reasoning_effort: str,
     api_key: str | None,
     access_key_id: str | None,
@@ -488,6 +508,9 @@ def save_managed_translation_settings(
     updated_by_user_id: UUID,
 ) -> TranslationProviderSettingsRow:
     normalized_provider = _normalized_provider(provider)
+    normalized_rpm = normalized_translation_requests_per_minute(
+        requests_per_minute
+    )
     if normalized_provider == "aliyun-alimt":
         normalized_base_url = _aliyun_endpoint(base_url)
         normalized_model = ALIYUN_GENERAL_EDITION
@@ -574,6 +597,7 @@ def save_managed_translation_settings(
             region_id=normalized_region,
             timeout_seconds=timeout_seconds,
             max_tokens=max_tokens,
+            requests_per_minute=normalized_rpm,
             reasoning_effort=normalized_reasoning,
             api_key_ciphertext=(
                 encrypt_translation_api_key(resolved_key)
@@ -608,6 +632,7 @@ def save_managed_translation_settings(
         settings.region_id = normalized_region
         settings.timeout_seconds = timeout_seconds
         settings.max_tokens = max_tokens
+        settings.requests_per_minute = normalized_rpm
         settings.reasoning_effort = normalized_reasoning
         settings.is_active = enabled
         settings.version += 1

@@ -17,6 +17,7 @@ class TranslationSettingsResponse(BaseModel):
     region_id: str | None = None
     timeout_seconds: int = Field(ge=1, le=120)
     max_tokens: int = Field(ge=512, le=32768)
+    requests_per_minute: int = Field(ge=1, le=10_000)
     reasoning_effort: ReasoningEffort
     api_key_configured: bool
     api_key_hint: str | None = None
@@ -34,6 +35,7 @@ class TranslationProviderParameters(BaseModel):
     region_id: str | None = Field(default=None, max_length=100)
     timeout_seconds: int = Field(default=20, ge=1, le=120)
     max_tokens: int = Field(default=16384, ge=512, le=32768)
+    requests_per_minute: int = Field(default=60, ge=1, le=10_000)
     reasoning_effort: ReasoningEffort = "low"
 
 

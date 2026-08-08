@@ -20,7 +20,11 @@ import type {
   Tenant,
   TenantPayload,
 } from "../types";
-import { clearCoreAuthSession, getCoreAccessToken } from "../core/api";
+import {
+  clearCoreAuthSession,
+  getCoreAccessToken,
+  refreshAuthSession,
+} from "../core/api";
 import { publicCatalogCacheKey } from "./publicCatalogRevision";
 import {
   cachedLanguagePack,
@@ -119,7 +123,12 @@ function getMessage(payload: unknown, fallback: string) {
   return fallback;
 }
 
-async function request<T>(path: string, init: RequestInit = {}, auth = false): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  auth = false,
+  retrySession = true,
+): Promise<T> {
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -143,7 +152,11 @@ async function request<T>(path: string, init: RequestInit = {}, auth = false): P
     : await response.text().catch(() => "");
 
   if (!response.ok) {
-    if (response.status === 401) {
+    if (response.status === 401 && auth && retrySession) {
+      const restored = await refreshAuthSession();
+      if (restored) return request<T>(path, init, auth, false);
+      window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+    } else if (response.status === 401 && auth) {
       authStorage.clearToken();
       window.dispatchEvent(new CustomEvent("atc:auth-expired"));
     }
@@ -484,6 +497,7 @@ async function download(
   path: string,
   filename: string,
   options: { auth?: boolean; headers?: HeadersInit } = {},
+  retrySession = true,
 ) {
   const headers = new Headers(options.headers);
   if (options.auth) {
@@ -493,6 +507,14 @@ async function download(
   const response = await fetch(apiUrl(path), { headers, credentials: "include" });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
+    if (response.status === 401 && options.auth && retrySession) {
+      const restored = await refreshAuthSession();
+      if (restored) return download(path, filename, options, false);
+      window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+    } else if (response.status === 401 && options.auth) {
+      authStorage.clearToken();
+      window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+    }
     throw new ApiError(getMessage(payload, "文件生成失败，请稍后再试。"), response.status, payload);
   }
   const blob = await response.blob();

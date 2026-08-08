@@ -720,6 +720,7 @@ export interface TranslationApiSettings {
   regionId?: string;
   timeoutSeconds: number;
   maxTokens: number;
+  requestsPerMinute: number;
   reasoningEffort: TranslationReasoningEffort;
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
@@ -773,6 +774,7 @@ export interface CatalogTranslationJob {
   totalSkus: number;
   processedSkus: number;
   failedSkus: number;
+  remainingSkus: number;
   progressPercent: number;
   currentSkuId?: string;
   currentSkuName?: string;
@@ -792,6 +794,8 @@ export interface CatalogTranslationJob {
   pauseRequested: boolean;
   pauseRequestedAt?: string;
   pausedAt?: string;
+  resumable: boolean;
+  checkpointAt?: string;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;

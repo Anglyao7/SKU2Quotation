@@ -117,6 +117,52 @@ def test_aliyun_adapter_routes_large_fields_to_general_translation() -> None:
     assert len(client.general_requests) == 1
 
 
+def test_aliyun_adapter_acquires_a_gate_for_each_general_sdk_request() -> None:
+    client = _FakeAliyunTranslationClient()
+    translator = AliyunAlimtTranslator(
+        access_key_id="test-access-key-id",
+        access_key_secret="test-access-key-secret",
+        client=client,
+    )
+    acquired: list[int] = []
+    translator.install_request_gate(lambda: acquired.append(1))
+
+    translator.translate(
+        "商品" * 3_000,
+        source_locale="zh-CN",
+        target_locale="en-US",
+    )
+
+    assert len(client.general_requests) == 2
+    assert acquired == [1, 1]
+    assert translator._runtime.autoretry is False
+    assert translator._runtime.max_attempts == 1
+
+
+def test_aliyun_adapter_acquires_a_gate_for_each_batch_sdk_request() -> None:
+    client = _FakeAliyunTranslationClient()
+    translator = AliyunAlimtTranslator(
+        access_key_id="test-access-key-id",
+        access_key_secret="test-access-key-secret",
+        client=client,
+    )
+    acquired: list[int] = []
+    translator.install_request_gate(lambda: acquired.append(1))
+    payload = "\n".join(
+        f"[[ATCV_{index:03d}]]\n商品 {index}"
+        for index in range(51)
+    )
+
+    translator.translate(
+        payload,
+        source_locale="zh-CN",
+        target_locale="en-US",
+    )
+
+    assert len(client.batch_requests) == 2
+    assert acquired == [1, 1]
+
+
 def test_deeplx_adapter_uses_json_contract_and_returns_safe_text() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/translate")

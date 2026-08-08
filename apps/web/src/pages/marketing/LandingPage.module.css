@@ -1050,13 +1050,12 @@
   inset: -2% -8%;
   opacity: 0.76;
   background:
-    radial-gradient(ellipse at 12% 8%, rgba(70, 39, 158, 0.96) 0%, rgba(45, 27, 105, 0.62) 22%, transparent 48%),
-    radial-gradient(ellipse at 88% 22%, rgba(212, 175, 55, 0.42) 0%, rgba(123, 91, 70, 0.24) 24%, transparent 48%),
-    radial-gradient(ellipse at 22% 52%, rgba(212, 175, 55, 0.3) 0%, rgba(86, 57, 103, 0.22) 24%, transparent 46%),
-    radial-gradient(ellipse at 82% 70%, rgba(75, 43, 166, 0.9) 0%, rgba(45, 27, 105, 0.48) 28%, transparent 54%),
-    radial-gradient(ellipse at 48% 92%, rgba(212, 175, 55, 0.34) 0%, rgba(99, 70, 91, 0.2) 25%, transparent 50%);
-  background-size: 100% 1900px;
-  background-repeat: repeat-y;
+    radial-gradient(ellipse 72% 18% at 12% 8%, rgba(70, 39, 158, 0.96) 0%, rgba(45, 27, 105, 0.62) 42%, transparent 100%),
+    radial-gradient(ellipse 66% 19% at 88% 26%, rgba(212, 175, 55, 0.42) 0%, rgba(123, 91, 70, 0.24) 46%, transparent 100%),
+    radial-gradient(ellipse 70% 20% at 22% 49%, rgba(212, 175, 55, 0.3) 0%, rgba(86, 57, 103, 0.22) 46%, transparent 100%),
+    radial-gradient(ellipse 68% 20% at 82% 71%, rgba(75, 43, 166, 0.9) 0%, rgba(45, 27, 105, 0.48) 48%, transparent 100%),
+    radial-gradient(ellipse 74% 18% at 48% 94%, rgba(212, 175, 55, 0.34) 0%, rgba(99, 70, 91, 0.2) 48%, transparent 100%);
+  background-repeat: no-repeat;
   transform: translate3d(-2.5%, -0.4%, 0) scale(1.02);
   transform-origin: 50% 35%;
   animation: ambientGradientBreath 16s ease-in-out infinite alternate;
@@ -1112,8 +1111,8 @@
 }
 
 .proofSection {
-  border-color: rgba(212, 175, 55, 0.15);
-  background: rgba(13, 7, 31, 0.52);
+  border-color: transparent;
+  background: transparent;
 }
 
 .sectionHeading h2,
@@ -1206,8 +1205,8 @@
 }
 
 .workflowSection {
-  border-color: rgba(212, 175, 55, 0.15);
-  background: rgba(15, 8, 37, 0.5);
+  border-color: transparent;
+  background: transparent;
 }
 
 .workflowList {
@@ -1251,7 +1250,7 @@
 }
 
 .capabilitiesSection {
-  background: rgba(12, 6, 29, 0.2);
+  background: transparent;
 }
 
 .capabilityCard {
@@ -1322,10 +1321,8 @@
 
 .pricingSection {
   padding: clamp(110px, 12vw, 178px) 0 clamp(120px, 13vw, 190px);
-  border-block: 1px solid rgba(212, 175, 55, 0.16);
-  background:
-    radial-gradient(ellipse 70% 55% at 50% 48%, rgba(77, 45, 165, 0.24), transparent 72%),
-    rgba(12, 6, 29, 0.46);
+  border-block: 1px solid transparent;
+  background: transparent;
 }
 
 .pricingHeading {
@@ -1739,8 +1736,8 @@
 }
 
 .merchantSection {
-  border-color: rgba(212, 175, 55, 0.15);
-  background: rgba(12, 6, 29, 0.52);
+  border-color: transparent;
+  background: transparent;
 }
 
 .merchantCopy li {

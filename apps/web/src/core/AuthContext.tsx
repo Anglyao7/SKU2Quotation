@@ -48,6 +48,7 @@ const initialState: AuthState = {
 };
 
 const CoreAuthContext = createContext<CoreAuthContextValue | null>(null);
+const SESSION_RESTORE_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000, 5_000];
 
 function errorMessage(reason: unknown) {
   return reason instanceof Error ? reason.message : "认证服务暂时不可用";
@@ -100,25 +101,45 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    void refreshAuthSession()
-      .then(async (session) => {
-        if (!active) return;
+    let restorationStopped = false;
+    let retryCount = 0;
+    let retryTimer: number | undefined;
+
+    const restore = async () => {
+      try {
+        const session = await refreshAuthSession();
+        if (!active || restorationStopped) return;
         if (!session) {
           setState({ ...initialState, status: "anonymous" });
           return;
         }
         await hydrate(session);
-      })
-      .catch((reason) => {
-        if (active) setState({ ...initialState, status: "anonymous", error: errorMessage(reason) });
-      });
+      } catch (reason) {
+        if (!active || restorationStopped) return;
+        setState({
+          ...initialState,
+          status: "restoring",
+          error: errorMessage(reason),
+        });
+        const delay = SESSION_RESTORE_RETRY_DELAYS_MS[
+          Math.min(retryCount, SESSION_RESTORE_RETRY_DELAYS_MS.length - 1)
+        ];
+        retryCount += 1;
+        retryTimer = window.setTimeout(() => void restore(), delay);
+      }
+    };
+
+    void restore();
     const expire = () => {
+      restorationStopped = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       clearCoreAuthSession();
       setState({ ...initialState, status: "anonymous", error: "会话已失效，请重新登录。" });
     };
     window.addEventListener("atc:auth-expired", expire);
     return () => {
       active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       window.removeEventListener("atc:auth-expired", expire);
     };
   }, [hydrate]);

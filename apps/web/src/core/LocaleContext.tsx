@@ -1057,8 +1057,9 @@ const english: Record<string, string> = {
   "多语言与语言包": "Languages and packages",
   "集中管理前台语言、翻译任务与 Cloudflare 语言包。访客下载一次后会保存在当前浏览器。":
     "Manage storefront languages, translation jobs, and Cloudflare language packages. Each package is persisted in the visitor's browser after its first download.",
-  "本地对象存储": "Local object storage",
-  "S3 兼容存储": "S3-compatible storage",
+  "每分钟最大请求数（RPM）": "Maximum requests per minute (RPM)",
+  "达到上限后请求会排队等待，已完成的翻译和断点不会丢失。":
+    "Requests wait in a queue after the limit is reached; completed translations and checkpoints are preserved.",
   "语言包状态读取失败。": "Could not load language package status.",
   "语言包已发布，前台将在下一次版本检查后自动使用。":
     "The language package is published and will be used after the storefront's next version check.",
@@ -1103,7 +1104,12 @@ const english: Record<string, string> = {
   "上传 Cloudflare": "Uploading to Cloudflare",
   "发布完成": "Published",
   "任务失败": "Job failed",
+  "任务中断，断点已保存": "Interrupted — checkpoint saved",
   "已处理 {done} / {total} 个 SKU": "Processed {done} / {total} SKUs",
+  "剩余 {remaining} 个 SKU · 断点 {time}": "{remaining} SKUs remaining · checkpoint {time}",
+  "从断点继续": "Resume from checkpoint",
+  "翻译任务已从断点继续，只会处理剩余商品。":
+    "Translation resumed from its checkpoint. Only remaining products will be processed.",
   "已发布语言包 v{version}": "Published language package v{version}",
   "当前语言包已经是最新版本。": "The current language package is already up to date.",
   "翻译任务启动失败。": "Could not start the translation job.",

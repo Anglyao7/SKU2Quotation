@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Protocol
@@ -404,9 +404,12 @@ class AliyunAlimtTranslator:
             raise TranslationProviderError("Aliyun AccessKey Secret is required")
 
         self._timeout_seconds = timeout_seconds
+        self._request_gate: Callable[[], None] | None = None
         self._runtime = util_models.RuntimeOptions(
-            autoretry=True,
-            max_attempts=2,
+            # Retries happen above the adapter so every real SDK request can
+            # acquire its own platform-wide RPM slot.
+            autoretry=False,
+            max_attempts=1,
             read_timeout=round(timeout_seconds * 1_000),
             connect_timeout=min(round(timeout_seconds * 1_000), 10_000),
         )
@@ -432,6 +435,15 @@ class AliyunAlimtTranslator:
             provider="aliyun-alimt",
             version=f"general:{self._API_VERSION}:{fingerprint}",
         )
+
+    def install_request_gate(self, gate: Callable[[], None]) -> None:
+        """Install a callback invoked immediately before every SDK request."""
+
+        self._request_gate = gate
+
+    def _acquire_request_slot(self) -> None:
+        if self._request_gate is not None:
+            self._request_gate()
 
     @staticmethod
     def _service_error(code: object, message: str | None = None) -> str:
@@ -475,6 +487,7 @@ class AliyunAlimtTranslator:
                 target_language=target,
             )
             try:
+                self._acquire_request_slot()
                 response = self._client.translate_general_with_options(
                     request,
                     self._runtime,
@@ -519,6 +532,7 @@ class AliyunAlimtTranslator:
             target_language=target,
         )
         try:
+            self._acquire_request_slot()
             response = self._client.get_batch_translate_with_options(
                 request,
                 self._runtime,

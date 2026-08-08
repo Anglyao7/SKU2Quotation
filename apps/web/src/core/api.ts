@@ -81,6 +81,10 @@ import { bumpPublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { resetStorefrontAnnouncementVisit } from "../lib/storefrontAnnouncementVisit";
 
 const CSRF_STORAGE_KEY = "atc.csrfToken";
+const TERMINAL_REFRESH_ERROR_CODES = new Set([
+  "AUTH_SESSION_EXPIRED",
+  "AUTH_REFRESH_REUSE_DETECTED",
+]);
 let accessToken: string | undefined;
 let refreshInFlight: Promise<AuthTokenData | undefined> | undefined;
 let authGeneration = 0;
@@ -124,6 +128,79 @@ function messageFromPayload(payload: unknown, fallback: string) {
   }
   if (typeof body.message === "string") return body.message;
   return fallback;
+}
+
+function errorCodeFromPayload(payload: unknown) {
+  if (!payload || typeof payload !== "object") return undefined;
+  const body = payload as Record<string, unknown>;
+  if (body.detail && typeof body.detail === "object") {
+    const code = (body.detail as Record<string, unknown>).code;
+    return typeof code === "string" ? code : undefined;
+  }
+  return typeof body.code === "string" ? body.code : undefined;
+}
+
+function readCsrfToken() {
+  try {
+    const shared = window.localStorage.getItem(CSRF_STORAGE_KEY);
+    if (shared) return shared;
+  } catch {
+    // Some privacy modes can disable localStorage; keep the same-tab fallback.
+  }
+  try {
+    const legacy = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
+    if (legacy) {
+      try {
+        window.localStorage.setItem(CSRF_STORAGE_KEY, legacy);
+      } catch {
+        // The sessionStorage value remains usable in this tab.
+      }
+      return legacy;
+    }
+  } catch {
+    // Missing browser storage means there is no recoverable refresh context.
+  }
+  return undefined;
+}
+
+function storeCsrfToken(csrfToken: string) {
+  try {
+    window.localStorage.setItem(CSRF_STORAGE_KEY, csrfToken);
+  } catch {
+    window.sessionStorage.setItem(CSRF_STORAGE_KEY, csrfToken);
+    return;
+  }
+  try {
+    window.sessionStorage.removeItem(CSRF_STORAGE_KEY);
+  } catch {
+    // The shared value is already durable; legacy cleanup is best-effort.
+  }
+}
+
+function removeCsrfToken() {
+  try {
+    window.localStorage.removeItem(CSRF_STORAGE_KEY);
+  } catch {
+    // Continue clearing the same-tab fallback.
+  }
+  try {
+    window.sessionStorage.removeItem(CSRF_STORAGE_KEY);
+  } catch {
+    // Browser storage cleanup is best-effort during logout.
+  }
+}
+
+function delay(milliseconds: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function waitForRotatedCsrfToken(previousToken: string) {
+  for (const pause of [25, 50, 100, 150]) {
+    await delay(pause);
+    const current = readCsrfToken();
+    if (current && current !== previousToken) return current;
+  }
+  return undefined;
 }
 
 async function safeFetch(input: RequestInfo | URL, init?: RequestInit) {
@@ -202,7 +279,7 @@ function acceptAuthData(row: ApiAuthTokenData) {
   authGeneration += 1;
   getRequestsInFlight.clear();
   getResponseCache.clear();
-  window.sessionStorage.setItem(CSRF_STORAGE_KEY, mapped.csrfToken);
+  storeCsrfToken(mapped.csrfToken);
   window.localStorage.removeItem("qingwan.accessToken");
   window.localStorage.removeItem("atc_access_token");
   return mapped;
@@ -218,32 +295,52 @@ export function clearCoreAuthSession() {
   authGeneration += 1;
   getRequestsInFlight.clear();
   getResponseCache.clear();
-  window.sessionStorage.removeItem(CSRF_STORAGE_KEY);
+  removeCsrfToken();
   window.localStorage.removeItem("qingwan.accessToken");
   window.localStorage.removeItem("atc_access_token");
 }
 
+async function performAuthRefresh(
+  csrfToken: string,
+  allowRotatedTokenRetry: boolean,
+): Promise<AuthTokenData | undefined> {
+  const response = await safeFetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "X-CSRF-Token": csrfToken },
+  });
+  const payload = await response.json().catch(() => null);
+  if (response.ok) {
+    return acceptAuthData((payload as { data: ApiAuthTokenData }).data);
+  }
+
+  const code = errorCodeFromPayload(payload);
+  if (code === "AUTH_CSRF_INVALID" && allowRotatedTokenRetry) {
+    const rotatedToken = await waitForRotatedCsrfToken(csrfToken);
+    if (rotatedToken) return performAuthRefresh(rotatedToken, false);
+  }
+  if (code === "AUTH_CSRF_INVALID") {
+    clearCoreAuthSession();
+    return undefined;
+  }
+  if (response.status === 401 && code && TERMINAL_REFRESH_ERROR_CODES.has(code)) {
+    clearCoreAuthSession();
+    return undefined;
+  }
+  throw new CoreApiError(
+    messageFromPayload(payload, response.status >= 500 ? "认证服务暂时不可用" : "会话恢复失败"),
+    response.status,
+    payload,
+  );
+}
+
 export async function refreshAuthSession(): Promise<AuthTokenData | undefined> {
-  const csrfToken = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
+  const csrfToken = readCsrfToken();
   if (!csrfToken) return undefined;
   if (!refreshInFlight) {
-    refreshInFlight = safeFetch(`${API_BASE}/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "X-CSRF-Token": csrfToken },
-    })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => null);
-        if (!response.ok) throw new CoreApiError(messageFromPayload(payload, "会话已失效"), response.status, payload);
-        return acceptAuthData((payload as { data: ApiAuthTokenData }).data);
-      })
-      .catch(() => {
-        clearCoreAuthSession();
-        return undefined;
-      })
-      .finally(() => {
-        refreshInFlight = undefined;
-      });
+    refreshInFlight = performAuthRefresh(csrfToken, true).finally(() => {
+      refreshInFlight = undefined;
+    });
   }
   return refreshInFlight;
 }
@@ -360,7 +457,7 @@ export async function loginPassword(identifier: string, password: string): Promi
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
   const submit = async () => {
-    const csrfToken = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
+    const csrfToken = readCsrfToken();
     if (!csrfToken) throw new CoreApiError("会话校验信息已失效，请重新登录。", 419);
     await request<void>("/auth/password", {
       method: "PUT",
@@ -392,7 +489,7 @@ export async function listMemberships() {
 }
 
 export async function switchTenant(membershipId: string) {
-  const csrfToken = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
+  const csrfToken = readCsrfToken();
   if (!csrfToken) throw new CoreApiError("会话校验信息已失效，请重新登录。", 401);
   const payload = await request<{ data: ApiAuthTokenData }>("/auth/tenant-context", {
     method: "POST",
@@ -1518,6 +1615,7 @@ interface ApiTranslationSettings {
   region_id?: string | null;
   timeout_seconds: number;
   max_tokens: number;
+  requests_per_minute: number;
   reasoning_effort: TranslationReasoningEffort;
   api_key_configured: boolean;
   api_key_hint?: string | null;
@@ -1546,6 +1644,7 @@ function mapTranslationSettings(
     regionId: defined(row.region_id),
     timeoutSeconds: row.timeout_seconds,
     maxTokens: row.max_tokens,
+    requestsPerMinute: row.requests_per_minute,
     reasoningEffort: row.reasoning_effort,
     apiKeyConfigured: row.api_key_configured,
     apiKeyHint: defined(row.api_key_hint),
@@ -1564,6 +1663,7 @@ export interface TranslationSettingsWriteInput {
   regionId?: string;
   timeoutSeconds: number;
   maxTokens: number;
+  requestsPerMinute: number;
   reasoningEffort: TranslationReasoningEffort;
 }
 
@@ -1577,6 +1677,7 @@ function translationSettingsBody(input: TranslationSettingsWriteInput) {
     region_id: input.regionId || undefined,
     timeout_seconds: input.timeoutSeconds,
     max_tokens: input.maxTokens,
+    requests_per_minute: input.requestsPerMinute,
     reasoning_effort: input.reasoningEffort,
   };
 }
@@ -1642,11 +1743,12 @@ interface ApiCatalogTranslationJob {
   source_locale: StorefrontLocale;
   target_locale: StorefrontLocale;
   mode: "INCREMENTAL" | "FULL_REBUILD";
-  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  status: "QUEUED" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
   stage: CatalogTranslationJob["stage"];
   total_skus: number;
   processed_skus: number;
   failed_skus: number;
+  remaining_skus: number;
   progress_percent: number;
   current_sku_id?: string | null;
   current_sku_name?: string | null;
@@ -1666,6 +1768,8 @@ interface ApiCatalogTranslationJob {
   pause_requested: boolean;
   pause_requested_at?: string | null;
   paused_at?: string | null;
+  resumable: boolean;
+  checkpoint_at?: string | null;
   created_at: string;
   started_at?: string | null;
   completed_at?: string | null;
@@ -1720,6 +1824,7 @@ function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTransla
     totalSkus: row.total_skus,
     processedSkus: row.processed_skus,
     failedSkus: row.failed_skus,
+    remainingSkus: row.remaining_skus,
     progressPercent: row.progress_percent,
     currentSkuId: defined(row.current_sku_id),
     currentSkuName: defined(row.current_sku_name),
@@ -1739,6 +1844,8 @@ function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTransla
     pauseRequested: row.pause_requested,
     pauseRequestedAt: defined(row.pause_requested_at),
     pausedAt: defined(row.paused_at),
+    resumable: row.resumable,
+    checkpointAt: defined(row.checkpoint_at),
     createdAt: row.created_at,
     startedAt: defined(row.started_at),
     completedAt: defined(row.completed_at),

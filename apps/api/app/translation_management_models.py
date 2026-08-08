@@ -33,6 +33,10 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
             name="max_tokens_supported",
         ),
         CheckConstraint(
+            "requests_per_minute >= 1 AND requests_per_minute <= 10000",
+            name="requests_per_minute_supported",
+        ),
+        CheckConstraint(
             "reasoning_effort IN ('none', 'minimal', 'low', 'medium', 'high')",
             name="reasoning_effort_supported",
         ),
@@ -55,6 +59,11 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
     region_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
     max_tokens: Mapped[int] = mapped_column(Integer, default=16384, nullable=False)
+    requests_per_minute: Mapped[int] = mapped_column(
+        Integer,
+        default=60,
+        nullable=False,
+    )
     reasoning_effort: Mapped[str] = mapped_column(
         String(20), default="low", nullable=False
     )
