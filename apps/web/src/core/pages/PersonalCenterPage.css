@@ -1,0 +1,271 @@
+.personal-center-page {
+  max-width: 1120px;
+  margin-inline: auto;
+  gap: 18px;
+}
+
+.personal-floating-settings {
+  display: grid;
+  gap: 18px;
+}
+
+.personal-floating-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px;
+  border: 1px solid var(--gray-a4);
+  border-radius: 20px;
+  background: var(--color-panel-solid);
+}
+
+.personal-floating-intro h2 {
+  margin: 4px 0 6px;
+  font: 600 22px/1.2 var(--font-display);
+}
+
+.personal-floating-intro p {
+  margin: 0;
+  color: var(--gray-10);
+  font-size: 13px;
+}
+
+.personal-orb-preview {
+  display: flex;
+  flex-direction: row-reverse;
+  gap: 9px;
+  padding: 11px;
+  border-radius: 999px;
+  background: var(--gray-a2);
+}
+
+.personal-orb-preview span {
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid var(--gray-a5);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--gray-11);
+  background: var(--color-panel-solid);
+}
+
+.personal-orb-preview span.is-chat {
+  color: white;
+  border-color: transparent;
+  background: var(--accent-9);
+}
+
+.personal-orb-preview img,
+.personal-action-settings-card > header img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.personal-welcome-field {
+  padding: 20px;
+  border: 1px solid var(--gray-a4);
+  border-radius: 20px;
+  display: grid;
+  gap: 8px;
+  background: var(--color-panel-solid);
+}
+
+.personal-welcome-field > span,
+.personal-action-settings-card label > span:not(.sr-only) {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.personal-welcome-field small,
+.personal-action-settings-card label small {
+  color: var(--gray-9);
+  font-size: 10px;
+}
+
+.personal-action-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.personal-action-settings-card {
+  min-width: 0;
+  padding: 19px;
+  border: 1px solid var(--gray-a4);
+  border-radius: 20px;
+  display: grid;
+  gap: 14px;
+  background: var(--color-panel-solid);
+}
+
+.personal-action-settings-card > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+}
+
+.personal-action-settings-card > header > span {
+  width: 46px;
+  height: 46px;
+  overflow: hidden;
+  border-radius: 15px;
+  display: grid;
+  place-items: center;
+  color: var(--accent-11);
+  background: var(--accent-a3);
+}
+
+.personal-action-settings-card > header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.personal-action-settings-card > header strong {
+  font-size: 14px;
+}
+
+.personal-action-settings-card > header small {
+  color: var(--gray-9);
+  font-size: 10px;
+}
+
+.personal-action-settings-card > label:not(.personal-image-upload):not(.personal-visibility-switch) {
+  display: grid;
+  gap: 6px;
+}
+
+.personal-action-settings-card input:not([type="checkbox"]):not([type="file"]) {
+  min-width: 0;
+  height: 39px;
+  border: 1px solid var(--gray-a6);
+  border-radius: 10px;
+  padding: 0 11px;
+  color: var(--gray-12);
+  background: var(--gray-a1);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.personal-action-settings-card input:focus-visible {
+  border-color: var(--accent-8);
+  box-shadow: 0 0 0 3px var(--accent-a3);
+}
+
+.personal-visibility-switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  cursor: pointer;
+}
+
+.personal-visibility-switch input {
+  position: absolute;
+  opacity: 0;
+}
+
+.personal-visibility-switch i {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--gray-a5);
+  transition: background 150ms ease;
+}
+
+.personal-visibility-switch i::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  transition: transform 150ms ease;
+}
+
+.personal-visibility-switch input:checked + i {
+  background: var(--accent-9);
+}
+
+.personal-visibility-switch input:checked + i::after {
+  transform: translateX(18px);
+}
+
+.personal-visibility-switch:focus-within i {
+  box-shadow: 0 0 0 3px var(--accent-a3);
+}
+
+.personal-image-upload {
+  min-height: 40px;
+  border: 1px dashed var(--gray-a6);
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--accent-11);
+  background: var(--accent-a2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.personal-image-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.personal-settings-actions {
+  position: sticky;
+  bottom: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--gray-a5);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-panel-solid) 92%, transparent);
+  box-shadow: 0 12px 30px var(--gray-a4);
+  backdrop-filter: blur(15px);
+}
+
+.personal-settings-actions > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--green-10);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .personal-action-settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .personal-floating-intro {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 17px;
+  }
+
+  .personal-orb-preview {
+    align-self: flex-end;
+  }
+
+  .personal-action-settings-card {
+    padding: 15px;
+  }
+}

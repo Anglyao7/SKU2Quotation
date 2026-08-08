@@ -2502,7 +2502,6 @@ interface ApiSupportActionSettings {
   slot: 2 | 3;
   visible: boolean;
   label?: string | null;
-  target_url?: string | null;
   external_image_url?: string | null;
   image_url?: string | null;
   has_uploaded_image: boolean;
@@ -2551,7 +2550,6 @@ function mapSupportAction(row: ApiSupportActionSettings): SupportActionSettings 
     slot: row.slot,
     visible: row.visible,
     label: defined(row.label),
-    targetUrl: defined(row.target_url),
     externalImageUrl: defined(row.external_image_url),
     imageUrl: defined(row.image_url),
     hasUploadedImage: row.has_uploaded_image,
@@ -2617,7 +2615,6 @@ export async function updateSupportSettings(
           slot: action.slot,
           visible: action.visible,
           label: action.label || null,
-          target_url: action.targetUrl || null,
           external_image_url: action.externalImageUrl || null,
         })),
       }),

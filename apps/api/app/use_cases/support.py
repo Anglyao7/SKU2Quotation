@@ -121,7 +121,6 @@ def _action_response(
         slot=slot,
         visible=bool(item.get("visible", False)),
         label=str(item.get("label") or "").strip() or None,
-        target_url=str(item.get("target_url") or "").strip() or None,
         external_image_url=external,
         image_url=(external or (_image_path(slug, slot, media_id) if media_id else None)),
         has_uploaded_image=bool(media_id),
@@ -173,10 +172,10 @@ def update_settings(
         if item is None:
             stored.append({"slot": slot, **previous})
             continue
-        if item.visible and not item.target_url:
+        if item.visible and not item.label:
             raise ApplicationError(
-                "SUPPORT_ACTION_TARGET_REQUIRED",
-                f"请为第 {slot} 个悬浮球填写跳转链接。",
+                "SUPPORT_ACTION_LABEL_REQUIRED",
+                f"请为第 {slot} 个悬浮球填写标题。",
             )
         if item.visible and not (
             item.external_image_url or previous.get("image_media_id")
@@ -190,7 +189,6 @@ def update_settings(
                 "slot": slot,
                 "visible": item.visible,
                 "label": item.label,
-                "target_url": item.target_url,
                 "external_image_url": item.external_image_url,
                 "image_media_id": previous.get("image_media_id"),
             }

@@ -14,24 +14,18 @@ SupportConversationStatus = Literal["OPEN", "CLOSED"]
 SupportSenderType = Literal["VISITOR", "MERCHANT", "SYSTEM", "AI"]
 
 
-def _safe_action_url(
-    value: str | None,
-    *,
-    allow_contact_schemes: bool,
-) -> str | None:
+def _safe_image_url(value: str | None) -> str | None:
     normalized = (value or "").strip()
     if not normalized:
         return None
     parsed = urlsplit(normalized)
-    if allow_contact_schemes and parsed.scheme in {"mailto", "tel"} and parsed.path:
-        return normalized
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
         or parsed.username is not None
         or parsed.password is not None
     ):
-        raise ValueError("链接必须使用 http://、https://、mailto: 或 tel:")
+        raise ValueError("图片链接必须使用 http:// 或 https://")
     return normalized
 
 
@@ -39,7 +33,6 @@ class SupportCustomActionWrite(BaseModel):
     slot: Literal[2, 3]
     visible: bool = False
     label: str | None = Field(default=None, max_length=40)
-    target_url: str | None = Field(default=None, max_length=2_000)
     external_image_url: str | None = Field(default=None, max_length=2_000)
 
     @field_validator("label", mode="before")
@@ -47,18 +40,11 @@ class SupportCustomActionWrite(BaseModel):
     def normalize_label(cls, value: object) -> object:
         return value.strip() or None if isinstance(value, str) else value
 
-    @field_validator("target_url", mode="before")
-    @classmethod
-    def validate_target_url(cls, value: object) -> object:
-        if value is None or isinstance(value, str):
-            return _safe_action_url(value, allow_contact_schemes=True)
-        return value
-
     @field_validator("external_image_url", mode="before")
     @classmethod
     def validate_image_url(cls, value: object) -> object:
         if value is None or isinstance(value, str):
-            return _safe_action_url(value, allow_contact_schemes=False)
+            return _safe_image_url(value)
         return value
 
 

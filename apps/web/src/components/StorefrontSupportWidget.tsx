@@ -1,7 +1,6 @@
 import {
-  ArrowUpRight,
   ChatCenteredDots,
-  LinkSimple,
+  ImageSquare,
   PaperPlaneTilt,
   Robot,
   X,
@@ -262,19 +261,16 @@ export function StorefrontSupportWidget({
           .slice()
           .sort((left, right) => right.slot - left.slot)
           .map((action) => (
-            <a
+            <div
               className="storefront-support-orb is-custom"
-              href={action.target_url || undefined}
-              target="_blank"
-              rel="noreferrer noopener"
+              role="img"
               aria-label={action.label || t("商家快捷入口")}
               title={action.label || t("商家快捷入口")}
               key={action.slot}
             >
-              {action.image_url ? <img src={action.image_url} alt="" /> : <LinkSimple weight="duotone" />}
+              {action.image_url ? <img src={action.image_url} alt="" /> : <ImageSquare weight="duotone" />}
               <span>{action.label}</span>
-              <ArrowUpRight className="support-action-arrow" weight="bold" />
-            </a>
+            </div>
           ))}
         <button
           type="button"

@@ -2000,8 +2000,13 @@ const english: Record<string, string> = {
     "Could not change the password. Please try again.",
   "客户沟通": "Customer communication",
   "客服管理": "Customer support",
-  "查看商品前台的咨询、人工回复客户，并管理右下角悬浮入口。":
-    "Review storefront inquiries, reply to customers, and manage the floating support actions.",
+  "查看商品前台的客户咨询，并在一个工作区内处理回复与会话状态。":
+    "Review storefront inquiries and handle replies and conversation status in one workspace.",
+  "个人中心": "Personal center",
+  "我的": "Me",
+  "个人设置": "Personal settings",
+  "集中管理常用账户入口与商品前台展示设置。":
+    "Manage frequently used account entries and storefront display settings in one place.",
   "客服管理模块": "Customer support sections",
   "客户会话": "Customer conversations",
   "有未读消息": "Unread messages",
@@ -2053,25 +2058,33 @@ const english: Record<string, string> = {
   "正在加载消息": "Loading messages",
   "正在打开会话": "Opening conversation",
   "正在加载悬浮球设置": "Loading floating action settings",
+  "悬浮球设置加载失败": "Could not load floating action settings",
   "客服悬浮球": "Support floating actions",
   "前台右下角入口": "Storefront bottom-right actions",
-  "第一个客服球固定展示；另外两个入口可独立设置图片、链接和显隐。 ":
-    "The support action is always available. Configure images, links, and visibility for the other two actions.",
+  "第一个客服球固定展示；另外两个入口可独立设置图片、标题和显隐。 ":
+    "The support action is always available. Configure images, titles, and visibility for the other two actions.",
   "悬浮球预览": "Floating action preview",
   "客服欢迎语": "Support welcome message",
+  "请填写客服欢迎语。": "Enter a support welcome message.",
+  "请为第 {slot} 个悬浮球填写标题。":
+    "Enter a title for floating action {slot}.",
+  "请为第 {slot} 个悬浮球上传或填写图片。":
+    "Upload or enter an image for floating action {slot}.",
   "客户首次打开对话框时会看到这段内容；AI 自动回复暂未启用。 ":
     "Visitors see this when they first open the chat. AI auto-replies are not enabled yet.",
   "前台已显示": "Visible on storefront",
   "前台已隐藏": "Hidden on storefront",
-  "入口名称": "Action name",
+  "自定义悬浮球 {slot}": "Custom floating action {slot}",
+  "悬浮球标题": "Floating action title",
   "例如：WhatsApp": "e.g. WhatsApp",
-  "点击跳转链接": "Destination URL",
   "外链图片（选填）": "External image (optional)",
   "填写后优先使用外链图片；留空则使用已上传图片。 ":
     "An external image takes priority. Leave this blank to use the uploaded image.",
   "替换已上传图片": "Replace uploaded image",
   "上传图片": "Upload image",
   "已保存并更新前台": "Saved and updated on storefront",
+  "设置保存失败": "Could not save settings",
+  "图片上传失败": "Could not upload the image",
   "保存中": "Saving",
   "保存设置": "Save settings",
   "正在加载": "Loading",

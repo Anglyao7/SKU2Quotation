@@ -22,6 +22,7 @@ import {
   Tag,
   Translate,
   TreeStructure,
+  UserCircle,
   UserGear,
   UsersThree,
   Warehouse,
@@ -68,7 +69,7 @@ const navigationGroups = [
     items: [
       { to: "/console/inventory", label: "进销存", mobileLabel: "库存", icon: Warehouse, permissions: ["inventory.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/announcements", label: "公告管理", mobileLabel: "公告", icon: Megaphone, permissions: ["announcement.manage"], platformAdminOnly: false, mobilePrimary: false },
-      { to: "/console/support", label: "客服管理", mobileLabel: "客服", icon: Headset, permissions: ["support.view", "support.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/support", label: "客服管理", mobileLabel: "客服", icon: Headset, permissions: ["support.view"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {
@@ -90,6 +91,7 @@ const navigationGroups = [
   {
     label: "设置",
     items: [
+      { to: "/console/personal-center", label: "个人中心", mobileLabel: "我的", icon: UserCircle, permissions: ["support.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/customer-accounts", label: "子账号管理", mobileLabel: "子账号", icon: UsersThree, permissions: ["customer_portal.subaccount_manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/system/permissions", label: "成员与权限", mobileLabel: "权限", icon: Key, permissions: ["system.user_manage", "system.role_manage"], platformAdminOnly: false, mobilePrimary: false },
     ],

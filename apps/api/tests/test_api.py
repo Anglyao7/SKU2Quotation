@@ -1036,7 +1036,6 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
                     "slot": 2,
                     "visible": True,
                     "label": "WhatsApp",
-                    "target_url": "https://example.test/contact",
                     "external_image_url": "https://example.test/whatsapp.png",
                 },
                 {"slot": 3, "visible": False},

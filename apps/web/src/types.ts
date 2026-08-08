@@ -46,7 +46,6 @@ export interface StorefrontSupportAction {
   slot: 2 | 3;
   visible: boolean;
   label?: string | null;
-  target_url?: string | null;
   external_image_url?: string | null;
   image_url?: string | null;
   has_uploaded_image?: boolean;

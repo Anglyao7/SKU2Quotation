@@ -14,6 +14,7 @@ const preloads: Record<string, () => Promise<unknown>> = {
   "/console/quotes": () => import("./pages/QuotesPage"),
   "/console/quote-templates": () => import("./pages/QuoteTemplatesPage"),
   "/console/customer-accounts": () => import("./pages/CustomerAccountsPage"),
+  "/console/personal-center": () => import("./pages/PersonalCenterPage"),
   "/console/system/permissions": () => import("./pages/PermissionsPage"),
   "/console/system/monitoring": () => import("./pages/SystemMonitoringPage"),
   "/console/system/translation": () => import("./pages/TranslationApiSettingsPage"),

@@ -60,6 +60,7 @@ const LanguagePackagesPage = recoverableLazy(() => import("./core/pages/Language
 const StorefrontAnalyticsPage = recoverableLazy(() => import("./core/pages/StorefrontAnalyticsPage").then((module) => ({ default: module.StorefrontAnalyticsPage })));
 const AnnouncementsPage = recoverableLazy(() => import("./core/pages/AnnouncementsPage").then((module) => ({ default: module.AnnouncementsPage })));
 const SupportCenterPage = recoverableLazy(() => import("./core/pages/SupportCenterPage").then((module) => ({ default: module.SupportCenterPage })));
+const PersonalCenterPage = recoverableLazy(() => import("./core/pages/PersonalCenterPage").then((module) => ({ default: module.PersonalCenterPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
 const QuoteTemplatesPage = recoverableLazy(() => import("./core/pages/QuoteTemplatesPage").then((module) => ({ default: module.QuoteTemplatesPage })));
@@ -281,12 +282,13 @@ const router = createBrowserRouter([{
         { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
+        { path: "personal-center", element: <PermissionGate anyOf={["support.settings_manage"]}><PersonalCenterPage /></PermissionGate> },
         { path: "system/permissions", element: <PermissionsPage /> },
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "system/translation", element: <PlatformAdminGate><TranslationApiSettingsPage /></PlatformAdminGate> },
         { path: "analytics", element: <PermissionGate anyOf={["analytics.view"]}><StorefrontAnalyticsPage /></PermissionGate> },
         { path: "announcements", element: <PermissionGate anyOf={["announcement.manage"]}><AnnouncementsPage /></PermissionGate> },
-        { path: "support", element: <PermissionGate anyOf={["support.view", "support.settings_manage"]}><SupportCenterPage /></PermissionGate> },
+        { path: "support", element: <PermissionGate anyOf={["support.view"]}><SupportCenterPage /></PermissionGate> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
         { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },
