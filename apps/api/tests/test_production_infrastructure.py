@@ -254,7 +254,18 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
     environment = services["api"]["environment"]
     assert environment["APP_ENV"] == "production"
     assert environment["ATC_RUNTIME_PROFILE"] == "compact"
-    assert environment["OBJECT_STORAGE_BACKEND"] == "local"
+    assert environment["OBJECT_STORAGE_BACKEND"] == "${OBJECT_STORAGE_BACKEND:-local}"
+    assert environment["OBJECT_STORAGE_BUCKET"] == "${OBJECT_STORAGE_BUCKET:-}"
+    assert environment["OBJECT_STORAGE_ENDPOINT_URL"] == (
+        "${OBJECT_STORAGE_ENDPOINT_URL:-}"
+    )
+    assert environment["OBJECT_STORAGE_REGION"] == "${OBJECT_STORAGE_REGION:-auto}"
+    assert environment["OBJECT_STORAGE_ACCESS_KEY_ID"] == (
+        "${OBJECT_STORAGE_ACCESS_KEY_ID:-}"
+    )
+    assert environment["OBJECT_STORAGE_SECRET_ACCESS_KEY"] == (
+        "${OBJECT_STORAGE_SECRET_ACCESS_KEY:-}"
+    )
     assert environment["FILE_SCANNER_PROFILE"] == "restricted"
     assert environment["FILE_WORKER_INLINE"] == "true"
     assert "atc_scheduler:" in environment["TENANT_DIRECTORY_DATABASE_URL"]
