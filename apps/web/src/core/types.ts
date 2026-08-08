@@ -547,7 +547,6 @@ export interface SupportActionSettings {
   slot: 2 | 3;
   visible: boolean;
   label?: string;
-  targetUrl?: string;
   externalImageUrl?: string;
   imageUrl?: string;
   hasUploadedImage: boolean;

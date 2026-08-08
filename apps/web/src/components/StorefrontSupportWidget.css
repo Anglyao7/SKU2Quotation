@@ -52,18 +52,7 @@
 .storefront-support-orb svg { width: 24px; height: 24px; }
 .storefront-support-orb > span { display: none; }
 .storefront-support-orb img { width: 100%; height: 100%; object-fit: cover; }
-.storefront-support-orb.is-custom { background: var(--color-panel-solid); color: var(--gray-12); border-color: var(--gray-a5); }
-.storefront-support-orb .support-action-arrow {
-  position: absolute;
-  right: 3px;
-  top: 3px;
-  width: 14px;
-  height: 14px;
-  padding: 2px;
-  border-radius: 999px;
-  color: white;
-  background: rgba(15, 23, 42, 0.62);
-}
+.storefront-support-orb.is-custom { cursor: default; background: var(--color-panel-solid); color: var(--gray-12); border-color: var(--gray-a5); }
 
 .storefront-support-panel {
   width: min(390px, calc(100vw - 28px));
