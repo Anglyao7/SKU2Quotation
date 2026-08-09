@@ -13,7 +13,6 @@ import {
   FileXls,
   GlobeHemisphereWest,
   Headset,
-  Key,
   Megaphone,
   Pulse,
   Robot,
@@ -96,7 +95,6 @@ const navigationGroups = [
     items: [
       { to: "/console/personal-center", label: "个人中心", mobileLabel: "我的", icon: UserCircle, permissions: ["support.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/customer-accounts", label: "子账号管理", mobileLabel: "子账号", icon: UsersThree, permissions: ["customer_portal.subaccount_manage"], platformAdminOnly: false, mobilePrimary: false },
-      { to: "/console/system/permissions", label: "成员与权限", mobileLabel: "权限", icon: Key, permissions: ["system.user_manage", "system.role_manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
 ];
@@ -134,10 +132,8 @@ export function ConsoleLayout() {
   const visibleNavigation = visibleGroups.flatMap((group) => group.items);
   const mobilePrimary = visibleNavigation.filter((item) => item.mobilePrimary);
   const mobileMore = visibleNavigation.filter((item) => !item.mobilePrimary);
-  const accessManagementVisible = visibleNavigation.some((item) => item.to === "/console/system/permissions");
   const mobileMoreActive = mobileMore.some((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
-    || location.pathname.startsWith("/console/account")
-    || (accessManagementVisible && location.pathname.startsWith("/console/system/permissions"));
+    || location.pathname.startsWith("/console/account");
   const storefrontPath = activeTenantSlug ? `/${encodeURIComponent(activeTenantSlug)}` : "/";
   const activeTenant = useMemo<Tenant | undefined>(() => activeTenantId ? { id: activeTenantId, name: profile?.context.tenantName ?? t("当前工作区"), slug: activeTenantSlug, active: true, status: "active" } : undefined, [activeTenantId, activeTenantSlug, profile?.context.tenantName, t]);
 
@@ -271,7 +267,6 @@ export function ConsoleLayout() {
                 </div>
               </DropdownMenu.Label>
               <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />{t("账户与安全")}</Link></DropdownMenu.Item>
-              {accessManagementVisible ? <DropdownMenu.Item asChild><Link to="/console/system/permissions"><Key size={17} />{t("成员与权限")}</Link></DropdownMenu.Item> : null}
               <DropdownMenu.Item asChild><Link to={storefrontPath}><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item color="red" onSelect={() => void logout()}><SignOut size={17} />{t("退出登录")}</DropdownMenu.Item>

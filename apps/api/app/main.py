@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import SessionLocal, init_database
 from .routers.auth import router as auth_router
 from .routers.announcements import router as announcements_router
-from .routers.access_control import router as access_control_router
 from .routers.health import router as health_router
 from .routers.image_intelligence import router as image_intelligence_router
 from .routers.inventory import router as inventory_router
@@ -54,7 +53,6 @@ def create_app() -> FastAPI:
         health_router,
         auth_router,
         announcements_router,
-        access_control_router,
         legacy_operations_router,
         product_intelligence_router,
         product_center_router,

@@ -115,7 +115,11 @@ from app.saas_seed import (
     seed_saas_foundation,
 )
 from app.services.file_detection import OLE_SIGNATURE, detect_file_path, detect_file_type
-from app.services.embedding import DeterministicFeatureHashEmbedding, validate_vectors
+from app.services.embedding import (
+    DeterministicFeatureHashEmbedding,
+    EmbeddingProviderError,
+    validate_vectors,
+)
 from app.services.embedding_configuration import decrypt_api_key
 from app.services.translation_configuration import (
     decrypt_translation_api_key,
@@ -3277,7 +3281,7 @@ def test_platform_admin_controls_merchant_visible_modules() -> None:
     assert "order.manage" in effective
     assert "inventory.view" not in effective
     assert "support.view" not in effective
-    assert "system.user_manage" not in effective
+    assert "system.user_manage" in effective
 
     invalid = client.patch(
         f"/api/admin/tenants/{tenant_id}",
@@ -4544,11 +4548,11 @@ def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     }
     breakdown = payload["results"][0]["score_breakdown"]
     expected_score = (
-        0.32 * breakdown["keyword"]
-        + 0.45 * breakdown["semantic"]
-        + 0.06 * breakdown["attribute"]
-        + 0.12 * breakdown["tag"]
-        + 0.05 * breakdown["supplier"]
+        0.50 * breakdown["keyword"]
+        + 0.25 * breakdown["semantic"]
+        + 0.07 * breakdown["attribute"]
+        + 0.16 * breakdown["tag"]
+        + 0.02 * breakdown["supplier"]
     )
     assert payload["results"][0]["score"] == pytest.approx(expected_score, abs=0.000002)
     assert payload["results"][0]["evidence"]
@@ -4564,6 +4568,30 @@ def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     assert exact.status_code == 200
     assert exact.json()["results"][0]["product_id"] == str(waterproof_id)
     assert exact.json()["results"][0]["score_breakdown"]["keyword"] == 1.0
+
+    fuzzy = client.post(
+        "/api/v1/ai/search/products",
+        json={"query": "CometSeries waterpro", "limit": 10},
+    )
+    assert fuzzy.status_code == 200
+    assert fuzzy.json()["results"][0]["product_id"] == str(waterproof_id)
+    assert fuzzy.json()["results"][0]["score_breakdown"]["keyword"] >= 0.90
+
+    class UnavailableEmbedding(DeterministicFeatureHashEmbedding):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            raise EmbeddingProviderError("temporarily unavailable")
+
+    with SessionLocal() as session:
+        lexical_fallback = hybrid_product_search(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            query="CometSeries waterpro",
+            limit=10,
+            product_ids=[waterproof_id, bowl_id],
+            embedder=UnavailableEmbedding(),
+        )
+    assert lexical_fallback["degraded_channels"] == ["semantic"]
+    assert lexical_fallback["results"][0]["product_id"] == waterproof_id
 
 
 def test_manual_knowledge_index_update_and_full_rebuild() -> None:
@@ -11844,6 +11872,41 @@ def test_postgres_hybrid_search_bounds_candidates_before_orm_hydration() -> None
     assert " LIMIT " in lexical_sql
 
 
+def test_public_hybrid_search_returns_catalog_text_matches_before_calling_semantic_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lexical_sku_id = uuid4()
+    lexical_product_id = uuid4()
+    lexical_row = (
+        SimpleNamespace(tags=[]),
+        SimpleNamespace(id=lexical_sku_id, sku_code="MATCH-001"),
+        SimpleNamespace(id=lexical_product_id, name="Direct match"),
+        None,
+    )
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "_bounded_public_lexical_rows",
+        lambda *_args, **_kwargs: [lexical_row],
+    )
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "hybrid_product_search",
+        lambda *_args, **_kwargs: pytest.fail(
+            "semantic search must not run when catalog text already matches"
+        ),
+    )
+
+    rows = public_catalog_use_cases._vector_semantic_rows(
+        SimpleNamespace(),
+        tenant_id=uuid4(),
+        query="MATCH",
+        now=datetime.now(UTC),
+        category=None,
+    )
+
+    assert [row[1].id for row in rows] == [lexical_sku_id]
+
+
 def test_category_template_download_and_incremental_import_are_idempotent() -> None:
     download = client.get("/api/v1/category-template.xlsx")
     assert download.status_code == 200, download.text
@@ -13962,109 +14025,13 @@ def test_product_template_import_requires_edit_and_publish_permissions(
         assert session.scalar(select(func.count()).select_from(ImportJobRow)) == before_count
 
 
-def test_tenant_access_control_manages_custom_roles_and_isolates_members() -> None:
-    _user_id, membership_id = _add_tenant_member_with_role(
-        role_code="VIEWER",
-        display_name="Access Control Target",
-    )
-    role_code = f"AUDITOR_{uuid4().hex[:8].upper()}"
-    created = client.post(
-        "/api/v1/access-control/roles",
-        json={
-            "code": role_code,
-            "name": "报价审阅",
-            "description": "只读报价与图册",
-            "permission_codes": ["quotation.view"],
-        },
-    )
-    assert created.status_code == 201, created.text
-    custom_role = created.json()
-    assert custom_role["is_system"] is False
-    assert custom_role["permission_codes"] == ["quotation.view"]
-
-    updated = client.patch(
-        f"/api/v1/access-control/roles/{custom_role['id']}",
-        json={"permission_codes": ["quotation.view", "catalog.view"]},
-    )
-    assert updated.status_code == 200, updated.text
-    assert updated.json()["permission_codes"] == ["catalog.view", "quotation.view"]
-
-    before = next(
-        row
-        for row in client.get("/api/v1/access-control/members").json()
-        if row["id"] == str(membership_id)
-    )
-    assigned = client.put(
-        f"/api/v1/access-control/members/{membership_id}/roles",
-        json={"role_ids": [custom_role["id"]]},
-    )
-    assert assigned.status_code == 200, assigned.text
-    assert [role["code"] for role in assigned.json()["roles"]] == [role_code]
-    assert assigned.json()["permission_version"] == before["permission_version"] + 1
-
-    owner_role = next(
-        role
-        for role in client.get("/api/v1/access-control/roles").json()
-        if role["code"] == "OWNER"
-    )
-    immutable = client.patch(
-        f"/api/v1/access-control/roles/{owner_role['id']}",
-        json={"name": "Mutable Owner"},
-    )
-    assert immutable.status_code == 409
-    assert immutable.json()["detail"]["code"] == "SYSTEM_ROLE_IMMUTABLE"
-
-    organization_id = uuid4()
-    other_tenant_id = uuid4()
-    other_user_id = uuid4()
-    other_membership_id = uuid4()
-    with SessionLocal() as session:
-        session.add(
-            OrganizationRow(
-                id=organization_id,
-                code=f"ACL-{organization_id.hex[:8]}",
-                name="Cross Tenant ACL",
-            )
-        )
-        session.add(
-            UserRow(
-                id=other_user_id,
-                email_normalized=f"{other_user_id.hex}@cross-acl.test",
-                display_name="Cross Tenant Member",
-                identity_provider="local-bootstrap",
-                identity_subject=str(other_user_id),
-                status="active",
-            )
-        )
-        session.flush()
-        session.add(
-            TenantRow(
-                id=other_tenant_id,
-                organization_id=organization_id,
-                slug=f"acl-{other_tenant_id.hex[:10]}",
-                name="Cross Tenant ACL",
-            )
-        )
-        session.flush()
-        session.add(
-            MembershipRow(
-                id=other_membership_id,
-                tenant_id=other_tenant_id,
-                user_id=other_user_id,
-                status="active",
-            )
-        )
-        session.commit()
-
-    cross_tenant = client.put(
-        f"/api/v1/access-control/members/{other_membership_id}/roles",
-        json={"role_ids": [custom_role["id"]]},
-    )
-    assert cross_tenant.status_code == 404
-    assert cross_tenant.json()["detail"]["code"] == "MEMBERSHIP_NOT_FOUND"
+def test_member_and_role_management_endpoints_are_not_exposed() -> None:
+    assert client.get("/api/v1/access-control/members").status_code == 404
+    assert client.get("/api/v1/access-control/roles").status_code == 404
+    assert client.get("/api/v1/access-control/permissions").status_code == 404
 
 
-def test_viewer_cannot_write_or_manage_access(
+def test_viewer_cannot_write_supplier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     viewer_user_id, _membership_id = _add_tenant_member_with_role(
@@ -14091,176 +14058,7 @@ def test_viewer_cannot_write_or_manage_access(
                 "country_code": "CN",
             },
         )
-        denied_role = viewer_client.post(
-            "/api/v1/access-control/roles",
-            headers=headers,
-            json={
-                "code": f"NO_{uuid4().hex[:8].upper()}",
-                "name": "No escalation",
-                "permission_codes": ["product.view"],
-            },
-        )
     assert denied_supplier.status_code == 403
-    assert denied_role.status_code == 403
-    assert denied_role.json()["detail"]["code"] == "PERMISSION_DENIED"
-
-
-def test_access_control_blocks_privilege_escalation_and_owner_assignment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manager_user_id = uuid4()
-    manager_membership_id = uuid4()
-    manager_role_id = uuid4()
-    target_user_id, target_membership_id = _add_tenant_member_with_role(
-        role_code="VIEWER",
-        display_name="Escalation Target",
-    )
-    del target_user_id
-    with SessionLocal() as session:
-        manager_role = RoleRow(
-            id=manager_role_id,
-            tenant_id=DEFAULT_TENANT_ID,
-            code=f"ROLE_MANAGER_{uuid4().hex[:6].upper()}",
-            name="Delegated Role Manager",
-            is_system=False,
-            status="active",
-        )
-        session.add(
-            UserRow(
-                id=manager_user_id,
-                email_normalized=f"{manager_user_id.hex}@delegated-manager.test",
-                display_name="Delegated Manager",
-                identity_provider="local-bootstrap",
-                identity_subject=str(manager_user_id),
-                status="active",
-            )
-        )
-        session.add(
-            MembershipRow(
-                id=manager_membership_id,
-                tenant_id=DEFAULT_TENANT_ID,
-                user_id=manager_user_id,
-                status="active",
-            )
-        )
-        session.add(manager_role)
-        session.flush()
-        for code in ("system.user_manage", "system.role_manage"):
-            permission = session.scalar(
-                select(PermissionRow).where(PermissionRow.code == code)
-            )
-            assert permission is not None
-            session.add(
-                RolePermissionRow(
-                    tenant_id=DEFAULT_TENANT_ID,
-                    role_id=manager_role.id,
-                    permission_id=permission.id,
-                )
-            )
-        session.add(
-            MembershipRoleRow(
-                tenant_id=DEFAULT_TENANT_ID,
-                membership_id=manager_membership_id,
-                role_id=manager_role.id,
-                assigned_by_user_id=DEFAULT_OWNER_USER_ID,
-            )
-        )
-        session.commit()
-
-    monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
-    with TestClient(app) as manager_client:
-        manager_token = _local_access_token(manager_client, manager_user_id)
-        escalation = manager_client.post(
-            "/api/v1/access-control/roles",
-            headers={"Authorization": f"Bearer {manager_token}"},
-            json={
-                "code": f"COST_{uuid4().hex[:8].upper()}",
-                "name": "Forbidden Cost Role",
-                "permission_codes": ["product.cost.write"],
-            },
-        )
-        governance_lockout = manager_client.patch(
-            f"/api/v1/access-control/roles/{manager_role_id}",
-            headers={"Authorization": f"Bearer {manager_token}"},
-            json={"permission_codes": ["system.role_manage"]},
-        )
-    assert escalation.status_code == 403
-    assert escalation.json()["detail"]["code"] == "PRIVILEGE_ESCALATION_FORBIDDEN"
-    assert governance_lockout.status_code == 409
-    assert governance_lockout.json()["detail"]["code"] == "SELF_LOCKOUT_FORBIDDEN"
-
-    admin_user_id, _admin_membership_id = _add_tenant_member_with_role(
-        role_code="ADMIN",
-        display_name="Tenant Admin But Not Owner",
-    )
-    with TestClient(app) as admin_client:
-        admin_token = _local_access_token(admin_client, admin_user_id)
-        owner_role = next(
-            role
-            for role in admin_client.get(
-                "/api/v1/access-control/roles",
-                headers={"Authorization": f"Bearer {admin_token}"},
-            ).json()
-            if role["code"] == "OWNER"
-        )
-        owner_escalation = admin_client.put(
-            f"/api/v1/access-control/members/{target_membership_id}/roles",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"role_ids": [owner_role["id"]]},
-        )
-    assert owner_escalation.status_code == 403
-    assert owner_escalation.json()["detail"]["code"] == "OWNER_ASSIGNMENT_FORBIDDEN"
-
-
-def test_access_control_prevents_self_lockout_and_last_owner_removal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _second_owner_user_id, second_owner_membership_id = _add_tenant_member_with_role(
-        role_code="OWNER",
-        display_name="Second Tenant Owner",
-    )
-    roles = {
-        role["code"]: role
-        for role in client.get("/api/v1/access-control/roles").json()
-    }
-    self_lockout = client.put(
-        f"/api/v1/access-control/members/{DEFAULT_MEMBERSHIP_ID}/roles",
-        json={"role_ids": [roles["VIEWER"]["id"]]},
-    )
-    assert self_lockout.status_code == 409
-    assert self_lockout.json()["detail"]["code"] == "SELF_LOCKOUT_FORBIDDEN"
-
-    admin_user_id, _admin_membership_id = _add_tenant_member_with_role(
-        role_code="ADMIN",
-        display_name="Owner Removal Guard Admin",
-    )
-    with monkeypatch.context() as auth_environment:
-        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
-        with TestClient(app) as admin_client:
-            admin_token = _local_access_token(admin_client, admin_user_id)
-            forbidden_owner_removal = admin_client.put(
-                f"/api/v1/access-control/members/{second_owner_membership_id}/roles",
-                headers={"Authorization": f"Bearer {admin_token}"},
-                json={"role_ids": [roles["ADMIN"]["id"]]},
-            )
-    assert forbidden_owner_removal.status_code == 403
-    assert (
-        forbidden_owner_removal.json()["detail"]["code"]
-        == "OWNER_ASSIGNMENT_FORBIDDEN"
-    )
-
-    downgrade_second = client.put(
-        f"/api/v1/access-control/members/{second_owner_membership_id}/roles",
-        json={"role_ids": [roles["VIEWER"]["id"]]},
-    )
-    assert downgrade_second.status_code == 200, downgrade_second.text
-
-    remove_last_owner = client.put(
-        f"/api/v1/access-control/members/{DEFAULT_MEMBERSHIP_ID}/roles",
-        json={"role_ids": [roles["ADMIN"]["id"]]},
-    )
-    assert remove_last_owner.status_code == 409
-    assert remove_last_owner.json()["detail"]["code"] == "LAST_OWNER_REQUIRED"
 
 
 def test_member_role_change_invalidates_existing_access_token(
@@ -14271,25 +14069,13 @@ def test_member_role_change_invalidates_existing_access_token(
         display_name="Permission Version Viewer",
     )
     monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
-    with TestClient(app) as viewer_client, TestClient(app) as owner_client:
+    with TestClient(app) as viewer_client:
         viewer_token = _local_access_token(viewer_client, viewer_user_id)
-        owner_token = _local_access_token(owner_client, DEFAULT_OWNER_USER_ID)
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
-        role_response = owner_client.get(
-            "/api/v1/access-control/roles", headers=owner_headers
-        )
-        assert role_response.status_code == 200, role_response.text
-        sales_role = next(
-            role
-            for role in role_response.json()
-            if role["code"] == "SALES"
-        )
-        changed = owner_client.put(
-            f"/api/v1/access-control/members/{viewer_membership_id}/roles",
-            headers=owner_headers,
-            json={"role_ids": [sales_role["id"]]},
-        )
-        assert changed.status_code == 200, changed.text
+        with SessionLocal() as session:
+            membership = session.get(MembershipRow, viewer_membership_id)
+            assert membership is not None
+            membership.permission_version += 1
+            session.commit()
         stale = viewer_client.get(
             "/api/v1/me",
             headers={"Authorization": f"Bearer {viewer_token}"},

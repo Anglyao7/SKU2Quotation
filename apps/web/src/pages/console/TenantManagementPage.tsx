@@ -55,13 +55,13 @@ const TENANT_MODULES: Array<{
   { code: "inquiries", label: "询盘", description: "客户与询盘工作流" },
   { code: "quotations", label: "报价", description: "报价单、模板与订单" },
   { code: "subaccounts", label: "子账号", description: "客户子账号与订货入口" },
-  { code: "team", label: "成员管理", description: "商家内部成员与角色" },
 ];
 
 const DEFAULT_TENANT_MODULES = TENANT_MODULES.map((module) => module.code);
 
 function enabledTenantModules(tenant: Tenant): TenantModuleCode[] {
-  return tenant.enabled_modules ?? DEFAULT_TENANT_MODULES;
+  const enabled = new Set(tenant.enabled_modules ?? DEFAULT_TENANT_MODULES);
+  return DEFAULT_TENANT_MODULES.filter((code) => enabled.has(code));
 }
 
 function apiErrorCode(caught: unknown): string | undefined {

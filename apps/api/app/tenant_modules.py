@@ -14,7 +14,6 @@ TenantModuleCode: TypeAlias = Literal[
     "inquiries",
     "quotations",
     "subaccounts",
-    "team",
 ]
 
 
@@ -28,12 +27,13 @@ TENANT_MODULE_CODES: Final[tuple[TenantModuleCode, ...]] = (
     "inquiries",
     "quotations",
     "subaccounts",
-    "team",
 )
 
 # Permission rows remain the fine-grained authorization source for merchant
 # members.  Tenant modules are the platform-level ceiling: a role can grant an
 # action only when the corresponding module is enabled for that merchant.
+# System permissions are internal account safeguards rather than a merchant
+# feature module, so they remain available to the roles that already own them.
 PERMISSION_MODULE_TO_TENANT_MODULE: Final[dict[str, TenantModuleCode]] = {
     "product": "products",
     "supplier": "products",
@@ -49,8 +49,9 @@ PERMISSION_MODULE_TO_TENANT_MODULE: Final[dict[str, TenantModuleCode]] = {
     "quotation": "quotations",
     "order": "quotations",
     "customer_portal": "subaccounts",
-    "system": "team",
 }
+
+ALWAYS_ENABLED_PERMISSION_MODULES: Final[frozenset[str]] = frozenset({"system"})
 
 
 def default_tenant_modules() -> list[TenantModuleCode]:
@@ -72,7 +73,7 @@ def enabled_permission_modules(
     value: object,
 ) -> frozenset[str]:
     selected = frozenset(normalized_tenant_modules(value))
-    return frozenset(
+    return ALWAYS_ENABLED_PERMISSION_MODULES | frozenset(
         permission_module
         for permission_module, tenant_module in PERMISSION_MODULE_TO_TENANT_MODULE.items()
         if tenant_module in selected

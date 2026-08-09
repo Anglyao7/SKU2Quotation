@@ -54,7 +54,6 @@ const CategoriesPage = recoverableLazy(() => import("./core/pages/CategoriesPage
 const CoreDashboardPage = recoverableLazy(() => import("./core/pages/DashboardPage").then((module) => ({ default: module.CoreDashboardPage })));
 const InquiryPage = recoverableLazy(() => import("./core/pages/InquiryPage").then((module) => ({ default: module.InquiryPage })));
 const InventoryPage = recoverableLazy(() => import("./core/pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
-const PermissionsPage = recoverableLazy(() => import("./core/pages/PermissionsPage").then((module) => ({ default: module.PermissionsPage })));
 const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMonitoringPage").then((module) => ({ default: module.SystemMonitoringPage })));
 const ConfigurationCenterPage = recoverableLazy(() => import("./core/pages/ConfigurationCenterPage").then((module) => ({ default: module.ConfigurationCenterPage })));
 const LanguagePackagesPage = recoverableLazy(() => import("./core/pages/LanguagePackagesPage").then((module) => ({ default: module.LanguagePackagesPage })));
@@ -307,7 +306,6 @@ const router = createBrowserRouter([{
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "personal-center", element: <PermissionGate anyOf={["support.settings_manage"]}><PersonalCenterPage /></PermissionGate> },
-        { path: "system/permissions", element: <PermissionGate anyOf={["system.user_manage", "system.role_manage"]}><PermissionsPage /></PermissionGate> },
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "system/configuration", element: <PlatformAdminGate><ConfigurationCenterPage /></PlatformAdminGate> },
         { path: "system/translation", element: <Navigate to="/console/system/configuration?section=translation" replace /> },
@@ -335,7 +333,6 @@ const router = createBrowserRouter([{
   { path: "/inquiries", element: <Navigate to="/console/inquiries" replace /> },
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },
   { path: "/account", element: <Navigate to="/console/account" replace /> },
-  { path: "/system/permissions", element: <Navigate to="/console/system/permissions" replace /> },
   {
     path: "/:tenantSlug/products/:productId",
     loader: storefrontProductLoader,
