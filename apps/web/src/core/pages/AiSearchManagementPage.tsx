@@ -6,13 +6,11 @@ import {
   Heading,
   Progress,
   Text,
-  TextField,
 } from "@radix-ui/themes";
 import {
   ArrowClockwise,
   ArrowsClockwise,
   Database,
-  FloppyDisk,
   MagnifyingGlass,
   Sparkle,
 } from "@phosphor-icons/react";
@@ -21,22 +19,18 @@ import {
   useEffect,
   useMemo,
   useState,
-  type FormEvent,
 } from "react";
 import { Link } from "react-router-dom";
 import {
-  getEmbeddingSettings,
   getKnowledgeIndexJob,
   getKnowledgeIndexStatus,
   getLatestKnowledgeIndexJob,
   startKnowledgeIndexJob,
-  updateEmbeddingSettings,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type {
-  EmbeddingSettings,
   KnowledgeIndexJob,
   KnowledgeIndexStatus,
 } from "../types";
@@ -44,10 +38,9 @@ import type {
 const ACTIVE_JOB_STATUSES = new Set(["QUEUED", "RUNNING"]);
 
 export function AiSearchManagementPage() {
-  const { hasPermission, profile } = useCoreAuth();
+  const { hasPermission } = useCoreAuth();
   const { locale, t } = useLocale();
   const canManageIndex = hasPermission("product.edit");
-  const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const [status, setStatus] = useState<KnowledgeIndexStatus>();
   const [job, setJob] = useState<KnowledgeIndexJob>();
   const [loading, setLoading] = useState(true);
@@ -55,23 +48,6 @@ export function AiSearchManagementPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [rebuildOpen, setRebuildOpen] = useState(false);
-  const [settings, setSettings] = useState<EmbeddingSettings>();
-  const [settingsError, setSettingsError] = useState("");
-  const [settingsSaving, setSettingsSaving] = useState(false);
-  const [baseUrl, setBaseUrl] = useState("");
-  const [modelName, setModelName] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [dimensions, setDimensions] = useState("1024");
-  const [timeoutSeconds, setTimeoutSeconds] = useState("20");
-
-  const applySettings = useCallback((next: EmbeddingSettings) => {
-    setSettings(next);
-    setBaseUrl(next.baseUrl ?? "");
-    setModelName(next.modelName);
-    setDimensions(String(next.dimensions));
-    setTimeoutSeconds(String(next.timeoutSeconds));
-    setApiKey("");
-  }, []);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -94,27 +70,9 @@ export function AiSearchManagementPage() {
     }
   }, [t]);
 
-  const loadSettings = useCallback(async () => {
-    if (!isPlatformAdmin) return;
-    setSettingsError("");
-    try {
-      applySettings(await getEmbeddingSettings());
-    } catch (reason) {
-      setSettingsError(
-        reason instanceof Error
-          ? reason.message
-          : t("Embedding 配置读取失败"),
-      );
-    }
-  }, [applySettings, isPlatformAdmin, t]);
-
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
-
-  useEffect(() => {
-    void loadSettings();
-  }, [loadSettings]);
 
   const jobIsActive = Boolean(job && ACTIVE_JOB_STATUSES.has(job.status));
 
@@ -186,36 +144,6 @@ export function AiSearchManagementPage() {
       );
       setStarting("");
       await loadStatus();
-    }
-  };
-
-  const saveSettings = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!isPlatformAdmin || settingsSaving) return;
-    setSettingsSaving(true);
-    setSettingsError("");
-    setMessage("");
-    try {
-      const next = await updateEmbeddingSettings({
-        baseUrl: baseUrl.trim(),
-        apiKey: apiKey.trim() || undefined,
-        modelName: modelName.trim(),
-        dimensions: Number(dimensions),
-        timeoutSeconds: Number(timeoutSeconds),
-      });
-      applySettings(next);
-      setMessage(
-        t("Embedding 模型配置已保存；请执行全量重建以使用新模型。"),
-      );
-      setStatus(await getKnowledgeIndexStatus());
-    } catch (reason) {
-      setSettingsError(
-        reason instanceof Error
-          ? reason.message
-          : t("Embedding 配置保存失败"),
-      );
-    } finally {
-      setSettingsSaving(false);
     }
   };
 
@@ -427,138 +355,16 @@ export function AiSearchManagementPage() {
             </section>
             <section>
               <Text size="1" color="gray">
-                {t("当前生效模型")}
+                {t("配置边界")}
               </Text>
-              <dl>
-                <div>
-                  <dt>{t("模型")}</dt>
-                  <dd>{status.modelName}</dd>
-                </div>
-                <div>
-                  <dt>{t("向量维度")}</dt>
-                  <dd>{status.dimensions.toLocaleString(locale)}</dd>
-                </div>
-                <div>
-                  <dt>{t("提供方")}</dt>
-                  <dd>{status.modelProvider}</dd>
-                </div>
-                <div>
-                  <dt>{t("模型版本")}</dt>
-                  <dd>{status.modelVersion}</dd>
-                </div>
-              </dl>
+              <Heading size="4">{t("平台统一托管")}</Heading>
+              <p>
+                {t(
+                  "模型、接口地址与密钥由平台管理员统一维护；商家账号仅管理当前工作区的索引任务。",
+                )}
+              </p>
             </section>
           </div>
-
-          {isPlatformAdmin ? (
-            <Card className="core-embedding-settings">
-              <div className="core-embedding-settings-heading">
-                <div>
-                  <Text size="1" color="gray" as="div">
-                    {t("平台级配置")}
-                  </Text>
-                  <Heading size="4">{t("Embedding 模型")}</Heading>
-                  <Text size="2" color="gray">
-                    {t("仅平台管理员可以修改；配置对所有商家生效。")}
-                  </Text>
-                </div>
-                {settings ? (
-                  <Badge color={settings.source === "database" ? "jade" : "gray"}>
-                    {t(
-                      settings.source === "database"
-                        ? "后台配置"
-                        : settings.source === "environment"
-                          ? "环境变量"
-                          : "本地测试模型",
-                    )}
-                  </Badge>
-                ) : null}
-              </div>
-
-              <form className="core-embedding-settings-form" onSubmit={(event) => void saveSettings(event)}>
-                <label className="core-embedding-field-wide">
-                  <Text size="1" color="gray">{t("Base URL")}</Text>
-                  <TextField.Root
-                    type="url"
-                    value={baseUrl}
-                    onChange={(event) => setBaseUrl(event.target.value)}
-                    placeholder="https://api.example.com/v1"
-                    required
-                  />
-                </label>
-                <label>
-                  <Text size="1" color="gray">{t("模型")}</Text>
-                  <TextField.Root
-                    value={modelName}
-                    onChange={(event) => setModelName(event.target.value)}
-                    placeholder="text-embedding-3-large"
-                    required
-                  />
-                </label>
-                <label>
-                  <Text size="1" color="gray">{t("API Key")}</Text>
-                  <TextField.Root
-                    type="password"
-                    autoComplete="new-password"
-                    value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
-                    placeholder={
-                      settings?.apiKeyConfigured
-                        ? t("已配置 {hint}，留空则保持不变", {
-                            hint: settings.apiKeyHint ?? "",
-                          })
-                        : t("请输入 API Key")
-                    }
-                    required={!settings?.apiKeyConfigured}
-                  />
-                </label>
-                <label>
-                  <Text size="1" color="gray">{t("向量维度")}</Text>
-                  <TextField.Root
-                    type="number"
-                    min="1"
-                    max="2000"
-                    value={dimensions}
-                    onChange={(event) => setDimensions(event.target.value)}
-                    required
-                  />
-                </label>
-                <label>
-                  <Text size="1" color="gray">{t("超时（秒）")}</Text>
-                  <TextField.Root
-                    type="number"
-                    min="1"
-                    max="120"
-                    value={timeoutSeconds}
-                    onChange={(event) => setTimeoutSeconds(event.target.value)}
-                    required
-                  />
-                </label>
-                <div className="core-embedding-settings-actions">
-                  <Button
-                    type="submit"
-                    size="3"
-                    disabled={
-                      settingsSaving ||
-                      !baseUrl.trim() ||
-                      !modelName.trim() ||
-                      Number(dimensions) < 1 ||
-                      Number(dimensions) > 2000
-                    }
-                  >
-                    <FloppyDisk />
-                    {t(settingsSaving ? "保存中…" : "保存模型配置")}
-                  </Button>
-                  <Text size="1" color="gray">
-                    {t("密钥加密保存，保存后不会显示明文。")}
-                  </Text>
-                </div>
-              </form>
-              {settingsError ? (
-                <Text size="2" color="red">{settingsError}</Text>
-              ) : null}
-            </Card>
-          ) : null}
         </>
       ) : null}
 
@@ -569,9 +375,8 @@ export function AiSearchManagementPage() {
           </AlertDialog.Title>
           <AlertDialog.Description size="2">
             {t(
-              "系统会使用当前的 {model}，重新向量化当前商家的全部 {count} 个商品。通常仅在更换模型或索引异常时使用。",
+              "系统会重新处理当前商家的全部 {count} 个商品。通常仅在平台升级检索能力或索引异常时使用。",
               {
-                model: status?.modelName ?? "Embedding",
                 count: status
                   ? status.totalProducts.toLocaleString(locale)
                   : "0",

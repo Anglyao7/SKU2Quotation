@@ -57,7 +57,7 @@ const stageCopy: Record<CatalogTranslationJobStage, string> = {
   PREPARING: "核对变更",
   TRANSLATING: "调用翻译 API",
   PACKAGING: "整理语言包",
-  UPLOADING: "上传 Cloudflare",
+  UPLOADING: "上传语言包",
   PAUSED: "翻译已暂停",
   PUBLISHED: "发布完成",
   FAILED: "任务失败",
@@ -276,7 +276,7 @@ export function LanguagePackagesPage() {
           <Text size="2" color="gray">{t("商品资料")}</Text>
           <Heading size="8">{t("多语言与语言包")}</Heading>
           <Text size="2" color="gray">
-            {t("集中管理前台语言、翻译任务与 Cloudflare 语言包。访客下载一次后会保存在当前浏览器。")}
+            {t("集中管理前台语言、翻译任务与云端语言包。访客下载一次后会保存在当前浏览器。")}
           </Text>
         </div>
       </div>
@@ -459,7 +459,7 @@ export function LanguagePackagesPage() {
             <Callout.Root color="red">
               <Callout.Icon><CloudArrowUp /></Callout.Icon>
               <Callout.Text>
-                {t("语言包存储尚未配置，请先在服务器配置 Cloudflare R2。")}
+                {t("语言包存储暂不可用，请联系平台管理员。")}
               </Callout.Text>
             </Callout.Root>
           ) : null}
@@ -478,7 +478,7 @@ export function LanguagePackagesPage() {
             <div><dt>{t("源数据截止")}</dt><dd>{formatDate(status?.package?.sourceCutoffAt)}</dd></div>
             <div><dt>{t("压缩后大小")}</dt><dd>{formatBytes(status?.package?.byteSize)}</dd></div>
             <div><dt>{t("包含内容")}</dt><dd>{status?.package ? `${status.package.productCount} Products · ${status.package.skuCount} SKUs` : "—"}</dd></div>
-            <div><dt>{t("翻译模型")}</dt><dd>{status?.provider || "—"}</dd></div>
+            <div><dt>{t("发布方式")}</dt><dd>{t("云端语言包")}</dd></div>
             <div><dt>{t("浏览器策略")}</dt><dd>{t("IndexedDB 按版本长期保存")}</dd></div>
           </dl>
           <Callout.Root color="blue">

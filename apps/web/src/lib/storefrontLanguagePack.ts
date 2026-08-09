@@ -149,7 +149,7 @@ function validPayload(
   if (!value || typeof value !== "object") return false;
   const payload = value as Partial<CatalogLanguagePack>;
   return payload.schema === "atc-catalog-language-pack"
-    && payload.schema_version === 1
+    && payload.schema_version === 2
     && payload.target_locale === descriptor.target_locale
     && payload.version === descriptor.version
     && Boolean(payload.products && payload.skus && payload.categories);

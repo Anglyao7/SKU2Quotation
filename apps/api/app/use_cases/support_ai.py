@@ -373,7 +373,7 @@ def upload_knowledge_source(
         except Exception as exc:
             raise ApplicationError(
                 "SUPPORT_AI_KNOWLEDGE_STORAGE_UNAVAILABLE",
-                "知识文件上传到对象存储失败，请检查 Cloudflare R2 配置。",
+                "知识文件上传到对象存储失败，请联系平台管理员。",
                 kind="unavailable",
             ) from exc
     now = utcnow()
@@ -623,8 +623,6 @@ def _run_response(session: Session, row: SupportAIRunRow) -> SupportAIRunRespons
         answer=row.answer,
         confidence=float(row.confidence) if row.confidence is not None else None,
         handoff_reason=row.handoff_reason,
-        provider=row.provider,
-        model_name=row.model_name,
         prompt_version=row.prompt_version,
         retrieval_count=row.retrieval_count,
         decision_trace=row.decision_trace,

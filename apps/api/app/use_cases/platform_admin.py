@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
@@ -47,6 +47,7 @@ from ..tenant_slugs import (
     is_reserved_tenant_slug,
     storefront_slug_from_name,
 )
+from ..tenant_modules import normalized_tenant_modules
 
 
 def _require_platform_admin(context: RequestContext) -> None:
@@ -109,6 +110,7 @@ def _summary(
         default_locale=tenant.default_locale,
         default_currency=tenant.default_currency,
         timezone=tenant.timezone,
+        enabled_modules=list(normalized_tenant_modules(tenant.enabled_modules)),
         contact_email=profile.contact_email if profile else None,
         sku_count=sku_count,
         quote_count=quote_count,
@@ -183,6 +185,7 @@ def create_tenant(
         default_locale=request.default_locale,
         default_currency=request.default_currency,
         timezone=request.timezone,
+        enabled_modules=list(request.enabled_modules),
         status="active" if request.active else "suspended",
     )
     session.add(tenant)
@@ -240,6 +243,19 @@ def update_tenant(
         next_slug = tenant.slug
     if request.active is not None:
         tenant.status = "active" if request.active else "suspended"
+    modules_changed = False
+    if "enabled_modules" in request.model_fields_set:
+        if request.enabled_modules is None:
+            raise ApplicationError(
+                "TENANT_MODULES_REQUIRED",
+                "Enabled modules must be a list.",
+                kind="invalid",
+            )
+        requested_modules = list(request.enabled_modules or [])
+        modules_changed = requested_modules != list(
+            normalized_tenant_modules(tenant.enabled_modules)
+        )
+        tenant.enabled_modules = requested_modules
     with _tenant_scope(session, context=context, tenant_id=tenant.id):
         profile = repository.get_public_profile(session, tenant.id)
         if profile is None:
@@ -264,6 +280,16 @@ def update_tenant(
             profile.contact_email = request.contact_email or None
         if request.active is not None:
             profile.publication_status = "PUBLISHED" if request.active else "SUSPENDED"
+        if modules_changed:
+            session.execute(
+                update(MembershipRow)
+                .where(
+                    MembershipRow.tenant_id == tenant.id,
+                    MembershipRow.status.in_(("active", "invited", "suspended")),
+                    MembershipRow.deleted_at.is_(None),
+                )
+                .values(permission_version=MembershipRow.permission_version + 1)
+            )
         session.flush()
     try:
         session.commit()

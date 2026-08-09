@@ -1206,6 +1206,15 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .pagination-row { display: flex; align-items: center; justify-content: center; gap: 16px; padding-top: 4px; }
 .dialog-form { display: grid; gap: 17px; margin-top: 20px; }
 .merchant-dialog { width: min(480px, calc(100vw - 28px)) !important; max-width: 480px !important; }
+.merchant-module-dialog { width: min(760px, calc(100vw - 28px)) !important; max-width: 760px !important; max-height: 88dvh !important; overflow-y: auto; }
+.merchant-module-toolbar { margin-top: 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.merchant-module-toolbar > div { display: flex; align-items: center; gap: var(--control-gap-compact); }
+.merchant-module-grid { margin-top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.merchant-module-option { min-height: 68px; padding: 12px 13px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 11px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-strong); cursor: pointer; transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease; }
+.merchant-module-option:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); transform: translateY(-1px); }
+.merchant-module-option.is-selected { border-color: color-mix(in srgb, var(--accent) 54%, var(--line)); background: var(--accent-soft); }
+.merchant-module-option > button { margin-top: 2px; }
+.merchant-module-option > span { min-width: 0; display: grid; gap: 3px; }
 .form-dialog { width: min(720px, calc(100vw - 28px)) !important; max-width: 720px !important; max-height: 88dvh !important; overflow-y: auto; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--control-gap); margin-top: 6px; }
 
@@ -1524,6 +1533,7 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .mobile-data-card > .rt-Badge { justify-self: start; }
   .mobile-card-heading, .mobile-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
   .mobile-card-footer > div { display: flex; gap: var(--control-gap-compact); }
+  .merchant-module-grid { grid-template-columns: 1fr; }
   .toolbar-row { align-items: stretch; flex-direction: column; }
   .console-search { width: 100%; }
   .login-page { padding: 20px; }

@@ -8,6 +8,11 @@ from uuid import UUID
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from .tenant_slugs import is_reserved_tenant_slug
+from .tenant_modules import (
+    TenantModuleCode,
+    canonical_tenant_module_list,
+    default_tenant_modules,
+)
 
 
 TenantStatus = Literal["active", "suspended", "archived"]
@@ -66,6 +71,7 @@ class PlatformTenantSummary(BaseModel):
     default_locale: str
     default_currency: str
     timezone: str
+    enabled_modules: list[TenantModuleCode]
     contact_email: str | None
     sku_count: int = Field(ge=0)
     quote_count: int = Field(ge=0)
@@ -85,6 +91,7 @@ class PlatformTenantCreate(BaseModel):
     default_locale: str = Field(default="zh-CN", min_length=2, max_length=20)
     default_currency: str = Field(default="CNY", min_length=3, max_length=3)
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    enabled_modules: list[TenantModuleCode] = Field(default_factory=default_tenant_modules)
 
     @field_validator("name", "slug", "contact_email", "default_locale", "timezone", mode="before")
     @classmethod
@@ -103,16 +110,33 @@ class PlatformTenantCreate(BaseModel):
     def normalize_currency(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
 
+    @field_validator("enabled_modules")
+    @classmethod
+    def normalize_modules(
+        cls,
+        value: list[TenantModuleCode],
+    ) -> list[TenantModuleCode]:
+        return canonical_tenant_module_list(value)
+
 
 class PlatformTenantUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     contact_email: str | None = Field(default=None, max_length=320)
     active: bool | None = None
+    enabled_modules: list[TenantModuleCode] | None = None
 
     @field_validator("name", "contact_email", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("enabled_modules")
+    @classmethod
+    def normalize_modules(
+        cls,
+        value: list[TenantModuleCode] | None,
+    ) -> list[TenantModuleCode] | None:
+        return None if value is None else canonical_tenant_module_list(value)
 
 
 class PlatformMemberInvitationCreate(BaseModel):

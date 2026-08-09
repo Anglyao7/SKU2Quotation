@@ -3,6 +3,7 @@ import {
   Badge,
   Button,
   Callout,
+  Checkbox,
   Dialog,
   Heading,
   IconButton,
@@ -18,6 +19,7 @@ import {
   EyeSlash,
   NotePencil,
   Plus,
+  SlidersHorizontal,
   Trash,
   UserPlus,
   WarningCircle,
@@ -32,11 +34,35 @@ import type {
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
   Tenant,
+  TenantModuleCode,
   TenantPayload,
 } from "../../types";
 import type { ConsoleOutletContext } from "./ConsoleLayout";
 
 const LOGIN_EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+const TENANT_MODULES: Array<{
+  code: TenantModuleCode;
+  label: string;
+  description: string;
+}> = [
+  { code: "products", label: "商品中心", description: "SKU、分类、标签、多语言与 AI 搜索" },
+  { code: "analytics", label: "网站监测", description: "访问、国家与商品热度数据" },
+  { code: "inventory", label: "进销存", description: "库存、采购、销售与调拨" },
+  { code: "announcements", label: "公告管理", description: "顶部字幕与富内容公告" },
+  { code: "support", label: "客服管理", description: "客户会话、回复与前台悬浮入口" },
+  { code: "support_ai", label: "AI 智能客服", description: "知识库、自动回复与运行记录" },
+  { code: "inquiries", label: "询盘", description: "客户与询盘工作流" },
+  { code: "quotations", label: "报价", description: "报价单、模板与订单" },
+  { code: "subaccounts", label: "子账号", description: "客户子账号与订货入口" },
+  { code: "team", label: "成员管理", description: "商家内部成员与角色" },
+];
+
+const DEFAULT_TENANT_MODULES = TENANT_MODULES.map((module) => module.code);
+
+function enabledTenantModules(tenant: Tenant): TenantModuleCode[] {
+  return tenant.enabled_modules ?? DEFAULT_TENANT_MODULES;
+}
 
 function apiErrorCode(caught: unknown): string | undefined {
   if (!(caught instanceof ApiError) || !caught.details || typeof caught.details !== "object") return undefined;
@@ -92,6 +118,7 @@ export function TenantManagementPage() {
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Tenant | "new" | null>(null);
   const [ownerSetup, setOwnerSetup] = useState<Tenant | null>(null);
+  const [moduleEditor, setModuleEditor] = useState<Tenant | null>(null);
   const [deleting, setDeleting] = useState<Tenant | null>(null);
 
   const load = useCallback(async () => {
@@ -165,6 +192,7 @@ export function TenantManagementPage() {
                   <Table.ColumnHeaderCell>{t("前台地址")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>SKU</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("报价")}</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>{t("可见模块")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("状态")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("创建时间")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell justify="end">{t("操作")}</Table.ColumnHeaderCell>
@@ -190,6 +218,20 @@ export function TenantManagementPage() {
                       </Table.Cell>
                       <Table.Cell>{tenant.sku_count ?? 0}</Table.Cell>
                       <Table.Cell>{tenant.quote_count ?? 0}</Table.Cell>
+                      <Table.Cell>
+                        <Button
+                          size="1"
+                          variant="soft"
+                          color="gray"
+                          onClick={() => setModuleEditor(tenant)}
+                        >
+                          <SlidersHorizontal size={15} />
+                          {t("{count} / {total} 个", {
+                            count: enabledTenantModules(tenant).length,
+                            total: TENANT_MODULES.length,
+                          })}
+                        </Button>
+                      </Table.Cell>
                       <Table.Cell>
                         <Badge
                           variant="soft"
@@ -286,6 +328,15 @@ export function TenantManagementPage() {
                   </Text>
                   <div className="mobile-card-footer">
                     <div className="page-actions">
+                      <Button
+                        size="1"
+                        variant="soft"
+                        color="gray"
+                        onClick={() => setModuleEditor(tenant)}
+                      >
+                        <SlidersHorizontal />
+                        {t("可见模块 {count}", { count: enabledTenantModules(tenant).length })}
+                      </Button>
                       <Button asChild size="1" variant="soft">
                         <Link to={`/${tenant.slug}`}>{t("查看前台")}</Link>
                       </Button>
@@ -343,6 +394,13 @@ export function TenantManagementPage() {
         }}
         onSaved={refreshAll}
       />
+      <TenantModuleDialog
+        tenant={moduleEditor}
+        onOpenChange={(open) => {
+          if (!open) setModuleEditor(null);
+        }}
+        onSaved={refreshAll}
+      />
       <AlertDialog.Root
         open={Boolean(deleting)}
         onOpenChange={(open) => {
@@ -367,6 +425,128 @@ export function TenantManagementPage() {
         </AlertDialog.Content>
       </AlertDialog.Root>
     </div>
+  );
+}
+
+function TenantModuleDialog({
+  tenant,
+  onOpenChange,
+  onSaved,
+}: {
+  tenant: Tenant | null;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => Promise<void>;
+}) {
+  const { t } = useLocale();
+  const [selected, setSelected] = useState<Set<TenantModuleCode>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!tenant) return;
+    setSelected(new Set(enabledTenantModules(tenant)));
+    setError("");
+  }, [tenant]);
+
+  const toggle = (code: TenantModuleCode, checked: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) next.add(code);
+      else next.delete(code);
+      return next;
+    });
+  };
+
+  const save = async () => {
+    if (!tenant || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const modules = TENANT_MODULES
+        .map((module) => module.code)
+        .filter((code) => selected.has(code));
+      await api.updateTenantModules(tenant.id, modules);
+      await onSaved();
+      onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("模块权限保存失败。"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog.Root open={Boolean(tenant)} onOpenChange={onOpenChange}>
+      <Dialog.Content className="merchant-module-dialog">
+        <Dialog.Title>{t("{name} 的可见模块", { name: tenant?.name ?? "" })}</Dialog.Title>
+        <Dialog.Description>
+          {t("勾选商家后台可以使用的模块。概览、账户安全和商品前台始终保留。")}
+        </Dialog.Description>
+
+        <div className="merchant-module-toolbar">
+          <Text size="2" color="gray">
+            {t("已选择 {count} 个模块", { count: selected.size })}
+          </Text>
+          <div>
+            <Button
+              type="button"
+              size="1"
+              variant="ghost"
+              color="gray"
+              onClick={() => setSelected(new Set(DEFAULT_TENANT_MODULES))}
+            >
+              {t("全选")}
+            </Button>
+            <Button
+              type="button"
+              size="1"
+              variant="ghost"
+              color="gray"
+              onClick={() => setSelected(new Set())}
+            >
+              {t("清空")}
+            </Button>
+          </div>
+        </div>
+
+        <div className="merchant-module-grid">
+          {TENANT_MODULES.map((module) => {
+            const checked = selected.has(module.code);
+            return (
+              <label
+                className={checked ? "merchant-module-option is-selected" : "merchant-module-option"}
+                key={module.code}
+              >
+                <Checkbox
+                  checked={checked}
+                  onCheckedChange={(value) => toggle(module.code, value === true)}
+                />
+                <span>
+                  <Text as="div" size="2" weight="medium">{t(module.label)}</Text>
+                  <Text as="div" size="1" color="gray">{t(module.description)}</Text>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        {error ? (
+          <Callout.Root color="red">
+            <Callout.Icon><WarningCircle /></Callout.Icon>
+            <Callout.Text>{error}</Callout.Text>
+          </Callout.Root>
+        ) : null}
+
+        <div className="dialog-actions">
+          <Dialog.Close>
+            <Button type="button" variant="soft" color="gray">{t("取消")}</Button>
+          </Dialog.Close>
+          <Button type="button" loading={saving} onClick={() => void save()}>
+            {t("保存可见模块")}
+          </Button>
+        </div>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 

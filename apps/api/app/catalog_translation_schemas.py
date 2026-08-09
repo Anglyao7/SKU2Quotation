@@ -42,8 +42,6 @@ class CatalogTranslationJobResponse(BaseModel):
     progress_percent: float = Field(ge=0, le=100)
     current_sku_id: UUID | None = None
     current_sku_name: str | None = None
-    provider: str
-    provider_version: str
     failure_details: list[CatalogTranslationFailure] = Field(default_factory=list)
     error_message: str | None = None
     package_version: int | None = Field(default=None, ge=1)
@@ -66,14 +64,11 @@ class CatalogLanguagePackResponse(BaseModel):
     version: int = Field(ge=1)
     download_url: str
     content_sha256: str = Field(min_length=64, max_length=64)
-    source_digest: str = Field(min_length=64, max_length=64)
     content_encoding: str = "gzip"
     byte_size: int = Field(ge=0)
     product_count: int = Field(ge=0)
     sku_count: int = Field(ge=0)
     category_count: int = Field(ge=0)
-    provider: str
-    provider_version: str
     source_cutoff_at: datetime
     published_at: datetime
     last_full_translation_at: datetime | None = None
@@ -82,15 +77,12 @@ class CatalogLanguagePackResponse(BaseModel):
 class CatalogTranslationStatusResponse(BaseModel):
     source_locale: str
     target_locale: str
-    provider: str
-    provider_version: str
     provider_configured: bool
     total_skus: int = Field(ge=0)
     translated_skus: int = Field(ge=0)
     stale_skus: int = Field(ge=0)
     pending_skus: int = Field(ge=0)
     package_outdated: bool = False
-    package_storage_backend: str
     package_storage_configured: bool
     available_locales: list[str]
     package: CatalogLanguagePackResponse | None = None

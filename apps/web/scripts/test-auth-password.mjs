@@ -91,3 +91,24 @@ assert.equal(
 );
 
 console.log("Password login error mapping tests passed");
+
+const timingSource = await fs.readFile(
+  new URL("../src/core/authSessionTiming.ts", import.meta.url),
+  "utf8",
+);
+const compiledTimingSource = ts.transpileModule(timingSource, {
+  compilerOptions: {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ES2022,
+  },
+}).outputText;
+const timingModuleUrl = `data:text/javascript;base64,${Buffer.from(compiledTimingSource).toString("base64")}`;
+const { accessTokenRefreshDelayMs } = await import(timingModuleUrl);
+
+assert.equal(accessTokenRefreshDelayMs(600), 540_000);
+assert.equal(accessTokenRefreshDelayMs(30), 25_000);
+assert.equal(accessTokenRefreshDelayMs(3), 1_500);
+assert.equal(accessTokenRefreshDelayMs(0), 0);
+assert.equal(accessTokenRefreshDelayMs(Number.NaN), 0);
+
+console.log("Proactive access-token refresh timing tests passed");

@@ -258,7 +258,7 @@ def upload_action_image(
     except Exception as exc:
         raise ApplicationError(
             "SUPPORT_IMAGE_STORAGE_UNAVAILABLE",
-            "图片上传到对象存储失败，请检查 Cloudflare R2 配置。",
+            "图片上传到对象存储失败，请联系平台管理员。",
             kind="unavailable",
         ) from exc
     media = MediaObjectRow(

@@ -140,17 +140,6 @@
 .core-ai-index-details > section + section { border-left: 1px solid var(--core-line); }
 .core-ai-index-details h2 { margin-top: 5px; }
 .core-ai-index-details p { max-width: 64ch; margin: 9px 0 0; color: var(--core-muted); line-height: 1.7; }
-.core-ai-index-details dl { margin: 8px 0 0; display: grid; gap: 0; }
-.core-ai-index-details dl > div { padding: 9px 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-top: 1px solid var(--core-line); }
-.core-ai-index-details dt { color: var(--core-muted); font-size: 12px; }
-.core-ai-index-details dd { margin: 0; color: var(--core-ink); font-size: 13px; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
-.core-embedding-settings { padding: clamp(20px, 3vw, 30px) !important; display: grid; gap: 22px; }
-.core-embedding-settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-.core-embedding-settings-heading > div { min-width: 0; display: grid; gap: 5px; }
-.core-embedding-settings-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
-.core-embedding-settings-form label { min-width: 0; display: grid; align-content: start; gap: 7px; }
-.core-embedding-field-wide { grid-column: 1 / -1; }
-.core-embedding-settings-actions { grid-column: 1 / -1; padding-top: 3px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; }
 .core-translation-api-card { padding: clamp(20px, 3vw, 32px) !important; display: grid; gap: 24px; background:
   radial-gradient(circle at 96% 0%, color-mix(in srgb, var(--core-accent) 8%, transparent), transparent 32%),
   var(--core-surface); }
@@ -1035,8 +1024,6 @@
   .core-toolbar { grid-template-columns: 1fr; }
   .core-ai-index-details { grid-template-columns: 1fr; }
   .core-ai-index-details > section + section { border-top: 1px solid var(--core-line); border-left: 0; }
-  .core-embedding-settings-form { grid-template-columns: 1fr; }
-  .core-embedding-field-wide, .core-embedding-settings-actions { grid-column: auto; }
   .core-translation-api-form { grid-template-columns: 1fr; }
   .core-translation-api-wide, .core-translation-api-switch, .core-translation-api-actions { grid-column: auto; }
   .core-translation-api-notes { grid-template-columns: 1fr; }
@@ -1158,9 +1145,7 @@
   .core-ai-index-actions .rt-Button { width: 100%; }
   .core-ai-index-details > section { padding: 18px; }
   .core-ai-job-progress { padding: 14px; }
-  .core-ai-job-progress-head, .core-embedding-settings-heading { align-items: flex-start; }
-  .core-embedding-settings-actions { align-items: stretch; }
-  .core-embedding-settings-actions .rt-Button { width: 100%; }
+  .core-ai-job-progress-head { align-items: flex-start; }
   .core-translation-api-heading { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
   .core-translation-api-status { grid-column: 2; justify-content: flex-start; }
   .core-translation-api-actions { display: grid; grid-template-columns: 1fr; align-items: stretch; }

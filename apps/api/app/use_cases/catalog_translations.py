@@ -147,14 +147,11 @@ def _language_pack_response(
         version=pack.version,
         download_url=_language_pack_download_url(pack, tenant_slug=tenant_slug),
         content_sha256=pack.content_sha256,
-        source_digest=pack.source_digest,
         content_encoding=pack.content_encoding,
         byte_size=pack.byte_size,
         product_count=pack.product_count,
         sku_count=pack.sku_count,
         category_count=pack.category_count,
-        provider=pack.provider,
-        provider_version=pack.provider_version,
         source_cutoff_at=pack.source_cutoff_at,
         published_at=pack.published_at,
         last_full_translation_at=pack.last_full_translation_at,
@@ -203,8 +200,6 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
         progress_percent=progress,
         current_sku_id=job.current_sku_id,
         current_sku_name=job.current_sku_name,
-        provider=job.provider,
-        provider_version=job.provider_version,
         failure_details=failures,
         error_message=job.error_message,
         package_version=job.package_version,
@@ -442,15 +437,12 @@ def get_translation_status(
     return CatalogTranslationStatusResponse(
         source_locale=_SOURCE_LOCALE,
         target_locale=target_locale,
-        provider=provider,
-        provider_version=provider_version,
         provider_configured=configured,
         total_skus=len(sources),
         translated_skus=valid_count,
         stale_skus=stale,
         pending_skus=len(pending),
         package_outdated=package_outdated,
-        package_storage_backend=storage_status.backend,
         package_storage_configured=storage_status.configured,
         available_locales=list(
             dict.fromkeys(
@@ -922,6 +914,11 @@ def _run_translation_job(
                 translator=translator,
                 sku_translations=sku_translations,
                 previous_payload=previous_payload,
+                reuse_previous=bool(
+                    current_pack
+                    and current_pack.provider == translator.identity.provider
+                    and current_pack.provider_version == translator.identity.version
+                ),
                 full_rebuild=job.mode == "FULL_REBUILD",
             )
             object_key = language_pack_object_key(
@@ -1271,7 +1268,7 @@ def start_translation_job(
     if not storage_status.configured:
         raise ApplicationError(
             "CATALOG_LANGUAGE_PACKAGE_STORAGE_NOT_CONFIGURED",
-            "语言包存储尚未配置，请先配置 Cloudflare R2。",
+            "语言包存储尚未配置，请联系平台管理员。",
         )
 
     _expire_stale_job(

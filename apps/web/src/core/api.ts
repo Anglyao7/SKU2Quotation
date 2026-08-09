@@ -85,6 +85,7 @@ import type {
 import type { StorefrontLocale } from "../types";
 import { buildPasswordChangePayload } from "./accountPassword";
 import { buildPasswordLoginPayload } from "./authCredentials";
+import { accessTokenRefreshDelayMs } from "./authSessionTiming";
 import { normalizeAnnouncementTickerSpeed } from "./announcementSpeed";
 import { bumpPublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { resetStorefrontAnnouncementVisit } from "../lib/storefrontAnnouncementVisit";
@@ -101,6 +102,8 @@ const getRequestsInFlight = new Map<string, Promise<unknown>>();
 const getResponseCache = new Map<string, { expiresAt: number; value: unknown }>();
 const GET_RESPONSE_CACHE_TTL_MS = 12_000;
 const GET_RESPONSE_CACHE_MAX_ENTRIES = 180;
+const AUTH_REFRESH_EXEMPT_PATHS = new Set(["/auth/login", "/auth/refresh"]);
+let accessTokenRefreshAt = 0;
 
 function resolveApiBase() {
   const configured = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
@@ -285,6 +288,7 @@ function mapAuthData(row: ApiAuthTokenData): AuthTokenData {
 function acceptAuthData(row: ApiAuthTokenData) {
   const mapped = mapAuthData(row);
   accessToken = mapped.accessToken;
+  accessTokenRefreshAt = Date.now() + accessTokenRefreshDelayMs(mapped.expiresIn);
   authGeneration += 1;
   getRequestsInFlight.clear();
   getResponseCache.clear();
@@ -300,6 +304,7 @@ export function getCoreAccessToken() {
 
 export function clearCoreAuthSession() {
   accessToken = undefined;
+  accessTokenRefreshAt = 0;
   resetStorefrontAnnouncementVisit();
   authGeneration += 1;
   getRequestsInFlight.clear();
@@ -354,7 +359,22 @@ export async function refreshAuthSession(): Promise<AuthTokenData | undefined> {
   return refreshInFlight;
 }
 
+export async function ensureFreshCoreAccessToken(): Promise<boolean> {
+  if (accessToken && Date.now() < accessTokenRefreshAt) return true;
+  if (!accessToken && !readCsrfToken()) return false;
+  return Boolean(await refreshAuthSession());
+}
+
+async function prepareCoreRequestAuth(path: string) {
+  if (AUTH_REFRESH_EXEMPT_PATHS.has(path)) return;
+  if (!accessToken && !readCsrfToken()) return;
+  if (await ensureFreshCoreAccessToken()) return;
+  window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+  throw new CoreApiError("会话已失效，请重新登录。", 401);
+}
+
 async function performRequest<T>(path: string, init: RequestInit, retrySession: boolean): Promise<T> {
+  await prepareCoreRequestAuth(path);
   const headers = new Headers(init.headers);
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
@@ -423,6 +443,7 @@ async function downloadCoreRequest(
   init: RequestInit = {},
   retrySession = true,
 ): Promise<void> {
+  await prepareCoreRequestAuth(path);
   const headers = new Headers(init.headers);
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
@@ -479,6 +500,10 @@ export async function loginPassword(identifier: string, password: string): Promi
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
   const submit = async () => {
+    if (!(await ensureFreshCoreAccessToken())) {
+      window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+      throw new CoreApiError("会话已失效，请重新登录。", 419);
+    }
     const csrfToken = readCsrfToken();
     if (!csrfToken) throw new CoreApiError("会话校验信息已失效，请重新登录。", 419);
     await request<void>("/auth/password", {
@@ -511,6 +536,10 @@ export async function listMemberships() {
 }
 
 export async function switchTenant(membershipId: string) {
+  if (!(await ensureFreshCoreAccessToken())) {
+    window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+    throw new CoreApiError("会话已失效，请重新登录。", 401);
+  }
   const csrfToken = readCsrfToken();
   if (!csrfToken) throw new CoreApiError("会话校验信息已失效，请重新登录。", 401);
   const payload = await request<{ data: ApiAuthTokenData }>("/auth/tenant-context", {
@@ -1047,11 +1076,15 @@ export async function getImport(jobId: string) {
   return mapImport(await request<ApiImportJob>(`/imports/${encodeURIComponent(jobId)}`));
 }
 
-function uploadProductTemplate(
+async function uploadProductTemplate(
   body: FormData,
   onUploadProgress: ((percent: number) => void) | undefined,
   retrySession: boolean,
 ): Promise<ApiImportJob> {
+  if (!(await ensureFreshCoreAccessToken())) {
+    window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+    throw new CoreApiError("会话已失效，请重新登录。", 401);
+  }
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_BASE}/imports`);
@@ -1536,10 +1569,6 @@ interface ApiKnowledgeIndexStatus {
   total_products: number;
   indexed_products: number;
   pending_products: number;
-  model_provider: string;
-  model_name: string;
-  model_version: string;
-  dimensions: number;
   mode?: "INCREMENTAL" | "FULL_REBUILD";
   processed_products?: number;
   embeddings?: number;
@@ -1550,10 +1579,6 @@ function mapKnowledgeIndexStatus(row: ApiKnowledgeIndexStatus): KnowledgeIndexSt
     totalProducts: row.total_products,
     indexedProducts: row.indexed_products,
     pendingProducts: row.pending_products,
-    modelProvider: row.model_provider,
-    modelName: row.model_name,
-    modelVersion: row.model_version,
-    dimensions: row.dimensions,
     mode: row.mode,
     processedProducts: row.processed_products,
     embeddings: row.embeddings,
@@ -1577,10 +1602,6 @@ interface ApiKnowledgeIndexJob {
   progress_percent: number;
   current_product_id?: string | null;
   current_product_name?: string | null;
-  model_provider: string;
-  model_name: string;
-  model_version: string;
-  dimensions: number;
   error_message?: string | null;
   created_at: string;
   started_at?: string | null;
@@ -1599,10 +1620,6 @@ function mapKnowledgeIndexJob(row: ApiKnowledgeIndexJob): KnowledgeIndexJob {
     progressPercent: row.progress_percent,
     currentProductId: defined(row.current_product_id),
     currentProductName: defined(row.current_product_name),
-    modelProvider: row.model_provider,
-    modelName: row.model_name,
-    modelVersion: row.model_version,
-    dimensions: row.dimensions,
     errorMessage: defined(row.error_message),
     createdAt: row.created_at,
     startedAt: defined(row.started_at),
@@ -1668,7 +1685,9 @@ function mapEmbeddingSettings(row: ApiEmbeddingSettings): EmbeddingSettings {
 
 export async function getEmbeddingSettings(): Promise<EmbeddingSettings> {
   return mapEmbeddingSettings(
-    await request<ApiEmbeddingSettings>("/ai/embedding/settings"),
+    await request<ApiEmbeddingSettings>("/ai/embedding/settings", {
+      cache: "no-store",
+    }),
   );
 }
 
@@ -1771,7 +1790,9 @@ function translationSettingsBody(input: TranslationSettingsWriteInput) {
 
 export async function getTranslationSettings(): Promise<TranslationApiSettings> {
   return mapTranslationSettings(
-    await request<ApiTranslationSettings>("/system/translation/settings"),
+    await request<ApiTranslationSettings>("/system/translation/settings", {
+      cache: "no-store",
+    }),
   );
 }
 
@@ -1813,13 +1834,10 @@ interface ApiCatalogLanguagePack {
   version: number;
   download_url: string;
   content_sha256: string;
-  source_digest: string;
   byte_size: number;
   product_count: number;
   sku_count: number;
   category_count: number;
-  provider: string;
-  provider_version: string;
   source_cutoff_at: string;
   published_at: string;
   last_full_translation_at?: string | null;
@@ -1839,8 +1857,6 @@ interface ApiCatalogTranslationJob {
   progress_percent: number;
   current_sku_id?: string | null;
   current_sku_name?: string | null;
-  provider: string;
-  provider_version: string;
   failure_details: Array<{
     sku_id?: string | null;
     sku_code?: string | null;
@@ -1865,15 +1881,12 @@ interface ApiCatalogTranslationJob {
 interface ApiCatalogTranslationStatus {
   source_locale: StorefrontLocale;
   target_locale: StorefrontLocale;
-  provider: string;
-  provider_version: string;
   provider_configured: boolean;
   total_skus: number;
   translated_skus: number;
   stale_skus: number;
   pending_skus: number;
   package_outdated: boolean;
-  package_storage_backend: string;
   package_storage_configured: boolean;
   available_locales: StorefrontLocale[];
   package?: ApiCatalogLanguagePack | null;
@@ -1887,13 +1900,10 @@ function mapCatalogLanguagePack(row: ApiCatalogLanguagePack): CatalogLanguagePac
     version: row.version,
     downloadUrl: row.download_url,
     contentSha256: row.content_sha256,
-    sourceDigest: row.source_digest,
     byteSize: row.byte_size,
     productCount: row.product_count,
     skuCount: row.sku_count,
     categoryCount: row.category_count,
-    provider: row.provider,
-    providerVersion: row.provider_version,
     sourceCutoffAt: row.source_cutoff_at,
     publishedAt: row.published_at,
     lastFullTranslationAt: defined(row.last_full_translation_at),
@@ -1915,8 +1925,6 @@ function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTransla
     progressPercent: row.progress_percent,
     currentSkuId: defined(row.current_sku_id),
     currentSkuName: defined(row.current_sku_name),
-    provider: row.provider,
-    providerVersion: row.provider_version,
     failureDetails: row.failure_details.map((failure) => ({
       skuId: defined(failure.sku_id),
       skuCode: defined(failure.sku_code),
@@ -1945,15 +1953,12 @@ function mapCatalogTranslationStatus(
   return {
     sourceLocale: row.source_locale,
     targetLocale: row.target_locale,
-    provider: row.provider,
-    providerVersion: row.provider_version,
     providerConfigured: row.provider_configured,
     totalSkus: row.total_skus,
     translatedSkus: row.translated_skus,
     staleSkus: row.stale_skus,
     pendingSkus: row.pending_skus,
     packageOutdated: row.package_outdated,
-    packageStorageBackend: row.package_storage_backend,
     packageStorageConfigured: row.package_storage_configured,
     availableLocales: row.available_locales,
     package: row.package ? mapCatalogLanguagePack(row.package) : undefined,
@@ -2934,8 +2939,6 @@ interface ApiSupportAIRun {
   answer?: string | null;
   confidence?: number | null;
   handoff_reason?: string | null;
-  provider?: string | null;
-  model_name?: string | null;
   prompt_version: number;
   retrieval_count: number;
   decision_trace: Record<string, unknown>;
@@ -2964,8 +2967,6 @@ function mapSupportAIRun(row: ApiSupportAIRun): SupportAIRun {
     answer: defined(row.answer),
     confidence: row.confidence ?? undefined,
     handoffReason: defined(row.handoff_reason),
-    provider: defined(row.provider),
-    modelName: defined(row.model_name),
     promptVersion: row.prompt_version,
     retrievalCount: row.retrieval_count,
     decisionTrace: row.decision_trace || {},
@@ -3337,13 +3338,13 @@ export async function searchImage(file: File) {
 }
 
 export async function searchProducts(query: string, limit = 10): Promise<HybridSearchResponse> {
-  const row = await request<{ query: string; ranking_version: string; model: HybridSearchResponse["model"]; degraded_channels: string[]; results: Array<{ product_id: string; product_code?: string | null; name: string; source_version: number; score: number; score_breakdown: HybridSearchResponse["results"][number]["scoreBreakdown"]; supplier_signal_status: string; evidence: Array<{ document_id: string; chunk_id: string; chunk_type: string; content_hash: string; excerpt: string }>; ranking_version: string; degraded_channels: string[] }> }>("/ai/search/products", { method: "POST", body: JSON.stringify({ query, limit }) });
+  const row = await request<{ query: string; degraded: boolean; results: Array<{ product_id: string; product_code?: string | null; name: string; source_version: number; score: number; score_breakdown: HybridSearchResponse["results"][number]["scoreBreakdown"]; supplier_signal_status: string; evidence: Array<{ chunk_type: string; excerpt: string }> }> }>("/ai/search/products", { method: "POST", body: JSON.stringify({ query, limit }) });
   const results = await Promise.all(row.results.map(async (result) => {
     let product: ProductDetail | undefined;
     try { product = await getProduct(result.product_id); } catch { product = undefined; }
-    return { productId: result.product_id, productCode: defined(result.product_code), name: result.name, sourceVersion: result.source_version, score: result.score, scoreBreakdown: result.score_breakdown, supplierSignalStatus: result.supplier_signal_status, evidence: result.evidence.map((evidence) => ({ documentId: evidence.document_id, chunkId: evidence.chunk_id, chunkType: evidence.chunk_type, contentHash: evidence.content_hash, excerpt: evidence.excerpt })), rankingVersion: result.ranking_version, degradedChannels: result.degraded_channels, product };
+    return { productId: result.product_id, productCode: defined(result.product_code), name: result.name, sourceVersion: result.source_version, score: result.score, scoreBreakdown: result.score_breakdown, supplierSignalStatus: result.supplier_signal_status, evidence: result.evidence.map((evidence) => ({ chunkType: evidence.chunk_type, excerpt: evidence.excerpt })), product };
   }));
-  return { query: row.query, rankingVersion: row.ranking_version, model: row.model, degradedChannels: row.degraded_channels, results };
+  return { query: row.query, degraded: row.degraded, results };
 }
 
 interface ApiInquiryItem { id: string; line_number: number; raw_requirement: string; normalized_requirement: Record<string, unknown>; quantity?: number | null; unit_code?: string | null; image_search_id?: string | null; status: string; version: number }
