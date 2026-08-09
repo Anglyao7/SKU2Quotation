@@ -28,7 +28,7 @@ from .model_mixins import AuditTimestampMixin
 
 
 class SupportAIProviderSettingsRow(AuditTimestampMixin, Base):
-    """Platform-wide OpenAI-compatible generation model configuration."""
+    """Reusable platform-owned OpenAI-compatible generation profile."""
 
     __tablename__ = "support_ai_provider_settings"
     __table_args__ = (
@@ -49,9 +49,14 @@ class SupportAIProviderSettingsRow(AuditTimestampMixin, Base):
             name="temperature_supported",
         ),
         CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint(
+            "configuration_name", name="uq_support_ai_provider_configuration_name"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    configuration_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    display_model_name: Mapped[str] = mapped_column(String(160), nullable=False)
     provider: Mapped[str] = mapped_column(
         String(40), default="openai-compatible", nullable=False
     )
@@ -69,17 +74,16 @@ class SupportAIProviderSettingsRow(AuditTimestampMixin, Base):
     updated_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
 
 class SupportAISettingsRow(AuditTimestampMixin, Base):
-    """Tenant-owned customer-service automation policy."""
+    """Store-owned customer-service AI configuration."""
 
     __tablename__ = "support_ai_settings"
     __table_args__ = (
-        CheckConstraint(
-            "mode IN ('OFF', 'DRAFT', 'SHADOW', 'AUTO_LIMITED', 'AUTO')",
-            name="mode_allowed",
-        ),
         CheckConstraint(
             "min_retrieval_score >= 0 AND min_retrieval_score <= 1",
             name="retrieval_score_range",
@@ -103,7 +107,11 @@ class SupportAISettingsRow(AuditTimestampMixin, Base):
     tenant_id: Mapped[UUID] = mapped_column(
         ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
     )
-    mode: Mapped[str] = mapped_column(String(30), default="OFF", nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    provider_setting_id: Mapped[str | None] = mapped_column(
+        ForeignKey("support_ai_provider_settings.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     sku_knowledge_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
@@ -311,10 +319,6 @@ class SupportAIRunRow(AuditTimestampMixin, Base):
             name="trigger_type_allowed",
         ),
         CheckConstraint(
-            "mode_snapshot IN ('OFF', 'DRAFT', 'SHADOW', 'AUTO_LIMITED', 'AUTO')",
-            name="mode_snapshot_allowed",
-        ),
-        CheckConstraint(
             "status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'NEEDS_REVIEW', "
             "'HANDOFF', 'FAILED', 'CANCELLED', 'SKIPPED')",
             name="status_allowed",
@@ -375,7 +379,11 @@ class SupportAIRunRow(AuditTimestampMixin, Base):
     input_message_id: Mapped[UUID | None] = mapped_column(nullable=True)
     output_message_id: Mapped[UUID | None] = mapped_column(nullable=True)
     trigger_type: Mapped[str] = mapped_column(String(20), nullable=False)
-    mode_snapshot: Mapped[str] = mapped_column(String(30), nullable=False)
+    enabled_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    provider_setting_id: Mapped[str | None] = mapped_column(
+        ForeignKey("support_ai_provider_settings.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", nullable=False)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     visitor_locale: Mapped[str] = mapped_column(String(35), default="und", nullable=False)
@@ -386,6 +394,7 @@ class SupportAIRunRow(AuditTimestampMixin, Base):
     handoff_reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    model_display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     prompt_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     retrieval_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     decision_trace: Mapped[dict[str, Any]] = mapped_column(

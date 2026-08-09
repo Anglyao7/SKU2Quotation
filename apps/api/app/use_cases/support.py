@@ -328,8 +328,10 @@ def public_widget(
     )
     ai_enabled = bool(
         ai_settings is not None
-        and ai_settings.mode in {"AUTO_LIMITED", "AUTO"}
-        and support_ai_provider_is_configured(session)
+        and ai_settings.enabled
+        and support_ai_provider_is_configured(
+            session, tenant_id=profile.tenant_id
+        )
     )
     return PublicSupportWidgetResponse(
         welcome_message=settings.welcome_message,

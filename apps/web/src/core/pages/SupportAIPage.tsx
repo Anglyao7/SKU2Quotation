@@ -27,7 +27,6 @@ import {
   Robot,
   ShieldCheck,
   UserSwitch,
-  WarningCircle,
 } from "@phosphor-icons/react";
 import {
   useCallback,
@@ -55,7 +54,6 @@ import { useLocale } from "../LocaleContext";
 import type {
   SupportAIIngestionJob,
   SupportAIKnowledgeSource,
-  SupportAIMode,
   SupportAIRun,
   SupportAISettings,
   SupportCitation,
@@ -63,14 +61,6 @@ import type {
 import "./SupportAIPage.css";
 
 const ACTIVE_JOB_STATUSES = new Set(["QUEUED", "RUNNING"]);
-
-const MODE_COPY: Record<SupportAIMode, { label: string; detail: string }> = {
-  OFF: { label: "关闭", detail: "不创建 AI 回答，客服会话保持人工处理。" },
-  DRAFT: { label: "草稿", detail: "生成可追踪草稿，但不向客户发送。" },
-  SHADOW: { label: "影子", detail: "完整运行并记录决策，用于离线评估，不向客户发送。" },
-  AUTO_LIMITED: { label: "受限自动", detail: "仅当证据和置信度同时达标时自动回复，否则转人工。" },
-  AUTO: { label: "自动", detail: "在安全边界与每日限额内自动回复，低置信度仍会转人工。" },
-};
 
 const STATUS_COLOR: Record<string, "gray" | "blue" | "amber" | "jade" | "red"> = {
   QUEUED: "gray",
@@ -123,7 +113,7 @@ function RunDetail({ run }: { run: SupportAIRun }) {
         <span><small>{t("识别语言")}</small><strong>{run.detectedLanguage || "—"}</strong></span>
         <span><small>{t("置信度")}</small><strong>{run.confidence === undefined ? "—" : percent(run.confidence)}</strong></span>
         <span><small>{t("证据数")}</small><strong>{run.retrievalCount}</strong></span>
-        <span><small>{t("运行模式")}</small><strong>{t(run.modeSnapshot)}</strong></span>
+        <span><small>{t("模型")}</small><strong>{run.modelDisplayName || "—"}</strong></span>
       </div>
       {run.normalizedQuery && run.normalizedQuery !== run.question ? (
         <div className="support-ai-normalized-query">
@@ -148,7 +138,7 @@ function RunDetail({ run }: { run: SupportAIRun }) {
 }
 
 export function SupportAIPage() {
-  const { hasPermission, profile } = useCoreAuth();
+  const { hasPermission } = useCoreAuth();
   const { locale, t } = useLocale();
   const canManage = hasPermission("support.ai.manage");
   const canInspect = hasPermission("support.ai.inspect");
@@ -165,7 +155,7 @@ export function SupportAIPage() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
 
-  const [mode, setMode] = useState<SupportAIMode>("OFF");
+  const [enabled, setEnabled] = useState(false);
   const [skuEnabled, setSkuEnabled] = useState(true);
   const [fileEnabled, setFileEnabled] = useState(true);
   const [multilingualEnabled, setMultilingualEnabled] = useState(true);
@@ -187,7 +177,7 @@ export function SupportAIPage() {
 
   const applySettings = useCallback((next: SupportAISettings) => {
     setSettings(next);
-    setMode(next.mode);
+    setEnabled(next.enabled);
     setSkuEnabled(next.skuKnowledgeEnabled);
     setFileEnabled(next.fileKnowledgeEnabled);
     setMultilingualEnabled(next.multilingualEnabled);
@@ -271,7 +261,7 @@ export function SupportAIPage() {
     setMessage("");
     try {
       applySettings(await updateSupportAISettings({
-        mode,
+        enabled,
         skuKnowledgeEnabled: skuEnabled,
         fileKnowledgeEnabled: fileEnabled,
         multilingualEnabled,
@@ -365,8 +355,6 @@ export function SupportAIPage() {
   };
 
   const approvedSources = sources.filter((source) => source.status === "APPROVED").length;
-  const autoMode = settings?.mode === "AUTO" || settings?.mode === "AUTO_LIMITED";
-
   return (
     <div className="core-workspace support-ai-page">
       <CorePageHeading
@@ -388,15 +376,11 @@ export function SupportAIPage() {
       {!loading ? (
         <>
           <section className="support-ai-overview">
-            <Card><Robot weight="duotone" /><div><Text size="1" color="gray">{t("运行模式")}</Text><strong>{t(MODE_COPY[settings?.mode || "OFF"].label)}</strong><small>{autoMode ? t("客户消息可自动触发") : t("当前不会自动发给客户")}</small></div></Card>
+            <Card><Robot weight="duotone" /><div><Text size="1" color="gray">{t("当前店铺")}</Text><strong>{t(settings?.enabled ? "启用" : "关闭")}</strong><small>{t(settings?.enabled ? "客户消息可触发智能回复" : "客服会话由人工处理")}</small></div></Card>
+            <Card><Brain weight="duotone" /><div><Text size="1" color="gray">{t("服务模型")}</Text><strong>{settings?.modelDisplayName || t("智能客服")}</strong><small>{t("模型接入由平台统一维护")}</small></div></Card>
             <Card><Database weight="duotone" /><div><Text size="1" color="gray">{t("SKU 知识")}</Text><strong>{settings?.indexedSkuProducts ?? 0}</strong><small>{t("仅客户安全字段")}</small></div></Card>
             <Card><FileText weight="duotone" /><div><Text size="1" color="gray">{t("已批准文件")}</Text><strong>{settings?.approvedFileSources ?? approvedSources}</strong><small>{t("可被回答引用")}</small></div></Card>
-            <Card><GlobeHemisphereWest weight="duotone" /><div><Text size="1" color="gray">{t("多语言")}</Text><strong>{settings?.multilingualEnabled ? t("开启") : t("关闭")}</strong><small>{t("按本次消息实际语言回复")}</small></div></Card>
           </section>
-
-          {!settings?.providerConfigured && canManage ? (
-            <Card className="support-ai-warning"><WarningCircle /><div><Text weight="bold" as="div">{t("生成模型尚未配置")}</Text><Text size="2" color="gray">{t(profile?.user.isPlatformAdmin ? "先在配置中心保存智能客服大模型 API，再启用非关闭模式。" : "请联系平台管理员在配置中心完成智能客服大模型 API 配置。")}</Text></div>{profile?.user.isPlatformAdmin ? <Button asChild variant="soft"><Link to="/console/system/configuration">{t("前往配置中心")}</Link></Button> : null}</Card>
-          ) : null}
 
           <Tabs.Root defaultValue={canManage ? "policy" : canManageKnowledge ? "knowledge" : "runs"}>
             <Tabs.List className="support-ai-tabs">
@@ -410,18 +394,11 @@ export function SupportAIPage() {
               <Tabs.Content value="policy" className="support-ai-tab-panel">
                 <Card className="support-ai-policy-card">
                   <div className="support-ai-panel-heading">
-                    <div><Text size="1" color="gray">{t("租户运行契约")}</Text><Heading size="5">{t("自动化与安全门槛")}</Heading></div>
-                    <Badge color={autoMode ? "jade" : settings?.mode === "OFF" ? "gray" : "amber"}>{t(MODE_COPY[mode].label)}</Badge>
+                    <div><Text size="1" color="gray">{t("当前店铺配置")}</Text><Heading size="5">{t("智能客服与安全门槛")}</Heading></div>
+                    <Badge color={enabled ? "jade" : "gray"}>{t(enabled ? "启用" : "关闭")}</Badge>
                   </div>
                   <form className="support-ai-policy-form" onSubmit={(event) => void saveSettings(event)}>
-                    <label className="support-ai-wide">
-                      <Text size="1" color="gray">{t("运行模式")}</Text>
-                      <Select.Root value={mode} onValueChange={(value) => setMode(value as SupportAIMode)}>
-                        <Select.Trigger />
-                        <Select.Content>{Object.entries(MODE_COPY).map(([value, copy]) => <Select.Item key={value} value={value}>{t(copy.label)} — {t(copy.detail)}</Select.Item>)}</Select.Content>
-                      </Select.Root>
-                      <small>{t(MODE_COPY[mode].detail)}</small>
-                    </label>
+                    <label className="support-ai-switch support-ai-wide"><span><strong>{t("启用智能客服")}</strong><small>{t("关闭时不会创建或发送 AI 回答；知识库、提示词、阈值和历史记录都会保留。")}</small></span><Switch checked={enabled} onCheckedChange={setEnabled} /></label>
                     <label className="support-ai-switch"><span><strong>{t("SKU 商品知识")}</strong><small>{t("只检索公开商品资料、公开报价与 MOQ；供应商名称、供应商 SKU、供应商评分不会参与向量化或回答。")}</small></span><Switch checked={skuEnabled} onCheckedChange={setSkuEnabled} /></label>
                     <label className="support-ai-switch"><span><strong>{t("企业文件知识")}</strong><small>{t("只检索已完成解析且经人工批准的文件版本。")}</small></span><Switch checked={fileEnabled} onCheckedChange={setFileEnabled} /></label>
                     <label className="support-ai-switch support-ai-wide"><span><strong>{t("多语言回答")}</strong><small>{t("保留客户原文并识别本次消息实际语言；必要时仅把查询翻译为内部检索语言，最终回答仍使用客户语言，SKU/型号等标识保持原样。")}</small></span><Switch checked={multilingualEnabled} onCheckedChange={setMultilingualEnabled} /></label>
@@ -430,7 +407,7 @@ export function SupportAIPage() {
                     <label><Text size="1" color="gray">{t("单次最大来源数")}</Text><TextField.Root type="number" min="1" max="12" value={maxSources} onChange={(event) => setMaxSources(event.target.value)} /></label>
                     <label><Text size="1" color="gray">{t("每日自动回复上限")}</Text><TextField.Root type="number" min="1" max="100000" value={dailyLimit} onChange={(event) => setDailyLimit(event.target.value)} /></label>
                     <label className="support-ai-wide"><Text size="1" color="gray">{t("企业补充提示词（可选）")}</Text><TextArea value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} maxLength={12000} placeholder={t("例如品牌语气、售前范围；不能用来绕过客户安全边界。")}/></label>
-                    <div className="support-ai-actions support-ai-wide"><Button type="submit" disabled={!settingsValid || busy === "settings"}>{busy === "settings" ? t("保存中…") : t("保存运行策略")}</Button><Text size="1" color="gray">{t("任何人工客服回复都会立即接管该会话，并取消尚未运行的自动回复。")}</Text></div>
+                    <div className="support-ai-actions support-ai-wide"><Button type="submit" disabled={!settingsValid || busy === "settings"}>{busy === "settings" ? t("保存中…") : t("保存店铺配置")}</Button><Text size="1" color="gray">{t("配置只影响当前店铺；文件知识库和 SKU 数据不会跨店铺读取。任何人工客服回复都会立即接管该会话。")}</Text></div>
                   </form>
                 </Card>
               </Tabs.Content>
@@ -500,7 +477,7 @@ export function SupportAIPage() {
               <Tabs.Content value="runs" className="support-ai-tab-panel">
                 <Card className="support-ai-runs-card">
                   <div className="support-ai-panel-heading"><div><Text size="1" color="gray">{t("审计与溯源")}</Text><Heading size="5">{t("最近运行")}</Heading></div><Badge color="gray">{runs.length}</Badge></div>
-                  {!runs.length ? <CoreEmpty title={t("还没有智能客服运行记录")} description={t("启用模式后收到客户消息，或在问答试跑中执行一次，就会形成不可混淆的 Run 与 Evidence 记录。")}/> : null}
+                  {!runs.length ? <CoreEmpty title={t("还没有智能客服运行记录")} description={t("店铺启用智能客服后收到客户消息，或在问答试跑中执行一次，就会形成不可混淆的 Run 与 Evidence 记录。")}/> : null}
                   <div className="support-ai-run-list">
                     {runs.map((run) => (
                       <details key={run.id}>

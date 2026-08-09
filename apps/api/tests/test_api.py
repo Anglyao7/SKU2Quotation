@@ -1172,6 +1172,22 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
     task_id: UUID | None = None
     conversation_ids: set[UUID] = set()
     object_key: str | None = None
+    copied_profile_id: str | None = None
+    copied_tenant_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            TenantRow(
+                id=copied_tenant_id,
+                organization_id=DEFAULT_ORGANIZATION_ID,
+                slug=f"support-copy-{copied_tenant_id.hex[:8]}",
+                name="Support AI Copy Target",
+                default_locale="zh-CN",
+                default_currency="CNY",
+                timezone="Asia/Shanghai",
+                status="active",
+            )
+        )
+        session.commit()
     try:
         configured = client.put(
             "/api/v1/system/ai-generation/settings",
@@ -1193,13 +1209,60 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         assert provider_payload["api_key_hint"] == "••••cret"
         assert "api_key" not in provider_payload
 
+        profiles = client.get("/api/v1/system/ai-generation/profiles")
+        assert profiles.status_code == 200, profiles.text
+        assert any(
+            row["configuration_name"] == "平台默认 API"
+            for row in profiles.json()
+        )
+
+        copied_profile = client.post(
+            "/api/v1/system/ai-generation/profiles/SUPPORT_AI_GENERATION/copy",
+            json={"configuration_name": "客户 A 专属 API"},
+        )
+        assert copied_profile.status_code == 201, copied_profile.text
+        copied_profile_id = copied_profile.json()["id"]
+        assert copied_profile.json()["api_key_hint"] == "••••cret"
+
+        bound = client.post(
+            "/api/v1/system/ai-generation/store-configurations/bulk-provider-bindings",
+            json={
+                "tenant_ids": [str(DEFAULT_TENANT_ID), str(copied_tenant_id)],
+                "provider_profile_id": copied_profile_id,
+            },
+        )
+        assert bound.status_code == 200, bound.text
+        assert {row["tenant_id"] for row in bound.json()} == {
+            str(DEFAULT_TENANT_ID),
+            str(copied_tenant_id),
+        }
+
         settings = client.patch(
             "/api/v1/support/ai/settings",
-            json={"mode": "DRAFT"},
+            json={"enabled": False},
         )
         assert settings.status_code == 200, settings.text
-        assert settings.json()["mode"] == "DRAFT"
-        assert settings.json()["provider_configured"] is True
+        assert settings.json()["enabled"] is False
+        assert settings.json()["model_display_name"] == "support-json-model"
+        assert "provider_configured" not in settings.json()
+
+        copied_store_settings = client.post(
+            "/api/v1/system/ai-generation/store-configurations/copy",
+            json={
+                "source_tenant_id": str(DEFAULT_TENANT_ID),
+                "target_tenant_ids": [str(copied_tenant_id)],
+                "copy_model_binding": True,
+                "copy_policy": True,
+                "copy_enabled_state": False,
+            },
+        )
+        assert copied_store_settings.status_code == 200, copied_store_settings.text
+        assert copied_store_settings.json()[0]["enabled"] is False
+        with SessionLocal() as session:
+            target_settings = session.get(SupportAISettingsRow, copied_tenant_id)
+            assert target_settings is not None
+            assert target_settings.provider_setting_id == copied_profile_id
+            assert target_settings.min_answer_confidence == Decimal("0.65000")
 
         uploaded = client.post(
             "/api/v1/support/ai/knowledge/sources/upload",
@@ -1271,7 +1334,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         monkeypatch.setattr(
             support_ai_orchestrator,
             "resolved_support_ai_provider",
-            lambda _session: FakeSupportGenerationProvider(),
+            lambda _session, **_kwargs: FakeSupportGenerationProvider(),
         )
         test_run = client.post(
             "/api/v1/support/ai/test-runs",
@@ -1287,6 +1350,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         assert run_payload["status"] == "SUCCEEDED"
         assert run_payload["detected_language"] == "en-US"
         assert run_payload["answer"].endswith("[1]")
+        assert run_payload["model_display_name"] == "support-json-model"
         assert {"provider", "model_name"}.isdisjoint(run_payload)
         assert run_payload["evidence"][0]["source_entity_id"] == str(source_id)
         assert run_payload["evidence"][0]["classification"] == "CUSTOMER_APPROVED"
@@ -1294,7 +1358,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
 
         auto_settings = client.patch(
             "/api/v1/support/ai/settings",
-            json={"mode": "AUTO_LIMITED", "daily_auto_reply_limit": 1},
+            json={"enabled": True, "daily_auto_reply_limit": 1},
         )
         assert auto_settings.status_code == 200, auto_settings.text
 
@@ -1397,15 +1461,33 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
                     session.flush()
                     if media_row is not None:
                         session.delete(media_row)
+            tenant_settings = session.get(SupportAISettingsRow, DEFAULT_TENANT_ID)
+            if tenant_settings is not None:
+                session.delete(tenant_settings)
+                session.flush()
+            copied_tenant_settings = session.get(
+                SupportAISettingsRow, copied_tenant_id
+            )
+            if copied_tenant_settings is not None:
+                session.delete(copied_tenant_settings)
+                session.flush()
+            if copied_profile_id is not None:
+                copied_provider_row = session.get(
+                    SupportAIProviderSettingsRow, copied_profile_id
+                )
+                if copied_provider_row is not None:
+                    session.delete(copied_provider_row)
+                    session.flush()
             provider_row = session.get(
                 SupportAIProviderSettingsRow,
                 "SUPPORT_AI_GENERATION",
             )
             if provider_row is not None:
                 session.delete(provider_row)
-            tenant_settings = session.get(SupportAISettingsRow, DEFAULT_TENANT_ID)
-            if tenant_settings is not None:
-                session.delete(tenant_settings)
+                session.flush()
+            copied_tenant = session.get(TenantRow, copied_tenant_id)
+            if copied_tenant is not None:
+                session.delete(copied_tenant)
             session.commit()
         if object_key:
             get_object_storage().delete(object_key)
@@ -4288,10 +4370,16 @@ def test_phase3b_product_projection_is_filtered_idempotent_and_versioned() -> No
         assert document.canonical_payload["suppliers"] == [
             {"lead_time_days": 15, "moq": "100.000000", "moq_unit": "pcs"}
         ]
+        assert document.schema_version == 3
         assert "DO-NOT-PROJECT" not in str(document.canonical_payload)
         chunks = session.scalars(
             select(KnowledgeChunkRow).where(KnowledgeChunkRow.document_id == document.id)
         ).all()
+        overview_chunk = next(chunk for chunk in chunks if chunk.chunk_type == "OVERVIEW")
+        assert (
+            "MOQ options / 最低起订量选项: 100.000000 pcs"
+            in overview_chunk.content
+        )
         projected_text = "\n".join(chunk.content for chunk in chunks)
         for private_supplier_value in (
             supplier_id,
@@ -4353,15 +4441,34 @@ def test_product_knowledge_promotes_sku_tags_into_rag_overview() -> None:
         },
         "category": {"name": "彩妆套装"},
         "attributes": [],
-        "suppliers": [],
+        "suppliers": [
+            {"moq": "300", "moq_unit": "pcs"},
+            {"moq": "100", "moq_unit": "pcs"},
+        ],
         "skus": [
-            {"code": "TAG-RAG-001-A", "tags": ["旅行装", "防水", "礼赠"]},
-            {"code": "TAG-RAG-001-B", "tags": ["旅行装", "轻量"]},
+            {
+                "code": "TAG-RAG-001-A",
+                "default_moq": "100",
+                "moq_unit": "pcs",
+                "tags": ["旅行装", "防水", "礼赠"],
+            },
+            {
+                "code": "TAG-RAG-001-B",
+                "default_moq": "200",
+                "moq_unit": "pcs",
+                "tags": ["旅行装", "轻量"],
+            },
         ],
     })
 
     overview = next(chunk for chunk in chunks if chunk["chunk_type"] == "OVERVIEW")
     assert "Search tags / 商品标签: 旅行装, 防水, 礼赠, 轻量" in overview["content"]
+    assert (
+        "SKU MOQ / SKU最低起订量: "
+        "TAG-RAG-001-A=100 pcs; TAG-RAG-001-B=200 pcs"
+        in overview["content"]
+    )
+    assert "MOQ options / 最低起订量选项: 300 pcs" in overview["content"]
     assert overview["metadata"]["search_tags"] == ["旅行装", "防水", "礼赠", "轻量"]
     assert overview["metadata"]["field_policy_version"] == 3
 
@@ -13202,7 +13309,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0061"
+        ).scalar() == "20260809_0062"
     upgraded_engine.dispose()
     command.check(config)
 

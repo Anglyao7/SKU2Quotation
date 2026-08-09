@@ -7,7 +7,6 @@ from uuid import UUID
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 
-SupportAIMode = Literal["OFF", "DRAFT", "SHADOW", "AUTO_LIMITED", "AUTO"]
 KnowledgeClassification = Literal["PUBLIC", "CUSTOMER_APPROVED"]
 KnowledgeSourceStatus = Literal[
     "PROCESSING", "READY", "APPROVED", "REVOKED", "FAILED"
@@ -25,6 +24,9 @@ SupportAIRunStatus = Literal[
 
 
 class SupportAIProviderSettingsResponse(BaseModel):
+    id: str | None = None
+    configuration_name: str | None = None
+    display_model_name: str | None = None
     source: Literal["database", "environment", "disabled"]
     provider: str
     enabled: bool
@@ -39,6 +41,8 @@ class SupportAIProviderSettingsResponse(BaseModel):
 
 
 class SupportAIProviderSettingsUpdate(BaseModel):
+    configuration_name: str | None = Field(default=None, max_length=160)
+    display_model_name: str | None = Field(default=None, max_length=160)
     enabled: bool = True
     base_url: str = Field(min_length=1, max_length=1000)
     model_name: str = Field(min_length=1, max_length=300)
@@ -47,14 +51,84 @@ class SupportAIProviderSettingsUpdate(BaseModel):
     max_output_tokens: int = Field(default=2048, ge=128, le=32768)
     temperature: float = Field(default=0.1, ge=0, le=2)
 
-    @field_validator("base_url", "model_name", mode="before")
+    @field_validator(
+        "configuration_name",
+        "display_model_name",
+        "base_url",
+        "model_name",
+        mode="before",
+    )
     @classmethod
     def normalize_required_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
 
+class SupportAIProviderProfileWrite(BaseModel):
+    configuration_name: str = Field(min_length=1, max_length=160)
+    display_model_name: str = Field(min_length=1, max_length=160)
+    enabled: bool = True
+    base_url: str = Field(min_length=1, max_length=1000)
+    model_name: str = Field(min_length=1, max_length=300)
+    api_key: SecretStr | None = Field(default=None, max_length=4096)
+    timeout_seconds: int = Field(default=45, ge=1, le=180)
+    max_output_tokens: int = Field(default=2048, ge=128, le=32768)
+    temperature: float = Field(default=0.1, ge=0, le=2)
+
+    @field_validator(
+        "configuration_name",
+        "display_model_name",
+        "base_url",
+        "model_name",
+        mode="before",
+    )
+    @classmethod
+    def normalize_profile_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class SupportAIProviderProfileCopy(BaseModel):
+    configuration_name: str = Field(min_length=1, max_length=160)
+
+    @field_validator("configuration_name", mode="before")
+    @classmethod
+    def normalize_copy_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class SupportAIStoreConfigurationResponse(BaseModel):
+    tenant_id: UUID
+    tenant_name: str
+    organization_id: UUID
+    enabled: bool
+    provider_profile_id: str | None = None
+    model_display_name: str | None = None
+    updated_at: datetime | None = None
+
+
+class SupportAIStoreProviderBindingUpdate(BaseModel):
+    provider_profile_id: str | None = Field(default=None, max_length=40)
+
+
+class SupportAIStoreProviderBulkBinding(BaseModel):
+    tenant_ids: list[UUID] = Field(min_length=1, max_length=500)
+    provider_profile_id: str | None = Field(default=None, max_length=40)
+
+
+class SupportAIStoreConfigurationCopy(BaseModel):
+    source_tenant_id: UUID
+    target_tenant_ids: list[UUID] = Field(min_length=1, max_length=500)
+    copy_model_binding: bool = True
+    copy_policy: bool = True
+    copy_enabled_state: bool = False
+
+    @field_validator("target_tenant_ids")
+    @classmethod
+    def unique_targets(cls, value: list[UUID]) -> list[UUID]:
+        return list(dict.fromkeys(value))
+
+
 class SupportAISettingsResponse(BaseModel):
-    mode: SupportAIMode
+    enabled: bool
     sku_knowledge_enabled: bool
     file_knowledge_enabled: bool
     multilingual_enabled: bool
@@ -65,14 +139,14 @@ class SupportAISettingsResponse(BaseModel):
     system_prompt: str | None = None
     handoff_messages: dict[str, str] = Field(default_factory=dict)
     prompt_version: int = Field(ge=1)
-    provider_configured: bool
+    model_display_name: str | None = None
     approved_file_sources: int = Field(ge=0)
     indexed_sku_products: int = Field(ge=0)
     updated_at: datetime | None = None
 
 
 class SupportAISettingsUpdate(BaseModel):
-    mode: SupportAIMode
+    enabled: bool
     sku_knowledge_enabled: bool = True
     file_knowledge_enabled: bool = True
     multilingual_enabled: bool = True
@@ -181,7 +255,7 @@ class SupportAIRunResponse(BaseModel):
     input_message_id: UUID | None = None
     output_message_id: UUID | None = None
     trigger_type: Literal["CHAT", "TEST"]
-    mode_snapshot: SupportAIMode
+    enabled_snapshot: bool
     status: SupportAIRunStatus
     question: str
     visitor_locale: str
@@ -190,6 +264,7 @@ class SupportAIRunResponse(BaseModel):
     answer: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
     handoff_reason: str | None = None
+    model_display_name: str | None = None
     prompt_version: int = Field(ge=1)
     retrieval_count: int = Field(ge=0)
     decision_trace: dict[str, object] = Field(default_factory=dict)

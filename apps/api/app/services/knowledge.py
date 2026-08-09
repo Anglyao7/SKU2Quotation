@@ -28,7 +28,7 @@ from .embedding import (
 from .embedding_configuration import resolved_text_embedding_provider
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 FIELD_POLICY_VERSION = 3
 LOCALE = "und"
 FEATURE_MARKERS = ("feature", "use", "application", "cert", "特点", "用途", "认证")
@@ -252,18 +252,44 @@ def _render_value(value: Any) -> str:
 def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
     product = payload["product"]
     category = payload.get("category") or {}
+    skus = payload.get("skus", [])
+    suppliers = payload.get("suppliers", [])
     search_tags = list(dict.fromkeys(
         str(tag).strip()
-        for sku in payload.get("skus", [])
+        for sku in skus
         for tag in sku.get("tags", [])
         if str(tag).strip()
     ))
+
+    sku_moq_items: list[str] = []
+    represented_moqs: set[str] = set()
+    for sku in skus:
+        if sku.get("default_moq") is None:
+            continue
+        moq = f"{sku['default_moq']} {sku.get('moq_unit') or ''}".strip()
+        sku_code = str(sku.get("code") or "SKU").strip()
+        sku_moq_items.append(f"{sku_code}={moq}")
+        represented_moqs.add(moq.casefold())
+
+    moq_options: list[str] = []
+    for supplier in suppliers:
+        if supplier.get("moq") is None:
+            continue
+        moq = f"{supplier['moq']} {supplier.get('moq_unit') or ''}".strip()
+        normalized_moq = moq.casefold()
+        if normalized_moq in represented_moqs:
+            continue
+        represented_moqs.add(normalized_moq)
+        moq_options.append(moq)
+
     overview_lines = [
         f"Product code: {product.get('code') or ''}",
         f"Product name: {product.get('name') or ''}",
         f"Category: {category.get('name') or ''}",
         f"Description: {product.get('description') or ''}",
         f"Search tags / 商品标签: {_render_value(search_tags)}" if search_tags else "",
+        f"SKU MOQ / SKU最低起订量: {'; '.join(sku_moq_items)}" if sku_moq_items else "",
+        f"MOQ options / 最低起订量选项: {'; '.join(moq_options)}" if moq_options else "",
     ]
     sections: dict[str, list[str]] = {
         "OVERVIEW": [line for line in overview_lines if line and not line.endswith(": ")],
@@ -272,7 +298,7 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
         "MARKETS": [],
         "SUPPLY": [],
     }
-    for sku in payload.get("skus", []):
+    for sku in skus:
         details = [f"SKU: {sku['code']}"]
         if sku.get("name"):
             details.append(f"name={sku['name']}")
@@ -297,7 +323,7 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
             sections["MARKETS"].append(line)
         else:
             sections["SPECIFICATIONS"].append(line)
-    for supplier in payload.get("suppliers", []):
+    for supplier in suppliers:
         details = []
         if supplier.get("moq") is not None:
             details.append(f"moq={supplier['moq']} {supplier.get('moq_unit') or ''}".strip())

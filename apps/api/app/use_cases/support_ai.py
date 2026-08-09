@@ -2,23 +2,32 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..adapters.file_scanner import get_file_scanner
 from ..adapters.object_storage import get_object_storage
 from ..domain.errors import ApplicationError
+from ..database import set_request_context
 from ..file_security_models import MediaObjectRow
+from ..identity_models import TenantRow
 from ..knowledge_embedding_models import KnowledgeDocumentRow
 from ..model_mixins import utcnow
 from ..services.auth.dependencies import RequestContext
 from ..services.chat_generation import ChatGenerationError
 from ..services.support_ai_configuration import (
+    copy_support_ai_provider_profile,
+    get_managed_support_ai_provider,
+    list_managed_support_ai_providers,
     save_managed_support_ai_provider,
+    save_support_ai_provider_profile,
     support_ai_provider_is_configured,
     support_ai_provider_snapshot,
 )
@@ -31,7 +40,9 @@ from ..support_ai_models import (
     SupportAIEvidenceUseRow,
     SupportAIIngestionJobRow,
     SupportAIKnowledgeSourceRow,
+    SupportAIProviderSettingsRow,
     SupportAIRunRow,
+    SupportAISettingsRow,
 )
 from ..support_ai_schemas import (
     SupportAIEvidenceResponse,
@@ -39,12 +50,18 @@ from ..support_ai_schemas import (
     SupportAIKnowledgeSourceResponse,
     SupportAIKnowledgeSourceUpdate,
     SupportAIKnowledgeUploadResponse,
+    SupportAIProviderProfileCopy,
+    SupportAIProviderProfileWrite,
     SupportAIProviderSettingsResponse,
     SupportAIProviderSettingsUpdate,
     SupportAIRunPageResponse,
     SupportAIRunResponse,
     SupportAISettingsResponse,
     SupportAISettingsUpdate,
+    SupportAIStoreConfigurationCopy,
+    SupportAIStoreConfigurationResponse,
+    SupportAIStoreProviderBindingUpdate,
+    SupportAIStoreProviderBulkBinding,
     SupportAITestRunRequest,
 )
 
@@ -77,6 +94,16 @@ def _require_platform_admin(context: RequestContext) -> None:
         )
 
 
+def _provider_response(
+    session: Session,
+    *,
+    profile_id: str | None = None,
+) -> SupportAIProviderSettingsResponse:
+    return SupportAIProviderSettingsResponse(
+        **asdict(support_ai_provider_snapshot(session, profile_id=profile_id))
+    )
+
+
 def get_provider_settings(
     session: Session,
     *,
@@ -84,9 +111,7 @@ def get_provider_settings(
 ) -> SupportAIProviderSettingsResponse:
     _require_platform_admin(context)
     try:
-        return SupportAIProviderSettingsResponse(
-            **asdict(support_ai_provider_snapshot(session))
-        )
+        return _provider_response(session)
     except (ChatGenerationError, ValueError) as exc:
         raise ApplicationError(
             "SUPPORT_AI_PROVIDER_CONFIGURATION_INVALID",
@@ -104,6 +129,8 @@ def update_provider_settings(
     try:
         save_managed_support_ai_provider(
             session,
+            configuration_name=request.configuration_name,
+            display_model_name=request.display_model_name,
             enabled=request.enabled,
             base_url=request.base_url,
             model_name=request.model_name,
@@ -118,15 +145,379 @@ def update_provider_settings(
             updated_by_user_id=context.user_id,
         )
         session.commit()
-        return SupportAIProviderSettingsResponse(
-            **asdict(support_ai_provider_snapshot(session))
-        )
+        return _provider_response(session)
     except (ChatGenerationError, ValueError) as exc:
         session.rollback()
         raise ApplicationError(
             "SUPPORT_AI_PROVIDER_CONFIGURATION_INVALID",
             str(exc),
         ) from exc
+
+
+def list_provider_profiles(
+    session: Session,
+    *,
+    context: RequestContext,
+) -> list[SupportAIProviderSettingsResponse]:
+    _require_platform_admin(context)
+    return [
+        _provider_response(session, profile_id=row.id)
+        for row in list_managed_support_ai_providers(session)
+    ]
+
+
+def _profile_name_available(
+    session: Session,
+    *,
+    configuration_name: str,
+    excluding_id: str | None = None,
+) -> bool:
+    predicate = func.lower(SupportAIProviderSettingsRow.configuration_name) == (
+        configuration_name.strip().casefold()
+    )
+    if excluding_id is not None:
+        predicate = predicate & (SupportAIProviderSettingsRow.id != excluding_id)
+    return session.scalar(
+        select(SupportAIProviderSettingsRow.id).where(
+            predicate,
+            SupportAIProviderSettingsRow.deleted_at.is_(None),
+        )
+    ) is None
+
+
+def _save_profile(
+    session: Session,
+    *,
+    context: RequestContext,
+    request: SupportAIProviderProfileWrite,
+    profile_id: str | None,
+) -> SupportAIProviderSettingsResponse:
+    _require_platform_admin(context)
+    if profile_id is not None and get_managed_support_ai_provider(
+        session, profile_id
+    ) is None:
+        raise ApplicationError(
+            "SUPPORT_AI_PROVIDER_PROFILE_NOT_FOUND",
+            "大模型 API 配置不存在。",
+            kind="not_found",
+        )
+    if not _profile_name_available(
+        session,
+        configuration_name=request.configuration_name,
+        excluding_id=profile_id,
+    ):
+        raise ApplicationError(
+            "SUPPORT_AI_PROVIDER_PROFILE_NAME_CONFLICT",
+            "API 配置名称已存在。",
+            kind="conflict",
+        )
+    try:
+        row = save_support_ai_provider_profile(
+            session,
+            profile_id=profile_id,
+            configuration_name=request.configuration_name,
+            display_model_name=request.display_model_name,
+            enabled=request.enabled,
+            base_url=request.base_url,
+            model_name=request.model_name,
+            timeout_seconds=request.timeout_seconds,
+            max_output_tokens=request.max_output_tokens,
+            temperature=request.temperature,
+            api_key=(
+                request.api_key.get_secret_value()
+                if request.api_key is not None
+                else None
+            ),
+            updated_by_user_id=context.user_id,
+        )
+        session.commit()
+        return _provider_response(session, profile_id=row.id)
+    except (ChatGenerationError, IntegrityError, ValueError) as exc:
+        session.rollback()
+        raise ApplicationError(
+            "SUPPORT_AI_PROVIDER_CONFIGURATION_INVALID",
+            str(exc),
+        ) from exc
+
+
+def create_provider_profile(
+    session: Session,
+    *,
+    context: RequestContext,
+    request: SupportAIProviderProfileWrite,
+) -> SupportAIProviderSettingsResponse:
+    return _save_profile(
+        session,
+        context=context,
+        request=request,
+        profile_id=None,
+    )
+
+
+def update_provider_profile(
+    session: Session,
+    *,
+    context: RequestContext,
+    profile_id: str,
+    request: SupportAIProviderProfileWrite,
+) -> SupportAIProviderSettingsResponse:
+    return _save_profile(
+        session,
+        context=context,
+        request=request,
+        profile_id=profile_id,
+    )
+
+
+def copy_provider_profile(
+    session: Session,
+    *,
+    context: RequestContext,
+    profile_id: str,
+    request: SupportAIProviderProfileCopy,
+) -> SupportAIProviderSettingsResponse:
+    _require_platform_admin(context)
+    source = get_managed_support_ai_provider(session, profile_id)
+    if source is None:
+        raise ApplicationError(
+            "SUPPORT_AI_PROVIDER_PROFILE_NOT_FOUND",
+            "大模型 API 配置不存在。",
+            kind="not_found",
+        )
+    if not _profile_name_available(
+        session, configuration_name=request.configuration_name
+    ):
+        raise ApplicationError(
+            "SUPPORT_AI_PROVIDER_PROFILE_NAME_CONFLICT",
+            "API 配置名称已存在。",
+            kind="conflict",
+        )
+    try:
+        row = copy_support_ai_provider_profile(
+            session,
+            source=source,
+            configuration_name=request.configuration_name,
+            updated_by_user_id=context.user_id,
+        )
+        session.commit()
+        return _provider_response(session, profile_id=row.id)
+    except (ChatGenerationError, IntegrityError, ValueError) as exc:
+        session.rollback()
+        raise ApplicationError(
+            "SUPPORT_AI_PROVIDER_CONFIGURATION_INVALID",
+            str(exc),
+        ) from exc
+
+
+@contextmanager
+def _tenant_scope(
+    session: Session,
+    *,
+    context: RequestContext,
+    tenant: TenantRow,
+) -> Iterator[None]:
+    set_request_context(
+        session,
+        organization_id=tenant.organization_id,
+        tenant_id=tenant.id,
+        user_id=context.user_id,
+    )
+    try:
+        yield
+    finally:
+        set_request_context(
+            session,
+            organization_id=context.organization_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+
+
+def _platform_tenant(session: Session, *, tenant_id: UUID) -> TenantRow:
+    row = session.scalar(
+        select(TenantRow).where(
+            TenantRow.id == tenant_id,
+            TenantRow.deleted_at.is_(None),
+        )
+    )
+    if row is None:
+        raise ApplicationError(
+            "TENANT_NOT_FOUND", "店铺不存在。", kind="not_found"
+        )
+    return row
+
+
+def _store_configuration_response(
+    session: Session,
+    *,
+    tenant: TenantRow,
+) -> SupportAIStoreConfigurationResponse:
+    row = get_support_ai_settings(session, tenant_id=tenant.id, create=False)
+    snapshot = support_ai_provider_snapshot(session, tenant_id=tenant.id)
+    return SupportAIStoreConfigurationResponse(
+        tenant_id=tenant.id,
+        tenant_name=tenant.name,
+        organization_id=tenant.organization_id,
+        enabled=bool(row.enabled) if row is not None else False,
+        provider_profile_id=row.provider_setting_id if row is not None else None,
+        model_display_name=snapshot.display_model_name,
+        updated_at=row.updated_at if row is not None else None,
+    )
+
+
+def list_store_configurations(
+    session: Session,
+    *,
+    context: RequestContext,
+) -> list[SupportAIStoreConfigurationResponse]:
+    _require_platform_admin(context)
+    tenants = session.scalars(
+        select(TenantRow)
+        .where(TenantRow.deleted_at.is_(None), TenantRow.status != "archived")
+        .order_by(TenantRow.name, TenantRow.id)
+    ).all()
+    result: list[SupportAIStoreConfigurationResponse] = []
+    for tenant in tenants:
+        with _tenant_scope(session, context=context, tenant=tenant):
+            result.append(_store_configuration_response(session, tenant=tenant))
+    return result
+
+
+def _validate_profile_binding(
+    session: Session,
+    *,
+    profile_id: str | None,
+) -> None:
+    if profile_id is not None and get_managed_support_ai_provider(
+        session, profile_id
+    ) is None:
+        raise ApplicationError(
+            "SUPPORT_AI_PROVIDER_PROFILE_NOT_FOUND",
+            "大模型 API 配置不存在。",
+            kind="not_found",
+        )
+
+
+def bind_store_provider(
+    session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID,
+    request: SupportAIStoreProviderBindingUpdate,
+) -> SupportAIStoreConfigurationResponse:
+    _require_platform_admin(context)
+    _validate_profile_binding(session, profile_id=request.provider_profile_id)
+    tenant = _platform_tenant(session, tenant_id=tenant_id)
+    with _tenant_scope(session, context=context, tenant=tenant):
+        row = get_support_ai_settings(session, tenant_id=tenant.id, create=True)
+        assert row is not None
+        row.provider_setting_id = request.provider_profile_id
+        row.updated_by_user_id = context.user_id
+        row.updated_at = utcnow()
+        session.flush()
+        response = _store_configuration_response(session, tenant=tenant)
+    session.commit()
+    return response
+
+
+def bulk_bind_store_provider(
+    session: Session,
+    *,
+    context: RequestContext,
+    request: SupportAIStoreProviderBulkBinding,
+) -> list[SupportAIStoreConfigurationResponse]:
+    _require_platform_admin(context)
+    _validate_profile_binding(session, profile_id=request.provider_profile_id)
+    tenants = [
+        _platform_tenant(session, tenant_id=tenant_id)
+        for tenant_id in dict.fromkeys(request.tenant_ids)
+    ]
+    responses: list[SupportAIStoreConfigurationResponse] = []
+    for tenant in tenants:
+        with _tenant_scope(session, context=context, tenant=tenant):
+            row = get_support_ai_settings(session, tenant_id=tenant.id, create=True)
+            assert row is not None
+            row.provider_setting_id = request.provider_profile_id
+            row.updated_by_user_id = context.user_id
+            row.updated_at = utcnow()
+            session.flush()
+            responses.append(_store_configuration_response(session, tenant=tenant))
+    session.commit()
+    return responses
+
+
+def copy_store_configuration(
+    session: Session,
+    *,
+    context: RequestContext,
+    request: SupportAIStoreConfigurationCopy,
+) -> list[SupportAIStoreConfigurationResponse]:
+    _require_platform_admin(context)
+    if not request.copy_model_binding and not request.copy_policy and not request.copy_enabled_state:
+        raise ApplicationError(
+            "SUPPORT_AI_COPY_SCOPE_REQUIRED",
+            "请选择至少一项需要复制的配置。",
+        )
+    if request.source_tenant_id in request.target_tenant_ids:
+        raise ApplicationError(
+            "SUPPORT_AI_COPY_TARGET_INVALID",
+            "源店铺不能同时作为目标店铺。",
+        )
+    source_tenant = _platform_tenant(
+        session, tenant_id=request.source_tenant_id
+    )
+    with _tenant_scope(session, context=context, tenant=source_tenant):
+        source = get_support_ai_settings(
+            session, tenant_id=source_tenant.id, create=True
+        )
+        assert source is not None
+        copied_values = {
+            "enabled": source.enabled,
+            "provider_setting_id": source.provider_setting_id,
+            "sku_knowledge_enabled": source.sku_knowledge_enabled,
+            "file_knowledge_enabled": source.file_knowledge_enabled,
+            "multilingual_enabled": source.multilingual_enabled,
+            "min_retrieval_score": source.min_retrieval_score,
+            "min_answer_confidence": source.min_answer_confidence,
+            "max_sources": source.max_sources,
+            "daily_auto_reply_limit": source.daily_auto_reply_limit,
+            "system_prompt": source.system_prompt,
+            "handoff_messages": dict(source.handoff_messages or {}),
+        }
+        session.flush()
+    targets = [
+        _platform_tenant(session, tenant_id=tenant_id)
+        for tenant_id in request.target_tenant_ids
+    ]
+    responses: list[SupportAIStoreConfigurationResponse] = []
+    for tenant in targets:
+        with _tenant_scope(session, context=context, tenant=tenant):
+            target = get_support_ai_settings(session, tenant_id=tenant.id, create=True)
+            assert target is not None
+            if request.copy_model_binding:
+                target.provider_setting_id = copied_values["provider_setting_id"]
+            if request.copy_policy:
+                for field in (
+                    "sku_knowledge_enabled",
+                    "file_knowledge_enabled",
+                    "multilingual_enabled",
+                    "min_retrieval_score",
+                    "min_answer_confidence",
+                    "max_sources",
+                    "daily_auto_reply_limit",
+                    "system_prompt",
+                    "handoff_messages",
+                ):
+                    setattr(target, field, copied_values[field])
+                target.prompt_version += 1
+            if request.copy_enabled_state:
+                target.enabled = bool(copied_values["enabled"])
+            target.updated_by_user_id = context.user_id
+            target.updated_at = utcnow()
+            session.flush()
+            responses.append(_store_configuration_response(session, tenant=tenant))
+    session.commit()
+    return responses
 
 
 def _settings_response(
@@ -157,7 +548,7 @@ def _settings_response(
         or 0
     )
     return SupportAISettingsResponse(
-        mode=row.mode,
+        enabled=row.enabled,
         sku_knowledge_enabled=row.sku_knowledge_enabled,
         file_knowledge_enabled=row.file_knowledge_enabled,
         multilingual_enabled=row.multilingual_enabled,
@@ -170,7 +561,9 @@ def _settings_response(
             str(key): str(value) for key, value in (row.handoff_messages or {}).items()
         },
         prompt_version=row.prompt_version,
-        provider_configured=support_ai_provider_is_configured(session),
+        model_display_name=support_ai_provider_snapshot(
+            session, tenant_id=tenant_id
+        ).display_model_name,
         approved_file_sources=approved_files,
         indexed_sku_products=indexed_products,
         updated_at=row.updated_at,
@@ -199,15 +592,17 @@ def update_settings(
     request: SupportAISettingsUpdate,
 ) -> SupportAISettingsResponse:
     _require(context.permissions, "support.ai.manage")
-    if request.mode != "OFF" and not support_ai_provider_is_configured(session):
+    if request.enabled and not support_ai_provider_is_configured(
+        session, tenant_id=context.tenant_id
+    ):
         raise ApplicationError(
             "SUPPORT_AI_PROVIDER_REQUIRED",
-            "请先在配置中心完成智能客服大模型 API 配置。",
+            "当前店铺的智能客服模型暂不可用，请联系平台服务人员。",
             kind="conflict",
         )
     row = get_support_ai_settings(session, tenant_id=context.tenant_id, create=True)
     assert row is not None
-    row.mode = request.mode
+    row.enabled = request.enabled
     row.sku_knowledge_enabled = request.sku_knowledge_enabled
     row.file_knowledge_enabled = request.file_knowledge_enabled
     row.multilingual_enabled = request.multilingual_enabled
@@ -614,7 +1009,7 @@ def _run_response(session: Session, row: SupportAIRunRow) -> SupportAIRunRespons
         input_message_id=row.input_message_id,
         output_message_id=row.output_message_id,
         trigger_type=row.trigger_type,
-        mode_snapshot=row.mode_snapshot,
+        enabled_snapshot=row.enabled_snapshot,
         status=row.status,
         question=row.question,
         visitor_locale=row.visitor_locale,
@@ -623,6 +1018,7 @@ def _run_response(session: Session, row: SupportAIRunRow) -> SupportAIRunRespons
         answer=row.answer,
         confidence=float(row.confidence) if row.confidence is not None else None,
         handoff_reason=row.handoff_reason,
+        model_display_name=row.model_display_name,
         prompt_version=row.prompt_version,
         retrieval_count=row.retrieval_count,
         decision_trace=row.decision_trace,
@@ -693,10 +1089,12 @@ def run_test(
     request: SupportAITestRunRequest,
 ) -> SupportAIRunResponse:
     _require(context.permissions, "support.ai.test")
-    if not support_ai_provider_is_configured(session):
+    if not support_ai_provider_is_configured(
+        session, tenant_id=context.tenant_id
+    ):
         raise ApplicationError(
             "SUPPORT_AI_PROVIDER_REQUIRED",
-            "请先在配置中心完成智能客服大模型 API 配置。",
+            "当前店铺的智能客服模型暂不可用，请联系平台服务人员。",
             kind="conflict",
         )
     run = create_test_run(

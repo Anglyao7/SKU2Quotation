@@ -7,9 +7,6 @@
 .support-ai-overview > .rt-Card > div { min-width: 0; display: grid; gap: 3px; }
 .support-ai-overview strong { font-family: var(--font-display); font-size: 25px; letter-spacing: -.035em; }
 .support-ai-overview small { color: var(--text-soft); font-size: 10px; line-height: 1.4; }
-.support-ai-warning { padding: 15px 17px !important; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; background: color-mix(in srgb, #f4bd6b 18%, var(--surface)) !important; }
-.support-ai-warning > svg { width: 24px; height: 24px; color: #9a5d16; }
-.support-ai-warning > div { display: grid; gap: 3px; }
 .support-ai-tabs { width: 100%; display: grid !important; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .support-ai-tabs .rt-TabsTrigger { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .support-ai-tabs svg { width: 17px; height: 17px; }
@@ -86,6 +83,4 @@
 
 @media (max-width: 480px) {
   .support-ai-overview { grid-template-columns: 1fr; }
-  .support-ai-warning { grid-template-columns: auto minmax(0, 1fr); }
-  .support-ai-warning .rt-Button { grid-column: 1 / -1; }
 }

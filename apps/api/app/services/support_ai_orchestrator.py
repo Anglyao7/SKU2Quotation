@@ -73,7 +73,8 @@ Follow these rules in priority order:
 5. Detect the actual language of the latest visitor question and answer in that same language, even when the storefront locale differs.
 6. Put a citation like [1] immediately after every factual claim. Citation numbers must refer to the supplied evidence.
 7. If evidence is missing, conflicting, ambiguous, or cannot support a safe answer, set handoff=true. Do not guess.
-8. Do not claim that a price, stock level, delivery date, certification, policy, or product property is certain unless evidence states it.
+8. If evidence contains multiple MOQ values, preserve their SKU association or present them as supported options. If the visitor has not identified the SKU, list the options or ask which SKU they mean; never select or invent a default MOQ.
+9. Do not claim that a price, stock level, delivery date, certification, policy, or product property is certain unless evidence states it.
 Return one JSON object only with this schema:
 {"detected_language":"BCP-47 tag","answer":"customer-ready answer with [n] citations","confidence":0.0,"citations":[1],"handoff":false,"handoff_reason":null}
 """
@@ -151,7 +152,7 @@ def claim_next_support_ai_run(
 def default_support_ai_settings(*, tenant_id: UUID) -> SupportAISettingsRow:
     return SupportAISettingsRow(
         tenant_id=tenant_id,
-        mode="OFF",
+        enabled=False,
         sku_knowledge_enabled=True,
         file_knowledge_enabled=True,
         multilingual_enabled=True,
@@ -851,6 +852,9 @@ def _record_daily_limit_handoff(
     message: StorefrontChatMessageRow,
     settings: SupportAISettingsRow,
 ) -> UUID:
+    provider_snapshot = support_ai_provider_snapshot(
+        session, tenant_id=conversation.tenant_id
+    )
     language = detect_message_language(
         message.body,
         locale_hint=conversation.locale or "und",
@@ -881,12 +885,17 @@ def _record_daily_limit_handoff(
         input_ref=f"support-message:{message.id}",
         input_hash=hashlib.sha256(message.body.encode("utf-8")).hexdigest(),
         policy_snapshot={
-            "mode": settings.mode,
+            "enabled": settings.enabled,
             "prompt_version": settings.prompt_version,
             "customer_safe_only": True,
         },
         budget_snapshot={"daily_auto_reply_limit": settings.daily_auto_reply_limit},
-        route_snapshot={"provider": "not-called", "reason": "daily-limit"},
+        route_snapshot={
+            "provider": "not-called",
+            "reason": "daily-limit",
+            "profile_id": provider_snapshot.id,
+            "model_display_name": provider_snapshot.display_model_name,
+        },
         idempotency_key=f"support-ai-chat:{message.id}",
         started_at=now,
         completed_at=now,
@@ -900,7 +909,9 @@ def _record_daily_limit_handoff(
         input_message_id=message.id,
         output_message_id=output.id,
         trigger_type="CHAT",
-        mode_snapshot=settings.mode,
+        enabled_snapshot=settings.enabled,
+        provider_setting_id=provider_snapshot.id,
+        model_display_name=provider_snapshot.display_model_name,
         status="SKIPPED",
         question=message.body,
         visitor_locale=conversation.locale or "und",
@@ -935,9 +946,11 @@ def enqueue_chat_run(
     )
     if (
         settings is None
-        or settings.mode == "OFF"
+        or not settings.enabled
         or conversation.automation_state != "AI_ACTIVE"
-        or not support_ai_provider_is_configured(session)
+        or not support_ai_provider_is_configured(
+            session, tenant_id=conversation.tenant_id
+        )
     ):
         return None
     existing = session.scalar(
@@ -948,29 +961,30 @@ def enqueue_chat_run(
     )
     if existing is not None:
         return existing.id
-    if settings.mode in {"AUTO_LIMITED", "AUTO"}:
-        now = utcnow()
-        start = datetime(now.year, now.month, now.day, tzinfo=UTC)
-        count = int(
-            session.scalar(
-                select(func.count(SupportAIRunRow.id)).where(
-                    SupportAIRunRow.tenant_id == conversation.tenant_id,
-                    SupportAIRunRow.mode_snapshot.in_(["AUTO_LIMITED", "AUTO"]),
-                    SupportAIRunRow.created_at >= start,
-                    SupportAIRunRow.output_message_id.is_not(None),
-                )
+    now = utcnow()
+    start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+    count = int(
+        session.scalar(
+            select(func.count(SupportAIRunRow.id)).where(
+                SupportAIRunRow.tenant_id == conversation.tenant_id,
+                SupportAIRunRow.enabled_snapshot.is_(True),
+                SupportAIRunRow.created_at >= start,
+                SupportAIRunRow.output_message_id.is_not(None),
             )
-            or 0
         )
-        if count >= settings.daily_auto_reply_limit:
-            return _record_daily_limit_handoff(
-                session,
-                conversation=conversation,
-                message=message,
-                settings=settings,
-            )
+        or 0
+    )
+    if count >= settings.daily_auto_reply_limit:
+        return _record_daily_limit_handoff(
+            session,
+            conversation=conversation,
+            message=message,
+            settings=settings,
+        )
     input_hash = hashlib.sha256(message.body.encode("utf-8")).hexdigest()
-    provider_snapshot = support_ai_provider_snapshot(session)
+    provider_snapshot = support_ai_provider_snapshot(
+        session, tenant_id=conversation.tenant_id
+    )
     task_id = uuid4()
     task = AITaskRow(
         id=task_id,
@@ -987,7 +1001,7 @@ def enqueue_chat_run(
         input_ref=f"support-message:{message.id}",
         input_hash=input_hash,
         policy_snapshot={
-            "mode": settings.mode,
+            "enabled": settings.enabled,
             "prompt_version": settings.prompt_version,
             "customer_safe_only": True,
         },
@@ -995,6 +1009,8 @@ def enqueue_chat_run(
         route_snapshot={
             "provider": provider_snapshot.provider,
             "model": provider_snapshot.model_name,
+            "model_display_name": provider_snapshot.display_model_name,
+            "profile_id": provider_snapshot.id,
             "source": provider_snapshot.source,
         },
         idempotency_key=f"support-ai-chat:{message.id}",
@@ -1006,7 +1022,9 @@ def enqueue_chat_run(
         conversation_id=conversation.id,
         input_message_id=message.id,
         trigger_type="CHAT",
-        mode_snapshot=settings.mode,
+        enabled_snapshot=settings.enabled,
+        provider_setting_id=provider_snapshot.id,
+        model_display_name=provider_snapshot.display_model_name,
         status="QUEUED",
         question=message.body,
         visitor_locale=message.translation_source_locale or conversation.locale or "und",
@@ -1033,7 +1051,7 @@ def create_test_run(
     settings = get_support_ai_settings(session, tenant_id=tenant_id, create=True)
     assert settings is not None
     input_hash = hashlib.sha256(question.encode("utf-8")).hexdigest()
-    provider_snapshot = support_ai_provider_snapshot(session)
+    provider_snapshot = support_ai_provider_snapshot(session, tenant_id=tenant_id)
     task_id = uuid4()
     task = AITaskRow(
         id=task_id,
@@ -1048,7 +1066,8 @@ def create_test_run(
         input_ref="support-test-lab",
         input_hash=input_hash,
         policy_snapshot={
-            "mode": "DRAFT",
+            "enabled": settings.enabled,
+            "test_only": True,
             "prompt_version": settings.prompt_version,
             "customer_safe_only": True,
         },
@@ -1057,6 +1076,8 @@ def create_test_run(
         route_snapshot={
             "provider": provider_snapshot.provider,
             "model": provider_snapshot.model_name,
+            "model_display_name": provider_snapshot.display_model_name,
+            "profile_id": provider_snapshot.id,
             "source": provider_snapshot.source,
         },
         idempotency_key=f"support-ai-test:{uuid4()}",
@@ -1066,7 +1087,9 @@ def create_test_run(
         tenant_id=tenant_id,
         ai_task_id=task_id,
         trigger_type="TEST",
-        mode_snapshot="DRAFT",
+        enabled_snapshot=settings.enabled,
+        provider_setting_id=provider_snapshot.id,
+        model_display_name=provider_snapshot.display_model_name,
         status="QUEUED",
         question=question,
         visitor_locale=locale,
@@ -1120,7 +1143,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
             "publish_decision": "HANDOFF",
             "reason": "NO_CUSTOMER_SAFE_EVIDENCE",
         }
-        if run.mode_snapshot in {"AUTO_LIMITED", "AUTO"}:
+        if run.trigger_type == "CHAT" and run.enabled_snapshot:
             _publish_handoff(
                 session,
                 run=run,
@@ -1134,9 +1157,19 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
         session.commit()
         return
 
-    provider = resolved_support_ai_provider(session)
+    provider = resolved_support_ai_provider(
+        session,
+        tenant_id=run.tenant_id,
+        profile_id=run.provider_setting_id,
+    )
     run.provider = provider.identity.provider
     run.model_name = provider.identity.model_name
+    if not run.model_display_name:
+        run.model_display_name = support_ai_provider_snapshot(
+            session,
+            tenant_id=run.tenant_id,
+            profile_id=run.provider_setting_id,
+        ).display_model_name
     messages = _prompt_messages(
         settings=settings,
         question=run.question,
@@ -1178,12 +1211,6 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
     if run.trigger_type == "TEST":
         run.status = "HANDOFF" if handoff or below_threshold else "SUCCEEDED"
         run.decision_trace["publish_decision"] = "TEST_ONLY"
-    elif run.mode_snapshot == "DRAFT":
-        run.status = "NEEDS_REVIEW"
-        run.decision_trace["publish_decision"] = "DRAFT_ONLY"
-    elif run.mode_snapshot == "SHADOW":
-        run.status = "SUCCEEDED"
-        run.decision_trace["publish_decision"] = "SHADOW_ONLY"
     elif not _conversation_is_still_ai_owned(session, run=run):
         run.status = "CANCELLED"
         run.handoff_reason = "HUMAN_TAKEOVER_OR_STALE_RUN"
@@ -1266,7 +1293,7 @@ def process_support_ai_run(
             task.safe_error_code = run.error_code
             task.safe_error_message = run.error_message
             task.completed_at = run.completed_at
-        if run.mode_snapshot in {"AUTO_LIMITED", "AUTO"}:
+        if run.trigger_type == "CHAT" and run.enabled_snapshot:
             _publish_handoff(
                 session,
                 run=run,
@@ -1292,7 +1319,7 @@ def process_support_ai_run(
             task.safe_error_code = run.error_code
             task.safe_error_message = run.error_message
             task.completed_at = run.completed_at
-        if run.mode_snapshot in {"AUTO_LIMITED", "AUTO"}:
+        if run.trigger_type == "CHAT" and run.enabled_snapshot:
             _publish_handoff(
                 session,
                 run=run,

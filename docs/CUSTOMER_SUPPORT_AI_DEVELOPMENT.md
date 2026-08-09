@@ -1,20 +1,22 @@
 # 智能客服开发设计
 
 > 状态：v1 可交付实现 + 后续路线图  
-> 版本：1.1  
+> 版本：1.2
 > 日期：2026-08-09  
 > 规范来源：[客服 AI 运行契约 v1](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
 
 ## 0. 当前交付状态
 
-本次已完成运行契约的首个可上线闭环（知识与证据基础、SKU/文件 RAG、
-`DRAFT/SHADOW/AUTO_LIMITED/AUTO`、多语言、引用和人工接管），数据库版本为
-`20260809_0060`。当前实现入口如下：
+本次已完成运行契约的首个可上线闭环（知识与证据基础、店铺级 SKU/文件 RAG、
+启用/关闭、多语言、引用和人工接管），
+数据库版本为 `20260809_0062`。当前实现入口如下：
 
 - 平台配置中心：`/console/system/configuration`，集中配置智能客服生成模型、翻译与
-  Embedding API；保存配置时只做格式校验，不探测外部连通性。
-- 商家智能客服：`/console/support/ai`，包含策略、文件知识、问答试跑、Run 与 Evidence
-  溯源。
+  Embedding API；智能客服支持多个加密 API 档案、店铺绑定、批量应用和配置复制。保存
+  配置时只做格式校验，不探测外部连通性。
+- 商家智能客服：`/console/support/ai`，所有操作针对当前店铺，包含启用/关闭、企业提示
+  词、阈值、文件知识、问答试跑、Run 与 Evidence 溯源。商家只看到模型展示名，不看到
+  API 地址、密钥、内部 provider 或配置完成度。
 - 人工工作台：`/console/support`，展示 AI/人工接管状态、回答引用，并支持暂停或恢复
   单会话自动化。
 - 客户 Widget：按客户本次消息的实际语言回答，显示 AI 身份、处理状态和服务端引用；
@@ -36,10 +38,14 @@
    服务上一个成功版本。
 6. v1 不开放退款、取消订单、修改资料、任意 HTTP/SQL 等写工具。实时库存、认证订单与
    其他只读动态事实属于 Phase 5，不得由静态 RAG 猜测。
+7. `organization` 表示客户企业，`tenant` 表示具体店铺。文件知识、SKU、提示词、阈值、
+   启停和 Run 均按 `tenant_id` 隔离；复制功能只复制选定配置，不复制知识和业务数据。
 
 主要实现文件为 `support_ai_models.py`、`support_ai_schemas.py`、
 `services/support_ai_*`、`routers/support_ai.py`、`use_cases/support_ai.py` 和迁移
-`20260809_0060_support_ai_configuration.py`。后续章节同时保留长期目标；标为 Phase 5/6
+`20260809_0060_support_ai_configuration.py`、
+`20260809_0061_tenant_module_entitlements.py`、
+`20260809_0062_support_ai_store_profiles.py`。后续章节同时保留长期目标；标为 Phase 5/6
 的能力不属于本次 v1 自动回答范围。
 
 ## 1. 文档目的
@@ -62,7 +68,9 @@
 8. 生成模型通过 provider-neutral port 接入，不把 OpenAI、Azure 或其他厂商 SDK 写进
    `use_cases`。
 9. 模型调用在后台任务中执行，访客发消息的 HTTP 请求不等待完整 AI 推理。
-10. 先 `DRAFT/SHADOW`，再 `AUTO_LIMITED`；v1 不执行写操作。
+10. 店铺状态只允许启用/关闭；草稿评估和不发送验证属于平台发布流程，不是店铺状态。
+11. 平台 API 配置与店铺运行配置分层：API 档案可复用、可复制、可批量绑定，店铺端只
+    接收模型展示名。
 
 ## 3. 当前系统基线
 
@@ -344,12 +352,12 @@ locator。Embedding 表继续引用 chunk，不需要为文件另建一套向量
 |---|---|
 | 关联 | `tenant_id`、`ai_task_id`、conversation、trigger message、response message |
 | 输入 | 原始 query、改写 query、locale、intent、上下文摘要哈希 |
-| 模式 | `OFF/DRAFT/SHADOW/AUTO_LIMITED/AUTO` 快照 |
+| 店铺状态 | 当时的 `enabled_snapshot` 与单会话人工接管状态 |
 | 版本 | runtime contract、field policy、retrieval、reranker、prompt、orchestrator |
-| 模型 | provider/name/version、route snapshot |
+| 模型 | 内部 provider/name/profile route snapshot；店铺接口仅返回 display model name |
 | 输出 | decision、answer payload、validation result、handoff reason |
 | 性能 | 各阶段延迟、input/output token、估算成本 |
-| 交付结果 | `NONE/DRAFT_READY/SHADOW_COMPLETE/MESSAGE_SENT/HANDED_OFF/DECLINED` |
+| 交付结果 | `NONE/TEST_ONLY/MESSAGE_SENT/HANDED_OFF/DECLINED` |
 
 `(tenant_id, trigger_message_id)` 必须唯一，保证一次访客消息最多生成一个 Run。
 
@@ -434,7 +442,8 @@ Pydantic schema，使新增 ORM 字段不会自动进入投影。
 - 商品/SKU 公开基本信息。
 - 已确认并客户可见的属性。
 - 标签、用途、认证和包装信息。
-- 公开 MOQ。
+- 公开 MOQ；商品概览 chunk 汇总 MOQ，规格 chunk 保留 SKU 与 MOQ 的精确对应。多个值只能
+  作为匿名化选项展示或要求客户明确 SKU，不能由模型猜测默认值。
 
 明确排除 supplier identity/SKU/score、采购成本、内部备注和未确认字段。原始供应商
 `lead_time_days` 从客户 RAG 移出；以后由“公开承诺交期”字段或实时工具提供。
@@ -522,12 +531,12 @@ claim task
 
 最后一次 ownership check 防止模型运行期间人工已经回复，但 AI 仍追加一条自动回答。
 
-### 9.3 Mode 行为
+### 9.3 店铺启停行为
 
-- `DRAFT`：结果写为商家可见草稿，不产生 `AI` 客户消息。
-- `SHADOW`：保存完整 Run 和评估数据，但不进入客服 composer，也不发送。
-- `AUTO_LIMITED`：只有主题 allowlist、无工具写操作、证据充分且全部验证通过才发送。
-- `AUTO`：保留同样验证，只扩大已批准场景，不表示无限自治。
+- `关闭`：新客户消息不进入 AI 队列，知识和历史 Run 保留，人工客服不受影响。
+- `启用`：证据与置信度达到店铺阈值才发送；否则明确转人工。启用不表示无限自治。
+- 测试实验室：无论店铺是否启用都可执行 `TEST_ONLY` Run，但绝不写入客户会话。
+- 平台离线评估和不发送验证使用独立测试任务，不增加店铺状态枚举。
 
 ## 10. Tool 设计
 
@@ -566,6 +575,14 @@ MOQ 首版优先来自客户知识投影；若以后 MOQ 具有客户、数量�
 ```text
 GET   /api/v1/system/ai-generation/settings
 PUT   /api/v1/system/ai-generation/settings
+GET   /api/v1/system/ai-generation/profiles
+POST  /api/v1/system/ai-generation/profiles
+PUT   /api/v1/system/ai-generation/profiles/{profile_id}
+POST  /api/v1/system/ai-generation/profiles/{profile_id}/copy
+GET   /api/v1/system/ai-generation/store-configurations
+PUT   /api/v1/system/ai-generation/store-configurations/{tenant_id}/provider
+POST  /api/v1/system/ai-generation/store-configurations/bulk-provider-bindings
+POST  /api/v1/system/ai-generation/store-configurations/copy
 GET   /api/v1/support/ai/settings
 PATCH /api/v1/support/ai/settings
 POST  /api/v1/support/ai/test-runs
@@ -574,9 +591,13 @@ GET   /api/v1/support/ai/runs/{run_id}
 PATCH /api/v1/support/conversations/{conversation_id}/automation
 ```
 
-生成模型配置是平台级配置，只有平台管理员可以读写。API Key 使用
-`SUPPORT_AI_SETTINGS_MASTER_KEY` 加密，读取接口只返回是否已配置和末四位提示。旧 Key 留空
-表示保持不变。配置保存不发起模型请求；可在“问答试跑”中验证完整业务链路。
+生成模型 API 档案和店铺绑定只有平台管理员可以读写。API Key 使用
+`SUPPORT_AI_SETTINGS_MASTER_KEY` 加密，平台读取接口只返回是否已配置和末四位提示，旧 Key
+留空表示保持不变。店铺设置接口不返回这些字段，仅返回批准的模型展示名。配置保存不发起
+模型请求；可在“问答试跑”中验证完整业务链路。
+
+店铺复制接口只复制明确勾选的模型绑定、策略和可选启停状态；不会复制文件知识、SKU、
+会话或 Run。默认不复制启停状态，避免未验收店铺被批量开启。
 
 ### 11.2 知识来源
 
@@ -595,7 +616,8 @@ GET    /api/v1/support/ai/knowledge/jobs/{job_id}
 
 ### 11.3 部署配置
 
-配置中心保存值优先于环境变量；环境变量作为冷启动/灾备回退：
+店铺显式绑定的配置档案优先，其次是数据库中的平台默认档案；环境变量只作为未绑定店铺的
+冷启动/灾备回退：
 
 ```text
 SUPPORT_AI_SETTINGS_MASTER_KEY
@@ -603,6 +625,7 @@ SUPPORT_AI_ENABLED
 SUPPORT_AI_BASE_URL
 SUPPORT_AI_API_KEY
 SUPPORT_AI_MODEL
+SUPPORT_AI_MODEL_DISPLAY_NAME
 SUPPORT_AI_TIMEOUT_SECONDS
 SUPPORT_AI_MAX_OUTPUT_TOKENS
 SUPPORT_AI_TEMPERATURE
@@ -664,7 +687,7 @@ knowledge.approve
 
 已新增 `/console/support/ai`，包含：
 
-1. **概览**：运行模式、索引健康、近期 Run、自动回答/转人工/失败趋势。
+1. **概览**：当前店铺启停、模型展示名、索引健康、近期 Run、自动回答/转人工/失败趋势。
 2. **知识来源**：SKU 索引、文件列表、分类、审核、版本、状态和错误。
 3. **回答策略**：允许主题、强制人工主题、语言、品牌语气和安全失败文案。
 4. **测试实验室**：输入真实问题，查看改写、候选证据、回答、引用和 Validator。
@@ -768,15 +791,15 @@ knowledge.approve
 
 - 任务 queue wait、各 stage p50/p95、模型和工具错误率。
 - retrieval no-result、low-support、conflict、citation validation failure。
-- DRAFT 采用/修改/拒绝率，SHADOW correctness，AUTO resolution/handoff/repeat contact。
+- 测试集 correctness、线上 resolution/handoff/repeat contact 和人工接管率。
 - 每租户 Token、成本、日限额和 provider 限流。
 - 每来源命中、解决、失败和内容缺口。
 
 ### 17.2 告警与开关
 
 - 跨租户或敏感字段 guardrail 命中立即产生安全告警。
-- 引用验证失败、模型失败和 tool failure 持续升高时自动降级到 DRAFT/人工。
-- 支持平台级 kill switch、租户 mode 和单会话 suspend 三层停止方式。
+- 引用验证失败、模型失败和 tool failure 持续升高时自动转人工或关闭店铺智能客服。
+- 支持平台 API 档案停用、店铺启停和单会话 suspend 三层停止方式。
 - Provider route、Prompt、策略和 Agent 版本可快速回退到上一个已批准版本。
 
 ## 18. 实施阶段
@@ -799,7 +822,7 @@ knowledge.approve
 
 验收：边界、版本、跨租户、引用 renderer 和 migration 测试全部通过。
 
-### Phase 2：SKU DRAFT/SHADOW 回答（v1 已完成）
+### Phase 2：SKU 受控回答与平台验证（v1 已完成）
 
 - 实现 ChatModelPort/adapter、Provider route 和 FakeChatModel。
 - 实现客服 Retriever、编排器、结构化回答和 Validator 链。
@@ -817,12 +840,12 @@ knowledge.approve
 
 验收：客户安全标题、引用定位、撤销、版本和 Prompt injection 测试通过。
 
-### Phase 4：`AUTO_LIMITED`（功能已完成，生产灰度由运营启用）
+### Phase 4：店铺级安全自动回答（功能已完成，生产启用由运营控制）
 
 - 仅开放批准的商品/品牌知识主题。
 - Widget 展示 AI、引用、处理状态和转人工。
 - 人工接管、并发 ownership 和失败降级完整上线。
-- 先小租户/小流量灰度，持续对比 Shadow 与人工结果。
+- 先小店铺/小流量灰度，持续对比平台验证集与人工结果。
 
 验收：运行契约第 16、20 节全部满足，紧急停用和回退演练通过。
 
