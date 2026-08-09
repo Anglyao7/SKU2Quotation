@@ -7,8 +7,7 @@ export type TenantModuleCode =
   | "support_ai"
   | "inquiries"
   | "quotations"
-  | "subaccounts"
-  | "team";
+  | "subaccounts";
 
 export interface Tenant {
   id: string;

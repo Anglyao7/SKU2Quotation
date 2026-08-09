@@ -47,7 +47,7 @@ export function AiSearchPage() {
 
   return (
     <div className="core-workspace">
-      <CorePageHeading eyebrow={t("AI 产品搜索")} title={t("说出需求，获得可追溯的匹配")} description={t("在当前租户已批准的产品知识中组合关键词、语义、属性与供应商信号。")} />
+      <CorePageHeading eyebrow={t("AI 产品搜索")} title={t("说出需求，获得可追溯的匹配")} description={t("优先匹配 SKU、商品名、标签与分类，再用语义搜索补充相近商品。")} />
       <Card className="core-search-hero">
         <form onSubmit={submit} className="core-ai-query">
           <Sparkle size={26} />
@@ -64,7 +64,7 @@ export function AiSearchPage() {
             <div><Heading size="5">{t("找到 {count} 个匹配", { count: response.results.length })}</Heading><Text size="2" color="gray">“{response.query}”</Text></div>
             <div className="core-provenance">
               <Badge color="jade"><ShieldCheck />{t("仅搜索当前工作区")}</Badge>
-              <Badge color="gray">{t("关键词 + 语义匹配")}</Badge>
+              <Badge color="gray">{t("文本匹配优先 · 语义补充")}</Badge>
             </div>
           </div>
           {response.degraded ? <Card className="core-warning"><WarningCircle /><Text size="2">{t("部分智能匹配能力暂不可用，已自动使用可用信号继续搜索。")}</Text></Card> : null}

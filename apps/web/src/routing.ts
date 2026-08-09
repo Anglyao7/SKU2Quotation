@@ -7,7 +7,6 @@ export const LEGACY_WORKSPACE_PATHS = {
   inquiries: "/inquiries",
   quotations: "/quotations",
   account: "/account",
-  permissions: "/system/permissions",
 } as const;
 
 export const CONSOLE_WORKSPACE_PATHS = {
@@ -19,5 +18,4 @@ export const CONSOLE_WORKSPACE_PATHS = {
   inquiries: "/console/inquiries",
   quotations: "/console/quotes",
   account: "/console/account",
-  permissions: "/console/system/permissions",
 } as const;

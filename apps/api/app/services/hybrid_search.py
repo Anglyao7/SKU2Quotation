@@ -23,23 +23,24 @@ from ..product_supplier_models import (
 from ..public_catalog_models import PublicCatalogOfferRow
 from .embedding import (
     EmbeddingProvider,
+    EmbeddingProviderError,
     cosine_similarity,
     normalize_text,
 )
 from .embedding_configuration import resolved_text_embedding_provider
 
 
-RANKING_VERSION = "hybrid-product-v2"
+RANKING_VERSION = "hybrid-product-v3-lexical-first"
 UNCATEGORIZED_CATEGORY_NAME = "未分类"
 WEIGHTS = {
-    "keyword": 0.32,
-    "semantic": 0.45,
-    "attribute": 0.06,
-    "tag": 0.12,
-    "supplier": 0.05,
+    "keyword": 0.50,
+    "semantic": 0.25,
+    "attribute": 0.07,
+    "tag": 0.16,
+    "supplier": 0.02,
 }
 MINIMUM_RESULT_SCORE = 0.20
-RELATIVE_RESULT_FLOOR = 0.78
+RELATIVE_RESULT_FLOOR = 0.62
 SEARCH_SEGMENT_PATTERN = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
 SINGLE_CHARACTER_STOPWORDS = {"的", "了", "和", "与", "及", "或", "一", "个", "款"}
 QUERY_NOISE_PHRASES = (
@@ -90,7 +91,67 @@ def _score_overlap(query_tokens: set[str], value: str) -> float:
     if not query_tokens:
         return 0.0
     value_tokens = _retrieval_tokens(value)
-    return min(1.0, len(query_tokens & value_tokens) / len(query_tokens))
+    return min(
+        1.0,
+        sum(_token_match_quality(token, value_tokens) for token in query_tokens)
+        / len(query_tokens),
+    )
+
+
+def _token_match_quality(query_token: str, value_tokens: Collection[str]) -> float:
+    """Return exact or prefix/substring token similarity without semantic vectors."""
+
+    if query_token in value_tokens:
+        return 1.0
+    return max(
+        (_token_pair_match_quality(query_token, value_token) for value_token in value_tokens),
+        default=0.0,
+    )
+
+
+def _token_pair_match_quality(query_token: str, value_token: str) -> float:
+    if query_token == value_token:
+        return 1.0
+    if not query_token.isascii() or len(query_token) < 2:
+        return 0.0
+    if not value_token.isascii() or len(value_token) < 2:
+        return 0.0
+    if query_token not in value_token and value_token not in query_token:
+        return 0.0
+    length_ratio = min(len(query_token), len(value_token)) / max(
+        len(query_token), len(value_token)
+    )
+    return min(0.95, 0.70 + 0.25 * length_ratio)
+
+
+def _weighted_query_token_weights(
+    query_tokens: set[str],
+    *,
+    document_frequency: Counter[str],
+    document_count: int,
+) -> dict[str, float]:
+    searchable_query_tokens = {
+        token: max(
+            (
+                frequency
+                for value_token, frequency in document_frequency.items()
+                if _token_pair_match_quality(token, value_token) > 0
+            ),
+            default=0,
+        )
+        for token in query_tokens
+    }
+    searchable_query_tokens = {
+        token: frequency
+        for token, frequency in searchable_query_tokens.items()
+        if frequency > 0
+    }
+    return {
+        token: (
+            1.0 + math.log((document_count + 1) / (frequency + 1))
+        ) * min(1.6, 0.7 + len(token) * 0.3)
+        for token, frequency in searchable_query_tokens.items()
+    }
 
 
 def _weighted_query_overlap(
@@ -99,25 +160,51 @@ def _weighted_query_overlap(
     *,
     document_frequency: Counter[str],
     document_count: int,
+    query_weights: dict[str, float] | None = None,
 ) -> float:
-    searchable_query_tokens = {
-        token for token in query_tokens if document_frequency.get(token, 0) > 0
-    }
-    if not searchable_query_tokens:
+    weights = query_weights or _weighted_query_token_weights(
+        query_tokens,
+        document_frequency=document_frequency,
+        document_count=document_count,
+    )
+    if not weights:
         return 0.0
-    weights = {
-        token: (
-            1.0 + math.log((document_count + 1) / (document_frequency[token] + 1))
-        ) * min(1.6, 0.7 + len(token) * 0.3)
-        for token in searchable_query_tokens
-    }
     total_weight = sum(weights.values())
     if total_weight <= 0:
         return 0.0
     matched_weight = sum(
-        weight for token, weight in weights.items() if token in value_tokens
+        weight * _token_match_quality(token, value_tokens)
+        for token, weight in weights.items()
     )
     return min(1.0, matched_weight / total_weight)
+
+
+def _contains_query_phrase(query: str, value: str) -> bool:
+    compact_query = _compact_search_text(query)
+    if len(compact_query) < 2:
+        return False
+    return compact_query in _compact_search_text(value)
+
+
+def _lexical_priority(
+    *,
+    exact_code: bool,
+    phrase_match: bool,
+    keyword: float,
+    attribute: float,
+    tag: float,
+) -> int:
+    """Put explicit text matches ahead of semantic-only retrieval."""
+
+    if exact_code:
+        return 4
+    if phrase_match:
+        return 3
+    if keyword >= 0.72 or tag >= 0.72:
+        return 2
+    if keyword >= 0.18 or attribute >= 0.40 or tag >= 0.35:
+        return 1
+    return 0
 
 
 def _compact_search_text(value: str) -> str:
@@ -220,6 +307,72 @@ def _semantic_scores(
         reverse=True,
     )[:candidate_limit]
     return dict(scored)
+
+
+def _postgres_semantic_candidate_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    query_vector: list[float],
+    embedder: EmbeddingProvider,
+    candidate_limit: int,
+    product_ids: list[UUID] | None,
+) -> list[tuple[UUID, UUID, float]]:
+    vector_expression = cast(
+        EmbeddingRow.embedding,
+        VECTOR(embedder.identity.dimensions),
+    )
+    distance = vector_expression.cosine_distance(query_vector).label("distance")
+    statement = (
+        select(
+            KnowledgeDocumentRow.source_entity_id,
+            KnowledgeChunkRow.id,
+            distance,
+        )
+        .select_from(EmbeddingRow)
+        .join(
+            KnowledgeChunkRow,
+            (KnowledgeChunkRow.tenant_id == EmbeddingRow.tenant_id)
+            & (KnowledgeChunkRow.id == EmbeddingRow.entity_id),
+        )
+        .join(
+            KnowledgeDocumentRow,
+            (KnowledgeDocumentRow.tenant_id == KnowledgeChunkRow.tenant_id)
+            & (KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id),
+        )
+        .join(
+            ProductRow,
+            (ProductRow.tenant_id == KnowledgeDocumentRow.tenant_id)
+            & (ProductRow.id == KnowledgeDocumentRow.source_entity_id),
+        )
+        .outerjoin(
+            ProductCategoryRow,
+            (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+            & (ProductCategoryRow.id == ProductRow.category_id)
+            & (ProductCategoryRow.status == "ACTIVE"),
+        )
+        .where(
+            EmbeddingRow.tenant_id == tenant_id,
+            EmbeddingRow.model_provider == embedder.identity.provider,
+            EmbeddingRow.model_name == embedder.identity.model_name,
+            EmbeddingRow.model_version == embedder.identity.model_version,
+            EmbeddingRow.dimensions == embedder.identity.dimensions,
+            EmbeddingRow.status == "ACTIVE",
+            KnowledgeChunkRow.status == "ACTIVE",
+            KnowledgeDocumentRow.status == "ACTIVE",
+            KnowledgeDocumentRow.source_entity_type == "PRODUCT",
+            ProductRow.status == "ACTIVE",
+            or_(
+                ProductCategoryRow.id.is_(None),
+                func.trim(ProductCategoryRow.name) != UNCATEGORIZED_CATEGORY_NAME,
+            ),
+        )
+        .order_by(distance)
+        .limit(candidate_limit)
+    )
+    if product_ids is not None:
+        statement = statement.where(ProductRow.id.in_(product_ids))
+    return list(session.execute(statement).all())
 
 
 def _tag_texts(
@@ -366,71 +519,26 @@ def hybrid_product_search(
 
     query_vector: list[float] | None = None
     preselected_semantic_by_chunk: dict[UUID, float] | None = None
+    semantic_unavailable = False
     if session.bind is not None and session.bind.dialect.name == "postgresql":
         # PostgreSQL can rank vectors before ORM hydration. Keeping this candidate
         # set bounded prevents a large catalog search from materializing every
         # document, chunk, attribute, tag and supplier row in the API process.
-        query_vector = embedder.embed([query])[0]
         candidate_limit = min(2_000, max(96, limit * 8))
         vector_candidate_limit = max(64, candidate_limit * 3 // 4)
-        vector_expression = cast(
-            EmbeddingRow.embedding,
-            VECTOR(embedder.identity.dimensions),
-        )
-        distance = vector_expression.cosine_distance(query_vector).label("distance")
-        semantic_statement = (
-            select(
-                KnowledgeDocumentRow.source_entity_id,
-                KnowledgeChunkRow.id,
-                distance,
+        try:
+            query_vector = embedder.embed([query])[0]
+            semantic_rows = _postgres_semantic_candidate_rows(
+                session,
+                tenant_id=tenant_id,
+                query_vector=query_vector,
+                embedder=embedder,
+                candidate_limit=vector_candidate_limit,
+                product_ids=allowed_product_ids,
             )
-            .select_from(EmbeddingRow)
-            .join(
-                KnowledgeChunkRow,
-                (KnowledgeChunkRow.tenant_id == EmbeddingRow.tenant_id)
-                & (KnowledgeChunkRow.id == EmbeddingRow.entity_id),
-            )
-            .join(
-                KnowledgeDocumentRow,
-                (KnowledgeDocumentRow.tenant_id == KnowledgeChunkRow.tenant_id)
-                & (KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id),
-            )
-            .join(
-                ProductRow,
-                (ProductRow.tenant_id == KnowledgeDocumentRow.tenant_id)
-                & (ProductRow.id == KnowledgeDocumentRow.source_entity_id),
-            )
-            .outerjoin(
-                ProductCategoryRow,
-                (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
-                & (ProductCategoryRow.id == ProductRow.category_id)
-                & (ProductCategoryRow.status == "ACTIVE"),
-            )
-            .where(
-                EmbeddingRow.tenant_id == tenant_id,
-                EmbeddingRow.model_provider == embedder.identity.provider,
-                EmbeddingRow.model_name == embedder.identity.model_name,
-                EmbeddingRow.model_version == embedder.identity.model_version,
-                EmbeddingRow.dimensions == embedder.identity.dimensions,
-                EmbeddingRow.status == "ACTIVE",
-                KnowledgeChunkRow.status == "ACTIVE",
-                KnowledgeDocumentRow.status == "ACTIVE",
-                KnowledgeDocumentRow.source_entity_type == "PRODUCT",
-                ProductRow.status == "ACTIVE",
-                or_(
-                    ProductCategoryRow.id.is_(None),
-                    func.trim(ProductCategoryRow.name)
-                    != UNCATEGORIZED_CATEGORY_NAME,
-                ),
-            )
-            .order_by(distance)
-            .limit(vector_candidate_limit)
-        )
-        if allowed_product_ids is not None:
-            semantic_statement = semantic_statement.where(
-                ProductRow.id.in_(allowed_product_ids)
-            )
-        semantic_rows = session.execute(semantic_statement).all()
+        except EmbeddingProviderError:
+            semantic_unavailable = True
+            semantic_rows = []
         candidate_product_ids = set(
             dict.fromkeys(
                 product_id
@@ -461,6 +569,11 @@ def hybrid_product_search(
             func.lower(func.coalesce(ProductRow.product_code, "")),
             func.lower(ProductRow.name),
             func.lower(func.coalesce(ProductRow.description, "")),
+            func.lower(func.coalesce(SkuRow.sku_code, "")),
+            func.lower(func.coalesce(SkuRow.name, "")),
+            func.lower(func.coalesce(SkuRow.barcode, "")),
+            func.lower(func.coalesce(ProductCategoryRow.name, "")),
+            func.lower(func.coalesce(ProductCategoryRow.path, "")),
             func.lower(KnowledgeDocumentRow.title),
             func.lower(KnowledgeChunkRow.content),
             func.lower(cast(PublicCatalogOfferRow.tags, Text)),
@@ -560,12 +673,22 @@ def hybrid_product_search(
         for tokens in searchable_tokens_by_document.values()
         for token in tokens
     )
-    if query_vector is None:
-        query_vector = embedder.embed([query])[0]
-    semantic_by_chunk = (
-        preselected_semantic_by_chunk
-        if preselected_semantic_by_chunk is not None
-        else _semantic_scores(
+    query_token_weights = _weighted_query_token_weights(
+        query_tokens,
+        document_frequency=document_frequency,
+        document_count=len(document_rows),
+    )
+    if query_vector is None and not semantic_unavailable:
+        try:
+            query_vector = embedder.embed([query])[0]
+        except EmbeddingProviderError:
+            semantic_unavailable = True
+    if semantic_unavailable or query_vector is None:
+        semantic_by_chunk = {}
+    elif preselected_semantic_by_chunk is not None:
+        semantic_by_chunk = preselected_semantic_by_chunk
+    else:
+        semantic_by_chunk = _semantic_scores(
             session,
             tenant_id=tenant_id,
             chunk_ids=[chunk.id for chunk in chunks],
@@ -573,7 +696,6 @@ def hybrid_product_search(
             embedder=embedder,
             candidate_limit=min(len(chunks), max(96, limit * 12)),
         )
-    )
     product_ids = [product.id for _, product in document_rows]
     attribute_text = _attribute_texts(session, tenant_id=tenant_id, product_ids=product_ids)
     tag_text = _tag_texts(session, tenant_id=tenant_id, product_ids=product_ids)
@@ -582,7 +704,7 @@ def hybrid_product_search(
     if not semantic_by_chunk:
         degraded_channels.append("semantic")
 
-    ranked: list[tuple[bool, float, dict[str, Any]]] = []
+    ranked: list[tuple[int, float, dict[str, Any]]] = []
     for document, product in document_rows:
         product_chunks = chunks_by_document.get(document.id, [])
         exact_code = bool(product.product_code) and normalized_query == normalize_text(product.product_code or "")
@@ -591,9 +713,29 @@ def hybrid_product_search(
             searchable_tokens_by_document.get(document.id, set()),
             document_frequency=document_frequency,
             document_count=len(document_rows),
+            query_weights=query_token_weights,
         )
         attribute = _score_overlap(query_tokens, attribute_text.get(product.id, ""))
         tag = _score_tag_relevance(query, query_tokens, tag_text.get(product.id, []))
+        phrase_match = _contains_query_phrase(
+            query,
+            "\n".join(
+                (
+                    product.product_code or "",
+                    product.name,
+                    product.description or "",
+                    searchable_text_by_document.get(document.id, ""),
+                    " ".join(tag_text.get(product.id, [])),
+                )
+            ),
+        )
+        lexical_priority = _lexical_priority(
+            exact_code=exact_code,
+            phrase_match=phrase_match,
+            keyword=keyword,
+            attribute=attribute,
+            tag=tag,
+        )
         best_chunk = max(
             product_chunks,
             key=lambda chunk: semantic_by_chunk.get(chunk.id, 0.0),
@@ -637,14 +779,21 @@ def hybrid_product_search(
             "ranking_version": RANKING_VERSION,
             "degraded_channels": list(degraded_channels),
         }
-        ranked.append((exact_code, final_score, result))
+        ranked.append((lexical_priority, final_score, result))
     ranked.sort(key=lambda item: (item[0], item[1], item[2]["product_code"] or ""), reverse=True)
     if ranked:
-        score_floor = max(MINIMUM_RESULT_SCORE, ranked[0][1] * RELATIVE_RESULT_FLOOR)
+        best_semantic_score = max(
+            (score for priority, score, _result in ranked if priority == 0),
+            default=0.0,
+        )
+        score_floor = max(
+            MINIMUM_RESULT_SCORE,
+            best_semantic_score * RELATIVE_RESULT_FLOOR,
+        )
         ranked = [
             item
             for item in ranked
-            if item[0] or item[1] >= score_floor
+            if item[0] > 0 or item[1] >= score_floor
         ]
     return {
         "query": query,

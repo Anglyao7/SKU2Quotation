@@ -54,7 +54,11 @@ from ..services.catalog_language_packages import (
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
 from ..services.embedding import EmbeddingProviderError
-from ..services.hybrid_search import _retrieval_tokens, hybrid_product_search
+from ..services.hybrid_search import (
+    _retrieval_tokens,
+    _score_overlap,
+    hybrid_product_search,
+)
 from ..services.rbac import list_permissions
 from ..services.translation import (
     TranslationProvider,
@@ -1555,12 +1559,7 @@ def _lexical_semantic_rows(rows: list[object], *, query: str) -> list[object]:
             category_name,
             *tag_values,
         ]
-        searchable_tokens = _retrieval_tokens(" ".join(fields))
-        coverage = (
-            len(query_tokens & searchable_tokens) / len(query_tokens)
-            if query_tokens
-            else 0.0
-        )
+        coverage = _score_overlap(query_tokens, " ".join(fields))
         score = coverage
         if sku_code == normalized_query:
             score += 2.0
@@ -1631,6 +1630,18 @@ def _vector_semantic_rows(
     now: datetime,
     category: str | None,
 ) -> list[object]:
+    # Text matches are sourced directly from the published catalog, so a product
+    # remains searchable even when its knowledge index is missing or stale.
+    # Semantic retrieval only supplements this ordered lexical result set.
+    lexical_rows = _bounded_public_lexical_rows(
+        session,
+        tenant_id=tenant_id,
+        query=query,
+        now=now,
+        category=category,
+    )
+    if lexical_rows:
+        return lexical_rows
     result_limit = _positive_int_environment(
         "PUBLIC_SEMANTIC_RESULT_LIMIT",
         200,
@@ -1653,13 +1664,7 @@ def _vector_semantic_rows(
         category=category,
     )
     if not result["results"]:
-        return _bounded_public_lexical_rows(
-            session,
-            tenant_id=tenant_id,
-            query=query,
-            now=now,
-            category=category,
-        )
+        return lexical_rows
     rank_by_product_id = {
         item["product_id"]: index
         for index, item in enumerate(result["results"])
