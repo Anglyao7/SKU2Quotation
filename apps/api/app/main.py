@@ -21,6 +21,7 @@ from .routers.public_catalog import router as public_catalog_router
 from .routers.quote_templates import router as quote_templates_router
 from .routers.customer_accounts import router as customer_accounts_router
 from .routers.catalog_translations import router as catalog_translations_router
+from .routers.catalog_shares import router as catalog_shares_router
 from .routers.workspace import router as workspace_router
 from .runtime_config import cors_origins, validate_startup_configuration
 from .saas_seed import demo_seed_enabled, seed_saas_foundation
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
         quote_templates_router,
         customer_accounts_router,
         catalog_translations_router,
+        catalog_shares_router,
         workspace_router,
         knowledge_search_router,
         system_router,

@@ -345,6 +345,7 @@ def _public_product_id_statement(
     query: str,
     category: str | None,
     tags: set[str],
+    product_ids: set[UUID] | None = None,
     hot: bool = False,
 ):
     statement = _public_catalog_statement(
@@ -354,6 +355,11 @@ def _public_product_id_statement(
         category=category,
     )
     statement = _with_catalog_tag_filters(session, statement, tags=tags)
+    if product_ids is not None:
+        if not product_ids:
+            statement = statement.where(ProductRow.id.is_(None))
+        else:
+            statement = statement.where(ProductRow.id.in_(product_ids))
     uncategorized = case((ProductCategoryRow.id.is_(None), 1), else_=0)
     root_sort = func.coalesce(
         ParentProductCategoryRow.sort_order,
@@ -514,6 +520,7 @@ def list_public_product_ids_page(
     tags: set[str],
     page: int,
     page_size: int,
+    product_ids: set[UUID] | None = None,
     hot: bool = False,
 ) -> list[UUID]:
     statement = _public_product_id_statement(
@@ -523,6 +530,7 @@ def list_public_product_ids_page(
         query=query,
         category=category,
         tags=tags,
+        product_ids=product_ids,
         hot=hot,
     )
     return [
@@ -541,6 +549,7 @@ def count_public_catalog_products(
     query: str,
     category: str | None,
     tags: set[str],
+    product_ids: set[UUID] | None = None,
 ) -> int:
     statement = _public_catalog_statement(
         tenant_id=tenant_id,
@@ -549,6 +558,10 @@ def count_public_catalog_products(
         category=category,
     )
     statement = _with_catalog_tag_filters(session, statement, tags=tags)
+    if product_ids is not None:
+        if not product_ids:
+            return 0
+        statement = statement.where(ProductRow.id.in_(product_ids))
     matching_ids = (
         statement.with_only_columns(ProductRow.id)
         .order_by(None)
@@ -612,6 +625,7 @@ def list_public_catalog_category_ids(
     now: datetime,
     query: str,
     category: str | None,
+    product_ids: set[UUID] | None = None,
 ) -> set[UUID]:
     statement = _public_catalog_statement(
         tenant_id=tenant_id,
@@ -619,6 +633,10 @@ def list_public_catalog_category_ids(
         query=query,
         category=category,
     )
+    if product_ids is not None:
+        if not product_ids:
+            return set()
+        statement = statement.where(ProductRow.id.in_(product_ids))
     statement = (
         statement.with_only_columns(ProductRow.category_id)
         .where(ProductRow.category_id.is_not(None))

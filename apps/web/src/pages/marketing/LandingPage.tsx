@@ -79,52 +79,61 @@ const pricingPlans = [
   {
     id: "standard",
     code: "ATC / 01",
-    name: "Standard",
-    chineseName: "标准版",
-    billing: "基础订阅",
-    audience: "适合刚开始整理商品资料的团队",
+    name: "基础档",
+    englishName: "Standard",
+    billing: "年度订阅",
+    price: "¥2,980",
+    audience: "适合需要快速建立数字化产品图册的团队",
     recommended: false,
     features: [
-      "所有基础图册功能",
-      "有限配额的向量化功能",
-      "基础模型的 AI 回复功能",
-      "单一主账号，不支持子账号",
+      "AI 产品库向量化搜索",
+      "在线询价：人工手动回复",
+      "最多 2 个子账号",
+      "多语言图册",
+      "AI 智能图册（H5）",
     ],
   },
   {
     id: "silver",
     code: "ATC / 02",
-    name: "Silver",
-    chineseName: "银辉版",
-    billing: "成长订阅",
-    audience: "适合持续扩充商品与协作规模的团队",
+    name: "专业版",
+    englishName: "Professional",
+    billing: "年度订阅",
+    price: "¥4,980",
+    audience: "适合需要 AI 询价与供应链协同的成长型团队",
     recommended: true,
     features: [
-      "所有基础图册功能",
-      "更高配额的向量化功能",
-      "更优质模型的 AI 回复功能",
-      "完整库存管理",
-      "最多 3 个子账号",
-      "网站前台装修",
+      "AI 产品库向量化搜索",
+      "在线询价：AI 自动回复（训练企业资料、SKU 与政策知识）",
+      "AI 智能图册（H5）",
+      "多语言图册",
+      "最多 4 个子账号",
+      "AI 外贸单证工作台",
+      "供应链管理",
+      "AI 智能数据分析与报告",
+      "优先技术支持",
     ],
   },
   {
     id: "elite",
     code: "ATC / 03",
-    name: "Elite",
-    chineseName: "鎏金版",
-    billing: "专属订阅",
-    audience: "适合需要完整能力与深度定制的团队",
+    name: "企业版",
+    englishName: "Enterprise",
+    billing: "年度订阅",
+    price: "¥9,800",
+    audience: "适合需要完整外贸智能化能力的规模化团队",
     recommended: false,
     features: [
-      "所有基础图册功能",
-      "无限向量化功能",
-      "更优质模型的 AI 回复功能",
-      "最多 5 个子账号",
-      "系统全部独立模块",
-      "未来更新的所有独立模块",
-      "定制开发功能",
-      "网站前台装修",
+      "AI 产品库向量化搜索",
+      "在线询价：AI 自动回复（训练企业资料、SKU 与政策知识）",
+      "AI 智能图册（H5）",
+      "多语言图册",
+      "最多 10 个子账号",
+      "AI 外贸单证工作台",
+      "最优先技术支持",
+      "智能进销存库存管理系统",
+      "AI 智能数据分析与报告",
+      "AI 智能拓客",
     ],
   },
 ] as const;
@@ -421,7 +430,7 @@ export function LandingPage() {
               </div>
               <div className={styles.pricingIntro}>
                 <p>从商品资料归整，到更深的智能检索、团队协作与独立模块，选择与你当下规模相称的版本。</p>
-                <span>具体金额按 SKU 规模与服务范围核定</span>
+                <span>价格为年度服务费 · 具体交付范围以服务协议为准</span>
               </div>
             </Reveal>
 
@@ -438,7 +447,7 @@ export function LandingPage() {
                     <div className={styles.pricingCardSurface}>
                       <span className={styles.pricingMetalBorder} aria-hidden="true" />
                       <span className={styles.pricingCursorLight} aria-hidden="true" />
-                      <span className={styles.pricingCardGhost} aria-hidden="true">{plan.name}</span>
+                      <span className={styles.pricingCardGhost} aria-hidden="true">{plan.englishName}</span>
 
                       <div className={styles.pricingCardMeta}>
                         <span>{plan.code}</span>
@@ -448,14 +457,14 @@ export function LandingPage() {
                       <div className={styles.pricingIdentity}>
                         <span className={styles.pricingChip} aria-hidden="true"><i /><i /><i /></span>
                         <div>
-                          <span>{plan.chineseName}</span>
+                          <span>{plan.englishName}</span>
                           <h3 id={`pricing-${plan.id}`}>{plan.name}</h3>
                         </div>
                       </div>
 
                       <div className={styles.pricingBilling}>
                         <strong>{plan.billing}</strong>
-                        <span>联系定价</span>
+                        <span>{plan.price}</span>
                       </div>
 
                       <ul className={styles.pricingFeatures}>

@@ -63,6 +63,23 @@ export interface Storefront {
   support_widget?: PublicSupportWidget;
 }
 
+export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY";
+
+export interface CatalogSharePublic {
+  id: string;
+  token: string;
+  target_type: CatalogShareTargetType;
+  title: string;
+  item_count: number;
+  category_id?: string | null;
+  category_name?: string | null;
+  category_path?: string | null;
+  share_path: string;
+  store_name: string;
+  store_logo_url?: string | null;
+  created_at: string;
+}
+
 export interface StorefrontSupportAction {
   slot: 2 | 3;
   visible: boolean;

@@ -38,7 +38,6 @@ import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import {
   normalizeStorefrontLocale,
   storefrontDirection,
-  storefrontLocaleQuery,
   storefrontText,
 } from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
@@ -77,9 +76,13 @@ export function ProductDetailPage() {
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
-  const localeQuery = storefrontLocaleQuery(locale);
-  const storefrontHome = `/${encodeURIComponent(store.slug)}${localeQuery}`;
   const location = useLocation();
+  const shareToken = new URLSearchParams(location.search).get("share")?.trim() || "";
+  const storefrontQuery = new URLSearchParams();
+  if (locale !== "zh-CN") storefrontQuery.set("lang", locale);
+  if (shareToken) storefrontQuery.set("share", shareToken);
+  const storefrontSearch = storefrontQuery.toString();
+  const storefrontHome = `/${encodeURIComponent(store.slug)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(store.slug),

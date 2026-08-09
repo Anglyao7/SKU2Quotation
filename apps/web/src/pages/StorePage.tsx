@@ -17,13 +17,14 @@ import {
   Fire,
   MagnifyingGlass,
   Rows,
+  ShareNetwork,
   Storefront as StoreIcon,
   X,
 } from "@phosphor-icons/react";
 import { ThinkingOrb } from "thinking-orbs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Link, useLoaderData } from "react-router-dom";
+import { Link, useLoaderData, useLocation } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
@@ -41,7 +42,7 @@ import {
   storefrontText,
 } from "../lib/storefrontLocale";
 import { readStorefrontViewState, writeStorefrontViewState } from "../lib/storefrontViewState";
-import type { StoreProduct, Storefront, StorefrontLocale } from "../types";
+import type { CatalogSharePublic, StoreProduct, Storefront, StorefrontLocale } from "../types";
 
 type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
 
@@ -184,6 +185,7 @@ function CategoryScrollTrack({
 
 export function StorePage() {
   const loadedStore = useLoaderData() as Storefront;
+  const location = useLocation();
   const tenantSlug = loadedStore.slug;
   const locale: StorefrontLocale = normalizeStorefrontLocale(loadedStore.locale);
   const t = useCallback(
@@ -192,9 +194,23 @@ export function StorePage() {
     ),
     [locale],
   );
-  const localeQuery = storefrontLocaleQuery(locale);
-  const storefrontHome = `/${encodeURIComponent(tenantSlug)}${localeQuery}`;
-  const [initialView] = useState(() => readStorefrontViewState(loadedStore.slug));
+  const shareToken = useMemo(
+    () => new URLSearchParams(location.search).get("share")?.trim() || "",
+    [location.search],
+  );
+  const sharedQuery = useMemo(() => {
+    const query = new URLSearchParams();
+    if (locale !== "zh-CN") query.set("lang", locale);
+    if (shareToken) query.set("share", shareToken);
+    const value = query.toString();
+    return value ? `?${value}` : "";
+  }, [locale, shareToken]);
+  const unsharedQuery = storefrontLocaleQuery(locale);
+  const storefrontHome = `/${encodeURIComponent(tenantSlug)}${sharedQuery}`;
+  const unsharedStorefrontHome = `/${encodeURIComponent(tenantSlug)}${unsharedQuery}`;
+  const [initialView] = useState(() => (
+    shareToken ? undefined : readStorefrontViewState(loadedStore.slug)
+  ));
   const [store, setStore] = useState<Storefront>(loadedStore);
   const [products, setProducts] = useState<StoreProduct[]>([]);
   const [total, setTotal] = useState(0);
@@ -202,6 +218,8 @@ export function StorePage() {
   const [page, setPage] = useState(initialView?.page ?? 1);
   const [pages, setPages] = useState(0);
   const [error, setError] = useState("");
+  const [catalogShare, setCatalogShare] = useState<CatalogSharePublic>();
+  const [shareError, setShareError] = useState("");
   const [search, setSearch] = useState(initialView?.search ?? "");
   const [deferredSearch, setDeferredSearch] = useState(initialView?.search.trim() ?? "");
   const [primaryCategory, setPrimaryCategory] = useState(initialView?.primaryCategory ?? "");
@@ -221,6 +239,7 @@ export function StorePage() {
   const paginationRef = useRef<HTMLElement>(null);
   const activeTenantRef = useRef(loadedStore.slug);
   const activeLocaleRef = useRef<StorefrontLocale>(locale);
+  const activeShareTokenRef = useRef(shareToken);
   const facetsLoadedRef = useRef(Boolean(loadedStore.categories?.length));
   const initialLoadPageRef = useRef<number | null>(initialView?.page ?? 1);
   const pendingScrollRestoreRef = useRef<number | null>(initialView?.scrollY ?? null);
@@ -234,11 +253,13 @@ export function StorePage() {
     setStore(loadedStore);
     const tenantChanged = activeTenantRef.current !== loadedStore.slug;
     const localeChanged = activeLocaleRef.current !== locale;
-    if (!tenantChanged && !localeChanged) return;
+    const shareChanged = activeShareTokenRef.current !== shareToken;
+    if (!tenantChanged && !localeChanged && !shareChanged) return;
     activeTenantRef.current = loadedStore.slug;
     activeLocaleRef.current = locale;
+    activeShareTokenRef.current = shareToken;
     facetsLoadedRef.current = false;
-    const nextView = readStorefrontViewState(loadedStore.slug);
+    const nextView = shareToken ? undefined : readStorefrontViewState(loadedStore.slug);
     setSearch(nextView?.search ?? "");
     setDeferredSearch(nextView?.search.trim() ?? "");
     setPrimaryCategory(nextView?.primaryCategory ?? "");
@@ -253,7 +274,24 @@ export function StorePage() {
     pendingScrollRestoreRef.current = nextView?.scrollY ?? null;
     setPage(nextView?.page ?? 1);
     setPages(0);
-  }, [loadedStore, locale]);
+  }, [loadedStore, locale, shareToken]);
+
+  useEffect(() => {
+    if (!shareToken) {
+      setCatalogShare(undefined);
+      setShareError("");
+      return;
+    }
+    let active = true;
+    setCatalogShare(undefined);
+    setShareError("");
+    void api.getCatalogShare(tenantSlug, shareToken)
+      .then((value) => { if (active) setCatalogShare(value); })
+      .catch((reason) => {
+        if (active) setShareError(reason instanceof Error ? reason.message : t("分享内容加载失败。"));
+      });
+    return () => { active = false; };
+  }, [shareToken, t, tenantSlug]);
 
   useEffect(() => {
     if (cartTenant === tenantSlug) writeStoreCart(tenantSlug, cart);
@@ -289,6 +327,7 @@ export function StorePage() {
         includeFacets,
         page: targetPage,
         locale,
+        shareToken: shareToken || undefined,
       });
       if (currentRequest !== requestId.current) return;
       if (includeFacets) facetsLoadedRef.current = true;
@@ -319,7 +358,7 @@ export function StorePage() {
         setLoading(false);
       }
     }
-  }, [tenantSlug, deferredSearch, category, locale, t]);
+  }, [tenantSlug, deferredSearch, category, locale, shareToken, t]);
 
   useEffect(() => {
     const targetPage = initialLoadPageRef.current ?? 1;
@@ -366,6 +405,7 @@ export function StorePage() {
         includeFacets: false,
         page: page + 1,
         locale,
+        shareToken: shareToken || undefined,
       }).catch(() => undefined);
     };
     const target = paginationRef.current;
@@ -392,6 +432,7 @@ export function StorePage() {
     page,
     pages,
     store.source_locale,
+    shareToken,
     tenantSlug,
   ]);
 
@@ -526,6 +567,16 @@ export function StorePage() {
     [categoryTree, primaryCategory],
   );
   const hasFilters = Boolean(search || category);
+  const shareDisplayTitle = useMemo(() => {
+    if (!catalogShare) return "";
+    if (catalogShare.target_type === "PRODUCTS") {
+      if (catalogShare.item_count === 1 && products[0]) return products[0].name;
+      return t("{count} 件商品精选", { count: catalogShare.item_count });
+    }
+    return store.category_options?.find(
+      (option) => option.value === catalogShare.category_path,
+    )?.label ?? catalogShare.category_name ?? catalogShare.title;
+  }, [catalogShare, products, store.category_options, t]);
   const hotSortActive = Boolean(store.hot_products_enabled && !hasFilters);
   const searchPending = Boolean(search.trim()) && (
     search.trim() !== deferredSearch || loading
@@ -559,6 +610,7 @@ export function StorePage() {
     });
   };
   const rememberCatalogPosition = () => {
+    if (shareToken) return;
     writeStorefrontViewState(tenantSlug, {
       page,
       scrollY: window.scrollY,
@@ -637,6 +689,29 @@ export function StorePage() {
         locale={locale}
       />
 
+      {shareToken ? (
+        <Container size="4" className="store-share-banner-wrap">
+          <section className={`store-share-banner${shareError ? " has-error" : ""}`} role="status">
+            <span className="store-share-banner-icon"><ShareNetwork weight="duotone" /></span>
+            <div>
+              <Text size="1" color="gray">{t("商家分享")}</Text>
+              <strong>{shareDisplayTitle || (shareError ? t("分享内容暂时不可用") : t("正在读取分享内容…"))}</strong>
+              <small>
+                {catalogShare
+                  ? t("{store} 为你分享了 {count} 件商品", {
+                      store: catalogShare.store_name,
+                      count: catalogShare.item_count,
+                    })
+                  : shareError || t("商品范围正在加载")}
+              </small>
+            </div>
+            <Button asChild size="1" variant="soft" color="gray">
+              <Link to={unsharedStorefrontHome}>{t("查看全部商品")}</Link>
+            </Button>
+          </section>
+        </Container>
+      ) : null}
+
       <main>
         <section className="catalog-section">
           <Container size="4">
@@ -647,7 +722,7 @@ export function StorePage() {
                   <Text size="1" color="gray">{t("输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找")}</Text>
                 </div>
                 <div className="filter-panel-actions">
-                  <Button
+                  {!shareToken ? <Button
                     type="button"
                     size="1"
                     variant="soft"
@@ -658,7 +733,7 @@ export function StorePage() {
                   >
                     {categoryLayout === "horizontal" ? <Columns size={15} weight="duotone" /> : <Rows size={15} weight="duotone" />}
                     {t(categoryLayout === "horizontal" ? "左侧分类" : "顶部分类")}
-                  </Button>
+                  </Button> : null}
                   {hasFilters && (
                     <Button className="filter-reset-button" size="1" variant="ghost" color="gray" onClick={resetFilters}>
                       <ArrowCounterClockwise size={15} />{t("清除筛选")}
@@ -692,7 +767,7 @@ export function StorePage() {
                   )}
                 </TextField.Root>
               </div>
-              <nav className="category-browser" aria-label={t("按两级分类筛选")}>
+              {!shareToken ? <nav className="category-browser" aria-label={t("按两级分类筛选")}>
                 {categoryLayout === "horizontal" ? (
                   <>
                     <div className="category-browser-row">
@@ -770,11 +845,11 @@ export function StorePage() {
                     </div>
                   </>
                 ) : null}
-              </nav>
+              </nav> : null}
             </div>
 
-            <div className={`results-container${categoryLayout === "vertical" ? " has-sidebar" : ""}`}>
-              {categoryLayout === "vertical" && (
+            <div className={`results-container${!shareToken && categoryLayout === "vertical" ? " has-sidebar" : ""}`}>
+              {!shareToken && categoryLayout === "vertical" && (
                 <aside className="category-sidebar">
                   <div className="category-sidebar-header">
                     <Text size="2" weight="medium">{t("商品分类")}</Text>
@@ -842,7 +917,7 @@ export function StorePage() {
             <div className="results-header" ref={resultsHeaderRef}>
               <div>
                 <div className="results-title-row">
-                  <Heading as="h2" size="5">{t(hasFilters ? "筛选结果" : "全部商品")}</Heading>
+                  <Heading as="h2" size="5">{shareDisplayTitle || t(hasFilters ? "筛选结果" : "全部商品")}</Heading>
                   {hotSortActive ? (
                     <Badge color="amber" variant="soft">
                       <Fire size={14} weight="fill" aria-hidden="true" />
@@ -895,7 +970,7 @@ export function StorePage() {
                     <ProductCard
                       key={product.id}
                       product={product}
-                      detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${localeQuery}`}
+                      detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
                       onOpenDetails={rememberCatalogPosition}
                       onPrefetchDetails={() => prefetchProductDetails(product.id)}
                       locale={locale}

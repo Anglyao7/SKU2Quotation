@@ -246,6 +246,7 @@ from .trade_flow_models import (  # noqa: E402,F401
 )
 
 from .public_catalog_models import (  # noqa: E402,F401
+    CatalogShareRow,
     PublicCatalogOfferRow,
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,

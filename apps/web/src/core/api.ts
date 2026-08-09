@@ -77,6 +77,8 @@ import type {
   TranslationProviderKind,
   TranslationReasoningEffort,
   CatalogLanguagePackInfo,
+  CatalogShare,
+  CatalogShareTargetType,
   CatalogTranslationJob,
   CatalogTranslationStatus,
   UiLocale,
@@ -2088,6 +2090,53 @@ export interface CategoryDeleteResult {
 
 export async function listCategories(): Promise<ProductCategory[]> {
   return (await request<ApiCategory[]>("/categories")).map(mapCategory);
+}
+
+interface ApiCatalogShare {
+  id: string;
+  token: string;
+  target_type: CatalogShareTargetType;
+  title: string;
+  item_count: number;
+  category_id?: string | null;
+  category_name?: string | null;
+  category_path?: string | null;
+  share_path: string;
+  store_name: string;
+  store_logo_url?: string | null;
+  created_at: string;
+}
+
+function mapCatalogShare(row: ApiCatalogShare): CatalogShare {
+  return {
+    id: row.id,
+    token: row.token,
+    targetType: row.target_type,
+    title: row.title,
+    itemCount: row.item_count,
+    categoryId: defined(row.category_id),
+    categoryName: defined(row.category_name),
+    categoryPath: defined(row.category_path),
+    sharePath: row.share_path,
+    storeName: row.store_name,
+    storeLogoUrl: defined(row.store_logo_url),
+    createdAt: row.created_at,
+  };
+}
+
+export async function createCatalogShare(input: {
+  targetType: CatalogShareTargetType;
+  skuIds?: string[];
+  categoryId?: string;
+}): Promise<CatalogShare> {
+  return mapCatalogShare(await request<ApiCatalogShare>("/catalog-shares", {
+    method: "POST",
+    body: JSON.stringify({
+      target_type: input.targetType,
+      sku_ids: input.skuIds ?? [],
+      category_id: input.categoryId ?? null,
+    }),
+  }));
 }
 
 export async function importCategories(file: File): Promise<CategoryImportResult> {

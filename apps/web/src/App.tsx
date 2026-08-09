@@ -149,8 +149,9 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
+  const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
-    const savedView = readStorefrontViewState(tenantSlug);
+    const savedView = shareToken ? undefined : readStorefrontViewState(tenantSlug);
     const category = savedView?.secondaryCategory || savedView?.primaryCategory;
     void api.prefetchStoreProducts(tenantSlug, {
       q: savedView?.search.trim() || undefined,
@@ -159,6 +160,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
       includeFacets: true,
       page: savedView?.page || 1,
       locale,
+      shareToken,
     }).catch(() => undefined);
     const store = await api.getStore(tenantSlug, locale);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
