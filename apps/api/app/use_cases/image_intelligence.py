@@ -42,7 +42,7 @@ def _provider():
 
 
 def _projection_response(embedding: ImageEmbeddingRow, observation: VisionObservationRow, *, idempotent: bool) -> ImageProjectionResponse:
-    return ImageProjectionResponse(observation_id=observation.id, embedding_id=embedding.id, product_id=embedding.product_id, product_image_id=embedding.product_image_id, model_provider=embedding.model_provider, model_name=embedding.model_name, model_version=embedding.model_version, dimensions=embedding.dimensions, quality_score=float(embedding.quality_score), labels=observation.labels, risks=observation.risks, idempotent=idempotent)
+    return ImageProjectionResponse(product_id=embedding.product_id, product_image_id=embedding.product_image_id, quality_score=float(embedding.quality_score), labels=observation.labels, risks=observation.risks, idempotent=idempotent)
 
 
 def project_product_image(session: Session, *, tenant_id: UUID, permissions: frozenset[str], image_id: UUID) -> ImageProjectionResponse:
@@ -119,7 +119,7 @@ def search_by_image(session: Session, *, tenant_id: UUID, membership_id: UUID, p
         similarity = float(candidate["similarity"])
         if similarity < 0.60:
             continue
-        ranked.append(ImageSearchResult(product_id=UUID(str(candidate["product_id"])), product_image_id=UUID(str(candidate["product_image_id"])), product_name=str(candidate["product_name"]), product_code=str(candidate["product_code"]) if candidate["product_code"] else None, visual_similarity=round(similarity, 6), classification="POSSIBLE_SAME_ITEM" if similarity >= 0.985 else "VISUALLY_SIMILAR", evidence={"query_hash": hashlib.sha256(content).hexdigest(), "corpus_hash": str(candidate["content_hash"]), "quality_score": float(candidate["quality_score"]), "model_version": provider.identity.model_version}, conflicts=[]))
+        ranked.append(ImageSearchResult(product_id=UUID(str(candidate["product_id"])), product_image_id=UUID(str(candidate["product_image_id"])), product_name=str(candidate["product_name"]), product_code=str(candidate["product_code"]) if candidate["product_code"] else None, visual_similarity=round(similarity, 6), classification="POSSIBLE_SAME_ITEM" if similarity >= 0.985 else "VISUALLY_SIMILAR", conflicts=[]))
     ranked.sort(key=lambda item: item.visual_similarity, reverse=True)
     deduped: list[ImageSearchResult] = []
     seen: set[UUID] = set()
@@ -135,4 +135,4 @@ def search_by_image(session: Session, *, tenant_id: UUID, membership_id: UUID, p
     expires_at = now + timedelta(hours=int(os.getenv("IMAGE_SEARCH_TTL_HOURS", "24")))
     row = ImageSearchRow(id=search_id, tenant_id=tenant_id, requested_by_membership_id=membership_id, query_object_key=source, query_hash=hashlib.sha256(content).hexdigest(), model_provider=provider.identity.provider, model_name=provider.identity.model_name, model_version=provider.identity.model_version, dimensions=provider.identity.dimensions, query_embedding=result.embedding, result_snapshot=[item.model_dump(mode="json") for item in deduped], warnings=warnings, status=status, expires_at=expires_at)
     session.add(row); session.commit()
-    return ImageSearchResponse(id=row.id, status=status, model_provider=row.model_provider, model_name=row.model_name, model_version=row.model_version, ranking_version="image-fusion-v1", expires_at=row.expires_at, warnings=warnings, results=deduped)
+    return ImageSearchResponse(id=row.id, status=status, expires_at=row.expires_at, warnings=warnings, results=deduped)

@@ -307,7 +307,7 @@ const router = createBrowserRouter([{
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "personal-center", element: <PermissionGate anyOf={["support.settings_manage"]}><PersonalCenterPage /></PermissionGate> },
-        { path: "system/permissions", element: <PermissionsPage /> },
+        { path: "system/permissions", element: <PermissionGate anyOf={["system.user_manage", "system.role_manage"]}><PermissionsPage /></PermissionGate> },
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "system/configuration", element: <PlatformAdminGate><ConfigurationCenterPage /></PlatformAdminGate> },
         { path: "system/translation", element: <Navigate to="/console/system/configuration?section=translation" replace /> },

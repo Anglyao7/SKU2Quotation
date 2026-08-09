@@ -123,7 +123,7 @@ function RunDetail({ run }: { run: SupportAIRun }) {
         <span><small>{t("识别语言")}</small><strong>{run.detectedLanguage || "—"}</strong></span>
         <span><small>{t("置信度")}</small><strong>{run.confidence === undefined ? "—" : percent(run.confidence)}</strong></span>
         <span><small>{t("证据数")}</small><strong>{run.retrievalCount}</strong></span>
-        <span><small>{t("模型")}</small><strong>{run.modelName || "—"}</strong></span>
+        <span><small>{t("运行模式")}</small><strong>{t(run.modeSnapshot)}</strong></span>
       </div>
       {run.normalizedQuery && run.normalizedQuery !== run.question ? (
         <div className="support-ai-normalized-query">
@@ -440,9 +440,9 @@ export function SupportAIPage() {
               <Tabs.Content value="knowledge" className="support-ai-tab-panel">
                 {canManageKnowledge ? (
                   <Card className="support-ai-upload-card">
-                    <div className="support-ai-panel-heading"><div><Text size="1" color="gray">{t("文件知识摄取")}</Text><Heading size="5">{t("上传企业资料")}</Heading></div><Badge color="blue">R2 + Embedding</Badge></div>
+                    <div className="support-ai-panel-heading"><div><Text size="1" color="gray">{t("文件知识摄取")}</Text><Heading size="5">{t("上传企业资料")}</Heading></div><Badge color="blue">{t("安全存储 + 智能索引")}</Badge></div>
                     <form className="support-ai-upload-form" onSubmit={(event) => void uploadKnowledge(event)}>
-                      <label className="support-ai-wide support-ai-file-field"><FileArrowUp /><span><strong>{uploadFile?.name || t("选择 PDF、DOCX、TXT 或 Markdown")}</strong><small>{t("最大 25 MB；文件先进行安全扫描，再上传 Cloudflare R2 并异步解析。")}</small></span><input id="support-ai-file-input" type="file" accept=".pdf,.docx,.txt,.md" onChange={(event) => setUploadFile(event.target.files?.[0])} required /></label>
+                      <label className="support-ai-wide support-ai-file-field"><FileArrowUp /><span><strong>{uploadFile?.name || t("选择 PDF、DOCX、TXT 或 Markdown")}</strong><small>{t("最大 25 MB；文件会先进行安全扫描，再加密存储并异步解析。")}</small></span><input id="support-ai-file-input" type="file" accept=".pdf,.docx,.txt,.md" onChange={(event) => setUploadFile(event.target.files?.[0])} required /></label>
                       <label><Text size="1" color="gray">{t("知识标题")}</Text><TextField.Root value={uploadTitle} onChange={(event) => setUploadTitle(event.target.value)} placeholder={uploadFile?.name.replace(/\.[^.]+$/, "") || t("例如：品牌介绍 2026")} /></label>
                       <label><Text size="1" color="gray">{t("文件语言")}</Text><TextField.Root value={uploadLanguage} onChange={(event) => setUploadLanguage(event.target.value)} placeholder="und / zh-CN / en" /></label>
                       <label><Text size="1" color="gray">{t("客户可用分类")}</Text><Select.Root value={uploadClassification} onValueChange={(value) => setUploadClassification(value as "PUBLIC" | "CUSTOMER_APPROVED")}><Select.Trigger /><Select.Content><Select.Item value="CUSTOMER_APPROVED">{t("客户回答可用（需批准）")}</Select.Item><Select.Item value="PUBLIC">{t("公开资料（需批准）")}</Select.Item></Select.Content></Select.Root></label>

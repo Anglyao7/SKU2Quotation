@@ -137,6 +137,7 @@ def test_language_package_builds_complete_versioned_payload(
     assert hashlib.sha256(raw).hexdigest() == build.content_sha256
     assert json.loads(raw) == build.payload
     assert build.payload["schema"] == "atc-catalog-language-pack"
+    assert build.payload["schema_version"] == 2
     assert build.payload["version"] == 1
     assert build.product_count == 1
     assert build.sku_count == 2
@@ -196,6 +197,7 @@ def test_incremental_language_package_reuses_unchanged_entries(
         translator=_PackageTranslator(),
         sku_translations={},
         previous_payload=initial.payload,
+        reuse_previous=True,
         full_rebuild=False,
     )
 
@@ -242,6 +244,7 @@ def test_incremental_package_detects_specification_changes_without_version_bump(
         translator=_PackageTranslator(),
         sku_translations={},
         previous_payload=initial.payload,
+        reuse_previous=True,
         full_rebuild=False,
     )
 

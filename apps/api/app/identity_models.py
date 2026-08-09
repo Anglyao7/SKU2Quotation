@@ -9,13 +9,19 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    JSON,
     String,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
 from .model_mixins import AuditTimestampMixin, utcnow
+from .tenant_modules import default_tenant_modules
+
+
+JSON_DOCUMENT = JSON().with_variant(JSONB(none_as_null=True), "postgresql")
 
 
 class OrganizationRow(AuditTimestampMixin, Base):
@@ -48,6 +54,11 @@ class TenantRow(AuditTimestampMixin, Base):
     default_locale: Mapped[str] = mapped_column(String(20), default="zh-CN", nullable=False)
     default_currency: Mapped[str] = mapped_column(String(3), default="CNY", nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", nullable=False)
+    enabled_modules: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=default_tenant_modules,
+        nullable=False,
+    )
     status: Mapped[str] = mapped_column(String(30), default="active", nullable=False, index=True)
 
     organization: Mapped[OrganizationRow] = relationship(back_populates="tenants")

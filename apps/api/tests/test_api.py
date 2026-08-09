@@ -189,6 +189,7 @@ from app.services.auth.service import (
 from app.production_bootstrap import bootstrap_production_owner
 from app.product_center_seed import seed_product_center_demo
 from app.tenant_slugs import RESERVED_TENANT_SLUGS, storefront_slug_from_name
+from app.tenant_modules import TENANT_MODULE_CODES
 from app.model_mixins import mark_deleted, restore_deleted
 from app.adapters.file_scanner import (
     DeterministicDevelopmentScanner,
@@ -1185,6 +1186,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
             },
         )
         assert configured.status_code == 200, configured.text
+        assert configured.headers["cache-control"] == "no-store"
         provider_payload = configured.json()
         assert provider_payload["source"] == "database"
         assert provider_payload["api_key_configured"] is True
@@ -1285,6 +1287,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         assert run_payload["status"] == "SUCCEEDED"
         assert run_payload["detected_language"] == "en-US"
         assert run_payload["answer"].endswith("[1]")
+        assert {"provider", "model_name"}.isdisjoint(run_payload)
         assert run_payload["evidence"][0]["source_entity_id"] == str(source_id)
         assert run_payload["evidence"][0]["classification"] == "CUSTOMER_APPROVED"
         assert run_payload["decision_trace"]["citations_valid"] is True
@@ -3042,6 +3045,16 @@ def test_platform_admin_routes_reject_regular_members(
         )
         assert denied.status_code == 403
         assert denied.json()["detail"]["code"] == "PLATFORM_ADMIN_REQUIRED"
+        denied_module_update = regular_client.patch(
+            f"/api/admin/tenants/{DEFAULT_TENANT_ID}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"enabled_modules": ["products"]},
+        )
+        assert denied_module_update.status_code == 403
+        assert (
+            denied_module_update.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
         denied_invitation = regular_client.post(
             f"/api/admin/tenants/{DEFAULT_TENANT_ID}/member-invitations",
             headers={"Authorization": f"Bearer {token}"},
@@ -3062,6 +3075,21 @@ def test_platform_admin_routes_reject_regular_members(
             denied_embedding_settings.json()["detail"]["code"]
             == "PLATFORM_ADMIN_REQUIRED"
         )
+        denied_embedding_update = regular_client.put(
+            "/api/v1/ai/embedding/settings",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "base_url": "https://embedding.example.test/v1",
+                "model_name": "private-model",
+                "dimensions": 1024,
+                "timeout_seconds": 20,
+            },
+        )
+        assert denied_embedding_update.status_code == 403
+        assert (
+            denied_embedding_update.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
         denied_system_monitoring = regular_client.get(
             "/api/v1/system/metrics",
             headers={"Authorization": f"Bearer {token}"},
@@ -3080,6 +3108,100 @@ def test_platform_admin_routes_reject_regular_members(
             denied_translation_settings.json()["detail"]["code"]
             == "PLATFORM_ADMIN_REQUIRED"
         )
+        denied_generation_settings = regular_client.get(
+            "/api/v1/system/ai-generation/settings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_generation_settings.status_code == 403
+        assert (
+            denied_generation_settings.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
+
+
+def test_platform_admin_controls_merchant_visible_modules() -> None:
+    suffix = uuid4().hex[:10]
+    created = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": f"Module Access {suffix}",
+            "slug": f"module-access-{suffix}",
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    tenant = created.json()
+    tenant_id = UUID(tenant["id"])
+    assert tenant["enabled_modules"] == list(TENANT_MODULE_CODES)
+
+    user_id = uuid4()
+    membership_id = uuid4()
+    with SessionLocal() as session:
+        owner_role = session.scalar(
+            select(RoleRow).where(
+                RoleRow.tenant_id == tenant_id,
+                RoleRow.code == "OWNER",
+            )
+        )
+        assert owner_role is not None
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=f"{user_id.hex}@module-access.test",
+                display_name="Module Access Owner",
+                identity_provider="local-bootstrap",
+                identity_subject=str(user_id),
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.flush()
+        session.add(
+            MembershipRoleRow(
+                tenant_id=tenant_id,
+                membership_id=membership_id,
+                role_id=owner_role.id,
+                assigned_by_user_id=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.commit()
+
+    updated = client.patch(
+        f"/api/admin/tenants/{tenant_id}",
+        json={"enabled_modules": ["quotations", "products", "products"]},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["enabled_modules"] == ["products", "quotations"]
+
+    with SessionLocal() as session:
+        membership = session.get(MembershipRow, membership_id)
+        assert membership is not None
+        assert membership.permission_version == 2
+        effective = list_permissions(
+            session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+    assert "product.view" in effective
+    assert "catalog.publish" in effective
+    assert "quotation.view" in effective
+    assert "order.manage" in effective
+    assert "inventory.view" not in effective
+    assert "support.view" not in effective
+    assert "system.user_manage" not in effective
+
+    invalid = client.patch(
+        f"/api/admin/tenants/{tenant_id}",
+        json={"enabled_modules": ["products", "private_secrets"]},
+    )
+    assert invalid.status_code == 422
 
 
 def test_system_monitoring_reports_server_resources_without_caching() -> None:
@@ -4305,13 +4427,10 @@ def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["ranking_version"] == "hybrid-product-v2"
-    assert payload["model"] == {
-        "provider": "local",
-        "name": "atc-feature-hash",
-        "version": "1",
-        "dimensions": 384,
-    }
+    assert "model" not in payload
+    assert "ranking_version" not in payload
+    assert "degraded_channels" not in payload
+    assert isinstance(payload["degraded"], bool)
     assert payload["results"][0]["product_id"] == str(waterproof_id)
     assert set(payload["results"][0]["score_breakdown"]) == {
         "keyword", "semantic", "attribute", "tag", "supplier"
@@ -4326,6 +4445,9 @@ def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     )
     assert payload["results"][0]["score"] == pytest.approx(expected_score, abs=0.000002)
     assert payload["results"][0]["evidence"]
+    assert set(payload["results"][0]["evidence"][0]) == {
+        "chunk_type", "excerpt"
+    }
     assert payload["results"][0]["supplier_signal_status"] == "UNKNOWN"
 
     exact = client.post(
@@ -4363,6 +4485,9 @@ def test_manual_knowledge_index_update_and_full_rebuild() -> None:
     status_before = client.get("/api/v1/ai/knowledge/index")
     assert status_before.status_code == 200
     assert status_before.json()["pending_products"] >= 1
+    assert {
+        "model_provider", "model_name", "model_version", "dimensions"
+    }.isdisjoint(status_before.json())
 
     updated = client.post("/api/v1/ai/knowledge/index/update")
     assert updated.status_code == 200
@@ -4567,6 +4692,9 @@ def test_observable_knowledge_index_job_reports_determinate_progress() -> None:
     assert started_payload["processed_products"] == 0
     assert started_payload["total_products"] >= 1
     assert started_payload["progress_percent"] == 0
+    assert {
+        "model_provider", "model_name", "model_version", "dimensions"
+    }.isdisjoint(started_payload)
 
     latest = client.get("/api/v1/ai/knowledge/index/jobs/latest")
     assert latest.status_code == 200
@@ -4608,6 +4736,7 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
     try:
         initial = client.get("/api/v1/ai/embedding/settings")
         assert initial.status_code == 200
+        assert initial.headers["cache-control"] == "no-store"
         assert "api_key" not in initial.json()
 
         saved = client.put(
@@ -4621,6 +4750,7 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
             },
         )
         assert saved.status_code == 200
+        assert saved.headers["cache-control"] == "no-store"
         payload = saved.json()
         assert payload["source"] == "database"
         assert payload["api_key_configured"] is True
@@ -4709,6 +4839,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             },
         )
         assert saved.status_code == 200, saved.text
+        assert saved.headers["cache-control"] == "no-store"
         payload = saved.json()
         assert payload["source"] == "database"
         assert payload["enabled"] is True
@@ -4780,6 +4911,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             },
         )
         assert tested.status_code == 200, tested.text
+        assert tested.headers["cache-control"] == "no-store"
         assert tested.json()["translated_text"] == "Smart pet feeder SF-6L20"
         assert tested.json()["latency_ms"] >= 0
         assert raw_api_key not in tested.text
@@ -9879,7 +10011,11 @@ def test_image_intelligence_projection_search_and_media_gate(tmp_path: Path) -> 
     repeated = client.post(f"/api/v1/product-images/{image_id}/intelligence")
     assert repeated.status_code == 200
     assert repeated.json()["idempotent"] is True
-    assert repeated.json()["embedding_id"] == projection.json()["embedding_id"]
+    assert repeated.json()["product_image_id"] == projection.json()["product_image_id"]
+    assert {
+        "observation_id", "embedding_id", "model_provider", "model_name",
+        "model_version", "dimensions",
+    }.isdisjoint(repeated.json())
     rejected = client.post(f"/api/v1/product-images/{source_id}/intelligence")
     assert rejected.status_code == 409
     assert rejected.json()["detail"]["code"] == "IMAGE_NOT_APPROVED"
@@ -9890,6 +10026,10 @@ def test_image_intelligence_projection_search_and_media_gate(tmp_path: Path) -> 
     assert payload["status"] == "COMPLETED"
     assert payload["results"][0]["product_id"] == str(product_id)
     assert payload["results"][0]["classification"] == "POSSIBLE_SAME_ITEM"
+    assert {
+        "model_provider", "model_name", "model_version", "ranking_version"
+    }.isdisjoint(payload)
+    assert "evidence" not in payload["results"][0]
     assert "never proves" in payload["warnings"][0]
     with SessionLocal() as session:
         expired_search = session.get(ImageSearchRow, UUID(payload["id"]))
@@ -11052,12 +11192,19 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         manifest = client.get("/api/store/demo/language-packages/en-US")
         assert manifest.status_code == 200, manifest.text
         assert manifest.json()["content_sha256"] == package["content_sha256"]
+        assert {"provider", "provider_version", "source_digest"}.isdisjoint(
+            manifest.json()
+        )
         download = client.get(manifest.json()["download_url"])
         assert download.status_code == 200, download.text
         assert download.headers["cache-control"].endswith("immutable")
         language_payload = download.json()
         assert language_payload["schema"] == "atc-catalog-language-pack"
+        assert language_payload["schema_version"] == 2
         assert language_payload["version"] == 1
+        assert {
+            "tenant_id", "provider", "provider_version", "source_digest"
+        }.isdisjoint(language_payload)
         source_products = client.get(
             "/api/store/demo/products",
             params={"page": 1, "page_size": 24},
@@ -13055,7 +13202,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0060"
+        ).scalar() == "20260809_0061"
     upgraded_engine.dispose()
     command.check(config)
 

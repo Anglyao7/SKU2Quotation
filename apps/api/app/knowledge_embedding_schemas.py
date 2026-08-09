@@ -6,15 +6,10 @@ from pydantic import BaseModel, Field, SecretStr
 
 
 class KnowledgeProjectionResponse(BaseModel):
-    document_id: UUID
     product_id: UUID
     source_version: int
     chunks: int
     embeddings: int
-    model_provider: str
-    model_name: str
-    model_version: str
-    dimensions: int
     idempotent: bool
 
 
@@ -22,10 +17,6 @@ class KnowledgeIndexStatusResponse(BaseModel):
     total_products: int = Field(ge=0)
     indexed_products: int = Field(ge=0)
     pending_products: int = Field(ge=0)
-    model_provider: str
-    model_name: str
-    model_version: str
-    dimensions: int = Field(ge=1)
 
 
 class KnowledgeIndexUpdateResponse(KnowledgeIndexStatusResponse):
@@ -54,10 +45,6 @@ class KnowledgeIndexJobResponse(BaseModel):
     progress_percent: float = Field(ge=0, le=100)
     current_product_id: UUID | None = None
     current_product_name: str | None = None
-    model_provider: str
-    model_name: str
-    model_version: str
-    dimensions: int = Field(ge=1)
     error_message: str | None = None
     created_at: datetime
     started_at: datetime | None = None
@@ -99,10 +86,7 @@ class SearchScoreBreakdown(BaseModel):
 
 
 class SearchEvidence(BaseModel):
-    document_id: UUID
-    chunk_id: UUID
     chunk_type: str
-    content_hash: str
     excerpt: str
 
 
@@ -115,20 +99,9 @@ class HybridSearchResult(BaseModel):
     score_breakdown: SearchScoreBreakdown
     supplier_signal_status: str
     evidence: list[SearchEvidence]
-    ranking_version: str
-    degraded_channels: list[str]
-
-
-class EmbeddingModelInfo(BaseModel):
-    provider: str
-    name: str
-    version: str
-    dimensions: int
 
 
 class HybridSearchResponse(BaseModel):
     query: str
-    ranking_version: str
-    model: EmbeddingModelInfo
-    degraded_channels: list[str]
+    degraded: bool = False
     results: list[HybridSearchResult]

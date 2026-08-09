@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ApplicationError
@@ -26,6 +26,7 @@ from .errors import application_http_error
 
 
 router = APIRouter(prefix="/api/v1/ai", tags=["knowledge-search"])
+NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
 @router.get(
@@ -33,8 +34,10 @@ router = APIRouter(prefix="/api/v1/ai", tags=["knowledge-search"])
     response_model=EmbeddingSettingsResponse,
 )
 def get_embedding_settings(
+    response: Response,
     session: Session = Depends(get_authenticated_session),
 ) -> EmbeddingSettingsResponse:
+    response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
         return embedding_management.get_settings(session, context=context)
@@ -48,8 +51,10 @@ def get_embedding_settings(
 )
 def update_embedding_settings(
     payload: EmbeddingSettingsUpdateRequest,
+    response: Response,
     session: Session = Depends(get_authenticated_session),
 ) -> EmbeddingSettingsResponse:
+    response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
         return embedding_management.update_settings(

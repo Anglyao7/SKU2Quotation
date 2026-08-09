@@ -18,10 +18,12 @@ import type {
   StorefrontCategoryOption,
   StorefrontLocale,
   Tenant,
+  TenantModuleCode,
   TenantPayload,
 } from "../types";
 import {
   clearCoreAuthSession,
+  ensureFreshCoreAccessToken,
   getCoreAccessToken,
   refreshAuthSession,
 } from "../core/api";
@@ -134,6 +136,10 @@ async function request<T>(
     headers.set("Content-Type", "application/json");
   }
   if (auth) {
+    if (!(await ensureFreshCoreAccessToken())) {
+      window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+      throw new ApiError("会话已失效，请重新登录。", 401);
+    }
     const token = authStorage.getToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);
   }
@@ -713,7 +719,13 @@ export const api = {
     return request<Tenant>("/api/admin/tenants", { method: "POST", body: JSON.stringify({ ...payload, default_currency: "CNY" }) }, true);
   },
   updateTenant: (id: string, payload: TenantPayload) =>
-    request<Tenant>(`/api/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify({ name: payload.name, contact_email: payload.contact_email || null, active: payload.active }) }, true),
+    request<Tenant>(`/api/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify({ name: payload.name, contact_email: payload.contact_email || null, active: payload.active, ...(payload.enabled_modules ? { enabled_modules: payload.enabled_modules } : {}) }) }, true),
+  updateTenantModules: (id: string, enabledModules: TenantModuleCode[]) =>
+    request<Tenant>(
+      `/api/admin/tenants/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify({ enabled_modules: enabledModules }) },
+      true,
+    ),
   deactivateTenant: (id: string) =>
     request<Tenant>(`/api/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify({ active: false }) }, true),
   provisionMerchantOwner: (tenantId: string, payload: MerchantOwnerAccountPayload) =>

@@ -638,10 +638,7 @@ export interface AttributeDefinition {
 }
 
 export interface HybridSearchEvidence {
-  documentId: string;
-  chunkId: string;
   chunkType: string;
-  contentHash: string;
   excerpt: string;
 }
 
@@ -651,19 +648,15 @@ export interface HybridSearchResult {
   name: string;
   sourceVersion: number;
   score: number;
-  scoreBreakdown: { keyword: number; semantic: number; attribute: number; supplier: number };
+  scoreBreakdown: { keyword: number; semantic: number; attribute: number; tag: number; supplier: number };
   supplierSignalStatus: string;
   evidence: HybridSearchEvidence[];
-  rankingVersion: string;
-  degradedChannels: string[];
   product?: ProductDetail;
 }
 
 export interface HybridSearchResponse {
   query: string;
-  rankingVersion: string;
-  model: { provider: string; name: string; version: string; dimensions: number };
-  degradedChannels: string[];
+  degraded: boolean;
   results: HybridSearchResult[];
 }
 
@@ -671,10 +664,6 @@ export interface KnowledgeIndexStatus {
   totalProducts: number;
   indexedProducts: number;
   pendingProducts: number;
-  modelProvider: string;
-  modelName: string;
-  modelVersion: string;
-  dimensions: number;
   mode?: "INCREMENTAL" | "FULL_REBUILD";
   processedProducts?: number;
   embeddings?: number;
@@ -693,10 +682,6 @@ export interface KnowledgeIndexJob {
   progressPercent: number;
   currentProductId?: string;
   currentProductName?: string;
-  modelProvider: string;
-  modelName: string;
-  modelVersion: string;
-  dimensions: number;
   errorMessage?: string;
   createdAt: string;
   startedAt?: string;
@@ -805,8 +790,6 @@ export interface SupportAIRun {
   answer?: string;
   confidence?: number;
   handoffReason?: string;
-  provider?: string;
-  modelName?: string;
   promptVersion: number;
   retrievalCount: number;
   decisionTrace: Record<string, unknown>;
@@ -878,13 +861,10 @@ export interface CatalogLanguagePackInfo {
   version: number;
   downloadUrl: string;
   contentSha256: string;
-  sourceDigest: string;
   byteSize: number;
   productCount: number;
   skuCount: number;
   categoryCount: number;
-  provider: string;
-  providerVersion: string;
   sourceCutoffAt: string;
   publishedAt: string;
   lastFullTranslationAt?: string;
@@ -904,8 +884,6 @@ export interface CatalogTranslationJob {
   progressPercent: number;
   currentSkuId?: string;
   currentSkuName?: string;
-  provider: string;
-  providerVersion: string;
   failureDetails: Array<{
     skuId?: string;
     skuCode?: string;
@@ -930,15 +908,12 @@ export interface CatalogTranslationJob {
 export interface CatalogTranslationStatus {
   sourceLocale: StorefrontLocale;
   targetLocale: StorefrontLocale;
-  provider: string;
-  providerVersion: string;
   providerConfigured: boolean;
   totalSkus: number;
   translatedSkus: number;
   staleSkus: number;
   pendingSkus: number;
   packageOutdated: boolean;
-  packageStorageBackend: string;
   packageStorageConfigured: boolean;
   availableLocales: StorefrontLocale[];
   package?: CatalogLanguagePackInfo;

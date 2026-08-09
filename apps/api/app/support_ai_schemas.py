@@ -190,8 +190,6 @@ class SupportAIRunResponse(BaseModel):
     answer: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
     handoff_reason: str | None = None
-    provider: str | None = None
-    model_name: str | None = None
     prompt_version: int = Field(ge=1)
     retrieval_count: int = Field(ge=0)
     decision_trace: dict[str, object] = Field(default_factory=dict)
@@ -219,4 +217,3 @@ class SupportAITestRunRequest(BaseModel):
     @classmethod
     def normalize_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
-

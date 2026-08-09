@@ -153,6 +153,7 @@ def search_products(
         )
     except ValueError as exc:
         raise ApplicationError("SEARCH_QUERY_INVALID", str(exc)) from exc
+    result["degraded"] = bool(result.get("degraded_channels"))
     return HybridSearchResponse.model_validate(result)
 
 
@@ -175,10 +176,6 @@ def _job_response(job: KnowledgeIndexJobRow) -> KnowledgeIndexJobResponse:
         progress_percent=progress_percent,
         current_product_id=job.current_product_id,
         current_product_name=job.current_product_name,
-        model_provider=job.model_provider,
-        model_name=job.model_name,
-        model_version=job.model_version,
-        dimensions=job.dimensions,
         error_message=job.error_message,
         created_at=job.created_at,
         started_at=job.started_at,

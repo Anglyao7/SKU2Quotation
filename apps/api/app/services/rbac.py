@@ -9,12 +9,14 @@ from ..identity_models import (
     PermissionRow,
     RolePermissionRow,
     RoleRow,
+    TenantRow,
 )
+from ..tenant_modules import enabled_permission_modules
 
 
 def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> frozenset[str]:
     statement = (
-        select(PermissionRow.code)
+        select(PermissionRow.code, PermissionRow.module)
         .join(RolePermissionRow, RolePermissionRow.permission_id == PermissionRow.id)
         .join(RoleRow, RoleRow.id == RolePermissionRow.role_id)
         .join(MembershipRoleRow, MembershipRoleRow.role_id == RoleRow.id)
@@ -35,7 +37,15 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
         )
         .distinct()
     )
-    return frozenset(session.scalars(statement).all())
+    tenant_modules = session.scalar(
+        select(TenantRow.enabled_modules).where(TenantRow.id == tenant_id)
+    )
+    allowed_permission_modules = enabled_permission_modules(tenant_modules)
+    return frozenset(
+        code
+        for code, permission_module in session.execute(statement).all()
+        if permission_module in allowed_permission_modules
+    )
 
 
 def has_permission(

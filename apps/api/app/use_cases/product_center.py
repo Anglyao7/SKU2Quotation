@@ -798,7 +798,7 @@ def upload_product_main_image(
     except Exception as exc:
         raise ApplicationError(
             "PRODUCT_IMAGE_STORAGE_UNAVAILABLE",
-            "图片上传到 Cloudflare R2 失败，请稍后重试。",
+            "图片上传到对象存储失败，请稍后重试。",
             kind="unavailable",
         ) from exc
 

@@ -142,7 +142,7 @@ class LanguagePackageStorage:
         if self._client is not None:
             return self._client
         if not self.status.configured:
-            raise RuntimeError("Cloudflare R2 language package storage is not configured")
+            raise RuntimeError("language package object storage is not configured")
         try:
             import boto3
         except ImportError as exc:  # pragma: no cover - dependency guard
@@ -221,7 +221,7 @@ class LanguagePackageStorage:
 def configured_language_package_storage() -> LanguagePackageStorage:
     storage = LanguagePackageStorage()
     if not storage.status.configured:
-        raise RuntimeError("Cloudflare R2 language package storage is not configured")
+        raise RuntimeError("language package object storage is not configured")
     return storage
 
 

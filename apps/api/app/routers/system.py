@@ -15,6 +15,7 @@ from .errors import application_http_error
 
 
 router = APIRouter(prefix="/api/v1/system", tags=["system"])
+NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
 @router.get(
@@ -26,7 +27,7 @@ def get_translation_settings(
     session: Session = Depends(get_authenticated_session),
 ) -> TranslationSettingsResponse:
     context = current_context(session)
-    response.headers["Cache-Control"] = "no-store"
+    response.headers.update(NO_STORE_HEADERS)
     try:
         return translation_management.get_settings(session, context=context)
     except ApplicationError as exc:
@@ -39,8 +40,10 @@ def get_translation_settings(
 )
 def update_translation_settings(
     payload: TranslationSettingsUpdateRequest,
+    response: Response,
     session: Session = Depends(get_authenticated_session),
 ) -> TranslationSettingsResponse:
+    response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
         return translation_management.update_settings(
@@ -58,8 +61,10 @@ def update_translation_settings(
 )
 def test_translation_settings(
     payload: TranslationSettingsTestRequest,
+    response: Response,
     session: Session = Depends(get_authenticated_session),
 ) -> TranslationSettingsTestResponse:
+    response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
         return translation_management.test_settings(

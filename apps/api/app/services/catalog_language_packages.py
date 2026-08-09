@@ -28,7 +28,7 @@ from .translation_memory import translate_values_with_memory
 
 logger = logging.getLogger(__name__)
 PACKAGE_SCHEMA = "atc-catalog-language-pack"
-PACKAGE_SCHEMA_VERSION = 1
+PACKAGE_SCHEMA_VERSION = 2
 _CJK_TEXT = re.compile(r"[\u3400-\u9fff]")
 _LATIN_WORD = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]{2,}")
 _OPTION_INTERNAL_KEY = "_sku2quotation"
@@ -86,6 +86,7 @@ def _catalog_sources_digest(
 ) -> str:
     return _json_hash(
         {
+            "package_schema_version": PACKAGE_SCHEMA_VERSION,
             "products": sorted(
                 (
                     source["product_id"],
@@ -490,6 +491,7 @@ def build_catalog_language_pack(
     translator: TranslationProvider,
     sku_translations: dict[UUID, CatalogSkuTranslationRow],
     previous_payload: dict[str, Any] | None,
+    reuse_previous: bool = False,
     full_rebuild: bool,
 ) -> CatalogLanguagePackBuild:
     groups = _group_rows(rows)
@@ -497,8 +499,7 @@ def build_catalog_language_pack(
     sku_sources = [_sku_source(row) for row in rows]
     previous_compatible = bool(
         isinstance(previous_payload, dict)
-        and previous_payload.get("provider") == translator.identity.provider
-        and previous_payload.get("provider_version") == translator.identity.version
+        and reuse_previous
     )
     previous_products = (
         previous_payload.get("products")
@@ -628,15 +629,11 @@ def build_catalog_language_pack(
     payload: dict[str, Any] = {
         "schema": PACKAGE_SCHEMA,
         "schema_version": PACKAGE_SCHEMA_VERSION,
-        "tenant_id": str(tenant_id),
         "source_locale": source_locale,
         "target_locale": target_locale,
         "version": version,
-        "provider": translator.identity.provider,
-        "provider_version": translator.identity.version,
         "generated_at": _iso(generated_at),
         "source_cutoff_at": _iso(source_cutoff_at),
-        "source_digest": source_digest,
         "products": products,
         "skus": skus,
         "categories": categories,

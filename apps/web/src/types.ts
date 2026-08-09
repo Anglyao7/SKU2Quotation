@@ -1,3 +1,15 @@
+export type TenantModuleCode =
+  | "products"
+  | "analytics"
+  | "inventory"
+  | "announcements"
+  | "support"
+  | "support_ai"
+  | "inquiries"
+  | "quotations"
+  | "subaccounts"
+  | "team";
+
 export interface Tenant {
   id: string;
   name: string;
@@ -9,6 +21,7 @@ export interface Tenant {
   sku_count?: number;
   quote_count?: number;
   owner_account?: MerchantOwnerAccount | null;
+  enabled_modules?: TenantModuleCode[];
   created_at?: string;
 }
 
@@ -107,14 +120,11 @@ export interface CatalogLanguagePackDescriptor {
   version: number;
   download_url: string;
   content_sha256: string;
-  source_digest: string;
   content_encoding: "gzip" | string;
   byte_size: number;
   product_count: number;
   sku_count: number;
   category_count: number;
-  provider: string;
-  provider_version: string;
   source_cutoff_at: string;
   published_at: string;
   last_full_translation_at?: string | null;
@@ -150,16 +160,13 @@ export interface CatalogLanguagePackSku {
 
 export interface CatalogLanguagePack {
   schema: "atc-catalog-language-pack";
-  schema_version: 1;
+  schema_version: 2;
   tenant_id: string;
   source_locale: StorefrontLocale;
   target_locale: StorefrontLocale;
   version: number;
-  provider: string;
-  provider_version: string;
   generated_at: string;
   source_cutoff_at: string;
-  source_digest: string;
   products: Record<string, CatalogLanguagePackProduct>;
   skus: Record<string, CatalogLanguagePackSku>;
   categories: Record<string, string>;
@@ -380,6 +387,7 @@ export interface TenantPayload {
   slug?: string;
   contact_email?: string;
   active: boolean;
+  enabled_modules?: TenantModuleCode[];
 }
 
 export interface MerchantOwnerAccountPayload {
