@@ -21,6 +21,11 @@ from ..services.auth.dependencies import current_context, get_authenticated_sess
 from ..services.support_ai_knowledge import process_knowledge_ingestion
 from ..services.support_ai_configuration import support_ai_inline_processing_enabled
 from ..support_ai_schemas import (
+    SupportAIAgentCreate,
+    SupportAIAgentKnowledgeSourceResponse,
+    SupportAIAgentKnowledgeUploadResponse,
+    SupportAIAgentResponse,
+    SupportAIAgentUpdate,
     SupportAIIngestionJobResponse,
     SupportAIKnowledgeSourceResponse,
     SupportAIKnowledgeSourceUpdate,
@@ -45,6 +50,151 @@ from .errors import application_http_error
 
 router = APIRouter(tags=["support-ai"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+@router.get(
+    "/api/v1/system/support-ai/agents",
+    response_model=list[SupportAIAgentResponse],
+)
+def list_support_ai_agents(
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> list[SupportAIAgentResponse]:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.list_agents(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents",
+    response_model=SupportAIAgentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_support_ai_agent(
+    payload: SupportAIAgentCreate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIAgentResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.create_agent(session, context=context, request=payload)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/support-ai/agents/{agent_id}",
+    response_model=SupportAIAgentResponse,
+)
+def get_support_ai_agent(
+    agent_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIAgentResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.get_agent(
+            session,
+            context=context,
+            agent_id=agent_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/api/v1/system/support-ai/agents/{agent_id}",
+    response_model=SupportAIAgentResponse,
+)
+def update_support_ai_agent(
+    agent_id: UUID,
+    payload: SupportAIAgentUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIAgentResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_agent(
+            session,
+            context=context,
+            agent_id=agent_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/support-ai/agents/{agent_id}/knowledge/sources",
+    response_model=list[SupportAIAgentKnowledgeSourceResponse],
+)
+def list_support_ai_agent_knowledge_sources(
+    agent_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> list[SupportAIAgentKnowledgeSourceResponse]:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.list_agent_knowledge_sources(
+            session,
+            context=context,
+            agent_id=agent_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/knowledge/sources/upload",
+    response_model=SupportAIAgentKnowledgeUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_support_ai_agent_knowledge_source(
+    agent_id: UUID,
+    background_tasks: BackgroundTasks,
+    title: str = Form(default="", max_length=300),
+    description: str | None = Form(default=None, max_length=4000),
+    classification: Literal["PUBLIC", "CUSTOMER_APPROVED"] = Form(
+        default="CUSTOMER_APPROVED"
+    ),
+    language: str = Form(default="und", min_length=2, max_length=35),
+    file: UploadFile = File(...),
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIAgentKnowledgeUploadResponse:
+    context = current_context(session)
+    try:
+        use_cases.require_platform_admin(context)
+        content = await file.read(use_cases.MAX_KNOWLEDGE_FILE_BYTES + 1)
+        result = use_cases.upload_agent_knowledge_source(
+            session,
+            context=context,
+            agent_id=agent_id,
+            title=title,
+            description=description,
+            classification=classification,
+            language=language,
+            filename=file.filename,
+            declared_content_type=file.content_type,
+            content=content,
+        )
+        if support_ai_inline_processing_enabled():
+            for item in result.items:
+                background_tasks.add_task(
+                    process_knowledge_ingestion,
+                    tenant_id=item.tenant_id,
+                    source_id=item.source.id,
+                    job_id=item.job.id,
+                )
+        return result
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
 
 
 @router.get(

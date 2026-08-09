@@ -28,7 +28,7 @@ import {
   UsersThree,
   Warehouse,
 } from "@phosphor-icons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Brand } from "../../components/Brand";
 import { ThemeToggle } from "../../components/ThemeToggle";
@@ -48,7 +48,9 @@ export interface ConsoleOutletContext {
 
 const navigationGroups = [
   {
+    key: "workspace",
     label: "工作",
+    icon: ChartDonut,
     items: [
       { to: "/console", label: "概览", mobileLabel: "概览", icon: ChartDonut, end: true, permissions: [], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/analytics", label: "网站监测", mobileLabel: "网站监测", icon: ChartLineUp, permissions: ["analytics.view"], platformAdminOnly: false, mobilePrimary: false },
@@ -57,7 +59,9 @@ const navigationGroups = [
     ],
   },
   {
+    key: "products",
     label: "商品",
+    icon: Cube,
     items: [
       { to: "/console/products", label: "SKU 商品库", mobileLabel: "SKU", icon: Cube, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/products/categories", label: "分类管理", mobileLabel: "分类", icon: TreeStructure, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
@@ -66,7 +70,9 @@ const navigationGroups = [
     ],
   },
   {
+    key: "operations",
     label: "经营",
+    icon: Warehouse,
     items: [
       { to: "/console/inventory", label: "进销存", mobileLabel: "库存", icon: Warehouse, permissions: ["inventory.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/announcements", label: "公告管理", mobileLabel: "公告", icon: Megaphone, permissions: ["announcement.manage"], platformAdminOnly: false, mobilePrimary: false },
@@ -74,7 +80,9 @@ const navigationGroups = [
     ],
   },
   {
+    key: "sales",
     label: "销售",
+    icon: FileText,
     items: [
       { to: "/console/inquiries", label: "询盘", mobileLabel: "询盘", icon: ChatCircleDots, permissions: ["inquiry.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/quotes", label: "报价", mobileLabel: "报价", icon: FileText, permissions: ["quotation.view"], platformAdminOnly: false, mobilePrimary: false },
@@ -82,22 +90,49 @@ const navigationGroups = [
     ],
   },
   {
+    key: "agents",
+    label: "智能体管理",
+    icon: Robot,
+    items: [
+      { to: "/console/agents", label: "智能体列表", mobileLabel: "智能体", icon: Robot, end: true, permissions: [], platformAdminOnly: true, mobilePrimary: false },
+      { to: "/console/agents/knowledge", label: "知识库管理", mobileLabel: "知识库", icon: Database, permissions: [], platformAdminOnly: true, mobilePrimary: false },
+    ],
+  },
+  {
+    key: "platform",
     label: "平台",
+    icon: StoreIcon,
     items: [
       { to: "/console/tenants", label: "商家管理", mobileLabel: "商家", icon: StoreIcon, permissions: [], platformAdminOnly: true, mobilePrimary: false },
-      { to: "/console/support/ai", label: "智能客服管理", mobileLabel: "AI 客服", icon: Robot, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/monitoring", label: "系统监控", mobileLabel: "监控", icon: Pulse, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/configuration", label: "配置中心", mobileLabel: "配置", icon: SlidersHorizontal, permissions: [], platformAdminOnly: true, mobilePrimary: false },
     ],
   },
   {
+    key: "settings",
     label: "设置",
+    icon: UserGear,
     items: [
       { to: "/console/personal-center", label: "个人中心", mobileLabel: "我的", icon: UserCircle, permissions: ["support.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/customer-accounts", label: "子账号管理", mobileLabel: "子账号", icon: UsersThree, permissions: ["customer_portal.subaccount_manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
 ];
+
+function navigationItemIsActive(
+  pathname: string,
+  item: { to: string; end?: boolean },
+) {
+  if (item.end) return pathname === item.to;
+  return pathname === item.to || pathname.startsWith(`${item.to}/`);
+}
+
+function initialNavigationGroup(pathname: string) {
+  if (pathname.startsWith("/console/account")) return "settings";
+  if (pathname.startsWith("/console/agents/")) return "agents";
+  return navigationGroups.find((group) =>
+    group.items.some((item) => navigationItemIsActive(pathname, item)))?.key ?? "workspace";
+}
 
 export function ConsoleLayout() {
   const {
@@ -116,6 +151,9 @@ export function ConsoleLayout() {
   const [modeDialogOpen, setModeDialogOpen] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
   const [toolbarError, setToolbarError] = useState("");
+  const [expandedNavigationGroup, setExpandedNavigationGroup] = useState<string | null>(
+    () => initialNavigationGroup(location.pathname),
+  );
   const activeMembershipId = profile?.context.membershipId ?? "";
   const activeTenantId = profile?.context.tenantId ?? "";
   const activeTenantSlug = profile?.context.tenantSlug ?? memberships.find((row) => row.id === activeMembershipId)?.tenantSlug ?? "";
@@ -130,12 +168,20 @@ export function ConsoleLayout() {
     }))
     .filter((group) => group.items.length);
   const visibleNavigation = visibleGroups.flatMap((group) => group.items);
+  const activeNavigationGroup = visibleGroups.find((group) =>
+    group.items.some((item) => navigationItemIsActive(location.pathname, item)))?.key
+    ?? (location.pathname.startsWith("/console/agents/") ? "agents" : null)
+    ?? (location.pathname.startsWith("/console/account") ? "settings" : null);
   const mobilePrimary = visibleNavigation.filter((item) => item.mobilePrimary);
   const mobileMore = visibleNavigation.filter((item) => !item.mobilePrimary);
   const mobileMoreActive = mobileMore.some((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
     || location.pathname.startsWith("/console/account");
   const storefrontPath = activeTenantSlug ? `/${encodeURIComponent(activeTenantSlug)}` : "/";
   const activeTenant = useMemo<Tenant | undefined>(() => activeTenantId ? { id: activeTenantId, name: profile?.context.tenantName ?? t("当前工作区"), slug: activeTenantSlug, active: true, status: "active" } : undefined, [activeTenantId, activeTenantSlug, profile?.context.tenantName, t]);
+
+  useEffect(() => {
+    if (activeNavigationGroup) setExpandedNavigationGroup(activeNavigationGroup);
+  }, [activeNavigationGroup]);
 
   const selectTenant = async (membershipId: string) => {
     if (membershipId === activeMembershipId) return;
@@ -178,10 +224,49 @@ export function ConsoleLayout() {
     <aside className="console-sidebar">
       <div className="sidebar-brand"><Brand /></div>
       <nav className="desktop-console-nav" aria-label={t("控制台导航")}>
-        {visibleGroups.map((group) => <section className="nav-group" key={group.label}>
-          <Text className="nav-group-label" size="1">{t(group.label)}</Text>
-          {group.items.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} onPointerEnter={() => preloadConsoleRoute(to)} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Icon size={20} weight="duotone" /><span>{t(label)}</span></NavLink>)}
-        </section>)}
+        {visibleGroups.map((group) => {
+          const isExpanded = expandedNavigationGroup === group.key;
+          const hasActiveItem = activeNavigationGroup === group.key;
+          const GroupIcon = group.icon;
+          const panelId = `console-nav-${group.key}`;
+          const toggleLabel = t(isExpanded ? "收起 {name}" : "展开 {name}", {
+            name: t(group.label),
+          });
+
+          return <section
+            className={`nav-group${isExpanded ? " is-expanded" : ""}${hasActiveItem ? " has-active-item" : ""}`}
+            key={group.key}
+          >
+            <button
+              type="button"
+              className="nav-group-trigger"
+              aria-expanded={isExpanded}
+              aria-controls={panelId}
+              aria-label={toggleLabel}
+              title={toggleLabel}
+              onClick={() => setExpandedNavigationGroup((current) => current === group.key ? null : group.key)}
+            >
+              <GroupIcon className="nav-group-icon" size={20} weight="duotone" />
+              <span>{t(group.label)}</span>
+              <CaretDown className="nav-group-caret" size={15} weight="bold" aria-hidden="true" />
+            </button>
+            {isExpanded ? <div className="nav-group-items" id={panelId}>
+              {group.items.map(({ to, label, icon: Icon, end }) => <NavLink
+                key={to}
+                to={to}
+                end={end}
+                title={t(label)}
+                onPointerEnter={() => preloadConsoleRoute(to)}
+                onPointerDown={() => preloadConsoleRoute(to)}
+                onFocus={() => preloadConsoleRoute(to)}
+                className={({ isActive }) => `nav-item nav-subitem ${isActive ? "active" : ""}`}
+              >
+                <Icon size={18} weight="duotone" />
+                <span>{t(label)}</span>
+              </NavLink>)}
+            </div> : null}
+          </section>;
+        })}
       </nav>
       <nav className="mobile-console-nav" aria-label={t("移动端控制台导航")}>
         {mobilePrimary.map(({ to, mobileLabel, icon: Icon, end }) => <NavLink key={to} to={to} end={end} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Icon size={20} weight="duotone" /><span>{t(mobileLabel)}</span></NavLink>)}

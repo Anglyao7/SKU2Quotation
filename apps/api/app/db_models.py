@@ -279,6 +279,7 @@ from .translation_management_models import (  # noqa: E402,F401
 )
 
 from .support_ai_models import (  # noqa: E402,F401
+    SupportAIAgentRow,
     SupportAIEvidenceUseRow,
     SupportAIIngestionJobRow,
     SupportAIKnowledgeChunkRow,

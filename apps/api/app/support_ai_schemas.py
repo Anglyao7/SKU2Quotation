@@ -127,6 +127,108 @@ class SupportAIStoreConfigurationCopy(BaseModel):
         return list(dict.fromkeys(value))
 
 
+class SupportAIAgentStoreResponse(BaseModel):
+    tenant_id: UUID
+    tenant_name: str
+
+
+class SupportAIAgentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+    tenant_ids: list[UUID] = Field(default_factory=list, max_length=500)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @field_validator("tenant_ids")
+    @classmethod
+    def unique_tenants(cls, value: list[UUID]) -> list[UUID]:
+        return list(dict.fromkeys(value))
+
+
+class SupportAIAgentUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+    enabled: bool | None = None
+    provider_profile_id: str | None = Field(default=None, max_length=40)
+    tenant_ids: list[UUID] | None = Field(default=None, max_length=500)
+    sku_knowledge_enabled: bool | None = None
+    file_knowledge_enabled: bool | None = None
+    multilingual_enabled: bool | None = None
+    min_retrieval_score: float | None = Field(default=None, ge=0, le=1)
+    min_answer_confidence: float | None = Field(default=None, ge=0, le=1)
+    max_sources: int | None = Field(default=None, ge=1, le=12)
+    daily_auto_reply_limit: int | None = Field(default=None, ge=1, le=100000)
+    system_prompt: str | None = Field(default=None, max_length=12000)
+    handoff_messages: dict[str, str] | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_optional_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("description", "system_prompt", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @field_validator("tenant_ids")
+    @classmethod
+    def unique_optional_tenants(cls, value: list[UUID] | None) -> list[UUID] | None:
+        return list(dict.fromkeys(value)) if value is not None else None
+
+    @field_validator("handoff_messages")
+    @classmethod
+    def normalize_agent_handoff_messages(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        if value is None:
+            return None
+        normalized: dict[str, str] = {}
+        for locale, message in value.items():
+            key = str(locale).strip()[:35]
+            text = str(message).strip()
+            if key and text:
+                normalized[key] = text[:1000]
+        return normalized
+
+
+class SupportAIAgentResponse(BaseModel):
+    id: UUID
+    agent_code: str = Field(pattern=r"^\d{8}$")
+    name: str
+    description: str | None = None
+    enabled: bool
+    provider_profile_id: str | None = None
+    model_display_name: str | None = None
+    api_configured: bool
+    sku_knowledge_enabled: bool
+    file_knowledge_enabled: bool
+    multilingual_enabled: bool
+    min_retrieval_score: float = Field(ge=0, le=1)
+    min_answer_confidence: float = Field(ge=0, le=1)
+    max_sources: int = Field(ge=1, le=12)
+    daily_auto_reply_limit: int = Field(ge=1, le=100000)
+    system_prompt: str | None = None
+    handoff_messages: dict[str, str] = Field(default_factory=dict)
+    stores: list[SupportAIAgentStoreResponse] = Field(default_factory=list)
+    knowledge_source_count: int = Field(ge=0)
+    approved_knowledge_source_count: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
 class SupportAISettingsResponse(BaseModel):
     enabled: bool
     sku_knowledge_enabled: bool
@@ -234,6 +336,23 @@ class SupportAIIngestionJobResponse(BaseModel):
 class SupportAIKnowledgeUploadResponse(BaseModel):
     source: SupportAIKnowledgeSourceResponse
     job: SupportAIIngestionJobResponse
+
+
+class SupportAIAgentKnowledgeSourceResponse(BaseModel):
+    tenant_id: UUID
+    tenant_name: str
+    source: SupportAIKnowledgeSourceResponse
+
+
+class SupportAIAgentKnowledgeUploadItem(BaseModel):
+    tenant_id: UUID
+    tenant_name: str
+    source: SupportAIKnowledgeSourceResponse
+    job: SupportAIIngestionJobResponse
+
+
+class SupportAIAgentKnowledgeUploadResponse(BaseModel):
+    items: list[SupportAIAgentKnowledgeUploadItem]
 
 
 class SupportAIEvidenceResponse(BaseModel):

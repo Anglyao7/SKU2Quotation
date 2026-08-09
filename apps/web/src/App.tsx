@@ -60,7 +60,9 @@ const LanguagePackagesPage = recoverableLazy(() => import("./core/pages/Language
 const StorefrontAnalyticsPage = recoverableLazy(() => import("./core/pages/StorefrontAnalyticsPage").then((module) => ({ default: module.StorefrontAnalyticsPage })));
 const AnnouncementsPage = recoverableLazy(() => import("./core/pages/AnnouncementsPage").then((module) => ({ default: module.AnnouncementsPage })));
 const SupportCenterPage = recoverableLazy(() => import("./core/pages/SupportCenterPage").then((module) => ({ default: module.SupportCenterPage })));
-const SupportAIPage = recoverableLazy(() => import("./core/pages/SupportAIPage").then((module) => ({ default: module.SupportAIPage })));
+const SupportAIAgentsPage = recoverableLazy(() => import("./core/pages/SupportAIAgentsPage").then((module) => ({ default: module.SupportAIAgentsPage })));
+const SupportAIAgentDetailPage = recoverableLazy(() => import("./core/pages/SupportAIAgentDetailPage").then((module) => ({ default: module.SupportAIAgentDetailPage })));
+const SupportAIKnowledgePage = recoverableLazy(() => import("./core/pages/SupportAIKnowledgePage").then((module) => ({ default: module.SupportAIKnowledgePage })));
 const PersonalCenterPage = recoverableLazy(() => import("./core/pages/PersonalCenterPage").then((module) => ({ default: module.PersonalCenterPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
@@ -312,7 +314,10 @@ const router = createBrowserRouter([{
         { path: "analytics", element: <PermissionGate anyOf={["analytics.view"]}><StorefrontAnalyticsPage /></PermissionGate> },
         { path: "announcements", element: <PermissionGate anyOf={["announcement.manage"]}><AnnouncementsPage /></PermissionGate> },
         { path: "support", element: <PermissionGate anyOf={["support.view"]}><SupportCenterPage /></PermissionGate> },
-        { path: "support/ai", element: <PlatformAdminGate><SupportAIPage /></PlatformAdminGate> },
+        { path: "agents", element: <PlatformAdminGate><SupportAIAgentsPage /></PlatformAdminGate> },
+        { path: "agents/knowledge", element: <PlatformAdminGate><SupportAIKnowledgePage /></PlatformAdminGate> },
+        { path: "agents/:agentId", element: <PlatformAdminGate><SupportAIAgentDetailPage /></PlatformAdminGate> },
+        { path: "support/ai", element: <Navigate to="/console/agents" replace /> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
         { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },
