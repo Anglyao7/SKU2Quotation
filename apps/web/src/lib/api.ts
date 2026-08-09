@@ -1,6 +1,7 @@
 import type {
   CatalogLanguagePack,
   CatalogLanguagePackDescriptor,
+  CatalogSharePublic,
   CreateQuoteInput,
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
@@ -59,6 +60,7 @@ interface StoreSkuFilters {
   includeFacets?: boolean;
   page?: number;
   locale?: StorefrontLocale;
+  shareToken?: string;
 }
 
 const publicRequestCache = new Map<string, PublicCacheEntry>();
@@ -337,6 +339,7 @@ async function getCachedStoreSkus(
   if (filters.tags?.length) params.set("tags", filters.tags.join(","));
   if (filters.semantic) params.set("semantic", "true");
   if (filters.includeFacets === false) params.set("include_facets", "false");
+  if (filters.shareToken) params.set("share", filters.shareToken);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
   params.sort();
@@ -421,6 +424,7 @@ async function getCachedStoreProducts(
   if (filters.tags?.length) params.set("tags", filters.tags.join(","));
   if (filters.semantic) params.set("semantic", "true");
   if (filters.includeFacets === false) params.set("include_facets", "false");
+  if (filters.shareToken) params.set("share", filters.shareToken);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
   params.sort();
@@ -558,6 +562,17 @@ export const api = {
           locale: languagePack.target_locale,
         };
       },
+    );
+  },
+  getCatalogShare: async (
+    slug: string,
+    token: string,
+  ): Promise<CatalogSharePublic> => {
+    const path = `/api/store/${encodeURIComponent(slug)}/shares/${encodeURIComponent(token)}`;
+    return cachedPublicRequest(
+      publicCatalogCacheKey("catalog-share", path),
+      PUBLIC_STORE_CACHE_TTL_MS,
+      () => request<CatalogSharePublic>(path),
     );
   },
   async getStoreProduct(

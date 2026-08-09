@@ -1639,7 +1639,11 @@
 .pricingBilling span {
   color: #dec45f;
   font-family: var(--mk-serif);
-  font-size: 18px;
+  font-size: clamp(24px, 2.1vw, 30px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  white-space: nowrap;
 }
 
 .pricingFeatures {

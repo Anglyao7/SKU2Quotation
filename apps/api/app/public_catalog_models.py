@@ -132,6 +132,55 @@ class PublicCatalogOfferRow(AuditTimestampMixin, Base):
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CatalogShareRow(AuditTimestampMixin, Base):
+    """Tenant-scoped, opaque storefront share links for products or a category."""
+
+    __tablename__ = "catalog_shares"
+    __table_args__ = (
+        CheckConstraint(
+            "target_type IN ('PRODUCTS', 'CATEGORY')",
+            name="target_type_allowed",
+        ),
+        CheckConstraint("item_count > 0", name="item_count_positive"),
+        CheckConstraint("length(fingerprint) = 64", name="fingerprint_sha256_length"),
+        CheckConstraint(
+            "(target_type = 'PRODUCTS' AND category_id IS NULL) OR "
+            "(target_type = 'CATEGORY' AND category_id IS NOT NULL)",
+            name="target_shape_valid",
+        ),
+        UniqueConstraint("tenant_id", "id", name="uq_catalog_shares_tenant_identity"),
+        UniqueConstraint("share_token", name="uq_catalog_shares_token"),
+        UniqueConstraint(
+            "tenant_id", "fingerprint", name="uq_catalog_shares_tenant_fingerprint"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "category_id"],
+            ["product_categories.tenant_id", "product_categories.id"],
+            name="fk_catalog_shares_tenant_category",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_catalog_shares_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    share_token: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    product_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    category_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    category_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class PublicQuoteDraftRow(AuditTimestampMixin, Base):
     """Customer-submitted price indication awaiting the authoritative quotation flow."""
 

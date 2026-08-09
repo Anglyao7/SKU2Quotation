@@ -6,6 +6,7 @@ import {
   Folder,
   FolderOpen,
   Plus,
+  ShareNetwork,
   Storefront,
   Trash,
   TreeStructure,
@@ -51,6 +52,7 @@ interface CategoryManagerProps {
   allProductsPosition: number;
   onChanged: () => Promise<void>;
   onAllProductsPositionChanged: (position: number) => Promise<void>;
+  onShareCategory?: (category: ProductCategory) => void;
 }
 
 const rootParentKey = "__root__";
@@ -111,6 +113,7 @@ export function CategoryManager({
   allProductsPosition,
   onChanged,
   onAllProductsPositionChanged,
+  onShareCategory,
 }: CategoryManagerProps) {
   const { t } = useLocale();
   const [displayCategories, setDisplayCategories] = useState(categories);
@@ -896,6 +899,16 @@ export function CategoryManager({
         ) : null}
         {error ? <Text size="2" color="red">{error}</Text> : null}
         <div className="core-category-editor-actions">
+          {draft.mode === "edit" && selectedCategory && onShareCategory ? (
+            <Button
+              variant="soft"
+              color="gray"
+              disabled={saving || reordering || selectedCategory.status !== "ACTIVE"}
+              onClick={() => onShareCategory(selectedCategory)}
+            >
+              <ShareNetwork />{t("分享分类")}
+            </Button>
+          ) : null}
           {draft.mode === "edit" && selectedCategory ? (
             <Button
               className="core-category-delete-button"

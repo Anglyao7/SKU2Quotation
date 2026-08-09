@@ -382,6 +382,23 @@ export interface ProductCategory {
   version: number;
 }
 
+export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY";
+
+export interface CatalogShare {
+  id: string;
+  token: string;
+  targetType: CatalogShareTargetType;
+  title: string;
+  itemCount: number;
+  categoryId?: string;
+  categoryName?: string;
+  categoryPath?: string;
+  sharePath: string;
+  storeName: string;
+  storeLogoUrl?: string;
+  createdAt: string;
+}
+
 export interface CategoryLayout {
   allProductsPosition: number;
   rootCategoryCount: number;

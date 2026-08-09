@@ -188,6 +188,7 @@ def list_public_products(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=24, ge=1, le=100),
     locale: str | None = Query(default=None, max_length=20),
+    share: str | None = Query(default=None, min_length=8, max_length=64),
     session: Session = Depends(get_session),
 ) -> PublicProductPage:
     response.headers.update(NO_STORE_HEADERS)
@@ -231,6 +232,7 @@ def list_public_products(
             page=page,
             page_size=page_size,
             locale=locale,
+            share_token=share,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

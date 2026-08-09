@@ -1,5 +1,5 @@
 import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowDown, ArrowUp, ArrowsClockwise, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, ArrowsClockwise, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, ShareNetwork, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -27,6 +27,7 @@ import {
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import { CatalogShareDialog, type CatalogShareTarget } from "../components/CatalogShareDialog";
 import { primaryCategoryLabel } from "../../lib/format";
 import { api } from "../../lib/api";
 import type { ProductTag } from "../../types";
@@ -189,6 +190,7 @@ export function ProductsPage() {
     && hasPermission("product.edit")
     && hasPermission("catalog.publish");
   const canCreate = canEdit && hasPermission("catalog.publish");
+  const canShare = canEdit && hasPermission("catalog.publish");
   const [params, setParams] = useSearchParams();
   const importInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -234,6 +236,7 @@ export function ProductsPage() {
   const [bulkError, setBulkError] = useState("");
   const [bulkNotice, setBulkNotice] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
+  const [shareTarget, setShareTarget] = useState<CatalogShareTarget>();
   const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
@@ -830,6 +833,14 @@ export function ProductsPage() {
             <Text size="2" weight="bold">{t("已选 {count} 项", { count: selectedSkuIds.size })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
+            {canShare ? (
+              <Button
+                size="2"
+                onClick={() => setShareTarget({ type: "PRODUCTS", skuIds: [...selectedSkuIds] })}
+              >
+                <ShareNetwork />{t("分享")}
+              </Button>
+            ) : null}
             <Button size="2" variant="soft" color="gray" onClick={() => openBulkAction("category")}><Folders />{t("修改分类")}</Button>
             <Button size="2" variant="soft" color="jade" onClick={() => openBulkAction("activate")}><ArrowUp />{t("上架")}</Button>
             <Button size="2" variant="soft" color="amber" onClick={() => openBulkAction("deactivate")}><ArrowDown />{t("下架")}</Button>
@@ -1374,6 +1385,12 @@ export function ProductsPage() {
           {detailLoading || !selected ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} selectedSkuId={selectedSkuId} managedTags={managedTags} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
         </Dialog.Content>
       </Dialog.Root>
+
+      <CatalogShareDialog
+        open={Boolean(shareTarget)}
+        target={shareTarget}
+        onOpenChange={(open) => { if (!open) setShareTarget(undefined); }}
+      />
     </div>
   );
 }

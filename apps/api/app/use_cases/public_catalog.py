@@ -1699,8 +1699,20 @@ def list_public_products(
     page: int,
     page_size: int,
     locale: str | None = None,
+    share_token: str | None = None,
 ) -> PublicProductPage:
     tenant, profile = _resolve_store(session, slug=slug)
+    shared_product_ids: set[UUID] | None = None
+    if share_token:
+        from .catalog_shares import resolve_share_constraint
+
+        share_constraint = resolve_share_constraint(
+            session, tenant_id=tenant.id, token=share_token
+        )
+        if share_constraint.target_type == "CATEGORY":
+            category = share_constraint.category_path
+        else:
+            shared_product_ids = set(share_constraint.product_ids)
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
             session,
@@ -1717,6 +1729,7 @@ def list_public_products(
         and not (category or "").strip()
         and not wanted_tags
         and not semantic
+        and not share_token
     )
     all_categories = (
         repository.list_catalog_categories(session, tenant_id=tenant.id)
@@ -1755,6 +1768,12 @@ def list_public_products(
         matching_product_ids = list(
             dict.fromkeys(row[2].id for row in candidate_rows)
         )
+        if shared_product_ids is not None:
+            matching_product_ids = [
+                product_id
+                for product_id in matching_product_ids
+                if product_id in shared_product_ids
+            ]
         total = len(matching_product_ids)
         start = (page - 1) * page_size
         selected_product_ids = matching_product_ids[start : start + page_size]
@@ -1766,6 +1785,7 @@ def list_public_products(
             query=query,
             category=category,
             tags=wanted_tags,
+            product_ids=shared_product_ids,
         )
         selected_product_ids = repository.list_public_product_ids_page(
             session,
@@ -1776,6 +1796,7 @@ def list_public_products(
             tags=wanted_tags,
             page=page,
             page_size=page_size,
+            product_ids=shared_product_ids,
             hot=hot_sort_applied,
         )
 
@@ -1797,6 +1818,7 @@ def list_public_products(
             now=now,
             query="",
             category=None,
+            product_ids=shared_product_ids,
         )
     else:
         visible_category_ids = set()

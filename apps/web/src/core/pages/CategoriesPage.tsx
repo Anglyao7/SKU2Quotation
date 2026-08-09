@@ -20,6 +20,7 @@ import {
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CategoryManager } from "../components/CategoryManager";
+import { CatalogShareDialog, type CatalogShareTarget } from "../components/CatalogShareDialog";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type { CategoryLayout, ProductCategory } from "../types";
@@ -44,6 +45,7 @@ export function CategoriesPage() {
   const { t } = useLocale();
   const { hasPermission } = useCoreAuth();
   const canImport = hasPermission("product.edit");
+  const canShare = hasPermission("catalog.publish");
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [layout, setLayout] = useState<CategoryLayout>({
     allProductsPosition: 0,
@@ -57,6 +59,7 @@ export function CategoriesPage() {
   const [importError, setImportError] = useState("");
   const [importIssues, setImportIssues] = useState<CategoryImportIssue[]>([]);
   const [importResult, setImportResult] = useState<CategoryImportResult>();
+  const [shareTarget, setShareTarget] = useState<CatalogShareTarget>();
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const load = useCallback(async () => {
@@ -172,6 +175,11 @@ export function CategoriesPage() {
           allProductsPosition={layout.allProductsPosition}
           onChanged={load}
           onAllProductsPositionChanged={saveAllProductsPosition}
+          onShareCategory={canShare ? (category) => setShareTarget({
+            type: "CATEGORY",
+            categoryId: category.id,
+            categoryName: category.name,
+          }) : undefined}
         />
       ) : null}
 
@@ -263,6 +271,12 @@ export function CategoriesPage() {
           </div>
         </Dialog.Content>
       </Dialog.Root>
+
+      <CatalogShareDialog
+        open={Boolean(shareTarget)}
+        target={shareTarget}
+        onOpenChange={(open) => { if (!open) setShareTarget(undefined); }}
+      />
     </div>
   );
 }

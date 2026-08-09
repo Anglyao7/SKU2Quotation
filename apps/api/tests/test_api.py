@@ -225,6 +225,7 @@ from app.use_cases import storefront_analytics as storefront_analytics_use_cases
 from app.workspace_schemas import SupplierCreateRequest
 from app.trade_flow_models import InquiryMatchResultRow, InquiryRow, QuotationApprovalRow, QuotationItemRow, QuotationRow, QuotationVersionRow
 from app.public_catalog_models import (
+    CatalogShareRow,
     PublicCatalogOfferRow,
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
@@ -4103,6 +4104,7 @@ def test_phase4a1a_schema_contains_only_approved_product_intelligence_tables() -
         "product_versions",
         "outbox_events",
         "tenant_public_profiles",
+        "catalog_shares",
         "public_catalog_offers",
         "public_quote_drafts",
         "public_quote_draft_items",
@@ -5995,6 +5997,7 @@ def test_postgresql_offline_migration_contains_forced_rls_policies() -> None:
         "storefront_chat_conversations",
         "storefront_chat_messages",
         "tenant_subscriptions",
+        "catalog_shares",
         "catalog_language_packs",
         "ai_runs",
         "ai_task_steps",
@@ -11084,6 +11087,171 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
             session.commit()
 
 
+def test_catalog_share_links_scope_products_and_categories() -> None:
+    suffix = uuid4().hex[:10]
+    category_id = uuid4()
+    product_ids = [uuid4(), uuid4()]
+    sku_ids = [uuid4(), uuid4(), uuid4()]
+    with SessionLocal() as session:
+        session.add(
+            ProductCategoryRow(
+                id=category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                code=f"SHARE-{suffix}",
+                name=f"分享分类 {suffix}",
+                path=f"分享分类 {suffix}",
+                status="ACTIVE",
+                sort_order=999,
+            )
+        )
+        session.add_all(
+            [
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"SHARE-{suffix}-{index}",
+                    name=f"分享商品 {suffix}-{index}",
+                    category_id=category_id,
+                    status="ACTIVE",
+                    current_version=1,
+                )
+                for index, product_id in enumerate(product_ids, start=1)
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=sku_ids[0],
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_ids[0],
+                    sku_code=f"SHARE-{suffix}-1A",
+                    name="分享规格 1A",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=sku_ids[1],
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_ids[0],
+                    sku_code=f"SHARE-{suffix}-1B",
+                    name="分享规格 1B",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=sku_ids[2],
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_ids[1],
+                    sku_code=f"SHARE-{suffix}-2A",
+                    name="分享规格 2A",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                PublicCatalogOfferRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    sku_id=sku_id,
+                    unit_price=Decimal("12.00"),
+                    currency="CNY",
+                    tags=[f"share-{suffix}"],
+                    publication_status="PUBLISHED",
+                )
+                for sku_id in sku_ids
+            ]
+        )
+        session.commit()
+
+    try:
+        created = client.post(
+            "/api/v1/catalog-shares",
+            json={
+                "target_type": "PRODUCTS",
+                "sku_ids": [str(sku_id) for sku_id in sku_ids],
+            },
+        )
+        assert created.status_code == 201, created.text
+        share = created.json()
+        assert share["target_type"] == "PRODUCTS"
+        assert share["item_count"] == 2
+        assert share["share_path"] == f"/demo?share={share['token']}"
+
+        repeated = client.post(
+            "/api/v1/catalog-shares",
+            json={
+                "target_type": "PRODUCTS",
+                "sku_ids": [str(sku_id) for sku_id in reversed(sku_ids)],
+            },
+        )
+        assert repeated.status_code == 201, repeated.text
+        assert repeated.json()["id"] == share["id"]
+
+        metadata = client.get(f"/api/store/demo/shares/{share['token']}")
+        assert metadata.status_code == 200, metadata.text
+        assert metadata.json()["store_name"] == "Local Demo Company"
+
+        scoped = client.get(
+            "/api/store/demo/products",
+            params={"share": share["token"], "include_facets": "false"},
+        )
+        assert scoped.status_code == 200, scoped.text
+        assert scoped.json()["total"] == 2
+        assert {item["id"] for item in scoped.json()["items"]} == {
+            str(product_id) for product_id in product_ids
+        }
+
+        category_created = client.post(
+            "/api/v1/catalog-shares",
+            json={"target_type": "CATEGORY", "category_id": str(category_id)},
+        )
+        assert category_created.status_code == 201, category_created.text
+        category_share = category_created.json()
+        assert category_share["item_count"] == 2
+        category_scoped = client.get(
+            "/api/store/demo/products",
+            params={
+                "share": category_share["token"],
+                "category": "不存在的分类",
+                "include_facets": "false",
+            },
+        )
+        assert category_scoped.status_code == 200, category_scoped.text
+        assert category_scoped.json()["total"] == 2
+
+        missing = client.get("/api/store/demo/shares/not-a-real-share-token")
+        assert missing.status_code == 404
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogShareRow).where(
+                    CatalogShareRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogShareRow.fingerprint.in_(
+                        [
+                            hashlib.sha256(
+                                ("PRODUCTS:" + ",".join(sorted(str(value) for value in product_ids))).encode("utf-8")
+                            ).hexdigest(),
+                            hashlib.sha256(f"CATEGORY:{category_id}".encode("utf-8")).hexdigest(),
+                        ]
+                    ),
+                )
+            )
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.sku_id.in_(sku_ids)
+                )
+            )
+            session.execute(delete(SkuRow).where(SkuRow.id.in_(sku_ids)))
+            session.execute(delete(ProductRow).where(ProductRow.id.in_(product_ids)))
+            session.execute(
+                delete(ProductCategoryRow).where(ProductCategoryRow.id == category_id)
+            )
+            session.commit()
+
+
 def test_storefront_detail_views_are_idempotent_and_tenant_analytics_are_aggregated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13877,6 +14045,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "storefront_chat_conversations",
         "storefront_chat_messages",
         "tenant_subscriptions",
+        "catalog_shares",
     }
     customer_account_tables = {
         "local_account_credentials",
@@ -13954,6 +14123,20 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert profile_columns["hot_products_enabled"]["nullable"] is False
     assert "support_widget_config" in profile_columns
     assert profile_columns["support_widget_config"]["nullable"] is False
+    share_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("catalog_shares")
+    }
+    assert {
+        "share_token",
+        "target_type",
+        "product_ids",
+        "category_id",
+        "category_path",
+        "title",
+        "item_count",
+        "fingerprint",
+    }.issubset(share_columns)
     product_columns = {
         column["name"]: column
         for column in inspect(upgraded_engine).get_columns("products")
@@ -14010,7 +14193,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0066"
+        ).scalar() == "20260809_0067"
     upgraded_engine.dispose()
     command.check(config)
 
