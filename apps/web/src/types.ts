@@ -9,6 +9,9 @@ export type TenantModuleCode =
   | "quotations"
   | "subaccounts";
 
+export type TenantSubscriptionTier = "TRIAL" | "STANDARD" | "SILVER" | "ELITE";
+export type TenantSubscriptionStatus = "active" | "expiring_soon" | "expired";
+
 export interface Tenant {
   id: string;
   name: string;
@@ -21,6 +24,12 @@ export interface Tenant {
   quote_count?: number;
   owner_account?: MerchantOwnerAccount | null;
   enabled_modules?: TenantModuleCode[];
+  subscription_tier: TenantSubscriptionTier;
+  subscription_started_at: string;
+  subscription_expires_at: string;
+  subscription_status: TenantSubscriptionStatus;
+  sku_limit: number | null;
+  sku_remaining: number | null;
   created_at?: string;
 }
 
@@ -334,6 +343,7 @@ export interface QuoteItemInput {
 }
 
 export interface CreateQuoteInput {
+  locale: StorefrontLocale;
   customer_name: string;
   customer_company?: string;
   customer_email?: string;
@@ -368,6 +378,7 @@ export interface Quote {
   customer_company?: string | null;
   customer_email?: string | null;
   notes?: string | null;
+  locale?: StorefrontLocale;
   status?: "draft" | "generated" | "sent" | "expired" | string;
   currency?: string;
   total_amount?: number | string | null;
@@ -387,6 +398,12 @@ export interface TenantPayload {
   contact_email?: string;
   active: boolean;
   enabled_modules?: TenantModuleCode[];
+}
+
+export interface TenantSubscriptionPayload {
+  subscription_tier: TenantSubscriptionTier;
+  subscription_expires_at: string;
+  sku_limit: number | null;
 }
 
 export interface MerchantOwnerAccountPayload {

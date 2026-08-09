@@ -6,7 +6,9 @@ Revises: 20260809_0062
 
 from __future__ import annotations
 
+import json
 import secrets
+from collections.abc import Mapping
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
@@ -46,6 +48,22 @@ def _agent_code(used: set[str]) -> str:
             used.add(value)
             return value
     raise RuntimeError("could not allocate a unique support AI agent code")
+
+
+def _json_object(value: object) -> dict[str, object]:
+    """Normalize JSON values read through migration-level raw SQL."""
+
+    candidate = value
+    for _attempt in range(2):
+        if isinstance(candidate, Mapping):
+            return {str(key): item for key, item in candidate.items()}
+        if not isinstance(candidate, str):
+            break
+        try:
+            candidate = json.loads(candidate)
+        except (TypeError, ValueError):
+            break
+    return {}
 
 
 def upgrade() -> None:
@@ -256,7 +274,7 @@ def upgrade() -> None:
                 "max_sources": row["max_sources"],
                 "daily_auto_reply_limit": row["daily_auto_reply_limit"],
                 "system_prompt": row["system_prompt"],
-                "handoff_messages": row["handoff_messages"] or {},
+                "handoff_messages": _json_object(row["handoff_messages"]),
                 "created_by_user_id": row["updated_by_user_id"],
                 "updated_by_user_id": row["updated_by_user_id"],
             },

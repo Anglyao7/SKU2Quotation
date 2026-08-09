@@ -1,4 +1,4 @@
-import { AlertDialog, Avatar, Badge, Button, DropdownMenu, Select, Text } from "@radix-ui/themes";
+import { AlertDialog, Avatar, Badge, Button, DropdownMenu, Select, Text, TextField } from "@radix-ui/themes";
 import {
   CaretDown,
   CaretRight,
@@ -37,7 +37,7 @@ import { updateMerchantSettings } from "../../core/api";
 import { preloadConsoleRoute } from "../../core/routePreload";
 import { useLocale } from "../../core/LocaleContext";
 import { initials } from "../../lib/format";
-import type { BusinessMode, UiLocale } from "../../core/types";
+import type { UiLocale } from "../../core/types";
 import type { Tenant } from "../../types";
 
 export interface ConsoleOutletContext {
@@ -119,6 +119,11 @@ const navigationGroups = [
   },
 ];
 
+const COMMON_CURRENCIES = [
+  "CNY", "USD", "EUR", "GBP", "JPY", "KRW", "HKD", "SGD",
+  "CAD", "AUD", "CHF", "AED", "SAR", "TRY", "BRL", "MXN",
+] as const;
+
 function navigationItemIsActive(
   pathname: string,
   item: { to: string; end?: boolean },
@@ -150,16 +155,18 @@ export function ConsoleLayout() {
   const [tenantError, setTenantError] = useState("");
   const [modeDialogOpen, setModeDialogOpen] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
+  const [currencyPreset, setCurrencyPreset] = useState("CNY");
+  const [customCurrency, setCustomCurrency] = useState("");
   const [toolbarError, setToolbarError] = useState("");
-  const [expandedNavigationGroup, setExpandedNavigationGroup] = useState<string | null>(
-    () => initialNavigationGroup(location.pathname),
+  const [expandedNavigationGroups, setExpandedNavigationGroups] = useState<Set<string>>(
+    () => new Set([initialNavigationGroup(location.pathname)]),
   );
   const activeMembershipId = profile?.context.membershipId ?? "";
   const activeTenantId = profile?.context.tenantId ?? "";
   const activeTenantSlug = profile?.context.tenantSlug ?? memberships.find((row) => row.id === activeMembershipId)?.tenantSlug ?? "";
   const displayName = profile?.user.displayName || profile?.user.email || t("当前成员");
-  const businessMode = profile?.context.businessMode ?? "DOMESTIC";
-  const nextBusinessMode: BusinessMode = businessMode === "EXPORT" ? "DOMESTIC" : "EXPORT";
+  const defaultCurrency = (profile?.context.defaultCurrency ?? "CNY").toUpperCase();
+  const businessMode = defaultCurrency === "CNY" ? "DOMESTIC" : "EXPORT";
   const canManageSettings = hasPermission("system.settings_manage");
   const visibleGroups = navigationGroups
     .map((group) => ({
@@ -177,10 +184,28 @@ export function ConsoleLayout() {
   const mobileMoreActive = mobileMore.some((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
     || location.pathname.startsWith("/console/account");
   const storefrontPath = activeTenantSlug ? `/${encodeURIComponent(activeTenantSlug)}` : "/";
-  const activeTenant = useMemo<Tenant | undefined>(() => activeTenantId ? { id: activeTenantId, name: profile?.context.tenantName ?? t("当前工作区"), slug: activeTenantSlug, active: true, status: "active" } : undefined, [activeTenantId, activeTenantSlug, profile?.context.tenantName, t]);
+  const activeTenant = useMemo<Tenant | undefined>(() => activeTenantId ? {
+    id: activeTenantId,
+    name: profile?.context.tenantName ?? t("当前工作区"),
+    slug: activeTenantSlug,
+    active: true,
+    status: "active",
+    subscription_tier: "TRIAL",
+    subscription_started_at: "",
+    subscription_expires_at: "",
+    subscription_status: "active",
+    sku_limit: 500,
+    sku_remaining: 500,
+  } : undefined, [activeTenantId, activeTenantSlug, profile?.context.tenantName, t]);
 
   useEffect(() => {
-    if (activeNavigationGroup) setExpandedNavigationGroup(activeNavigationGroup);
+    if (!activeNavigationGroup) return;
+    setExpandedNavigationGroups((current) => {
+      if (current.has(activeNavigationGroup)) return current;
+      const next = new Set(current);
+      next.add(activeNavigationGroup);
+      return next;
+    });
   }, [activeNavigationGroup]);
 
   const selectTenant = async (membershipId: string) => {
@@ -191,21 +216,43 @@ export function ConsoleLayout() {
   };
   const reloadTenants = async () => undefined;
 
-  const switchBusinessMode = async () => {
+  const openCurrencyDialog = () => {
+    if (COMMON_CURRENCIES.includes(defaultCurrency as typeof COMMON_CURRENCIES[number])) {
+      setCurrencyPreset(defaultCurrency);
+      setCustomCurrency("");
+    } else {
+      setCurrencyPreset("OTHER");
+      setCustomCurrency(defaultCurrency);
+    }
+    setToolbarError("");
+    setModeDialogOpen(true);
+  };
+
+  const saveDefaultCurrency = async () => {
     if (!canManageSettings || modeBusy) return;
+    const nextCurrency = (currencyPreset === "OTHER" ? customCurrency : currencyPreset)
+      .trim()
+      .toUpperCase();
+    if (!/^[A-Z]{3}$/.test(nextCurrency)) {
+      setToolbarError(t("请输入三位英文字母币种代码。"));
+      return;
+    }
     setModeBusy(true);
     setToolbarError("");
     try {
-      await updateMerchantSettings({ businessMode: nextBusinessMode });
+      await updateMerchantSettings({ defaultCurrency: nextCurrency });
       await reloadProfile();
       window.dispatchEvent(
         new CustomEvent("atc:merchant-settings-changed", {
-          detail: { businessMode: nextBusinessMode },
+          detail: {
+            defaultCurrency: nextCurrency,
+            businessMode: nextCurrency === "CNY" ? "DOMESTIC" : "EXPORT",
+          },
         }),
       );
       setModeDialogOpen(false);
     } catch {
-      setToolbarError(t("业务版本切换失败，请稍后重试。"));
+      setToolbarError(t("币种设置保存失败，请稍后重试。"));
     } finally {
       setModeBusy(false);
     }
@@ -225,7 +272,7 @@ export function ConsoleLayout() {
       <div className="sidebar-brand"><Brand /></div>
       <nav className="desktop-console-nav" aria-label={t("控制台导航")}>
         {visibleGroups.map((group) => {
-          const isExpanded = expandedNavigationGroup === group.key;
+          const isExpanded = expandedNavigationGroups.has(group.key);
           const hasActiveItem = activeNavigationGroup === group.key;
           const GroupIcon = group.icon;
           const panelId = `console-nav-${group.key}`;
@@ -244,7 +291,12 @@ export function ConsoleLayout() {
               aria-controls={panelId}
               aria-label={toggleLabel}
               title={toggleLabel}
-              onClick={() => setExpandedNavigationGroup((current) => current === group.key ? null : group.key)}
+              onClick={() => setExpandedNavigationGroups((current) => {
+                const next = new Set(current);
+                if (next.has(group.key)) next.delete(group.key);
+                else next.add(group.key);
+                return next;
+              })}
             >
               <GroupIcon className="nav-group-icon" size={20} weight="duotone" />
               <span>{t(group.label)}</span>
@@ -303,15 +355,15 @@ export function ConsoleLayout() {
             className={`business-mode-trigger ${businessMode === "EXPORT" ? "export" : ""}`}
             variant="soft"
             color={businessMode === "EXPORT" ? "amber" : "gray"}
-            aria-label={t("切换业务版本")}
+            aria-label={t("设置前台币种")}
             title={!canManageSettings
               ? t("当前成员没有修改商家设置的权限。")
-              : t(businessMode === "EXPORT" ? "外贸版 · USD" : "内贸版 · CNY")}
+              : t("设置前台币种")}
             disabled={!canManageSettings || modeBusy}
-            onClick={() => setModeDialogOpen(true)}
+            onClick={openCurrencyDialog}
           >
             <GlobeHemisphereWest size={17} weight="duotone" />
-            <span>{t(businessMode === "EXPORT" ? "外贸版 · USD" : "内贸版 · CNY")}</span>
+            <span>{t("币种")} · {defaultCurrency}</span>
           </Button>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>
@@ -364,21 +416,42 @@ export function ConsoleLayout() {
     </div>
     <AlertDialog.Root open={modeDialogOpen} onOpenChange={setModeDialogOpen}>
       <AlertDialog.Content className="business-mode-dialog">
-        <AlertDialog.Title>{t(nextBusinessMode === "EXPORT" ? "切换至外贸版" : "切换至内贸版")}</AlertDialog.Title>
+        <AlertDialog.Title>{t("设置前台币种")}</AlertDialog.Title>
         <AlertDialog.Description>
-          {t(nextBusinessMode === "EXPORT"
-            ? "外贸版默认以 USD 处理新导入商品、采购、销售与报价。已有历史金额不会被重新换算。"
-            : "内贸版默认以 CNY 处理新业务。已有 USD 仓库和历史单据会继续保留。")}
+          {t("商品前台和之后生成的报价单会统一使用所选币种展示。")}
         </AlertDialog.Description>
+        <div className="business-currency-field">
+          <Text as="label" size="2" weight="medium">{t("币种代码")}</Text>
+          <Select.Root value={currencyPreset} onValueChange={setCurrencyPreset}>
+            <Select.Trigger aria-label={t("选择币种")} />
+            <Select.Content>
+              {COMMON_CURRENCIES.map((currency) => (
+                <Select.Item key={currency} value={currency}>
+                  {currency === "CNY" ? "CNY / RMB" : currency}
+                </Select.Item>
+              ))}
+              <Select.Separator />
+              <Select.Item value="OTHER">{t("其他币种")}</Select.Item>
+            </Select.Content>
+          </Select.Root>
+          {currencyPreset === "OTHER" ? <TextField.Root
+            value={customCurrency}
+            onChange={(event) => setCustomCurrency(event.currentTarget.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3))}
+            placeholder="EUR"
+            maxLength={3}
+            autoCapitalize="characters"
+            aria-label={t("三位币种代码")}
+          /> : null}
+        </div>
         <div className="business-mode-note">
           <GlobeHemisphereWest size={20} weight="duotone" />
-          <Text size="2">{t("系统会自动切换到对应币种的默认仓库；若不存在，将创建一个空仓库。")}</Text>
+          <Text size="2">{t("切换币种不会换算或修改价格数值；系统仅更换币种符号与代码，并切换到对应币种的默认仓库。")}</Text>
         </div>
         {toolbarError ? <Text size="2" color="red" role="alert">{toolbarError}</Text> : null}
         <div className="core-dialog-actions">
           <AlertDialog.Cancel><Button variant="soft" color="gray" disabled={modeBusy}>{t("取消")}</Button></AlertDialog.Cancel>
-          <Button onClick={() => void switchBusinessMode()} loading={modeBusy}>
-            {t(modeBusy ? "正在切换" : "确认切换")}
+          <Button onClick={() => void saveDefaultCurrency()} loading={modeBusy}>
+            {t(modeBusy ? "正在保存" : "保存币种")}
           </Button>
         </div>
       </AlertDialog.Content>

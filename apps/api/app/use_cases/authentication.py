@@ -40,9 +40,9 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
             tenant_name=tenant.name,
             tenant_slug=tenant.slug,
             business_mode=(
-                "EXPORT"
-                if tenant.default_currency.upper() == "USD"
-                else "DOMESTIC"
+                "DOMESTIC"
+                if tenant.default_currency.upper() == "CNY"
+                else "EXPORT"
             ),
             default_currency=tenant.default_currency.upper(),
             default_workspace=(

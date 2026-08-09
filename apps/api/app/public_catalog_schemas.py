@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .announcement_schemas import PublicAnnouncementResponse
 from .quote_template_schemas import QuoteExcelTemplateRenderSpec
+from .storefront_locales import StorefrontLocale
 from .support_schemas import PublicSupportWidgetResponse
 
 PUBLIC_DRAFT_DISCLAIMER = (
@@ -135,6 +136,7 @@ class PublicCartItem(BaseModel):
 
 
 class PublicQuoteDraftCreate(BaseModel):
+    locale: StorefrontLocale = "zh-CN"
     customer_name: str = Field(min_length=1, max_length=160)
     customer_company: str | None = Field(default=None, max_length=200)
     customer_email: str | None = Field(default=None, max_length=320)
@@ -193,6 +195,7 @@ class PublicQuoteDraftResponse(BaseModel):
     customer_email: str | None
     customer_phone: str | None
     notes: str | None
+    locale: StorefrontLocale = "zh-CN"
     currency: str
     subtotal: Decimal
     total: Decimal
@@ -215,6 +218,7 @@ class PublicQuoteDraftSummary(BaseModel):
     status: str
     customer_name: str
     customer_company: str | None
+    locale: StorefrontLocale = "zh-CN"
     currency: str
     total_amount: Decimal
     valid_until: datetime

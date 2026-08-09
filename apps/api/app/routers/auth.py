@@ -124,10 +124,10 @@ def _token_response(
                 tenant_name=result.tenant.name if result.tenant else None,
                 tenant_slug=result.tenant.slug if result.tenant else None,
                 business_mode=(
-                    "EXPORT"
+                    "DOMESTIC"
                     if result.tenant
-                    and result.tenant.default_currency.upper() == "USD"
-                    else "DOMESTIC"
+                    and result.tenant.default_currency.upper() == "CNY"
+                    else "EXPORT"
                     if result.tenant
                     else None
                 ),

@@ -33,7 +33,7 @@ def _response(
         slug=tenant.slug,
         storefront_path=f"/{tenant.slug}",
         business_mode=(
-            "EXPORT" if tenant.default_currency.upper() == "USD" else "DOMESTIC"
+            "DOMESTIC" if tenant.default_currency.upper() == "CNY" else "EXPORT"
         ),
         default_currency=tenant.default_currency.upper(),
         storefront_locales=effective_storefront_locales(
@@ -46,21 +46,21 @@ def _response(
     )
 
 
-def _activate_mode_warehouse(
+def _activate_currency_warehouse(
     session: Session,
     *,
     tenant: TenantRow,
     context: RequestContext,
-    business_mode: str,
+    currency: str,
 ) -> None:
-    """Select a valuation-safe default warehouse for the requested mode.
+    """Select a valuation-safe default warehouse for the display currency.
 
     Existing warehouse balances and documents keep their original currency.
     When no warehouse exists for the new mode, a clean warehouse is created
     instead of relabelling historical inventory values.
     """
 
-    currency = "USD" if business_mode == "EXPORT" else "CNY"
+    currency = currency.strip().upper()
     warehouses = list(
         session.scalars(
             select(WarehouseRow).where(
@@ -73,7 +73,8 @@ def _activate_mode_warehouse(
         (
             warehouse
             for warehouse in warehouses
-            if warehouse.status == "ACTIVE" and warehouse.currency == currency
+            if warehouse.status == "ACTIVE"
+            and warehouse.currency.upper() == currency
         ),
         None,
     )
@@ -84,7 +85,13 @@ def _activate_mode_warehouse(
     session.flush()
 
     if target is None:
-        base_code = "EXPORT" if business_mode == "EXPORT" else "MAIN"
+        base_code = (
+            "MAIN"
+            if currency == "CNY"
+            else "EXPORT"
+            if currency == "USD"
+            else f"FX-{currency}"
+        )
         used_codes = {warehouse.code.casefold() for warehouse in warehouses}
         code = base_code
         suffix = 2
@@ -94,7 +101,13 @@ def _activate_mode_warehouse(
         target = WarehouseRow(
             tenant_id=tenant.id,
             code=code,
-            name="外贸仓" if business_mode == "EXPORT" else "默认仓库",
+            name=(
+                "默认仓库"
+                if currency == "CNY"
+                else "外贸仓"
+                if currency == "USD"
+                else f"{currency} 仓库"
+            ),
             currency=currency,
             status="ACTIVE",
             is_default=True,
@@ -211,12 +224,21 @@ def update_merchant_settings(
         assert profile is not None
         profile.hot_products_enabled = request.hot_products_enabled
 
+    requested_currency = request.default_currency
     if request.business_mode is not None:
-        _activate_mode_warehouse(
+        mode_currency = "USD" if request.business_mode == "EXPORT" else "CNY"
+        if requested_currency is not None and requested_currency != mode_currency:
+            raise ApplicationError(
+                "MERCHANT_CURRENCY_CONFLICT",
+                "Business mode and default currency do not match.",
+            )
+        requested_currency = mode_currency
+    if requested_currency is not None:
+        _activate_currency_warehouse(
             session,
             tenant=tenant,
             context=context,
-            business_mode=request.business_mode,
+            currency=requested_currency,
         )
 
     try:

@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+from functools import lru_cache
+from types import SimpleNamespace
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
@@ -50,7 +52,9 @@ from ..services.catalog_translation import (
 from ..services.catalog_language_packages import (
     catalog_product_package_source_hash,
     catalog_sku_package_source_hash,
+    load_language_pack_payload,
 )
+from ..services.language_package_storage import configured_language_package_storage
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
 from ..services.embedding import EmbeddingProviderError
@@ -558,6 +562,7 @@ def _sku_response(
     category_color: str | None,
     source_locale: str,
     locale: str,
+    display_currency: str,
     translation: object | None = None,
 ) -> PublicSkuResponse:
     offer, sku, product, category = row
@@ -615,7 +620,7 @@ def _sku_response(
         ),
         tag_color=offer.tag_color,
         price=_money(Decimal(offer.unit_price)),
-        currency=offer.currency,
+        currency=display_currency,
         unit_code=product.default_unit or "piece",
         image_url=_public_image_url(image, slug=slug),
         product_version=product.current_version,
@@ -1472,6 +1477,7 @@ def _product_summary_response(
     category_color: str | None,
     source_locale: str,
     locale: str,
+    display_currency: str,
     translation: PublicProductTranslation | None,
 ) -> PublicProductSummary:
     _offer, first_sku, product, category = rows[0]
@@ -1479,7 +1485,6 @@ def _product_summary_response(
     display_tag = _product_group_display_tag(rows, tags=tags)
     translated = translation is not None and locale != source_locale
     prices = [_money(Decimal(row[0].unit_price)) for row in rows]
-    currencies = [str(row[0].currency) for row in rows]
     product_model = str(
         (first_sku.option_values or {}).get("商品型号") or ""
     ).strip()
@@ -1520,7 +1525,7 @@ def _product_summary_response(
         tag_color=tag_color,
         price_from=min(prices),
         price_to=max(prices),
-        currency=currencies[0],
+        currency=display_currency,
         unit_code=product.default_unit or "piece",
         image_url=_public_image_url(image, slug=slug),
         sku_count=len({row[1].id for row in rows}),
@@ -1851,6 +1856,7 @@ def list_public_products(
                 ),
                 source_locale=source_locale,
                 locale=requested_locale,
+                display_currency=tenant.default_currency.upper(),
                 translation=translations.get(rows[0][2].id),
             )
             for rows in groups
@@ -1956,6 +1962,7 @@ def get_public_product(
         ),
         source_locale=source_locale,
         locale=requested_locale,
+        display_currency=tenant.default_currency.upper(),
         translation=product_translation,
     )
     source_group_tags = _product_group_tags(rows)
@@ -1985,6 +1992,7 @@ def get_public_product(
             category_color=summary.category_color,
             source_locale=source_locale,
             locale=requested_locale,
+            display_currency=tenant.default_currency.upper(),
             translation=None,
         )
         source_specification = str(
@@ -2216,6 +2224,7 @@ def list_public_skus(
                 ),
                 source_locale=source_locale,
                 locale=requested_locale,
+                display_currency=tenant.default_currency.upper(),
                 translation=translations.get(row[1].id),
             )
             for row in selected
@@ -2315,6 +2324,7 @@ def get_public_sku(
         ),
         source_locale=source_locale,
         locale=requested_locale,
+        display_currency=tenant.default_currency.upper(),
         translation=translations.get(sku_id),
     )
 
@@ -2363,6 +2373,232 @@ def _quote_specification(option_values: dict[str, object]) -> str | None:
     return "；".join(parts) or None
 
 
+@lru_cache(maxsize=4)
+def _cached_quote_language_pack(
+    object_key: str,
+    content_sha256: str,
+    target_locale: str,
+) -> dict[str, object]:
+    """Load a versioned immutable pack once per API process.
+
+    The cache key includes the content hash, so publishing a new package cannot
+    accidentally reuse the preceding version. Failures are raised and therefore
+    are not cached, allowing a transient R2 error to recover on the next request.
+    """
+
+    payload = load_language_pack_payload(
+        configured_language_package_storage(),
+        SimpleNamespace(
+            object_key=object_key,
+            content_sha256=content_sha256,
+            target_locale=target_locale,
+        ),
+    )
+    if payload is None:
+        raise RuntimeError("catalog language package could not be loaded")
+    return payload
+
+
+def _quote_language_pack_payload(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+) -> dict[str, object] | None:
+    row = catalog_translation_repository.language_pack(
+        session,
+        tenant_id=tenant_id,
+        target_locale=target_locale,
+    )
+    if row is None:
+        return None
+    try:
+        return _cached_quote_language_pack(
+            row.object_key,
+            row.content_sha256,
+            row.target_locale,
+        )
+    except Exception as exc:
+        logger.warning(
+            "quotation could not load catalog language pack %s: %s",
+            row.object_key,
+            exc,
+        )
+        return None
+
+
+def _pack_mapping(payload: dict[str, object] | None, key: str) -> dict[str, object]:
+    value = payload.get(key) if payload is not None else None
+    return value if isinstance(value, dict) else {}
+
+
+def _pack_product_translation(
+    entry: object,
+    *,
+    product_version: int,
+) -> PublicProductTranslation | None:
+    if not isinstance(entry, dict):
+        return None
+    if int(entry.get("product_version") or 0) != int(product_version):
+        return None
+
+    def clean_mapping(value: object) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(source): str(localized).strip()
+            for source, localized in value.items()
+            if str(source).strip() and str(localized).strip()
+        }
+
+    tags = tuple(
+        str(tag).strip()
+        for tag in (entry.get("tags") or [])
+        if str(tag).strip()
+    )
+    return PublicProductTranslation(
+        name=str(entry.get("name") or "").strip(),
+        description=(
+            str(entry.get("description")).strip()
+            if entry.get("description") not in (None, "")
+            else None
+        ),
+        category=str(entry.get("category_label") or "").strip() or None,
+        tags=tags,
+        display_tag=str(entry.get("display_tag") or "").strip() or None,
+        specifications=clean_mapping(entry.get("specifications")),
+        option_labels=clean_mapping(entry.get("option_labels")),
+        option_values=clean_mapping(entry.get("option_values")),
+        complete=True,
+    )
+
+
+def _valid_pack_sku_entry(entry: object, row: object) -> dict[str, object] | None:
+    if not isinstance(entry, dict):
+        return None
+    _offer, sku, product, _category = row
+    if (
+        entry.get("source_hash") != catalog_sku_package_source_hash(row)
+        or int(entry.get("product_version") or 0) != int(product.current_version)
+        or int(entry.get("sku_version") or 0) != int(sku.version)
+    ):
+        return None
+    return entry
+
+
+def _quote_translation_maps(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    rows: list[object],
+    source_locale: str,
+    target_locale: str,
+) -> tuple[
+    dict[UUID, object],
+    dict[UUID, PublicProductTranslation],
+]:
+    if target_locale == source_locale:
+        return {}, {}
+
+    payload = _quote_language_pack_payload(
+        session,
+        tenant_id=tenant_id,
+        target_locale=target_locale,
+    )
+    pack_skus = _pack_mapping(payload, "skus")
+    pack_products = _pack_mapping(payload, "products")
+    sku_translations: dict[UUID, object] = {}
+    product_translations: dict[UUID, PublicProductTranslation] = {}
+    rows_by_product: dict[UUID, list[object]] = {}
+    for row in rows:
+        sku = row[1]
+        product = row[2]
+        rows_by_product.setdefault(product.id, []).append(row)
+        entry = _valid_pack_sku_entry(pack_skus.get(str(sku.id)), row)
+        if entry is not None:
+            sku_translations[sku.id] = entry
+        if product.id not in product_translations:
+            translated_product = _pack_product_translation(
+                pack_products.get(str(product.id)),
+                product_version=product.current_version,
+            )
+            if translated_product is not None:
+                product_translations[product.id] = translated_product
+
+    missing_rows = [row for row in rows if row[1].id not in sku_translations]
+    if missing_rows:
+        stored = catalog_translation_repository.translation_map(
+            session,
+            tenant_id=tenant_id,
+            sku_ids=[row[1].id for row in missing_rows],
+            target_locale=target_locale,
+        )
+        for row in missing_rows:
+            source = catalog_translation_source(row)
+            translated = stored.get(row[1].id)
+            if (
+                translated is not None
+                and translated.source_hash == source.source_hash
+                and translated.product_version == row[2].current_version
+                and translated.sku_version == row[1].version
+            ):
+                sku_translations[row[1].id] = translated
+
+    missing_rows = [row for row in rows if row[1].id not in sku_translations]
+    missing_groups = [
+        group
+        for product_id, group in rows_by_product.items()
+        if product_id not in product_translations
+    ]
+    if not missing_rows and not missing_groups:
+        return sku_translations, product_translations
+
+    translator = _live_translation_provider(
+        session,
+        source_locale=source_locale,
+        target_locale=target_locale,
+    )
+    if missing_rows:
+        sku_translations.update(
+            _live_sku_translation_map(
+                missing_rows,
+                tenant_id=tenant_id,
+                translator=translator,
+                source_locale=source_locale,
+                target_locale=target_locale,
+            )
+        )
+    if missing_groups:
+        product_translations.update(
+            _live_product_translation_map(
+                missing_groups,
+                tenant_id=tenant_id,
+                translator=translator,
+                source_locale=source_locale,
+                target_locale=target_locale,
+                include_sku_options=True,
+            )
+        )
+    return sku_translations, product_translations
+
+
+def _quote_translation_value(
+    translation: object | None,
+    *keys: str,
+) -> object | None:
+    if translation is None:
+        return None
+    for key in keys:
+        value = (
+            translation.get(key)
+            if isinstance(translation, dict)
+            else getattr(translation, key, None)
+        )
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
 def _draft_response(
     draft: PublicQuoteDraftRow,
     items: list[PublicQuoteDraftItemRow],
@@ -2382,6 +2618,10 @@ def _draft_response(
         customer_email=draft.customer_email,
         customer_phone=draft.customer_phone,
         notes=draft.notes,
+        locale=_normalized_locale(
+            getattr(draft, "document_locale", None),
+            default="zh-CN",
+        ),
         currency=draft.currency,
         subtotal=draft.subtotal_amount,
         total=draft.estimated_total,
@@ -2408,7 +2648,15 @@ def create_public_quote_draft(
     submitted_by_tenant_id: UUID | None = None,
     submitted_by_user_id: UUID | None = None,
 ) -> PublicQuoteDraftResponse:
-    tenant, _profile = _resolve_store(session, slug=slug)
+    tenant, profile = _resolve_store(session, slug=slug)
+    source_locale, requested_locale, _available_locales = (
+        _requested_storefront_locale(
+            session,
+            request.locale,
+            tenant=tenant,
+            profile=profile,
+        )
+    )
     if submitted_by_membership_id is not None:
         if (
             submitted_by_tenant_id != tenant.id
@@ -2441,13 +2689,16 @@ def create_public_quote_draft(
             "PUBLIC_SKU_NOT_FOUND",
             "One or more public SKUs were not found: " + ", ".join(missing),
         )
-    currencies = {row[0].currency for row in rows}
-    if len(currencies) != 1:
-        raise ApplicationError(
-            "PUBLIC_CART_MIXED_CURRENCY",
-            "A draft cannot mix currencies; submit separate carts.",
-        )
-    currency = next(iter(currencies))
+    # Prices are deliberately not converted. The merchant's selected currency
+    # controls only the presentation/snapshot currency used for new documents.
+    currency = str(tenant.default_currency or "CNY").strip().upper()
+    sku_translations, product_translations = _quote_translation_maps(
+        session,
+        tenant_id=tenant.id,
+        rows=rows,
+        source_locale=source_locale,
+        target_locale=requested_locale,
+    )
     images = repository.approved_image_map(
         session,
         tenant_id=tenant.id,
@@ -2462,13 +2713,76 @@ def create_public_quote_draft(
         unit_price = _money(Decimal(offer.unit_price))
         line_total = _money(unit_price * quantity)
         subtotal += line_total
-        tags = [str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()]
-        option_values = {
+        source_tags = [
+            str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()
+        ]
+        source_option_values = {
             str(key): value
             for key, value in (sku.option_values or {}).items()
+            if str(key).strip()
+        }
+        sku_translation = sku_translations.get(sku.id)
+        product_translation = product_translations.get(product.id)
+        localized_options = _localized_public_option_values(
+            source_option_values,
+            translation=product_translation,
+        )
+        option_values = {
+            str(key): value
+            for key, value in localized_options.items()
             if str(key).strip() and not str(key).startswith("_")
         }
-        specification = _quote_specification(option_values)
+        source_public_options = {
+            str(key): value
+            for key, value in source_option_values.items()
+            if str(key).strip() and not str(key).startswith("_")
+        }
+        internal_marker = localized_options.get(_PUBLIC_OPTION_INTERNAL_KEY)
+        marker = dict(internal_marker) if isinstance(internal_marker, dict) else {}
+        marker["quote_source_option_values"] = source_public_options
+        option_values[_PUBLIC_OPTION_INTERNAL_KEY] = marker
+
+        source_specification = str(
+            source_option_values.get("规格名称") or ""
+        ).strip()
+        translated_specification = _quote_translation_value(
+            sku_translation,
+            "specification",
+        )
+        if translated_specification in (None, "") and product_translation is not None:
+            translated_specification = product_translation.specifications.get(
+                source_specification,
+                source_specification,
+            )
+        if translated_specification not in (None, ""):
+            specification = str(translated_specification).strip() or None
+        else:
+            specification = _quote_specification(option_values)
+
+        translated_tags = _quote_translation_value(sku_translation, "tags")
+        if translated_tags is None and product_translation is not None:
+            translated_tags = product_translation.tags
+        tags = [
+            str(tag).strip()
+            for tag in (translated_tags or source_tags)
+            if str(tag).strip()
+        ]
+        translated_name = _quote_translation_value(sku_translation, "name")
+        if translated_name is None and product_translation is not None:
+            translated_name = product_translation.name
+        translated_description = _quote_translation_value(
+            sku_translation,
+            "description",
+        )
+        if translated_description is None and product_translation is not None:
+            translated_description = product_translation.description
+        translated_category = _quote_translation_value(
+            sku_translation,
+            "category_label",
+            "category",
+        )
+        if translated_category is None and product_translation is not None:
+            translated_category = product_translation.category
         image_url = _public_image_url(images.get(product.id), slug=tenant.slug)
         item_row = PublicQuoteDraftItemRow(
             tenant_id=tenant.id,
@@ -2480,11 +2794,19 @@ def create_public_quote_draft(
             product_version=product.current_version,
             sku_version=sku.version,
             sku_code_snapshot=sku.sku_code,
-            name_snapshot=sku.name or product.name,
-            description_snapshot=product.description,
+            name_snapshot=str(translated_name or sku.name or product.name).strip(),
+            description_snapshot=(
+                str(translated_description).strip()
+                if translated_description not in (None, "")
+                else product.description
+            ),
             specification_snapshot=specification,
             option_values_snapshot=option_values,
-            category_snapshot=_category_path(category) or None,
+            category_snapshot=(
+                str(translated_category).strip()
+                if translated_category not in (None, "")
+                else _category_path(category) or None
+            ),
             tags_snapshot=list(dict.fromkeys(tags)),
             image_url_snapshot=image_url,
             minimum_order_quantity=Decimal("1"),
@@ -2533,6 +2855,8 @@ def create_public_quote_draft(
             "phone": request.customer_phone,
         },
         "notes": request.notes,
+        "document_locale": requested_locale,
+        "source_locale": source_locale,
         "privacy_notice": {
             "acknowledged": request.privacy_acknowledged,
             "version": PUBLIC_PRIVACY_NOTICE_VERSION,
@@ -2561,6 +2885,7 @@ def create_public_quote_draft(
         customer_email=request.customer_email,
         customer_phone=request.customer_phone,
         notes=request.notes,
+        document_locale=requested_locale,
         currency=currency,
         subtotal_amount=subtotal,
         estimated_total=subtotal,
@@ -2697,6 +3022,10 @@ def list_tenant_quote_drafts(
             status=row.status,
             customer_name=row.customer_name,
             customer_company=row.customer_company,
+            locale=_normalized_locale(
+                getattr(row, "document_locale", None),
+                default="zh-CN",
+            ),
             currency=row.currency,
             total_amount=row.estimated_total,
             valid_until=row.expires_at,

@@ -14,6 +14,7 @@ from ..identity_models import (
     LocalAccountCredentialRow,
     MembershipRoleRow,
     MembershipRow,
+    TenantSubscriptionRow,
     TenantRow,
     UserRow,
 )
@@ -24,6 +25,7 @@ from ..platform_admin_schemas import (
     PlatformMerchantOwnerAccount,
     PlatformMerchantOwnerCreate,
     PlatformTenantCreate,
+    PlatformTenantSubscriptionUpdate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
 )
@@ -48,6 +50,12 @@ from ..tenant_slugs import (
     storefront_slug_from_name,
 )
 from ..tenant_modules import normalized_tenant_modules
+from ..tenant_subscriptions import (
+    default_sku_limit,
+    default_subscription_expiry,
+    normalized_utc,
+    subscription_status,
+)
 
 
 def _require_platform_admin(context: RequestContext) -> None:
@@ -95,6 +103,23 @@ def _summary(
         profile = repository.get_public_profile(session, tenant.id)
         sku_count, quote_count = repository.tenant_counts(session, tenant.id)
         owner = repository.get_tenant_owner_account(session, tenant.id)
+    subscription = repository.get_tenant_subscription(session, tenant.id)
+    subscription_started_at = (
+        subscription.started_at if subscription is not None else tenant.created_at
+    )
+    subscription_tier = (
+        subscription.subscription_tier if subscription is not None else "TRIAL"
+    )
+    subscription_expires_at = (
+        subscription.expires_at
+        if subscription is not None
+        else default_subscription_expiry("TRIAL", started_at=subscription_started_at)
+    )
+    sku_limit = (
+        subscription.sku_limit
+        if subscription is not None
+        else default_sku_limit("TRIAL")
+    )
     owner_account = (
         _owner_account_summary(*owner)
         if owner is not None
@@ -111,6 +136,17 @@ def _summary(
         default_currency=tenant.default_currency,
         timezone=tenant.timezone,
         enabled_modules=list(normalized_tenant_modules(tenant.enabled_modules)),
+        subscription_tier=subscription_tier,  # type: ignore[arg-type]
+        subscription_started_at=subscription_started_at,
+        subscription_expires_at=subscription_expires_at,
+        subscription_status=subscription_status(
+            subscription_expires_at,
+            now=utcnow(),
+        ),
+        sku_limit=sku_limit,
+        sku_remaining=(
+            None if sku_limit is None else max(0, sku_limit - sku_count)
+        ),
         contact_email=profile.contact_email if profile else None,
         sku_count=sku_count,
         quote_count=quote_count,
@@ -178,6 +214,7 @@ def create_tenant(
         if request.slug
         else allocate_storefront_slug(session, base=base_slug)
     )
+    subscription_started_at = utcnow()
     tenant = TenantRow(
         organization_id=context.organization_id,
         name=request.name,
@@ -191,6 +228,18 @@ def create_tenant(
     session.add(tenant)
     try:
         session.flush()
+        session.add(
+            TenantSubscriptionRow(
+                tenant_id=tenant.id,
+                subscription_tier="TRIAL",
+                started_at=subscription_started_at,
+                expires_at=default_subscription_expiry(
+                    "TRIAL",
+                    started_at=subscription_started_at,
+                ),
+                sku_limit=default_sku_limit("TRIAL"),
+            )
+        )
         with _tenant_scope(session, context=context, tenant_id=tenant.id):
             session.add(
                 TenantPublicProfileRow(
@@ -211,6 +260,61 @@ def create_tenant(
             "This storefront slug is already in use.",
             kind="conflict",
         ) from exc
+    return _summary(session, context=context, tenant=tenant)
+
+
+def update_tenant_subscription(
+    session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID,
+    request: PlatformTenantSubscriptionUpdate,
+) -> PlatformTenantSummary:
+    _require_platform_admin(context)
+    tenant = repository.get_tenant(session, tenant_id)
+    if tenant is None:
+        raise ApplicationError("TENANT_NOT_FOUND", "Tenant was not found.", kind="not_found")
+
+    now = utcnow()
+    expires_at = normalized_utc(request.subscription_expires_at)
+    if expires_at <= now:
+        raise ApplicationError(
+            "SUBSCRIPTION_EXPIRY_MUST_BE_FUTURE",
+            "Subscription expiry must be later than the current time.",
+            kind="invalid",
+        )
+
+    subscription = repository.get_tenant_subscription(session, tenant.id)
+    if subscription is None:
+        subscription = TenantSubscriptionRow(
+            tenant_id=tenant.id,
+            subscription_tier=request.subscription_tier,
+            started_at=now,
+            expires_at=expires_at,
+            sku_limit=(
+                request.sku_limit
+                if "sku_limit" in request.model_fields_set
+                else default_sku_limit(request.subscription_tier)
+            ),
+        )
+        session.add(subscription)
+    current_expiry = normalized_utc(subscription.expires_at)
+    tier_changed = subscription.subscription_tier != request.subscription_tier
+    if tier_changed or current_expiry <= now:
+        subscription.started_at = now
+    if expires_at <= normalized_utc(subscription.started_at):
+        raise ApplicationError(
+            "SUBSCRIPTION_EXPIRY_BEFORE_START",
+            "Subscription expiry must be later than its start time.",
+            kind="invalid",
+        )
+    subscription.subscription_tier = request.subscription_tier
+    subscription.expires_at = expires_at
+    if "sku_limit" in request.model_fields_set:
+        subscription.sku_limit = request.sku_limit
+    elif tier_changed:
+        subscription.sku_limit = default_sku_limit(request.subscription_tier)
+    session.commit()
     return _summary(session, context=context, tenant=tenant)
 
 

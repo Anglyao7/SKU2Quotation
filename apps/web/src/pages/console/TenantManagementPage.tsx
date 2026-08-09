@@ -36,10 +36,74 @@ import type {
   Tenant,
   TenantModuleCode,
   TenantPayload,
+  TenantSubscriptionStatus,
+  TenantSubscriptionTier,
 } from "../../types";
 import type { ConsoleOutletContext } from "./ConsoleLayout";
 
 const LOGIN_EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+const SUBSCRIPTION_TIERS: Array<{
+  value: TenantSubscriptionTier;
+  label: string;
+  description: string;
+}> = [
+  { value: "TRIAL", label: "试用", description: "默认 1 个月 · 500 SKU" },
+  { value: "STANDARD", label: "Standard", description: "基础版 · 5000 SKU" },
+  { value: "SILVER", label: "Silver", description: "进阶版 · 5000 SKU" },
+  { value: "ELITE", label: "Elite", description: "高级版 · SKU 不限" },
+];
+
+const SUBSCRIPTION_TIER_COLORS: Record<
+  TenantSubscriptionTier,
+  "gray" | "blue" | "violet" | "amber"
+> = {
+  TRIAL: "gray",
+  STANDARD: "blue",
+  SILVER: "violet",
+  ELITE: "amber",
+};
+
+function subscriptionTierLabel(tier: TenantSubscriptionTier): string {
+  return SUBSCRIPTION_TIERS.find((item) => item.value === tier)?.label ?? tier;
+}
+
+function subscriptionStatusLabel(status: TenantSubscriptionStatus): string {
+  if (status === "expired") return "已过期";
+  if (status === "expiring_soon") return "即将到期";
+  return "有效";
+}
+
+function toDateTimeLocal(value: Date | string): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function addCalendarMonths(value: Date, months: number): Date {
+  const result = new Date(value);
+  const day = result.getDate();
+  result.setDate(1);
+  result.setMonth(result.getMonth() + months);
+  const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+  result.setDate(Math.min(day, lastDay));
+  return result;
+}
+
+function defaultExpiryForTier(tier: TenantSubscriptionTier): Date {
+  return addCalendarMonths(new Date(), tier === "TRIAL" ? 1 : 12);
+}
+
+function defaultSkuLimitForTier(tier: TenantSubscriptionTier): number | null {
+  if (tier === "TRIAL") return 500;
+  if (tier === "STANDARD" || tier === "SILVER") return 5_000;
+  return null;
+}
+
+function skuLimitLabel(limit: number | null): string {
+  return limit === null ? "不限" : limit.toLocaleString();
+}
 
 const TENANT_MODULES: Array<{
   code: TenantModuleCode;
@@ -119,6 +183,7 @@ export function TenantManagementPage() {
   const [editing, setEditing] = useState<Tenant | "new" | null>(null);
   const [ownerSetup, setOwnerSetup] = useState<Tenant | null>(null);
   const [moduleEditor, setModuleEditor] = useState<Tenant | null>(null);
+  const [subscriptionEditor, setSubscriptionEditor] = useState<Tenant | null>(null);
   const [deleting, setDeleting] = useState<Tenant | null>(null);
 
   const load = useCallback(async () => {
@@ -192,6 +257,9 @@ export function TenantManagementPage() {
                   <Table.ColumnHeaderCell>{t("前台地址")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>SKU</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("报价")}</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>{t("等级")}</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>{t("SKU 配额")}</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>{t("过期时间")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("可见模块")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("状态")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("创建时间")}</Table.ColumnHeaderCell>
@@ -218,6 +286,46 @@ export function TenantManagementPage() {
                       </Table.Cell>
                       <Table.Cell>{tenant.sku_count ?? 0}</Table.Cell>
                       <Table.Cell>{tenant.quote_count ?? 0}</Table.Cell>
+                      <Table.Cell>
+                        <Button
+                          size="1"
+                          variant="soft"
+                          color={SUBSCRIPTION_TIER_COLORS[tenant.subscription_tier]}
+                          onClick={() => setSubscriptionEditor(tenant)}
+                        >
+                          {t(subscriptionTierLabel(tenant.subscription_tier))}
+                          <NotePencil size={14} />
+                        </Button>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <div className="merchant-sku-quota">
+                          <Text size="1" weight="medium">
+                            {(tenant.sku_count ?? 0).toLocaleString()} / {t(skuLimitLabel(tenant.sku_limit))}
+                          </Text>
+                          {tenant.sku_limit !== null && (tenant.sku_count ?? 0) >= tenant.sku_limit ? (
+                            <Badge size="1" color="red" variant="soft">{t("已达上限")}</Badge>
+                          ) : null}
+                        </div>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <div className="merchant-subscription-expiry">
+                          <Text
+                            size="1"
+                            color={tenant.subscription_status === "expired" ? "red" : "gray"}
+                          >
+                            {dateTime(tenant.subscription_expires_at)}
+                          </Text>
+                          {tenant.subscription_status === "active" ? null : (
+                            <Badge
+                              size="1"
+                              variant="soft"
+                              color={tenant.subscription_status === "expired" ? "red" : "amber"}
+                            >
+                              {t(subscriptionStatusLabel(tenant.subscription_status))}
+                            </Badge>
+                          )}
+                        </div>
+                      </Table.Cell>
                       <Table.Cell>
                         <Button
                           size="1"
@@ -313,9 +421,14 @@ export function TenantManagementPage() {
                       <Text as="div" size="3" weight="medium">{tenant.name}</Text>
                       <Text className="mono-text" size="1" color="gray">/{tenant.slug}</Text>
                     </div>
-                    <Badge color={tenant.status === "active" ? "jade" : "gray"}>
-                      {t(tenant.status === "active" ? "启用" : "停用")}
-                    </Badge>
+                    <div className="mobile-card-badges">
+                      <Badge color={SUBSCRIPTION_TIER_COLORS[tenant.subscription_tier]}>
+                        {t(subscriptionTierLabel(tenant.subscription_tier))}
+                      </Badge>
+                      <Badge color={tenant.status === "active" ? "jade" : "gray"}>
+                        {t(tenant.status === "active" ? "启用" : "停用")}
+                      </Badge>
+                    </div>
                   </div>
                   <Text size="2" color={loginEmail ? "gray" : "amber"}>
                     {loginEmail || t("尚未开通登录账号")}
@@ -326,8 +439,31 @@ export function TenantManagementPage() {
                       quotes: tenant.quote_count || 0,
                     })}
                   </Text>
+                  <Text size="2" color="gray">
+                    {t("SKU 配额：{used} / {limit}", {
+                      used: (tenant.sku_count ?? 0).toLocaleString(),
+                      limit: t(skuLimitLabel(tenant.sku_limit)),
+                    })}
+                  </Text>
+                  <Text
+                    size="2"
+                    color={tenant.subscription_status === "expired" ? "red" : "gray"}
+                  >
+                    {t("到期：{date}", { date: dateTime(tenant.subscription_expires_at) })}
+                    {tenant.subscription_status === "active"
+                      ? ""
+                      : ` · ${t(subscriptionStatusLabel(tenant.subscription_status))}`}
+                  </Text>
                   <div className="mobile-card-footer">
                     <div className="page-actions">
+                      <Button
+                        size="1"
+                        variant="soft"
+                        color={SUBSCRIPTION_TIER_COLORS[tenant.subscription_tier]}
+                        onClick={() => setSubscriptionEditor(tenant)}
+                      >
+                        {t("等级设置")}
+                      </Button>
                       <Button
                         size="1"
                         variant="soft"
@@ -401,6 +537,13 @@ export function TenantManagementPage() {
         }}
         onSaved={refreshAll}
       />
+      <TenantSubscriptionDialog
+        tenant={subscriptionEditor}
+        onOpenChange={(open) => {
+          if (!open) setSubscriptionEditor(null);
+        }}
+        onSaved={refreshAll}
+      />
       <AlertDialog.Root
         open={Boolean(deleting)}
         onOpenChange={(open) => {
@@ -425,6 +568,258 @@ export function TenantManagementPage() {
         </AlertDialog.Content>
       </AlertDialog.Root>
     </div>
+  );
+}
+
+function TenantSubscriptionDialog({
+  tenant,
+  onOpenChange,
+  onSaved,
+}: {
+  tenant: Tenant | null;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => Promise<void>;
+}) {
+  const { t } = useLocale();
+  const [tier, setTier] = useState<TenantSubscriptionTier>("TRIAL");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [skuLimit, setSkuLimit] = useState("500");
+  const [unlimitedSkus, setUnlimitedSkus] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!tenant) return;
+    setTier(tenant.subscription_tier);
+    setExpiresAt(toDateTimeLocal(tenant.subscription_expires_at));
+    setUnlimitedSkus(tenant.sku_limit === null);
+    setSkuLimit(tenant.sku_limit === null ? "" : String(tenant.sku_limit));
+    setError("");
+  }, [tenant]);
+
+  const chooseTier = (nextTier: TenantSubscriptionTier) => {
+    setTier(nextTier);
+    setExpiresAt(toDateTimeLocal(defaultExpiryForTier(nextTier)));
+    const nextLimit = defaultSkuLimitForTier(nextTier);
+    setUnlimitedSkus(nextLimit === null);
+    setSkuLimit(nextLimit === null ? "" : String(nextLimit));
+    setError("");
+  };
+
+  const applyTerm = (months: number) => {
+    setExpiresAt(toDateTimeLocal(addCalendarMonths(new Date(), months)));
+    setError("");
+  };
+
+  const save = async () => {
+    if (!tenant || saving) return;
+    const parsedExpiry = new Date(expiresAt);
+    if (!expiresAt || Number.isNaN(parsedExpiry.getTime())) {
+      setError(t("请选择有效的到期时间。"));
+      return;
+    }
+    if (parsedExpiry.getTime() <= Date.now()) {
+      setError(t("到期时间必须晚于当前时间。"));
+      return;
+    }
+    const numericSkuLimit = Number(skuLimit);
+    const parsedSkuLimit = unlimitedSkus ? null : numericSkuLimit;
+    if (
+      !unlimitedSkus
+      && (!skuLimit.trim() || !Number.isInteger(numericSkuLimit) || numericSkuLimit < 0)
+    ) {
+      setError(t("SKU 上限必须是大于或等于 0 的整数。"));
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      await api.updateTenantSubscription(tenant.id, {
+        subscription_tier: tier,
+        subscription_expires_at: parsedExpiry.toISOString(),
+        sku_limit: parsedSkuLimit,
+      });
+      await onSaved();
+      onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("等级保存失败。"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog.Root open={Boolean(tenant)} onOpenChange={onOpenChange}>
+      <Dialog.Content className="merchant-subscription-dialog">
+        <Dialog.Title>{t("设置商家等级")}</Dialog.Title>
+        <Dialog.Description>
+          {t("为“{name}”设置等级与有效期。到期后会在商家列表中提醒。", {
+            name: tenant?.name ?? "",
+          })}
+        </Dialog.Description>
+
+        <div className="subscription-tier-grid">
+          {SUBSCRIPTION_TIERS.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              className={tier === item.value ? "subscription-tier-card is-selected" : "subscription-tier-card"}
+              onClick={() => chooseTier(item.value)}
+            >
+              <Badge size="1" color={SUBSCRIPTION_TIER_COLORS[item.value]} variant="soft">
+                {t(item.label)}
+              </Badge>
+              <Text as="span" size="1" color="gray">{t(item.description)}</Text>
+            </button>
+          ))}
+        </div>
+
+        <div className="subscription-expiry-panel">
+          <div className="subscription-expiry-heading">
+            <div>
+              <Text as="div" size="2" weight="medium">{t("过期时间")}</Text>
+              <Text as="div" size="1" color="gray">
+                {t("试用默认 1 个月，正式等级默认 1 年；也可以直接修改日期。")}
+              </Text>
+            </div>
+            {tenant ? (
+              <Badge
+                color={tenant.subscription_status === "expired" ? "red" : tenant.subscription_status === "expiring_soon" ? "amber" : "jade"}
+                variant="soft"
+              >
+                {t(subscriptionStatusLabel(tenant.subscription_status))}
+              </Badge>
+            ) : null}
+          </div>
+
+          <TextField.Root
+            type="datetime-local"
+            value={expiresAt}
+            min={toDateTimeLocal(new Date(Date.now() + 60_000))}
+            onChange={(event) => {
+              setExpiresAt(event.currentTarget.value);
+              setError("");
+            }}
+          />
+
+          <div className="subscription-term-actions" aria-label={t("快速设置期限")}>
+            <Text size="1" color="gray">{t("从今天起")}</Text>
+            <Button type="button" size="1" variant="soft" color="gray" onClick={() => applyTerm(1)}>
+              {t("1 个月")}
+            </Button>
+            <Button type="button" size="1" variant="soft" color="gray" onClick={() => applyTerm(3)}>
+              {t("3 个月")}
+            </Button>
+            <Button type="button" size="1" variant="soft" color="gray" onClick={() => applyTerm(12)}>
+              {t("1 年")}
+            </Button>
+            <Button type="button" size="1" variant="soft" color="gray" onClick={() => applyTerm(24)}>
+              {t("2 年")}
+            </Button>
+          </div>
+
+          {tenant ? (
+            <Text size="1" color="gray">
+              {t("本期开始：{date}", { date: dateTime(tenant.subscription_started_at) })}
+            </Text>
+          ) : null}
+        </div>
+
+        <div className="subscription-quota-panel">
+          <div className="subscription-expiry-heading">
+            <div>
+              <Text as="div" size="2" weight="medium">{t("SKU 数量上限")}</Text>
+              <Text as="div" size="1" color="gray">
+                {t("按 SKU 记录计数，商品数量不参与配额计算。")}
+              </Text>
+            </div>
+            <Badge color="blue" variant="soft">
+              {t("已使用 {count}", { count: (tenant?.sku_count ?? 0).toLocaleString() })}
+            </Badge>
+          </div>
+
+          <div className="subscription-quota-controls">
+            <TextField.Root
+              type="number"
+              min="0"
+              step="1"
+              value={skuLimit}
+              disabled={unlimitedSkus}
+              placeholder={t("输入 SKU 上限")}
+              onChange={(event) => {
+                setSkuLimit(event.currentTarget.value);
+                setError("");
+              }}
+            />
+            <label className="subscription-unlimited-option">
+              <Checkbox
+                checked={unlimitedSkus}
+                onCheckedChange={(checked) => {
+                  const nextUnlimited = checked === true;
+                  setUnlimitedSkus(nextUnlimited);
+                  if (!nextUnlimited && !skuLimit) {
+                    const fallback = defaultSkuLimitForTier(tier) ?? 5_000;
+                    setSkuLimit(String(fallback));
+                  }
+                  setError("");
+                }}
+              />
+              <Text size="2">{t("不限制 SKU 数量")}</Text>
+            </label>
+          </div>
+
+          <div className="subscription-term-actions">
+            <Button
+              type="button"
+              size="1"
+              variant="soft"
+              color="gray"
+              onClick={() => {
+                const nextLimit = defaultSkuLimitForTier(tier);
+                setUnlimitedSkus(nextLimit === null);
+                setSkuLimit(nextLimit === null ? "" : String(nextLimit));
+                setError("");
+              }}
+            >
+              {t("恢复当前档位默认值")}
+            </Button>
+            <Text size="1" color="gray">
+              {t("当前档位默认：{limit}", {
+                limit: t(skuLimitLabel(defaultSkuLimitForTier(tier))),
+              })}
+            </Text>
+          </div>
+
+          {!unlimitedSkus
+          && Number.isFinite(Number(skuLimit))
+          && Number(skuLimit) < (tenant?.sku_count ?? 0) ? (
+            <Callout.Root color="amber" size="1">
+              <Callout.Icon><WarningCircle /></Callout.Icon>
+              <Callout.Text>
+                {t("新的上限低于当前 SKU 数量；现有 SKU 不会被删除，但将无法继续新增。")}
+              </Callout.Text>
+            </Callout.Root>
+          ) : null}
+        </div>
+
+        {error ? (
+          <Callout.Root color="red">
+            <Callout.Icon><WarningCircle /></Callout.Icon>
+            <Callout.Text>{error}</Callout.Text>
+          </Callout.Root>
+        ) : null}
+
+        <div className="dialog-actions">
+          <Dialog.Close>
+            <Button type="button" variant="soft" color="gray">{t("取消")}</Button>
+          </Dialog.Close>
+          <Button type="button" loading={saving} onClick={() => void save()}>
+            {t("保存等级")}
+          </Button>
+        </div>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 

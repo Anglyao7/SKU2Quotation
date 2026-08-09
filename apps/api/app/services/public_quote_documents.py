@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import socket
 import unicodedata
@@ -13,6 +14,7 @@ from urllib.parse import urljoin, urlsplit
 from xml.sax.saxutils import escape
 
 import httpx
+import reportlab
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -28,30 +30,26 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from ..public_catalog_schemas import PublicQuoteDocument
+from .quote_localization import (
+    localize_known_quote_template_label,
+    localize_quote_unit,
+    quote_field_label,
+    quote_headers,
+    quote_is_rtl,
+    quote_label_aliases,
+    quote_locale,
+    quote_text,
+)
 
 
 QuoteImageLoader = Callable[[str], bytes | None]
 MAX_QUOTE_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_QUOTE_IMAGE_EDGE = 320
-DEFAULT_QUOTE_HEADERS = (
-    "序号",
-    "图片",
-    "SKU",
-    "商品名称",
-    "数量",
-    "单位",
-    "装箱数量",
-    "装箱尺寸",
-    "毛重(kg)",
-    "立方(m³)",
-    "单价",
-    "总价",
-    "总立方(m³)",
-    "总毛重(kg)",
-)
+DEFAULT_QUOTE_HEADERS = quote_headers("zh-CN")
 DEFAULT_QUOTE_WIDTHS = (
     8,
     15,
@@ -106,10 +104,6 @@ _LOGISTICS_OPTION_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _pdf_text(value: object | None) -> str:
-    return escape(str(value or ""))
-
-
 def _xlsx_text(value: object | None) -> str:
     """Force untrusted spreadsheet text to remain text, never a formula."""
 
@@ -128,6 +122,14 @@ def _normalized_option_key(value: object) -> str:
 
 def _option_value(item: object, field: str) -> object | None:
     values = getattr(item, "option_values_snapshot", None) or {}
+    marker = values.get("_sku2quotation")
+    source_values = (
+        marker.get("quote_source_option_values")
+        if isinstance(marker, dict)
+        else None
+    )
+    if isinstance(source_values, dict):
+        values = {**values, **source_values}
     normalized = {
         _normalized_option_key(key): value
         for key, value in values.items()
@@ -367,6 +369,7 @@ def _configure_default_quote_printing(
 
 def _template_item_value(field: str, document: PublicQuoteDocument, item) -> object:
     quote = document.quote
+    locale = quote_locale(quote.locale)
     logistics = _logistics_values(item)
     values: dict[str, object | None] = {
         "serial_number": item.position,
@@ -375,10 +378,10 @@ def _template_item_value(field: str, document: PublicQuoteDocument, item) -> obj
         "description": item.description_snapshot,
         "specification": item.specification_snapshot,
         "category": item.category_snapshot,
-        "tags": "、".join(item.tags_snapshot or []),
+        "tags": quote_text(locale, "separator").join(item.tags_snapshot or []),
         "product_image": None,
         "quantity": float(item.quantity),
-        "unit_code": item.unit_code_snapshot,
+        "unit_code": localize_quote_unit(locale, item.unit_code_snapshot),
         **logistics,
         "unit_price": float(item.unit_price_snapshot),
         "line_total": float(item.line_total),
@@ -396,7 +399,7 @@ def _template_item_value(field: str, document: PublicQuoteDocument, item) -> obj
 
 def _placeholder_values(document: PublicQuoteDocument) -> dict[str, object]:
     quote = document.quote
-    return {
+    values: dict[str, object] = {
         "quote_number": quote.quote_number,
         "报价单号": quote.quote_number,
         "quote_date": quote.created_at.date(),
@@ -421,6 +424,23 @@ def _placeholder_values(document: PublicQuoteDocument) -> dict[str, object]:
         "notes": quote.notes or "",
         "备注": quote.notes or "",
     }
+    localized_values = {
+        "quote_number": quote.quote_number,
+        "quote_date": quote.created_at.date(),
+        "valid_until": quote.valid_until.date(),
+        "customer": quote.customer_name,
+        "company": quote.customer_company or "",
+        "email": quote.customer_email or "",
+        "phone": quote.customer_phone or "",
+        "merchant": document.tenant_name,
+        "currency": quote.currency,
+        "total": float(quote.total),
+        "notes": quote.notes or "",
+    }
+    for label_key, value in localized_values.items():
+        for alias in quote_label_aliases(label_key):
+            values.setdefault(alias, value)
+    return values
 
 
 _PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
@@ -588,6 +608,7 @@ def _render_custom_quote_xlsx(
         if spec.sheet_name not in workbook.sheetnames:
             raise ValueError("configured quote worksheet is missing")
         sheet = workbook[spec.sheet_name]
+        sheet.sheet_view.rightToLeft = quote_is_rtl(document.quote.locale)
         item_count = max(1, len(document.quote.items))
         data_start = spec.data_start_row
         data_end = max(data_start, spec.data_end_row)
@@ -607,6 +628,14 @@ def _render_custom_quote_xlsx(
         )
         for merged in list(sheet.merged_cells.ranges):
             sheet.unmerge_cells(str(merged))
+
+        for key, column in columns_by_key.items():
+            field = spec.column_mappings.get(key)
+            if field:
+                sheet.cell(spec.header_row, column.index).value = quote_field_label(
+                    document.quote.locale,
+                    field,
+                )
 
         if old_count > 1:
             sheet.delete_rows(data_start + 1, old_count - 1)
@@ -682,6 +711,18 @@ def _render_custom_quote_xlsx(
             item_count=item_count,
         ):
             sheet.merge_cells(merged)
+        for row in sheet.iter_rows():
+            for cell in row:
+                if (
+                    data_start <= cell.row <= new_end
+                    or cell.data_type == "f"
+                    or not isinstance(cell.value, str)
+                ):
+                    continue
+                cell.value = localize_known_quote_template_label(
+                    cell.value,
+                    document.quote.locale,
+                )
         _replace_placeholders(workbook, document)
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True
@@ -692,29 +733,83 @@ def _render_custom_quote_xlsx(
         workbook.close()
 
 
-def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
-    quote = document.quote
-    buffer = BytesIO()
+def _register_quote_pdf_font(locale: str) -> str:
+    cid_fonts = {
+        "zh-CN": "STSong-Light",
+        "ja": "HeiseiMin-W3",
+        "ko": "HYSMyeongJo-Medium",
+    }
+    cid_font = cid_fonts.get(locale)
+    if cid_font:
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont(cid_font))
+        except KeyError:
+            pass
+        return cid_font
+
+    if locale == "ar":
+        configured = os.environ.get("QUOTE_ARABIC_FONT_PATH", "").strip()
+        candidates = [
+            *((Path(configured),) if configured else ()),
+            Path("/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansArabic-Regular.ttf"),
+            Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+        ]
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                pdfmetrics.registerFont(TTFont("QuoteArabic", str(candidate)))
+            except KeyError:
+                pass
+            return "QuoteArabic"
+
+    vera = Path(reportlab.__file__).resolve().parent / "fonts" / "Vera.ttf"
     try:
-        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        pdfmetrics.registerFont(TTFont("QuoteSans", str(vera)))
     except KeyError:
         pass
+    return "QuoteSans"
 
+
+def _pdf_localized_text(value: object | None, locale: str) -> str:
+    text = str(value or "")
+    if locale == "ar" and re.search(r"[\u0600-\u06ff]", text):
+        try:
+            import arabic_reshaper
+            from bidi.algorithm import get_display
+
+            text = get_display(arabic_reshaper.reshape(text))
+        except ImportError:
+            # Production installs the shaping helpers. This fallback keeps
+            # development downloads functional before dependencies are synced.
+            pass
+    return escape(text)
+
+
+def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
+    quote = document.quote
+    locale = quote_locale(quote.locale)
+    font_name = _register_quote_pdf_font(locale)
+    buffer = BytesIO()
     styles = getSampleStyleSheet()
+    rtl = quote_is_rtl(locale)
     title_style = ParagraphStyle(
-        "DraftChineseTitle",
+        "DraftLocalizedTitle",
         parent=styles["Title"],
-        fontName="STSong-Light",
+        fontName=font_name,
         fontSize=18,
         leading=24,
         textColor=colors.HexColor("#172033"),
+        alignment=TA_RIGHT if rtl else styles["Title"].alignment,
     )
     body_style = ParagraphStyle(
-        "DraftChineseBody",
+        "DraftLocalizedBody",
         parent=styles["BodyText"],
-        fontName="STSong-Light",
+        fontName=font_name,
         fontSize=9,
         leading=13,
+        alignment=TA_RIGHT if rtl else styles["BodyText"].alignment,
     )
     right_style = ParagraphStyle("DraftRight", parent=body_style, alignment=TA_RIGHT)
     pdf = SimpleDocTemplate(
@@ -724,48 +819,56 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
         leftMargin=16 * mm,
         topMargin=15 * mm,
         bottomMargin=15 * mm,
-        title=f"报价单 {quote.quote_number}",
+        title=f"{quote_text(locale, 'document_title')} {quote.quote_number}",
     )
     story = [
-        Paragraph("报价单 / QUOTATION", title_style),
+        Paragraph(_pdf_localized_text(quote_text(locale, "document_title"), locale), title_style),
         Spacer(1, 6 * mm),
     ]
     metadata = [
         [
-            Paragraph(f"商家：{_pdf_text(document.tenant_name)}", body_style),
-            Paragraph(f"申请编号：{_pdf_text(quote.quote_number)}", right_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'merchant')}: {document.tenant_name}", locale), body_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'quote_number')}: {quote.quote_number}", locale), right_style),
         ],
         [
-            Paragraph(f"客户：{_pdf_text(quote.customer_name)}", body_style),
-            Paragraph(f"提交日期：{quote.created_at:%Y-%m-%d}", right_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'customer')}: {quote.customer_name}", locale), body_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'submitted_date')}: {quote.created_at:%Y-%m-%d}", locale), right_style),
         ],
         [
-            Paragraph(f"公司：{_pdf_text(quote.customer_company or '-')}", body_style),
-            Paragraph(f"有效期：{quote.valid_until:%Y-%m-%d}", right_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'company')}: {quote.customer_company or '-'}", locale), body_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'valid_until')}: {quote.valid_until:%Y-%m-%d}", locale), right_style),
         ],
         [
-            Paragraph(f"邮箱：{_pdf_text(quote.customer_email or '-')}", body_style),
-            Paragraph(f"币种：{_pdf_text(quote.currency)}", right_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'email')}: {quote.customer_email or '-'}", locale), body_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'currency')}: {quote.currency}", locale), right_style),
         ],
     ]
     meta_table = Table(metadata, colWidths=[90 * mm, 72 * mm])
     meta_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.extend([meta_table, Spacer(1, 7 * mm)])
 
-    rows: list[list[object]] = [["序号", "SKU", "商品", "数量", "单位", "单价", "小计"]]
+    rows: list[list[object]] = [[
+        _pdf_localized_text(quote_text(locale, "serial_number"), locale),
+        "SKU",
+        _pdf_localized_text(quote_text(locale, "product_name"), locale),
+        _pdf_localized_text(quote_text(locale, "quantity"), locale),
+        _pdf_localized_text(quote_text(locale, "unit"), locale),
+        _pdf_localized_text(quote_text(locale, "unit_price"), locale),
+        _pdf_localized_text(quote_text(locale, "line_total"), locale),
+    ]]
     for item in quote.items:
         rows.append(
             [
                 str(item.position),
-                Paragraph(_pdf_text(item.sku_code_snapshot), body_style),
-                Paragraph(_pdf_text(item.name_snapshot), body_style),
+                Paragraph(_pdf_localized_text(item.sku_code_snapshot, locale), body_style),
+                Paragraph(_pdf_localized_text(item.name_snapshot, locale), body_style),
                 f"{item.quantity:f}",
-                Paragraph(_pdf_text(item.unit_code_snapshot), body_style),
+                Paragraph(_pdf_localized_text(localize_quote_unit(locale, item.unit_code_snapshot), locale), body_style),
                 f"{item.unit_price_snapshot:,.2f}",
                 f"{item.line_total:,.2f}",
             ]
         )
-    rows.append(["", "", "", "", "", "合计", f"{quote.currency} {quote.total:,.2f}"])
+    rows.append(["", "", "", "", "", _pdf_localized_text(quote_text(locale, "total"), locale), f"{quote.currency} {quote.total:,.2f}"])
     table = Table(
         rows,
         repeatRows=1,
@@ -774,7 +877,7 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
     table.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("FONTNAME", (0, 0), (-1, -1), font_name),
                 ("FONTSIZE", (0, 0), (-1, -1), 8.2),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#172033")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -792,15 +895,17 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
     story.append(table)
     if quote.notes:
         story.extend(
-            [Spacer(1, 7 * mm), Paragraph(f"备注：{_pdf_text(quote.notes)}", body_style)]
+            [Spacer(1, 7 * mm), Paragraph(_pdf_localized_text(f"{quote_text(locale, 'notes')}: {quote.notes}", locale), body_style)]
         )
     story.extend(
         [
             Spacer(1, 8 * mm),
             Paragraph(
-                "商家联系方式："
-                f"{_pdf_text(document.contact_email or '-')}  "
-                f"{_pdf_text(document.contact_phone or '')}",
+                _pdf_localized_text(
+                    f"{quote_text(locale, 'merchant_contact')}: "
+                    f"{document.contact_email or '-'}  {document.contact_phone or ''}",
+                    locale,
+                ),
                 body_style,
             ),
         ]
@@ -822,31 +927,33 @@ def render_public_quote_draft_xlsx(
             image_loader=image_loader,
         )
     quote = document.quote
+    locale = quote_locale(quote.locale)
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "报价单"
+    sheet.title = quote_text(locale, "sheet_name")[:31]
     sheet.sheet_view.showGridLines = False
+    sheet.sheet_view.rightToLeft = quote_is_rtl(locale)
     dark_fill = PatternFill("solid", fgColor="172033")
     light_fill = PatternFill("solid", fgColor="EEF2F7")
     white_font = Font(color="FFFFFF", bold=True)
 
     sheet.merge_cells("A1:N1")
-    sheet["A1"] = "报价单 / QUOTATION"
+    sheet["A1"] = quote_text(locale, "document_title")
     sheet["A1"].font = Font(size=18, bold=True)
     sheet["A1"].alignment = Alignment(horizontal="center")
     sheet.row_dimensions[1].height = 30
 
     sheet.append(
         [
-            "商家",
+            quote_text(locale, "merchant"),
             _xlsx_text(document.tenant_name),
             "",
             "",
-            "报价单号",
+            quote_text(locale, "quote_number"),
             _xlsx_text(quote.quote_number),
             "",
             "",
-            "币种",
+            quote_text(locale, "currency"),
             quote.currency,
             "",
             "",
@@ -856,15 +963,15 @@ def render_public_quote_draft_xlsx(
     )
     sheet.append(
         [
-            "客户",
+            quote_text(locale, "customer"),
             _xlsx_text(quote.customer_name),
             "",
             "",
-            "客户公司",
+            quote_text(locale, "company"),
             _xlsx_text(quote.customer_company),
             "",
             "",
-            "有效期",
+            quote_text(locale, "valid_until"),
             quote.valid_until.date(),
             "",
             "",
@@ -874,15 +981,15 @@ def render_public_quote_draft_xlsx(
     )
     sheet.append(
         [
-            "邮箱",
+            quote_text(locale, "email"),
             _xlsx_text(quote.customer_email),
             "",
             "",
-            "电话",
+            quote_text(locale, "phone"),
             _xlsx_text(quote.customer_phone),
             "",
             "",
-            "提交日期",
+            quote_text(locale, "submitted_date"),
             quote.created_at.date(),
             "",
             "",
@@ -895,7 +1002,7 @@ def render_public_quote_draft_xlsx(
         sheet.merge_cells(start_row=row_number, start_column=6, end_row=row_number, end_column=8)
         sheet.merge_cells(start_row=row_number, start_column=10, end_row=row_number, end_column=14)
     sheet.append([])
-    sheet.append(list(DEFAULT_QUOTE_HEADERS))
+    sheet.append(list(quote_headers(locale)))
     header_row = sheet.max_row
     for cell in sheet[header_row]:
         cell.fill = dark_fill
@@ -916,7 +1023,7 @@ def render_public_quote_draft_xlsx(
                 _xlsx_text(item.sku_code_snapshot),
                 _xlsx_text(item.name_snapshot),
                 float(item.quantity),
-                _xlsx_text(item.unit_code_snapshot),
+                _xlsx_text(localize_quote_unit(locale, item.unit_code_snapshot)),
                 logistics["packing_quantity"],
                 logistics["carton_dimensions"],
                 logistics["gross_weight"],
@@ -955,7 +1062,7 @@ def render_public_quote_draft_xlsx(
             "",
             "",
             "",
-            "合计",
+            quote_text(locale, "total"),
             float(quote.total),
             float(total_volume) if has_total_volume else None,
             float(total_gross_weight) if has_total_gross_weight else None,
@@ -967,7 +1074,7 @@ def render_public_quote_draft_xlsx(
         cell.font = Font(bold=True)
     if quote.notes:
         sheet.append([])
-        sheet.append(["备注", _xlsx_text(quote.notes)])
+        sheet.append([quote_text(locale, "notes"), _xlsx_text(quote.notes)])
         sheet.merge_cells(
             start_row=sheet.max_row,
             start_column=2,

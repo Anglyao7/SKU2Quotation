@@ -69,8 +69,11 @@
 .storefront-support-action-preview {
   position: absolute;
   right: calc(100% + 14px);
-  bottom: 50%;
+  bottom: 0;
   width: clamp(228px, 22vw, 300px);
+  max-height: calc(100dvh - 128px - env(safe-area-inset-top));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: visible;
   border: 1px solid var(--gray-a5);
   border-radius: 18px;
@@ -82,8 +85,8 @@
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
-  transform: translate(10px, 50%) scale(0.96);
-  transform-origin: right center;
+  transform: translateX(10px) scale(0.96);
+  transform-origin: right bottom;
   transition: transform 190ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 150ms ease, visibility 150ms;
 }
 
@@ -99,21 +102,21 @@
 .storefront-support-action-preview::after {
   content: "";
   position: absolute;
-  top: 50%;
   right: -6px;
+  bottom: 21px;
   width: 11px;
   height: 11px;
   border-top: 1px solid var(--gray-a5);
   border-right: 1px solid var(--gray-a5);
   background: color-mix(in srgb, var(--color-panel-solid) 96%, transparent);
-  transform: translateY(-50%) rotate(45deg);
+  transform: rotate(45deg);
 }
 
 .storefront-support-action-item.is-preview-visible .storefront-support-action-preview {
   pointer-events: auto;
   opacity: 1;
   visibility: visible;
-  transform: translate(0, 50%) scale(1);
+  transform: translateX(0) scale(1);
 }
 
 .storefront-support-action-preview > header {
@@ -135,6 +138,7 @@
 }
 
 .storefront-support-action-preview > div {
+  min-height: 0;
   overflow: hidden;
   border-radius: 0 0 17px 17px;
   background: var(--gray-a2);
@@ -142,7 +146,7 @@
 
 .storefront-support-action-preview img {
   width: 100%;
-  max-height: min(360px, 48dvh);
+  max-height: min(360px, calc(100dvh - 174px - env(safe-area-inset-top)));
   display: block;
   object-fit: contain;
 }
@@ -327,7 +331,8 @@
   .storefront-support-action-preview {
     right: calc(100% + 10px);
     bottom: 0;
-    width: min(220px, calc(100vw - 82px));
+    width: min(220px, calc(100vw - 82px - env(safe-area-inset-left)));
+    max-height: calc(100dvh - 116px - env(safe-area-inset-top));
     border-radius: 16px;
     transform: translateX(8px) scale(0.96);
     transform-origin: right bottom;
@@ -339,7 +344,9 @@
   .storefront-support-action-preview::after { top: auto; right: -5px; bottom: 17px; width: 9px; height: 9px; transform: rotate(45deg); }
   .storefront-support-action-preview > header { min-height: 38px; padding: 8px 11px; }
   .storefront-support-action-preview > header strong { font-size: 12px; }
-  .storefront-support-action-preview img { max-height: min(280px, 38dvh); }
+  .storefront-support-action-preview img {
+    max-height: min(280px, calc(100dvh - 158px - env(safe-area-inset-top)));
+  }
   .storefront-support-action-placeholder { min-height: 120px; }
   .storefront-support-panel { width: min(366px, calc(100vw - 40px)); height: min(560px, calc(100dvh - 130px)); min-height: 380px; border-radius: 20px; transform-origin: calc(100% - 24px) calc(100% + 60px); }
 }
