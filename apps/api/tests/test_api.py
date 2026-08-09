@@ -1145,6 +1145,164 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     assert rejected.status_code == 409, rejected.text
 
 
+def test_platform_support_ai_agent_management_and_knowledge_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.support_ai_models import (
+        SupportAIAgentRow,
+        SupportAIKnowledgeSourceRow,
+        SupportAIProviderSettingsRow,
+        SupportAISettingsRow,
+    )
+
+    monkeypatch.setenv("SUPPORT_AI_SETTINGS_MASTER_KEY", "test-master-key-" * 3)
+    tenant_ids = [uuid4(), uuid4()]
+    profile_id: str | None = None
+    agent_ids: list[UUID] = []
+    with SessionLocal() as session:
+        for index, tenant_id in enumerate(tenant_ids, start=1):
+            session.add(
+                TenantRow(
+                    id=tenant_id,
+                    organization_id=DEFAULT_ORGANIZATION_ID,
+                    slug=f"agent-store-{tenant_id.hex[:8]}",
+                    name=f"Agent Store {index}",
+                    default_locale="zh-CN",
+                    default_currency="CNY",
+                    timezone="Asia/Shanghai",
+                    status="active",
+                )
+            )
+        session.commit()
+    try:
+        created = client.post(
+            "/api/v1/system/support-ai/agents",
+            json={
+                "name": "Global pre-sales agent",
+                "description": "Answers catalog questions",
+                "tenant_ids": [str(value) for value in tenant_ids],
+            },
+        )
+        assert created.status_code == 201, created.text
+        agent = created.json()
+        agent_id = UUID(agent["id"])
+        agent_ids.append(agent_id)
+        assert re.fullmatch(r"\d{8}", agent["agent_code"])
+        assert agent["enabled"] is False
+        assert {row["tenant_id"] for row in agent["stores"]} == {
+            str(value) for value in tenant_ids
+        }
+
+        another = client.post(
+            "/api/v1/system/support-ai/agents",
+            json={"name": "Second agent"},
+        )
+        assert another.status_code == 201, another.text
+        agent_ids.append(UUID(another.json()["id"]))
+        assert another.json()["agent_code"] != agent["agent_code"]
+
+        profile = client.post(
+            "/api/v1/system/ai-generation/profiles",
+            json={
+                "configuration_name": f"Agent {agent['agent_code']} API",
+                "display_model_name": "Support model",
+                "enabled": True,
+                "base_url": "https://generation.invalid/v1",
+                "model_name": "support-model",
+                "api_key": "sk-agent-test-secret",
+                "timeout_seconds": 30,
+                "max_output_tokens": 1024,
+                "temperature": 0.1,
+            },
+        )
+        assert profile.status_code == 201, profile.text
+        profile_id = profile.json()["id"]
+
+        configured = client.patch(
+            f"/api/v1/system/support-ai/agents/{agent_id}",
+            json={
+                "provider_profile_id": profile_id,
+                "enabled": True,
+                "min_retrieval_score": 0.22,
+                "daily_auto_reply_limit": 1200,
+            },
+        )
+        assert configured.status_code == 200, configured.text
+        assert configured.json()["api_configured"] is True
+        assert configured.json()["enabled"] is True
+        with SessionLocal() as session:
+            for tenant_id in tenant_ids:
+                settings = session.get(SupportAISettingsRow, tenant_id)
+                assert settings is not None
+                assert settings.agent_id == agent_id
+                assert settings.provider_setting_id == profile_id
+                assert settings.enabled is True
+                assert settings.min_retrieval_score == Decimal("0.22000")
+
+        uploaded = client.post(
+            f"/api/v1/system/support-ai/agents/{agent_id}/knowledge/sources/upload",
+            data={
+                "title": "Shipping policy",
+                "classification": "CUSTOMER_APPROVED",
+                "language": "en-US",
+            },
+            files={
+                "file": (
+                    "shipping.txt",
+                    b"Orders normally ship within three business days.",
+                    "text/plain",
+                )
+            },
+        )
+        assert uploaded.status_code == 202, uploaded.text
+        assert {row["tenant_id"] for row in uploaded.json()["items"]} == {
+            str(value) for value in tenant_ids
+        }
+        sources = client.get(
+            f"/api/v1/system/support-ai/agents/{agent_id}/knowledge/sources"
+        )
+        assert sources.status_code == 200, sources.text
+        assert len(sources.json()) == 2
+        assert {row["tenant_name"] for row in sources.json()} == {
+            "Agent Store 1",
+            "Agent Store 2",
+        }
+        with SessionLocal() as session:
+            stored_sources = session.scalars(
+                select(SupportAIKnowledgeSourceRow).where(
+                    SupportAIKnowledgeSourceRow.tenant_id.in_(tenant_ids)
+                )
+            ).all()
+            assert len(stored_sources) == 2
+            assert {row.agent_id for row in stored_sources} == {agent_id}
+
+        listed = client.get("/api/v1/system/support-ai/agents")
+        assert listed.status_code == 200, listed.text
+        listed_agent = next(
+            row for row in listed.json() if row["id"] == str(agent_id)
+        )
+        assert listed_agent["knowledge_source_count"] == 1
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(TenantRow).where(TenantRow.id.in_(tenant_ids))
+            )
+            session.flush()
+            if agent_ids:
+                session.execute(
+                    delete(SupportAIAgentRow).where(
+                        SupportAIAgentRow.id.in_(agent_ids)
+                    )
+                )
+            if profile_id:
+                session.execute(
+                    delete(SupportAIProviderSettingsRow).where(
+                        SupportAIProviderSettingsRow.id == profile_id
+                    )
+                )
+            session.commit()
+
+
 def test_support_ai_configuration_and_file_knowledge_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1326,6 +1484,17 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         assert approved.status_code == 200, approved.text
         assert approved.json()["status"] == "APPROVED"
 
+        with SessionLocal() as session:
+            stored_settings = session.get(SupportAISettingsRow, DEFAULT_TENANT_ID)
+            assert stored_settings is not None
+            retrieved = support_ai_orchestrator.retrieve_customer_evidence(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                query="Standard dispatch takes three business days.",
+                settings=stored_settings,
+            )
+            assert any(item.knowledge_source_id == source_id for item in retrieved)
+
         class FakeSupportGenerationProvider:
             identity = ChatGenerationIdentity(
                 provider="fake-support",
@@ -1371,7 +1540,11 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         run_payload = test_run.json()
         run_id = UUID(run_payload["id"])
         task_id = UUID(run_payload["ai_task_id"])
-        assert run_payload["status"] == "SUCCEEDED"
+        assert run_payload["status"] == "SUCCEEDED", (
+            run_payload.get("failure_code"),
+            run_payload.get("failure_message"),
+            run_payload.get("decision_trace"),
+        )
         assert run_payload["detected_language"] == "en-US"
         assert run_payload["answer"].endswith("[1]")
         assert run_payload["model_display_name"] == "support-json-model"
@@ -3274,6 +3447,15 @@ def test_platform_admin_routes_reject_regular_members(
         assert denied_generation_settings.status_code == 403
         assert (
             denied_generation_settings.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
+        denied_agent_management = regular_client.get(
+            "/api/v1/system/support-ai/agents",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_agent_management.status_code == 403
+        assert (
+            denied_agent_management.json()["detail"]["code"]
             == "PLATFORM_ADMIN_REQUIRED"
         )
         denied_support_ai_settings = regular_client.get(
@@ -13402,6 +13584,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "storefront_product_view_events",
         "storefront_product_view_daily",
     }
+    support_ai_tables = {"support_ai_agents"}
 
     command.upgrade(config, "20260718_0019")
     before_engine = create_engine(migration_url)
@@ -13415,6 +13598,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert public_tables.issubset(inspect(upgraded_engine).get_table_names())
     assert customer_account_tables.issubset(inspect(upgraded_engine).get_table_names())
     assert analytics_tables.issubset(inspect(upgraded_engine).get_table_names())
+    assert support_ai_tables.issubset(inspect(upgraded_engine).get_table_names())
     assert "submitted_by_membership_id" in {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
@@ -13490,10 +13674,20 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         )
     }
     assert "requests_per_minute" in translation_settings_columns
+    assert "agent_id" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("support_ai_settings")
+    }
+    assert "agent_id" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns(
+            "support_ai_knowledge_sources"
+        )
+    }
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0062"
+        ).scalar() == "20260809_0063"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -13505,6 +13699,67 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)
+
+
+def test_support_ai_agent_migration_preserves_existing_store_configuration(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "support-ai-agent-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+
+    command.upgrade(config, "20260809_0062")
+    legacy_engine = create_engine(migration_url)
+    with legacy_engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO organizations (id, code, name, status) "
+            "VALUES (?, ?, ?, ?)",
+            ("1" * 32, "MIGRATION_ORG", "Migration Org", "active"),
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO tenants "
+            "(id, organization_id, slug, name, default_locale, "
+            "default_currency, timezone, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "2" * 32,
+                "1" * 32,
+                "migration-store",
+                "Migration Store",
+                "zh-CN",
+                "CNY",
+                "Asia/Shanghai",
+                "active",
+            ),
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO support_ai_settings "
+            "(tenant_id, enabled, min_retrieval_score, system_prompt) "
+            "VALUES (?, ?, ?, ?)",
+            ("2" * 32, True, 0.25, "Preserved prompt"),
+        )
+    legacy_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    with upgraded_engine.connect() as connection:
+        row = connection.exec_driver_sql(
+            "SELECT agents.agent_code, agents.name, agents.enabled, "
+            "agents.min_retrieval_score, agents.system_prompt, settings.agent_id "
+            "FROM support_ai_agents AS agents "
+            "JOIN support_ai_settings AS settings ON settings.agent_id = agents.id "
+            "WHERE settings.tenant_id = ?",
+            ("2" * 32,),
+        ).mappings().one()
+    upgraded_engine.dispose()
+
+    assert re.fullmatch(r"\d{8}", row["agent_code"])
+    assert row["name"] == "Migration Store 智能客服"
+    assert bool(row["enabled"]) is True
+    assert float(row["min_retrieval_score"]) == 0.25
+    assert row["system_prompt"] == "Preserved prompt"
+    assert row["agent_id"] is not None
 
 
 def test_catalog_tag_color_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:

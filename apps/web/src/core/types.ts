@@ -688,6 +688,36 @@ export interface SupportAIStoreConfiguration {
   updatedAt?: string;
 }
 
+export interface SupportAIAgentStore {
+  tenantId: string;
+  tenantName: string;
+}
+
+export interface SupportAIAgent {
+  id: string;
+  agentCode: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  providerProfileId?: string;
+  modelDisplayName?: string;
+  apiConfigured: boolean;
+  skuKnowledgeEnabled: boolean;
+  fileKnowledgeEnabled: boolean;
+  multilingualEnabled: boolean;
+  minRetrievalScore: number;
+  minAnswerConfidence: number;
+  maxSources: number;
+  dailyAutoReplyLimit: number;
+  systemPrompt?: string;
+  handoffMessages: Record<string, string>;
+  stores: SupportAIAgentStore[];
+  knowledgeSourceCount: number;
+  approvedKnowledgeSourceCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SupportAISettings {
   enabled: boolean;
   skuKnowledgeEnabled: boolean;
@@ -741,6 +771,16 @@ export interface SupportAIIngestionJob {
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
+}
+
+export interface SupportAIAgentKnowledgeSource {
+  tenantId: string;
+  tenantName: string;
+  source: SupportAIKnowledgeSource;
+}
+
+export interface SupportAIAgentKnowledgeUploadItem extends SupportAIAgentKnowledgeSource {
+  job: SupportAIIngestionJob;
 }
 
 export type SupportAIRunStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "NEEDS_REVIEW" | "HANDOFF" | "FAILED" | "CANCELLED" | "SKIPPED";

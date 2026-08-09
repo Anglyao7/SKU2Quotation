@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -47,6 +48,9 @@ from .translation_configuration import (
     resolved_catalog_translator,
     translation_provider_is_configured,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_HANDOFF_MESSAGES = {
@@ -400,6 +404,7 @@ def _file_evidence(
     session: Session,
     *,
     tenant_id: UUID,
+    agent_id: UUID | None,
     query: str,
     embedder: EmbeddingProvider | None,
     query_vector: list[float] | None,
@@ -414,6 +419,11 @@ def _file_evidence(
         .where(
             SupportAIKnowledgeChunkRow.tenant_id == tenant_id,
             SupportAIKnowledgeChunkRow.status == "ACTIVE",
+            (
+                SupportAIKnowledgeSourceRow.agent_id == agent_id
+                if agent_id is not None
+                else SupportAIKnowledgeSourceRow.agent_id.is_(None)
+            ),
             SupportAIKnowledgeSourceRow.status == "APPROVED",
             SupportAIKnowledgeSourceRow.classification.in_(
                 ["PUBLIC", "CUSTOMER_APPROVED"]
@@ -486,6 +496,7 @@ def retrieve_customer_evidence(
             _file_evidence(
                 session,
                 tenant_id=tenant_id,
+                agent_id=settings.agent_id,
                 query=query,
                 embedder=embedder,
                 query_vector=query_vector,
@@ -1302,6 +1313,7 @@ def process_support_ai_run(
             )
         session.commit()
     except Exception:
+        logger.exception("support AI run failed", extra={"run_id": str(run_id)})
         session.rollback()
         run = session.get(SupportAIRunRow, run_id)
         if run is None:

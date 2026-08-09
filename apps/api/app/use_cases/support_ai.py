@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import tempfile
 from contextlib import contextmanager
 from collections.abc import Iterator
 from dataclasses import asdict
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -37,6 +39,7 @@ from ..services.support_ai_orchestrator import (
     process_support_ai_run,
 )
 from ..support_ai_models import (
+    SupportAIAgentRow,
     SupportAIEvidenceUseRow,
     SupportAIIngestionJobRow,
     SupportAIKnowledgeSourceRow,
@@ -45,6 +48,13 @@ from ..support_ai_models import (
     SupportAISettingsRow,
 )
 from ..support_ai_schemas import (
+    SupportAIAgentCreate,
+    SupportAIAgentKnowledgeSourceResponse,
+    SupportAIAgentKnowledgeUploadItem,
+    SupportAIAgentKnowledgeUploadResponse,
+    SupportAIAgentResponse,
+    SupportAIAgentStoreResponse,
+    SupportAIAgentUpdate,
     SupportAIEvidenceResponse,
     SupportAIIngestionJobResponse,
     SupportAIKnowledgeSourceResponse,
@@ -357,6 +367,474 @@ def _admin_target_tenant(
         session,
         tenant_id=tenant_id or context.tenant_id,
     )
+
+
+def _support_agent(session: Session, *, agent_id: UUID) -> SupportAIAgentRow:
+    row = session.scalar(
+        select(SupportAIAgentRow).where(SupportAIAgentRow.id == agent_id)
+    )
+    if row is None:
+        raise ApplicationError(
+            "SUPPORT_AI_AGENT_NOT_FOUND",
+            "智能体不存在。",
+            kind="not_found",
+        )
+    return row
+
+
+def _new_agent_code(session: Session) -> str:
+    for _attempt in range(100):
+        code = str(secrets.randbelow(90_000_000) + 10_000_000)
+        exists = session.scalar(
+            select(SupportAIAgentRow.id)
+            .execution_options(include_deleted=True)
+            .where(SupportAIAgentRow.agent_code == code)
+        )
+        if exists is None:
+            return code
+    raise ApplicationError(
+        "SUPPORT_AI_AGENT_CODE_EXHAUSTED",
+        "暂时无法生成智能体 ID，请重试。",
+        kind="unavailable",
+    )
+
+
+def _agent_scope_maps(
+    session: Session,
+    *,
+    context: RequestContext,
+) -> tuple[
+    dict[UUID, list[SupportAIAgentStoreResponse]],
+    dict[UUID, int],
+    dict[UUID, int],
+]:
+    stores: dict[UUID, list[SupportAIAgentStoreResponse]] = {}
+    source_hashes: dict[UUID, set[str]] = {}
+    approved_hashes: dict[UUID, set[str]] = {}
+    tenants = session.scalars(
+        select(TenantRow)
+        .where(TenantRow.deleted_at.is_(None), TenantRow.status != "archived")
+        .order_by(TenantRow.name, TenantRow.id)
+    ).all()
+    for tenant in tenants:
+        with _tenant_scope(session, context=context, tenant=tenant):
+            settings = get_support_ai_settings(
+                session,
+                tenant_id=tenant.id,
+                create=False,
+            )
+            if settings is None or settings.agent_id is None:
+                continue
+            agent_id = settings.agent_id
+            stores.setdefault(agent_id, []).append(
+                SupportAIAgentStoreResponse(
+                    tenant_id=tenant.id,
+                    tenant_name=tenant.name,
+                )
+            )
+            sources = session.execute(
+                select(
+                    SupportAIKnowledgeSourceRow.sha256,
+                    SupportAIKnowledgeSourceRow.status,
+                ).where(
+                    SupportAIKnowledgeSourceRow.tenant_id == tenant.id,
+                    SupportAIKnowledgeSourceRow.agent_id == agent_id,
+                )
+            ).all()
+            for sha256, status in sources:
+                source_hashes.setdefault(agent_id, set()).add(sha256)
+                if status == "APPROVED":
+                    approved_hashes.setdefault(agent_id, set()).add(sha256)
+    return (
+        stores,
+        {agent_id: len(values) for agent_id, values in source_hashes.items()},
+        {agent_id: len(values) for agent_id, values in approved_hashes.items()},
+    )
+
+
+def _agent_response(
+    session: Session,
+    *,
+    row: SupportAIAgentRow,
+    stores: list[SupportAIAgentStoreResponse],
+    knowledge_source_count: int,
+    approved_knowledge_source_count: int,
+) -> SupportAIAgentResponse:
+    snapshot = (
+        support_ai_provider_snapshot(session, profile_id=row.provider_setting_id)
+        if row.provider_setting_id
+        else None
+    )
+    return SupportAIAgentResponse(
+        id=row.id,
+        agent_code=row.agent_code,
+        name=row.name,
+        description=row.description,
+        enabled=row.enabled,
+        provider_profile_id=row.provider_setting_id,
+        model_display_name=snapshot.display_model_name if snapshot else None,
+        api_configured=bool(
+            row.provider_setting_id
+            and support_ai_provider_is_configured(
+                session,
+                profile_id=row.provider_setting_id,
+            )
+        ),
+        sku_knowledge_enabled=row.sku_knowledge_enabled,
+        file_knowledge_enabled=row.file_knowledge_enabled,
+        multilingual_enabled=row.multilingual_enabled,
+        min_retrieval_score=float(row.min_retrieval_score),
+        min_answer_confidence=float(row.min_answer_confidence),
+        max_sources=row.max_sources,
+        daily_auto_reply_limit=row.daily_auto_reply_limit,
+        system_prompt=row.system_prompt,
+        handoff_messages={
+            str(key): str(value)
+            for key, value in (row.handoff_messages or {}).items()
+        },
+        stores=stores,
+        knowledge_source_count=knowledge_source_count,
+        approved_knowledge_source_count=approved_knowledge_source_count,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def list_agents(
+    session: Session,
+    *,
+    context: RequestContext,
+) -> list[SupportAIAgentResponse]:
+    _require_platform_admin(context)
+    rows = session.scalars(
+        select(SupportAIAgentRow).order_by(
+            SupportAIAgentRow.updated_at.desc(),
+            SupportAIAgentRow.created_at.desc(),
+        )
+    ).all()
+    stores, source_counts, approved_counts = _agent_scope_maps(
+        session,
+        context=context,
+    )
+    return [
+        _agent_response(
+            session,
+            row=row,
+            stores=stores.get(row.id, []),
+            knowledge_source_count=source_counts.get(row.id, 0),
+            approved_knowledge_source_count=approved_counts.get(row.id, 0),
+        )
+        for row in rows
+    ]
+
+
+def get_agent(
+    session: Session,
+    *,
+    context: RequestContext,
+    agent_id: UUID,
+) -> SupportAIAgentResponse:
+    _require_platform_admin(context)
+    row = _support_agent(session, agent_id=agent_id)
+    stores, source_counts, approved_counts = _agent_scope_maps(
+        session,
+        context=context,
+    )
+    return _agent_response(
+        session,
+        row=row,
+        stores=stores.get(row.id, []),
+        knowledge_source_count=source_counts.get(row.id, 0),
+        approved_knowledge_source_count=approved_counts.get(row.id, 0),
+    )
+
+
+def _copy_agent_policy_to_store(
+    session: Session,
+    settings: SupportAISettingsRow,
+    *,
+    agent: SupportAIAgentRow,
+    user_id: UUID,
+) -> None:
+    settings.agent_id = agent.id
+    settings.provider_setting_id = agent.provider_setting_id
+    settings.sku_knowledge_enabled = agent.sku_knowledge_enabled
+    settings.file_knowledge_enabled = agent.file_knowledge_enabled
+    settings.multilingual_enabled = agent.multilingual_enabled
+    settings.min_retrieval_score = agent.min_retrieval_score
+    settings.min_answer_confidence = agent.min_answer_confidence
+    settings.max_sources = agent.max_sources
+    settings.daily_auto_reply_limit = agent.daily_auto_reply_limit
+    settings.system_prompt = agent.system_prompt
+    settings.handoff_messages = dict(agent.handoff_messages or {})
+    settings.prompt_version += 1
+    settings.updated_by_user_id = user_id
+    settings.updated_at = utcnow()
+    settings.enabled = bool(
+        agent.enabled
+        and agent.provider_setting_id
+        and support_ai_provider_is_configured(
+            session,
+            profile_id=agent.provider_setting_id,
+        )
+    )
+
+
+def _sync_agent_bindings(
+    session: Session,
+    *,
+    context: RequestContext,
+    agent: SupportAIAgentRow,
+    tenant_ids: list[UUID],
+) -> None:
+    target_ids = set(dict.fromkeys(tenant_ids))
+    target_tenants = {
+        tenant_id: _platform_tenant(session, tenant_id=tenant_id)
+        for tenant_id in target_ids
+    }
+    tenants = session.scalars(
+        select(TenantRow).where(
+            TenantRow.deleted_at.is_(None),
+            TenantRow.status != "archived",
+        )
+    ).all()
+    for tenant in tenants:
+        with _tenant_scope(session, context=context, tenant=tenant):
+            settings = get_support_ai_settings(
+                session,
+                tenant_id=tenant.id,
+                create=tenant.id in target_tenants,
+            )
+            if settings is None:
+                continue
+            if tenant.id in target_tenants:
+                _copy_agent_policy_to_store(
+                    session,
+                    settings,
+                    agent=agent,
+                    user_id=context.user_id,
+                )
+            elif settings.agent_id == agent.id:
+                settings.agent_id = None
+                settings.enabled = False
+                settings.updated_by_user_id = context.user_id
+                settings.updated_at = utcnow()
+            session.flush()
+
+
+def create_agent(
+    session: Session,
+    *,
+    context: RequestContext,
+    request: SupportAIAgentCreate,
+) -> SupportAIAgentResponse:
+    _require_platform_admin(context)
+    row = SupportAIAgentRow(
+        id=uuid4(),
+        agent_code=_new_agent_code(session),
+        name=request.name,
+        description=request.description,
+        enabled=False,
+        created_by_user_id=context.user_id,
+        updated_by_user_id=context.user_id,
+    )
+    session.add(row)
+    try:
+        session.flush()
+        _sync_agent_bindings(
+            session,
+            context=context,
+            agent=row,
+            tenant_ids=request.tenant_ids,
+        )
+        session.commit()
+        return get_agent(session, context=context, agent_id=row.id)
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "SUPPORT_AI_AGENT_CREATE_CONFLICT",
+            "智能体创建失败，请重试。",
+            kind="conflict",
+        ) from exc
+
+
+def update_agent(
+    session: Session,
+    *,
+    context: RequestContext,
+    agent_id: UUID,
+    request: SupportAIAgentUpdate,
+) -> SupportAIAgentResponse:
+    _require_platform_admin(context)
+    row = _support_agent(session, agent_id=agent_id)
+    fields = request.model_fields_set
+    if "name" in fields:
+        if request.name is None:
+            raise ApplicationError(
+                "SUPPORT_AI_AGENT_NAME_REQUIRED",
+                "请填写智能体名称。",
+            )
+        row.name = request.name
+    if "description" in fields:
+        row.description = request.description
+    if "provider_profile_id" in fields:
+        _validate_profile_binding(
+            session,
+            profile_id=request.provider_profile_id,
+        )
+        row.provider_setting_id = request.provider_profile_id
+    if "enabled" in fields and request.enabled is not None:
+        row.enabled = request.enabled
+    for field in (
+        "sku_knowledge_enabled",
+        "file_knowledge_enabled",
+        "multilingual_enabled",
+        "max_sources",
+        "daily_auto_reply_limit",
+    ):
+        if field in fields:
+            value = getattr(request, field)
+            if value is not None:
+                setattr(row, field, value)
+    for field in ("min_retrieval_score", "min_answer_confidence"):
+        if field in fields:
+            value = getattr(request, field)
+            if value is not None:
+                setattr(row, field, Decimal(str(value)))
+    if "system_prompt" in fields:
+        row.system_prompt = request.system_prompt
+    if "handoff_messages" in fields:
+        row.handoff_messages = dict(request.handoff_messages or {})
+    if row.enabled and not (
+        row.provider_setting_id
+        and support_ai_provider_is_configured(
+            session,
+            profile_id=row.provider_setting_id,
+        )
+    ):
+        raise ApplicationError(
+            "SUPPORT_AI_AGENT_PROVIDER_REQUIRED",
+            "启用智能体前请先完成模型 API 配置。",
+            kind="conflict",
+        )
+    current = get_agent(session, context=context, agent_id=row.id)
+    tenant_ids = (
+        request.tenant_ids
+        if "tenant_ids" in fields and request.tenant_ids is not None
+        else [store.tenant_id for store in current.stores]
+    )
+    row.updated_by_user_id = context.user_id
+    row.updated_at = utcnow()
+    try:
+        session.flush()
+        _sync_agent_bindings(
+            session,
+            context=context,
+            agent=row,
+            tenant_ids=tenant_ids,
+        )
+        session.commit()
+        return get_agent(session, context=context, agent_id=row.id)
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "SUPPORT_AI_AGENT_UPDATE_CONFLICT",
+            "智能体保存失败，请重试。",
+            kind="conflict",
+        ) from exc
+
+
+def list_agent_knowledge_sources(
+    session: Session,
+    *,
+    context: RequestContext,
+    agent_id: UUID,
+) -> list[SupportAIAgentKnowledgeSourceResponse]:
+    _require_platform_admin(context)
+    _support_agent(session, agent_id=agent_id)
+    stores, _source_counts, _approved_counts = _agent_scope_maps(
+        session,
+        context=context,
+    )
+    result: list[SupportAIAgentKnowledgeSourceResponse] = []
+    for store in stores.get(agent_id, []):
+        tenant = _platform_tenant(session, tenant_id=store.tenant_id)
+        with _tenant_scope(session, context=context, tenant=tenant):
+            rows = session.scalars(
+                select(SupportAIKnowledgeSourceRow)
+                .where(
+                    SupportAIKnowledgeSourceRow.tenant_id == tenant.id,
+                    SupportAIKnowledgeSourceRow.agent_id == agent_id,
+                )
+                .order_by(SupportAIKnowledgeSourceRow.created_at.desc())
+            ).all()
+            result.extend(
+                SupportAIAgentKnowledgeSourceResponse(
+                    tenant_id=tenant.id,
+                    tenant_name=tenant.name,
+                    source=_source_response(row),
+                )
+                for row in rows
+            )
+    return sorted(
+        result,
+        key=lambda item: item.source.created_at,
+        reverse=True,
+    )
+
+
+def upload_agent_knowledge_source(
+    session: Session,
+    *,
+    context: RequestContext,
+    agent_id: UUID,
+    title: str,
+    description: str | None,
+    classification: str,
+    language: str,
+    filename: str | None,
+    declared_content_type: str | None,
+    content: bytes,
+) -> SupportAIAgentKnowledgeUploadResponse:
+    _require_platform_admin(context)
+    _support_agent(session, agent_id=agent_id)
+    stores, _source_counts, _approved_counts = _agent_scope_maps(
+        session,
+        context=context,
+    )
+    bound_stores = stores.get(agent_id, [])
+    if not bound_stores:
+        raise ApplicationError(
+            "SUPPORT_AI_AGENT_STORE_REQUIRED",
+            "请先为智能体绑定至少一个店铺，再上传知识库。",
+            kind="conflict",
+        )
+    items: list[SupportAIAgentKnowledgeUploadItem] = []
+    for store in bound_stores:
+        tenant = _platform_tenant(session, tenant_id=store.tenant_id)
+        with _tenant_scope(session, context=context, tenant=tenant):
+            uploaded = _upload_knowledge_source_in_scope(
+                session,
+                tenant_id=tenant.id,
+                agent_id=agent_id,
+                requested_by_user_id=context.user_id,
+                title=title,
+                description=description,
+                classification=classification,
+                language=language,
+                filename=filename,
+                declared_content_type=declared_content_type,
+                content=content,
+            )
+        items.append(
+            SupportAIAgentKnowledgeUploadItem(
+                tenant_id=tenant.id,
+                tenant_name=tenant.name,
+                source=uploaded.source,
+                job=uploaded.job,
+            )
+        )
+    return SupportAIAgentKnowledgeUploadResponse(items=items)
 
 
 def _store_configuration_response(
@@ -741,9 +1219,15 @@ def upload_knowledge_source(
         tenant_id=tenant_id,
     )
     with _tenant_scope(session, context=context, tenant=tenant):
+        settings = get_support_ai_settings(
+            session,
+            tenant_id=tenant.id,
+            create=False,
+        )
         return _upload_knowledge_source_in_scope(
             session,
             tenant_id=tenant.id,
+            agent_id=settings.agent_id if settings is not None else None,
             requested_by_user_id=context.user_id,
             title=title,
             description=description,
@@ -759,6 +1243,7 @@ def _upload_knowledge_source_in_scope(
     session: Session,
     *,
     tenant_id: UUID,
+    agent_id: UUID | None,
     requested_by_user_id: UUID,
     title: str,
     description: str | None,
@@ -850,6 +1335,7 @@ def _upload_knowledge_source_in_scope(
     source = SupportAIKnowledgeSourceRow(
         id=source_id,
         tenant_id=tenant_id,
+        agent_id=agent_id,
         source_type="FILE",
         title=resolved_title[:300],
         description=(description or "").strip()[:4000] or None,

@@ -79,6 +79,72 @@ class SupportAIProviderSettingsRow(AuditTimestampMixin, Base):
     )
 
 
+class SupportAIAgentRow(AuditTimestampMixin, Base):
+    """Platform-owned intelligent agent reusable across one or more stores."""
+
+    __tablename__ = "support_ai_agents"
+    __table_args__ = (
+        CheckConstraint("length(agent_code) = 8", name="agent_code_length"),
+        CheckConstraint(
+            "min_retrieval_score >= 0 AND min_retrieval_score <= 1",
+            name="retrieval_score_range",
+        ),
+        CheckConstraint(
+            "min_answer_confidence >= 0 AND min_answer_confidence <= 1",
+            name="answer_confidence_range",
+        ),
+        CheckConstraint(
+            "max_sources >= 1 AND max_sources <= 12",
+            name="max_sources_range",
+        ),
+        CheckConstraint(
+            "daily_auto_reply_limit >= 1 AND daily_auto_reply_limit <= 100000",
+            name="daily_limit_range",
+        ),
+        UniqueConstraint("agent_code", name="uq_support_ai_agents_agent_code"),
+        Index("ix_support_ai_agents_enabled_updated", "enabled", "updated_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    agent_code: Mapped[str] = mapped_column(String(8), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    provider_setting_id: Mapped[str | None] = mapped_column(
+        ForeignKey("support_ai_provider_settings.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    sku_knowledge_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    file_knowledge_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    multilingual_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    min_retrieval_score: Mapped[Decimal] = mapped_column(
+        Numeric(6, 5), default=Decimal("0.12000"), nullable=False
+    )
+    min_answer_confidence: Mapped[Decimal] = mapped_column(
+        Numeric(6, 5), default=Decimal("0.65000"), nullable=False
+    )
+    max_sources: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    daily_auto_reply_limit: Mapped[int] = mapped_column(
+        Integer, default=500, nullable=False
+    )
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    handoff_messages: Mapped[dict[str, Any]] = mapped_column(
+        JSON_DOCUMENT, default=dict, nullable=False
+    )
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class SupportAISettingsRow(AuditTimestampMixin, Base):
     """Store-owned customer-service AI configuration."""
 
@@ -106,6 +172,11 @@ class SupportAISettingsRow(AuditTimestampMixin, Base):
 
     tenant_id: Mapped[UUID] = mapped_column(
         ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    agent_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("support_ai_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     provider_setting_id: Mapped[str | None] = mapped_column(
@@ -176,6 +247,11 @@ class SupportAIKnowledgeSourceRow(AuditTimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(
         ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("support_ai_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     source_type: Mapped[str] = mapped_column(String(20), default="FILE", nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)

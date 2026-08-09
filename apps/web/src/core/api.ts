@@ -54,6 +54,9 @@ import type {
   StorefrontAnalyticsSnapshot,
   StorefrontAnnouncement,
   SupportActionSettings,
+  SupportAIAgent,
+  SupportAIAgentKnowledgeSource,
+  SupportAIAgentKnowledgeUploadItem,
   SupportAIIngestionJob,
   SupportAIKnowledgeSource,
   SupportAIProviderSettings,
@@ -2691,6 +2694,142 @@ export async function copySupportAIStoreConfiguration(input: {
   return rows.map(mapSupportAIStoreConfiguration);
 }
 
+interface ApiSupportAIAgent {
+  id: string;
+  agent_code: string;
+  name: string;
+  description?: string | null;
+  enabled: boolean;
+  provider_profile_id?: string | null;
+  model_display_name?: string | null;
+  api_configured: boolean;
+  sku_knowledge_enabled: boolean;
+  file_knowledge_enabled: boolean;
+  multilingual_enabled: boolean;
+  min_retrieval_score: number;
+  min_answer_confidence: number;
+  max_sources: number;
+  daily_auto_reply_limit: number;
+  system_prompt?: string | null;
+  handoff_messages: Record<string, string>;
+  stores: Array<{ tenant_id: string; tenant_name: string }>;
+  knowledge_source_count: number;
+  approved_knowledge_source_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapSupportAIAgent(row: ApiSupportAIAgent): SupportAIAgent {
+  return {
+    id: row.id,
+    agentCode: row.agent_code,
+    name: row.name,
+    description: defined(row.description),
+    enabled: row.enabled,
+    providerProfileId: defined(row.provider_profile_id),
+    modelDisplayName: defined(row.model_display_name),
+    apiConfigured: row.api_configured,
+    skuKnowledgeEnabled: row.sku_knowledge_enabled,
+    fileKnowledgeEnabled: row.file_knowledge_enabled,
+    multilingualEnabled: row.multilingual_enabled,
+    minRetrievalScore: row.min_retrieval_score,
+    minAnswerConfidence: row.min_answer_confidence,
+    maxSources: row.max_sources,
+    dailyAutoReplyLimit: row.daily_auto_reply_limit,
+    systemPrompt: defined(row.system_prompt),
+    handoffMessages: row.handoff_messages || {},
+    stores: row.stores.map((store) => ({
+      tenantId: store.tenant_id,
+      tenantName: store.tenant_name,
+    })),
+    knowledgeSourceCount: row.knowledge_source_count,
+    approvedKnowledgeSourceCount: row.approved_knowledge_source_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function listSupportAIAgents(): Promise<SupportAIAgent[]> {
+  const rows = await request<ApiSupportAIAgent[]>(
+    "/system/support-ai/agents",
+    { cache: "no-store" },
+  );
+  return rows.map(mapSupportAIAgent);
+}
+
+export async function getSupportAIAgent(agentId: string): Promise<SupportAIAgent> {
+  return mapSupportAIAgent(
+    await request<ApiSupportAIAgent>(
+      `/system/support-ai/agents/${encodeURIComponent(agentId)}`,
+      { cache: "no-store" },
+    ),
+  );
+}
+
+export async function createSupportAIAgent(input: {
+  name: string;
+  description?: string;
+  tenantIds?: string[];
+}): Promise<SupportAIAgent> {
+  return mapSupportAIAgent(
+    await request<ApiSupportAIAgent>("/system/support-ai/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: input.name,
+        description: input.description || null,
+        tenant_ids: input.tenantIds || [],
+      }),
+    }),
+  );
+}
+
+export interface SupportAIAgentUpdateInput {
+  name?: string;
+  description?: string | null;
+  enabled?: boolean;
+  providerProfileId?: string | null;
+  tenantIds?: string[];
+  skuKnowledgeEnabled?: boolean;
+  fileKnowledgeEnabled?: boolean;
+  multilingualEnabled?: boolean;
+  minRetrievalScore?: number;
+  minAnswerConfidence?: number;
+  maxSources?: number;
+  dailyAutoReplyLimit?: number;
+  systemPrompt?: string | null;
+  handoffMessages?: Record<string, string>;
+}
+
+export async function updateSupportAIAgent(
+  agentId: string,
+  input: SupportAIAgentUpdateInput,
+): Promise<SupportAIAgent> {
+  return mapSupportAIAgent(
+    await request<ApiSupportAIAgent>(
+      `/system/support-ai/agents/${encodeURIComponent(agentId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: input.name,
+          description: input.description,
+          enabled: input.enabled,
+          provider_profile_id: input.providerProfileId,
+          tenant_ids: input.tenantIds,
+          sku_knowledge_enabled: input.skuKnowledgeEnabled,
+          file_knowledge_enabled: input.fileKnowledgeEnabled,
+          multilingual_enabled: input.multilingualEnabled,
+          min_retrieval_score: input.minRetrievalScore,
+          min_answer_confidence: input.minAnswerConfidence,
+          max_sources: input.maxSources,
+          daily_auto_reply_limit: input.dailyAutoReplyLimit,
+          system_prompt: input.systemPrompt,
+          handoff_messages: input.handoffMessages,
+        }),
+      },
+    ),
+  );
+}
+
 interface ApiSupportAISettings {
   enabled: boolean;
   sku_knowledge_enabled: boolean;
@@ -2860,6 +2999,57 @@ function mapSupportAIIngestionJob(
     completedAt: defined(row.completed_at),
     createdAt: row.created_at,
   };
+}
+
+export async function listSupportAIAgentKnowledgeSources(
+  agentId: string,
+): Promise<SupportAIAgentKnowledgeSource[]> {
+  const rows = await request<Array<{
+    tenant_id: string;
+    tenant_name: string;
+    source: ApiSupportAIKnowledgeSource;
+  }>>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/knowledge/sources`,
+    { cache: "no-store" },
+  );
+  return rows.map((row) => ({
+    tenantId: row.tenant_id,
+    tenantName: row.tenant_name,
+    source: mapSupportAIKnowledgeSource(row.source),
+  }));
+}
+
+export async function uploadSupportAIAgentKnowledgeSource(input: {
+  agentId: string;
+  file: File;
+  title: string;
+  description?: string;
+  classification: "PUBLIC" | "CUSTOMER_APPROVED";
+  language: string;
+}): Promise<SupportAIAgentKnowledgeUploadItem[]> {
+  const body = new FormData();
+  body.append("file", input.file);
+  body.append("title", input.title);
+  body.append("description", input.description || "");
+  body.append("classification", input.classification);
+  body.append("language", input.language);
+  const row = await request<{
+    items: Array<{
+      tenant_id: string;
+      tenant_name: string;
+      source: ApiSupportAIKnowledgeSource;
+      job: ApiSupportAIIngestionJob;
+    }>;
+  }>(
+    `/system/support-ai/agents/${encodeURIComponent(input.agentId)}/knowledge/sources/upload`,
+    { method: "POST", body },
+  );
+  return row.items.map((item) => ({
+    tenantId: item.tenant_id,
+    tenantName: item.tenant_name,
+    source: mapSupportAIKnowledgeSource(item.source),
+    job: mapSupportAIIngestionJob(item.job),
+  }));
 }
 
 export async function listSupportAIKnowledgeSources(
