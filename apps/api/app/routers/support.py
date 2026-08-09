@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Header,
@@ -26,6 +27,7 @@ from ..support_schemas import (
     PublicChatConversationResponse,
     PublicChatMessageWrite,
     SupportConversationDetailResponse,
+    SupportConversationAutomationUpdate,
     SupportConversationPageResponse,
     SupportConversationStatusUpdate,
     SupportMerchantMessageWrite,
@@ -35,6 +37,10 @@ from ..support_schemas import (
     SupportTranslationPreviewWrite,
 )
 from ..use_cases import support as use_cases
+from ..services.support_ai_orchestrator import (
+    process_queued_runs_for_public_conversation,
+)
+from ..services.support_ai_configuration import support_ai_inline_processing_enabled
 from .errors import application_http_error
 
 
@@ -230,6 +236,30 @@ def update_support_conversation(
         raise application_http_error(exc) from exc
 
 
+@router.patch(
+    "/api/v1/support/conversations/{conversation_id}/automation",
+    response_model=SupportConversationDetailResponse,
+)
+def update_support_conversation_automation(
+    conversation_id: UUID,
+    payload: SupportConversationAutomationUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportConversationDetailResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_conversation_automation(
+            session,
+            tenant_id=context.tenant_id,
+            conversation_id=conversation_id,
+            permissions=context.permissions,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.get("/api/store/{tenant_slug}/support/actions/{slot}/image")
 def get_support_action_image(
     tenant_slug: str,
@@ -264,6 +294,7 @@ def create_public_support_conversation(
     payload: PublicChatConversationCreate,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -278,11 +309,18 @@ def create_public_support_conversation(
         ),
     )
     try:
-        return use_cases.create_public_conversation(
+        result = use_cases.create_public_conversation(
             session,
             slug=tenant_slug,
             request=payload,
         )
+        if result.ai_processing and support_ai_inline_processing_enabled():
+            background_tasks.add_task(
+                process_queued_runs_for_public_conversation,
+                tenant_slug=tenant_slug,
+                conversation_id=result.id,
+            )
+        return result
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -317,6 +355,7 @@ def send_public_support_message(
     payload: PublicChatMessageWrite,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     x_support_token: str = Header(..., max_length=500),
     session: Session = Depends(get_session),
 ) -> PublicChatConversationResponse:
@@ -329,11 +368,18 @@ def send_public_support_message(
         token=x_support_token,
     )
     try:
-        return use_cases.send_public_message(
+        result = use_cases.send_public_message(
             session,
             slug=tenant_slug,
             token=x_support_token,
             request=payload,
         )
+        if result.ai_processing and support_ai_inline_processing_enabled():
+            background_tasks.add_task(
+                process_queued_runs_for_public_conversation,
+                tenant_slug=tenant_slug,
+                conversation_id=result.id,
+            )
+        return result
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

@@ -134,10 +134,13 @@
   gap: 5px;
   align-self: flex-start;
 }
-.support-message > span {
+.support-message-content {
   padding: 10px 12px;
   border-radius: 15px 15px 15px 5px;
   background: var(--gray-a3);
+}
+.support-message-content > span {
+  display: block;
   font-size: 13px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -145,12 +148,27 @@
 }
 .support-message > small { padding-inline: 3px; color: var(--gray-9); font-size: 10px; }
 .support-message.is-visitor { align-self: flex-end; justify-items: end; }
-.support-message.is-visitor > span {
+.support-message.is-visitor > .support-message-content {
   border-radius: 15px 15px 5px 15px;
   color: white;
   background: var(--accent-9);
 }
-.support-message.is-welcome > span { background: var(--accent-a3); }
+.support-message.is-welcome > .support-message-content { background: var(--accent-a3); }
+.support-message.is-ai .support-message-content { border: 1px solid var(--accent-a4); background: var(--accent-a2); }
+.support-message.is-ai small:first-letter { text-transform: none; }
+.support-message.is-system { max-width: 92%; align-self: center; justify-items: center; }
+.support-message.is-system .support-message-content { padding: 8px 11px; border-radius: 11px; color: var(--gray-10); background: var(--gray-a2); }
+.support-message.is-system .support-message-content > span { font-size: 11px; }
+.storefront-support-citations { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--accent-a4); }
+.storefront-support-citations summary { width: fit-content; color: var(--accent-11); font-size: 10px; font-weight: 700; cursor: pointer; }
+.storefront-support-citations > div { margin-top: 7px; display: grid; gap: 6px; }
+.storefront-support-citations article { padding: 7px 8px; display: grid; gap: 2px; border-radius: 8px; background: var(--color-panel-solid); }
+.storefront-support-citations strong { font-size: 10px; line-height: 1.4; }
+.storefront-support-citations article small { padding: 0; color: var(--gray-9); font-size: 9px; }
+.storefront-support-citations p { margin: 2px 0 0; color: var(--gray-10); font-size: 10px; line-height: 1.5; }
+.support-ai-processing { display: flex; align-items: center; gap: 8px; }
+.support-ai-processing .support-message-loading { flex: 0 0 auto; }
+.support-ai-processing > small { color: var(--gray-9); font-size: 10px; }
 
 .support-message-loading {
   width: 54px;

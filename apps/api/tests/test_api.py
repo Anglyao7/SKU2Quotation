@@ -1099,6 +1099,7 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     detail = client.get(f"/api/v1/support/conversations/{conversation_id}")
     assert detail.status_code == 200, detail.text
     assert detail.json()["unread"] is False
+    assert detail.json()["automation_state"] == "AI_ACTIVE"
 
     replied = client.post(
         f"/api/v1/support/conversations/{conversation_id}/messages",
@@ -1106,6 +1107,14 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     )
     assert replied.status_code == 200, replied.text
     assert replied.json()["messages"][-1]["sender_type"] == "MERCHANT"
+    assert replied.json()["automation_state"] == "HUMAN_TAKEOVER"
+
+    resumed = client.patch(
+        f"/api/v1/support/conversations/{conversation_id}/automation",
+        json={"automation_state": "AI_ACTIVE"},
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["automation_state"] == "AI_ACTIVE"
 
     public_detail = client.get(
         "/api/store/demo/support/conversations/current",
@@ -1125,6 +1134,278 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
         json={"message": "One more question"},
     )
     assert rejected.status_code == 409, rejected.text
+
+
+def test_support_ai_configuration_and_file_knowledge_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.chat_generation import (
+        ChatGenerationIdentity,
+        ChatGenerationResult,
+        OpenAICompatibleChatGeneration,
+    )
+    from app.services import support_ai_orchestrator
+    from app.support_ai_models import (
+        SupportAIEvidenceUseRow,
+        SupportAIKnowledgeSourceRow,
+        SupportAIProviderSettingsRow,
+        SupportAIRunRow,
+        SupportAISettingsRow,
+    )
+    from app.support_models import (
+        StorefrontChatConversationRow,
+        StorefrontChatMessageRow,
+    )
+
+    def unexpected_generation_request(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("saving model settings must not test provider connectivity")
+
+    monkeypatch.setenv("SUPPORT_AI_SETTINGS_MASTER_KEY", "test-master-key-" * 3)
+    monkeypatch.setattr(
+        OpenAICompatibleChatGeneration,
+        "_request",
+        unexpected_generation_request,
+    )
+    source_id: UUID | None = None
+    run_id: UUID | None = None
+    task_id: UUID | None = None
+    conversation_ids: set[UUID] = set()
+    object_key: str | None = None
+    try:
+        configured = client.put(
+            "/api/v1/system/ai-generation/settings",
+            json={
+                "enabled": True,
+                "base_url": "https://generation.invalid/v1",
+                "model_name": "support-json-model",
+                "api_key": "sk-support-test-secret",
+                "timeout_seconds": 30,
+                "max_output_tokens": 1024,
+                "temperature": 0.1,
+            },
+        )
+        assert configured.status_code == 200, configured.text
+        provider_payload = configured.json()
+        assert provider_payload["source"] == "database"
+        assert provider_payload["api_key_configured"] is True
+        assert provider_payload["api_key_hint"] == "••••cret"
+        assert "api_key" not in provider_payload
+
+        settings = client.patch(
+            "/api/v1/support/ai/settings",
+            json={"mode": "DRAFT"},
+        )
+        assert settings.status_code == 200, settings.text
+        assert settings.json()["mode"] == "DRAFT"
+        assert settings.json()["provider_configured"] is True
+
+        uploaded = client.post(
+            "/api/v1/support/ai/knowledge/sources/upload",
+            data={
+                "title": "Brand shipping policy",
+                "classification": "CUSTOMER_APPROVED",
+                "language": "en-US",
+            },
+            files={
+                "file": (
+                    "brand-policy.txt",
+                    b"Standard dispatch takes three business days.",
+                    "text/plain",
+                )
+            },
+        )
+        assert uploaded.status_code == 202, uploaded.text
+        source_id = UUID(uploaded.json()["source"]["id"])
+        job_id = uploaded.json()["job"]["id"]
+
+        job = client.get(f"/api/v1/support/ai/knowledge/jobs/{job_id}")
+        assert job.status_code == 200, job.text
+        assert job.json()["status"] == "SUCCEEDED"
+        assert job.json()["chunks_written"] >= 1
+
+        sources = client.get("/api/v1/support/ai/knowledge/sources")
+        assert sources.status_code == 200, sources.text
+        source = next(
+            row for row in sources.json() if row["id"] == str(source_id)
+        )
+        assert source["status"] == "READY"
+        assert source["chunk_count"] >= 1
+
+        approved = client.post(
+            f"/api/v1/support/ai/knowledge/sources/{source_id}/approve"
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "APPROVED"
+
+        class FakeSupportGenerationProvider:
+            identity = ChatGenerationIdentity(
+                provider="fake-support",
+                model_name="grounded-test-model",
+            )
+
+            def generate_json(
+                self,
+                *,
+                messages: list[dict[str, str]],
+                temperature: float | None = None,
+                max_output_tokens: int | None = None,
+            ) -> ChatGenerationResult:
+                del messages, temperature, max_output_tokens
+                data = {
+                    "detected_language": "en-US",
+                    "answer": "Standard dispatch takes three business days. [1]",
+                    "confidence": 0.92,
+                    "citations": [1],
+                    "handoff": False,
+                    "handoff_reason": None,
+                }
+                return ChatGenerationResult(
+                    content="",
+                    data=data,
+                    finish_reason="stop",
+                    usage={"total_tokens": 42},
+                )
+
+        monkeypatch.setattr(
+            support_ai_orchestrator,
+            "resolved_support_ai_provider",
+            lambda _session: FakeSupportGenerationProvider(),
+        )
+        test_run = client.post(
+            "/api/v1/support/ai/test-runs",
+            json={
+                "question": "Standard dispatch takes three business days.",
+                "locale": "en-US",
+            },
+        )
+        assert test_run.status_code == 200, test_run.text
+        run_payload = test_run.json()
+        run_id = UUID(run_payload["id"])
+        task_id = UUID(run_payload["ai_task_id"])
+        assert run_payload["status"] == "SUCCEEDED"
+        assert run_payload["detected_language"] == "en-US"
+        assert run_payload["answer"].endswith("[1]")
+        assert run_payload["evidence"][0]["source_entity_id"] == str(source_id)
+        assert run_payload["evidence"][0]["classification"] == "CUSTOMER_APPROVED"
+        assert run_payload["decision_trace"]["citations_valid"] is True
+
+        auto_settings = client.patch(
+            "/api/v1/support/ai/settings",
+            json={"mode": "AUTO_LIMITED", "daily_auto_reply_limit": 1},
+        )
+        assert auto_settings.status_code == 200, auto_settings.text
+
+        first_chat = client.post(
+            "/api/store/demo/support/conversations",
+            json={
+                "message": "Standard dispatch takes three business days.",
+                "client_message_id": str(uuid4()),
+                "locale": "en-US",
+            },
+        )
+        assert first_chat.status_code == 201, first_chat.text
+        conversation_ids.add(UUID(first_chat.json()["id"]))
+        first_public = client.get(
+            "/api/store/demo/support/conversations/current",
+            headers={"X-Support-Token": first_chat.json()["access_token"]},
+        )
+        assert first_public.status_code == 200, first_public.text
+        first_ai_message = first_public.json()["messages"][-1]
+        assert first_ai_message["sender_type"] == "AI"
+        assert first_ai_message["citations"][0]["source_entity_id"] == str(source_id)
+
+        limited_chat = client.post(
+            "/api/store/demo/support/conversations",
+            json={
+                "message": "Standard dispatch takes three business days.",
+                "client_message_id": str(uuid4()),
+                "locale": "en-US",
+            },
+        )
+        assert limited_chat.status_code == 201, limited_chat.text
+        conversation_ids.add(UUID(limited_chat.json()["id"]))
+        assert limited_chat.json()["automation_state"] == "HUMAN_TAKEOVER"
+        assert limited_chat.json()["messages"][-1]["sender_type"] == "SYSTEM"
+
+        with SessionLocal() as session:
+            limited_run = session.scalar(
+                select(SupportAIRunRow).where(
+                    SupportAIRunRow.conversation_id == UUID(limited_chat.json()["id"])
+                )
+            )
+            assert limited_run is not None
+            assert limited_run.status == "SKIPPED"
+            assert limited_run.handoff_reason == "DAILY_AUTO_REPLY_LIMIT_REACHED"
+            assert limited_run.decision_trace["model_called"] is False
+
+        revoked = client.delete(
+            f"/api/v1/support/ai/knowledge/sources/{source_id}"
+        )
+        assert revoked.status_code == 200, revoked.text
+        assert revoked.json()["status"] == "REVOKED"
+    finally:
+        with SessionLocal() as session:
+            run_rows = session.scalars(
+                select(SupportAIRunRow).where(
+                    SupportAIRunRow.id == run_id
+                    if not conversation_ids
+                    else (
+                        (SupportAIRunRow.id == run_id)
+                        | SupportAIRunRow.conversation_id.in_(conversation_ids)
+                    )
+                )
+            ).all()
+            cleanup_run_ids = [row.id for row in run_rows]
+            cleanup_task_ids = [row.ai_task_id for row in run_rows]
+            if cleanup_run_ids:
+                session.execute(
+                    delete(SupportAIEvidenceUseRow).where(
+                        SupportAIEvidenceUseRow.run_id.in_(cleanup_run_ids)
+                    )
+                )
+                session.execute(
+                    delete(SupportAIRunRow).where(
+                        SupportAIRunRow.id.in_(cleanup_run_ids)
+                    )
+                )
+            if task_id is not None and task_id not in cleanup_task_ids:
+                cleanup_task_ids.append(task_id)
+            if cleanup_task_ids:
+                session.execute(
+                    delete(AITaskRow).where(AITaskRow.id.in_(cleanup_task_ids))
+                )
+            if conversation_ids:
+                session.execute(
+                    delete(StorefrontChatMessageRow).where(
+                        StorefrontChatMessageRow.conversation_id.in_(conversation_ids)
+                    )
+                )
+                session.execute(
+                    delete(StorefrontChatConversationRow).where(
+                        StorefrontChatConversationRow.id.in_(conversation_ids)
+                    )
+                )
+            if source_id is not None:
+                source_row = session.get(SupportAIKnowledgeSourceRow, source_id)
+                if source_row is not None:
+                    media_row = session.get(MediaObjectRow, source_row.media_object_id)
+                    object_key = media_row.object_key if media_row is not None else None
+                    session.delete(source_row)
+                    session.flush()
+                    if media_row is not None:
+                        session.delete(media_row)
+            provider_row = session.get(
+                SupportAIProviderSettingsRow,
+                "SUPPORT_AI_GENERATION",
+            )
+            if provider_row is not None:
+                session.delete(provider_row)
+            tenant_settings = session.get(SupportAISettingsRow, DEFAULT_TENANT_ID)
+            if tenant_settings is not None:
+                session.delete(tenant_settings)
+            session.commit()
+        if object_key:
+            get_object_storage().delete(object_key)
 
 
 class _SupportTranslationTestProvider:
@@ -3882,10 +4163,24 @@ def test_phase3b_product_projection_is_filtered_idempotent_and_versioned() -> No
             {"key": "market", "value": "USA, Brazil"},
             {"key": "material", "value": "TPR"},
         ]
+        assert document.canonical_payload["suppliers"] == [
+            {"lead_time_days": 15, "moq": "100.000000", "moq_unit": "pcs"}
+        ]
         assert "DO-NOT-PROJECT" not in str(document.canonical_payload)
         chunks = session.scalars(
             select(KnowledgeChunkRow).where(KnowledgeChunkRow.document_id == document.id)
         ).all()
+        projected_text = "\n".join(chunk.content for chunk in chunks)
+        for private_supplier_value in (
+            supplier_id,
+            "Knowledge Supplier",
+            "DOG-TPR-10",
+            "88.00",
+            "supplier-score-v1",
+        ):
+            assert private_supplier_value not in str(document.canonical_payload)
+            assert private_supplier_value not in projected_text
+        assert "moq=100.000000 pcs" in projected_text
         embeddings = session.scalars(
             select(EmbeddingRow).where(EmbeddingRow.entity_id.in_([chunk.id for chunk in chunks]))
         ).all()
@@ -3946,7 +4241,7 @@ def test_product_knowledge_promotes_sku_tags_into_rag_overview() -> None:
     overview = next(chunk for chunk in chunks if chunk["chunk_type"] == "OVERVIEW")
     assert "Search tags / 商品标签: 旅行装, 防水, 礼赠, 轻量" in overview["content"]
     assert overview["metadata"]["search_tags"] == ["旅行装", "防水", "礼赠", "轻量"]
-    assert overview["metadata"]["field_policy_version"] == 2
+    assert overview["metadata"]["field_policy_version"] == 3
 
 
 def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
@@ -12586,7 +12881,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0058"
+        ).scalar() == "20260809_0059"
     upgraded_engine.dispose()
     command.check(config)
 

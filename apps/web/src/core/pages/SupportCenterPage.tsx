@@ -5,17 +5,21 @@ import {
   CheckCircle,
   MagnifyingGlass,
   PaperPlaneTilt,
+  Robot,
   Translate,
   UserCircle,
+  UserSwitch,
   XCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useCoreAuth } from "../AuthContext";
 import {
   getSupportConversation,
   listSupportConversations,
   previewSupportReplyTranslation,
   replySupportConversation,
+  updateSupportConversationAutomation,
   updateSupportConversationStatus,
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
@@ -46,6 +50,9 @@ export function SupportCenterPage() {
   const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
   const canReply = hasPermission("support.reply");
+  const canUseAI = hasPermission("support.ai.manage")
+    || hasPermission("support.ai.inspect")
+    || hasPermission("knowledge.manage");
   const [items, setItems] = useState<SupportConversationSummary[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState<SupportConversationDetail>();
@@ -56,6 +63,7 @@ export function SupportCenterPage() {
   const [error, setError] = useState("");
   const [reply, setReply] = useState("");
   const [replyBusy, setReplyBusy] = useState(false);
+  const [automationBusy, setAutomationBusy] = useState(false);
   const [translationBusy, setTranslationBusy] = useState(false);
   const [translationError, setTranslationError] = useState("");
   const [translatedReply, setTranslatedReply] = useState("");
@@ -96,7 +104,13 @@ export function SupportCenterPage() {
       const next = await getSupportConversation(conversationId);
       setDetail(next);
       setItems((current) => current.map((item) => (
-        item.id === conversationId ? { ...item, unread: false, status: next.status } : item
+        item.id === conversationId ? {
+          ...item,
+          unread: false,
+          status: next.status,
+          automationState: next.automationState,
+          aiProcessing: next.aiProcessing,
+        } : item
       )));
       setError("");
     } catch (caught) {
@@ -206,6 +220,28 @@ export function SupportCenterPage() {
     }
   };
 
+  const changeAutomation = async () => {
+    if (!detail || !canReply || automationBusy) return;
+    setAutomationBusy(true);
+    setError("");
+    try {
+      const next = await updateSupportConversationAutomation(
+        detail.id,
+        detail.automationState === "AI_ACTIVE" ? "HUMAN_TAKEOVER" : "AI_ACTIVE",
+      );
+      setDetail(next);
+      setItems((current) => current.map((item) => item.id === next.id ? {
+        ...item,
+        automationState: next.automationState,
+        aiProcessing: next.aiProcessing,
+      } : item));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("会话接管状态更新失败"));
+    } finally {
+      setAutomationBusy(false);
+    }
+  };
+
   const selectedSummary = useMemo(
     () => items.find((item) => item.id === selectedId),
     [items, selectedId],
@@ -218,9 +254,12 @@ export function SupportCenterPage() {
         title={t("客服管理")}
         description={t("查看商品前台的客户咨询，并在一个工作区内处理回复与会话状态。")}
         actions={(
-          <Button variant="soft" color="gray" onClick={() => void loadList()}>
-            <ArrowClockwise />{t("刷新")}
-          </Button>
+          <>
+            {canUseAI ? <Button asChild variant="soft"><Link to="/console/support/ai"><Robot />{t("AI 智能客服")}</Link></Button> : null}
+            <Button variant="soft" color="gray" onClick={() => void loadList()}>
+              <ArrowClockwise />{t("刷新")}
+            </Button>
+          </>
         )}
       />
 
@@ -250,6 +289,7 @@ export function SupportCenterPage() {
                   <span className="support-inbox-meta">
                     <time>{dateTime(item.lastMessageAt, locale)}</time>
                     {item.unread ? <i /> : null}
+                    {item.aiProcessing ? <Badge color="blue">AI</Badge> : null}
                     {item.status === "CLOSED" ? <Badge color="gray">{t("已结束")}</Badge> : null}
                   </span>
                 </button>
@@ -269,6 +309,15 @@ export function SupportCenterPage() {
                     <span>{detail.visitorEmail || detail.referenceNumber} · {detail.locale}</span>
                   </div>
                   <div>
+                    <Badge color={detail.automationState === "AI_ACTIVE" ? "blue" : "amber"}>
+                      {detail.aiProcessing ? t("AI 回答中") : detail.automationState === "AI_ACTIVE" ? t("AI 可接待") : t("人工接管")}
+                    </Badge>
+                    {canReply ? (
+                      <Button size="1" variant="soft" color={detail.automationState === "AI_ACTIVE" ? "amber" : "blue"} onClick={() => void changeAutomation()} disabled={automationBusy}>
+                        {detail.automationState === "AI_ACTIVE" ? <UserSwitch /> : <Robot />}
+                        {detail.automationState === "AI_ACTIVE" ? t("人工接管") : t("恢复 AI")}
+                      </Button>
+                    ) : null}
                     <Badge color={detail.status === "OPEN" ? "green" : "gray"}>{detail.status === "OPEN" ? t("进行中") : t("已结束")}</Badge>
                     {canReply ? (
                       <Button size="1" variant="soft" color={detail.status === "OPEN" ? "gray" : "green"} onClick={() => void changeStatus(detail.status === "OPEN" ? "CLOSED" : "OPEN")} disabled={replyBusy}>
@@ -281,11 +330,13 @@ export function SupportCenterPage() {
                 <div className="support-thread-messages" ref={messagesRef}>
                   {detail.messages.map((message) => {
                     const isVisitor = message.senderType === "VISITOR";
+                    const isAI = message.senderType === "AI";
+                    const isSystem = message.senderType === "SYSTEM";
                     const hasIncomingTranslation = isVisitor
                       && message.translationStatus === "READY"
                       && Boolean(message.translatedBody);
                     return (
-                      <div className={`support-thread-message ${isVisitor ? "is-visitor" : "is-merchant"}`} key={message.id}>
+                      <div className={`support-thread-message ${isVisitor ? "is-visitor" : isAI ? "is-ai" : isSystem ? "is-system" : "is-merchant"}`} key={message.id}>
                         <div className="support-thread-bubble">
                           <span>{hasIncomingTranslation ? message.translatedBody : message.body}</span>
                           {hasIncomingTranslation ? (
@@ -307,9 +358,23 @@ export function SupportCenterPage() {
                                 : t("自动翻译失败，系统稍后会重试。")}
                             </small>
                           ) : null}
+                          {isAI && message.citations.length ? (
+                            <details className="support-message-citations">
+                              <summary>{t("查看 {count} 条引用来源", { count: message.citations.length })}</summary>
+                              <div>
+                                {message.citations.map((citation) => (
+                                  <article key={`${message.id}:${citation.citationNumber}`}>
+                                    <b>[{citation.citationNumber}] {citation.sourceTitle}</b>
+                                    <small>{citation.sourceType === "SKU" ? "SKU" : t("企业文件")} · v{citation.sourceVersion}</small>
+                                    <p>{citation.excerpt}</p>
+                                  </article>
+                                ))}
+                              </div>
+                            </details>
+                          ) : null}
                         </div>
                         <small>
-                          {isVisitor ? t("客户") : t("商家客服")}
+                          {isVisitor ? t("客户") : isAI ? t("AI 客服") : isSystem ? t("系统") : t("商家客服")}
                           {hasIncomingTranslation ? ` · ${t("已译为{language}", { language: storefrontLanguage(message.translationTargetLocale || operatorLocale).label })}` : ""}
                           {" · "}{dateTime(message.createdAt, locale)}
                         </small>

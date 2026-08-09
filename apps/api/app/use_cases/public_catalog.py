@@ -542,7 +542,7 @@ def get_store(
             session,
             tenant_id=tenant.id,
         ),
-        support_widget=support_use_cases.public_widget(profile),
+        support_widget=support_use_cases.public_widget(session, profile),
     )
 
 

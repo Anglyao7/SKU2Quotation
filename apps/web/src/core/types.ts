@@ -560,6 +560,19 @@ export interface SupportSettings {
 export type SupportConversationStatus = "OPEN" | "CLOSED";
 export type SupportMessageSender = "VISITOR" | "MERCHANT" | "SYSTEM" | "AI";
 export type SupportTranslationStatus = "PENDING" | "READY" | "FAILED" | "UNAVAILABLE" | "NOT_REQUIRED";
+export type SupportAutomationState = "AI_ACTIVE" | "HUMAN_TAKEOVER";
+
+export interface SupportCitation {
+  citationNumber: number;
+  sourceType: "SKU" | "FILE";
+  sourceEntityId: string;
+  sourceTitle: string;
+  sourceVersion: number;
+  classification: "PUBLIC" | "CUSTOMER_APPROVED";
+  locator: Record<string, unknown>;
+  excerpt: string;
+  score: number;
+}
 
 export interface SupportMessage {
   id: string;
@@ -571,6 +584,7 @@ export interface SupportMessage {
   translationTargetLocale?: StorefrontLocale;
   translationStatus: SupportTranslationStatus;
   createdAt: string;
+  citations: SupportCitation[];
 }
 
 export interface SupportTranslationPreview {
@@ -590,6 +604,8 @@ export interface SupportConversationSummary {
   lastMessagePreview: string;
   lastMessageAt: string;
   unread: boolean;
+  automationState: SupportAutomationState;
+  aiProcessing: boolean;
 }
 
 export interface SupportConversationDetail extends SupportConversationSummary {
@@ -697,6 +713,116 @@ export interface EmbeddingSettings {
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
   updatedAt?: string;
+}
+
+export interface SupportAIProviderSettings {
+  source: "database" | "environment" | "disabled";
+  provider: string;
+  enabled: boolean;
+  baseUrl?: string;
+  modelName?: string;
+  timeoutSeconds: number;
+  maxOutputTokens: number;
+  temperature: number;
+  apiKeyConfigured: boolean;
+  apiKeyHint?: string;
+  updatedAt?: string;
+}
+
+export type SupportAIMode = "OFF" | "DRAFT" | "SHADOW" | "AUTO_LIMITED" | "AUTO";
+
+export interface SupportAISettings {
+  mode: SupportAIMode;
+  skuKnowledgeEnabled: boolean;
+  fileKnowledgeEnabled: boolean;
+  multilingualEnabled: boolean;
+  minRetrievalScore: number;
+  minAnswerConfidence: number;
+  maxSources: number;
+  dailyAutoReplyLimit: number;
+  systemPrompt?: string;
+  handoffMessages: Record<string, string>;
+  promptVersion: number;
+  providerConfigured: boolean;
+  approvedFileSources: number;
+  indexedSkuProducts: number;
+  updatedAt?: string;
+}
+
+export type SupportAIKnowledgeStatus = "PROCESSING" | "READY" | "APPROVED" | "REVOKED" | "FAILED";
+
+export interface SupportAIKnowledgeSource {
+  id: string;
+  title: string;
+  description?: string;
+  classification: "PUBLIC" | "CUSTOMER_APPROVED";
+  language: string;
+  status: SupportAIKnowledgeStatus;
+  originalFilename: string;
+  contentType?: string;
+  sha256: string;
+  byteSize: number;
+  chunkCount: number;
+  version: number;
+  failureCode?: string;
+  failureMessage?: string;
+  approvedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportAIIngestionJob {
+  id: string;
+  sourceId: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  progress: number;
+  parserIdentifier?: string;
+  parserVersion?: string;
+  chunksWritten: number;
+  errorCode?: string;
+  errorMessage?: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
+export type SupportAIRunStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "NEEDS_REVIEW" | "HANDOFF" | "FAILED" | "CANCELLED" | "SKIPPED";
+
+export interface SupportAIRun {
+  id: string;
+  aiTaskId: string;
+  conversationId?: string;
+  inputMessageId?: string;
+  outputMessageId?: string;
+  triggerType: "CHAT" | "TEST";
+  modeSnapshot: SupportAIMode;
+  status: SupportAIRunStatus;
+  question: string;
+  visitorLocale: string;
+  detectedLanguage?: string;
+  normalizedQuery?: string;
+  answer?: string;
+  confidence?: number;
+  handoffReason?: string;
+  provider?: string;
+  modelName?: string;
+  promptVersion: number;
+  retrievalCount: number;
+  decisionTrace: Record<string, unknown>;
+  errorCode?: string;
+  errorMessage?: string;
+  evidence: SupportCitation[];
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface SupportAIRunPage {
+  items: SupportAIRun[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
 }
 
 export type TranslationReasoningEffort =

@@ -18,7 +18,6 @@ from ..product_supplier_models import (
     ProductCategoryRow,
     ProductRow,
     SupplierProductRow,
-    SupplierScoreRow,
 )
 from ..public_catalog_models import PublicCatalogOfferRow
 from .embedding import (
@@ -30,7 +29,7 @@ from .embedding_configuration import resolved_text_embedding_provider
 
 
 SCHEMA_VERSION = 2
-FIELD_POLICY_VERSION = 2
+FIELD_POLICY_VERSION = 3
 LOCALE = "und"
 FEATURE_MARKERS = ("feature", "use", "application", "cert", "特点", "用途", "认证")
 MARKET_MARKERS = ("market", "country", "region", "市场", "国家", "地区")
@@ -117,30 +116,6 @@ def _attribute_value(attribute: ProductAttributeRow) -> Any:
     return _json_value(attribute.value_json)
 
 
-def _latest_supplier_scores(
-    session: Session, *, tenant_id: UUID, supplier_ids: list[str]
-) -> dict[str, dict[str, Any]]:
-    if not supplier_ids:
-        return {}
-    rows = session.scalars(
-        select(SupplierScoreRow)
-        .where(
-            SupplierScoreRow.tenant_id == tenant_id,
-            SupplierScoreRow.supplier_id.in_(supplier_ids),
-        )
-        .order_by(SupplierScoreRow.calculated_at.desc())
-    ).all()
-    latest: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        if row.supplier_id not in latest:
-            latest[row.supplier_id] = {
-                "overall_score": _json_value(row.overall_score),
-                "method_version": row.method_version,
-                "calculated_at": row.calculated_at.isoformat(),
-            }
-    return latest
-
-
 def build_product_payload(
     session: Session, *, tenant_id: UUID, product_id: UUID
 ) -> tuple[ProductRow, dict[str, Any]]:
@@ -174,8 +149,8 @@ def build_product_payload(
         )
         .order_by(ProductAttributeRow.attribute_key, ProductAttributeRow.id)
     ).all()
-    supplier_rows = session.execute(
-        select(SupplierProductRow, SupplierRow)
+    supplier_rows = session.scalars(
+        select(SupplierProductRow)
         .join(
             SupplierRow,
             (SupplierRow.tenant_id == SupplierProductRow.tenant_id)
@@ -189,10 +164,6 @@ def build_product_payload(
         )
         .order_by(SupplierProductRow.supplier_id)
     ).all()
-    supplier_ids = [supplier_product.supplier_id for supplier_product, _ in supplier_rows]
-    latest_scores = _latest_supplier_scores(
-        session, tenant_id=tenant_id, supplier_ids=supplier_ids
-    )
     sku_rows = session.execute(
         select(SkuRow, PublicCatalogOfferRow)
         .outerjoin(
@@ -254,16 +225,11 @@ def build_product_payload(
         ],
         "suppliers": [
             {
-                "id": supplier.id,
-                "code": supplier.supplier_code,
-                "name": supplier.name,
-                "supplier_sku": supplier_product.supplier_sku,
                 "moq": _json_value(supplier_product.moq),
                 "moq_unit": supplier_product.moq_unit,
                 "lead_time_days": supplier_product.lead_time_days,
-                "score": latest_scores.get(supplier.id),
             }
-            for supplier_product, supplier in supplier_rows
+            for supplier_product in supplier_rows
         ],
         "projection": {
             "schema_version": SCHEMA_VERSION,
@@ -332,17 +298,13 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
         else:
             sections["SPECIFICATIONS"].append(line)
     for supplier in payload.get("suppliers", []):
-        details = [
-            f"supplier={supplier['name']}",
-            f"supplier_code={supplier['code']}",
-        ]
-        if supplier.get("supplier_sku"):
-            details.append(f"supplier_sku={supplier['supplier_sku']}")
+        details = []
         if supplier.get("moq") is not None:
             details.append(f"moq={supplier['moq']} {supplier.get('moq_unit') or ''}".strip())
         if supplier.get("lead_time_days") is not None:
             details.append(f"lead_time_days={supplier['lead_time_days']}")
-        sections["SUPPLY"].append("; ".join(details))
+        if details:
+            sections["SUPPLY"].append("; ".join(details))
 
     chunks: list[dict[str, Any]] = []
     for chunk_type in ("OVERVIEW", "SPECIFICATIONS", "FEATURES", "MARKETS", "SUPPLY"):

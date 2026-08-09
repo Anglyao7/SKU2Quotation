@@ -10,10 +10,8 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowClockwise,
-  CheckCircle,
   FloppyDisk,
   Key,
-  PlugsConnected,
   ShieldCheck,
   Translate,
 } from "@phosphor-icons/react";
@@ -26,7 +24,6 @@ import {
 } from "react";
 import {
   getTranslationSettings,
-  testTranslationSettings,
   updateTranslationSettings,
   type TranslationSettingsWriteInput,
 } from "../api";
@@ -34,7 +31,6 @@ import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type {
   TranslationApiSettings,
-  TranslationApiTestResult,
   TranslationProviderKind,
   TranslationReasoningEffort,
 } from "../types";
@@ -53,15 +49,13 @@ const ALIYUN_REGION = "cn-hangzhou";
 const ALIYUN_EDITION = "translate_standard";
 
 
-export function TranslationApiSettingsPage() {
-  const { locale, t } = useLocale();
+export function TranslationApiSettingsPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const { t } = useLocale();
   const [settings, setSettings] = useState<TranslationApiSettings>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [testResult, setTestResult] = useState<TranslationApiTestResult>();
   const [provider, setProvider] =
     useState<TranslationProviderKind>("openai-compatible");
   const [enabled, setEnabled] = useState(true);
@@ -118,7 +112,6 @@ export function TranslationApiSettingsPage() {
   const clearResult = () => {
     setMessage("");
     setError("");
-    setTestResult(undefined);
   };
 
   const input = useMemo<TranslationSettingsWriteInput>(() => ({
@@ -176,17 +169,6 @@ export function TranslationApiSettingsPage() {
       && hasSecret
       && (!isAliyun || hasAccessKeyId),
   );
-  const canTest = Boolean(
-    input.baseUrl
-      && validRpm
-      && (isAliyun ? input.regionId : input.modelName)
-      && (input.apiKey || (storedCredentialsMatch && settings?.apiKeyConfigured))
-      && (!isAliyun || (
-        input.accessKeyId
-        || (storedCredentialsMatch && settings?.accessKeyIdConfigured)
-      )),
-  );
-
   const saveSettings = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!formValid || saving) return;
@@ -196,7 +178,6 @@ export function TranslationApiSettingsPage() {
     try {
       const next = await updateTranslationSettings({ ...input, enabled });
       applySettings(next);
-      setTestResult(undefined);
       setMessage(t("翻译 API 配置已保存并立即生效。"));
     } catch (reason) {
       setError(
@@ -206,25 +187,6 @@ export function TranslationApiSettingsPage() {
       );
     } finally {
       setSaving(false);
-    }
-  };
-
-  const testConnection = async () => {
-    if (!canTest || testing) return;
-    setTesting(true);
-    setError("");
-    setMessage("");
-    setTestResult(undefined);
-    try {
-      setTestResult(await testTranslationSettings(input));
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : t("翻译 API 连接测试失败"),
-      );
-    } finally {
-      setTesting(false);
     }
   };
 
@@ -256,25 +218,27 @@ export function TranslationApiSettingsPage() {
   };
 
   return (
-    <div className="core-workspace">
-      <CorePageHeading
-        eyebrow={t("平台设置")}
-        title={t("翻译 API")}
-        description={t(
-          "统一管理商品、分类与客服翻译使用的模型接口；配置对所有商家立即生效。",
-        )}
-        actions={(
-          <Button
-            variant="soft"
-            color="gray"
-            disabled={loading}
-            onClick={() => void loadSettings()}
-          >
-            <ArrowClockwise />
-            {t("刷新配置")}
-          </Button>
-        )}
-      />
+    <div className={embedded ? "core-configuration-embedded" : "core-workspace"}>
+      {!embedded ? (
+        <CorePageHeading
+          eyebrow={t("平台设置")}
+          title={t("翻译 API")}
+          description={t(
+            "统一管理商品、分类与客服翻译使用的模型接口；配置对所有商家立即生效。",
+          )}
+          actions={(
+            <Button
+              variant="soft"
+              color="gray"
+              disabled={loading}
+              onClick={() => void loadSettings()}
+            >
+              <ArrowClockwise />
+              {t("刷新配置")}
+            </Button>
+          )}
+        />
+      ) : null}
 
       {loading && !settings ? (
         <CoreLoading label={t("正在读取翻译 API 配置")} />
@@ -561,19 +525,9 @@ export function TranslationApiSettingsPage() {
 
               <div className="core-translation-api-actions">
                 <Button
-                  type="button"
-                  size="3"
-                  variant="soft"
-                  disabled={!canTest || testing || saving}
-                  onClick={() => void testConnection()}
-                >
-                  <PlugsConnected />
-                  {t(testing ? "测试中…" : "测试连接")}
-                </Button>
-                <Button
                   type="submit"
                   size="3"
-                  disabled={!formValid || saving || testing}
+                  disabled={!formValid || saving}
                 >
                   <FloppyDisk />
                   {t(saving ? "保存中…" : "保存并生效")}
@@ -586,26 +540,11 @@ export function TranslationApiSettingsPage() {
               </div>
             </form>
 
-            {testResult ? (
-              <div className="core-translation-api-test-result" role="status">
-                <CheckCircle weight="fill" />
-                <span>
-                  <Text size="2" weight="bold" as="div">
-                    {t("连接成功 · {latency} ms", {
-                      latency: testResult.latencyMs.toLocaleString(locale),
-                    })}
-                  </Text>
-                  <Text size="1" color="gray" as="div">
-                    {testResult.translatedText}
-                  </Text>
-                </span>
-              </div>
-            ) : null}
             {message ? <Text size="2" color="green">{message}</Text> : null}
             {error && settings ? <Text size="2" color="red">{error}</Text> : null}
           </Card>
 
-          <div className="core-translation-api-notes">
+          {!embedded ? <div className="core-translation-api-notes">
             <section>
               <ShieldCheck weight="duotone" />
               <div>
@@ -622,7 +561,7 @@ export function TranslationApiSettingsPage() {
                 <p>{t("商品名称、描述、分类、标签与客服消息均使用这套配置；已有翻译缓存不受影响。")}</p>
               </div>
             </section>
-          </div>
+          </div> : null}
         </>
       ) : null}
     </div>

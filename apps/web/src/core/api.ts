@@ -54,6 +54,15 @@ import type {
   StorefrontAnalyticsSnapshot,
   StorefrontAnnouncement,
   SupportActionSettings,
+  SupportAIIngestionJob,
+  SupportAIKnowledgeSource,
+  SupportAIMode,
+  SupportAIProviderSettings,
+  SupportAIRun,
+  SupportAIRunPage,
+  SupportAISettings,
+  SupportAutomationState,
+  SupportCitation,
   SupportConversationDetail,
   SupportConversationPage,
   SupportConversationStatus,
@@ -2498,6 +2507,446 @@ export async function deleteAnnouncement(
   bumpPublicCatalogRevision();
 }
 
+interface ApiSupportAIProviderSettings {
+  source: "database" | "environment" | "disabled";
+  provider: string;
+  enabled: boolean;
+  base_url?: string | null;
+  model_name?: string | null;
+  timeout_seconds: number;
+  max_output_tokens: number;
+  temperature: number;
+  api_key_configured: boolean;
+  api_key_hint?: string | null;
+  updated_at?: string | null;
+}
+
+function mapSupportAIProviderSettings(
+  row: ApiSupportAIProviderSettings,
+): SupportAIProviderSettings {
+  return {
+    source: row.source,
+    provider: row.provider,
+    enabled: row.enabled,
+    baseUrl: defined(row.base_url),
+    modelName: defined(row.model_name),
+    timeoutSeconds: row.timeout_seconds,
+    maxOutputTokens: row.max_output_tokens,
+    temperature: row.temperature,
+    apiKeyConfigured: row.api_key_configured,
+    apiKeyHint: defined(row.api_key_hint),
+    updatedAt: defined(row.updated_at),
+  };
+}
+
+export interface SupportAIProviderSettingsWriteInput {
+  enabled: boolean;
+  baseUrl: string;
+  modelName: string;
+  apiKey?: string;
+  timeoutSeconds: number;
+  maxOutputTokens: number;
+  temperature: number;
+}
+
+export async function getSupportAIProviderSettings(): Promise<SupportAIProviderSettings> {
+  return mapSupportAIProviderSettings(
+    await request<ApiSupportAIProviderSettings>(
+      "/system/ai-generation/settings",
+      { cache: "no-store" },
+    ),
+  );
+}
+
+export async function updateSupportAIProviderSettings(
+  input: SupportAIProviderSettingsWriteInput,
+): Promise<SupportAIProviderSettings> {
+  return mapSupportAIProviderSettings(
+    await request<ApiSupportAIProviderSettings>(
+      "/system/ai-generation/settings",
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: input.enabled,
+          base_url: input.baseUrl,
+          model_name: input.modelName,
+          api_key: input.apiKey || undefined,
+          timeout_seconds: input.timeoutSeconds,
+          max_output_tokens: input.maxOutputTokens,
+          temperature: input.temperature,
+        }),
+      },
+    ),
+  );
+}
+
+interface ApiSupportAISettings {
+  mode: SupportAIMode;
+  sku_knowledge_enabled: boolean;
+  file_knowledge_enabled: boolean;
+  multilingual_enabled: boolean;
+  min_retrieval_score: number;
+  min_answer_confidence: number;
+  max_sources: number;
+  daily_auto_reply_limit: number;
+  system_prompt?: string | null;
+  handoff_messages: Record<string, string>;
+  prompt_version: number;
+  provider_configured: boolean;
+  approved_file_sources: number;
+  indexed_sku_products: number;
+  updated_at?: string | null;
+}
+
+function mapSupportAISettings(row: ApiSupportAISettings): SupportAISettings {
+  return {
+    mode: row.mode,
+    skuKnowledgeEnabled: row.sku_knowledge_enabled,
+    fileKnowledgeEnabled: row.file_knowledge_enabled,
+    multilingualEnabled: row.multilingual_enabled,
+    minRetrievalScore: row.min_retrieval_score,
+    minAnswerConfidence: row.min_answer_confidence,
+    maxSources: row.max_sources,
+    dailyAutoReplyLimit: row.daily_auto_reply_limit,
+    systemPrompt: defined(row.system_prompt),
+    handoffMessages: row.handoff_messages || {},
+    promptVersion: row.prompt_version,
+    providerConfigured: row.provider_configured,
+    approvedFileSources: row.approved_file_sources,
+    indexedSkuProducts: row.indexed_sku_products,
+    updatedAt: defined(row.updated_at),
+  };
+}
+
+export interface SupportAISettingsWriteInput {
+  mode: SupportAIMode;
+  skuKnowledgeEnabled: boolean;
+  fileKnowledgeEnabled: boolean;
+  multilingualEnabled: boolean;
+  minRetrievalScore: number;
+  minAnswerConfidence: number;
+  maxSources: number;
+  dailyAutoReplyLimit: number;
+  systemPrompt?: string;
+  handoffMessages: Record<string, string>;
+}
+
+export async function getSupportAISettings(): Promise<SupportAISettings> {
+  return mapSupportAISettings(
+    await request<ApiSupportAISettings>("/support/ai/settings", {
+      cache: "no-store",
+    }),
+  );
+}
+
+export async function updateSupportAISettings(
+  input: SupportAISettingsWriteInput,
+): Promise<SupportAISettings> {
+  return mapSupportAISettings(
+    await request<ApiSupportAISettings>("/support/ai/settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        mode: input.mode,
+        sku_knowledge_enabled: input.skuKnowledgeEnabled,
+        file_knowledge_enabled: input.fileKnowledgeEnabled,
+        multilingual_enabled: input.multilingualEnabled,
+        min_retrieval_score: input.minRetrievalScore,
+        min_answer_confidence: input.minAnswerConfidence,
+        max_sources: input.maxSources,
+        daily_auto_reply_limit: input.dailyAutoReplyLimit,
+        system_prompt: input.systemPrompt || null,
+        handoff_messages: input.handoffMessages,
+      }),
+    }),
+  );
+}
+
+interface ApiSupportAIKnowledgeSource {
+  id: string;
+  title: string;
+  description?: string | null;
+  classification: "PUBLIC" | "CUSTOMER_APPROVED";
+  language: string;
+  status: SupportAIKnowledgeSource["status"];
+  original_filename: string;
+  content_type?: string | null;
+  sha256: string;
+  byte_size: number;
+  chunk_count: number;
+  version: number;
+  failure_code?: string | null;
+  failure_message?: string | null;
+  approved_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapSupportAIKnowledgeSource(
+  row: ApiSupportAIKnowledgeSource,
+): SupportAIKnowledgeSource {
+  return {
+    id: row.id,
+    title: row.title,
+    description: defined(row.description),
+    classification: row.classification,
+    language: row.language,
+    status: row.status,
+    originalFilename: row.original_filename,
+    contentType: defined(row.content_type),
+    sha256: row.sha256,
+    byteSize: row.byte_size,
+    chunkCount: row.chunk_count,
+    version: row.version,
+    failureCode: defined(row.failure_code),
+    failureMessage: defined(row.failure_message),
+    approvedAt: defined(row.approved_at),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface ApiSupportAIIngestionJob {
+  id: string;
+  source_id: string;
+  status: SupportAIIngestionJob["status"];
+  progress: number;
+  parser_identifier?: string | null;
+  parser_version?: string | null;
+  chunks_written: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+}
+
+function mapSupportAIIngestionJob(
+  row: ApiSupportAIIngestionJob,
+): SupportAIIngestionJob {
+  return {
+    id: row.id,
+    sourceId: row.source_id,
+    status: row.status,
+    progress: row.progress,
+    parserIdentifier: defined(row.parser_identifier),
+    parserVersion: defined(row.parser_version),
+    chunksWritten: row.chunks_written,
+    errorCode: defined(row.error_code),
+    errorMessage: defined(row.error_message),
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+    createdAt: row.created_at,
+  };
+}
+
+export async function listSupportAIKnowledgeSources(): Promise<SupportAIKnowledgeSource[]> {
+  return (
+    await request<ApiSupportAIKnowledgeSource[]>(
+      "/support/ai/knowledge/sources",
+      { cache: "no-store" },
+    )
+  ).map(mapSupportAIKnowledgeSource);
+}
+
+export async function uploadSupportAIKnowledgeSource(input: {
+  file: File;
+  title: string;
+  description?: string;
+  classification: "PUBLIC" | "CUSTOMER_APPROVED";
+  language: string;
+}): Promise<{ source: SupportAIKnowledgeSource; job: SupportAIIngestionJob }> {
+  const body = new FormData();
+  body.append("file", input.file);
+  body.append("title", input.title);
+  body.append("description", input.description || "");
+  body.append("classification", input.classification);
+  body.append("language", input.language);
+  const row = await request<{
+    source: ApiSupportAIKnowledgeSource;
+    job: ApiSupportAIIngestionJob;
+  }>("/support/ai/knowledge/sources/upload", { method: "POST", body });
+  return {
+    source: mapSupportAIKnowledgeSource(row.source),
+    job: mapSupportAIIngestionJob(row.job),
+  };
+}
+
+export async function updateSupportAIKnowledgeSource(
+  sourceId: string,
+  input: {
+    title: string;
+    description?: string;
+    classification: "PUBLIC" | "CUSTOMER_APPROVED";
+    language: string;
+  },
+): Promise<SupportAIKnowledgeSource> {
+  return mapSupportAIKnowledgeSource(
+    await request<ApiSupportAIKnowledgeSource>(
+      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: input.title,
+          description: input.description || null,
+          classification: input.classification,
+          language: input.language,
+        }),
+      },
+    ),
+  );
+}
+
+export async function approveSupportAIKnowledgeSource(
+  sourceId: string,
+): Promise<SupportAIKnowledgeSource> {
+  return mapSupportAIKnowledgeSource(
+    await request<ApiSupportAIKnowledgeSource>(
+      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}/approve`,
+      { method: "POST" },
+    ),
+  );
+}
+
+export async function revokeSupportAIKnowledgeSource(
+  sourceId: string,
+): Promise<SupportAIKnowledgeSource> {
+  return mapSupportAIKnowledgeSource(
+    await request<ApiSupportAIKnowledgeSource>(
+      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}`,
+      { method: "DELETE" },
+    ),
+  );
+}
+
+export async function reindexSupportAIKnowledgeSource(
+  sourceId: string,
+): Promise<SupportAIIngestionJob> {
+  return mapSupportAIIngestionJob(
+    await request<ApiSupportAIIngestionJob>(
+      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}/reindex`,
+      { method: "POST" },
+    ),
+  );
+}
+
+export async function getSupportAIIngestionJob(
+  jobId: string,
+): Promise<SupportAIIngestionJob> {
+  return mapSupportAIIngestionJob(
+    await request<ApiSupportAIIngestionJob>(
+      `/support/ai/knowledge/jobs/${encodeURIComponent(jobId)}`,
+      { cache: "no-store" },
+    ),
+  );
+}
+
+interface ApiSupportAIRun {
+  id: string;
+  ai_task_id: string;
+  conversation_id?: string | null;
+  input_message_id?: string | null;
+  output_message_id?: string | null;
+  trigger_type: "CHAT" | "TEST";
+  mode_snapshot: SupportAIMode;
+  status: SupportAIRun["status"];
+  question: string;
+  visitor_locale: string;
+  detected_language?: string | null;
+  normalized_query?: string | null;
+  answer?: string | null;
+  confidence?: number | null;
+  handoff_reason?: string | null;
+  provider?: string | null;
+  model_name?: string | null;
+  prompt_version: number;
+  retrieval_count: number;
+  decision_trace: Record<string, unknown>;
+  error_code?: string | null;
+  error_message?: string | null;
+  evidence: ApiSupportCitation[];
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+function mapSupportAIRun(row: ApiSupportAIRun): SupportAIRun {
+  return {
+    id: row.id,
+    aiTaskId: row.ai_task_id,
+    conversationId: defined(row.conversation_id),
+    inputMessageId: defined(row.input_message_id),
+    outputMessageId: defined(row.output_message_id),
+    triggerType: row.trigger_type,
+    modeSnapshot: row.mode_snapshot,
+    status: row.status,
+    question: row.question,
+    visitorLocale: row.visitor_locale,
+    detectedLanguage: defined(row.detected_language),
+    normalizedQuery: defined(row.normalized_query),
+    answer: defined(row.answer),
+    confidence: row.confidence ?? undefined,
+    handoffReason: defined(row.handoff_reason),
+    provider: defined(row.provider),
+    modelName: defined(row.model_name),
+    promptVersion: row.prompt_version,
+    retrievalCount: row.retrieval_count,
+    decisionTrace: row.decision_trace || {},
+    errorCode: defined(row.error_code),
+    errorMessage: defined(row.error_message),
+    evidence: (row.evidence || []).map(mapSupportCitation),
+    createdAt: row.created_at,
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+  };
+}
+
+export async function runSupportAITest(
+  question: string,
+  locale: string,
+): Promise<SupportAIRun> {
+  return mapSupportAIRun(
+    await request<ApiSupportAIRun>("/support/ai/test-runs", {
+      method: "POST",
+      body: JSON.stringify({ question, locale }),
+    }),
+  );
+}
+
+export async function listSupportAIRuns(input: {
+  page?: number;
+  pageSize?: number;
+  status?: string;
+} = {}): Promise<SupportAIRunPage> {
+  const params = new URLSearchParams({
+    page: String(input.page || 1),
+    page_size: String(input.pageSize || 30),
+  });
+  if (input.status) params.set("status", input.status);
+  const row = await request<{
+    items: ApiSupportAIRun[];
+    total: number;
+    page: number;
+    page_size: number;
+    pages: number;
+  }>(`/support/ai/runs?${params}`, { cache: "no-store" });
+  return {
+    items: row.items.map(mapSupportAIRun),
+    total: row.total,
+    page: row.page,
+    pageSize: row.page_size,
+    pages: row.pages,
+  };
+}
+
+export async function getSupportAIRun(runId: string): Promise<SupportAIRun> {
+  return mapSupportAIRun(
+    await request<ApiSupportAIRun>(
+      `/support/ai/runs/${encodeURIComponent(runId)}`,
+      { cache: "no-store" },
+    ),
+  );
+}
+
 interface ApiSupportActionSettings {
   slot: 2 | 3;
   visible: boolean;
@@ -2522,6 +2971,20 @@ interface ApiSupportConversationSummary {
   last_message_preview: string;
   last_message_at: string;
   unread: boolean;
+  automation_state: SupportAutomationState;
+  ai_processing: boolean;
+}
+
+interface ApiSupportCitation {
+  citation_number: number;
+  source_type: "SKU" | "FILE";
+  source_entity_id: string;
+  source_title: string;
+  source_version: number;
+  classification: "PUBLIC" | "CUSTOMER_APPROVED";
+  locator: Record<string, unknown>;
+  excerpt: string;
+  score: number;
 }
 
 interface ApiSupportConversationDetail extends ApiSupportConversationSummary {
@@ -2535,6 +2998,7 @@ interface ApiSupportConversationDetail extends ApiSupportConversationSummary {
     translation_target_locale?: StorefrontLocale | null;
     translation_status: "PENDING" | "READY" | "FAILED" | "UNAVAILABLE" | "NOT_REQUIRED";
     created_at: string;
+    citations?: ApiSupportCitation[];
   }>;
 }
 
@@ -2563,6 +3027,20 @@ function mapSupportSettings(row: ApiSupportSettings): SupportSettings {
   };
 }
 
+function mapSupportCitation(row: ApiSupportCitation): SupportCitation {
+  return {
+    citationNumber: row.citation_number,
+    sourceType: row.source_type,
+    sourceEntityId: row.source_entity_id,
+    sourceTitle: row.source_title,
+    sourceVersion: row.source_version,
+    classification: row.classification,
+    locator: row.locator || {},
+    excerpt: row.excerpt,
+    score: row.score,
+  };
+}
+
 function mapSupportSummary(
   row: ApiSupportConversationSummary,
 ): SupportConversationDetail | SupportConversationPage["items"][number] {
@@ -2576,6 +3054,8 @@ function mapSupportSummary(
     lastMessagePreview: row.last_message_preview,
     lastMessageAt: row.last_message_at,
     unread: row.unread,
+    automationState: row.automation_state,
+    aiProcessing: row.ai_processing,
   };
   if ("messages" in row) {
     const detail = row as ApiSupportConversationDetail;
@@ -2591,6 +3071,7 @@ function mapSupportSummary(
         translationTargetLocale: defined(message.translation_target_locale),
         translationStatus: message.translation_status,
         createdAt: message.created_at,
+        citations: (message.citations || []).map(mapSupportCitation),
       })),
     };
   }
@@ -2732,6 +3213,21 @@ export async function updateSupportConversationStatus(
     await request<ApiSupportConversationDetail>(
       `/support/conversations/${encodeURIComponent(conversationId)}`,
       { method: "PATCH", body: JSON.stringify({ status }) },
+    ),
+  ) as SupportConversationDetail;
+}
+
+export async function updateSupportConversationAutomation(
+  conversationId: string,
+  automationState: SupportAutomationState,
+): Promise<SupportConversationDetail> {
+  return mapSupportSummary(
+    await request<ApiSupportConversationDetail>(
+      `/support/conversations/${encodeURIComponent(conversationId)}/automation`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ automation_state: automationState }),
+      },
     ),
   ) as SupportConversationDetail;
 }

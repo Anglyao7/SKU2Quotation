@@ -12,6 +12,7 @@ from .storefront_locales import StorefrontLocale, normalize_storefront_locale
 
 SupportConversationStatus = Literal["OPEN", "CLOSED"]
 SupportSenderType = Literal["VISITOR", "MERCHANT", "SYSTEM", "AI"]
+SupportAutomationState = Literal["AI_ACTIVE", "HUMAN_TAKEOVER"]
 
 
 def _safe_image_url(value: str | None) -> str | None:
@@ -128,11 +129,24 @@ class PublicChatConversationCreate(PublicChatMessageWrite):
         return normalized or None
 
 
+class SupportCitationResponse(BaseModel):
+    citation_number: int = Field(ge=1)
+    source_type: Literal["SKU", "FILE"]
+    source_entity_id: str
+    source_title: str
+    source_version: int = Field(ge=1)
+    classification: Literal["PUBLIC", "CUSTOMER_APPROVED"]
+    locator: dict[str, object] = Field(default_factory=dict)
+    excerpt: str
+    score: float = Field(ge=0, le=1)
+
+
 class PublicSupportChatMessageResponse(BaseModel):
     id: UUID
     sender_type: SupportSenderType
     body: str
     created_at: datetime
+    citations: list[SupportCitationResponse] = Field(default_factory=list)
 
 
 SupportTranslationStatus = Literal[
@@ -158,6 +172,8 @@ class PublicChatConversationResponse(BaseModel):
     status: SupportConversationStatus
     messages: list[PublicSupportChatMessageResponse]
     access_token: str | None = None
+    automation_state: SupportAutomationState = "AI_ACTIVE"
+    ai_processing: bool = False
 
 
 class SupportConversationSummaryResponse(BaseModel):
@@ -170,6 +186,8 @@ class SupportConversationSummaryResponse(BaseModel):
     last_message_preview: str
     last_message_at: datetime
     unread: bool
+    automation_state: SupportAutomationState = "AI_ACTIVE"
+    ai_processing: bool = False
 
 
 class SupportConversationDetailResponse(SupportConversationSummaryResponse):
@@ -229,3 +247,7 @@ class SupportTranslationPreviewResponse(BaseModel):
 
 class SupportConversationStatusUpdate(BaseModel):
     status: SupportConversationStatus
+
+
+class SupportConversationAutomationUpdate(BaseModel):
+    automation_state: SupportAutomationState

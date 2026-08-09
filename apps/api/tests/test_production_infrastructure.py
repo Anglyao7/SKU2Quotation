@@ -791,6 +791,8 @@ def test_tenant_worker_empty_bootstrap_and_multi_tenant_cycle(
 
     tenants = (uuid4(), uuid4())
     file_seen: list[object] = []
+    knowledge_seen: list[object] = []
+    support_ai_seen: list[object] = []
     relay_seen: list[object] = []
     monkeypatch.setattr(
         run_tenant_workers, "active_tenant_ids", lambda _url: tenants
@@ -799,6 +801,24 @@ def test_tenant_worker_empty_bootstrap_and_multi_tenant_cycle(
         run_tenant_workers,
         "process_file_once",
         lambda *, tenant_id, worker_id: file_seen.append((tenant_id, worker_id))
+        is None
+        and False,
+    )
+    monkeypatch.setattr(
+        run_tenant_workers,
+        "process_support_knowledge_once",
+        lambda *, tenant_id, worker_id: knowledge_seen.append(
+            (tenant_id, worker_id)
+        )
+        is None
+        and False,
+    )
+    monkeypatch.setattr(
+        run_tenant_workers,
+        "process_support_ai_once",
+        lambda *, tenant_id, worker_id: support_ai_seen.append(
+            (tenant_id, worker_id)
+        )
         is None
         and False,
     )
@@ -815,4 +835,6 @@ def test_tenant_worker_empty_bootstrap_and_multi_tenant_cycle(
         relay_id="relay",
     ) == (2, True)
     assert [row[0] for row in file_seen] == list(tenants)
+    assert [row[0] for row in knowledge_seen] == list(tenants)
+    assert [row[0] for row in support_ai_seen] == list(tenants)
     assert [row[0] for row in relay_seen] == list(tenants)

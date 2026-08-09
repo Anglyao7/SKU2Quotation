@@ -66,6 +66,19 @@ export interface PublicSupportMessage {
   sender_type: SupportSenderType;
   body: string;
   created_at: string;
+  citations?: SupportCitation[];
+}
+
+export interface SupportCitation {
+  citation_number: number;
+  source_type: "SKU" | "FILE";
+  source_entity_id: string;
+  source_title: string;
+  source_version: number;
+  classification: "PUBLIC" | "CUSTOMER_APPROVED";
+  locator: Record<string, unknown>;
+  excerpt: string;
+  score: number;
 }
 
 export interface PublicSupportConversation {
@@ -74,6 +87,8 @@ export interface PublicSupportConversation {
   status: "OPEN" | "CLOSED";
   messages: PublicSupportMessage[];
   access_token?: string | null;
+  automation_state?: "AI_ACTIVE" | "HUMAN_TAKEOVER";
+  ai_processing?: boolean;
 }
 
 export type StorefrontLocale =
