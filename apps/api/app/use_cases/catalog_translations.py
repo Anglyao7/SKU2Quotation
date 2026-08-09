@@ -60,6 +60,7 @@ from ..services.translation import (
 )
 from ..services.translation_configuration import (
     resolved_catalog_translation_batch_limits,
+    resolved_catalog_translation_retry_count,
     resolved_catalog_translator,
     translation_provider_is_configured,
 )
@@ -604,14 +605,10 @@ def _translate_batch_with_retry(
     *,
     source_locale: str,
     target_locale: str,
+    max_retry_count: int,
 ) -> list[CatalogTranslationResult]:
     """Retry only transient provider failures before yielding the checkpoint."""
 
-    max_retries = _positive_environment(
-        "CATALOG_TRANSLATION_PROVIDER_RETRIES",
-        2,
-        maximum=5,
-    )
     base_delay = _positive_environment(
         "CATALOG_TRANSLATION_RETRY_BASE_SECONDS",
         2,
@@ -627,14 +624,17 @@ def _translate_batch_with_retry(
                 target_locale=target_locale,
             )
         except TranslationProviderError as exc:
-            if attempt >= max_retries or not _transient_translation_error(exc):
+            if (
+                attempt >= max_retry_count
+                or not _transient_translation_error(exc)
+            ):
                 raise
             delay = min(base_delay * (2**attempt), 30)
             attempt += 1
             logger.warning(
                 "catalog translation provider retry %s/%s in %ss: %s",
                 attempt,
-                max_retries,
+                max_retry_count,
                 delay,
                 exc,
             )
@@ -798,6 +798,7 @@ def _run_translation_job(
             batch_size, batch_characters = (
                 resolved_catalog_translation_batch_limits(session)
             )
+            max_retry_count = resolved_catalog_translation_retry_count(session)
             batches = translation_batches(
                 candidates,
                 max_items=batch_size,
@@ -821,6 +822,7 @@ def _run_translation_job(
                         batch,
                         source_locale=job.source_locale,
                         target_locale=job.target_locale,
+                        max_retry_count=max_retry_count,
                     )
                 except TranslationProviderError as exc:
                     if (

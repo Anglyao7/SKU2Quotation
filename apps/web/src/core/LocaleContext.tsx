@@ -1209,6 +1209,9 @@ const english: Record<string, string> = {
   "每分钟最大请求数（RPM）": "Maximum requests per minute (RPM)",
   "达到上限后请求会排队等待，已完成的翻译和断点不会丢失。":
     "Requests wait in a queue after the limit is reached; completed translations and checkpoints are preserved.",
+  "失败后最多重试次数": "Maximum retries after failure",
+  "仅临时错误会自动重试；次数不包含首次请求，建议设置为 2–3。":
+    "Only transient errors are retried. The initial request is not counted; 2–3 retries are recommended.",
   "商品批量翻译": "Catalog translation batching",
   "同时满足 SKU 数量和字符上限时才会放入同一次请求。":
     "A request is filled only while both the SKU and character limits are satisfied.",

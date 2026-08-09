@@ -65,6 +65,7 @@ def update_settings(
             timeout_seconds=request.timeout_seconds,
             max_tokens=request.max_tokens,
             requests_per_minute=request.requests_per_minute,
+            max_retry_count=request.max_retry_count,
             catalog_batch_size=request.catalog_batch_size,
             catalog_batch_characters=request.catalog_batch_characters,
             reasoning_effort=request.reasoning_effort,

@@ -1610,6 +1610,7 @@ interface ApiTranslationSettings {
   timeout_seconds: number;
   max_tokens: number;
   requests_per_minute: number;
+  max_retry_count: number;
   catalog_batch_size: number;
   catalog_batch_characters: number;
   reasoning_effort: TranslationReasoningEffort;
@@ -1641,6 +1642,7 @@ function mapTranslationSettings(
     timeoutSeconds: row.timeout_seconds,
     maxTokens: row.max_tokens,
     requestsPerMinute: row.requests_per_minute,
+    maxRetryCount: row.max_retry_count,
     catalogBatchSize: row.catalog_batch_size,
     catalogBatchCharacters: row.catalog_batch_characters,
     reasoningEffort: row.reasoning_effort,
@@ -1662,6 +1664,7 @@ export interface TranslationSettingsWriteInput {
   timeoutSeconds: number;
   maxTokens: number;
   requestsPerMinute: number;
+  maxRetryCount: number;
   catalogBatchSize: number;
   catalogBatchCharacters: number;
   reasoningEffort: TranslationReasoningEffort;
@@ -1678,6 +1681,7 @@ function translationSettingsBody(input: TranslationSettingsWriteInput) {
     timeout_seconds: input.timeoutSeconds,
     max_tokens: input.maxTokens,
     requests_per_minute: input.requestsPerMinute,
+    max_retry_count: input.maxRetryCount,
     catalog_batch_size: input.catalogBatchSize,
     catalog_batch_characters: input.catalogBatchCharacters,
     reasoning_effort: input.reasoningEffort,

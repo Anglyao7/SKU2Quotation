@@ -125,6 +125,7 @@ from app.services.embedding_configuration import decrypt_api_key
 from app.services.translation_configuration import (
     decrypt_translation_api_key,
     resolved_catalog_translation_batch_limits,
+    resolved_catalog_translation_retry_count,
     resolved_catalog_translator,
     translation_provider_is_configured,
 )
@@ -5566,6 +5567,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "timeout_seconds": 25,
                 "max_tokens": 8192,
                 "requests_per_minute": 12,
+                "max_retry_count": 4,
                 "catalog_batch_size": 50,
                 "catalog_batch_characters": 10000,
                 "reasoning_effort": "low",
@@ -5579,6 +5581,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
         assert payload["api_key_configured"] is True
         assert payload["api_key_hint"] == "••••4321"
         assert payload["requests_per_minute"] == 12
+        assert payload["max_retry_count"] == 4
         assert payload["catalog_batch_size"] == 50
         assert payload["catalog_batch_characters"] == 10000
         assert raw_api_key not in saved.text
@@ -5592,6 +5595,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             assert row is not None
             assert row.api_key_ciphertext is not None
             assert row.requests_per_minute == 12
+            assert row.max_retry_count == 4
             assert row.catalog_batch_size == 50
             assert row.catalog_batch_characters == 10000
             assert raw_api_key not in row.api_key_ciphertext
@@ -5610,6 +5614,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
                 "requests_per_minute": 24,
+                "max_retry_count": 5,
                 "catalog_batch_size": 80,
                 "catalog_batch_characters": 20000,
                 "reasoning_effort": "minimal",
@@ -5624,12 +5629,14 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             assert row is not None
             assert row.api_key_ciphertext == original_ciphertext
             assert row.requests_per_minute == 24
+            assert row.max_retry_count == 5
             assert row.catalog_batch_size == 80
             assert row.catalog_batch_characters == 20000
             assert resolved_catalog_translation_batch_limits(session) == (
                 80,
                 20000,
             )
+            assert resolved_catalog_translation_retry_count(session) == 5
             provider = resolved_catalog_translator(
                 session,
                 environment_factory=lambda: (_ for _ in ()).throw(
@@ -14236,6 +14243,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     }
     assert {
         "requests_per_minute",
+        "max_retry_count",
         "catalog_batch_size",
         "catalog_batch_characters",
     }.issubset(translation_settings_columns)
@@ -14252,7 +14260,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0068"
+        ).scalar() == "20260809_0069"
     upgraded_engine.dispose()
     command.check(config)
 
