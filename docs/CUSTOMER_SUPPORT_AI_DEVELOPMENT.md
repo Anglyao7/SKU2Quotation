@@ -9,7 +9,7 @@
 
 本次已完成运行契约的首个可上线闭环（知识与证据基础、SKU/文件 RAG、
 `DRAFT/SHADOW/AUTO_LIMITED/AUTO`、多语言、引用和人工接管），数据库版本为
-`20260809_0059`。当前实现入口如下：
+`20260809_0060`。当前实现入口如下：
 
 - 平台配置中心：`/console/system/configuration`，集中配置智能客服生成模型、翻译与
   Embedding API；保存配置时只做格式校验，不探测外部连通性。
@@ -39,7 +39,7 @@
 
 主要实现文件为 `support_ai_models.py`、`support_ai_schemas.py`、
 `services/support_ai_*`、`routers/support_ai.py`、`use_cases/support_ai.py` 和迁移
-`20260809_0059_support_ai_configuration.py`。后续章节同时保留长期目标；标为 Phase 5/6
+`20260809_0060_support_ai_configuration.py`。后续章节同时保留长期目标；标为 Phase 5/6
 的能力不属于本次 v1 自动回答范围。
 
 ## 1. 文档目的

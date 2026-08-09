@@ -1,7 +1,7 @@
 """Add configuration center generation model and traceable AI support runtime.
 
-Revision ID: 20260809_0059
-Revises: 20260809_0058
+Revision ID: 20260809_0060
+Revises: 20260809_0059
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from alembic import context, op
 from sqlalchemy.dialects import postgresql
 
 
-revision = "20260809_0059"
-down_revision = "20260809_0058"
+revision = "20260809_0060"
+down_revision = "20260809_0059"
 branch_labels = None
 depends_on = None
 
@@ -823,4 +823,3 @@ def downgrade() -> None:
         )
         batch.drop_column("automation_state_changed_at")
         batch.drop_column("automation_state")
-
