@@ -67,6 +67,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const [timeoutSeconds, setTimeoutSeconds] = useState("20");
   const [maxTokens, setMaxTokens] = useState("16384");
   const [requestsPerMinute, setRequestsPerMinute] = useState("60");
+  const [catalogBatchSize, setCatalogBatchSize] = useState("50");
+  const [catalogBatchCharacters, setCatalogBatchCharacters] =
+    useState("10000");
   const [reasoningEffort, setReasoningEffort] =
     useState<TranslationReasoningEffort>("low");
 
@@ -84,6 +87,8 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     setTimeoutSeconds(String(next.timeoutSeconds));
     setMaxTokens(String(next.maxTokens));
     setRequestsPerMinute(String(next.requestsPerMinute));
+    setCatalogBatchSize(String(next.catalogBatchSize));
+    setCatalogBatchCharacters(String(next.catalogBatchCharacters));
     setReasoningEffort(next.reasoningEffort);
     setApiKey("");
     setAccessKeyId("");
@@ -124,11 +129,15 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     timeoutSeconds: Number(timeoutSeconds),
     maxTokens: Number(maxTokens),
     requestsPerMinute: Number(requestsPerMinute),
+    catalogBatchSize: Number(catalogBatchSize),
+    catalogBatchCharacters: Number(catalogBatchCharacters),
     reasoningEffort,
   }), [
     accessKeyId,
     apiKey,
     baseUrl,
+    catalogBatchCharacters,
+    catalogBatchSize,
     maxTokens,
     modelName,
     provider,
@@ -153,6 +162,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const validRpm = Number.isInteger(input.requestsPerMinute)
     && input.requestsPerMinute >= 1
     && input.requestsPerMinute <= 10_000;
+  const validBatchSize = Number.isInteger(input.catalogBatchSize)
+    && input.catalogBatchSize >= 1
+    && input.catalogBatchSize <= 200;
+  const validBatchCharacters = Number.isInteger(input.catalogBatchCharacters)
+    && input.catalogBatchCharacters >= 1_000
+    && input.catalogBatchCharacters <= 100_000;
 
   const formValid = Boolean(
     input.baseUrl
@@ -161,6 +176,8 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
       && input.timeoutSeconds >= 1
       && input.timeoutSeconds <= 120
       && validRpm
+      && validBatchSize
+      && validBatchCharacters
       && (isAliyun || (
         Number.isInteger(input.maxTokens)
         && input.maxTokens >= 512
@@ -482,6 +499,63 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                   {t("达到上限后请求会排队等待，已完成的翻译和断点不会丢失。")}
                 </Text>
               </label>
+
+              <div className="core-translation-batch-settings core-translation-api-wide">
+                <div className="core-translation-batch-heading">
+                  <div>
+                    <Text size="2" weight="bold" as="div">
+                      {t("商品批量翻译")}
+                    </Text>
+                    <Text size="1" color="gray">
+                      {t("同时满足 SKU 数量和字符上限时才会放入同一次请求。")}
+                    </Text>
+                  </div>
+                  <Badge color="blue" variant="soft">
+                    {t("全量与增量任务")}
+                  </Badge>
+                </div>
+                <div className="core-translation-batch-fields">
+                  <label>
+                    <Text size="1" color="gray">
+                      {t("每批最多 SKU 数")}
+                    </Text>
+                    <TextField.Root
+                      type="number"
+                      min="1"
+                      max="200"
+                      value={catalogBatchSize}
+                      onChange={(event) => {
+                        clearResult();
+                        setCatalogBatchSize(event.target.value);
+                      }}
+                      required
+                    />
+                    <Text size="1" color="gray">
+                      {t("默认 50，可设置 1–200。")}
+                    </Text>
+                  </label>
+                  <label>
+                    <Text size="1" color="gray">
+                      {t("单批字符上限")}
+                    </Text>
+                    <TextField.Root
+                      type="number"
+                      min="1000"
+                      max="100000"
+                      step="1000"
+                      value={catalogBatchCharacters}
+                      onChange={(event) => {
+                        clearResult();
+                        setCatalogBatchCharacters(event.target.value);
+                      }}
+                      required
+                    />
+                    <Text size="1" color="gray">
+                      {t("默认 10,000，超出后自动拆分，不会丢失断点。")}
+                    </Text>
+                  </label>
+                </div>
+              </div>
 
               {!isAliyun ? (
                 <>

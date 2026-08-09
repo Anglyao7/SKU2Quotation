@@ -1122,6 +1122,8 @@ const english: Record<string, string> = {
   "无法导入的详细信息": "Detailed import failures",
   "共 {count} 个问题；请修正后重新上传，当前商品库未发生变化。":
     "{count} issues found. Fix them and upload again; the current catalog was not changed.",
+  "本次共跳过 {count} 行；其余额度内数据已正常写入。":
+    "{count} rows were skipped; all other rows within the SKU quota were imported.",
   "下载失败明细": "Download failure details",
   "正在加载全部 {count} 条明细…":
     "Loading all {count} details…",
@@ -1140,6 +1142,8 @@ const english: Record<string, string> = {
   "开始导入": "Start import",
   "{products} 个 SKU 已处理 · {warnings} 条提醒":
     "{products} SKUs processed · {warnings} warnings",
+  "{products} 个 SKU 已处理 · {skipped} 行未导入 · {warnings} 条提醒":
+    "{products} SKUs processed · {skipped} rows not imported · {warnings} warnings",
   "正在读取产品聚合视图": "Loading product details",
   "权威产品记录 · v{version}": "Authoritative product record · v{version}",
   "权威产品记录": "Authoritative product record",
@@ -1205,6 +1209,15 @@ const english: Record<string, string> = {
   "每分钟最大请求数（RPM）": "Maximum requests per minute (RPM)",
   "达到上限后请求会排队等待，已完成的翻译和断点不会丢失。":
     "Requests wait in a queue after the limit is reached; completed translations and checkpoints are preserved.",
+  "商品批量翻译": "Catalog translation batching",
+  "同时满足 SKU 数量和字符上限时才会放入同一次请求。":
+    "A request is filled only while both the SKU and character limits are satisfied.",
+  "全量与增量任务": "Full and incremental jobs",
+  "每批最多 SKU 数": "Maximum SKUs per batch",
+  "默认 50，可设置 1–200。": "Default: 50. Range: 1–200.",
+  "单批字符上限": "Characters per batch",
+  "默认 10,000，超出后自动拆分，不会丢失断点。":
+    "Default: 10,000. Oversized batches are split without losing the checkpoint.",
   "语言包状态读取失败。": "Could not load language package status.",
   "语言包已发布，前台将在下一次版本检查后自动使用。":
     "The language package is published and will be used after the storefront's next version check.",

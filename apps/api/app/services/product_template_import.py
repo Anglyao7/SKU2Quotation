@@ -31,7 +31,7 @@ from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY, SkuRow
 from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
 from ..public_catalog_models import PublicCatalogOfferRow
 from .import_progress import publish_runtime_import_progress
-from .sku_quotas import sku_quota_message, sku_quota_snapshot
+from .sku_quotas import sku_quota_snapshot
 
 
 PRODUCT_TEMPLATE_SHEET = "商品列表"
@@ -3795,7 +3795,82 @@ def process_product_template_import(
         for sku_row in sku_rows:
             sku_groups[_normalize_sku_code(sku_row.sku_code)].append(sku_row)
 
-        incoming_sku_codes = {row.sku_code for row in parsed.rows}
+        skus = {
+            code: rows[0]
+            for code, rows in sku_groups.items()
+            if len(rows) == 1
+        }
+        current_sku_count = sum(1 for row in sku_rows if row.deleted_at is None)
+        additional_sku_count = sum(
+            1
+            for row in parsed.rows
+            if (
+                (existing := skus.get(_normalize_sku_code(row.sku_code))) is None
+                or existing.deleted_at is not None
+            )
+        )
+        quota = sku_quota_snapshot(
+            session,
+            tenant_id=tenant_id,
+            additional=additional_sku_count,
+            current_count=current_sku_count,
+            lock_tenant=False,
+        )
+        remaining_capacity = quota.remaining
+        import_rows: list[ProductTemplateRow] = []
+        quota_skipped_rows: list[ProductTemplateRow] = []
+        for template_row in parsed.rows:
+            existing = skus.get(_normalize_sku_code(template_row.sku_code))
+            consumes_capacity = existing is None or existing.deleted_at is not None
+            if (
+                consumes_capacity
+                and remaining_capacity is not None
+                and remaining_capacity <= 0
+            ):
+                quota_skipped_rows.append(template_row)
+                continue
+            import_rows.append(template_row)
+            if consumes_capacity and remaining_capacity is not None:
+                remaining_capacity -= 1
+
+        accepted_rows = tuple(import_rows)
+        quota_skipped_count = len(quota_skipped_rows)
+        quota_warnings: list[str] = []
+        quota_issues: tuple[ProductTemplateIssue, ...] = ()
+        if quota_skipped_rows:
+            assert quota.limit is not None
+            first_skipped = quota_skipped_rows[0]
+            accepted_new_count = additional_sku_count - quota_skipped_count
+            warning = (
+                f"当前等级最多可保留 {quota.limit} 个 SKU；导入前已使用 "
+                f"{quota.current} 个，本次新增 {accepted_new_count} 个，"
+                f"另有 {quota_skipped_count} 行超出额度未导入。"
+            )
+            quota_warnings.append(warning)
+            sample_codes = "、".join(
+                row.sku_code for row in quota_skipped_rows[:5]
+            )
+            if quota_skipped_count > 5:
+                sample_codes += f" 等 {quota_skipped_count} 个 SKU"
+            quota_issues = (
+                _issue(
+                    row_number=first_skipped.row_number,
+                    column="SKU编号",
+                    code="SKU_LIMIT_EXCEEDED",
+                    message=(
+                        f"共有 {quota_skipped_count} 行因超出 SKU 额度未导入，"
+                        f"首个未导入项位于第 {first_skipped.row_number} 行；"
+                        "额度内商品及已有 SKU 的更新已正常处理。"
+                    ),
+                    value=sample_codes,
+                    suggestion=(
+                        "删除不再使用的 SKU、提高商家额度后重新导入；"
+                        "重新导入不会重复创建已成功写入的 SKU。"
+                    ),
+                ),
+            )
+
+        incoming_sku_codes = {row.sku_code for row in accepted_rows}
         conflicting_codes = sorted(
             code
             for code in incoming_sku_codes
@@ -3811,31 +3886,6 @@ def process_product_template_import(
                 ),
             )
 
-        skus = {
-            code: rows[0]
-            for code, rows in sku_groups.items()
-            if len(rows) == 1
-        }
-        current_sku_count = sum(1 for row in sku_rows if row.deleted_at is None)
-        additional_sku_count = sum(
-            1
-            for code in incoming_sku_codes
-            if (existing := skus.get(_normalize_sku_code(code))) is None
-            or existing.deleted_at is not None
-        )
-        quota = sku_quota_snapshot(
-            session,
-            tenant_id=tenant_id,
-            additional=additional_sku_count,
-            current_count=current_sku_count,
-            lock_tenant=False,
-        )
-        if quota.exceeded:
-            return _fail_import(
-                session,
-                job=job,
-                message=sku_quota_message(quota),
-            )
         supplier_rows = session.scalars(
             select(SupplierRow)
             .where(SupplierRow.tenant_id == tenant_id)
@@ -3850,7 +3900,7 @@ def process_product_template_import(
             ].append(supplier_row)
 
         requested_supplier_names: dict[str, str] = {}
-        for template_row in parsed.rows:
+        for template_row in accepted_rows:
             if template_row.supplier_name:
                 requested_supplier_names.setdefault(
                     template_row.supplier_name.casefold(),
@@ -3921,7 +3971,7 @@ def process_product_template_import(
         template_rows_by_product_key: dict[str, list[ProductTemplateRow]] = (
             defaultdict(list)
         )
-        for template_row in parsed.rows:
+        for template_row in accepted_rows:
             template_rows_by_product_key[template_row.product_key].append(
                 template_row
             )
@@ -3998,7 +4048,7 @@ def process_product_template_import(
             tenant_id=tenant_id,
             progress=55,
             stage="LOADING_CATALOG",
-            total_rows=len(parsed.rows),
+            total_rows=len(accepted_rows),
         )
 
         # A product/variant template intentionally maps several SKU rows onto
@@ -4075,7 +4125,7 @@ def process_product_template_import(
             tenant_id=tenant_id,
             progress=65,
             stage="PLANNING_CHANGES",
-            total_rows=len(parsed.rows),
+            total_rows=len(accepted_rows),
         )
 
         suppliers_for_template: dict[str, SupplierRow] = {}
@@ -4118,18 +4168,18 @@ def process_product_template_import(
         touched_supplier_ids: set[str] = set()
         synced_image_product_keys: set[str] = set()
         moved_from_product_ids: set[UUID] = set()
-        runtime_warnings = list(parsed.warnings)
-        progress_interval = max(1, len(parsed.rows) // 100)
-        for row_index, template_row in enumerate(parsed.rows, start=1):
+        runtime_warnings = [*parsed.warnings, *quota_warnings]
+        progress_interval = max(1, len(accepted_rows) // 100)
+        for row_index, template_row in enumerate(accepted_rows, start=1):
             if row_index == 1 or row_index % progress_interval == 0:
-                progress = 70 + int((row_index / len(parsed.rows)) * 22)
+                progress = 70 + int((row_index / len(accepted_rows)) * 22)
                 _record_import_progress(
                     job_id=job.id,
                     tenant_id=tenant_id,
                     progress=progress,
                     stage="APPLYING_PRODUCTS",
                     processed_rows=row_index,
-                    total_rows=len(parsed.rows),
+                    total_rows=len(accepted_rows),
                 )
             changed = False
             supplier = (
@@ -4475,6 +4525,7 @@ def process_product_template_import(
                         supplier.version += 1
 
         imported = created + updated + unchanged
+        skipped = parsed.skipped_rows + quota_skipped_count
         warning_summary = "；".join(runtime_warnings[:3])
         index_summary = (
             f"，待更新智能索引 {len(dirty_product_ids)}"
@@ -4484,7 +4535,7 @@ def process_product_template_import(
         result_summary = (
             f"商品导入完成：新建 {created}，更新 {updated}，"
             f"未变化 {unchanged}，保留未包含商品 {preserved}，"
-            f"跳过 {parsed.skipped_rows}"
+            f"跳过 {skipped}"
             f"{index_summary}。"
         )
         job.products_count = imported
@@ -4510,7 +4561,8 @@ def process_product_template_import(
             created=created,
             updated=updated,
             unchanged=unchanged,
-            skipped=parsed.skipped_rows,
+            skipped=skipped,
             warnings=tuple(runtime_warnings),
+            issues=quota_issues,
             message=result_summary,
         )

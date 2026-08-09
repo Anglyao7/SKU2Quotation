@@ -37,6 +37,15 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
             name="requests_per_minute_supported",
         ),
         CheckConstraint(
+            "catalog_batch_size >= 1 AND catalog_batch_size <= 200",
+            name="catalog_batch_size_supported",
+        ),
+        CheckConstraint(
+            "catalog_batch_characters >= 1000 "
+            "AND catalog_batch_characters <= 100000",
+            name="catalog_batch_characters_supported",
+        ),
+        CheckConstraint(
             "reasoning_effort IN ('none', 'minimal', 'low', 'medium', 'high')",
             name="reasoning_effort_supported",
         ),
@@ -62,6 +71,16 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
     requests_per_minute: Mapped[int] = mapped_column(
         Integer,
         default=60,
+        nullable=False,
+    )
+    catalog_batch_size: Mapped[int] = mapped_column(
+        Integer,
+        default=50,
+        nullable=False,
+    )
+    catalog_batch_characters: Mapped[int] = mapped_column(
+        Integer,
+        default=10_000,
         nullable=False,
     )
     reasoning_effort: Mapped[str] = mapped_column(

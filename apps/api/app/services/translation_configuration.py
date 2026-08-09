@@ -33,6 +33,11 @@ from .translation_rate_limit import (
 SETTINGS_ID = "CATALOG_TRANSLATION"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_TOKENS = 16_384
+DEFAULT_CATALOG_BATCH_SIZE = 50
+DEFAULT_CATALOG_BATCH_CHARACTERS = 10_000
+MAX_CATALOG_BATCH_SIZE = 200
+MIN_CATALOG_BATCH_CHARACTERS = 1_000
+MAX_CATALOG_BATCH_CHARACTERS = 100_000
 DEFAULT_REASONING_EFFORT = "low"
 SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high"}
 SUPPORTED_PROVIDERS = {"openai-compatible", "aliyun-alimt"}
@@ -50,6 +55,8 @@ class TranslationConfigurationSnapshot:
     timeout_seconds: int
     max_tokens: int
     requests_per_minute: int
+    catalog_batch_size: int
+    catalog_batch_characters: int
     reasoning_effort: str
     api_key_configured: bool
     api_key_hint: str | None
@@ -120,6 +127,48 @@ def _normalized_provider(value: str) -> str:
             "translation provider must be openai-compatible or aliyun-alimt"
         )
     return normalized
+
+
+def normalized_catalog_translation_batch_limits(
+    batch_size: int,
+    batch_characters: int,
+) -> tuple[int, int]:
+    if batch_size < 1 or batch_size > MAX_CATALOG_BATCH_SIZE:
+        raise TranslationProviderError(
+            "catalog translation batch size must be between 1 and 200"
+        )
+    if (
+        batch_characters < MIN_CATALOG_BATCH_CHARACTERS
+        or batch_characters > MAX_CATALOG_BATCH_CHARACTERS
+    ):
+        raise TranslationProviderError(
+            "catalog translation batch characters must be between 1000 and 100000"
+        )
+    return batch_size, batch_characters
+
+
+def _environment_catalog_translation_batch_limits() -> tuple[int, int]:
+    try:
+        batch_size = int(
+            os.getenv(
+                "CATALOG_TRANSLATION_BATCH_SIZE",
+                str(DEFAULT_CATALOG_BATCH_SIZE),
+            )
+        )
+        batch_characters = int(
+            os.getenv(
+                "CATALOG_TRANSLATION_BATCH_CHARACTERS",
+                str(DEFAULT_CATALOG_BATCH_CHARACTERS),
+            )
+        )
+    except ValueError as exc:
+        raise TranslationProviderError(
+            "catalog translation batch limits must be integers"
+        ) from exc
+    return normalized_catalog_translation_batch_limits(
+        batch_size,
+        batch_characters,
+    )
 
 
 def _validated_provider(
@@ -199,6 +248,9 @@ def _environment_access_key_id(provider: str) -> str:
 
 
 def _environment_snapshot() -> TranslationConfigurationSnapshot:
+    catalog_batch_size, catalog_batch_characters = (
+        _environment_catalog_translation_batch_limits()
+    )
     profile = os.getenv("CATALOG_TRANSLATION_PROFILE", "disabled").strip().lower()
     if profile in {"", "disabled", "none"}:
         return TranslationConfigurationSnapshot(
@@ -211,6 +263,8 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
             max_tokens=DEFAULT_MAX_TOKENS,
             requests_per_minute=environment_translation_requests_per_minute(),
+            catalog_batch_size=catalog_batch_size,
+            catalog_batch_characters=catalog_batch_characters,
             reasoning_effort=DEFAULT_REASONING_EFFORT,
             api_key_configured=False,
             api_key_hint=None,
@@ -237,6 +291,8 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             timeout_seconds=timeout_seconds,
             max_tokens=DEFAULT_MAX_TOKENS,
             requests_per_minute=environment_translation_requests_per_minute(),
+            catalog_batch_size=catalog_batch_size,
+            catalog_batch_characters=catalog_batch_characters,
             reasoning_effort="none",
             api_key_configured=configured,
             api_key_hint=None,
@@ -271,6 +327,8 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             timeout_seconds=timeout_seconds,
             max_tokens=DEFAULT_MAX_TOKENS,
             requests_per_minute=environment_translation_requests_per_minute(),
+            catalog_batch_size=catalog_batch_size,
+            catalog_batch_characters=catalog_batch_characters,
             reasoning_effort="none",
             api_key_configured=bool(raw_api_key),
             api_key_hint=f"••••{raw_api_key[-4:]}" if raw_api_key else None,
@@ -308,6 +366,8 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
         timeout_seconds=timeout_seconds,
         max_tokens=max_tokens,
         requests_per_minute=environment_translation_requests_per_minute(),
+        catalog_batch_size=catalog_batch_size,
+        catalog_batch_characters=catalog_batch_characters,
         reasoning_effort=_normalized_reasoning_effort(
             os.getenv(
                 "OPENAI_TRANSLATION_REASONING_EFFORT",
@@ -338,6 +398,8 @@ def translation_configuration_snapshot(
         timeout_seconds=settings.timeout_seconds,
         max_tokens=settings.max_tokens,
         requests_per_minute=settings.requests_per_minute,
+        catalog_batch_size=settings.catalog_batch_size,
+        catalog_batch_characters=settings.catalog_batch_characters,
         reasoning_effort=settings.reasoning_effort,
         api_key_configured=bool(settings.api_key_ciphertext),
         api_key_hint=(
@@ -352,6 +414,20 @@ def translation_configuration_snapshot(
             else None
         ),
         updated_at=settings.updated_at,
+    )
+
+
+def resolved_catalog_translation_batch_limits(
+    session: Session,
+) -> tuple[int, int]:
+    """Resolve the platform-managed SKU and character limits for one job."""
+
+    settings = get_managed_translation_settings(session)
+    if settings is None:
+        return _environment_catalog_translation_batch_limits()
+    return normalized_catalog_translation_batch_limits(
+        settings.catalog_batch_size,
+        settings.catalog_batch_characters,
     )
 
 
@@ -501,6 +577,8 @@ def save_managed_translation_settings(
     timeout_seconds: int,
     max_tokens: int,
     requests_per_minute: int,
+    catalog_batch_size: int,
+    catalog_batch_characters: int,
     reasoning_effort: str,
     api_key: str | None,
     access_key_id: str | None,
@@ -510,6 +588,12 @@ def save_managed_translation_settings(
     normalized_provider = _normalized_provider(provider)
     normalized_rpm = normalized_translation_requests_per_minute(
         requests_per_minute
+    )
+    normalized_batch_size, normalized_batch_characters = (
+        normalized_catalog_translation_batch_limits(
+            catalog_batch_size,
+            catalog_batch_characters,
+        )
     )
     if normalized_provider == "aliyun-alimt":
         normalized_base_url = _aliyun_endpoint(base_url)
@@ -598,6 +682,8 @@ def save_managed_translation_settings(
             timeout_seconds=timeout_seconds,
             max_tokens=max_tokens,
             requests_per_minute=normalized_rpm,
+            catalog_batch_size=normalized_batch_size,
+            catalog_batch_characters=normalized_batch_characters,
             reasoning_effort=normalized_reasoning,
             api_key_ciphertext=(
                 encrypt_translation_api_key(resolved_key)
@@ -633,6 +719,8 @@ def save_managed_translation_settings(
         settings.timeout_seconds = timeout_seconds
         settings.max_tokens = max_tokens
         settings.requests_per_minute = normalized_rpm
+        settings.catalog_batch_size = normalized_batch_size
+        settings.catalog_batch_characters = normalized_batch_characters
         settings.reasoning_effort = normalized_reasoning
         settings.is_active = enabled
         settings.version += 1

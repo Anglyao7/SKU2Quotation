@@ -623,6 +623,60 @@ def test_catalog_translation_preserves_model_codes_and_field_structure() -> None
     assert result.display_tag == "Smart feeding"
 
 
+def test_catalog_translation_sends_shared_sku_fields_only_once_per_batch() -> None:
+    class RecordingTranslator(_ReplacingTranslator):
+        def __init__(self) -> None:
+            self.payloads: list[str] = []
+
+        def translate(
+            self,
+            text: str,
+            *,
+            source_locale: str,
+            target_locale: str,
+        ) -> str:
+            self.payloads.append(text)
+            return super().translate(
+                text,
+                source_locale=source_locale,
+                target_locale=target_locale,
+            )
+
+    translator = RecordingTranslator()
+    sources = [
+        CatalogTranslationSource(
+            sku_id=uuid4(),
+            sku_code=f"SF-6L2{index}",
+            name=f"支持APP的智能宠物喂食器 SF-6L2{index}",
+            description="定时定量喂食",
+            category="宠物用品/智能喂食",
+            tags=("智能喂食",),
+            display_tag="智能喂食",
+            product_version=1,
+            sku_version=1,
+            source_hash=str(index).zfill(64),
+        )
+        for index in range(2)
+    ]
+
+    results = translate_catalog_sources(
+        translator,
+        sources,
+        source_locale="zh-CN",
+        target_locale="en-US",
+    )
+
+    assert len(results) == 2
+    assert len(translator.payloads) == 1
+    payload = translator.payloads[0]
+    assert payload.count("定时定量喂食") == 1
+    assert payload.count("宠物用品") == 1
+    assert payload.count("智能喂食") == 1
+    assert all(result.description == "Scheduled portion feeding" for result in results)
+    assert all(result.category == "Pet supplies/Smart feeding" for result in results)
+    assert all(result.tags == ("Smart feeding",) for result in results)
+
+
 def test_translation_batches_bound_request_size_without_splitting_a_sku() -> None:
     sources = [
         CatalogTranslationSource(
@@ -647,6 +701,33 @@ def test_translation_batches_bound_request_size_without_splitting_a_sku() -> Non
     )
 
     assert [len(batch) for batch in batches] == [2, 2, 1]
+
+
+def test_translation_batches_count_shared_product_text_once() -> None:
+    shared_description = "共同描述" * 25
+    sources = [
+        CatalogTranslationSource(
+            sku_id=uuid4(),
+            sku_code=f"SKU-{index}",
+            name=f"商品{index}",
+            description=shared_description,
+            category="共同分类",
+            tags=(),
+            display_tag=None,
+            product_version=1,
+            sku_version=1,
+            source_hash=str(index).zfill(64),
+        )
+        for index in range(2)
+    ]
+
+    batches = translation_batches(
+        sources,
+        max_items=20,
+        max_characters=120,
+    )
+
+    assert [len(batch) for batch in batches] == [2]
 
 
 def test_catalog_value_translation_preserves_category_segments() -> None:

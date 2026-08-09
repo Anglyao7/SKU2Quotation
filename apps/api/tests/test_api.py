@@ -124,6 +124,7 @@ from app.services.embedding import (
 from app.services.embedding_configuration import decrypt_api_key
 from app.services.translation_configuration import (
     decrypt_translation_api_key,
+    resolved_catalog_translation_batch_limits,
     resolved_catalog_translator,
     translation_provider_is_configured,
 )
@@ -3249,7 +3250,7 @@ def test_platform_admin_manages_merchant_subscription_level_and_expiry() -> None
     assert invalid_tier.status_code == 422
 
 
-def test_sku_quota_blocks_manual_batch_and_template_import_creation(
+def test_sku_quota_blocks_direct_creation_but_partially_accepts_template_import(
     request: pytest.FixtureRequest,
 ) -> None:
     suffix = uuid4().hex[:10].upper()
@@ -3258,13 +3259,19 @@ def test_sku_quota_blocks_manual_batch_and_template_import_creation(
     manual_sku_code = f"QUOTA-MANUAL-SKU-{suffix}"
     batch_sku_code = f"QUOTA-BATCH-SKU-{suffix}"
     import_sku_code = f"QUOTA-IMPORT-SKU-{suffix}"
+    overflow_sku_code = f"QUOTA-OVERFLOW-SKU-{suffix}"
     import_job_ids: list[str] = []
     original_limit: int | None = None
 
     def cleanup() -> None:
         _cleanup_template_test_records(
             import_job_ids=import_job_ids,
-            sku_codes=[manual_sku_code, batch_sku_code, import_sku_code],
+            sku_codes=[
+                manual_sku_code,
+                batch_sku_code,
+                import_sku_code,
+                overflow_sku_code,
+            ],
             category_names=[f"配额测试分类 {suffix}"],
         )
         with SessionLocal() as session:
@@ -3337,6 +3344,12 @@ def test_sku_quota_blocks_manual_batch_and_template_import_creation(
     assert batch.status_code == 409, batch.text
     assert batch.json()["detail"]["code"] == "SKU_LIMIT_EXCEEDED"
 
+    with SessionLocal() as session:
+        subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
+        assert subscription is not None
+        subscription.sku_limit = current_sku_count + 1
+        session.commit()
+
     imported = client.post(
         "/api/v1/imports",
         files={
@@ -3354,7 +3367,18 @@ def test_sku_quota_blocks_manual_batch_and_template_import_creation(
                             None,
                             None,
                             *([None] * 10),
-                        ]
+                        ],
+                        [
+                            f"配额溢出商品 {suffix}",
+                            f"配额测试分类 {suffix}",
+                            overflow_sku_code,
+                            None,
+                            0,
+                            None,
+                            None,
+                            None,
+                            *([None] * 10),
+                        ],
                     ]
                 ),
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -3364,8 +3388,11 @@ def test_sku_quota_blocks_manual_batch_and_template_import_creation(
     )
     assert imported.status_code == 201, imported.text
     import_job_ids.append(imported.json()["id"])
-    assert imported.json()["status"] == "failed"
-    assert "SKU 数量将超过当前等级上限" in imported.json()["error_message"]
+    assert imported.json()["status"] == "published"
+    assert "另有 1 行超出额度未导入" in imported.json()["error_message"]
+    assert imported.json()["result_details"]["created"] == 1
+    assert imported.json()["result_details"]["skipped"] == 1
+    assert imported.json()["result_details"]["issues"][0]["code"] == "SKU_LIMIT_EXCEEDED"
 
     with SessionLocal() as session:
         assert session.scalar(
@@ -3377,8 +3404,14 @@ def test_sku_quota_blocks_manual_batch_and_template_import_creation(
         assert session.scalar(
             select(func.count(SkuRow.id)).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == import_sku_code,
+            )
+        ) == 1
+        assert session.scalar(
+            select(func.count(SkuRow.id)).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
                 SkuRow.sku_code.in_(
-                    (manual_sku_code, batch_sku_code, import_sku_code)
+                    (manual_sku_code, batch_sku_code, overflow_sku_code)
                 ),
             )
         ) == 0
@@ -5533,6 +5566,8 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "timeout_seconds": 25,
                 "max_tokens": 8192,
                 "requests_per_minute": 12,
+                "catalog_batch_size": 50,
+                "catalog_batch_characters": 10000,
                 "reasoning_effort": "low",
             },
         )
@@ -5544,6 +5579,8 @@ def test_platform_admin_manages_encrypted_translation_configuration(
         assert payload["api_key_configured"] is True
         assert payload["api_key_hint"] == "••••4321"
         assert payload["requests_per_minute"] == 12
+        assert payload["catalog_batch_size"] == 50
+        assert payload["catalog_batch_characters"] == 10000
         assert raw_api_key not in saved.text
         assert "api_key_ciphertext" not in payload
 
@@ -5555,6 +5592,8 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             assert row is not None
             assert row.api_key_ciphertext is not None
             assert row.requests_per_minute == 12
+            assert row.catalog_batch_size == 50
+            assert row.catalog_batch_characters == 10000
             assert raw_api_key not in row.api_key_ciphertext
             assert (
                 decrypt_translation_api_key(row.api_key_ciphertext)
@@ -5571,6 +5610,8 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
                 "requests_per_minute": 24,
+                "catalog_batch_size": 80,
+                "catalog_batch_characters": 20000,
                 "reasoning_effort": "minimal",
             },
         )
@@ -5583,6 +5624,12 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             assert row is not None
             assert row.api_key_ciphertext == original_ciphertext
             assert row.requests_per_minute == 24
+            assert row.catalog_batch_size == 80
+            assert row.catalog_batch_characters == 20000
+            assert resolved_catalog_translation_batch_limits(session) == (
+                80,
+                20000,
+            )
             provider = resolved_catalog_translator(
                 session,
                 environment_factory=lambda: (_ for _ in ()).throw(
@@ -5605,6 +5652,8 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
                 "requests_per_minute": 24,
+                "catalog_batch_size": 80,
+                "catalog_batch_characters": 20000,
                 "reasoning_effort": "minimal",
             },
         )
@@ -5623,6 +5672,8 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
                 "requests_per_minute": 24,
+                "catalog_batch_size": 50,
+                "catalog_batch_characters": 10000,
                 "reasoning_effort": "minimal",
             },
         )
@@ -5660,6 +5711,8 @@ def test_platform_admin_manages_aliyun_translation_credentials() -> None:
                 "timeout_seconds": 20,
                 "max_tokens": 16384,
                 "requests_per_minute": 90,
+                "catalog_batch_size": 50,
+                "catalog_batch_characters": 10000,
                 "reasoning_effort": "none",
             },
         )
@@ -5671,6 +5724,8 @@ def test_platform_admin_manages_aliyun_translation_credentials() -> None:
         assert payload["access_key_id_hint"] == "••••7788"
         assert payload["api_key_hint"] == "••••9900"
         assert payload["requests_per_minute"] == 90
+        assert payload["catalog_batch_size"] == 50
+        assert payload["catalog_batch_characters"] == 10000
         assert access_key_id not in saved.text
         assert access_key_secret not in saved.text
 
@@ -14179,7 +14234,11 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
             "translation_provider_settings"
         )
     }
-    assert "requests_per_minute" in translation_settings_columns
+    assert {
+        "requests_per_minute",
+        "catalog_batch_size",
+        "catalog_batch_characters",
+    }.issubset(translation_settings_columns)
     assert "agent_id" in {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("support_ai_settings")
@@ -14193,7 +14252,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0067"
+        ).scalar() == "20260809_0068"
     upgraded_engine.dispose()
     command.check(config)
 
