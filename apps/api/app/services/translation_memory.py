@@ -438,12 +438,12 @@ def _translate_uncached_values(
         values,
         max_items=_positive_int_environment(
             "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
-            24,
-            maximum=100,
+            48,
+            maximum=200,
         ),
         max_characters=_positive_int_environment(
             "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
-            1_800,
+            8_000,
             maximum=100_000,
         ),
     )

@@ -59,6 +59,7 @@ from ..services.translation import (
     configured_catalog_translator,
 )
 from ..services.translation_configuration import (
+    resolved_catalog_translation_batch_limits,
     resolved_catalog_translator,
     translation_provider_is_configured,
 )
@@ -794,18 +795,13 @@ def _run_translation_job(
             if _pause_at_safe_checkpoint(session, job):
                 return
 
+            batch_size, batch_characters = (
+                resolved_catalog_translation_batch_limits(session)
+            )
             batches = translation_batches(
                 candidates,
-                max_items=_positive_environment(
-                    "CATALOG_TRANSLATION_BATCH_SIZE",
-                    5,
-                    maximum=20,
-                ),
-                max_characters=_positive_environment(
-                    "CATALOG_TRANSLATION_BATCH_CHARACTERS",
-                    12_000,
-                    maximum=50_000,
-                ),
+                max_items=batch_size,
+                max_characters=batch_characters,
             )
             processed = job.processed_skus
             failures: list[dict[str, str]] = list(job.failure_details or [])

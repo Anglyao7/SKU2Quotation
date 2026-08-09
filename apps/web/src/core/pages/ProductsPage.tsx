@@ -1260,6 +1260,12 @@ export function ProductsPage() {
                 <Text size="2" color="gray">
                   {lastImport.status === "failed"
                     ? t("本次未写入商品 · 共发现 {count} 个问题", { count: lastImport.resultDetails.issueTotal || lastImport.warnings })
+                    : (lastImport.resultDetails.skipped ?? 0) > 0
+                    ? t("{products} 个 SKU 已处理 · {skipped} 行未导入 · {warnings} 条提醒", {
+                        products: lastImport.products,
+                        skipped: lastImport.resultDetails.skipped ?? 0,
+                        warnings: lastImport.warnings,
+                      })
                     : t("{products} 个 SKU 已处理 · {warnings} 条提醒", { products: lastImport.products, warnings: lastImport.warnings })}
                 </Text>
 
@@ -1294,7 +1300,11 @@ export function ProductsPage() {
                       <span>
                         <Text weight="bold" as="div">{t("无法导入的详细信息")}</Text>
                         <Text size="1" color="gray">
-                          {t("共 {count} 个问题；请修正后重新上传，当前商品库未发生变化。", { count: lastImport.resultDetails.issueTotal })}
+                          {lastImport.status === "published"
+                            ? t("本次共跳过 {count} 行；其余额度内数据已正常写入。", {
+                                count: lastImport.resultDetails.skipped ?? lastImport.resultDetails.issueTotal,
+                              })
+                            : t("共 {count} 个问题；请修正后重新上传，当前商品库未发生变化。", { count: lastImport.resultDetails.issueTotal })}
                         </Text>
                       </span>
                       <Button size="1" variant="soft" color="gray" onClick={() => void downloadIssueDetails(lastImport)}>
@@ -1308,7 +1318,7 @@ export function ProductsPage() {
                       {lastImport.resultDetails.issues.map((issue, index) => (
                         <article key={`${issue.rowNumber ?? "file"}:${issue.column}:${issue.code}:${index}`}>
                           <div className="core-import-issue-meta">
-                            <Badge color="red" variant="soft">
+                            <Badge color={lastImport.status === "published" ? "amber" : "red"} variant="soft">
                               {issue.rowNumber ? t("第 {row} 行", { row: issue.rowNumber }) : t("文件级")}
                             </Badge>
                             <strong>{issue.column}</strong>

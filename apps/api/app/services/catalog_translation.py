@@ -150,15 +150,7 @@ def catalog_translation_source(row: object) -> CatalogTranslationSource:
 
 
 def catalog_translation_source_size(source: CatalogTranslationSource) -> int:
-    return sum(
-        len(value)
-        for value in (
-            source.name,
-            source.description or "",
-            source.category or "",
-            *source.tags,
-        )
-    )
+    return sum(len(value) for value in set(_field_values(source).values()))
 
 
 def translation_batches(
@@ -172,8 +164,12 @@ def translation_batches(
     batches: list[list[CatalogTranslationSource]] = []
     current: list[CatalogTranslationSource] = []
     current_size = 0
+    current_values: set[str] = set()
     for source in sources:
-        source_size = catalog_translation_source_size(source)
+        source_values = tuple(_field_values(source).values())
+        source_size = sum(
+            len(value) for value in source_values if value not in current_values
+        )
         if current and (
             len(current) >= max_items
             or current_size + source_size > max_characters
@@ -181,8 +177,11 @@ def translation_batches(
             batches.append(current)
             current = []
             current_size = 0
+            current_values = set()
+            source_size = catalog_translation_source_size(source)
         current.append(source)
         current_size += source_size
+        current_values.update(source_values)
     if current:
         batches.append(current)
     return batches
@@ -246,11 +245,18 @@ def translate_catalog_sources(
     protected: dict[str, str] = {}
     expected_fields: dict[int, dict[str, str]] = {}
     field_names: dict[tuple[int, int], str] = {}
+    canonical_field_by_value: dict[str, tuple[int, str]] = {}
+    field_aliases: dict[tuple[int, str], tuple[int, str]] = {}
     payload_lines: list[str] = []
     for item_index, source in enumerate(sources):
         fields = _field_values(source)
         expected_fields[item_index] = fields
         for field_index, (field, value) in enumerate(fields.items()):
+            canonical_field = canonical_field_by_value.get(value)
+            if canonical_field is not None:
+                field_aliases[(item_index, field)] = canonical_field
+                continue
+            canonical_field_by_value[value] = (item_index, field)
             field_names[(item_index, field_index)] = field
             payload_lines.append(
                 f"[[ATCF_{item_index:03d}_{field_index:03d}]]"
@@ -281,6 +287,11 @@ def translate_catalog_sources(
         translated_fields[(item_index, field)] = _restore_identifiers(
             translated_text[start:end],
             protected=protected,
+        )
+    for aliased_field, canonical_field in field_aliases.items():
+        translated_fields[aliased_field] = translated_fields.get(
+            canonical_field,
+            "",
         )
 
     results: list[CatalogTranslationResult] = []

@@ -18,6 +18,8 @@ class TranslationSettingsResponse(BaseModel):
     timeout_seconds: int = Field(ge=1, le=120)
     max_tokens: int = Field(ge=512, le=32768)
     requests_per_minute: int = Field(ge=1, le=10_000)
+    catalog_batch_size: int = Field(ge=1, le=200)
+    catalog_batch_characters: int = Field(ge=1_000, le=100_000)
     reasoning_effort: ReasoningEffort
     api_key_configured: bool
     api_key_hint: str | None = None
@@ -36,6 +38,12 @@ class TranslationProviderParameters(BaseModel):
     timeout_seconds: int = Field(default=20, ge=1, le=120)
     max_tokens: int = Field(default=16384, ge=512, le=32768)
     requests_per_minute: int = Field(default=60, ge=1, le=10_000)
+    catalog_batch_size: int = Field(default=50, ge=1, le=200)
+    catalog_batch_characters: int = Field(
+        default=10_000,
+        ge=1_000,
+        le=100_000,
+    )
     reasoning_effort: ReasoningEffort = "low"
 
 
