@@ -156,7 +156,7 @@
 .core-translation-batch-settings { padding: 16px; display: grid; gap: 14px; border: 1px solid color-mix(in srgb, var(--core-accent) 18%, var(--core-line)); border-radius: var(--radius-card); background: color-mix(in srgb, var(--core-accent) 4%, var(--core-surface)); }
 .core-translation-batch-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .core-translation-batch-heading > div { min-width: 0; display: grid; gap: 3px; }
-.core-translation-batch-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.core-translation-batch-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .core-translation-api-actions { padding-top: 4px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; }
 .core-translation-api-actions > .rt-Text { flex: 1 1 260px; }
 .core-translation-api-test-result { padding: 14px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 11px; border: 1px solid color-mix(in srgb, var(--core-success) 32%, var(--core-line)); border-radius: var(--radius-card); color: var(--core-success); background: color-mix(in srgb, var(--core-success) 7%, var(--core-surface)); }

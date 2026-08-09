@@ -859,6 +859,7 @@ export interface TranslationApiSettings {
   timeoutSeconds: number;
   maxTokens: number;
   requestsPerMinute: number;
+  maxRetryCount: number;
   catalogBatchSize: number;
   catalogBatchCharacters: number;
   reasoningEffort: TranslationReasoningEffort;

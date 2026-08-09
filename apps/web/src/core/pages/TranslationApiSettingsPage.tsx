@@ -67,6 +67,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const [timeoutSeconds, setTimeoutSeconds] = useState("20");
   const [maxTokens, setMaxTokens] = useState("16384");
   const [requestsPerMinute, setRequestsPerMinute] = useState("60");
+  const [maxRetryCount, setMaxRetryCount] = useState("3");
   const [catalogBatchSize, setCatalogBatchSize] = useState("50");
   const [catalogBatchCharacters, setCatalogBatchCharacters] =
     useState("10000");
@@ -87,6 +88,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     setTimeoutSeconds(String(next.timeoutSeconds));
     setMaxTokens(String(next.maxTokens));
     setRequestsPerMinute(String(next.requestsPerMinute));
+    setMaxRetryCount(String(next.maxRetryCount));
     setCatalogBatchSize(String(next.catalogBatchSize));
     setCatalogBatchCharacters(String(next.catalogBatchCharacters));
     setReasoningEffort(next.reasoningEffort);
@@ -129,6 +131,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     timeoutSeconds: Number(timeoutSeconds),
     maxTokens: Number(maxTokens),
     requestsPerMinute: Number(requestsPerMinute),
+    maxRetryCount: Number(maxRetryCount),
     catalogBatchSize: Number(catalogBatchSize),
     catalogBatchCharacters: Number(catalogBatchCharacters),
     reasoningEffort,
@@ -138,6 +141,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     baseUrl,
     catalogBatchCharacters,
     catalogBatchSize,
+    maxRetryCount,
     maxTokens,
     modelName,
     provider,
@@ -162,6 +166,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const validRpm = Number.isInteger(input.requestsPerMinute)
     && input.requestsPerMinute >= 1
     && input.requestsPerMinute <= 10_000;
+  const validRetryCount = Number.isInteger(input.maxRetryCount)
+    && input.maxRetryCount >= 0
+    && input.maxRetryCount <= 10;
   const validBatchSize = Number.isInteger(input.catalogBatchSize)
     && input.catalogBatchSize >= 1
     && input.catalogBatchSize <= 200;
@@ -176,6 +183,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
       && input.timeoutSeconds >= 1
       && input.timeoutSeconds <= 120
       && validRpm
+      && validRetryCount
       && validBatchSize
       && validBatchCharacters
       && (isAliyun || (
@@ -552,6 +560,25 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                     />
                     <Text size="1" color="gray">
                       {t("默认 10,000，超出后自动拆分，不会丢失断点。")}
+                    </Text>
+                  </label>
+                  <label>
+                    <Text size="1" color="gray">
+                      {t("失败后最多重试次数")}
+                    </Text>
+                    <TextField.Root
+                      type="number"
+                      min="0"
+                      max="10"
+                      value={maxRetryCount}
+                      onChange={(event) => {
+                        clearResult();
+                        setMaxRetryCount(event.target.value);
+                      }}
+                      required
+                    />
+                    <Text size="1" color="gray">
+                      {t("仅临时错误会自动重试；次数不包含首次请求，建议设置为 2–3。")}
                     </Text>
                   </label>
                 </div>

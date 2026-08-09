@@ -33,11 +33,13 @@ from .translation_rate_limit import (
 SETTINGS_ID = "CATALOG_TRANSLATION"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_TOKENS = 16_384
+DEFAULT_MAX_RETRY_COUNT = 3
 DEFAULT_CATALOG_BATCH_SIZE = 50
 DEFAULT_CATALOG_BATCH_CHARACTERS = 10_000
 MAX_CATALOG_BATCH_SIZE = 200
 MIN_CATALOG_BATCH_CHARACTERS = 1_000
 MAX_CATALOG_BATCH_CHARACTERS = 100_000
+MAX_TRANSLATION_RETRY_COUNT = 10
 DEFAULT_REASONING_EFFORT = "low"
 SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high"}
 SUPPORTED_PROVIDERS = {"openai-compatible", "aliyun-alimt"}
@@ -55,6 +57,7 @@ class TranslationConfigurationSnapshot:
     timeout_seconds: int
     max_tokens: int
     requests_per_minute: int
+    max_retry_count: int
     catalog_batch_size: int
     catalog_batch_characters: int
     reasoning_effort: str
@@ -171,6 +174,29 @@ def _environment_catalog_translation_batch_limits() -> tuple[int, int]:
     )
 
 
+def normalized_catalog_translation_retry_count(value: int) -> int:
+    if value < 0 or value > MAX_TRANSLATION_RETRY_COUNT:
+        raise TranslationProviderError(
+            "catalog translation retry count must be between 0 and 10"
+        )
+    return value
+
+
+def _environment_catalog_translation_retry_count() -> int:
+    try:
+        value = int(
+            os.getenv(
+                "CATALOG_TRANSLATION_PROVIDER_RETRIES",
+                str(DEFAULT_MAX_RETRY_COUNT),
+            )
+        )
+    except ValueError as exc:
+        raise TranslationProviderError(
+            "catalog translation retry count must be an integer"
+        ) from exc
+    return normalized_catalog_translation_retry_count(value)
+
+
 def _validated_provider(
     *,
     provider: str,
@@ -263,6 +289,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
             max_tokens=DEFAULT_MAX_TOKENS,
             requests_per_minute=environment_translation_requests_per_minute(),
+            max_retry_count=_environment_catalog_translation_retry_count(),
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
             reasoning_effort=DEFAULT_REASONING_EFFORT,
@@ -291,6 +318,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             timeout_seconds=timeout_seconds,
             max_tokens=DEFAULT_MAX_TOKENS,
             requests_per_minute=environment_translation_requests_per_minute(),
+            max_retry_count=_environment_catalog_translation_retry_count(),
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
             reasoning_effort="none",
@@ -327,6 +355,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             timeout_seconds=timeout_seconds,
             max_tokens=DEFAULT_MAX_TOKENS,
             requests_per_minute=environment_translation_requests_per_minute(),
+            max_retry_count=_environment_catalog_translation_retry_count(),
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
             reasoning_effort="none",
@@ -366,6 +395,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
         timeout_seconds=timeout_seconds,
         max_tokens=max_tokens,
         requests_per_minute=environment_translation_requests_per_minute(),
+        max_retry_count=_environment_catalog_translation_retry_count(),
         catalog_batch_size=catalog_batch_size,
         catalog_batch_characters=catalog_batch_characters,
         reasoning_effort=_normalized_reasoning_effort(
@@ -398,6 +428,7 @@ def translation_configuration_snapshot(
         timeout_seconds=settings.timeout_seconds,
         max_tokens=settings.max_tokens,
         requests_per_minute=settings.requests_per_minute,
+        max_retry_count=settings.max_retry_count,
         catalog_batch_size=settings.catalog_batch_size,
         catalog_batch_characters=settings.catalog_batch_characters,
         reasoning_effort=settings.reasoning_effort,
@@ -429,6 +460,15 @@ def resolved_catalog_translation_batch_limits(
         settings.catalog_batch_size,
         settings.catalog_batch_characters,
     )
+
+
+def resolved_catalog_translation_retry_count(session: Session) -> int:
+    """Resolve how many retries follow the first failed provider request."""
+
+    settings = get_managed_translation_settings(session)
+    if settings is None:
+        return _environment_catalog_translation_retry_count()
+    return normalized_catalog_translation_retry_count(settings.max_retry_count)
 
 
 def translation_provider_is_configured(
@@ -577,6 +617,7 @@ def save_managed_translation_settings(
     timeout_seconds: int,
     max_tokens: int,
     requests_per_minute: int,
+    max_retry_count: int,
     catalog_batch_size: int,
     catalog_batch_characters: int,
     reasoning_effort: str,
@@ -588,6 +629,9 @@ def save_managed_translation_settings(
     normalized_provider = _normalized_provider(provider)
     normalized_rpm = normalized_translation_requests_per_minute(
         requests_per_minute
+    )
+    normalized_retry_count = normalized_catalog_translation_retry_count(
+        max_retry_count
     )
     normalized_batch_size, normalized_batch_characters = (
         normalized_catalog_translation_batch_limits(
@@ -682,6 +726,7 @@ def save_managed_translation_settings(
             timeout_seconds=timeout_seconds,
             max_tokens=max_tokens,
             requests_per_minute=normalized_rpm,
+            max_retry_count=normalized_retry_count,
             catalog_batch_size=normalized_batch_size,
             catalog_batch_characters=normalized_batch_characters,
             reasoning_effort=normalized_reasoning,
@@ -719,6 +764,7 @@ def save_managed_translation_settings(
         settings.timeout_seconds = timeout_seconds
         settings.max_tokens = max_tokens
         settings.requests_per_minute = normalized_rpm
+        settings.max_retry_count = normalized_retry_count
         settings.catalog_batch_size = normalized_batch_size
         settings.catalog_batch_characters = normalized_batch_characters
         settings.reasoning_effort = normalized_reasoning

@@ -37,6 +37,10 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
             name="requests_per_minute_supported",
         ),
         CheckConstraint(
+            "max_retry_count >= 0 AND max_retry_count <= 10",
+            name="max_retry_count_supported",
+        ),
+        CheckConstraint(
             "catalog_batch_size >= 1 AND catalog_batch_size <= 200",
             name="catalog_batch_size_supported",
         ),
@@ -71,6 +75,11 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
     requests_per_minute: Mapped[int] = mapped_column(
         Integer,
         default=60,
+        nullable=False,
+    )
+    max_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        default=3,
         nullable=False,
     )
     catalog_batch_size: Mapped[int] = mapped_column(
