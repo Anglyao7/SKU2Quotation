@@ -758,6 +758,7 @@ def approved_image_for_product(
             ProductImageRow.tenant_id == tenant_id,
             ProductImageRow.product_id == product_id,
             ProductImageRow.approval_status == "APPROVED",
+            ProductImageRow.deleted_at.is_(None),
         )
         .order_by(
             case((ProductImageRow.image_role == "MAIN", 0), else_=1),
@@ -777,6 +778,7 @@ def get_approved_public_image(
             ProductImageRow.id == image_id,
             ProductImageRow.approval_status == "APPROVED",
             ProductImageRow.content_type.like("image/%"),
+            ProductImageRow.deleted_at.is_(None),
         )
     )
 

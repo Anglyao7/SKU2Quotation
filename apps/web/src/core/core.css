@@ -636,6 +636,13 @@
 .core-product-detail-heading h1,
 .core-product-detail-heading p { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .core-product-detail-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.core-product-image-editor { margin-top: 13px; padding: 12px; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 13px; align-items: center; border: 1px solid var(--core-line); border-radius: 12px; background: var(--core-surface); }
+.core-product-image-preview { width: 92px; aspect-ratio: 4 / 3; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--core-line); border-radius: 10px; color: var(--core-muted); background: var(--core-soft); }
+.core-product-image-preview img { width: 100%; height: 100%; object-fit: cover; }
+.core-product-image-preview svg { width: 28px; height: 28px; }
+.core-product-image-editor > div:nth-child(2) { min-width: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.core-product-image-editor > div:nth-child(2) > span:nth-child(2) { flex: 1 1 200px; }
+.core-product-image-editor > .core-form-error { grid-column: 1 / -1; margin: 0; }
 .core-product-description { margin-top: 13px; padding: 12px 14px; display: grid; gap: 4px; border: 1px solid var(--core-line); border-radius: 12px; background: var(--core-soft); }
 .core-product-description p { margin: 0; color: var(--core-ink); font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
 .core-sku-detail-section { margin-top: 18px; display: grid; gap: 12px; }
@@ -1126,6 +1133,9 @@
 
 @media (max-width: 560px) {
   .core-product-create-dialog { width: calc(100vw - 16px) !important; max-height: calc(100dvh - 16px) !important; }
+  .core-product-image-editor { grid-template-columns: 72px minmax(0, 1fr); }
+  .core-product-image-preview { width: 72px; }
+  .core-product-image-editor .rt-Button { width: 100%; }
   .core-product-create-section { padding: 12px; }
   .core-product-create-grid { grid-template-columns: 1fr; }
   .core-product-create-grid .is-wide { grid-column: auto; }

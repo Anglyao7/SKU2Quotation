@@ -15,6 +15,7 @@ import {
 import {
   lazy,
   Suspense,
+  useEffect,
   type ComponentType,
   type ReactNode,
 } from "react";
@@ -244,9 +245,31 @@ function LegacyStoreRedirect() {
 
 function StorefrontRouteError() {
   const error = useRouteError();
-  if (isRouteErrorResponse(error) && error.status === 404) return <NotFoundPage />;
-  const message = error instanceof Error ? error.message : "商家前台暂时无法加载，请稍后重试。";
-  return <main className="not-found-page"><Brand /><div className="not-found-content"><ErrorState message={message} onRetry={() => window.location.reload()} /></div></main>;
+  const notFound = isRouteErrorResponse(error) && error.status === 404;
+  const staleBundle = isChunkLoadFailure(error);
+  const message = staleBundle
+    ? "页面资源已经更新，请重新加载最新版。"
+    : error instanceof Error
+    ? error.message
+    : "商家前台暂时无法加载，请稍后重试。";
+
+  useEffect(() => {
+    if (!notFound && staleBundle) reloadLatestBundle();
+  }, [notFound, staleBundle]);
+
+  if (notFound) return <NotFoundPage />;
+
+  return (
+    <main className="not-found-page">
+      <Brand />
+      <div className="not-found-content">
+        <ErrorState
+          message={message}
+          onRetry={() => staleBundle ? reloadLatestBundle(true) : window.location.reload()}
+        />
+      </div>
+    </main>
+  );
 }
 
 const router = createBrowserRouter([{

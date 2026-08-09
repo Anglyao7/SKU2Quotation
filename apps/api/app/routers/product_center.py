@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from urllib.parse import quote
 from uuid import UUID
 
@@ -35,10 +36,12 @@ from ..product_center_schemas import (
     ProductDeleteAllJobResponse,
     ProductDeleteAllRequest,
     ProductDetail,
+    ProductImageResponse,
     ProductReviewQueueItem,
     PublicCatalogOfferResponse,
     PublicCatalogOfferUpsertRequest,
     SkuBatchCreateRequest,
+    SkuCatalogExportRequest,
     SkuBatchDeleteRequest,
     SkuBatchUpdateCategoryRequest,
     SkuBatchUpdatePinnedRequest,
@@ -174,6 +177,36 @@ def list_skus(
         raise application_http_error(exc) from exc
 
 
+@router.post("/product-center/skus/export")
+def export_skus(
+    payload: SkuCatalogExportRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> Response:
+    context = _context(session)
+    try:
+        content = use_cases.export_sku_catalog(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    filename = f"SKU商品库-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="sku-catalog.xlsx"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/products/{product_id}", response_model=ProductDetail)
 def get_product(
     product_id: UUID,
@@ -189,6 +222,36 @@ def get_product(
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/products/{product_id}/images/main",
+    response_model=ProductImageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_product_main_image(
+    product_id: UUID,
+    image: UploadFile = File(...),
+    session: Session = Depends(get_authenticated_session),
+) -> ProductImageResponse:
+    context = _context(session)
+    content = await image.read(use_cases.MAX_PRODUCT_IMAGE_BYTES + 1)
+    try:
+        return await run_in_threadpool(
+            use_cases.upload_product_main_image,
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_id=product_id,
+            filename=image.filename,
+            content=content,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    finally:
+        await image.close()
 
 
 @router.post(

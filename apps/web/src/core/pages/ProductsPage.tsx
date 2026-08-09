@@ -12,6 +12,7 @@ import {
   createSkus,
   deleteAllProducts,
   detectFile,
+  exportSkuCatalog,
   getDeleteAllProductsJob,
   getImport,
   getProduct,
@@ -20,6 +21,7 @@ import {
   listSkus,
   PRODUCT_TEMPLATE_DOWNLOAD_URL,
   updateSku,
+  uploadProductMainImage,
   upsertPublicCatalogOffer,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
@@ -231,6 +233,7 @@ export function ProductsPage() {
   const [deleteAllStage, setDeleteAllStage] = useState("QUEUED");
   const [bulkError, setBulkError] = useState("");
   const [bulkNotice, setBulkNotice] = useState("");
+  const [exportBusy, setExportBusy] = useState(false);
   const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
@@ -689,6 +692,30 @@ export function ProductsPage() {
       setImportError(reason instanceof Error ? reason.message : t("失败明细下载失败"));
     }
   };
+  const exportCatalog = async () => {
+    if (!result.total || exportBusy) return;
+    setExportBusy(true);
+    setError("");
+    try {
+      const selectedIds = [...selectedSkuIds];
+      await exportSkuCatalog({
+        q: selectedIds.length ? undefined : debouncedQuery.trim() || undefined,
+        categoryId: selectedIds.length ? undefined : categoryId || undefined,
+        statuses: selectedIds.length || !status ? undefined : [status],
+        missingImagesOnly: selectedIds.length ? false : missingImagesOnly,
+        skuIds: selectedIds.length ? selectedIds : undefined,
+      });
+      setBulkNotice(
+        selectedIds.length
+          ? t("已导出所选 {count} 个 SKU。", { count: selectedIds.length })
+          : t("已导出当前筛选下的 SKU 商品库。"),
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("SKU 商品库导出失败"));
+    } finally {
+      setExportBusy(false);
+    }
+  };
   const rangeStart = result.total ? (result.page - 1) * result.pageSize + 1 : 0;
   const rangeEnd = Math.min(result.page * result.pageSize, result.total);
   const paginationItems = useMemo(
@@ -751,6 +778,7 @@ export function ProductsPage() {
         eyebrow={t("商品资料")}
         title={t("SKU 商品库")}
         actions={<>
+          <Button variant="soft" disabled={!result.total || exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t(selectedSkuIds.size ? "导出所选" : "导出")}</Button>
           {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}
           {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}
           {canImport || canDelete ? (
@@ -1614,7 +1642,34 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
   onChanged: () => Promise<void>;
   onClose: () => void;
 }) {
+  const { hasPermission } = useCoreAuth();
   const { t } = useLocale();
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const [imageFailed, setImageFailed] = useState(false);
+  const canEdit = hasPermission("product.edit");
+
+  useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
+
+  const uploadImage = async (file?: File) => {
+    if (!file || imageUploading || !canEdit) return;
+    setImageError("");
+    if (file.size > 20 * 1024 * 1024) {
+      setImageError(t("商品图片不能超过 20 MB。"));
+      return;
+    }
+    setImageUploading(true);
+    try {
+      await uploadProductMainImage(product.id, file);
+      await onChanged();
+    } catch (reason) {
+      setImageError(reason instanceof Error ? reason.message : t("商品图片上传失败"));
+    } finally {
+      setImageUploading(false);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    }
+  };
   return (
     <>
       <div className="core-dialog-heading core-product-detail-heading">
@@ -1628,6 +1683,30 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
         <Badge color={product.status === "ACTIVE" ? "jade" : "gray"}>{t(skuStatusLabel[product.status as ProductSku["status"]] ?? product.status)}</Badge>
         <Text size="2" color="gray">{t("{count} 个 SKU", { count: product.skus.length })}</Text>
       </div>
+      <section className="core-product-image-editor">
+        <div className="core-product-image-preview">
+          {product.primaryImageUrl && !imageFailed ? (
+            <img src={product.primaryImageUrl} alt={product.name} onError={() => setImageFailed(true)} />
+          ) : <ImageSquare aria-hidden="true" />}
+        </div>
+        <div>
+          <Text size="2" weight="bold">{t("商品主图")}</Text>
+          <Text size="1" color="gray">{t("PNG、JPG 或 WebP，最大 20 MB")}</Text>
+          {canEdit ? (
+            <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
+              <FileArrowUp />{t(product.primaryImageUrl ? "替换图片" : "上传图片")}
+            </Button>
+          ) : null}
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(event) => void uploadImage(event.target.files?.[0])}
+          />
+        </div>
+        {imageError ? <div className="core-form-error" role="alert">{imageError}</div> : null}
+      </section>
       <section className="core-product-description">
         <Text size="1" color="gray">{t("商品描述")}</Text>
         <p>{product.description || t("暂无描述")}</p>

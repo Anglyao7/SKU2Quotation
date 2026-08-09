@@ -56,6 +56,8 @@ export function StorefrontSupportWidget({
     [locale],
   );
   const [open, setOpen] = useState(false);
+  const [activeActionSlot, setActiveActionSlot] = useState<2 | 3 | null>(null);
+  const [hoveredActionSlot, setHoveredActionSlot] = useState<2 | 3 | null>(null);
   const [conversation, setConversation] = useState<PublicSupportConversation>();
   const [token, setToken] = useState(() => storedToken(tenantSlug));
   const [draft, setDraft] = useState("");
@@ -64,6 +66,7 @@ export function StorefrontSupportWidget({
   const [error, setError] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const widgetRef = useRef<HTMLElement>(null);
   const widget = config ?? {
     enabled: true,
     title: "AI 智能客服",
@@ -80,6 +83,8 @@ export function StorefrontSupportWidget({
     const next = storedToken(tenantSlug);
     setToken(next);
     setConversation(undefined);
+    setActiveActionSlot(null);
+    setHoveredActionSlot(null);
   }, [tenantSlug]);
 
   const refreshConversation = useCallback(async (quiet = false) => {
@@ -124,13 +129,26 @@ export function StorefrontSupportWidget({
   }, [conversation?.messages.length, open]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open && activeActionSlot === null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      setActiveActionSlot(null);
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [open]);
+  }, [activeActionSlot, open]);
+
+  useEffect(() => {
+    if (activeActionSlot === null) return;
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (!widgetRef.current?.contains(event.target as Node)) {
+        setActiveActionSlot(null);
+      }
+    };
+    window.addEventListener("pointerdown", closeOnOutsidePress);
+    return () => window.removeEventListener("pointerdown", closeOnOutsidePress);
+  }, [activeActionSlot]);
 
   const send = async () => {
     const message = draft.trim();
@@ -175,7 +193,11 @@ export function StorefrontSupportWidget({
   if (!widget.enabled) return null;
 
   return (
-    <aside className={`storefront-support${open ? " is-open" : ""}`} aria-label={t("在线客服")}>
+    <aside
+      ref={widgetRef}
+      className={`storefront-support${open ? " is-open" : ""}`}
+      aria-label={t("在线客服")}
+    >
       <section
         id="storefront-support-panel"
         className="storefront-support-panel"
@@ -260,25 +282,80 @@ export function StorefrontSupportWidget({
         {actions
           .slice()
           .sort((left, right) => right.slot - left.slot)
-          .map((action) => (
+          .map((action) => {
+            const previewVisible = !open && (
+              activeActionSlot === action.slot || hoveredActionSlot === action.slot
+            );
+            const previewId = `storefront-support-action-${action.slot}`;
+            const titleId = `${previewId}-title`;
+            return (
             <div
-              className="storefront-support-orb is-custom"
-              role="img"
-              aria-label={action.label || t("商家快捷入口")}
-              title={action.label || t("商家快捷入口")}
+              className={`storefront-support-action-item${previewVisible ? " is-preview-visible" : ""}`}
               key={action.slot}
+              onMouseEnter={() => setHoveredActionSlot(action.slot)}
+              onMouseLeave={() => setHoveredActionSlot((slot) => (
+                slot === action.slot ? null : slot
+              ))}
             >
-              {action.image_url ? <img src={action.image_url} alt="" /> : <ImageSquare weight="duotone" />}
-              <span>{action.label}</span>
+              <section
+                id={previewId}
+                className="storefront-support-action-preview"
+                aria-hidden={!previewVisible}
+                aria-labelledby={titleId}
+              >
+                <header>
+                  <strong id={titleId}>{action.label || t("商家快捷入口")}</strong>
+                </header>
+                <div>
+                  {action.image_url ? (
+                    <img
+                      src={action.image_url}
+                      alt={action.label || t("商家快捷入口")}
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  ) : (
+                    <span className="storefront-support-action-placeholder">
+                      <ImageSquare weight="duotone" />
+                    </span>
+                  )}
+                </div>
+              </section>
+              <button
+                type="button"
+                className="storefront-support-orb is-custom"
+                aria-label={action.label || t("商家快捷入口")}
+                aria-expanded={previewVisible}
+                aria-controls={previewId}
+                onClick={() => {
+                  setOpen(false);
+                  setHoveredActionSlot(null);
+                  setActiveActionSlot((slot) => (
+                    slot === action.slot ? null : action.slot
+                  ));
+                }}
+                onFocus={() => setHoveredActionSlot(action.slot)}
+                onBlur={() => setHoveredActionSlot((slot) => (
+                  slot === action.slot ? null : slot
+                ))}
+              >
+                <ImageSquare weight="duotone" />
+                <span>{action.label}</span>
+              </button>
             </div>
-          ))}
+            );
+          })}
         <button
           type="button"
           className="storefront-support-orb is-chat"
           aria-expanded={open}
           aria-controls="storefront-support-panel"
           aria-label={t(open ? "关闭客服窗口" : "打开 AI 智能客服")}
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => {
+            setActiveActionSlot(null);
+            setHoveredActionSlot(null);
+            setOpen((value) => !value);
+          }}
         >
           {open ? <X weight="bold" /> : <ChatCenteredDots weight="fill" />}
           <span>{t("在线客服")}</span>

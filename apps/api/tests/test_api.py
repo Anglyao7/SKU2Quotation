@@ -9222,6 +9222,180 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
     assert duplicate.json()["detail"]["code"] == "PRODUCT_CODE_CONFLICT"
 
 
+def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_product_ids: list[UUID] = []
+    stored_object_keys: list[str] = []
+
+    def cleanup() -> None:
+        with SessionLocal() as session:
+            image_rows = (
+                session.scalars(
+                    select(ProductImageRow)
+                    .where(
+                        ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductImageRow.product_id.in_(created_product_ids),
+                    )
+                    .execution_options(include_deleted=True)
+                ).all()
+                if created_product_ids
+                else []
+            )
+            stored_object_keys.extend(
+                row.object_key
+                for row in image_rows
+                if not row.object_key.startswith(("http://", "https://"))
+            )
+            if created_product_ids:
+                sku_ids = select(SkuRow.id).where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.product_id.in_(created_product_ids),
+                )
+                session.execute(
+                    delete(PublicCatalogOfferRow).where(
+                        PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                        PublicCatalogOfferRow.sku_id.in_(sku_ids),
+                    )
+                )
+                session.execute(
+                    delete(ProductAuditEventRow).where(
+                        ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductAuditEventRow.product_id.in_(created_product_ids),
+                    )
+                )
+                session.execute(
+                    delete(ProductImageRow).where(
+                        ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductImageRow.product_id.in_(created_product_ids),
+                    )
+                )
+                session.execute(
+                    delete(SkuRow).where(
+                        SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                        SkuRow.product_id.in_(created_product_ids),
+                    )
+                )
+                session.execute(
+                    delete(ProductRow).where(
+                        ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductRow.id.in_(created_product_ids),
+                    )
+                )
+                session.commit()
+        storage = get_object_storage()
+        for object_key in set(stored_object_keys):
+            storage.delete(object_key)
+
+    request.addfinalizer(cleanup)
+    monkeypatch.setenv(
+        "PUBLIC_MEDIA_BASE_URL",
+        "https://resources.example.test",
+    )
+    category_id = client.get(
+        "/api/v1/products/71000000-0000-0000-0000-000000000002"
+    ).json()["category"]["id"]
+    suffix = uuid4().hex[:10].upper()
+    created = client.post(
+        "/api/v1/products",
+        json={
+            "name": f"Image export product {suffix}",
+            "product_code": f"IMG-{suffix}",
+            "description": "Image upload and workbook export test.",
+            "category_id": category_id,
+            "sku_code": f"IMG-SKU-{suffix}",
+            "unit_price": "0",
+            "currency": "USD",
+            "publish_to_storefront": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    detail = created.json()
+    product_id = UUID(detail["id"])
+    sku_id = detail["skus"][0]["id"]
+    created_product_ids.append(product_id)
+
+    image_buffer = BytesIO()
+    Image.new("RGB", (320, 240), color=(45, 27, 105)).save(
+        image_buffer,
+        format="PNG",
+    )
+    uploaded = client.post(
+        f"/api/v1/products/{product_id}/images/main",
+        files={"image": ("catalog-main.png", image_buffer.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    uploaded_payload = uploaded.json()
+    assert uploaded_payload["content_type"] == "image/webp"
+    assert uploaded_payload["width"] == 320
+    assert uploaded_payload["height"] == 240
+    assert uploaded_payload["image_role"] == "MAIN"
+    assert uploaded_payload["approval_status"] == "APPROVED"
+    assert uploaded_payload["url"].startswith(
+        f"https://resources.example.test/tenants/{DEFAULT_TENANT_ID}/products/{product_id}/images/"
+    )
+
+    with SessionLocal() as session:
+        image_row = session.get(ProductImageRow, UUID(uploaded_payload["id"]))
+        assert image_row is not None
+        assert image_row.object_key.startswith(
+            f"tenants/{DEFAULT_TENANT_ID}/products/{product_id}/images/"
+        )
+        assert image_row.sha256
+        assert session.scalar(
+            select(ProductImageRow.id).where(
+                ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductImageRow.sha256 == image_row.sha256,
+            )
+        ) == image_row.id
+        assert get_object_storage().exists(image_row.object_key)
+
+    listed = client.get(
+        "/api/v1/product-center/skus",
+        params={"q": f"IMG-SKU-{suffix}", "page": 1, "page_size": 20},
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["items"][0]["thumbnail_url"] == uploaded_payload["url"]
+
+    exported = client.post(
+        "/api/v1/product-center/skus/export",
+        json={"sku_ids": [sku_id]},
+    )
+    assert exported.status_code == 200, exported.text
+    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in exported.headers["content-type"]
+    workbook = load_workbook(BytesIO(exported.content))
+    try:
+        assert workbook.sheetnames == ["商品", "SKU"]
+        product_sheet = workbook["商品"]
+        sku_sheet = workbook["SKU"]
+        product_headers = [cell.value for cell in product_sheet[1]]
+        sku_headers = [cell.value for cell in sku_sheet[1]]
+        product_values = {
+            product_headers[column - 1]: product_sheet.cell(2, column).value
+            for column in range(1, len(product_headers) + 1)
+        }
+        sku_values = {
+            sku_headers[column - 1]: sku_sheet.cell(2, column).value
+            for column in range(1, len(sku_headers) + 1)
+        }
+        assert product_values["商品ID"] == str(product_id)
+        assert product_values["商品名称"] == detail["name"]
+        assert product_values["图片地址1"] == uploaded_payload["url"]
+        image_url_cell = product_sheet.cell(
+            2,
+            product_headers.index("图片地址1") + 1,
+        )
+        assert image_url_cell.hyperlink is not None
+        assert image_url_cell.hyperlink.target == uploaded_payload["url"]
+        assert len(product_sheet._images) == 0
+        assert sku_values["SKU ID"] == sku_id
+        assert sku_values["商品ID"] == str(product_id)
+        assert sku_values["SKU编号"] == f"IMG-SKU-{suffix}"
+    finally:
+        workbook.close()
+
+
 def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
     product_id = UUID("71000000-0000-0000-0000-000000000002")
     detail_response = client.get(f"/api/v1/products/{product_id}")
@@ -12586,7 +12760,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0058"
+        ).scalar() == "20260809_0059"
     upgraded_engine.dispose()
     command.check(config)
 
