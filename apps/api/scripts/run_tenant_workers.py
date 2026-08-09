@@ -19,12 +19,29 @@ import psycopg
 from app.database import SessionLocal, set_request_context
 from app.model_mixins import utcnow
 from app.repositories.file_security_repository import next_due_job_id
+from app.services.support_ai_knowledge import (
+    claim_next_knowledge_ingestion,
+    process_knowledge_ingestion,
+)
+from app.services.support_ai_orchestrator import (
+    claim_next_support_ai_run,
+    process_support_ai_run,
+)
+from app.support_ai_models import SupportAIRunRow
 from app.workers.file_processing import process_file_worker_job
 from app.workers.outbox_relay import relay_one_outbox_event
 from scripts.bootstrap_postgres_roles import _psycopg_url
 
 
 ZERO_UUID = UUID(int=0)
+
+
+def _support_stale_seconds() -> int:
+    try:
+        value = int(os.getenv("SUPPORT_AI_STALE_JOB_SECONDS", "900"))
+    except ValueError:
+        value = 900
+    return max(60, min(value, 86_400))
 
 
 def _required(name: str) -> str:
@@ -86,6 +103,61 @@ def relay_outbox_once(*, tenant_id: UUID, relay_id: str) -> bool:
         return result.status != "IDLE"
 
 
+def process_support_knowledge_once(*, tenant_id: UUID, worker_id: str) -> bool:
+    del worker_id
+    with SessionLocal() as session:
+        set_request_context(
+            session,
+            organization_id=ZERO_UUID,
+            tenant_id=tenant_id,
+            user_id=ZERO_UUID,
+        )
+        claimed = claim_next_knowledge_ingestion(
+            session,
+            tenant_id=tenant_id,
+            stale_after_seconds=_support_stale_seconds(),
+        )
+    if claimed is None:
+        return False
+    source_id, job_id = claimed
+    process_knowledge_ingestion(
+        tenant_id=tenant_id,
+        source_id=source_id,
+        job_id=job_id,
+    )
+    print(
+        f"tenant={tenant_id} support_knowledge_job={job_id} processed=true",
+        flush=True,
+    )
+    return True
+
+
+def process_support_ai_once(*, tenant_id: UUID, worker_id: str) -> bool:
+    del worker_id
+    with SessionLocal() as session:
+        set_request_context(
+            session,
+            organization_id=ZERO_UUID,
+            tenant_id=tenant_id,
+            user_id=ZERO_UUID,
+        )
+        run_id = claim_next_support_ai_run(
+            session,
+            tenant_id=tenant_id,
+            stale_after_seconds=_support_stale_seconds(),
+        )
+        if run_id is None:
+            return False
+        process_support_ai_run(session, run_id=run_id)
+        run = session.get(SupportAIRunRow, run_id)
+        print(
+            f"tenant={tenant_id} support_ai_run={run_id} "
+            f"status={run.status if run is not None else 'missing'}",
+            flush=True,
+        )
+        return True
+
+
 def run_cycle(*, directory_url: str, worker_id: str, relay_id: str) -> tuple[int, bool]:
     tenant_ids = active_tenant_ids(directory_url)
     did_work = False
@@ -93,6 +165,20 @@ def run_cycle(*, directory_url: str, worker_id: str, relay_id: str) -> tuple[int
         try:
             did_work = (
                 process_file_once(tenant_id=tenant_id, worker_id=worker_id)
+                or did_work
+            )
+            did_work = (
+                process_support_knowledge_once(
+                    tenant_id=tenant_id,
+                    worker_id=worker_id,
+                )
+                or did_work
+            )
+            did_work = (
+                process_support_ai_once(
+                    tenant_id=tenant_id,
+                    worker_id=worker_id,
+                )
                 or did_work
             )
             did_work = (

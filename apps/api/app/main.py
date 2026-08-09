@@ -15,6 +15,7 @@ from .routers.platform_admin import router as platform_admin_router
 from .routers.system import router as system_router
 from .routers.storefront_analytics import router as storefront_analytics_router
 from .routers.support import router as support_router
+from .routers.support_ai import router as support_ai_router
 from .routers.tags import router as tags_router
 from .routers.trade_flow import router as trade_flow_router
 from .routers.public_catalog import router as public_catalog_router
@@ -38,8 +39,6 @@ def _initialize_runtime() -> None:
             seed_product_center_demo(session)
     resume_deferred_imports()
     recover_interrupted_translation_jobs()
-
-
 def create_app() -> FastAPI:
     application = FastAPI(
         title="智贸云 API", version="0.3.0",
@@ -72,6 +71,7 @@ def create_app() -> FastAPI:
         system_router,
         storefront_analytics_router,
         support_router,
+        support_ai_router,
         tags_router,
     ):
         application.include_router(router)

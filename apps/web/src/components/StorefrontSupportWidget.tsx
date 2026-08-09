@@ -209,8 +209,14 @@ export function StorefrontSupportWidget({
         <header className="storefront-support-header">
           <span className="storefront-support-avatar"><Robot weight="duotone" /></span>
           <div>
-            <strong id="storefront-support-title">{t("AI 智能客服")}</strong>
-            <small>{t("AI 自动回复筹备中 · 当前由商家人工回复")}</small>
+            <strong id="storefront-support-title">{widget.title && widget.title !== "AI 智能客服" ? widget.title : t("AI 智能客服")}</strong>
+            <small>
+              {widget.ai_enabled
+                ? conversation?.automation_state === "HUMAN_TAKEOVER"
+                  ? t("人工客服已接管本次会话")
+                  : t("AI 基于已批准资料回答 · 必要时转人工")
+                : t("当前由商家人工回复")}
+            </small>
           </div>
           <button type="button" onClick={() => setOpen(false)} aria-label={t("关闭客服窗口")}>
             <X weight="bold" />
@@ -219,25 +225,53 @@ export function StorefrontSupportWidget({
 
         <div className="storefront-support-messages" ref={messageListRef} aria-live="polite">
           <div className="support-message is-merchant is-welcome">
-            <span>{widget.welcome_message}</span>
+            <div className="support-message-content"><span dir="auto">{widget.welcome_message}</span></div>
             <small>{storeName}</small>
           </div>
           {loading && !conversation ? (
             <div className="support-message-loading"><i /><i /><i /></div>
           ) : null}
-          {(conversation?.messages || []).map((message) => (
-            <div
-              className={`support-message ${message.sender_type === "VISITOR" ? "is-visitor" : "is-merchant"}`}
-              key={message.id}
-            >
-              <span>{message.body}</span>
-              <small>
-                {message.sender_type === "VISITOR" ? t("我") : storeName}
-                {" · "}
-                {new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(message.created_at))}
-              </small>
+          {(conversation?.messages || []).map((message) => {
+            const senderClass = message.sender_type === "VISITOR"
+              ? "is-visitor"
+              : message.sender_type === "AI"
+                ? "is-ai"
+                : message.sender_type === "SYSTEM"
+                  ? "is-system"
+                  : "is-merchant";
+            return (
+              <div className={`support-message ${senderClass}`} key={message.id}>
+                <div className="support-message-content">
+                  <span dir="auto">{message.body}</span>
+                  {message.sender_type === "AI" && message.citations?.length ? (
+                    <details className="storefront-support-citations">
+                      <summary>{t("查看 {count} 条资料来源", { count: message.citations.length })}</summary>
+                      <div>
+                        {message.citations.map((citation) => (
+                          <article key={`${message.id}:${citation.citation_number}`}>
+                            <strong>[{citation.citation_number}] {citation.source_title}</strong>
+                            <small>{citation.source_type === "SKU" ? "SKU" : t("企业文件")} · v{citation.source_version}</small>
+                            <p dir="auto">{citation.excerpt}</p>
+                          </article>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+                <small>
+                  {message.sender_type === "VISITOR" ? t("我") : message.sender_type === "AI" ? t("AI 客服") : message.sender_type === "SYSTEM" ? t("系统") : storeName}
+                  {" · "}
+                  {new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(message.created_at))}
+                </small>
+              </div>
+            );
+          })}
+          {conversation?.ai_processing ? (
+            <div className="support-ai-processing" role="status">
+              <div className="support-message-loading"><i /><i /><i /></div>
+              <small>{t("正在查找可信资料并生成回答…")}</small>
             </div>
-          ))}
+          ) : null}
           {conversation?.status === "CLOSED" ? (
             <div className="support-conversation-closed">
               <span>{t("本次会话已结束。")}</span>
@@ -274,7 +308,11 @@ export function StorefrontSupportWidget({
               <PaperPlaneTilt weight="fill" />
             </button>
           </div>
-          <small>{t("消息会发送给商家客服，回复可能需要一些时间。")}</small>
+          <small>
+            {widget.ai_enabled
+              ? t("AI 只会依据公开商品与已批准资料回答；证据不足时转交人工客服。")
+              : t("消息会发送给商家客服，回复可能需要一些时间。")}
+          </small>
         </footer>
       </section>
 

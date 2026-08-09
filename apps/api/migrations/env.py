@@ -2,7 +2,7 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, inspect, pool
 
 from app import db_models  # noqa: F401
 from app.database import Base
@@ -45,6 +45,29 @@ SQLITE_MIGRATION_MANAGED_UNIQUE_OBJECTS = {
     # shape declared by the ORM and migration.
     "uq_memberships_tenant_login_identifier",
 }
+SQLITE_APPLICATION_MANAGED_CHECKS = {
+    # Migration 0037 deliberately leaves this check to the application on
+    # SQLite to avoid a second membership-table rebuild. PostgreSQL owns the
+    # database check and remains part of strict autogenerate comparison.
+    "ck_memberships_account_scope_allowed",
+}
+_SQLITE_CHECK_NAMES: dict[str, frozenset[str]] = {}
+
+
+def _sqlite_check_names(table_name: str) -> frozenset[str]:
+    cached = _SQLITE_CHECK_NAMES.get(table_name)
+    if cached is not None:
+        return cached
+    connection = getattr(context.get_context(), "connection", None)
+    if connection is None:
+        return frozenset()
+    names = frozenset(
+        str(row["name"])
+        for row in inspect(connection).get_check_constraints(table_name)
+        if row.get("name")
+    )
+    _SQLITE_CHECK_NAMES[table_name] = names
+    return names
 
 
 def include_object(
@@ -54,6 +77,7 @@ def include_object(
     reflected: bool,
     compare_to: object | None,
 ) -> bool:
+    dialect_name = context.get_context().dialect.name
     if (
         type_ == "index"
         and reflected
@@ -64,15 +88,34 @@ def include_object(
     if (
         type_ == "foreign_key_constraint"
         and name in POSTGRESQL_MIGRATION_MANAGED_FOREIGN_KEYS
-        and context.get_context().dialect.name == "sqlite"
+        and dialect_name == "sqlite"
     ):
         return False
     if (
-        context.get_context().dialect.name == "sqlite"
+        dialect_name == "sqlite"
         and name in SQLITE_MIGRATION_MANAGED_UNIQUE_OBJECTS
         and type_ in {"index", "unique_constraint"}
     ):
         return False
+    if dialect_name == "sqlite" and type_ == "check_constraint" and name:
+        if name in SQLITE_APPLICATION_MANAGED_CHECKS:
+            return False
+        table_name = str(getattr(getattr(_object, "table", None), "name", ""))
+        prefix = f"ck_{table_name}_"
+        # Historical create_table migrations supplied an already-prefixed
+        # check name while the metadata naming convention added the prefix a
+        # second time. SQLite reflects that doubled physical name. Treat only
+        # this exact legacy pair as equivalent; PostgreSQL and every other
+        # check-constraint difference remain visible to autogenerate.
+        if reflected and name.startswith(f"{prefix}{prefix}"):
+            return False
+        if (
+            not reflected
+            and compare_to is None
+            and table_name
+            and f"{prefix}{name}" in _sqlite_check_names(table_name)
+        ):
+            return False
     return True
 
 

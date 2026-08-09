@@ -10,7 +10,7 @@ from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from ..adapters.object_storage import get_object_storage
@@ -38,6 +38,7 @@ from ..support_models import (
     StorefrontChatConversationRow,
     StorefrontChatMessageRow,
 )
+from ..support_ai_models import SupportAIEvidenceUseRow, SupportAIRunRow
 from ..support_schemas import (
     PublicChatConversationCreate,
     PublicChatConversationResponse,
@@ -45,6 +46,8 @@ from ..support_schemas import (
     PublicSupportChatMessageResponse,
     PublicSupportWidgetResponse,
     SupportChatMessageResponse,
+    SupportCitationResponse,
+    SupportConversationAutomationUpdate,
     SupportConversationDetailResponse,
     SupportConversationPageResponse,
     SupportConversationStatusUpdate,
@@ -310,10 +313,27 @@ def _resolve_public_store(
     return tenant, profile
 
 
-def public_widget(profile: TenantPublicProfileRow) -> PublicSupportWidgetResponse:
+def public_widget(
+    session: Session,
+    profile: TenantPublicProfileRow,
+) -> PublicSupportWidgetResponse:
     settings = settings_response(profile)
+    from ..services.support_ai_configuration import support_ai_provider_is_configured
+    from ..services.support_ai_orchestrator import get_support_ai_settings
+
+    ai_settings = get_support_ai_settings(
+        session,
+        tenant_id=profile.tenant_id,
+        create=False,
+    )
+    ai_enabled = bool(
+        ai_settings is not None
+        and ai_settings.mode in {"AUTO_LIMITED", "AUTO"}
+        and support_ai_provider_is_configured(session)
+    )
     return PublicSupportWidgetResponse(
         welcome_message=settings.welcome_message,
+        ai_enabled=ai_enabled,
         custom_actions=[row for row in settings.custom_actions if row.visible],
     )
 
@@ -361,7 +381,56 @@ def get_public_action_image(
         ) from exc
 
 
+def _message_citations(
+    session: Session,
+    row: StorefrontChatMessageRow,
+) -> list[SupportCitationResponse]:
+    if row.sender_type != "AI":
+        return []
+    run = session.scalar(
+        select(SupportAIRunRow).where(
+            SupportAIRunRow.tenant_id == row.tenant_id,
+            SupportAIRunRow.output_message_id == row.id,
+            SupportAIRunRow.status == "SUCCEEDED",
+        )
+    )
+    if run is None:
+        return []
+    cited_numbers = {
+        int(value)
+        for value in (run.decision_trace or {}).get("inline_citations", [])
+        if isinstance(value, int)
+        or (isinstance(value, str) and value.isdigit())
+    }
+    if not cited_numbers:
+        return []
+    evidence = session.scalars(
+        select(SupportAIEvidenceUseRow)
+        .where(
+            SupportAIEvidenceUseRow.tenant_id == row.tenant_id,
+            SupportAIEvidenceUseRow.run_id == run.id,
+            SupportAIEvidenceUseRow.citation_number.in_(cited_numbers),
+        )
+        .order_by(SupportAIEvidenceUseRow.citation_number)
+    ).all()
+    return [
+        SupportCitationResponse(
+            citation_number=item.citation_number,
+            source_type=item.source_type,
+            source_entity_id=item.source_entity_id,
+            source_title=item.source_title,
+            source_version=int(item.source_version),
+            classification=item.classification,
+            locator=item.locator,
+            excerpt=item.excerpt,
+            score=float(item.score),
+        )
+        for item in evidence
+    ]
+
+
 def _public_message_response(
+    session: Session,
     row: StorefrontChatMessageRow,
 ) -> PublicSupportChatMessageResponse:
     return PublicSupportChatMessageResponse(
@@ -369,10 +438,14 @@ def _public_message_response(
         sender_type=row.sender_type,
         body=row.body,
         created_at=row.created_at,
+        citations=_message_citations(session, row),
     )
 
 
-def _message_response(row: StorefrontChatMessageRow) -> SupportChatMessageResponse:
+def _message_response(
+    session: Session,
+    row: StorefrontChatMessageRow,
+) -> SupportChatMessageResponse:
     return SupportChatMessageResponse(
         id=row.id,
         sender_type=row.sender_type,
@@ -383,6 +456,26 @@ def _message_response(row: StorefrontChatMessageRow) -> SupportChatMessageRespon
         translation_target_locale=row.translation_target_locale,
         translation_status=row.translation_status,
         created_at=row.created_at,
+        citations=_message_citations(session, row),
+    )
+
+
+def _ai_processing(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    conversation_id: UUID,
+) -> bool:
+    return bool(
+        session.scalar(
+            select(
+                exists().where(
+                    SupportAIRunRow.tenant_id == tenant_id,
+                    SupportAIRunRow.conversation_id == conversation_id,
+                    SupportAIRunRow.status.in_(["QUEUED", "RUNNING"]),
+                )
+            )
+        )
     )
 
 
@@ -511,7 +604,7 @@ def _public_conversation_response(
         reference_number=row.reference_number,
         status=row.status,
         messages=[
-            _public_message_response(message)
+            _public_message_response(session, message)
             for message in repository.list_messages(
                 session,
                 tenant_id=row.tenant_id,
@@ -519,6 +612,12 @@ def _public_conversation_response(
             )
         ],
         access_token=access_token,
+        automation_state=row.automation_state,
+        ai_processing=_ai_processing(
+            session,
+            tenant_id=row.tenant_id,
+            conversation_id=row.id,
+        ),
     )
 
 
@@ -558,6 +657,10 @@ def create_public_conversation(
         translation_status="PENDING",
     )
     session.add_all([row, message])
+    session.flush()
+    from ..services.support_ai_orchestrator import enqueue_chat_run
+
+    enqueue_chat_run(session, conversation=row, message=message)
     session.commit()
     _translate_visitor_messages(
         session,
@@ -646,6 +749,10 @@ def send_public_message(
         row.last_message_at = now
         row.last_visitor_message_at = now
         row.locale = source_locale
+        session.flush()
+        from ..services.support_ai_orchestrator import enqueue_chat_run
+
+        enqueue_chat_run(session, conversation=row, message=existing)
         session.commit()
         _translate_visitor_messages(
             session,
@@ -671,6 +778,8 @@ def _summary(
         last_message_preview=preview[:160],
         last_message_at=row.last_message_at,
         unread=repository.has_unread_visitor_message(row),
+        automation_state=row.automation_state,
+        ai_processing=False,
     )
 
 
@@ -695,7 +804,18 @@ def list_conversations(
         preview_locale=_merchant_reading_locale(session, tenant_id=tenant_id),
     )
     return SupportConversationPageResponse(
-        items=[_summary(row, preview) for row, preview in rows],
+        items=[
+            _summary(row, preview).model_copy(
+                update={
+                    "ai_processing": _ai_processing(
+                        session,
+                        tenant_id=tenant_id,
+                        conversation_id=row.id,
+                    )
+                }
+            )
+            for row, preview in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -744,10 +864,18 @@ def get_conversation(
         else last_message.body if last_message is not None else ""
     )
     session.commit()
-    summary = _summary(row, preview)
+    summary = _summary(row, preview).model_copy(
+        update={
+            "ai_processing": _ai_processing(
+                session,
+                tenant_id=tenant_id,
+                conversation_id=row.id,
+            )
+        }
+    )
     return SupportConversationDetailResponse(
         **summary.model_dump(),
-        messages=[_message_response(message) for message in messages],
+        messages=[_message_response(session, message) for message in messages],
     )
 
 
@@ -779,6 +907,16 @@ def send_merchant_message(
             kind="conflict",
         )
     now = utcnow()
+    row.automation_state = "HUMAN_TAKEOVER"
+    row.automation_state_changed_at = now
+    from ..services.support_ai_orchestrator import cancel_queued_runs_for_conversation
+
+    cancel_queued_runs_for_conversation(
+        session,
+        tenant_id=tenant_id,
+        conversation_id=row.id,
+        reason="MERCHANT_REPLIED",
+    )
     source_locale = _merchant_reading_locale(session, tenant_id=tenant_id)
     target_locale = source_locale
     translation_status = "NOT_REQUIRED"
@@ -910,6 +1048,46 @@ def update_conversation_status(
             kind="not_found",
         )
     row.status = request.status
+    session.commit()
+    return get_conversation(
+        session,
+        tenant_id=tenant_id,
+        conversation_id=row.id,
+        permissions=frozenset({"support.view"}),
+    )
+
+
+def update_conversation_automation(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    conversation_id: UUID,
+    permissions: frozenset[str],
+    request: SupportConversationAutomationUpdate,
+) -> SupportConversationDetailResponse:
+    _require(permissions, "support.reply")
+    row = repository.get_conversation(
+        session,
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+    )
+    if row is None:
+        raise ApplicationError(
+            "SUPPORT_CONVERSATION_NOT_FOUND",
+            "客服会话不存在。",
+            kind="not_found",
+        )
+    row.automation_state = request.automation_state
+    row.automation_state_changed_at = utcnow()
+    if request.automation_state == "HUMAN_TAKEOVER":
+        from ..services.support_ai_orchestrator import cancel_queued_runs_for_conversation
+
+        cancel_queued_runs_for_conversation(
+            session,
+            tenant_id=tenant_id,
+            conversation_id=row.id,
+            reason="MANUAL_TAKEOVER",
+        )
     session.commit()
     return get_conversation(
         session,

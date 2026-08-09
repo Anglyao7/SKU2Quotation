@@ -278,6 +278,16 @@ from .translation_management_models import (  # noqa: E402,F401
     TranslationProviderSettingsRow,
 )
 
+from .support_ai_models import (  # noqa: E402,F401
+    SupportAIEvidenceUseRow,
+    SupportAIIngestionJobRow,
+    SupportAIKnowledgeChunkRow,
+    SupportAIKnowledgeSourceRow,
+    SupportAIProviderSettingsRow,
+    SupportAIRunRow,
+    SupportAISettingsRow,
+)
+
 from .catalog_translation_models import (  # noqa: E402,F401
     CatalogLanguagePackRow,
     CatalogSkuTranslationRow,

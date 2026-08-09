@@ -10,6 +10,7 @@ const preloads: Record<string, () => Promise<unknown>> = {
   "/console/inventory": () => import("./pages/InventoryPage"),
   "/console/announcements": () => import("./pages/AnnouncementsPage"),
   "/console/support": () => import("./pages/SupportCenterPage"),
+  "/console/support/ai": () => import("./pages/SupportAIPage"),
   "/console/inquiries": () => import("./pages/InquiryPage"),
   "/console/quotes": () => import("./pages/QuotesPage"),
   "/console/quote-templates": () => import("./pages/QuoteTemplatesPage"),
@@ -17,7 +18,8 @@ const preloads: Record<string, () => Promise<unknown>> = {
   "/console/personal-center": () => import("./pages/PersonalCenterPage"),
   "/console/system/permissions": () => import("./pages/PermissionsPage"),
   "/console/system/monitoring": () => import("./pages/SystemMonitoringPage"),
-  "/console/system/translation": () => import("./pages/TranslationApiSettingsPage"),
+  "/console/system/configuration": () => import("./pages/ConfigurationCenterPage"),
+  "/console/system/translation": () => import("./pages/ConfigurationCenterPage"),
   "/console/tenants": () => import("../pages/console/TenantManagementPage"),
   "/console/account": () => import("./pages/AccountSettingsPage"),
 };

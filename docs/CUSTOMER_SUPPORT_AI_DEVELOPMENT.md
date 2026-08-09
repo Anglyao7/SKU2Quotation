@@ -1,0 +1,869 @@
+# 智能客服开发设计
+
+> 状态：v1 可交付实现 + 后续路线图  
+> 版本：1.1  
+> 日期：2026-08-09  
+> 规范来源：[客服 AI 运行契约 v1](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
+
+## 0. 当前交付状态
+
+本次已完成运行契约的首个可上线闭环（知识与证据基础、SKU/文件 RAG、
+`DRAFT/SHADOW/AUTO_LIMITED/AUTO`、多语言、引用和人工接管），数据库版本为
+`20260809_0059`。当前实现入口如下：
+
+- 平台配置中心：`/console/system/configuration`，集中配置智能客服生成模型、翻译与
+  Embedding API；保存配置时只做格式校验，不探测外部连通性。
+- 商家智能客服：`/console/support/ai`，包含策略、文件知识、问答试跑、Run 与 Evidence
+  溯源。
+- 人工工作台：`/console/support`，展示 AI/人工接管状态、回答引用，并支持暂停或恢复
+  单会话自动化。
+- 客户 Widget：按客户本次消息的实际语言回答，显示 AI 身份、处理状态和服务端引用；
+  证据不足、语言不一致、数字或引用校验失败时转人工。
+
+已经落地的关键边界：
+
+1. SKU 客户知识只读取已发布商品资料；供应商名称、供应商标识、供应商 SKU 与供应商
+   评分在向量化前排除，MOQ 保留。
+2. 企业文件支持 PDF、DOCX、TXT、Markdown；先扫描并写入 Cloudflare R2/S3-compatible
+   对象存储，再解析、分块、向量化，只有人工批准的版本可被检索。
+3. 客户原文永久保留。语言启发式由生成模型二次确认；跨语言时仅扩展内部检索 query，
+   SKU/型号等标识不翻译，最终回答必须与客户实际语言一致。客户 query 不写入商品翻译
+   记忆，受控翻译结果只随对应 Run 保存。
+4. Evidence 是不可混淆的快照，保存来源类型、版本、定位、摘录、哈希和分数；客户只看到
+   回答正文实际引用到的编号。
+5. 开发环境默认使用请求后的后台执行；标准生产环境使用已有 tenant worker 认领持久化
+   任务，进程中断后的 `RUNNING` 任务会在租约过期后重试。已批准来源重新索引失败时继续
+   服务上一个成功版本。
+6. v1 不开放退款、取消订单、修改资料、任意 HTTP/SQL 等写工具。实时库存、认证订单与
+   其他只读动态事实属于 Phase 5，不得由静态 RAG 猜测。
+
+主要实现文件为 `support_ai_models.py`、`support_ai_schemas.py`、
+`services/support_ai_*`、`routers/support_ai.py`、`use_cases/support_ai.py` 和迁移
+`20260809_0059_support_ai_configuration.py`。后续章节同时保留长期目标；标为 Phase 5/6
+的能力不属于本次 v1 自动回答范围。
+
+## 1. 文档目的
+
+本文把运行契约映射为当前 SKU2Quotation 项目的可实施架构、数据模型、模块边界、接口、
+页面、测试和迭代顺序。后续智能客服开发以本文为主计划，以运行契约为强制验收标准。
+
+运行契约回答“系统必须如何表现”；本文回答“在当前代码库中如何实现”。发生冲突时，
+运行契约优先，修改设计不能隐式降低安全边界。
+
+## 2. 已确定的设计决策
+
+1. 第一版使用**单一客服编排器**，不提前建设多 Agent 网络。
+2. SKU 和企业文件使用统一知识来源模型，但通过两条独立 ingestion pipeline 进入。
+3. 继续使用 PostgreSQL、pgvector、现有 Embedding Provider 和混合检索基础。
+4. 客户客服使用独立的字段白名单投影，不直接复用内部商品搜索结果。
+5. 知识边界在 chunk/Embedding 之前执行，回答后脱敏不是主要防线。
+6. 引用和 Evidence 是持久化业务数据，不由模型临时拼接。
+7. 动态事实通过只读工具查询，不写入共享向量。
+8. 生成模型通过 provider-neutral port 接入，不把 OpenAI、Azure 或其他厂商 SDK 写进
+   `use_cases`。
+9. 模型调用在后台任务中执行，访客发消息的 HTTP 请求不等待完整 AI 推理。
+10. 先 `DRAFT/SHADOW`，再 `AUTO_LIMITED`；v1 不执行写操作。
+
+## 3. 当前系统基线
+
+### 3.1 可以直接复用
+
+- [`services/knowledge.py`](../apps/api/app/services/knowledge.py)：商品 canonical payload、
+  deterministic chunk、内容哈希、版本切换和批量预计算基础。
+- [`knowledge_embedding_models.py`](../apps/api/app/knowledge_embedding_models.py)：
+  `KnowledgeDocumentRow`、`KnowledgeChunkRow`、`EmbeddingRow` 和 pgvector 数据结构。
+- [`services/embedding.py`](../apps/api/app/services/embedding.py)：本地确定性 Embedding 和
+  OpenAI-compatible Embedding port/adapter。
+- [`services/hybrid_search.py`](../apps/api/app/services/hybrid_search.py)：lexical/vector 候选、
+  PostgreSQL 有界预选和现有排序基础。
+- [`embedding_management_models.py`](../apps/api/app/embedding_management_models.py)：可观测
+  索引任务和模型版本记录。
+- [`support_models.py`](../apps/api/app/support_models.py)：前台会话、消息、翻译，以及已支持的
+  `AI` sender type。
+- [`use_cases/support.py`](../apps/api/app/use_cases/support.py)：访客/商家消息、租户解析和客服
+  翻译流程。
+- [`ai_data_models.py`](../apps/api/app/ai_data_models.py)：通用 `AITaskRow`、provider route 和
+  source evidence 基础。
+- [`file_security_models.py`](../apps/api/app/file_security_models.py)、对象存储和 scanner port：
+  私有文件、哈希、隔离区、扫描状态及 Cloudflare R2/S3-compatible 存储能力。
+- 前端客服窗口和 [`SupportCenterPage.tsx`](../apps/web/src/core/pages/SupportCenterPage.tsx)：
+  客户消息与人工客服工作台。
+
+### 3.2 当前阻塞点
+
+1. `KnowledgeDocumentRow` 被 check constraint 和 tenant FK 写死为 `PRODUCT`。
+2. `KnowledgeChunkRow.chunk_type` 只允许五种商品 chunk，不能表达页、段落、表格和幻灯片。
+3. 当前商品知识 document 固定为 `classification=INTERNAL`，没有客户 Agent 启用状态、审核
+   状态和引用展示策略。
+4. 当前 `hybrid_product_search` 直接关联 Product，并包含 supplier ranking signal；客服不能
+   原样调用它。
+5. 当前字段策略已移除供应商名称/编码/SKU/评分，但仍需按运行契约处理客户公开字段、原始
+   供应商交期和多 MOQ 聚合。
+6. `WorkerJobRow` 被约束为商品导入的 `FILE_SCAN_AND_PARSE`，且强依赖 source file/import job，
+   不适合作为通用知识文件任务。
+7. 客服消息没有 AI Run、claims、citations、evidence、模型版本和 validation 结果。
+8. 会话只有 `OPEN/CLOSED`，没有 AI active、human active、suspended 等接管状态。
+9. `PublicSupportWidgetResponse.ai_enabled` 当前固定为 `False`。
+10. 只有 Embedding/翻译模型适配器，没有客服生成模型的结构化输出适配器。
+
+## 4. 目标架构
+
+```text
+                         ┌──────────────────────────┐
+Product/SKU change ─────>│ Customer Product Projector│
+                         └────────────┬─────────────┘
+                                      │
+File upload -> R2 -> scan -> parse ───┤
+                                      ▼
+                         Knowledge Source + Versions
+                                      │
+                             chunks + locators
+                                      │
+                         lexical index + pgvector
+                                      │
+Visitor message                        │
+      │                                │
+      ▼                                │
+Support AI Task -> Query Planner -> Policy-filtered Hybrid Retriever
+      │                                      │
+      │                         optional read-only business tools
+      │                                      │
+      └──────────────> Context/Evidence Builder
+                                      │
+                              Structured LLM output
+                                      │
+                       Citation/Grounding/Safety Validator
+                                      │
+                     ┌────────────────┴───────────────┐
+                     ▼                                ▼
+              AI message + citations            Human handoff
+                     │                                │
+                     └──────── Trace/Evaluation ──────┘
+```
+
+### 4.1 请求链路与索引链路分离
+
+- 知识扫描、解析、chunk、Embedding 和版本激活走异步 ingestion job。
+- 访客发消息先可靠保存，再创建幂等 AI Task。
+- AI worker 只读取已经 `ACTIVE + APPROVED` 的知识版本。
+- 新索引未完成时继续使用旧活动版本，不能让部分 chunk 对客户可见。
+
+## 5. 后端模块设计
+
+建议增加以下模块，保持 router -> use case -> service/port -> adapter 的现有方向：
+
+```text
+apps/api/app/
+  knowledge_source_models.py
+  support_ai_models.py
+  support_ai_schemas.py
+  routers/
+    support_ai.py
+    knowledge_sources.py
+  use_cases/
+    support_ai.py
+    knowledge_sources.py
+  services/
+    support_ai/
+      orchestrator.py
+      policy.py
+      query_planner.py
+      retriever.py
+      context_builder.py
+      evidence.py
+      answer_generator.py
+      validators.py
+      handoff.py
+      tool_registry.py
+    knowledge_ingestion/
+      product_projector.py
+      document_parser.py
+      chunker.py
+      projector.py
+      lifecycle.py
+  ports/
+    chat_model.py
+    knowledge_parser.py
+    support_tool.py
+  adapters/
+    chat_model.py
+    knowledge_parsers/
+  workers/
+    support_ai.py
+    knowledge_ingestion.py
+```
+
+首轮不要求一次创建所有文件。模块应在对应阶段出现，禁止先生成空壳和未使用抽象。
+
+### 5.1 `SupportAIOrchestrator`
+
+编排器负责运行状态，不负责直接访问 ORM：
+
+1. 加载租户 AI 设置、会话状态和触发消息。
+2. 运行输入安全及是否允许 AI 接管的检查。
+3. 构建受控最近上下文，生成原始/改写查询和意图。
+4. 决定知识检索、只读工具或直接转人工。
+5. 构建带 opaque evidence ID 的模型上下文。
+6. 请求结构化回答。
+7. 执行 citation、grounding、边界、PII、语言和重复校验。
+8. 在同一事务中保存 Run 结果、evidence use、AI message 和引用。
+9. 失败时执行有限重试、安全说明或人工接管。
+
+每一步产生可记录的 step result。不得把整个流程写成一个难以定位失败原因的函数。
+
+### 5.2 `ChatModelPort`
+
+首版 port 至少支持：
+
+```python
+class ChatModelPort(Protocol):
+    identity: ChatModelIdentity
+
+    def generate_structured(
+        self,
+        *,
+        messages: list[ChatMessage],
+        output_schema: dict[str, object],
+        tools: list[ToolDefinition],
+        timeout_seconds: float,
+    ) -> ChatModelResult: ...
+```
+
+要求：
+
+- Provider identity 至少记录 provider/name/version。
+- 优先使用严格 Structured Output/JSON Schema；仍要在本地再次验证。
+- Provider 错误只能返回安全错误码，不能写入密钥和完整第三方响应。
+- Use case 不得知道 `/v1/responses`、Anthropic Messages 或厂商 SDK 类型。
+- Provider route 使用现有 `AIProviderRouteRow`，新增 capability
+  `CUSTOMER_SUPPORT_RESPONSE`，凭证继续使用 secret reference/加密配置，不进 Prompt。
+- `AIProviderRouteRow.max_data_classification` 的约束需要加入 `CUSTOMER_APPROVED`，并按
+  `PUBLIC < CUSTOMER_APPROVED < INTERNAL < CONFIDENTIAL < RESTRICTED` 执行发送上限校验。
+- 测试提供 network-free fake adapter，可以精确模拟无效 JSON、伪造引用、超时和工具调用。
+
+### 5.3 客服专用 Retriever
+
+新增 `retrieve_support_evidence()`，不能直接把 `hybrid_product_search()` 的完整返回作为
+客户上下文。可以抽取和复用其底层 lexical/vector 计算，但客服 Retriever 必须：
+
+- 强制 tenant、classification、approval、audience、status 和有效期过滤。
+- 不查询或计算 supplier score，不返回 supplier signal。
+- 分别获取 Product 与 File 候选，按配置控制每类配额。
+- 先处理 SKU/商品编码、条码和精确名称，再进行语义召回。
+- 统一 rerank，并返回 `RetrievedEvidence`，而不是 UI Product result。
+- 保留 document/chunk/source version/locator 和所有分数。
+- 对冲突、低支持度和无结果返回明确 signal，而不是空列表后继续生成。
+
+建议把现有通用向量候选和 tokenization 下沉为私有公共函数，内部商品搜索与客服检索分别
+维护自己的 field policy 和 ranking policy。
+
+### 5.4 Validator 链
+
+初始 Validator 顺序：
+
+```text
+SchemaValidator
+  -> ConversationOwnershipValidator
+  -> EvidenceReferenceValidator
+  -> GroundingValidator
+  -> SensitiveFieldValidator
+  -> LinkValidator
+  -> LocaleValidator
+  -> DuplicationAndLoopValidator
+```
+
+Validator 返回稳定 code、可重试性和安全原因。模型不得决定是否跳过 Validator。
+
+## 6. 数据模型
+
+### 6.1 `knowledge_sources`：稳定来源身份
+
+新增 `KnowledgeSourceRow`：
+
+| 字段 | 说明 |
+|---|---|
+| `id`, `tenant_id` | 复合租户身份与 RLS 边界 |
+| `source_kind` | `PRODUCT`、`FILE`、`MANUAL`、`FAQ` |
+| `product_id` | PRODUCT 来源使用的 tenant-scoped FK，可空 |
+| `source_key` | FILE/MANUAL 的稳定业务键 |
+| `internal_title` | 后台真实标题 |
+| `customer_citation_title` | 客户安全标题 |
+| `locale` | 来源主要语言 |
+| `classification` | 运行契约中的五级分类 |
+| `customer_agent_enabled` | 客户 AI 是否可检索 |
+| `staff_copilot_enabled` | 后台 Copilot 是否可检索 |
+| `citation_mode` | `LINK/EXCERPT/LABEL/NONE` |
+| `approval_status` | `DRAFT/APPROVED/REVOKED` |
+| `effective_from/until` | 生效窗口 |
+| `status` | `ACTIVE/ARCHIVED/DELETED` |
+| `approved_by/approved_at` | 审核记录 |
+| `record_version` | 乐观并发和审计版本 |
+
+约束：
+
+- PRODUCT 必须有 `product_id`；其他类型不得伪造 product FK。
+- `customer_agent_enabled=true` 时只允许 `PUBLIC/CUSTOMER_APPROVED + APPROVED +
+  citation_mode!=NONE`。
+- 同一租户/商品只有一个稳定 PRODUCT source。
+- 所有写操作必须带 tenant 条件；PostgreSQL 开启并强制 RLS。
+
+### 6.2 `knowledge_documents`：不可变来源版本
+
+保留现有表并迁移为通用版本表：
+
+1. 新增 tenant-scoped `knowledge_source_id` FK。
+2. 为当前商品 documents 回填一条 PRODUCT `knowledge_source`。
+3. 增加可空 `media_object_id`、`parser_identifier/version`、`chunker_version`。
+4. 删除 `source_entity_type='PRODUCT'` check 和直接 product composite FK。
+5. classification check 增加 `CUSTOMER_APPROVED`。
+6. 兼容期保留 `source_entity_type/id` 只读字段；完成迁移后再删除。
+7. classification、citation 和权限在 document 中保存来源激活时的快照。
+8. 继续使用“同一 source/locale 仅一个 ACTIVE version”的 partial unique index。
+
+Document 仍保存 canonical normalized payload 和 content hash；原始文件二进制留在对象存储，
+不得写入 PostgreSQL JSON。
+
+### 6.3 `knowledge_chunks`
+
+新增 `locator JSONB`，并扩展 chunk type：
+
+```text
+OVERVIEW, SPECIFICATIONS, FEATURES, MARKETS, SUPPLY,
+SECTION, PARAGRAPH, FAQ, TABLE, SLIDE, SHEET_RANGE
+```
+
+`locator` 结构按来源类型由 schema 校验；`chunk_metadata` 只保存检索辅助信息，不能替代
+locator。Embedding 表继续引用 chunk，不需要为文件另建一套向量表。
+
+### 6.4 通用 AI Task 与客服 Run
+
+复用 `AITaskRow` 保存幂等、风险、provider route、policy snapshot 和总体状态；新增一对一
+`SupportAIRunRow` 保存客服领域信息：
+
+| 字段组 | 内容 |
+|---|---|
+| 关联 | `tenant_id`、`ai_task_id`、conversation、trigger message、response message |
+| 输入 | 原始 query、改写 query、locale、intent、上下文摘要哈希 |
+| 模式 | `OFF/DRAFT/SHADOW/AUTO_LIMITED/AUTO` 快照 |
+| 版本 | runtime contract、field policy、retrieval、reranker、prompt、orchestrator |
+| 模型 | provider/name/version、route snapshot |
+| 输出 | decision、answer payload、validation result、handoff reason |
+| 性能 | 各阶段延迟、input/output token、估算成本 |
+| 交付结果 | `NONE/DRAFT_READY/SHADOW_COMPLETE/MESSAGE_SENT/HANDED_OFF/DECLINED` |
+
+`(tenant_id, trigger_message_id)` 必须唯一，保证一次访客消息最多生成一个 Run。
+
+`AITaskRow.status` 是排队、运行、验证、成功/失败等任务生命周期的唯一状态源；
+`SupportAIRunRow.delivery_result` 只表达客服领域的最终交付结果，避免维护两套会漂移的运行
+状态。运行契约状态机由这两个字段确定性映射，不允许业务代码自由组合非法状态。
+
+### 6.5 Evidence catalog 与 Run evidence use
+
+现有 `AISourceEvidenceRow` 适合作为不可变来源证据目录，但需要：
+
+- classification 增加 `CUSTOMER_APPROVED`。
+- locator 增加 `CHUNK_SECTION`、`DOCUMENT_PARAGRAPH`、`TOOL_RESULT` 等类型。
+- 不再依赖单一 `ai_task_id` 表示使用关系。
+
+新增 `SupportAIEvidenceUseRow` 关联 Run 与 evidence catalog，并保存本次检索状态：
+
+- query、candidate rank、lexical/vector/rerank/final score。
+- selected、cited、citation order、claim IDs。
+- safe excerpt、excerpt hash、customer title/citation mode/locator 快照。
+- source/document/chunk version 快照。
+
+同一来源证据可以被多个 Run 使用；每次 Run 的排序和客户显示快照彼此独立。
+
+### 6.6 Tool calls
+
+新增 `SupportAIToolCallRow`：
+
+- `run_id`、tool name/version、status。
+- 安全输入、input hash、幂等键。
+- 安全输出、output hash、observed_at、数据记录版本。
+- latency、attempts、safe error code/message。
+- 是否需要确认、确认消息和确认时间（为未来写工具预留，v1 恒为 false）。
+
+工具原始第三方响应不得直接持久化；只有满足审计需要的受控字段和哈希进入数据库。
+
+### 6.7 会话和消息扩展
+
+`StorefrontChatConversationRow` 增加：
+
+- `automation_state`：`AI_ACTIVE`、`AI_SUSPENDED`、`HUMAN_ACTIVE`、`DISABLED`。
+- `automation_suspended_at`、`automation_suspend_reason`。
+- 可选 `last_ai_run_at`。
+
+`StorefrontChatMessageRow` 增加可空 tenant-scoped `ai_run_id`，AI 消息必须唯一关联 Run。
+公共与后台消息 response 增加结构化 `citations`，但普通访客/商家消息返回空数组。
+
+### 6.8 租户 AI 设置
+
+新增 `SupportAISettingsRow`：
+
+- mode，是否启用。
+- 自动回答主题 allowlist 和强制人工主题 denylist。
+- 最大模型回合、最大重试、超时和日用量上限。
+- Retriever 候选配额、支持度阈值和引用展示选项。
+- 默认回答语言策略、品牌语气和安全失败文案。
+- 当前已批准 Prompt/policy/provider route 版本。
+- updated_by、record_version 和审计时间。
+
+设置保存时执行 schema 校验；不能允许商家通过自由文本覆盖系统安全指令。
+
+## 7. SKU 知识实现
+
+### 7.1 投影器拆分
+
+当前 `build_product_payload()` 应逐步拆为：
+
+```text
+load_product_projection_source()     # 读取租户内权威数据
+apply_customer_product_policy()      # 显式字段 allowlist
+build_customer_product_chunks()      # 只接收安全 DTO
+project_knowledge_version()          # 通用版本/Embedding 生命周期
+```
+
+禁止把 ORM 对象或完整 supplier record 传给 chunk builder。安全 DTO 使用冻结 dataclass/
+Pydantic schema，使新增 ORM 字段不会自动进入投影。
+
+### 7.2 v1 字段
+
+按照运行契约先实现：
+
+- 商品/SKU 公开基本信息。
+- 已确认并客户可见的属性。
+- 标签、用途、认证和包装信息。
+- 公开 MOQ。
+
+明确排除 supplier identity/SKU/score、采购成本、内部备注和未确认字段。原始供应商
+`lead_time_days` 从客户 RAG 移出；以后由“公开承诺交期”字段或实时工具提供。
+
+### 7.3 更新事件
+
+- 商品/SKU/属性/标签/公开 MOQ 变化触发对应 PRODUCT source 增量投影。
+- 与客户字段无关的供应商评分变化不得触发客服 Embedding。
+- 字段策略、chunker 或 Embedding 模型变化触发受控全量重建。
+- Outbox consumer 失败可重试；新版本失败不切换活动 document。
+
+## 8. 文件知识实现
+
+### 8.1 上传
+
+复用 `ObjectStoragePort` 和 `MediaObjectRow`，对象初始进入 `QUARANTINE`。建议对象键：
+
+```text
+tenants/{tenant_id}/knowledge/{source_id}/{sha256}/source/{safe_filename}
+```
+
+数据库和前端只使用 media ID/source ID；不保存可长期访问的签名 URL。
+
+### 8.2 Ingestion job
+
+新增专用 `KnowledgeIngestionJobRow`，不强行复用 import-only `WorkerJobRow`。字段至少包括：
+
+- tenant/source/media/document IDs。
+- mode：`NEW_VERSION/REINDEX/REPARSE`。
+- stage：`SCANNING/PARSING/NORMALIZING/CHUNKING/EMBEDDING/VALIDATING/ACTIVATING`。
+- status、attempt、lease、checkpoint、safe error。
+- parser/chunker/Embedding 版本和进度计数。
+
+同一 source 只允许一个活动 ingestion job；job 使用 DB lease，进程重启后可以安全接管。
+
+### 8.3 Parser 路由
+
+首批建议支持：
+
+| 类型 | Parser 输出 |
+|---|---|
+| PDF | 页、标题、段落、表格；扫描页可选 OCR |
+| DOCX | 标题层级、段落、列表和表格 |
+| PPTX | 幻灯片、标题、文本块和表格 |
+| XLSX | 工作表、命名表格和单元格范围 |
+| TXT/Markdown | 标题、段落、列表和代码块 |
+
+每个 parser 返回统一 `ParsedDocument`，包括 blocks、locator、语言和 warnings。Parser 不直接
+写数据库；projector 统一完成 canonical payload、chunk 和版本激活。
+
+### 8.4 审核与激活
+
+- 首次上传及新版本默认 `REVIEW_REQUIRED/DRAFT`。
+- 后台预览解析结果、客户可见标题、分类、引用模式和抽样 chunk。
+- 审核人点击发布后才可变为 `APPROVED + ACTIVE`。
+- `CUSTOMER_APPROVED` 文件不能提供原文件下载，只能根据 citation mode 展示安全摘录/标签。
+
+## 9. 回答运行流程
+
+### 9.1 触发
+
+`send_public_message()` 成功持久化访客消息后：
+
+1. 读取租户 mode 和会话 automation state。
+2. mode 不是 `OFF` 时，以 `support:{tenant}:{conversation}:{message}` 创建幂等 AITask。
+3. 提交事务后通知 worker；接口立即返回访客消息。
+4. Widget 初期继续使用现有刷新机制读取 AI 消息，后续再按需要增加 SSE/WebSocket。
+
+模型调用不得发生在数据库事务或访客 HTTP 请求等待路径中。
+
+### 9.2 Worker
+
+```text
+claim task
+  -> verify conversation ownership
+  -> build bounded context
+  -> rewrite/classify
+  -> retrieve and/or call read tool
+  -> freeze evidence uses
+  -> generate structured result
+  -> validate
+  -> recheck conversation/human ownership
+  -> persist AI message + citations or handoff
+```
+
+最后一次 ownership check 防止模型运行期间人工已经回复，但 AI 仍追加一条自动回答。
+
+### 9.3 Mode 行为
+
+- `DRAFT`：结果写为商家可见草稿，不产生 `AI` 客户消息。
+- `SHADOW`：保存完整 Run 和评估数据，但不进入客服 composer，也不发送。
+- `AUTO_LIMITED`：只有主题 allowlist、无工具写操作、证据充分且全部验证通过才发送。
+- `AUTO`：保留同样验证，只扩大已批准场景，不表示无限自治。
+
+## 10. Tool 设计
+
+### 10.1 第一批只读工具
+
+```text
+get_public_product_state(product_or_sku_code)
+get_current_public_price(sku_id, optional_quantity, optional_currency)
+get_current_availability(sku_id, optional_quantity)
+get_customer_order_status(order_reference)  # 需要身份验证
+handoff_to_human(reason, priority, summary)
+```
+
+MOQ 首版优先来自客户知识投影；若以后 MOQ 具有客户、数量梯度或时效性，再提升为工具。
+
+### 10.2 Tool 注册表
+
+每个 Tool 定义：
+
+- 名称、版本、用途说明和适用 intent。
+- strict input/output schema。
+- required authentication/permission/risk level。
+- timeout、retry、rate limit 和结果分类。
+- 是否可以向客户展示输出字段。
+- evidence renderer 和 failure/handoff policy。
+
+模型只看到经过当前租户设置筛选后的少量工具。工具描述应清晰且互不重叠，避免 planner
+因工具过多或语义相近而误选。
+
+## 11. API 设计
+
+以下为 v1 已落地接口；response schema 以 OpenAPI、Pydantic schema 和集成测试固化。
+
+### 11.1 AI 设置与运行
+
+```text
+GET   /api/v1/system/ai-generation/settings
+PUT   /api/v1/system/ai-generation/settings
+GET   /api/v1/support/ai/settings
+PATCH /api/v1/support/ai/settings
+POST  /api/v1/support/ai/test-runs
+GET   /api/v1/support/ai/runs
+GET   /api/v1/support/ai/runs/{run_id}
+PATCH /api/v1/support/conversations/{conversation_id}/automation
+```
+
+生成模型配置是平台级配置，只有平台管理员可以读写。API Key 使用
+`SUPPORT_AI_SETTINGS_MASTER_KEY` 加密，读取接口只返回是否已配置和末四位提示。旧 Key 留空
+表示保持不变。配置保存不发起模型请求；可在“问答试跑”中验证完整业务链路。
+
+### 11.2 知识来源
+
+```text
+GET    /api/v1/support/ai/knowledge/sources
+POST   /api/v1/support/ai/knowledge/sources/upload
+PATCH  /api/v1/support/ai/knowledge/sources/{source_id}
+POST   /api/v1/support/ai/knowledge/sources/{source_id}/approve
+POST   /api/v1/support/ai/knowledge/sources/{source_id}/reindex
+DELETE /api/v1/support/ai/knowledge/sources/{source_id}
+GET    /api/v1/support/ai/knowledge/jobs/{job_id}
+```
+
+`DELETE` 在 v1 表示撤销，不物理删除历史来源；既有 Run/Evidence 仍可审计。文件上传沿用对象
+存储和 media ID；大文件后续可增加预签名直传，不改变 source API。
+
+### 11.3 部署配置
+
+配置中心保存值优先于环境变量；环境变量作为冷启动/灾备回退：
+
+```text
+SUPPORT_AI_SETTINGS_MASTER_KEY
+SUPPORT_AI_ENABLED
+SUPPORT_AI_BASE_URL
+SUPPORT_AI_API_KEY
+SUPPORT_AI_MODEL
+SUPPORT_AI_TIMEOUT_SECONDS
+SUPPORT_AI_MAX_OUTPUT_TOKENS
+SUPPORT_AI_TEMPERATURE
+SUPPORT_AI_WORKER_INLINE
+SUPPORT_AI_STALE_JOB_SECONDS
+```
+
+标准生产 compose 将 `SUPPORT_AI_WORKER_INLINE=false`，由 `scripts.run_tenant_workers`
+处理队列；compact 和开发环境默认为 `true`。文件对象沿用现有 `OBJECT_STORAGE_*` R2/S3
+变量，向量模型沿用配置中心或 `TEXT_EMBEDDING_*`。
+
+### 11.3 公共消息引用
+
+现有公共 conversation/message 接口保持兼容，为消息增加：
+
+```json
+{
+  "id": "message-id",
+  "sender_type": "AI",
+  "body": "这款产品的公开起订量为 100 件。[1]",
+  "citations": [
+    {
+      "number": 1,
+      "title": "6L 智能宠物喂食器 · 产品规格",
+      "mode": "LINK",
+      "url": "/store/.../products/...",
+      "locator_label": "MOQ",
+      "updated_at": "2026-08-09T00:00:00Z"
+    }
+  ]
+}
+```
+
+URL 必须由服务端 allowlisted renderer 生成，不能直接使用模型输出或对象存储键。
+回答中的 `[1]` 等显示编号也由服务端根据已验证的 claim/evidence 映射插入；模型返回的
+编号文本不具有引用效力。
+
+## 12. 权限与 RLS
+
+建议新增权限：
+
+```text
+support.ai.manage
+support.ai.inspect
+support.ai.test
+knowledge.manage
+knowledge.approve
+```
+
+- `support.view/manage` 继续控制人工会话。
+- 只有 `support.ai.inspect` 可以查看模型输入、证据摘录和验证细节。
+- `knowledge.manage` 可以上传和编辑草稿，`knowledge.approve` 才能发布给客户 AI。
+- 默认 OWNER/ADMIN 获得管理与批准权限；客服角色默认只获得 inspect/test，不获得批准。
+- 新表均启用 tenant RLS；平台级 provider 配置沿用平台管理员边界。
+
+## 13. 前端设计
+
+### 13.1 新增“智能客服”模块
+
+已新增 `/console/support/ai`，包含：
+
+1. **概览**：运行模式、索引健康、近期 Run、自动回答/转人工/失败趋势。
+2. **知识来源**：SKU 索引、文件列表、分类、审核、版本、状态和错误。
+3. **回答策略**：允许主题、强制人工主题、语言、品牌语气和安全失败文案。
+4. **测试实验室**：输入真实问题，查看改写、候选证据、回答、引用和 Validator。
+5. **回答检查**：按 Run 查看完整 evidence、工具、模型版本和人工修改。
+
+悬浮球展示设置继续属于个人中心；人工会话继续属于客服管理，不与知识配置混在一起。
+
+### 13.2 客户 Widget
+
+- AI 消息显示清晰身份，不伪装成人工客服。
+- 引用显示在对应回答下方，支持标题、定位、更新时间和安全预览。
+- `LABEL` 引用不可点击到内部文件。
+- 客户始终有“转人工”入口。
+- AI 正在处理、需要补充信息、已转人工和暂时失败有不同状态。
+- 不在客户端计算权限、证据有效性或构造来源 URL。
+
+### 13.3 客服工作台
+
+- 展示 AI 草稿、采用、编辑后发送和拒绝操作。
+- 显示 AI 已使用来源及 `PUBLIC/CUSTOMER_APPROVED` 标识。
+- 人工接管时显示 AI 摘要、已收集参数和失败原因。
+- 人工编辑量、采用率和拒绝原因进入评估数据，但人工消息不会自动进入知识库。
+
+## 14. 多语言策略
+
+- 会话继续使用现有客服翻译基础；AI 生成前保留访客原文和 normalized query。
+- Retriever 使用多语言 Embedding，或对检索 query 生成受控翻译；不得翻译 SKU/订单号。
+- 首选与访客语言匹配的知识；缺失时可以跨语言检索并在回答阶段翻译。
+- customer citation title 可以按 locale 提供翻译；没有翻译时回退企业默认语言。
+- Evidence 始终指向原始来源版本，翻译后的摘录另存 hash 和 translator version。
+- 商品语言包是前台展示缓存，不直接作为客服事实源；事实仍来自商品知识版本。
+
+## 15. 安全实现
+
+### 15.1 输入和来源
+
+- 对用户输入、文件文本和工具输出使用明确的数据分隔，绝不拼进 system instruction。
+- 文件 parser 删除脚本/宏执行能力，只读取静态内容。
+- 扫描未 CLEAN 的 media object 不进入 parser。
+- 来源审批与客户 Agent 启用是服务端写操作，需权限和审计。
+
+### 15.2 工具
+
+- tenant/auth context 由 server-side context 注入。
+- 禁止 generic HTTP、generic SQL、filesystem 和 object-storage browser tool。
+- 输出 DTO 只包含公开字段；完整 ORM 不进入模型。
+- 未来写工具默认 require confirmation，并单独经过 tool input/output guardrail。
+
+### 15.3 输出
+
+- 拦截供应商、成本、内部备注、密钥形态和非 allowlisted URL。
+- 数字和单位从 claim/evidence 进行一致性检查。
+- 引用 renderer 不信任模型生成的 label/URL。
+- Validator 结果和拒绝原因使用安全错误码，不把内部实现暴露给客户。
+
+## 16. 测试策略
+
+### 16.1 单元测试
+
+- Customer product allowlist 和所有禁止字段哨兵测试。
+- 每种文件 parser/chunker/locator fixture。
+- query rewrite 对 SKU、数字、语言的保真。
+- retrieval filter、source quotas、authority 和 conflict policy。
+- structured output、citation 和 sensitive field validators。
+- tool strict schema、tenant injection 和 safe output DTO。
+
+### 16.2 数据库与集成测试
+
+- 所有新表的 tenant composite FK、RLS 和跨租户失败测试。
+- source 新版本原子激活、旧版本 stale、失败回滚。
+- 一个 evidence catalog 被多个 Run 使用且快照互不污染。
+- 一次 visitor message 只能创建一个 AITask/AI message。
+- 人工在模型运行期间回复会取消自动发送。
+- 文件撤销后退出新检索，但历史 Run 仍可审计。
+
+### 16.3 Agent 合约测试
+
+使用 FakeChatModel 固定返回：
+
+- 正确回答和引用。
+- 不存在/跨租户 evidence ID。
+- 引用存在但 claim 不受支持。
+- 内部字段泄漏。
+- 无效 JSON、超长文本、错误语言和循环工具调用。
+- 超时、限流和部分工具失败。
+
+### 16.4 离线评估
+
+建立 `support_ai_eval_cases` fixture 或独立数据集，保存问题、用户画像、期望 decision、
+必需/禁止 evidence、期望工具和关键事实。每次以下变化自动运行同一测试集：
+
+- 模型或 Prompt。
+- Embedding 或 chunker。
+- Retriever 权重/阈值。
+- 字段策略和知识 schema。
+- Tool 描述/schema。
+
+## 17. 可观测性与运营
+
+### 17.1 指标
+
+- 任务 queue wait、各 stage p50/p95、模型和工具错误率。
+- retrieval no-result、low-support、conflict、citation validation failure。
+- DRAFT 采用/修改/拒绝率，SHADOW correctness，AUTO resolution/handoff/repeat contact。
+- 每租户 Token、成本、日限额和 provider 限流。
+- 每来源命中、解决、失败和内容缺口。
+
+### 17.2 告警与开关
+
+- 跨租户或敏感字段 guardrail 命中立即产生安全告警。
+- 引用验证失败、模型失败和 tool failure 持续升高时自动降级到 DRAFT/人工。
+- 支持平台级 kill switch、租户 mode 和单会话 suspend 三层停止方式。
+- Provider route、Prompt、策略和 Agent 版本可快速回退到上一个已批准版本。
+
+## 18. 实施阶段
+
+阶段按依赖顺序推进，不以日期绑定。每一阶段完成验收后才进入下一阶段。
+
+### Phase 0：契约与基线（已完成）
+
+- 运行契约和开发设计进入文档索引。
+- 当前商品知识禁止字段测试通过。
+- 建立首批真实客服评估问题和敏感字段哨兵集合。
+
+### Phase 1：知识与证据基础（v1 已完成）
+
+- 新增 knowledge source、通用 document/chunk migration 和 RLS。
+- 新增 AI settings、SupportAIRun、EvidenceUse、会话 automation state。
+- 建立客户商品安全 DTO/投影器，移出供应商交期和内部字段。
+- 建立 source approval、version 和 citation renderer。
+- 暂不接入真实生成模型。
+
+验收：边界、版本、跨租户、引用 renderer 和 migration 测试全部通过。
+
+### Phase 2：SKU DRAFT/SHADOW 回答（v1 已完成）
+
+- 实现 ChatModelPort/adapter、Provider route 和 FakeChatModel。
+- 实现客服 Retriever、编排器、结构化回答和 Validator 链。
+- 后台测试实验室、Run inspection 和人工草稿。
+- 建立离线评估与回归命令。
+
+验收：真实 SKU 测试集达到批准基线；不产生客户自动消息。
+
+### Phase 3：企业文件知识（v1 已完成）
+
+- 实现知识文件上传、扫描、parser、chunker、ingestion job 和审核预览。
+- 支持 PDF/DOCX/TXT/Markdown；PPTX/XLSX 按真实需求接续。
+- 实现页/章节/段落/表格引用及历史版本审计。
+- SKU 与文件候选统一 rerank。
+
+验收：客户安全标题、引用定位、撤销、版本和 Prompt injection 测试通过。
+
+### Phase 4：`AUTO_LIMITED`（功能已完成，生产灰度由运营启用）
+
+- 仅开放批准的商品/品牌知识主题。
+- Widget 展示 AI、引用、处理状态和转人工。
+- 人工接管、并发 ownership 和失败降级完整上线。
+- 先小租户/小流量灰度，持续对比 Shadow 与人工结果。
+
+验收：运行契约第 16、20 节全部满足，紧急停用和回退演练通过。
+
+### Phase 5：实时只读工具
+
+- 逐个接入公开价格、可售状态、库存和已认证订单查询。
+- 每个工具单独评估选择、参数、权限、证据和失败行为。
+- 仍不开放退款、取消或资料修改。
+
+验收：动态事实不从 RAG 回答，工具证据带 observed_at，失败正确转人工。
+
+### Phase 6：持续优化
+
+- 内容缺口、低质量来源和人工修改分析。
+- Retriever/reranker、缓存、流式响应和多语言优化。
+- 只有在单编排器持续出现复杂 Prompt 或工具选择问题时，才评估专用 Agent；新增 Agent
+  不能改变运行契约。
+
+## 19. 完成定义
+
+一个智能客服阶段只有同时满足以下条件才算完成：
+
+- 功能代码、迁移、RLS、权限、API schema 和前端状态完整。
+- 单元、集成、跨租户、边界、Agent 合约和离线评估通过。
+- Run、Evidence、版本、工具和错误均可观测。
+- 故障降级、人工接管、kill switch 和回滚经过演练。
+- 文档中的当前状态、接口和验收结果同步更新。
+- 不存在只靠 Prompt 执行的关键安全边界。
+
+## 20. 行业实现参考
+
+本设计参考的官方资料（检索于 2026-08-09）：
+
+- [Intercom：Fin AI Engine 的 query refinement、RAG 和 answer validation](https://www.intercom.com/help/en/articles/9929230-the-fin-ai-engine)
+- [Intercom：知识来源与 AI Agent/Copilot 的可用范围](https://www.intercom.com/help/en/articles/9440354-knowledge-sources-to-power-ai-agents-and-self-serve-support)
+- [Zendesk：知识 chunk 与向量检索](https://support.zendesk.com/hc/en-us/articles/4408845739162-Optimizing-your-knowledge-content-for-generative-AI)
+- [Zendesk：Generative Procedures、API integration 与人工接管](https://support.zendesk.com/hc/en-us/articles/10473649691418-About-generative-procedures-for-AI-agents)
+- [Microsoft：知识、工具和 Topic 的生成式编排](https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/generative-orchestration)
+- [Microsoft：Grounding、provenance、citation 和输入输出安全检查](https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/generative-ai-public-websites)
+- [Microsoft：可重复 Agent test set 与 activity map](https://learn.microsoft.com/en-us/microsoft-copilot-studio/analytics-agent-evaluation-intro)
+- [Amazon Connect：query reformulation、hybrid retrieval、content filter 与 Agent version](https://docs.aws.amazon.com/connect/latest/adminguide/create-ai-agents.html)
+- [Salesforce：确定性 action、LLM tool 和用户确认](https://developer.salesforce.com/docs/ai/agentforce/guide/ascript-ref-actions.html)
+- [OpenAI：从单 Agent、分层 guardrail 到 human intervention](https://openai.com/business/guides-and-resources/a-practical-guide-to-building-ai-agents/)
+- [OpenAI Agents SDK：generation、tool、guardrail 与 handoff tracing](https://openai.github.io/openai-agents-python/tracing/)

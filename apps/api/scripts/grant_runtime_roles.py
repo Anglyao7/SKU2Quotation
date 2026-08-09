@@ -50,6 +50,21 @@ WORKER_TABLES = {
     "knowledge_documents",
     "knowledge_chunks",
     "embeddings",
+    "storefront_chat_conversations",
+    "storefront_chat_messages",
+    "support_ai_knowledge_sources",
+    "support_ai_knowledge_chunks",
+    "support_ai_ingestion_jobs",
+    "support_ai_runs",
+    "support_ai_evidence_uses",
+}
+WORKER_READ_ONLY_TABLES = {
+    "embedding_provider_settings",
+    "translation_provider_settings",
+    "support_ai_provider_settings",
+    "support_ai_settings",
+    "skus",
+    "public_catalog_offers",
 }
 
 
@@ -96,7 +111,9 @@ def grant_runtime_roles() -> dict[str, object]:
             )
             all_tables = {str(row[0]) for row in cursor.fetchall()}
             missing_auth = set(AUTH_TABLE_GRANTS) - all_tables
-            missing_worker = WORKER_TABLES - all_tables
+            missing_worker = (
+                WORKER_TABLES | WORKER_READ_ONLY_TABLES
+            ) - all_tables
             if missing_auth or missing_worker:
                 raise RuntimeError(
                     "required migrated tables are missing: "
@@ -176,6 +193,12 @@ def grant_runtime_roles() -> dict[str, object]:
                 ).format(sql.Identifier(auth_role))
             )
             _grant_tables(cursor, role_name=worker_role, tables=WORKER_TABLES)
+            _grant_tables(
+                cursor,
+                role_name=worker_role,
+                tables=WORKER_READ_ONLY_TABLES,
+                privileges=("SELECT",),
+            )
             # The BYPASSRLS scheduler can read only the three columns needed to
             # discover active IDs; it cannot inspect tenant profile data.
             # Business work still uses the NOBYPASSRLS worker connection after
@@ -195,7 +218,10 @@ def grant_runtime_roles() -> dict[str, object]:
             "table_count": len(AUTH_TABLE_GRANTS),
             "business_table_access": "revoked",
         },
-        "worker": {"role": worker_role, "table_count": len(WORKER_TABLES)},
+        "worker": {
+            "role": worker_role,
+            "table_count": len(WORKER_TABLES | WORKER_READ_ONLY_TABLES),
+        },
         "scheduler": {
             "role": scheduler_role,
             "table_count": 1,

@@ -26,6 +26,10 @@ class StorefrontChatConversationRow(AuditTimestampMixin, Base):
             "status IN ('OPEN', 'CLOSED')",
             name="status_allowed",
         ),
+        CheckConstraint(
+            "automation_state IN ('AI_ACTIVE', 'HUMAN_TAKEOVER')",
+            name="automation_state_allowed",
+        ),
         UniqueConstraint(
             "tenant_id",
             "id",
@@ -74,6 +78,12 @@ class StorefrontChatConversationRow(AuditTimestampMixin, Base):
     last_merchant_message_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+    automation_state: Mapped[str] = mapped_column(
+        String(30), default="AI_ACTIVE", nullable=False
+    )
+    automation_state_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

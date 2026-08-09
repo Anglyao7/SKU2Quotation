@@ -32,6 +32,10 @@
 .support-thread-message small { padding-inline: 3px; color: var(--gray-8); font-size: 10px; }
 .support-thread-message.is-merchant { align-self: flex-end; justify-items: end; }
 .support-thread-message.is-merchant .support-thread-bubble { border-radius: 16px 16px 5px 16px; color: white; background: var(--accent-9); }
+.support-thread-message.is-ai { align-self: flex-end; justify-items: end; }
+.support-thread-message.is-ai .support-thread-bubble { border: 1px solid var(--accent-a5); border-radius: 16px 16px 5px 16px; background: var(--accent-a2); }
+.support-thread-message.is-system { max-width: min(82%, 720px); align-self: center; justify-items: center; }
+.support-thread-message.is-system .support-thread-bubble { border-radius: 12px; color: var(--gray-10); background: var(--gray-a3); box-shadow: none; }
 .support-message-original { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--gray-a4); }
 .support-message-original summary { width: fit-content; color: var(--gray-9); font-size: 10px; cursor: pointer; user-select: none; }
 .support-message-original p { margin: 7px 0 0; color: var(--gray-10); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -39,6 +43,13 @@
 .support-thread-message.is-merchant .support-message-original summary,
 .support-thread-message.is-merchant .support-message-original p { color: rgba(255,255,255,.78); }
 .support-message-translation-note { display: block; margin-top: 7px; padding: 6px 8px !important; border-radius: 8px; color: var(--amber-11) !important; background: var(--amber-a3); line-height: 1.4; }
+.support-message-citations { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--accent-a5); }
+.support-message-citations summary { width: fit-content; color: var(--accent-11); font-size: 10px; font-weight: 650; cursor: pointer; }
+.support-message-citations > div { margin-top: 8px; display: grid; gap: 7px; }
+.support-message-citations article { padding: 8px 9px; display: grid; gap: 2px; border-radius: 9px; background: var(--color-panel-solid); }
+.support-message-citations b { font-size: 10px; }
+.support-message-citations article small { padding: 0; color: var(--gray-9); font-size: 9px; }
+.support-message-citations p { margin: 2px 0 0; color: var(--gray-10); font-size: 10px; line-height: 1.5; }
 .support-thread-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; padding: 13px; border-top: 1px solid var(--gray-a4); background: var(--color-panel-solid); }
 .support-composer-fields { min-width: 0; display: grid; gap: 8px; }
 .support-composer-fields > label { display: grid; gap: 6px; }
