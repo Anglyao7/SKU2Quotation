@@ -25,6 +25,7 @@ dist/
 coverage/
 *.tsbuildinfo
 .vite/
+.vite-cache/
 .npm/
 .pnpm-store/
 

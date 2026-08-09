@@ -273,6 +273,7 @@ def list_images(
             .where(
                 ProductImageRow.tenant_id == tenant_id,
                 ProductImageRow.product_id == product_id,
+                ProductImageRow.deleted_at.is_(None),
             )
             .order_by(
                 case((ProductImageRow.image_role == "MAIN", 0), else_=1),
@@ -303,6 +304,7 @@ def list_sku_page_rows(
     missing_images_only: bool,
     page: int,
     page_size: int,
+    sku_ids: set[UUID] | None = None,
 ) -> tuple[list[SkuListRow], int]:
     conditions = [
         SkuRow.tenant_id == tenant_id,
@@ -315,6 +317,10 @@ def list_sku_page_rows(
         conditions.append(SkuRow.status.in_(statuses))
     else:
         conditions.append(SkuRow.status != "ARCHIVED")
+    if sku_ids is not None:
+        if not sku_ids:
+            return [], 0
+        conditions.append(SkuRow.id.in_(sku_ids))
     if category_id is not None:
         conditions.append(
             or_(

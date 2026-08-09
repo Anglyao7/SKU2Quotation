@@ -110,6 +110,23 @@ class SkuListPage(BaseModel):
     pages: int = Field(ge=0)
 
 
+class SkuCatalogExportRequest(BaseModel):
+    q: str = Field(default="", max_length=200)
+    category_id: UUID | None = None
+    statuses: list[Literal["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"]] = Field(
+        default_factory=list,
+        max_length=4,
+    )
+    missing_images_only: bool = False
+    sku_ids: list[UUID] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_sku_ids(self) -> "SkuCatalogExportRequest":
+        if len(self.sku_ids) != len(set(self.sku_ids)):
+            raise ValueError("sku ids must be unique")
+        return self
+
+
 class SkuCreateItem(BaseModel):
     sku_code: str = Field(min_length=1, max_length=160)
     name: str | None = Field(default=None, max_length=500)
@@ -528,6 +545,20 @@ class ProductAttributeResponse(BaseModel):
     value: Any
     unit_code: str | None
     review_status: str
+
+
+class ProductImageResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    url: str
+    original_filename: str | None
+    content_type: str
+    byte_size: int = Field(ge=0)
+    width: int | None
+    height: int | None
+    image_role: str
+    approval_status: str
+    created_at: datetime
 
 
 class ProductAuditEventResponse(BaseModel):

@@ -279,6 +279,7 @@ export interface CoreProduct {
   price?: number;
   currency?: string;
   updated: string;
+  primaryImageUrl?: string;
   imageStatus: "SOURCE" | "APPROVED" | "NONE";
   tags: string[];
   skuCount: number;

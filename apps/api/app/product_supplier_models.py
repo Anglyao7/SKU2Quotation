@@ -194,6 +194,7 @@ class ProductImageRow(AuditTimestampMixin, Base):
             ondelete="CASCADE",
         ),
         Index("ix_product_images_tenant_product_sort", "tenant_id", "product_id", "sort_order"),
+        Index("ix_product_images_tenant_sha256", "tenant_id", "sha256"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

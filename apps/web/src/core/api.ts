@@ -408,21 +408,26 @@ async function request<T>(path: string, init: RequestInit = {}, retrySession = t
   }
 }
 
-async function downloadCoreFile(
+async function downloadCoreRequest(
   path: string,
   filename: string,
+  init: RequestInit = {},
   retrySession = true,
 ): Promise<void> {
-  const headers = new Headers();
+  const headers = new Headers(init.headers);
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+  if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await safeFetch(`${API_BASE}${path}`, {
+    ...init,
     headers,
     credentials: "include",
     cache: "no-store",
   });
   if (response.status === 401 && retrySession) {
     const restored = await refreshAuthSession();
-    if (restored) return downloadCoreFile(path, filename, false);
+    if (restored) return downloadCoreRequest(path, filename, init, false);
     window.dispatchEvent(new CustomEvent("atc:auth-expired"));
   }
   if (!response.ok) {
@@ -445,6 +450,14 @@ async function downloadCoreFile(
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+async function downloadCoreFile(
+  path: string,
+  filename: string,
+  retrySession = true,
+): Promise<void> {
+  return downloadCoreRequest(path, filename, {}, retrySession);
 }
 
 export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
@@ -1108,6 +1121,7 @@ interface ApiProduct {
   category?: { id: string; code: string; name: string } | null;
   sku_count: number;
   supplier_count: number;
+  primary_image_url?: string | null;
   image_status: CoreProduct["imageStatus"];
   current_version: number;
   updated_at: string;
@@ -1209,6 +1223,7 @@ function mapProduct(row: ApiProduct): CoreProduct {
     price: row.price == null ? undefined : Number(row.price),
     currency: defined(row.currency),
     updated: row.updated_at,
+    primaryImageUrl: defined(row.primary_image_url),
     imageStatus: row.image_status,
     tags: row.tags ?? [],
     skuCount: row.sku_count,
@@ -1310,6 +1325,69 @@ export async function listSkus(params: {
     pageSize: row.page_size,
     total: row.total,
     pages: row.pages,
+  };
+}
+
+export async function exportSkuCatalog(params: {
+  q?: string;
+  categoryId?: string;
+  statuses?: ProductSku["status"][];
+  missingImagesOnly?: boolean;
+  skuIds?: string[];
+} = {}): Promise<void> {
+  await downloadCoreRequest(
+    "/product-center/skus/export",
+    `SKU商品库-${new Date().toISOString().slice(0, 10)}.xlsx`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        q: params.q ?? "",
+        category_id: params.categoryId || null,
+        statuses: params.statuses ?? [],
+        missing_images_only: Boolean(params.missingImagesOnly),
+        sku_ids: params.skuIds ?? [],
+      }),
+    },
+  );
+}
+
+export interface ProductImageUploadResult {
+  id: string;
+  productId: string;
+  url: string;
+  originalFilename?: string;
+  contentType: string;
+  byteSize: number;
+  width?: number;
+  height?: number;
+}
+
+export async function uploadProductMainImage(
+  productId: string,
+  image: File,
+): Promise<ProductImageUploadResult> {
+  const body = new FormData();
+  body.append("image", image);
+  const row = await request<{
+    id: string;
+    product_id: string;
+    url: string;
+    original_filename?: string | null;
+    content_type: string;
+    byte_size: number;
+    width?: number | null;
+    height?: number | null;
+  }>(`/products/${productId}/images/main`, { method: "POST", body });
+  bumpPublicCatalogRevision();
+  return {
+    id: row.id,
+    productId: row.product_id,
+    url: row.url,
+    originalFilename: defined(row.original_filename),
+    contentType: row.content_type,
+    byteSize: row.byte_size,
+    width: defined(row.width),
+    height: defined(row.height),
   };
 }
 

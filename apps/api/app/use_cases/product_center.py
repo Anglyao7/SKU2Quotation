@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+import io
 import os
+import tempfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ApplicationError
 from ..db_models import SupplierRow
-from ..model_mixins import utcnow
+from ..model_mixins import mark_deleted, utcnow
 from ..product_center_models import (
     AttributeDefinitionRow,
     ProductAuditEventRow,
@@ -40,12 +44,14 @@ from ..product_center_schemas import (
     ProductCard,
     ProductCategorySummary,
     ProductDetail,
+    ProductImageResponse,
     ProductOfferSummary,
     PublicCatalogOfferResponse,
     PublicCatalogOfferUpsertRequest,
     ProductReviewQueueItem,
     ReviewQueueField,
     SkuBatchCreateRequest,
+    SkuCatalogExportRequest,
     SkuListItem,
     SkuListPage,
     SkuResponse,
@@ -67,6 +73,8 @@ from ..services.category_template_import import (
     CategoryTemplateParseResult,
     category_name_key,
 )
+from ..adapters.object_storage import get_object_storage
+from ..services.sku_catalog_export import build_sku_catalog_workbook
 
 
 FIELD_LABELS = {
@@ -80,6 +88,31 @@ FIELD_LABELS = {
     "packing": "包装",
     "description": "产品描述",
 }
+
+MAX_PRODUCT_IMAGE_BYTES = max(
+    1,
+    int(os.getenv("PRODUCT_IMAGE_MAX_BYTES", str(20 * 1024 * 1024))),
+)
+MAX_PRODUCT_IMAGE_EDGE = max(
+    320,
+    int(os.getenv("PRODUCT_IMAGE_MAX_EDGE", "2400")),
+)
+MAX_SKU_EXPORT_ROWS = max(
+    1,
+    int(os.getenv("SKU_EXPORT_MAX_ROWS", "100000")),
+)
+
+
+def _storefront_slug(session: Session, *, tenant_id: UUID) -> str | None:
+    slug = session.scalar(
+        select(TenantPublicProfileRow.slug).where(
+            TenantPublicProfileRow.tenant_id == tenant_id
+        )
+    )
+    if slug:
+        return slug
+    tenant = session.get(TenantRow, tenant_id)
+    return tenant.slug if tenant is not None else None
 
 
 def _sku_thumbnail_url(
@@ -102,6 +135,38 @@ def _sku_thumbnail_url(
     if image.approval_status != "APPROVED" or not storefront_slug:
         return None
     return f"/api/store/{quote(storefront_slug, safe='')}/media/{image.id}"
+
+
+def _absolute_image_url(
+    image: ProductImageRow,
+    *,
+    storefront_slug: str | None,
+) -> str:
+    url = _sku_thumbnail_url(image, storefront_slug=storefront_slug) or ""
+    if not url.startswith("/"):
+        return url
+    public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    return f"{public_base_url}{url}" if public_base_url else url
+
+
+def _image_response(
+    image: ProductImageRow,
+    *,
+    storefront_slug: str | None,
+) -> ProductImageResponse:
+    return ProductImageResponse(
+        id=image.id,
+        product_id=image.product_id,
+        url=_sku_thumbnail_url(image, storefront_slug=storefront_slug) or "",
+        original_filename=image.original_filename,
+        content_type=image.content_type,
+        byte_size=image.byte_size,
+        width=image.width,
+        height=image.height,
+        image_role=image.image_role,
+        approval_status=image.approval_status,
+        created_at=image.created_at,
+    )
 
 SKU_STATUSES = frozenset({"DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"})
 
@@ -258,6 +323,7 @@ def _card(
     tenant_id: UUID,
     product: Any,
     permissions: frozenset[str],
+    storefront_slug: str | None,
 ) -> ProductCard:
     category = repository.get_category(
         session, tenant_id=tenant_id, category_id=product.category_id
@@ -275,6 +341,7 @@ def _card(
     )
     skus = repository.list_skus(session, tenant_id=tenant_id, product_id=product.id)
     images = repository.list_images(session, tenant_id=tenant_id, product_id=product.id)
+    primary_image = images[0] if images else None
     image_status = (
         "APPROVED"
         if any(image.approval_status == "APPROVED" for image in images)
@@ -313,7 +380,14 @@ def _card(
         material=material,
         sku_count=len(skus),
         supplier_count=len(offers),
-        primary_image_url=None,
+        primary_image_url=(
+            _sku_thumbnail_url(
+                primary_image,
+                storefront_slug=storefront_slug,
+            )
+            if primary_image is not None
+            else None
+        ),
         image_status=image_status,
         current_offer=current_offer,
         current_version=product.current_version,
@@ -351,8 +425,15 @@ def list_products(
         approved_images_only=approved_images_only,
         limit=limit,
     )
+    storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
     return [
-        _card(session, tenant_id=tenant_id, product=row, permissions=permissions)
+        _card(
+            session,
+            tenant_id=tenant_id,
+            product=row,
+            permissions=permissions,
+            storefront_slug=storefront_slug,
+        )
         for row in rows
     ]
 
@@ -422,14 +503,7 @@ def list_skus(
             )
             target.append((source, supplier))
 
-    storefront_slug = session.scalar(
-        select(TenantPublicProfileRow.slug).where(
-            TenantPublicProfileRow.tenant_id == tenant_id
-        )
-    )
-    if not storefront_slug:
-        tenant = session.get(TenantRow, tenant_id)
-        storefront_slug = tenant.slug if tenant is not None else None
+    storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
 
     image_statuses_by_product: dict[UUID, set[str]] = {}
     thumbnail_urls_by_product: dict[UUID, str] = {}
@@ -531,6 +605,67 @@ def list_skus(
     )
 
 
+def export_sku_catalog(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    request: SkuCatalogExportRequest,
+) -> bytes:
+    _require(permissions, "product.view")
+    rows, total = repository.list_sku_page_rows(
+        session,
+        tenant_id=tenant_id,
+        query=request.q,
+        category_id=request.category_id,
+        statuses=list(request.statuses),
+        missing_images_only=request.missing_images_only,
+        page=1,
+        page_size=MAX_SKU_EXPORT_ROWS + 1,
+        sku_ids=set(request.sku_ids) if request.sku_ids else None,
+    )
+    if total > MAX_SKU_EXPORT_ROWS:
+        raise ApplicationError(
+            "SKU_EXPORT_TOO_LARGE",
+            f"当前结果包含 {total} 个 SKU，请先按分类或状态筛选后再导出。",
+            kind="too_large",
+        )
+
+    product_ids = {row.product.id for row in rows}
+    images_by_product: dict[UUID, list[ProductImageRow]] = {}
+    ordered_product_ids = list(product_ids)
+    for start in range(0, len(ordered_product_ids), 1000):
+        for image in repository.list_images_for_products(
+            session,
+            tenant_id=tenant_id,
+            product_ids=set(ordered_product_ids[start : start + 1000]),
+        ):
+            images_by_product.setdefault(image.product_id, []).append(image)
+
+    supplier_rows = repository.list_suppliers_by_ids(
+        session,
+        tenant_id=tenant_id,
+        supplier_ids={
+            row.sku.supplier_id
+            for row in rows
+            if row.sku.supplier_id is not None
+        },
+    )
+    supplier_names = {row.id: row.name for row in supplier_rows}
+    storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
+    image_urls = {
+        image.id: _absolute_image_url(image, storefront_slug=storefront_slug)
+        for images in images_by_product.values()
+        for image in images
+    }
+    return build_sku_catalog_workbook(
+        rows=rows,
+        images_by_product=images_by_product,
+        image_urls=image_urls,
+        supplier_names=supplier_names,
+    )
+
+
 def get_product(
     session: Session,
     *,
@@ -542,7 +677,13 @@ def get_product(
     product = repository.get_product_row(session, tenant_id=tenant_id, product_id=product_id)
     if product is None:
         raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
-    card = _card(session, tenant_id=tenant_id, product=product, permissions=permissions)
+    card = _card(
+        session,
+        tenant_id=tenant_id,
+        product=product,
+        permissions=permissions,
+        storefront_slug=_storefront_slug(session, tenant_id=tenant_id),
+    )
     attributes = repository.list_attributes(session, tenant_id=tenant_id, product_id=product.id)
     skus = repository.list_skus(session, tenant_id=tenant_id, product_id=product.id)
     audit = repository.list_audit_events(session, tenant_id=tenant_id, product_id=product.id)
@@ -581,6 +722,158 @@ def get_product(
             )
             for row in audit
         ],
+    )
+
+
+def _normalized_product_image(content: bytes) -> tuple[bytes, int, int]:
+    try:
+        with Image.open(io.BytesIO(content)) as source:
+            source.verify()
+        with Image.open(io.BytesIO(content)) as source:
+            image = ImageOps.exif_transpose(source)
+            image.load()
+            image.thumbnail(
+                (MAX_PRODUCT_IMAGE_EDGE, MAX_PRODUCT_IMAGE_EDGE),
+                Image.Resampling.LANCZOS,
+            )
+            has_alpha = "A" in image.getbands() or (
+                image.mode == "P" and "transparency" in image.info
+            )
+            normalized = image.convert("RGBA" if has_alpha else "RGB")
+            output = io.BytesIO()
+            normalized.save(output, format="WEBP", quality=90, method=4)
+            return output.getvalue(), normalized.width, normalized.height
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_INVALID",
+            "图片无法识别，请上传 PNG、JPG 或 WebP 文件。",
+        ) from exc
+
+
+def upload_product_main_image(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+    filename: str | None,
+    content: bytes,
+) -> ProductImageResponse:
+    _require(permissions, "product.edit")
+    if not content:
+        raise ApplicationError("PRODUCT_IMAGE_EMPTY", "请选择一张商品图片。")
+    if len(content) > MAX_PRODUCT_IMAGE_BYTES:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_TOO_LARGE",
+            f"商品图片不能超过 {MAX_PRODUCT_IMAGE_BYTES // (1024 * 1024)} MB。",
+            kind="too_large",
+        )
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if product is None:
+        raise ApplicationError(
+            "PRODUCT_NOT_FOUND",
+            "Product was not found.",
+            kind="not_found",
+        )
+
+    processed, width, height = _normalized_product_image(content)
+    image_id = uuid4()
+    object_key = f"tenants/{tenant_id}/products/{product_id}/images/{image_id}.webp"
+    storage = get_object_storage()
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".webp") as temporary:
+            temporary.write(processed)
+            temporary.flush()
+            storage.put_file(
+                Path(temporary.name),
+                object_key=object_key,
+                content_type="image/webp",
+            )
+    except Exception as exc:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_STORAGE_UNAVAILABLE",
+            "图片上传到 Cloudflare R2 失败，请稍后重试。",
+            kind="unavailable",
+        ) from exc
+
+    now = utcnow()
+    previous_main_images = [
+        image
+        for image in repository.list_images(
+            session,
+            tenant_id=tenant_id,
+            product_id=product_id,
+        )
+        if image.image_role == "MAIN"
+    ]
+    for previous in previous_main_images:
+        mark_deleted(previous, at=now)
+
+    image = ProductImageRow(
+        id=image_id,
+        tenant_id=tenant_id,
+        product_id=product_id,
+        storage_provider=storage.backend_name.upper(),
+        bucket=os.getenv("OBJECT_STORAGE_BUCKET", "local") or "local",
+        object_key=object_key,
+        original_filename=(filename or f"{product.name}.webp")[:500],
+        content_type="image/webp",
+        byte_size=len(processed),
+        sha256=sha256(processed).hexdigest(),
+        width=width,
+        height=height,
+        image_role="MAIN",
+        sort_order=0,
+        approval_status="APPROVED",
+        alt_text=product.name,
+        created_by=user_id,
+    )
+    session.add(image)
+    product.current_version += 1
+    product.updated_by = user_id
+    product.updated_at = now
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=product.id,
+            entity_type="PRODUCT",
+            entity_id=str(product.id),
+            action="product.image.uploaded",
+            before={
+                "main_image_ids": [str(previous.id) for previous in previous_main_images],
+            },
+            after={
+                "image_id": str(image.id),
+                "object_key": image.object_key,
+                "width": width,
+                "height": height,
+            },
+            actor_membership_id=membership_id,
+            occurred_at=now,
+        )
+    )
+    try:
+        _commit(
+            session,
+            conflict_code="PRODUCT_IMAGE_CONFLICT",
+            conflict_message="Product image could not be indexed.",
+        )
+    except Exception:
+        try:
+            storage.delete(object_key)
+        except Exception:
+            pass
+        raise
+    session.refresh(image)
+    return _image_response(
+        image,
+        storefront_slug=_storefront_slug(session, tenant_id=tenant_id),
     )
 
 
