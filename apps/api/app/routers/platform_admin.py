@@ -13,6 +13,7 @@ from ..platform_admin_schemas import (
     PlatformMerchantOwnerAccount,
     PlatformMerchantOwnerCreate,
     PlatformTenantCreate,
+    PlatformTenantSubscriptionUpdate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
 )
@@ -68,6 +69,27 @@ def update_tenant_endpoint(
 ) -> PlatformTenantSummary:
     try:
         return use_cases.update_tenant(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/tenants/{tenant_id}/subscription",
+    response_model=PlatformTenantSummary,
+)
+def update_tenant_subscription_endpoint(
+    tenant_id: UUID,
+    request: PlatformTenantSubscriptionUpdate,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> PlatformTenantSummary:
+    try:
+        return use_cases.update_tenant_subscription(
             session,
             context=context,
             tenant_id=tenant_id,

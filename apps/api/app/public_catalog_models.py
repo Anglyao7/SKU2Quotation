@@ -186,6 +186,9 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
     customer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     customer_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    document_locale: Mapped[str] = mapped_column(
+        String(20), default="zh-CN", nullable=False
+    )
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     subtotal_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
     estimated_total: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)

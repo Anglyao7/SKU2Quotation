@@ -13,6 +13,10 @@ from .tenant_modules import (
     canonical_tenant_module_list,
     default_tenant_modules,
 )
+from .tenant_subscriptions import (
+    TenantSubscriptionStatus,
+    TenantSubscriptionTier,
+)
 
 
 TenantStatus = Literal["active", "suspended", "archived"]
@@ -72,6 +76,12 @@ class PlatformTenantSummary(BaseModel):
     default_currency: str
     timezone: str
     enabled_modules: list[TenantModuleCode]
+    subscription_tier: TenantSubscriptionTier
+    subscription_started_at: datetime
+    subscription_expires_at: datetime
+    subscription_status: TenantSubscriptionStatus
+    sku_limit: int | None = Field(default=None, ge=0)
+    sku_remaining: int | None = Field(default=None, ge=0)
     contact_email: str | None
     sku_count: int = Field(ge=0)
     quote_count: int = Field(ge=0)
@@ -137,6 +147,24 @@ class PlatformTenantUpdate(BaseModel):
         value: list[TenantModuleCode] | None,
     ) -> list[TenantModuleCode] | None:
         return None if value is None else canonical_tenant_module_list(value)
+
+
+class PlatformTenantSubscriptionUpdate(BaseModel):
+    subscription_tier: TenantSubscriptionTier
+    subscription_expires_at: datetime
+    sku_limit: int | None = Field(default=None, ge=0)
+
+    @field_validator("subscription_tier", mode="before")
+    @classmethod
+    def normalize_tier(cls, value: object) -> object:
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("subscription_expires_at")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Subscription expiry must include a timezone.")
+        return value
 
 
 class PlatformMemberInvitationCreate(BaseModel):

@@ -140,17 +140,28 @@ class MeResponse(BaseModel):
 class MerchantSettingsUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     business_mode: Literal["DOMESTIC", "EXPORT"] | None = None
+    default_currency: str | None = Field(default=None, min_length=3, max_length=3)
     hot_products_enabled: bool | None = None
     storefront_locales: list[StorefrontLocale] | None = Field(
         default=None,
         min_length=1,
-        max_length=7,
+        max_length=8,
     )
 
     @field_validator("name", mode="before")
     @classmethod
     def normalize_name(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("default_currency", mode="before")
+    @classmethod
+    def normalize_default_currency(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        if len(normalized) != 3 or not normalized.isalpha() or not normalized.isascii():
+            raise ValueError("currency must be a three-letter ISO-style code")
+        return normalized
 
     @field_validator("storefront_locales")
     @classmethod
@@ -167,6 +178,7 @@ class MerchantSettingsUpdate(BaseModel):
         if (
             self.name is None
             and self.business_mode is None
+            and self.default_currency is None
             and self.hot_products_enabled is None
             and self.storefront_locales is None
         ):

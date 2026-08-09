@@ -57,6 +57,7 @@ from app.identity_models import (
     RolePermissionRow,
     RoleRow,
     TenantRow,
+    TenantSubscriptionRow,
     UserRow,
 )
 from app.inventory_models import WarehouseRow
@@ -671,6 +672,13 @@ def test_merchant_name_collision_receives_unique_storefront_path() -> None:
 
 
 def test_merchant_business_mode_switches_default_currency_safely() -> None:
+    initial_catalog = client.get(
+        "/api/store/demo/skus",
+        params={"page": 1, "page_size": 1, "include_facets": "false"},
+    )
+    assert initial_catalog.status_code == 200, initial_catalog.text
+    initial_sku = initial_catalog.json()["items"][0]
+    initial_price = Decimal(str(initial_sku["price"]))
     with SessionLocal() as session:
         tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
         assert tenant is not None
@@ -709,6 +717,36 @@ def test_merchant_business_mode_switches_default_currency_safely() -> None:
         assert me_response.status_code == 200
         assert me_response.json()["context"]["business_mode"] == "EXPORT"
         assert me_response.json()["context"]["default_currency"] == "USD"
+
+        eur_response = client.patch(
+            "/api/v1/me/merchant",
+            json={"default_currency": "eur"},
+        )
+        assert eur_response.status_code == 200, eur_response.text
+        assert eur_response.json()["business_mode"] == "EXPORT"
+        assert eur_response.json()["default_currency"] == "EUR"
+
+        eur_catalog = client.get(
+            "/api/store/demo/skus",
+            params={"page": 1, "page_size": 1, "include_facets": "false"},
+        )
+        assert eur_catalog.status_code == 200, eur_catalog.text
+        eur_sku = eur_catalog.json()["items"][0]
+        assert eur_sku["currency"] == "EUR"
+        assert Decimal(str(eur_sku["price"])) == initial_price
+
+        eur_quote = client.post(
+            "/api/store/demo/quotes",
+            json={
+                "locale": "zh-CN",
+                "customer_name": "Currency Snapshot Test",
+                "privacy_acknowledged": True,
+                "items": [{"sku_id": eur_sku["id"], "quantity": 1}],
+            },
+        )
+        assert eur_quote.status_code == 201, eur_quote.text
+        assert eur_quote.json()["currency"] == "EUR"
+        assert Decimal(str(eur_quote.json()["total"])) == initial_price
 
         domestic_response = client.patch(
             "/api/v1/me/merchant",
@@ -3123,6 +3161,226 @@ def test_platform_admin_manages_tenant_lifecycle(
     )
     assert current_tenant_guard.status_code == 409
     assert current_tenant_guard.json()["detail"]["code"] == "ACTIVE_TENANT_SUSPENSION_FORBIDDEN"
+
+
+def test_platform_admin_manages_merchant_subscription_level_and_expiry() -> None:
+    suffix = uuid4().hex[:10]
+    created = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": f"Subscription Merchant {suffix}",
+            "slug": f"subscription-{suffix}",
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    merchant = created.json()
+    started_at = datetime.fromisoformat(merchant["subscription_started_at"])
+    expires_at = datetime.fromisoformat(merchant["subscription_expires_at"])
+    assert merchant["subscription_tier"] == "TRIAL"
+    assert merchant["subscription_status"] == "active"
+    assert merchant["sku_limit"] == 500
+    assert merchant["sku_remaining"] == 500
+    assert timedelta(days=27) <= expires_at - started_at <= timedelta(days=32)
+
+    two_year_expiry = datetime.now(UTC) + timedelta(days=730)
+    updated = client.patch(
+        f"/api/admin/tenants/{merchant['id']}/subscription",
+        json={
+            "subscription_tier": "silver",
+            "subscription_expires_at": two_year_expiry.isoformat(),
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    subscription = updated.json()
+    assert subscription["subscription_tier"] == "SILVER"
+    assert subscription["subscription_status"] == "active"
+    assert subscription["sku_limit"] == 5000
+    assert abs(
+        datetime.fromisoformat(subscription["subscription_expires_at"]).timestamp()
+        - two_year_expiry.timestamp()
+    ) < 1
+
+    listed = client.get("/api/admin/tenants")
+    assert listed.status_code == 200, listed.text
+    listed_merchant = next(row for row in listed.json() if row["id"] == merchant["id"])
+    assert listed_merchant["subscription_tier"] == "SILVER"
+
+    custom_quota = client.patch(
+        f"/api/admin/tenants/{merchant['id']}/subscription",
+        json={
+            "subscription_tier": "SILVER",
+            "subscription_expires_at": two_year_expiry.isoformat(),
+            "sku_limit": 12_345,
+        },
+    )
+    assert custom_quota.status_code == 200, custom_quota.text
+    assert custom_quota.json()["sku_limit"] == 12_345
+
+    elite = client.patch(
+        f"/api/admin/tenants/{merchant['id']}/subscription",
+        json={
+            "subscription_tier": "ELITE",
+            "subscription_expires_at": two_year_expiry.isoformat(),
+        },
+    )
+    assert elite.status_code == 200, elite.text
+    assert elite.json()["sku_limit"] is None
+    assert elite.json()["sku_remaining"] is None
+
+    invalid_expiry = client.patch(
+        f"/api/admin/tenants/{merchant['id']}/subscription",
+        json={
+            "subscription_tier": "ELITE",
+            "subscription_expires_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        },
+    )
+    assert invalid_expiry.status_code == 422
+    assert invalid_expiry.json()["detail"]["code"] == "SUBSCRIPTION_EXPIRY_MUST_BE_FUTURE"
+
+    invalid_tier = client.patch(
+        f"/api/admin/tenants/{merchant['id']}/subscription",
+        json={
+            "subscription_tier": "VIP",
+            "subscription_expires_at": two_year_expiry.isoformat(),
+        },
+    )
+    assert invalid_tier.status_code == 422
+
+
+def test_sku_quota_blocks_manual_batch_and_template_import_creation(
+    request: pytest.FixtureRequest,
+) -> None:
+    suffix = uuid4().hex[:10].upper()
+    product_id = uuid4()
+    manual_product_code = f"QUOTA-MANUAL-{suffix}"
+    manual_sku_code = f"QUOTA-MANUAL-SKU-{suffix}"
+    batch_sku_code = f"QUOTA-BATCH-SKU-{suffix}"
+    import_sku_code = f"QUOTA-IMPORT-SKU-{suffix}"
+    import_job_ids: list[str] = []
+    original_limit: int | None = None
+
+    def cleanup() -> None:
+        _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[manual_sku_code, batch_sku_code, import_sku_code],
+            category_names=[f"配额测试分类 {suffix}"],
+        )
+        with SessionLocal() as session:
+            subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
+            assert subscription is not None
+            subscription.sku_limit = original_limit
+            session.execute(
+                delete(ProductRow).where(
+                    ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductRow.id == product_id,
+                )
+            )
+            session.commit()
+
+    request.addfinalizer(cleanup)
+
+    with SessionLocal() as session:
+        subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
+        assert subscription is not None
+        original_limit = subscription.sku_limit
+        current_sku_count = int(
+            session.scalar(
+                select(func.count(SkuRow.id)).where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.deleted_at.is_(None),
+                )
+            )
+            or 0
+        )
+        # A product without an SKU does not consume capacity. Only SKU rows
+        # are counted by the subscription quota.
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"QUOTA-PRODUCT-{suffix}",
+                name=f"SKU 配额测试商品 {suffix}",
+                status="ACTIVE",
+            )
+        )
+        subscription.sku_limit = current_sku_count
+        session.commit()
+
+    manual = client.post(
+        "/api/v1/products",
+        json={
+            "name": f"配额手动商品 {suffix}",
+            "product_code": manual_product_code,
+            "sku_code": manual_sku_code,
+            "unit_price": "0",
+            "currency": "CNY",
+        },
+    )
+    assert manual.status_code == 409, manual.text
+    assert manual.json()["detail"]["code"] == "SKU_LIMIT_EXCEEDED"
+
+    batch = client.post(
+        f"/api/v1/products/{product_id}/skus",
+        json={
+            "items": [
+                {
+                    "sku_code": batch_sku_code,
+                    "name": f"配额批量 SKU {suffix}",
+                    "option_values": {},
+                    "status": "ACTIVE",
+                }
+            ]
+        },
+    )
+    assert batch.status_code == 409, batch.text
+    assert batch.json()["detail"]["code"] == "SKU_LIMIT_EXCEEDED"
+
+    imported = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                f"配额测试-{suffix}.xlsx",
+                _product_template_bytes(
+                    [
+                        [
+                            f"配额导入商品 {suffix}",
+                            f"配额测试分类 {suffix}",
+                            import_sku_code,
+                            None,
+                            0,
+                            None,
+                            None,
+                            None,
+                            *([None] * 10),
+                        ]
+                    ]
+                ),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert imported.status_code == 201, imported.text
+    import_job_ids.append(imported.json()["id"])
+    assert imported.json()["status"] == "failed"
+    assert "SKU 数量将超过当前等级上限" in imported.json()["error_message"]
+
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count(ProductRow.id)).where(
+                ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductRow.product_code == manual_product_code,
+            )
+        ) == 0
+        assert session.scalar(
+            select(func.count(SkuRow.id)).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code.in_(
+                    (manual_sku_code, batch_sku_code, import_sku_code)
+                ),
+            )
+        ) == 0
 
 
 def test_platform_admin_can_open_a_password_login_owner_for_an_existing_merchant(
@@ -5736,6 +5994,7 @@ def test_postgresql_offline_migration_contains_forced_rls_policies() -> None:
         "catalog_delete_jobs",
         "storefront_chat_conversations",
         "storefront_chat_messages",
+        "tenant_subscriptions",
         "catalog_language_packs",
         "ai_runs",
         "ai_task_steps",
@@ -11662,6 +11921,48 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
                 language_payload["skus"][sku["id"]]["source_hash"]
             )
 
+        quote_sku = source_skus.json()["items"][0]
+        localized_quote = client.post(
+            "/api/store/demo/quotes",
+            json={
+                "locale": "en-US",
+                "customer_name": "International Buyer",
+                "privacy_acknowledged": True,
+                "items": [{"sku_id": quote_sku["id"], "quantity": 2}],
+            },
+        )
+        assert localized_quote.status_code == 201, localized_quote.text
+        localized_draft = localized_quote.json()
+        assert localized_draft["locale"] == "en-US"
+        assert localized_draft["items"][0]["name_snapshot"] == (
+            language_payload["skus"][quote_sku["id"]]["name"]
+        )
+        assert localized_draft["items"][0]["category_snapshot"] == (
+            language_payload["skus"][quote_sku["id"]]["category_label"]
+        )
+
+        localized_xlsx = client.get(
+            localized_draft["xlsx_url"],
+            headers={
+                "X-Quote-Download-Token": localized_draft["download_token"]
+            },
+        )
+        assert localized_xlsx.status_code == 200, localized_xlsx.text
+        localized_workbook = load_workbook(BytesIO(localized_xlsx.content))
+        localized_sheet = localized_workbook["Quotation"]
+        assert localized_sheet["A1"].value == "QUOTATION"
+        localized_header_row = next(
+            row_index
+            for row_index in range(1, localized_sheet.max_row + 1)
+            if localized_sheet.cell(row_index, 1).value == "No."
+        )
+        assert localized_sheet.cell(localized_header_row, 4).value == "Product"
+        assert localized_sheet.cell(localized_header_row, 11).value == "Unit Price"
+        assert localized_sheet.cell(localized_header_row + 1, 4).value == (
+            language_payload["skus"][quote_sku["id"]]["name"]
+        )
+        localized_workbook.close()
+
     finally:
         with SessionLocal() as session:
             session.execute(
@@ -13230,7 +13531,7 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert xlsx_response.status_code == 200, xlsx_response.text
         workbook = load_workbook(BytesIO(xlsx_response.content), data_only=False)
         sheet = workbook.active
-        assert sheet["A1"].value == "报价单 / QUOTATION"
+        assert sheet["A1"].value == "报价单"
         assert sheet["B3"].value == "'=2+2"
         assert all(
             "待人工确认" not in str(cell.value or "")
@@ -13575,6 +13876,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "catalog_delete_jobs",
         "storefront_chat_conversations",
         "storefront_chat_messages",
+        "tenant_subscriptions",
     }
     customer_account_tables = {
         "local_account_credentials",
@@ -13603,6 +13905,27 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         column["name"]
         for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
     }
+    assert "document_locale" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
+    }
+    subscription_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("tenant_subscriptions")
+    }
+    assert {
+        "subscription_tier",
+        "started_at",
+        "expires_at",
+        "sku_limit",
+    }.issubset(subscription_columns)
+    subscription_checks = {
+        item["name"]
+        for item in inspect(upgraded_engine).get_check_constraints("tenant_subscriptions")
+    }
+    assert "ck_tenant_subscriptions_tier_allowed" in subscription_checks
+    assert "ck_tenant_subscriptions_expiry_after_start" in subscription_checks
+    assert "ck_tenant_subscriptions_sku_limit_nonnegative" in subscription_checks
     assert "latest_import_job_id" in {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("skus")
@@ -13687,7 +14010,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0063"
+        ).scalar() == "20260809_0066"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -13746,7 +14069,8 @@ def test_support_ai_agent_migration_preserves_existing_store_configuration(
     with upgraded_engine.connect() as connection:
         row = connection.exec_driver_sql(
             "SELECT agents.agent_code, agents.name, agents.enabled, "
-            "agents.min_retrieval_score, agents.system_prompt, settings.agent_id "
+            "agents.min_retrieval_score, agents.system_prompt, settings.agent_id, "
+            "json_type(agents.handoff_messages) AS handoff_messages_type "
             "FROM support_ai_agents AS agents "
             "JOIN support_ai_settings AS settings ON settings.agent_id = agents.id "
             "WHERE settings.tenant_id = ?",
@@ -13760,6 +14084,7 @@ def test_support_ai_agent_migration_preserves_existing_store_configuration(
     assert float(row["min_retrieval_score"]) == 0.25
     assert row["system_prompt"] == "Preserved prompt"
     assert row["agent_id"] is not None
+    assert row["handoff_messages_type"] == "object"
 
 
 def test_catalog_tag_color_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:

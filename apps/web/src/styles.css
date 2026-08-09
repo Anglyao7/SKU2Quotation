@@ -1201,6 +1201,9 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .console-toolbar-error { position: fixed; z-index: 35; top: calc(var(--topbar-height) + 10px); right: 22px; max-width: min(420px, calc(100vw - 32px)); padding: 10px 13px; border: 1px solid color-mix(in srgb, #c86157 38%, var(--line)); border-radius: 10px; color: #a74239; background: color-mix(in srgb, #c86157 10%, var(--surface)); box-shadow: var(--shadow); font-size: 13px; }
 .business-mode-dialog { width: min(520px, calc(100vw - 28px)) !important; }
 .business-mode-dialog .rt-AlertDialogDescription { line-height: 1.7; }
+.business-currency-field { margin-top: 18px; display: grid; gap: 8px; }
+.business-currency-field .rt-SelectTrigger,
+.business-currency-field .rt-TextFieldRoot { width: 100%; }
 .business-mode-note { margin-top: 18px; padding: 13px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px; border-radius: 10px; color: var(--text-soft); background: var(--page-soft); }
 .business-mode-note svg { color: var(--accent); margin-top: 1px; }
 .business-mode-dialog .core-dialog-actions { margin-top: 18px; }
@@ -1259,6 +1262,20 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .merchant-module-option.is-selected { border-color: color-mix(in srgb, var(--accent) 54%, var(--line)); background: var(--accent-soft); }
 .merchant-module-option > button { margin-top: 2px; }
 .merchant-module-option > span { min-width: 0; display: grid; gap: 3px; }
+.merchant-subscription-expiry { min-width: 146px; display: grid; justify-items: start; gap: 5px; }
+.merchant-sku-quota { min-width: 94px; display: grid; justify-items: start; gap: 5px; }
+.merchant-subscription-dialog { width: min(620px, calc(100vw - 28px)) !important; max-width: 620px !important; max-height: 88dvh !important; overflow-y: auto; }
+.subscription-tier-grid { margin-top: 20px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.subscription-tier-card { min-width: 0; min-height: 78px; padding: 12px; display: grid; align-content: center; justify-items: start; gap: 7px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-strong); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease, box-shadow 160ms ease; }
+.subscription-tier-card:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); transform: translateY(-1px); }
+.subscription-tier-card.is-selected { border-color: color-mix(in srgb, var(--accent) 64%, var(--line)); background: var(--accent-soft); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
+.subscription-expiry-panel { margin-top: 18px; padding: 15px; display: grid; gap: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-muted); }
+.subscription-quota-panel { margin-top: 12px; padding: 15px; display: grid; gap: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-muted); }
+.subscription-expiry-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.subscription-expiry-heading > div { min-width: 0; display: grid; gap: 3px; }
+.subscription-term-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.subscription-quota-controls { display: grid; grid-template-columns: minmax(160px, 1fr) auto; align-items: center; gap: 12px; }
+.subscription-unlimited-option { min-height: 38px; padding-inline: 10px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); cursor: pointer; }
 .form-dialog { width: min(720px, calc(100vw - 28px)) !important; max-width: 720px !important; max-height: 88dvh !important; overflow-y: auto; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--control-gap); margin-top: 6px; }
 
@@ -1580,7 +1597,10 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .mobile-data-card > .rt-Badge { justify-self: start; }
   .mobile-card-heading, .mobile-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
   .mobile-card-footer > div { display: flex; gap: var(--control-gap-compact); }
+  .mobile-card-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
   .merchant-module-grid { grid-template-columns: 1fr; }
+  .subscription-tier-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .subscription-quota-controls { grid-template-columns: 1fr; }
   .toolbar-row { align-items: stretch; flex-direction: column; }
   .console-search { width: 100%; }
   .login-page { padding: 20px; }

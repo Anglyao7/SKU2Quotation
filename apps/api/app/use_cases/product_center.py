@@ -75,6 +75,7 @@ from ..services.category_template_import import (
 )
 from ..adapters.object_storage import get_object_storage
 from ..services.sku_catalog_export import build_sku_catalog_workbook
+from ..services.sku_quotas import ensure_sku_capacity
 
 
 FIELD_LABELS = {
@@ -938,6 +939,8 @@ def create_manual_product(
             kind="conflict",
         )
 
+    ensure_sku_capacity(session, tenant_id=tenant_id, additional=1)
+
     now = utcnow()
     product_status = "ACTIVE" if request.publish_to_storefront else "DRAFT"
     sku_status = "ACTIVE" if request.publish_to_storefront else "DRAFT"
@@ -1118,6 +1121,11 @@ def create_skus(
                 "SKU_VARIANT_ATTRIBUTE_INVALID",
                 f"Variant attributes are not allowed by the category template: {', '.join(sorted(invalid_keys))}",
             )
+    ensure_sku_capacity(
+        session,
+        tenant_id=tenant_id,
+        additional=len(request.items),
+    )
     rows: list[SkuRow] = []
     now = utcnow()
     for item in request.items:

@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     JSON,
     String,
     UniqueConstraint,
@@ -18,10 +19,24 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
 from .model_mixins import AuditTimestampMixin, utcnow
+from .tenant_subscriptions import default_sku_limit, default_subscription_expiry
 from .tenant_modules import default_tenant_modules
 
 
 JSON_DOCUMENT = JSON().with_variant(JSONB(none_as_null=True), "postgresql")
+
+
+def _default_tenant_subscription_expiry(context: object) -> datetime:
+    parameters = context.get_current_parameters()  # type: ignore[attr-defined]
+    tier = str(parameters.get("subscription_tier") or "TRIAL")
+    started_at = parameters.get("started_at") or utcnow()
+    return default_subscription_expiry(tier, started_at=started_at)  # type: ignore[arg-type]
+
+
+def _default_tenant_subscription_sku_limit(context: object) -> int | None:
+    parameters = context.get_current_parameters()  # type: ignore[attr-defined]
+    tier = str(parameters.get("subscription_tier") or "TRIAL")
+    return default_sku_limit(tier)  # type: ignore[arg-type]
 
 
 class OrganizationRow(AuditTimestampMixin, Base):
@@ -64,6 +79,52 @@ class TenantRow(AuditTimestampMixin, Base):
     organization: Mapped[OrganizationRow] = relationship(back_populates="tenants")
     memberships: Mapped[list["MembershipRow"]] = relationship(back_populates="tenant")
     roles: Mapped[list["RoleRow"]] = relationship(back_populates="tenant")
+    subscription: Mapped["TenantSubscriptionRow | None"] = relationship(
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class TenantSubscriptionRow(AuditTimestampMixin, Base):
+    __tablename__ = "tenant_subscriptions"
+    __table_args__ = (
+        CheckConstraint(
+            "subscription_tier IN ('TRIAL', 'STANDARD', 'SILVER', 'ELITE')",
+            name="tier_allowed",
+        ),
+        CheckConstraint(
+            "expires_at > started_at",
+            name="expiry_after_start",
+        ),
+        CheckConstraint(
+            "sku_limit IS NULL OR sku_limit >= 0",
+            name="sku_limit_nonnegative",
+        ),
+        Index("ix_tenant_subscriptions_tier_expiry", "subscription_tier", "expires_at"),
+    )
+
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    subscription_tier: Mapped[str] = mapped_column(
+        String(20), default="TRIAL", nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_default_tenant_subscription_expiry,
+        nullable=False,
+    )
+    sku_limit: Mapped[int | None] = mapped_column(
+        Integer,
+        default=_default_tenant_subscription_sku_limit,
+        nullable=True,
+    )
+
+    tenant: Mapped[TenantRow] = relationship(back_populates="subscription")
 
 
 class UserRow(AuditTimestampMixin, Base):

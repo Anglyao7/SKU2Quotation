@@ -5,7 +5,14 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..identity_models import MembershipRoleRow, MembershipRow, RoleRow, TenantRow, UserRow
+from ..identity_models import (
+    MembershipRoleRow,
+    MembershipRow,
+    RoleRow,
+    TenantRow,
+    TenantSubscriptionRow,
+    UserRow,
+)
 from ..product_center_models import SkuRow
 from ..public_catalog_models import PublicQuoteDraftRow, TenantPublicProfileRow
 
@@ -18,13 +25,23 @@ def get_tenant(session: Session, tenant_id: UUID) -> TenantRow | None:
     return session.get(TenantRow, tenant_id)
 
 
+def get_tenant_subscription(
+    session: Session,
+    tenant_id: UUID,
+) -> TenantSubscriptionRow | None:
+    return session.get(TenantSubscriptionRow, tenant_id)
+
+
 def get_public_profile(session: Session, tenant_id: UUID) -> TenantPublicProfileRow | None:
     return session.get(TenantPublicProfileRow, tenant_id)
 
 
 def tenant_counts(session: Session, tenant_id: UUID) -> tuple[int, int]:
     sku_count = session.scalar(
-        select(func.count(SkuRow.id)).where(SkuRow.tenant_id == tenant_id)
+        select(func.count(SkuRow.id)).where(
+            SkuRow.tenant_id == tenant_id,
+            SkuRow.deleted_at.is_(None),
+        )
     )
     quote_count = session.scalar(
         select(func.count(PublicQuoteDraftRow.id)).where(PublicQuoteDraftRow.tenant_id == tenant_id)

@@ -15,13 +15,16 @@ from .identity_models import (
     PermissionRow,
     RolePermissionRow,
     RoleRow,
+    TenantSubscriptionRow,
     TenantRow,
     UserRow,
 )
+from .model_mixins import utcnow
 from .public_catalog_models import TenantPublicProfileRow
 from .saas_seed import PERMISSION_SEEDS, ROLE_SEEDS
 from .inventory_seed import ensure_default_warehouse
 from .tenant_slugs import is_reserved_tenant_slug, storefront_slug_from_name
+from .tenant_subscriptions import default_sku_limit, default_subscription_expiry
 
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
@@ -132,6 +135,22 @@ def bootstrap_production_owner(
         raise ValueError("bootstrap tenant identity does not match")
     elif tenant.status != "active":
         raise ValueError("existing tenant is not active")
+
+    subscription = session.get(TenantSubscriptionRow, tenant_id)
+    if subscription is None:
+        started_at = utcnow()
+        session.add(
+            TenantSubscriptionRow(
+                tenant_id=tenant_id,
+                subscription_tier="TRIAL",
+                started_at=started_at,
+                expires_at=default_subscription_expiry(
+                    "TRIAL",
+                    started_at=started_at,
+                ),
+                sku_limit=default_sku_limit("TRIAL"),
+            )
+        )
 
     user = session.get(UserRow, user_id)
     if user is not None:

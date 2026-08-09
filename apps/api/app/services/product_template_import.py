@@ -31,6 +31,7 @@ from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY, SkuRow
 from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
 from ..public_catalog_models import PublicCatalogOfferRow
 from .import_progress import publish_runtime_import_progress
+from .sku_quotas import sku_quota_message, sku_quota_snapshot
 
 
 PRODUCT_TEMPLATE_SHEET = "商品列表"
@@ -3815,6 +3816,26 @@ def process_product_template_import(
             for code, rows in sku_groups.items()
             if len(rows) == 1
         }
+        current_sku_count = sum(1 for row in sku_rows if row.deleted_at is None)
+        additional_sku_count = sum(
+            1
+            for code in incoming_sku_codes
+            if (existing := skus.get(_normalize_sku_code(code))) is None
+            or existing.deleted_at is not None
+        )
+        quota = sku_quota_snapshot(
+            session,
+            tenant_id=tenant_id,
+            additional=additional_sku_count,
+            current_count=current_sku_count,
+            lock_tenant=False,
+        )
+        if quota.exceeded:
+            return _fail_import(
+                session,
+                job=job,
+                message=sku_quota_message(quota),
+            )
         supplier_rows = session.scalars(
             select(SupplierRow)
             .where(SupplierRow.tenant_id == tenant_id)

@@ -1054,6 +1054,7 @@ export interface PublicQuoteDraft {
   customerEmail?: string;
   customerPhone?: string;
   notes?: string;
+  locale: StorefrontLocale;
   currency: string;
   subtotal: number;
   total: number;
@@ -1071,6 +1072,7 @@ export interface PublicQuoteDraftSummary {
   status: string;
   customerName: string;
   customerCompany?: string;
+  locale: StorefrontLocale;
   currency: string;
   total: number;
   validUntil: string;

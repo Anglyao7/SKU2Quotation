@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import tempfile
 from contextlib import contextmanager
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
@@ -84,6 +85,31 @@ CONTENT_TYPES = {
     ".txt": "text/plain",
     ".md": "text/markdown",
 }
+
+
+def _normalized_handoff_messages(value: object) -> dict[str, str]:
+    """Return a stable locale/message map, including legacy JSON strings.
+
+    An earlier SQLite backfill could serialize an already-serialized JSON
+    object a second time. Keep reads resilient while normalizing every later
+    write back to a regular JSON object.
+    """
+
+    candidate = value
+    for _attempt in range(2):
+        if isinstance(candidate, Mapping):
+            return {
+                str(key): str(message)
+                for key, message in candidate.items()
+                if str(key).strip() and str(message).strip()
+            }
+        if not isinstance(candidate, str):
+            break
+        try:
+            candidate = json.loads(candidate)
+        except (TypeError, ValueError):
+            break
+    return {}
 
 
 def _require_platform_admin(context: RequestContext) -> None:
@@ -488,10 +514,7 @@ def _agent_response(
         max_sources=row.max_sources,
         daily_auto_reply_limit=row.daily_auto_reply_limit,
         system_prompt=row.system_prompt,
-        handoff_messages={
-            str(key): str(value)
-            for key, value in (row.handoff_messages or {}).items()
-        },
+        handoff_messages=_normalized_handoff_messages(row.handoff_messages),
         stores=stores,
         knowledge_source_count=knowledge_source_count,
         approved_knowledge_source_count=approved_knowledge_source_count,
@@ -566,7 +589,9 @@ def _copy_agent_policy_to_store(
     settings.max_sources = agent.max_sources
     settings.daily_auto_reply_limit = agent.daily_auto_reply_limit
     settings.system_prompt = agent.system_prompt
-    settings.handoff_messages = dict(agent.handoff_messages or {})
+    settings.handoff_messages = _normalized_handoff_messages(
+        agent.handoff_messages
+    )
     settings.prompt_version += 1
     settings.updated_by_user_id = user_id
     settings.updated_at = utcnow()
@@ -972,7 +997,9 @@ def copy_store_configuration(
             "max_sources": source.max_sources,
             "daily_auto_reply_limit": source.daily_auto_reply_limit,
             "system_prompt": source.system_prompt,
-            "handoff_messages": dict(source.handoff_messages or {}),
+            "handoff_messages": _normalized_handoff_messages(
+                source.handoff_messages
+            ),
         }
         session.flush()
     targets = [
@@ -1047,9 +1074,7 @@ def _settings_response(
         max_sources=row.max_sources,
         daily_auto_reply_limit=row.daily_auto_reply_limit,
         system_prompt=row.system_prompt,
-        handoff_messages={
-            str(key): str(value) for key, value in (row.handoff_messages or {}).items()
-        },
+        handoff_messages=_normalized_handoff_messages(row.handoff_messages),
         prompt_version=row.prompt_version,
         model_display_name=support_ai_provider_snapshot(
             session, tenant_id=tenant_id

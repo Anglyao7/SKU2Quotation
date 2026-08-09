@@ -20,6 +20,7 @@ import type {
   Tenant,
   TenantModuleCode,
   TenantPayload,
+  TenantSubscriptionPayload,
 } from "../types";
 import {
   clearCoreAuthSession,
@@ -724,6 +725,12 @@ export const api = {
     request<Tenant>(
       `/api/admin/tenants/${encodeURIComponent(id)}`,
       { method: "PATCH", body: JSON.stringify({ enabled_modules: enabledModules }) },
+      true,
+    ),
+  updateTenantSubscription: (id: string, payload: TenantSubscriptionPayload) =>
+    request<Tenant>(
+      `/api/admin/tenants/${encodeURIComponent(id)}/subscription`,
+      { method: "PATCH", body: JSON.stringify(payload) },
       true,
     ),
   deactivateTenant: (id: string) =>

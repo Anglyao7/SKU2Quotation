@@ -3,7 +3,7 @@ FROM python:3.12.13-slim-bookworm AS runtime
 
 ARG ATC_RELEASE=local
 ARG ATC_COMMIT_SHA=unknown
-ARG ATC_MIGRATION_HEAD=20260809_0063
+ARG ATC_MIGRATION_HEAD=20260809_0066
 ARG ATC_CONFIG_VERSION=container-default-v1
 ARG PIP_VERSION=26.1.2
 
@@ -20,7 +20,10 @@ LABEL org.opencontainers.image.title="智贸云 API" \
       org.opencontainers.image.revision="${ATC_COMMIT_SHA}" \
       org.opencontainers.image.vendor="智贸云"
 
-RUN groupadd --gid 10001 atc \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-noto-core \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 atc \
     && useradd --uid 10001 --gid atc --create-home --shell /usr/sbin/nologin atc
 
 WORKDIR /app

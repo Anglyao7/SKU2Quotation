@@ -621,6 +621,7 @@ export async function getMerchantSettings(): Promise<MerchantSettings> {
 export async function updateMerchantSettings(input: {
   name?: string;
   businessMode?: "DOMESTIC" | "EXPORT";
+  defaultCurrency?: string;
   storefrontLocales?: MerchantSettings["storefrontLocales"];
   hotProductsEnabled?: boolean;
 }): Promise<MerchantSettings> {
@@ -631,6 +632,7 @@ export async function updateMerchantSettings(input: {
       body: JSON.stringify({
         name: input.name,
         business_mode: input.businessMode,
+        default_currency: input.defaultCurrency,
         storefront_locales: input.storefrontLocales,
         hot_products_enabled: input.hotProductsEnabled,
       }),
@@ -3677,8 +3679,8 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
 }
 
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
-interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; currency: string; total_amount: number | string; valid_until: string; created_at: string }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
+interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string }
 
 function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
   return {
@@ -3691,6 +3693,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     customerEmail: defined(row.customer_email),
     customerPhone: defined(row.customer_phone),
     notes: defined(row.notes),
+    locale: row.locale,
     currency: row.currency,
     subtotal: Number(row.subtotal),
     total: Number(row.total),
@@ -3705,7 +3708,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
 
 export async function listPublicQuoteDrafts(): Promise<PublicQuoteDraftSummary[]> {
   const rows = await request<ApiPublicQuoteDraftSummary[]>("/public-quote-drafts");
-  return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at }));
+  return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), locale: row.locale, currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at }));
 }
 
 export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteDraft> {

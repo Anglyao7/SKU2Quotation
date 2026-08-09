@@ -97,6 +97,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
       return;
     }
     const payload: CreateQuoteInput = {
+      locale,
       customer_name: String(data.get("customer_name") || "").trim(),
       customer_company: String(data.get("customer_company") || "").trim() || undefined,
       customer_email: String(data.get("customer_email") || "").trim() || undefined,

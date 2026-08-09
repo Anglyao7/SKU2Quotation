@@ -18,11 +18,13 @@ from .identity_models import (
     PermissionRow,
     RolePermissionRow,
     RoleRow,
+    TenantSubscriptionRow,
     TenantRow,
     UserRow,
 )
-from .model_mixins import restore_deleted
+from .model_mixins import restore_deleted, utcnow
 from .inventory_seed import ensure_default_warehouse
+from .tenant_subscriptions import default_sku_limit, default_subscription_expiry
 
 
 @dataclass(frozen=True)
@@ -326,6 +328,21 @@ def seed_saas_foundation(session: Session) -> None:
     # the earlier internal-only `local` slug.
     if tenant.status == "active":
         tenant.slug = "demo"
+
+    subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
+    if subscription is None:
+        started_at = utcnow()
+        subscription = TenantSubscriptionRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            subscription_tier="TRIAL",
+            started_at=started_at,
+            expires_at=default_subscription_expiry(
+                "TRIAL",
+                started_at=started_at,
+            ),
+            sku_limit=default_sku_limit("TRIAL"),
+        )
+        session.add(subscription)
 
     user = session.get(UserRow, DEFAULT_OWNER_USER_ID, execution_options=include_deleted)
     if user is None:
