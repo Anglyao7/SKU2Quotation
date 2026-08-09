@@ -12,7 +12,6 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import { useCoreAuth } from "../AuthContext";
 import {
   getSupportConversation,
@@ -50,9 +49,7 @@ export function SupportCenterPage() {
   const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
   const canReply = hasPermission("support.reply");
-  const canUseAI = hasPermission("support.ai.manage")
-    || hasPermission("support.ai.inspect")
-    || hasPermission("knowledge.manage");
+  const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const [items, setItems] = useState<SupportConversationSummary[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState<SupportConversationDetail>();
@@ -221,7 +218,11 @@ export function SupportCenterPage() {
   };
 
   const changeAutomation = async () => {
-    if (!detail || !canReply || automationBusy) return;
+    if (
+      !detail
+      || automationBusy
+      || (detail.automationState === "AI_ACTIVE" ? !canReply : !isPlatformAdmin)
+    ) return;
     setAutomationBusy(true);
     setError("");
     try {
@@ -254,12 +255,9 @@ export function SupportCenterPage() {
         title={t("客服管理")}
         description={t("查看商品前台的客户咨询，并在一个工作区内处理回复与会话状态。")}
         actions={(
-          <>
-            {canUseAI ? <Button asChild variant="soft"><Link to="/console/support/ai"><Robot />{t("AI 智能客服")}</Link></Button> : null}
-            <Button variant="soft" color="gray" onClick={() => void loadList()}>
-              <ArrowClockwise />{t("刷新")}
-            </Button>
-          </>
+          <Button variant="soft" color="gray" onClick={() => void loadList()}>
+            <ArrowClockwise />{t("刷新")}
+          </Button>
         )}
       />
 
@@ -312,7 +310,7 @@ export function SupportCenterPage() {
                     <Badge color={detail.automationState === "AI_ACTIVE" ? "blue" : "amber"}>
                       {detail.aiProcessing ? t("AI 回答中") : detail.automationState === "AI_ACTIVE" ? t("AI 可接待") : t("人工接管")}
                     </Badge>
-                    {canReply ? (
+                    {(detail.automationState === "AI_ACTIVE" ? canReply : isPlatformAdmin) ? (
                       <Button size="1" variant="soft" color={detail.automationState === "AI_ACTIVE" ? "amber" : "blue"} onClick={() => void changeAutomation()} disabled={automationBusy}>
                         {detail.automationState === "AI_ACTIVE" ? <UserSwitch /> : <Robot />}
                         {detail.automationState === "AI_ACTIVE" ? t("人工接管") : t("恢复 AI")}

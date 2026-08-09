@@ -71,7 +71,6 @@ const navigationGroups = [
       { to: "/console/inventory", label: "进销存", mobileLabel: "库存", icon: Warehouse, permissions: ["inventory.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/announcements", label: "公告管理", mobileLabel: "公告", icon: Megaphone, permissions: ["announcement.manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/support", label: "客服管理", mobileLabel: "客服", icon: Headset, end: true, permissions: ["support.view"], platformAdminOnly: false, mobilePrimary: false },
-      { to: "/console/support/ai", label: "AI 智能客服", mobileLabel: "AI 客服", icon: Robot, permissions: ["support.ai.manage", "support.ai.inspect", "knowledge.manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {
@@ -86,6 +85,7 @@ const navigationGroups = [
     label: "平台",
     items: [
       { to: "/console/tenants", label: "商家管理", mobileLabel: "商家", icon: StoreIcon, permissions: [], platformAdminOnly: true, mobilePrimary: false },
+      { to: "/console/support/ai", label: "智能客服管理", mobileLabel: "AI 客服", icon: Robot, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/monitoring", label: "系统监控", mobileLabel: "监控", icon: Pulse, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/configuration", label: "配置中心", mobileLabel: "配置", icon: SlidersHorizontal, permissions: [], platformAdminOnly: true, mobilePrimary: false },
     ],

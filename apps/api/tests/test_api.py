@@ -174,7 +174,11 @@ from app.services.category_template_import import (
     CATEGORY_TEMPLATE_SHEET,
 )
 from app.services.product_intelligence.normalization import normalize_product_field
-from app.services.rbac import has_permission, list_permissions
+from app.services.rbac import (
+    PLATFORM_ADMIN_ONLY_PERMISSION_CODES,
+    has_permission,
+    list_permissions,
+)
 from app.services.auth.tokens import (
     ACCESS_TTL_SECONDS,
     REFRESH_COOKIE_NAME,
@@ -1240,6 +1244,17 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
             str(DEFAULT_TENANT_ID),
             str(copied_tenant_id),
         }
+        copied_store = client.patch(
+            f"/api/v1/support/ai/settings?tenant_id={copied_tenant_id}",
+            json={"enabled": False, "min_retrieval_score": 0.44},
+        )
+        assert copied_store.status_code == 200, copied_store.text
+        assert copied_store.json()["min_retrieval_score"] == pytest.approx(0.44)
+        copied_store_read = client.get(
+            f"/api/v1/support/ai/settings?tenant_id={copied_tenant_id}"
+        )
+        assert copied_store_read.status_code == 200, copied_store_read.text
+        assert copied_store_read.json()["model_display_name"] == "support-json-model"
 
         settings = client.patch(
             "/api/v1/support/ai/settings",
@@ -1299,6 +1314,11 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         )
         assert source["status"] == "READY"
         assert source["chunk_count"] >= 1
+        copied_sources = client.get(
+            f"/api/v1/support/ai/knowledge/sources?tenant_id={copied_tenant_id}"
+        )
+        assert copied_sources.status_code == 200, copied_sources.text
+        assert copied_sources.json() == []
 
         approved = client.post(
             f"/api/v1/support/ai/knowledge/sources/{source_id}/approve"
@@ -3087,9 +3107,13 @@ def test_preprovisioned_oidc_merchant_owner_can_use_an_account_without_verified_
 
 def test_platform_admin_routes_reject_regular_members(
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
+    from app.support_models import StorefrontChatConversationRow
+
     user_id = uuid4()
     membership_id = uuid4()
+    conversation_id = uuid4()
     with SessionLocal() as session:
         session.add(
             UserRow(
@@ -3110,7 +3134,56 @@ def test_platform_admin_routes_reject_regular_members(
                 status="active",
             )
         )
+        session.flush()
+        owner_role = session.scalar(
+            select(RoleRow).where(
+                RoleRow.tenant_id == DEFAULT_TENANT_ID,
+                RoleRow.code == "OWNER",
+                RoleRow.deleted_at.is_(None),
+            )
+        )
+        assert owner_role is not None
+        session.add(
+            MembershipRoleRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                membership_id=membership_id,
+                role_id=owner_role.id,
+                assigned_by_user_id=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.add(
+            StorefrontChatConversationRow(
+                id=conversation_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                reference_number=f"SUP-BOUNDARY-{conversation_id.hex[:10]}",
+                visitor_token_hash=hashlib.sha256(
+                    f"support-boundary:{conversation_id}".encode("utf-8")
+                ).hexdigest(),
+                locale="zh-CN",
+                status="OPEN",
+                last_message_at=datetime.now(UTC),
+                automation_state="AI_ACTIVE",
+            )
+        )
         session.commit()
+
+    def cleanup_regular_owner_assignment() -> None:
+        with SessionLocal() as session:
+            session.execute(
+                delete(MembershipRoleRow).where(
+                    MembershipRoleRow.tenant_id == DEFAULT_TENANT_ID,
+                    MembershipRoleRow.membership_id == membership_id,
+                )
+            )
+            session.execute(
+                delete(StorefrontChatConversationRow).where(
+                    StorefrontChatConversationRow.tenant_id == DEFAULT_TENANT_ID,
+                    StorefrontChatConversationRow.id == conversation_id,
+                )
+            )
+            session.commit()
+
+    request.addfinalizer(cleanup_regular_owner_assignment)
 
     monkeypatch.setenv("AUTH_TEST_BYPASS", "false")
     with TestClient(app) as regular_client:
@@ -3201,6 +3274,49 @@ def test_platform_admin_routes_reject_regular_members(
         assert denied_generation_settings.status_code == 403
         assert (
             denied_generation_settings.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
+        denied_support_ai_settings = regular_client.get(
+            "/api/v1/support/ai/settings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_support_ai_settings.status_code == 403
+        assert (
+            denied_support_ai_settings.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
+        denied_support_ai_knowledge = regular_client.get(
+            "/api/v1/support/ai/knowledge/sources",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_support_ai_knowledge.status_code == 403
+        assert (
+            denied_support_ai_knowledge.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
+        denied_support_ai_runs = regular_client.get(
+            "/api/v1/support/ai/runs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_support_ai_runs.status_code == 403
+        assert (
+            denied_support_ai_runs.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
+        manual_takeover = regular_client.patch(
+            f"/api/v1/support/conversations/{conversation_id}/automation",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"automation_state": "HUMAN_TAKEOVER"},
+        )
+        assert manual_takeover.status_code == 200, manual_takeover.text
+        denied_ai_resume = regular_client.patch(
+            f"/api/v1/support/conversations/{conversation_id}/automation",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"automation_state": "AI_ACTIVE"},
+        )
+        assert denied_ai_resume.status_code == 403
+        assert (
+            denied_ai_resume.json()["detail"]["code"]
             == "PLATFORM_ADMIN_REQUIRED"
         )
 
@@ -3742,7 +3858,7 @@ def test_phase2_core_and_legacy_import_tables_have_lifecycle_and_tenant_columns(
     assert any(name and name.endswith("image_role_allowed") for name in image_checks)
 
 
-def test_phase1_seed_is_idempotent_and_owner_has_all_permissions() -> None:
+def test_phase1_seed_is_idempotent_and_owner_excludes_platform_ai_permissions() -> None:
     with SessionLocal() as session:
         before = session.scalar(select(func.count()).select_from(PermissionRow))
         seed_saas_foundation(session)
@@ -3752,7 +3868,12 @@ def test_phase1_seed_is_idempotent_and_owner_has_all_permissions() -> None:
         )
 
     assert before == after == len(PERMISSION_SEEDS)
-    assert permissions == frozenset(seed.code for seed in PERMISSION_SEEDS)
+    assert permissions == frozenset(
+        seed.code
+        for seed in PERMISSION_SEEDS
+        if seed.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+    )
+    assert permissions.isdisjoint(PLATFORM_ADMIN_ONLY_PERMISSION_CODES)
     assert "system.role_manage" in permissions
 
 

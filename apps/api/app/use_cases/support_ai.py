@@ -76,15 +76,6 @@ CONTENT_TYPES = {
 }
 
 
-def _require(permissions: frozenset[str], permission: str) -> None:
-    if permission not in permissions:
-        raise ApplicationError(
-            "PERMISSION_DENIED",
-            f"Permission is required: {permission}",
-            kind="forbidden",
-        )
-
-
 def _require_platform_admin(context: RequestContext) -> None:
     if not context.is_platform_admin:
         raise ApplicationError(
@@ -92,6 +83,12 @@ def _require_platform_admin(context: RequestContext) -> None:
             "Platform administrator access is required.",
             kind="forbidden",
         )
+
+
+def require_platform_admin(context: RequestContext) -> None:
+    """Public guard for routes that must reject before reading large request bodies."""
+
+    _require_platform_admin(context)
 
 
 def _provider_response(
@@ -347,6 +344,21 @@ def _platform_tenant(session: Session, *, tenant_id: UUID) -> TenantRow:
     return row
 
 
+def _admin_target_tenant(
+    session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID | None,
+) -> TenantRow:
+    """Resolve a store only after enforcing the platform administration boundary."""
+
+    _require_platform_admin(context)
+    return _platform_tenant(
+        session,
+        tenant_id=tenant_id or context.tenant_id,
+    )
+
+
 def _store_configuration_response(
     session: Session,
     *,
@@ -574,13 +586,15 @@ def get_settings(
     session: Session,
     *,
     context: RequestContext,
+    tenant_id: UUID | None = None,
 ) -> SupportAISettingsResponse:
-    if not (
-        "support.ai.manage" in context.permissions
-        or "support.ai.inspect" in context.permissions
-    ):
-        _require(context.permissions, "support.ai.manage")
-    response = _settings_response(session, tenant_id=context.tenant_id)
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
+    )
+    with _tenant_scope(session, context=context, tenant=tenant):
+        response = _settings_response(session, tenant_id=tenant.id)
     session.commit()
     return response
 
@@ -590,33 +604,41 @@ def update_settings(
     *,
     context: RequestContext,
     request: SupportAISettingsUpdate,
+    tenant_id: UUID | None = None,
 ) -> SupportAISettingsResponse:
-    _require(context.permissions, "support.ai.manage")
-    if request.enabled and not support_ai_provider_is_configured(
-        session, tenant_id=context.tenant_id
-    ):
-        raise ApplicationError(
-            "SUPPORT_AI_PROVIDER_REQUIRED",
-            "当前店铺的智能客服模型暂不可用，请联系平台服务人员。",
-            kind="conflict",
-        )
-    row = get_support_ai_settings(session, tenant_id=context.tenant_id, create=True)
-    assert row is not None
-    row.enabled = request.enabled
-    row.sku_knowledge_enabled = request.sku_knowledge_enabled
-    row.file_knowledge_enabled = request.file_knowledge_enabled
-    row.multilingual_enabled = request.multilingual_enabled
-    row.min_retrieval_score = request.min_retrieval_score
-    row.min_answer_confidence = request.min_answer_confidence
-    row.max_sources = request.max_sources
-    row.daily_auto_reply_limit = request.daily_auto_reply_limit
-    row.system_prompt = request.system_prompt
-    row.handoff_messages = request.handoff_messages
-    row.prompt_version += 1
-    row.updated_by_user_id = context.user_id
-    row.updated_at = utcnow()
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
+    )
+    with _tenant_scope(session, context=context, tenant=tenant):
+        if request.enabled and not support_ai_provider_is_configured(
+            session, tenant_id=tenant.id
+        ):
+            raise ApplicationError(
+                "SUPPORT_AI_PROVIDER_REQUIRED",
+                "当前店铺的智能客服模型暂不可用，请先在配置中心分配模型。",
+                kind="conflict",
+            )
+        row = get_support_ai_settings(session, tenant_id=tenant.id, create=True)
+        assert row is not None
+        row.enabled = request.enabled
+        row.sku_knowledge_enabled = request.sku_knowledge_enabled
+        row.file_knowledge_enabled = request.file_knowledge_enabled
+        row.multilingual_enabled = request.multilingual_enabled
+        row.min_retrieval_score = request.min_retrieval_score
+        row.min_answer_confidence = request.min_answer_confidence
+        row.max_sources = request.max_sources
+        row.daily_auto_reply_limit = request.daily_auto_reply_limit
+        row.system_prompt = request.system_prompt
+        row.handoff_messages = request.handoff_messages
+        row.prompt_version += 1
+        row.updated_by_user_id = context.user_id
+        row.updated_at = utcnow()
+        session.flush()
+        response = _settings_response(session, tenant_id=tenant.id)
     session.commit()
-    return _settings_response(session, tenant_id=context.tenant_id)
+    return response
 
 
 def _source_response(row: SupportAIKnowledgeSourceRow) -> SupportAIKnowledgeSourceResponse:
@@ -663,17 +685,19 @@ def list_knowledge_sources(
     session: Session,
     *,
     context: RequestContext,
+    tenant_id: UUID | None = None,
 ) -> list[SupportAIKnowledgeSourceResponse]:
-    if not (
-        "knowledge.manage" in context.permissions
-        or "support.ai.inspect" in context.permissions
-    ):
-        _require(context.permissions, "knowledge.manage")
-    rows = session.scalars(
-        select(SupportAIKnowledgeSourceRow)
-        .where(SupportAIKnowledgeSourceRow.tenant_id == context.tenant_id)
-        .order_by(SupportAIKnowledgeSourceRow.created_at.desc())
-    ).all()
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
+    )
+    with _tenant_scope(session, context=context, tenant=tenant):
+        rows = session.scalars(
+            select(SupportAIKnowledgeSourceRow)
+            .where(SupportAIKnowledgeSourceRow.tenant_id == tenant.id)
+            .order_by(SupportAIKnowledgeSourceRow.created_at.desc())
+        ).all()
     return [_source_response(row) for row in rows]
 
 
@@ -702,6 +726,7 @@ def upload_knowledge_source(
     session: Session,
     *,
     context: RequestContext,
+    tenant_id: UUID | None = None,
     title: str,
     description: str | None,
     classification: str,
@@ -710,7 +735,39 @@ def upload_knowledge_source(
     declared_content_type: str | None,
     content: bytes,
 ) -> SupportAIKnowledgeUploadResponse:
-    _require(context.permissions, "knowledge.manage")
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
+    )
+    with _tenant_scope(session, context=context, tenant=tenant):
+        return _upload_knowledge_source_in_scope(
+            session,
+            tenant_id=tenant.id,
+            requested_by_user_id=context.user_id,
+            title=title,
+            description=description,
+            classification=classification,
+            language=language,
+            filename=filename,
+            declared_content_type=declared_content_type,
+            content=content,
+        )
+
+
+def _upload_knowledge_source_in_scope(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    requested_by_user_id: UUID,
+    title: str,
+    description: str | None,
+    classification: str,
+    language: str,
+    filename: str | None,
+    declared_content_type: str | None,
+    content: bytes,
+) -> SupportAIKnowledgeUploadResponse:
     original_filename = Path(filename or "knowledge-file").name[:500]
     suffix = Path(original_filename).suffix.casefold()
     if suffix not in SUPPORTED_KNOWLEDGE_EXTENSIONS:
@@ -740,7 +797,7 @@ def upload_knowledge_source(
             "SUPPORT_AI_KNOWLEDGE_TITLE_REQUIRED", "请填写知识文件标题。"
         )
     sha256 = hashlib.sha256(content).hexdigest()
-    object_key = f"tenants/{context.tenant_id}/documents/support-ai/{source_id}{suffix}"
+    object_key = f"tenants/{tenant_id}/documents/support-ai/{source_id}{suffix}"
     storage = get_object_storage()
     with tempfile.NamedTemporaryFile(suffix=suffix) as temporary:
         temporary.write(content)
@@ -774,7 +831,7 @@ def upload_knowledge_source(
     now = utcnow()
     media = MediaObjectRow(
         id=media_id,
-        tenant_id=context.tenant_id,
+        tenant_id=tenant_id,
         object_key=object_key,
         zone="DOCUMENT",
         original_filename=original_filename,
@@ -788,11 +845,11 @@ def upload_knowledge_source(
         scan_result={"detail_code": scan.detail_code},
         scan_at=now,
         retention_class="SOURCE_DEFAULT",
-        created_by_user_id=context.user_id,
+        created_by_user_id=requested_by_user_id,
     )
     source = SupportAIKnowledgeSourceRow(
         id=source_id,
-        tenant_id=context.tenant_id,
+        tenant_id=tenant_id,
         source_type="FILE",
         title=resolved_title[:300],
         description=(description or "").strip()[:4000] or None,
@@ -806,15 +863,15 @@ def upload_knowledge_source(
         byte_size=len(content),
         chunk_count=0,
         version=1,
-        created_by_user_id=context.user_id,
+        created_by_user_id=requested_by_user_id,
     )
     job = SupportAIIngestionJobRow(
         id=job_id,
-        tenant_id=context.tenant_id,
+        tenant_id=tenant_id,
         source_id=source_id,
         status="QUEUED",
         progress=0,
-        requested_by_user_id=context.user_id,
+        requested_by_user_id=requested_by_user_id,
     )
     try:
         # These rows are connected through tenant-scoped composite foreign keys.
@@ -848,29 +905,35 @@ def update_knowledge_source(
     context: RequestContext,
     source_id: UUID,
     request: SupportAIKnowledgeSourceUpdate,
+    tenant_id: UUID | None = None,
 ) -> SupportAIKnowledgeSourceResponse:
-    _require(context.permissions, "knowledge.manage")
-    row = _knowledge_source(
-        session, tenant_id=context.tenant_id, source_id=source_id
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
     )
-    if row.status == "PROCESSING":
-        raise ApplicationError(
-            "SUPPORT_AI_KNOWLEDGE_BUSY",
-            "知识文件正在处理，请稍后再修改。",
-            kind="conflict",
+    with _tenant_scope(session, context=context, tenant=tenant):
+        row = _knowledge_source(
+            session, tenant_id=tenant.id, source_id=source_id
         )
-    classification_changed = row.classification != request.classification
-    row.title = request.title
-    row.description = request.description
-    row.classification = request.classification
-    row.language = request.language
-    if classification_changed and row.status == "APPROVED":
-        row.status = "READY"
-        row.approved_at = None
-        row.approved_by_user_id = None
-    row.version += 1
-    session.commit()
-    return _source_response(row)
+        if row.status == "PROCESSING":
+            raise ApplicationError(
+                "SUPPORT_AI_KNOWLEDGE_BUSY",
+                "知识文件正在处理，请稍后再修改。",
+                kind="conflict",
+            )
+        classification_changed = row.classification != request.classification
+        row.title = request.title
+        row.description = request.description
+        row.classification = request.classification
+        row.language = request.language
+        if classification_changed and row.status == "APPROVED":
+            row.status = "READY"
+            row.approved_at = None
+            row.approved_by_user_id = None
+        row.version += 1
+        session.commit()
+        return _source_response(row)
 
 
 def approve_knowledge_source(
@@ -878,22 +941,28 @@ def approve_knowledge_source(
     *,
     context: RequestContext,
     source_id: UUID,
+    tenant_id: UUID | None = None,
 ) -> SupportAIKnowledgeSourceResponse:
-    _require(context.permissions, "knowledge.approve")
-    row = _knowledge_source(
-        session, tenant_id=context.tenant_id, source_id=source_id
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
     )
-    if row.status not in {"READY", "APPROVED"} or row.chunk_count <= 0:
-        raise ApplicationError(
-            "SUPPORT_AI_KNOWLEDGE_NOT_READY",
-            "知识文件尚未完成解析和向量化，暂时不能批准。",
-            kind="conflict",
+    with _tenant_scope(session, context=context, tenant=tenant):
+        row = _knowledge_source(
+            session, tenant_id=tenant.id, source_id=source_id
         )
-    row.status = "APPROVED"
-    row.approved_at = utcnow()
-    row.approved_by_user_id = context.user_id
-    session.commit()
-    return _source_response(row)
+        if row.status not in {"READY", "APPROVED"} or row.chunk_count <= 0:
+            raise ApplicationError(
+                "SUPPORT_AI_KNOWLEDGE_NOT_READY",
+                "知识文件尚未完成解析和向量化，暂时不能批准。",
+                kind="conflict",
+            )
+        row.status = "APPROVED"
+        row.approved_at = utcnow()
+        row.approved_by_user_id = context.user_id
+        session.commit()
+        return _source_response(row)
 
 
 def revoke_knowledge_source(
@@ -901,17 +970,23 @@ def revoke_knowledge_source(
     *,
     context: RequestContext,
     source_id: UUID,
+    tenant_id: UUID | None = None,
 ) -> SupportAIKnowledgeSourceResponse:
-    _require(context.permissions, "knowledge.manage")
-    row = _knowledge_source(
-        session, tenant_id=context.tenant_id, source_id=source_id
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
     )
-    row.status = "REVOKED"
-    row.approved_at = None
-    row.approved_by_user_id = None
-    row.version += 1
-    session.commit()
-    return _source_response(row)
+    with _tenant_scope(session, context=context, tenant=tenant):
+        row = _knowledge_source(
+            session, tenant_id=tenant.id, source_id=source_id
+        )
+        row.status = "REVOKED"
+        row.approved_at = None
+        row.approved_by_user_id = None
+        row.version += 1
+        session.commit()
+        return _source_response(row)
 
 
 def reindex_knowledge_source(
@@ -919,38 +994,44 @@ def reindex_knowledge_source(
     *,
     context: RequestContext,
     source_id: UUID,
+    tenant_id: UUID | None = None,
 ) -> SupportAIIngestionJobResponse:
-    _require(context.permissions, "knowledge.manage")
-    row = _knowledge_source(
-        session, tenant_id=context.tenant_id, source_id=source_id
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
     )
-    active_job = session.scalar(
-        select(SupportAIIngestionJobRow).where(
-            SupportAIIngestionJobRow.tenant_id == context.tenant_id,
-            SupportAIIngestionJobRow.source_id == source_id,
-            SupportAIIngestionJobRow.status.in_(["QUEUED", "RUNNING"]),
+    with _tenant_scope(session, context=context, tenant=tenant):
+        row = _knowledge_source(
+            session, tenant_id=tenant.id, source_id=source_id
         )
-    )
-    if active_job is not None:
-        return _job_response(active_job)
-    job = SupportAIIngestionJobRow(
-        id=uuid4(),
-        tenant_id=context.tenant_id,
-        source_id=row.id,
-        status="QUEUED",
-        progress=0,
-        requested_by_user_id=context.user_id,
-    )
-    # An approved source keeps serving its last committed chunks while a new
-    # version is built.  The ingestion job carries the processing state; only
-    # sources without an approved version leave the customer-visible set.
-    if row.status != "APPROVED":
-        row.status = "PROCESSING"
-    row.failure_code = None
-    row.failure_message = None
-    session.add(job)
-    session.commit()
-    return _job_response(job)
+        active_job = session.scalar(
+            select(SupportAIIngestionJobRow).where(
+                SupportAIIngestionJobRow.tenant_id == tenant.id,
+                SupportAIIngestionJobRow.source_id == source_id,
+                SupportAIIngestionJobRow.status.in_(["QUEUED", "RUNNING"]),
+            )
+        )
+        if active_job is not None:
+            return _job_response(active_job)
+        job = SupportAIIngestionJobRow(
+            id=uuid4(),
+            tenant_id=tenant.id,
+            source_id=row.id,
+            status="QUEUED",
+            progress=0,
+            requested_by_user_id=context.user_id,
+        )
+        # An approved source keeps serving its last committed chunks while a new
+        # version is built.  The ingestion job carries the processing state; only
+        # sources without an approved version leave the customer-visible set.
+        if row.status != "APPROVED":
+            row.status = "PROCESSING"
+        row.failure_code = None
+        row.failure_message = None
+        session.add(job)
+        session.commit()
+        return _job_response(job)
 
 
 def get_ingestion_job(
@@ -958,25 +1039,27 @@ def get_ingestion_job(
     *,
     context: RequestContext,
     job_id: UUID,
+    tenant_id: UUID | None = None,
 ) -> SupportAIIngestionJobResponse:
-    if not (
-        "knowledge.manage" in context.permissions
-        or "support.ai.inspect" in context.permissions
-    ):
-        _require(context.permissions, "knowledge.manage")
-    row = session.scalar(
-        select(SupportAIIngestionJobRow).where(
-            SupportAIIngestionJobRow.tenant_id == context.tenant_id,
-            SupportAIIngestionJobRow.id == job_id,
-        )
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
     )
-    if row is None:
-        raise ApplicationError(
-            "SUPPORT_AI_INGESTION_JOB_NOT_FOUND",
-            "知识处理任务不存在。",
-            kind="not_found",
+    with _tenant_scope(session, context=context, tenant=tenant):
+        row = session.scalar(
+            select(SupportAIIngestionJobRow).where(
+                SupportAIIngestionJobRow.tenant_id == tenant.id,
+                SupportAIIngestionJobRow.id == job_id,
+            )
         )
-    return _job_response(row)
+        if row is None:
+            raise ApplicationError(
+                "SUPPORT_AI_INGESTION_JOB_NOT_FOUND",
+                "知识处理任务不存在。",
+                kind="not_found",
+            )
+        return _job_response(row)
 
 
 def _evidence_response(row: SupportAIEvidenceUseRow) -> SupportAIEvidenceResponse:
@@ -1038,28 +1121,35 @@ def list_runs(
     page: int,
     page_size: int,
     status: str | None,
+    tenant_id: UUID | None = None,
 ) -> SupportAIRunPageResponse:
-    _require(context.permissions, "support.ai.inspect")
-    predicates = [SupportAIRunRow.tenant_id == context.tenant_id]
-    if status:
-        predicates.append(SupportAIRunRow.status == status)
-    total = int(
-        session.scalar(select(func.count(SupportAIRunRow.id)).where(*predicates)) or 0
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
     )
-    rows = session.scalars(
-        select(SupportAIRunRow)
-        .where(*predicates)
-        .order_by(SupportAIRunRow.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-    return SupportAIRunPageResponse(
-        items=[_run_response(session, row) for row in rows],
-        total=total,
-        page=page,
-        page_size=page_size,
-        pages=max(1, (total + page_size - 1) // page_size),
-    )
+    with _tenant_scope(session, context=context, tenant=tenant):
+        predicates = [SupportAIRunRow.tenant_id == tenant.id]
+        if status:
+            predicates.append(SupportAIRunRow.status == status)
+        total = int(
+            session.scalar(select(func.count(SupportAIRunRow.id)).where(*predicates))
+            or 0
+        )
+        rows = session.scalars(
+            select(SupportAIRunRow)
+            .where(*predicates)
+            .order_by(SupportAIRunRow.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+        return SupportAIRunPageResponse(
+            items=[_run_response(session, row) for row in rows],
+            total=total,
+            page=page,
+            page_size=page_size,
+            pages=max(1, (total + page_size - 1) // page_size),
+        )
 
 
 def get_run(
@@ -1067,19 +1157,27 @@ def get_run(
     *,
     context: RequestContext,
     run_id: UUID,
+    tenant_id: UUID | None = None,
 ) -> SupportAIRunResponse:
-    _require(context.permissions, "support.ai.inspect")
-    row = session.scalar(
-        select(SupportAIRunRow).where(
-            SupportAIRunRow.tenant_id == context.tenant_id,
-            SupportAIRunRow.id == run_id,
-        )
+    tenant = _admin_target_tenant(
+        session,
+        context=context,
+        tenant_id=tenant_id,
     )
-    if row is None:
-        raise ApplicationError(
-            "SUPPORT_AI_RUN_NOT_FOUND", "智能客服运行记录不存在。", kind="not_found"
+    with _tenant_scope(session, context=context, tenant=tenant):
+        row = session.scalar(
+            select(SupportAIRunRow).where(
+                SupportAIRunRow.tenant_id == tenant.id,
+                SupportAIRunRow.id == run_id,
+            )
         )
-    return _run_response(session, row)
+        if row is None:
+            raise ApplicationError(
+                "SUPPORT_AI_RUN_NOT_FOUND",
+                "智能客服运行记录不存在。",
+                kind="not_found",
+            )
+        return _run_response(session, row)
 
 
 def run_test(
@@ -1087,24 +1185,34 @@ def run_test(
     *,
     context: RequestContext,
     request: SupportAITestRunRequest,
+    tenant_id: UUID | None = None,
 ) -> SupportAIRunResponse:
-    _require(context.permissions, "support.ai.test")
-    if not support_ai_provider_is_configured(
-        session, tenant_id=context.tenant_id
-    ):
-        raise ApplicationError(
-            "SUPPORT_AI_PROVIDER_REQUIRED",
-            "当前店铺的智能客服模型暂不可用，请联系平台服务人员。",
-            kind="conflict",
-        )
-    run = create_test_run(
+    tenant = _admin_target_tenant(
         session,
-        tenant_id=context.tenant_id,
-        membership_id=context.membership_id,
-        question=request.question,
-        locale=request.locale,
+        context=context,
+        tenant_id=tenant_id,
     )
-    process_support_ai_run(session, run_id=run.id)
-    refreshed = session.get(SupportAIRunRow, run.id)
-    assert refreshed is not None
-    return _run_response(session, refreshed)
+    with _tenant_scope(session, context=context, tenant=tenant):
+        if not support_ai_provider_is_configured(
+            session, tenant_id=tenant.id
+        ):
+            raise ApplicationError(
+                "SUPPORT_AI_PROVIDER_REQUIRED",
+                "当前店铺的智能客服模型暂不可用，请先在配置中心分配模型。",
+                kind="conflict",
+            )
+        run = create_test_run(
+            session,
+            tenant_id=tenant.id,
+            membership_id=(
+                context.membership_id
+                if tenant.id == context.tenant_id
+                else None
+            ),
+            question=request.question,
+            locale=request.locale,
+        )
+        process_support_ai_run(session, run_id=run.id)
+        refreshed = session.get(SupportAIRunRow, run.id)
+        assert refreshed is not None
+        return _run_response(session, refreshed)

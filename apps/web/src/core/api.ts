@@ -2742,33 +2742,45 @@ export interface SupportAISettingsWriteInput {
   handoffMessages: Record<string, string>;
 }
 
-export async function getSupportAISettings(): Promise<SupportAISettings> {
+function supportAITenantPath(path: string, tenantId: string): string {
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}tenant_id=${encodeURIComponent(tenantId)}`;
+}
+
+export async function getSupportAISettings(
+  tenantId: string,
+): Promise<SupportAISettings> {
   return mapSupportAISettings(
-    await request<ApiSupportAISettings>("/support/ai/settings", {
-      cache: "no-store",
-    }),
+    await request<ApiSupportAISettings>(
+      supportAITenantPath("/support/ai/settings", tenantId),
+      { cache: "no-store" },
+    ),
   );
 }
 
 export async function updateSupportAISettings(
+  tenantId: string,
   input: SupportAISettingsWriteInput,
 ): Promise<SupportAISettings> {
   return mapSupportAISettings(
-    await request<ApiSupportAISettings>("/support/ai/settings", {
-      method: "PATCH",
-      body: JSON.stringify({
-        enabled: input.enabled,
-        sku_knowledge_enabled: input.skuKnowledgeEnabled,
-        file_knowledge_enabled: input.fileKnowledgeEnabled,
-        multilingual_enabled: input.multilingualEnabled,
-        min_retrieval_score: input.minRetrievalScore,
-        min_answer_confidence: input.minAnswerConfidence,
-        max_sources: input.maxSources,
-        daily_auto_reply_limit: input.dailyAutoReplyLimit,
-        system_prompt: input.systemPrompt || null,
-        handoff_messages: input.handoffMessages,
-      }),
-    }),
+    await request<ApiSupportAISettings>(
+      supportAITenantPath("/support/ai/settings", tenantId),
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          enabled: input.enabled,
+          sku_knowledge_enabled: input.skuKnowledgeEnabled,
+          file_knowledge_enabled: input.fileKnowledgeEnabled,
+          multilingual_enabled: input.multilingualEnabled,
+          min_retrieval_score: input.minRetrievalScore,
+          min_answer_confidence: input.minAnswerConfidence,
+          max_sources: input.maxSources,
+          daily_auto_reply_limit: input.dailyAutoReplyLimit,
+          system_prompt: input.systemPrompt || null,
+          handoff_messages: input.handoffMessages,
+        }),
+      },
+    ),
   );
 }
 
@@ -2850,16 +2862,19 @@ function mapSupportAIIngestionJob(
   };
 }
 
-export async function listSupportAIKnowledgeSources(): Promise<SupportAIKnowledgeSource[]> {
+export async function listSupportAIKnowledgeSources(
+  tenantId: string,
+): Promise<SupportAIKnowledgeSource[]> {
   return (
     await request<ApiSupportAIKnowledgeSource[]>(
-      "/support/ai/knowledge/sources",
+      supportAITenantPath("/support/ai/knowledge/sources", tenantId),
       { cache: "no-store" },
     )
   ).map(mapSupportAIKnowledgeSource);
 }
 
 export async function uploadSupportAIKnowledgeSource(input: {
+  tenantId: string;
   file: File;
   title: string;
   description?: string;
@@ -2875,7 +2890,10 @@ export async function uploadSupportAIKnowledgeSource(input: {
   const row = await request<{
     source: ApiSupportAIKnowledgeSource;
     job: ApiSupportAIIngestionJob;
-  }>("/support/ai/knowledge/sources/upload", { method: "POST", body });
+  }>(supportAITenantPath("/support/ai/knowledge/sources/upload", input.tenantId), {
+    method: "POST",
+    body,
+  });
   return {
     source: mapSupportAIKnowledgeSource(row.source),
     job: mapSupportAIIngestionJob(row.job),
@@ -2883,6 +2901,7 @@ export async function uploadSupportAIKnowledgeSource(input: {
 }
 
 export async function updateSupportAIKnowledgeSource(
+  tenantId: string,
   sourceId: string,
   input: {
     title: string;
@@ -2893,7 +2912,10 @@ export async function updateSupportAIKnowledgeSource(
 ): Promise<SupportAIKnowledgeSource> {
   return mapSupportAIKnowledgeSource(
     await request<ApiSupportAIKnowledgeSource>(
-      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}`,
+      supportAITenantPath(
+        `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}`,
+        tenantId,
+      ),
       {
         method: "PATCH",
         body: JSON.stringify({
@@ -2908,44 +2930,60 @@ export async function updateSupportAIKnowledgeSource(
 }
 
 export async function approveSupportAIKnowledgeSource(
+  tenantId: string,
   sourceId: string,
 ): Promise<SupportAIKnowledgeSource> {
   return mapSupportAIKnowledgeSource(
     await request<ApiSupportAIKnowledgeSource>(
-      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}/approve`,
+      supportAITenantPath(
+        `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}/approve`,
+        tenantId,
+      ),
       { method: "POST" },
     ),
   );
 }
 
 export async function revokeSupportAIKnowledgeSource(
+  tenantId: string,
   sourceId: string,
 ): Promise<SupportAIKnowledgeSource> {
   return mapSupportAIKnowledgeSource(
     await request<ApiSupportAIKnowledgeSource>(
-      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}`,
+      supportAITenantPath(
+        `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}`,
+        tenantId,
+      ),
       { method: "DELETE" },
     ),
   );
 }
 
 export async function reindexSupportAIKnowledgeSource(
+  tenantId: string,
   sourceId: string,
 ): Promise<SupportAIIngestionJob> {
   return mapSupportAIIngestionJob(
     await request<ApiSupportAIIngestionJob>(
-      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}/reindex`,
+      supportAITenantPath(
+        `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}/reindex`,
+        tenantId,
+      ),
       { method: "POST" },
     ),
   );
 }
 
 export async function getSupportAIIngestionJob(
+  tenantId: string,
   jobId: string,
 ): Promise<SupportAIIngestionJob> {
   return mapSupportAIIngestionJob(
     await request<ApiSupportAIIngestionJob>(
-      `/support/ai/knowledge/jobs/${encodeURIComponent(jobId)}`,
+      supportAITenantPath(
+        `/support/ai/knowledge/jobs/${encodeURIComponent(jobId)}`,
+        tenantId,
+      ),
       { cache: "no-store" },
     ),
   );
@@ -3010,23 +3048,29 @@ function mapSupportAIRun(row: ApiSupportAIRun): SupportAIRun {
 }
 
 export async function runSupportAITest(
+  tenantId: string,
   question: string,
   locale: string,
 ): Promise<SupportAIRun> {
   return mapSupportAIRun(
-    await request<ApiSupportAIRun>("/support/ai/test-runs", {
-      method: "POST",
-      body: JSON.stringify({ question, locale }),
-    }),
+    await request<ApiSupportAIRun>(
+      supportAITenantPath("/support/ai/test-runs", tenantId),
+      {
+        method: "POST",
+        body: JSON.stringify({ question, locale }),
+      },
+    ),
   );
 }
 
 export async function listSupportAIRuns(input: {
+  tenantId: string;
   page?: number;
   pageSize?: number;
   status?: string;
-} = {}): Promise<SupportAIRunPage> {
+}): Promise<SupportAIRunPage> {
   const params = new URLSearchParams({
+    tenant_id: input.tenantId,
     page: String(input.page || 1),
     page_size: String(input.pageSize || 30),
   });
@@ -3047,10 +3091,16 @@ export async function listSupportAIRuns(input: {
   };
 }
 
-export async function getSupportAIRun(runId: string): Promise<SupportAIRun> {
+export async function getSupportAIRun(
+  tenantId: string,
+  runId: string,
+): Promise<SupportAIRun> {
   return mapSupportAIRun(
     await request<ApiSupportAIRun>(
-      `/support/ai/runs/${encodeURIComponent(runId)}`,
+      supportAITenantPath(
+        `/support/ai/runs/${encodeURIComponent(runId)}`,
+        tenantId,
+      ),
       { cache: "no-store" },
     ),
   );

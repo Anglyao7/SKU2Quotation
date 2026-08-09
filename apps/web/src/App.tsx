@@ -312,7 +312,7 @@ const router = createBrowserRouter([{
         { path: "analytics", element: <PermissionGate anyOf={["analytics.view"]}><StorefrontAnalyticsPage /></PermissionGate> },
         { path: "announcements", element: <PermissionGate anyOf={["announcement.manage"]}><AnnouncementsPage /></PermissionGate> },
         { path: "support", element: <PermissionGate anyOf={["support.view"]}><SupportCenterPage /></PermissionGate> },
-        { path: "support/ai", element: <PermissionGate anyOf={["support.ai.manage", "support.ai.inspect", "knowledge.manage"]}><SupportAIPage /></PermissionGate> },
+        { path: "support/ai", element: <PlatformAdminGate><SupportAIPage /></PlatformAdminGate> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },
         { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },

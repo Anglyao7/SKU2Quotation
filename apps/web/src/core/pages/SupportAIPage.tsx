@@ -26,6 +26,8 @@ import {
   Quotes,
   Robot,
   ShieldCheck,
+  SlidersHorizontal,
+  Storefront,
   UserSwitch,
 } from "@phosphor-icons/react";
 import {
@@ -35,13 +37,14 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   approveSupportAIKnowledgeSource,
   getSupportAIIngestionJob,
   getSupportAISettings,
   listSupportAIKnowledgeSources,
   listSupportAIRuns,
+  listSupportAIStoreConfigurations,
   reindexSupportAIKnowledgeSource,
   revokeSupportAIKnowledgeSource,
   runSupportAITest,
@@ -56,6 +59,7 @@ import type {
   SupportAIKnowledgeSource,
   SupportAIRun,
   SupportAISettings,
+  SupportAIStoreConfiguration,
   SupportCitation,
 } from "../types";
 import "./SupportAIPage.css";
@@ -138,14 +142,19 @@ function RunDetail({ run }: { run: SupportAIRun }) {
 }
 
 export function SupportAIPage() {
-  const { hasPermission } = useCoreAuth();
+  const { profile } = useCoreAuth();
   const { locale, t } = useLocale();
-  const canManage = hasPermission("support.ai.manage");
-  const canInspect = hasPermission("support.ai.inspect");
-  const canTest = hasPermission("support.ai.test");
-  const canManageKnowledge = hasPermission("knowledge.manage");
-  const canApproveKnowledge = hasPermission("knowledge.approve");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTenantId = searchParams.get("tenant_id") || "";
+  const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
+  const canManage = isPlatformAdmin;
+  const canInspect = isPlatformAdmin;
+  const canTest = isPlatformAdmin;
+  const canManageKnowledge = isPlatformAdmin;
+  const canApproveKnowledge = isPlatformAdmin;
 
+  const [stores, setStores] = useState<SupportAIStoreConfiguration[]>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState("");
   const [settings, setSettings] = useState<SupportAISettings>();
   const [sources, setSources] = useState<SupportAIKnowledgeSource[]>([]);
   const [runs, setRuns] = useState<SupportAIRun[]>([]);
@@ -188,13 +197,49 @@ export function SupportAIPage() {
     setSystemPrompt(next.systemPrompt ?? "");
   }, []);
 
+  useEffect(() => {
+    if (!isPlatformAdmin) return;
+    let cancelled = false;
+    void listSupportAIStoreConfigurations()
+      .then((nextStores) => {
+        if (cancelled) return;
+        setStores(nextStores);
+        const preferredTenantId = [
+          requestedTenantId,
+          profile?.context.tenantId || "",
+          nextStores[0]?.tenantId || "",
+        ].find((candidate) => nextStores.some((store) => store.tenantId === candidate)) || "";
+        setSelectedTenantId((current) => current || preferredTenantId);
+        if (!preferredTenantId) setLoading(false);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : t("店铺列表读取失败"));
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPlatformAdmin, profile?.context.tenantId, requestedTenantId, t]);
+
+  const selectStore = (tenantId: string) => {
+    setSelectedTenantId(tenantId);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("tenant_id", tenantId);
+      return next;
+    }, { replace: true });
+  };
+
   const load = useCallback(async (quiet = false) => {
+    if (!selectedTenantId) return;
     if (!quiet) setLoading(true);
     try {
       const [nextSettings, nextSources, nextRuns] = await Promise.all([
-        (canManage || canInspect) ? getSupportAISettings() : Promise.resolve(undefined),
-        (canManageKnowledge || canInspect) ? listSupportAIKnowledgeSources() : Promise.resolve([]),
-        canInspect ? listSupportAIRuns({ pageSize: 30 }) : Promise.resolve({ items: [], total: 0, page: 1, pageSize: 30, pages: 1 }),
+        (canManage || canInspect) ? getSupportAISettings(selectedTenantId) : Promise.resolve(undefined),
+        (canManageKnowledge || canInspect) ? listSupportAIKnowledgeSources(selectedTenantId) : Promise.resolve([]),
+        canInspect ? listSupportAIRuns({ tenantId: selectedTenantId, pageSize: 30 }) : Promise.resolve({ items: [], total: 0, page: 1, pageSize: 30, pages: 1 }),
       ]);
       if (nextSettings) applySettings(nextSettings);
       setSources(nextSources);
@@ -205,11 +250,16 @@ export function SupportAIPage() {
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [applySettings, canInspect, canManage, canManageKnowledge, t]);
+  }, [applySettings, canInspect, canManage, canManageKnowledge, selectedTenantId, t]);
 
   useEffect(() => {
+    setSettings(undefined);
+    setSources([]);
+    setRuns([]);
+    setActiveJobs({});
+    setTestRun(undefined);
     void load();
-  }, [load]);
+  }, [load, selectedTenantId]);
 
   const activeJobIds = useMemo(
     () => Object.values(activeJobs).filter((job) => ACTIVE_JOB_STATUSES.has(job.status)).map((job) => job.id),
@@ -224,7 +274,9 @@ export function SupportAIPage() {
       if (polling) return;
       polling = true;
       try {
-        const jobs = await Promise.all(activeJobIds.map(getSupportAIIngestionJob));
+        const jobs = await Promise.all(
+          activeJobIds.map((jobId) => getSupportAIIngestionJob(selectedTenantId, jobId)),
+        );
         if (stopped) return;
         setActiveJobs((current) => {
           const next = { ...current };
@@ -244,7 +296,7 @@ export function SupportAIPage() {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activeJobIds.join("|"), load]);
+  }, [activeJobIds.join("|"), load, selectedTenantId]);
 
   const settingsValid = Boolean(
     Number(retrievalScore) >= 0 && Number(retrievalScore) <= 1
@@ -255,12 +307,12 @@ export function SupportAIPage() {
 
   const saveSettings = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canManage || !settingsValid || busy) return;
+    if (!canManage || !selectedTenantId || !settingsValid || busy) return;
     setBusy("settings");
     setError("");
     setMessage("");
     try {
-      applySettings(await updateSupportAISettings({
+      applySettings(await updateSupportAISettings(selectedTenantId, {
         enabled,
         skuKnowledgeEnabled: skuEnabled,
         fileKnowledgeEnabled: fileEnabled,
@@ -282,12 +334,13 @@ export function SupportAIPage() {
 
   const uploadKnowledge = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!uploadFile || !canManageKnowledge || busy) return;
+    if (!selectedTenantId || !uploadFile || !canManageKnowledge || busy) return;
     setBusy("upload");
     setError("");
     setMessage("");
     try {
       const result = await uploadSupportAIKnowledgeSource({
+        tenantId: selectedTenantId,
         file: uploadFile,
         title: uploadTitle.trim() || uploadFile.name.replace(/\.[^.]+$/, ""),
         description: uploadDescription.trim() || undefined,
@@ -310,24 +363,24 @@ export function SupportAIPage() {
   };
 
   const sourceAction = async (source: SupportAIKnowledgeSource, action: "approve" | "reindex" | "revoke") => {
-    if (busy) return;
+    if (!selectedTenantId || busy) return;
     setBusy(`${action}:${source.id}`);
     setError("");
     setMessage("");
     try {
       if (action === "approve") {
-        const next = await approveSupportAIKnowledgeSource(source.id);
+        const next = await approveSupportAIKnowledgeSource(selectedTenantId, source.id);
         setSources((current) => current.map((item) => item.id === next.id ? next : item));
         setMessage(t("知识文件已批准，后续回答可以引用这份来源。"));
       } else if (action === "reindex") {
-        const job = await reindexSupportAIKnowledgeSource(source.id);
+        const job = await reindexSupportAIKnowledgeSource(selectedTenantId, source.id);
         setActiveJobs((current) => ({ ...current, [source.id]: job }));
         setSources((current) => current.map((item) => item.id === source.id
           ? { ...item, status: item.status === "APPROVED" ? "APPROVED" : "PROCESSING" }
           : item));
         setMessage(t("已重新提交解析与向量化任务。"));
       } else {
-        const next = await revokeSupportAIKnowledgeSource(source.id);
+        const next = await revokeSupportAIKnowledgeSource(selectedTenantId, source.id);
         setSources((current) => current.map((item) => item.id === next.id ? next : item));
         setMessage(t("知识来源已撤销，新的回答不会再检索它。"));
       }
@@ -339,12 +392,12 @@ export function SupportAIPage() {
   };
 
   const executeTest = async () => {
-    if (!canTest || !testQuestion.trim() || busy) return;
+    if (!canTest || !selectedTenantId || !testQuestion.trim() || busy) return;
     setBusy("test");
     setError("");
     setTestRun(undefined);
     try {
-      const next = await runSupportAITest(testQuestion.trim(), testLocale);
+      const next = await runSupportAITest(selectedTenantId, testQuestion.trim(), testLocale);
       setTestRun(next);
       setRuns((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 30));
     } catch (reason) {
@@ -355,25 +408,45 @@ export function SupportAIPage() {
   };
 
   const approvedSources = sources.filter((source) => source.status === "APPROVED").length;
+  const selectedStore = stores.find((store) => store.tenantId === selectedTenantId);
   return (
     <div className="core-workspace support-ai-page">
       <CorePageHeading
-        eyebrow={t("客户沟通")}
-        title={t("AI 智能客服")}
-        description={t("用客户安全的 SKU 数据和已批准企业文件回答问题，逐条保存引用，并在证据不足时转交人工。")}
+        eyebrow={t("平台管理")}
+        title={t("智能客服管理")}
+        description={t("由平台管理员按店铺维护启停、知识库、回答策略与运行审计；商家成员只在客服管理中查看本店会话。")}
         actions={(
           <>
-            <Button asChild variant="soft" color="gray"><Link to="/console/support"><UserSwitch />{t("打开客服会话")}</Link></Button>
-            <Button variant="soft" color="gray" disabled={loading} onClick={() => void load()}><ArrowClockwise />{t("刷新")}</Button>
+            <Button asChild variant="soft" color="gray"><Link to="/console/system/configuration?section=support-ai"><SlidersHorizontal />{t("配置模型 API")}</Link></Button>
+            <Button variant="soft" color="gray" disabled={loading || !selectedTenantId} onClick={() => void load()}><ArrowClockwise />{t("刷新")}</Button>
           </>
         )}
       />
 
+      <Card className="support-ai-store-scope">
+        <span><Storefront weight="duotone" /></span>
+        <div>
+          <Text size="1" color="gray">{t("管理目标店铺")}</Text>
+          <Heading size="4">{selectedStore?.tenantName || t("请选择店铺")}</Heading>
+          <Text size="1" color="gray">{t("知识文件、SKU、提示词、阈值、启停和运行记录都严格归属于所选店铺。")}</Text>
+        </div>
+        <Select.Root value={selectedTenantId} onValueChange={selectStore}>
+          <Select.Trigger placeholder={t("选择店铺")} />
+          <Select.Content>
+            {stores.map((store) => (
+              <Select.Item value={store.tenantId} key={store.tenantId}>{store.tenantName}</Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+        <Badge color="amber">{t("仅平台管理员")}</Badge>
+      </Card>
+
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
       {message ? <Card className="support-ai-success"><CheckCircle weight="fill" /><Text size="2">{message}</Text></Card> : null}
       {loading ? <CoreLoading label={t("正在读取智能客服配置与运行记录")} /> : null}
+      {!loading && !selectedTenantId ? <CoreEmpty title={t("还没有可管理的店铺")} description={t("创建店铺后即可由平台管理员配置智能客服。")}/> : null}
 
-      {!loading ? (
+      {!loading && selectedTenantId ? (
         <>
           <section className="support-ai-overview">
             <Card><Robot weight="duotone" /><div><Text size="1" color="gray">{t("当前店铺")}</Text><strong>{t(settings?.enabled ? "启用" : "关闭")}</strong><small>{t(settings?.enabled ? "客户消息可触发智能回复" : "客服会话由人工处理")}</small></div></Card>

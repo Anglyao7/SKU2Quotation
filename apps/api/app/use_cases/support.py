@@ -1065,9 +1065,18 @@ def update_conversation_automation(
     tenant_id: UUID,
     conversation_id: UUID,
     permissions: frozenset[str],
+    is_platform_admin: bool,
     request: SupportConversationAutomationUpdate,
 ) -> SupportConversationDetailResponse:
-    _require(permissions, "support.reply")
+    if request.automation_state == "AI_ACTIVE":
+        if not is_platform_admin:
+            raise ApplicationError(
+                "PLATFORM_ADMIN_REQUIRED",
+                "只有平台管理员可以恢复 AI 接待。",
+                kind="forbidden",
+            )
+    else:
+        _require(permissions, "support.reply")
     row = repository.get_conversation(
         session,
         tenant_id=tenant_id,

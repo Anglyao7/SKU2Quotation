@@ -86,31 +86,31 @@ PERMISSION_SEEDS = (
         "support.ai.manage",
         "support_ai",
         "manage",
-        "Manage customer-service AI policy and automation mode",
+        "Legacy platform-only customer-service AI policy marker",
     ),
     PermissionSeed(
         "support.ai.inspect",
         "support_ai",
         "inspect",
-        "Inspect customer-service AI runs, evidence, and decisions",
+        "Legacy platform-only AI run inspection marker",
     ),
     PermissionSeed(
         "support.ai.test",
         "support_ai",
         "test",
-        "Run customer-service AI test-lab questions",
+        "Legacy platform-only AI test-lab marker",
     ),
     PermissionSeed(
         "knowledge.manage",
         "knowledge",
         "manage",
-        "Upload, reindex, and revoke customer-facing knowledge sources",
+        "Legacy platform-only knowledge management marker",
     ),
     PermissionSeed(
         "knowledge.approve",
         "knowledge",
         "approve",
-        "Approve customer-facing knowledge sources for AI use",
+        "Legacy platform-only knowledge approval marker",
     ),
     PermissionSeed("order.view", "order", "view", "View orders"),
     PermissionSeed("order.manage", "order", "manage", "Manage orders"),
@@ -154,15 +154,31 @@ PERMISSION_SEEDS = (
     ),
 )
 
+PLATFORM_ADMIN_ONLY_PERMISSION_CODES = {
+    "support.ai.manage",
+    "support.ai.inspect",
+    "support.ai.test",
+    "knowledge.manage",
+    "knowledge.approve",
+}
+
+
 ROLE_SEEDS = {
-    "OWNER": {seed.code for seed in PERMISSION_SEEDS},
-    "ADMIN": {seed.code for seed in PERMISSION_SEEDS},
+    "OWNER": {
+        seed.code
+        for seed in PERMISSION_SEEDS
+        if seed.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+    },
+    "ADMIN": {
+        seed.code
+        for seed in PERMISSION_SEEDS
+        if seed.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+    },
     "SALES": {
         "product.view", "product.import", "supplier.view", "customer.view", "customer.manage",
         "inquiry.view", "inquiry.manage", "quotation.view", "quotation.create",
         "catalog.view", "catalog.publish", "announcement.manage", "order.view",
         "inventory.view", "inventory.sale", "support.view", "support.reply",
-        "support.ai.inspect",
     },
     "PURCHASING": {
         "product.view", "product.create", "product.edit", "product.import", "product.review",

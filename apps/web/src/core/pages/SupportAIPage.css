@@ -1,4 +1,8 @@
 .support-ai-page { align-content: start; }
+.support-ai-store-scope { padding: 16px 18px !important; display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(220px, .55fr) auto; align-items: center; gap: 14px; }
+.support-ai-store-scope > span:first-child { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 13px; color: var(--accent); background: var(--accent-soft); }
+.support-ai-store-scope > span:first-child svg { width: 24px; height: 24px; }
+.support-ai-store-scope > div { min-width: 0; display: grid; gap: 3px; }
 .support-ai-success { min-height: 54px; padding: 12px 15px !important; display: flex; align-items: center; gap: 9px; color: #238b6d; background: color-mix(in srgb, #238b6d 7%, var(--surface)) !important; }
 .support-ai-success > svg { flex: 0 0 auto; }
 .support-ai-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
@@ -72,6 +76,8 @@
 }
 
 @media (max-width: 720px) {
+  .support-ai-store-scope { grid-template-columns: auto minmax(0, 1fr); }
+  .support-ai-store-scope > .rt-SelectTrigger, .support-ai-store-scope > .rt-Badge { grid-column: 1 / -1; }
   .support-ai-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .support-ai-policy-form, .support-ai-upload-form { grid-template-columns: 1fr; }
   .support-ai-wide { grid-column: 1; }
