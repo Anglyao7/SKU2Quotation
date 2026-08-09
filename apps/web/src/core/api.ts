@@ -56,11 +56,11 @@ import type {
   SupportActionSettings,
   SupportAIIngestionJob,
   SupportAIKnowledgeSource,
-  SupportAIMode,
   SupportAIProviderSettings,
   SupportAIRun,
   SupportAIRunPage,
   SupportAISettings,
+  SupportAIStoreConfiguration,
   SupportAutomationState,
   SupportCitation,
   SupportConversationDetail,
@@ -2508,6 +2508,9 @@ export async function deleteAnnouncement(
 }
 
 interface ApiSupportAIProviderSettings {
+  id?: string | null;
+  configuration_name?: string | null;
+  display_model_name?: string | null;
   source: "database" | "environment" | "disabled";
   provider: string;
   enabled: boolean;
@@ -2525,6 +2528,9 @@ function mapSupportAIProviderSettings(
   row: ApiSupportAIProviderSettings,
 ): SupportAIProviderSettings {
   return {
+    id: defined(row.id),
+    configurationName: defined(row.configuration_name),
+    displayModelName: defined(row.display_model_name),
     source: row.source,
     provider: row.provider,
     enabled: row.enabled,
@@ -2540,6 +2546,8 @@ function mapSupportAIProviderSettings(
 }
 
 export interface SupportAIProviderSettingsWriteInput {
+  configurationName?: string;
+  displayModelName?: string;
   enabled: boolean;
   baseUrl: string;
   modelName: string;
@@ -2567,6 +2575,8 @@ export async function updateSupportAIProviderSettings(
       {
         method: "PUT",
         body: JSON.stringify({
+          configuration_name: input.configurationName,
+          display_model_name: input.displayModelName,
           enabled: input.enabled,
           base_url: input.baseUrl,
           model_name: input.modelName,
@@ -2580,8 +2590,145 @@ export async function updateSupportAIProviderSettings(
   );
 }
 
+export interface SupportAIProviderProfileWriteInput extends SupportAIProviderSettingsWriteInput {
+  configurationName: string;
+  displayModelName: string;
+}
+
+function providerProfilePayload(input: SupportAIProviderProfileWriteInput) {
+  return {
+    configuration_name: input.configurationName,
+    display_model_name: input.displayModelName,
+    enabled: input.enabled,
+    base_url: input.baseUrl,
+    model_name: input.modelName,
+    api_key: input.apiKey || undefined,
+    timeout_seconds: input.timeoutSeconds,
+    max_output_tokens: input.maxOutputTokens,
+    temperature: input.temperature,
+  };
+}
+
+export async function listSupportAIProviderProfiles(): Promise<SupportAIProviderSettings[]> {
+  const rows = await request<ApiSupportAIProviderSettings[]>(
+    "/system/ai-generation/profiles",
+    { cache: "no-store" },
+  );
+  return rows.map(mapSupportAIProviderSettings);
+}
+
+export async function createSupportAIProviderProfile(
+  input: SupportAIProviderProfileWriteInput,
+): Promise<SupportAIProviderSettings> {
+  return mapSupportAIProviderSettings(
+    await request<ApiSupportAIProviderSettings>(
+      "/system/ai-generation/profiles",
+      { method: "POST", body: JSON.stringify(providerProfilePayload(input)) },
+    ),
+  );
+}
+
+export async function updateSupportAIProviderProfile(
+  profileId: string,
+  input: SupportAIProviderProfileWriteInput,
+): Promise<SupportAIProviderSettings> {
+  return mapSupportAIProviderSettings(
+    await request<ApiSupportAIProviderSettings>(
+      `/system/ai-generation/profiles/${encodeURIComponent(profileId)}`,
+      { method: "PUT", body: JSON.stringify(providerProfilePayload(input)) },
+    ),
+  );
+}
+
+export async function copySupportAIProviderProfile(
+  profileId: string,
+  configurationName: string,
+): Promise<SupportAIProviderSettings> {
+  return mapSupportAIProviderSettings(
+    await request<ApiSupportAIProviderSettings>(
+      `/system/ai-generation/profiles/${encodeURIComponent(profileId)}/copy`,
+      {
+        method: "POST",
+        body: JSON.stringify({ configuration_name: configurationName }),
+      },
+    ),
+  );
+}
+
+interface ApiSupportAIStoreConfiguration {
+  tenant_id: string;
+  tenant_name: string;
+  organization_id: string;
+  enabled: boolean;
+  provider_profile_id?: string | null;
+  model_display_name?: string | null;
+  updated_at?: string | null;
+}
+
+function mapSupportAIStoreConfiguration(
+  row: ApiSupportAIStoreConfiguration,
+): SupportAIStoreConfiguration {
+  return {
+    tenantId: row.tenant_id,
+    tenantName: row.tenant_name,
+    organizationId: row.organization_id,
+    enabled: row.enabled,
+    providerProfileId: defined(row.provider_profile_id),
+    modelDisplayName: defined(row.model_display_name),
+    updatedAt: defined(row.updated_at),
+  };
+}
+
+export async function listSupportAIStoreConfigurations(): Promise<SupportAIStoreConfiguration[]> {
+  const rows = await request<ApiSupportAIStoreConfiguration[]>(
+    "/system/ai-generation/store-configurations",
+    { cache: "no-store" },
+  );
+  return rows.map(mapSupportAIStoreConfiguration);
+}
+
+export async function bulkBindSupportAIProviderProfile(
+  tenantIds: string[],
+  providerProfileId?: string,
+): Promise<SupportAIStoreConfiguration[]> {
+  const rows = await request<ApiSupportAIStoreConfiguration[]>(
+    "/system/ai-generation/store-configurations/bulk-provider-bindings",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        tenant_ids: tenantIds,
+        provider_profile_id: providerProfileId || null,
+      }),
+    },
+  );
+  return rows.map(mapSupportAIStoreConfiguration);
+}
+
+export async function copySupportAIStoreConfiguration(input: {
+  sourceTenantId: string;
+  targetTenantIds: string[];
+  copyModelBinding: boolean;
+  copyPolicy: boolean;
+  copyEnabledState: boolean;
+}): Promise<SupportAIStoreConfiguration[]> {
+  const rows = await request<ApiSupportAIStoreConfiguration[]>(
+    "/system/ai-generation/store-configurations/copy",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        source_tenant_id: input.sourceTenantId,
+        target_tenant_ids: input.targetTenantIds,
+        copy_model_binding: input.copyModelBinding,
+        copy_policy: input.copyPolicy,
+        copy_enabled_state: input.copyEnabledState,
+      }),
+    },
+  );
+  return rows.map(mapSupportAIStoreConfiguration);
+}
+
 interface ApiSupportAISettings {
-  mode: SupportAIMode;
+  enabled: boolean;
   sku_knowledge_enabled: boolean;
   file_knowledge_enabled: boolean;
   multilingual_enabled: boolean;
@@ -2592,7 +2739,7 @@ interface ApiSupportAISettings {
   system_prompt?: string | null;
   handoff_messages: Record<string, string>;
   prompt_version: number;
-  provider_configured: boolean;
+  model_display_name?: string | null;
   approved_file_sources: number;
   indexed_sku_products: number;
   updated_at?: string | null;
@@ -2600,7 +2747,7 @@ interface ApiSupportAISettings {
 
 function mapSupportAISettings(row: ApiSupportAISettings): SupportAISettings {
   return {
-    mode: row.mode,
+    enabled: row.enabled,
     skuKnowledgeEnabled: row.sku_knowledge_enabled,
     fileKnowledgeEnabled: row.file_knowledge_enabled,
     multilingualEnabled: row.multilingual_enabled,
@@ -2611,7 +2758,7 @@ function mapSupportAISettings(row: ApiSupportAISettings): SupportAISettings {
     systemPrompt: defined(row.system_prompt),
     handoffMessages: row.handoff_messages || {},
     promptVersion: row.prompt_version,
-    providerConfigured: row.provider_configured,
+    modelDisplayName: defined(row.model_display_name),
     approvedFileSources: row.approved_file_sources,
     indexedSkuProducts: row.indexed_sku_products,
     updatedAt: defined(row.updated_at),
@@ -2619,7 +2766,7 @@ function mapSupportAISettings(row: ApiSupportAISettings): SupportAISettings {
 }
 
 export interface SupportAISettingsWriteInput {
-  mode: SupportAIMode;
+  enabled: boolean;
   skuKnowledgeEnabled: boolean;
   fileKnowledgeEnabled: boolean;
   multilingualEnabled: boolean;
@@ -2646,7 +2793,7 @@ export async function updateSupportAISettings(
     await request<ApiSupportAISettings>("/support/ai/settings", {
       method: "PATCH",
       body: JSON.stringify({
-        mode: input.mode,
+        enabled: input.enabled,
         sku_knowledge_enabled: input.skuKnowledgeEnabled,
         file_knowledge_enabled: input.fileKnowledgeEnabled,
         multilingual_enabled: input.multilingualEnabled,
@@ -2847,7 +2994,7 @@ interface ApiSupportAIRun {
   input_message_id?: string | null;
   output_message_id?: string | null;
   trigger_type: "CHAT" | "TEST";
-  mode_snapshot: SupportAIMode;
+  enabled_snapshot: boolean;
   status: SupportAIRun["status"];
   question: string;
   visitor_locale: string;
@@ -2856,8 +3003,7 @@ interface ApiSupportAIRun {
   answer?: string | null;
   confidence?: number | null;
   handoff_reason?: string | null;
-  provider?: string | null;
-  model_name?: string | null;
+  model_display_name?: string | null;
   prompt_version: number;
   retrieval_count: number;
   decision_trace: Record<string, unknown>;
@@ -2877,7 +3023,7 @@ function mapSupportAIRun(row: ApiSupportAIRun): SupportAIRun {
     inputMessageId: defined(row.input_message_id),
     outputMessageId: defined(row.output_message_id),
     triggerType: row.trigger_type,
-    modeSnapshot: row.mode_snapshot,
+    enabledSnapshot: row.enabled_snapshot,
     status: row.status,
     question: row.question,
     visitorLocale: row.visitor_locale,
@@ -2886,8 +3032,7 @@ function mapSupportAIRun(row: ApiSupportAIRun): SupportAIRun {
     answer: defined(row.answer),
     confidence: row.confidence ?? undefined,
     handoffReason: defined(row.handoff_reason),
-    provider: defined(row.provider),
-    modelName: defined(row.model_name),
+    modelDisplayName: defined(row.model_display_name),
     promptVersion: row.prompt_version,
     retrievalCount: row.retrieval_count,
     decisionTrace: row.decision_trace || {},

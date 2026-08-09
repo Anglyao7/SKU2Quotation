@@ -25,12 +25,18 @@ from ..support_ai_schemas import (
     SupportAIKnowledgeSourceResponse,
     SupportAIKnowledgeSourceUpdate,
     SupportAIKnowledgeUploadResponse,
+    SupportAIProviderProfileCopy,
+    SupportAIProviderProfileWrite,
     SupportAIProviderSettingsResponse,
     SupportAIProviderSettingsUpdate,
     SupportAIRunPageResponse,
     SupportAIRunResponse,
     SupportAISettingsResponse,
     SupportAISettingsUpdate,
+    SupportAIStoreConfigurationCopy,
+    SupportAIStoreConfigurationResponse,
+    SupportAIStoreProviderBindingUpdate,
+    SupportAIStoreProviderBulkBinding,
     SupportAITestRunRequest,
 )
 from ..use_cases import support_ai as use_cases
@@ -73,6 +79,166 @@ def update_ai_generation_settings(
             session,
             context=context,
             request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/ai-generation/profiles",
+    response_model=list[SupportAIProviderSettingsResponse],
+)
+def list_ai_generation_profiles(
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> list[SupportAIProviderSettingsResponse]:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.list_provider_profiles(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/ai-generation/profiles",
+    response_model=SupportAIProviderSettingsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_ai_generation_profile(
+    payload: SupportAIProviderProfileWrite,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIProviderSettingsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.create_provider_profile(
+            session, context=context, request=payload
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/api/v1/system/ai-generation/profiles/{profile_id}",
+    response_model=SupportAIProviderSettingsResponse,
+)
+def update_ai_generation_profile(
+    profile_id: str,
+    payload: SupportAIProviderProfileWrite,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIProviderSettingsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_provider_profile(
+            session,
+            context=context,
+            profile_id=profile_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/ai-generation/profiles/{profile_id}/copy",
+    response_model=SupportAIProviderSettingsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def copy_ai_generation_profile(
+    profile_id: str,
+    payload: SupportAIProviderProfileCopy,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIProviderSettingsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.copy_provider_profile(
+            session,
+            context=context,
+            profile_id=profile_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/ai-generation/store-configurations",
+    response_model=list[SupportAIStoreConfigurationResponse],
+)
+def list_ai_generation_store_configurations(
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> list[SupportAIStoreConfigurationResponse]:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.list_store_configurations(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/api/v1/system/ai-generation/store-configurations/{tenant_id}/provider",
+    response_model=SupportAIStoreConfigurationResponse,
+)
+def bind_ai_generation_store_provider(
+    tenant_id: UUID,
+    payload: SupportAIStoreProviderBindingUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIStoreConfigurationResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.bind_store_provider(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/ai-generation/store-configurations/bulk-provider-bindings",
+    response_model=list[SupportAIStoreConfigurationResponse],
+)
+def bulk_bind_ai_generation_store_provider(
+    payload: SupportAIStoreProviderBulkBinding,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> list[SupportAIStoreConfigurationResponse]:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.bulk_bind_store_provider(
+            session, context=context, request=payload
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/ai-generation/store-configurations/copy",
+    response_model=list[SupportAIStoreConfigurationResponse],
+)
+def copy_ai_generation_store_configuration(
+    payload: SupportAIStoreConfigurationCopy,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> list[SupportAIStoreConfigurationResponse]:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.copy_store_configuration(
+            session, context=context, request=payload
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

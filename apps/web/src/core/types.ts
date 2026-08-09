@@ -716,6 +716,9 @@ export interface EmbeddingSettings {
 }
 
 export interface SupportAIProviderSettings {
+  id?: string;
+  configurationName?: string;
+  displayModelName?: string;
   source: "database" | "environment" | "disabled";
   provider: string;
   enabled: boolean;
@@ -729,10 +732,18 @@ export interface SupportAIProviderSettings {
   updatedAt?: string;
 }
 
-export type SupportAIMode = "OFF" | "DRAFT" | "SHADOW" | "AUTO_LIMITED" | "AUTO";
+export interface SupportAIStoreConfiguration {
+  tenantId: string;
+  tenantName: string;
+  organizationId: string;
+  enabled: boolean;
+  providerProfileId?: string;
+  modelDisplayName?: string;
+  updatedAt?: string;
+}
 
 export interface SupportAISettings {
-  mode: SupportAIMode;
+  enabled: boolean;
   skuKnowledgeEnabled: boolean;
   fileKnowledgeEnabled: boolean;
   multilingualEnabled: boolean;
@@ -743,7 +754,7 @@ export interface SupportAISettings {
   systemPrompt?: string;
   handoffMessages: Record<string, string>;
   promptVersion: number;
-  providerConfigured: boolean;
+  modelDisplayName?: string;
   approvedFileSources: number;
   indexedSkuProducts: number;
   updatedAt?: string;
@@ -795,7 +806,7 @@ export interface SupportAIRun {
   inputMessageId?: string;
   outputMessageId?: string;
   triggerType: "CHAT" | "TEST";
-  modeSnapshot: SupportAIMode;
+  enabledSnapshot: boolean;
   status: SupportAIRunStatus;
   question: string;
   visitorLocale: string;
@@ -804,8 +815,7 @@ export interface SupportAIRun {
   answer?: string;
   confidence?: number;
   handoffReason?: string;
-  provider?: string;
-  modelName?: string;
+  modelDisplayName?: string;
   promptVersion: number;
   retrievalCount: number;
   decisionTrace: Record<string, unknown>;
