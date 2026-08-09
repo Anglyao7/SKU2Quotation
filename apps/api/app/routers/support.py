@@ -254,6 +254,7 @@ def update_support_conversation_automation(
             tenant_id=context.tenant_id,
             conversation_id=conversation_id,
             permissions=context.permissions,
+            is_platform_admin=context.is_platform_admin,
             request=payload,
         )
     except ApplicationError as exc:

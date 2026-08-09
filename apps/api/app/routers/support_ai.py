@@ -250,12 +250,17 @@ def copy_ai_generation_store_configuration(
 )
 def get_support_ai_settings(
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAISettingsResponse:
     response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
-        return use_cases.get_settings(session, context=context)
+        return use_cases.get_settings(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -267,6 +272,7 @@ def get_support_ai_settings(
 def update_support_ai_settings(
     payload: SupportAISettingsUpdate,
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAISettingsResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -276,6 +282,7 @@ def update_support_ai_settings(
             session,
             context=context,
             request=payload,
+            tenant_id=tenant_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -287,12 +294,17 @@ def update_support_ai_settings(
 )
 def list_support_ai_knowledge_sources(
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> list[SupportAIKnowledgeSourceResponse]:
     response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
-        return use_cases.list_knowledge_sources(session, context=context)
+        return use_cases.list_knowledge_sources(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -311,14 +323,17 @@ async def upload_support_ai_knowledge_source(
     ),
     language: str = Form(default="und", min_length=2, max_length=35),
     file: UploadFile = File(...),
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIKnowledgeUploadResponse:
     context = current_context(session)
-    content = await file.read(use_cases.MAX_KNOWLEDGE_FILE_BYTES + 1)
     try:
+        use_cases.require_platform_admin(context)
+        content = await file.read(use_cases.MAX_KNOWLEDGE_FILE_BYTES + 1)
         result = use_cases.upload_knowledge_source(
             session,
             context=context,
+            tenant_id=tenant_id,
             title=title,
             description=description,
             classification=classification,
@@ -328,9 +343,10 @@ async def upload_support_ai_knowledge_source(
             content=content,
         )
         if support_ai_inline_processing_enabled():
+            target_tenant_id = tenant_id or context.tenant_id
             background_tasks.add_task(
                 process_knowledge_ingestion,
-                tenant_id=context.tenant_id,
+                tenant_id=target_tenant_id,
                 source_id=result.source.id,
                 job_id=result.job.id,
             )
@@ -347,6 +363,7 @@ def update_support_ai_knowledge_source(
     source_id: UUID,
     payload: SupportAIKnowledgeSourceUpdate,
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIKnowledgeSourceResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -357,6 +374,7 @@ def update_support_ai_knowledge_source(
             context=context,
             source_id=source_id,
             request=payload,
+            tenant_id=tenant_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -369,6 +387,7 @@ def update_support_ai_knowledge_source(
 def approve_support_ai_knowledge_source(
     source_id: UUID,
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIKnowledgeSourceResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -378,6 +397,7 @@ def approve_support_ai_knowledge_source(
             session,
             context=context,
             source_id=source_id,
+            tenant_id=tenant_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -390,6 +410,7 @@ def approve_support_ai_knowledge_source(
 def revoke_support_ai_knowledge_source(
     source_id: UUID,
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIKnowledgeSourceResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -399,6 +420,7 @@ def revoke_support_ai_knowledge_source(
             session,
             context=context,
             source_id=source_id,
+            tenant_id=tenant_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -413,6 +435,7 @@ def reindex_support_ai_knowledge_source(
     source_id: UUID,
     background_tasks: BackgroundTasks,
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIIngestionJobResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -422,11 +445,13 @@ def reindex_support_ai_knowledge_source(
             session,
             context=context,
             source_id=source_id,
+            tenant_id=tenant_id,
         )
         if result.status == "QUEUED" and support_ai_inline_processing_enabled():
+            target_tenant_id = tenant_id or context.tenant_id
             background_tasks.add_task(
                 process_knowledge_ingestion,
-                tenant_id=context.tenant_id,
+                tenant_id=target_tenant_id,
                 source_id=source_id,
                 job_id=result.id,
             )
@@ -442,6 +467,7 @@ def reindex_support_ai_knowledge_source(
 def get_support_ai_ingestion_job(
     job_id: UUID,
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIIngestionJobResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -451,6 +477,7 @@ def get_support_ai_ingestion_job(
             session,
             context=context,
             job_id=job_id,
+            tenant_id=tenant_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -463,12 +490,18 @@ def get_support_ai_ingestion_job(
 def run_support_ai_test(
     payload: SupportAITestRunRequest,
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIRunResponse:
     response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
-        return use_cases.run_test(session, context=context, request=payload)
+        return use_cases.run_test(
+            session,
+            context=context,
+            request=payload,
+            tenant_id=tenant_id,
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -482,6 +515,7 @@ def list_support_ai_runs(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
     run_status: str | None = Query(default=None, alias="status", max_length=30),
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIRunPageResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -493,6 +527,7 @@ def list_support_ai_runs(
             page=page,
             page_size=page_size,
             status=run_status,
+            tenant_id=tenant_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -505,11 +540,17 @@ def list_support_ai_runs(
 def get_support_ai_run(
     run_id: UUID,
     response: Response,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIRunResponse:
     response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
-        return use_cases.get_run(session, context=context, run_id=run_id)
+        return use_cases.get_run(
+            session,
+            context=context,
+            run_id=run_id,
+            tenant_id=tenant_id,
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

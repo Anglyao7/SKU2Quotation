@@ -1,7 +1,7 @@
 # 智能客服开发设计
 
 > 状态：v1 可交付实现 + 后续路线图  
-> 版本：1.2
+> 版本：1.3
 > 日期：2026-08-09  
 > 规范来源：[客服 AI 运行契约 v1](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
 
@@ -14,11 +14,10 @@
 - 平台配置中心：`/console/system/configuration`，集中配置智能客服生成模型、翻译与
   Embedding API；智能客服支持多个加密 API 档案、店铺绑定、批量应用和配置复制。保存
   配置时只做格式校验，不探测外部连通性。
-- 商家智能客服：`/console/support/ai`，所有操作针对当前店铺，包含启用/关闭、企业提示
-  词、阈值、文件知识、问答试跑、Run 与 Evidence 溯源。商家只看到模型展示名，不看到
-  API 地址、密钥、内部 provider 或配置完成度。
-- 人工工作台：`/console/support`，展示 AI/人工接管状态、回答引用，并支持暂停或恢复
-  单会话自动化。
+- 平台智能客服管理：`/console/support/ai`，仅平台管理员可进入；先选择目标店铺，再维护
+  启用/关闭、企业提示词、阈值、文件知识、问答试跑、Run 与 Evidence 溯源。
+- 商家人工工作台：`/console/support`，商家成员只查看和处理本店客服会话、AI 回答及其
+  客户可见引用；可以人工接管，但不能恢复 AI、管理知识或修改任何 AI 配置。
 - 客户 Widget：按客户本次消息的实际语言回答，显示 AI 身份、处理状态和服务端引用；
   证据不足、语言不一致、数字或引用校验失败时转人工。
 
@@ -40,6 +39,8 @@
    其他只读动态事实属于 Phase 5，不得由静态 RAG 猜测。
 7. `organization` 表示客户企业，`tenant` 表示具体店铺。文件知识、SKU、提示词、阈值、
    启停和 Run 均按 `tenant_id` 隔离；复制功能只复制选定配置，不复制知识和业务数据。
+8. 智能客服管理是平台职责。历史租户角色即使仍带有 `support.ai.*` 或 `knowledge.*`
+   授权记录，服务端也会过滤并拒绝管理接口；前端隐藏入口不是安全边界。
 
 主要实现文件为 `support_ai_models.py`、`support_ai_schemas.py`、
 `services/support_ai_*`、`routers/support_ai.py`、`use_cases/support_ai.py` 和迁移
@@ -69,8 +70,8 @@
    `use_cases`。
 9. 模型调用在后台任务中执行，访客发消息的 HTTP 请求不等待完整 AI 推理。
 10. 店铺状态只允许启用/关闭；草稿评估和不发送验证属于平台发布流程，不是店铺状态。
-11. 平台 API 配置与店铺运行配置分层：API 档案可复用、可复制、可批量绑定，店铺端只
-    接收模型展示名。
+11. 平台 API 配置与店铺运行配置分层：API 档案可复用、可复制、可批量绑定；知识库、
+    店铺启停、提示词、阈值、试跑和运行审计均只对平台管理员开放。
 
 ## 3. 当前系统基线
 
@@ -583,18 +584,17 @@ GET   /api/v1/system/ai-generation/store-configurations
 PUT   /api/v1/system/ai-generation/store-configurations/{tenant_id}/provider
 POST  /api/v1/system/ai-generation/store-configurations/bulk-provider-bindings
 POST  /api/v1/system/ai-generation/store-configurations/copy
-GET   /api/v1/support/ai/settings
-PATCH /api/v1/support/ai/settings
-POST  /api/v1/support/ai/test-runs
-GET   /api/v1/support/ai/runs
-GET   /api/v1/support/ai/runs/{run_id}
+GET   /api/v1/support/ai/settings?tenant_id={tenant_id}
+PATCH /api/v1/support/ai/settings?tenant_id={tenant_id}
+POST  /api/v1/support/ai/test-runs?tenant_id={tenant_id}
+GET   /api/v1/support/ai/runs?tenant_id={tenant_id}
+GET   /api/v1/support/ai/runs/{run_id}?tenant_id={tenant_id}
 PATCH /api/v1/support/conversations/{conversation_id}/automation
 ```
 
-生成模型 API 档案和店铺绑定只有平台管理员可以读写。API Key 使用
+以上生成模型、店铺 AI 设置、试跑与运行审计接口均只有平台管理员可以调用。API Key 使用
 `SUPPORT_AI_SETTINGS_MASTER_KEY` 加密，平台读取接口只返回是否已配置和末四位提示，旧 Key
-留空表示保持不变。店铺设置接口不返回这些字段，仅返回批准的模型展示名。配置保存不发起
-模型请求；可在“问答试跑”中验证完整业务链路。
+留空表示保持不变。配置保存不发起模型请求；可在“问答试跑”中验证完整业务链路。
 
 店铺复制接口只复制明确勾选的模型绑定、策略和可选启停状态；不会复制文件知识、SKU、
 会话或 Run。默认不复制启停状态，避免未验收店铺被批量开启。
@@ -602,17 +602,18 @@ PATCH /api/v1/support/conversations/{conversation_id}/automation
 ### 11.2 知识来源
 
 ```text
-GET    /api/v1/support/ai/knowledge/sources
-POST   /api/v1/support/ai/knowledge/sources/upload
-PATCH  /api/v1/support/ai/knowledge/sources/{source_id}
-POST   /api/v1/support/ai/knowledge/sources/{source_id}/approve
-POST   /api/v1/support/ai/knowledge/sources/{source_id}/reindex
-DELETE /api/v1/support/ai/knowledge/sources/{source_id}
-GET    /api/v1/support/ai/knowledge/jobs/{job_id}
+GET    /api/v1/support/ai/knowledge/sources?tenant_id={tenant_id}
+POST   /api/v1/support/ai/knowledge/sources/upload?tenant_id={tenant_id}
+PATCH  /api/v1/support/ai/knowledge/sources/{source_id}?tenant_id={tenant_id}
+POST   /api/v1/support/ai/knowledge/sources/{source_id}/approve?tenant_id={tenant_id}
+POST   /api/v1/support/ai/knowledge/sources/{source_id}/reindex?tenant_id={tenant_id}
+DELETE /api/v1/support/ai/knowledge/sources/{source_id}?tenant_id={tenant_id}
+GET    /api/v1/support/ai/knowledge/jobs/{job_id}?tenant_id={tenant_id}
 ```
 
 `DELETE` 在 v1 表示撤销，不物理删除历史来源；既有 Run/Evidence 仍可审计。文件上传沿用对象
-存储和 media ID；大文件后续可增加预签名直传，不改变 source API。
+存储和 media ID；大文件后续可增加预签名直传，不改变 source API。全部接口先验证平台
+管理员身份，再切换到目标店铺 RLS 上下文。
 
 ### 11.3 部署配置
 
@@ -665,7 +666,7 @@ URL 必须由服务端 allowlisted renderer 生成，不能直接使用模型输
 
 ## 12. 权限与 RLS
 
-建议新增权限：
+数据库中保留以下历史权限码用于兼容既有审计记录，但它们不再向租户角色生效或开放委派：
 
 ```text
 support.ai.manage
@@ -675,17 +676,16 @@ knowledge.manage
 knowledge.approve
 ```
 
-- `support.view/manage` 继续控制人工会话。
-- 只有 `support.ai.inspect` 可以查看模型输入、证据摘录和验证细节。
-- `knowledge.manage` 可以上传和编辑草稿，`knowledge.approve` 才能发布给客户 AI。
-- 默认 OWNER/ADMIN 获得管理与批准权限；客服角色默认只获得 inspect/test，不获得批准。
-- 新表均启用 tenant RLS；平台级 provider 配置沿用平台管理员边界。
+- `support.view/reply` 继续控制商家查看、回复和人工接管本店会话。
+- `support.ai.*` 与 `knowledge.*` 不再是可委派的租户权限；只有平台管理员身份可以调用。
+- 商家成员不能恢复单会话 AI 接待；人工接管优先且保持有效。
+- 新表均启用 tenant RLS；平台管理员管理指定店铺时由服务端切换目标 RLS 上下文。
 
 ## 13. 前端设计
 
-### 13.1 新增“智能客服”模块
+### 13.1 平台“智能客服管理”模块
 
-已新增 `/console/support/ai`，包含：
+`/console/support/ai` 由 `PlatformAdminGate` 保护，并提供目标店铺选择器，包含：
 
 1. **概览**：当前店铺启停、模型展示名、索引健康、近期 Run、自动回答/转人工/失败趋势。
 2. **知识来源**：SKU 索引、文件列表、分类、审核、版本、状态和错误。
@@ -693,7 +693,8 @@ knowledge.approve
 4. **测试实验室**：输入真实问题，查看改写、候选证据、回答、引用和 Validator。
 5. **回答检查**：按 Run 查看完整 evidence、工具、模型版本和人工修改。
 
-悬浮球展示设置继续属于个人中心；人工会话继续属于客服管理，不与知识配置混在一起。
+商家导航不显示该模块，直接访问也会被前后端同时拒绝。悬浮球展示设置继续属于个人中心；
+人工会话继续属于客服管理，不与知识配置混在一起。
 
 ### 13.2 客户 Widget
 
@@ -706,10 +707,10 @@ knowledge.approve
 
 ### 13.3 客服工作台
 
-- 展示 AI 草稿、采用、编辑后发送和拒绝操作。
-- 显示 AI 已使用来源及 `PUBLIC/CUSTOMER_APPROVED` 标识。
-- 人工接管时显示 AI 摘要、已收集参数和失败原因。
-- 人工编辑量、采用率和拒绝原因进入评估数据，但人工消息不会自动进入知识库。
+- 商家成员只能读取本店会话、客户可见 AI 回答与对应引用，并按客服权限人工回复。
+- 商家可以人工接管正在自动处理的会话，但只有平台管理员可以恢复 AI 接待。
+- 不展示知识库清单、Prompt、阈值、模型/API 状态、试跑或内部 Run 决策细节。
+- 人工消息不会自动进入知识库。
 
 ## 14. 多语言策略
 

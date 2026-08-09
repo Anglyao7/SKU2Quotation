@@ -446,7 +446,7 @@ export function ConfigurationCenterPage() {
       <CorePageHeading
         eyebrow={t("平台设置")}
         title={t("配置中心")}
-        description={t("集中管理全站第三方 API。密钥只在平台层保存，商家仅配置自己的智能客服运行策略。")}
+        description={t("集中管理全站第三方 API 与店铺模型分配。智能客服的知识库、启停和运行策略同样只由平台管理员维护。")}
         actions={<Button variant="soft" color="gray" onClick={() => window.location.reload()}><ArrowClockwise />{t("刷新")}</Button>}
       />
 

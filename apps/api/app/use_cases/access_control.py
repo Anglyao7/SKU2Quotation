@@ -18,6 +18,7 @@ from ..domain.errors import ApplicationError
 from ..identity_models import MembershipRoleRow, PermissionRow, RolePermissionRow, RoleRow
 from ..model_mixins import mark_deleted, restore_deleted, utcnow
 from ..repositories import access_control_repository as repository
+from ..services.rbac import PLATFORM_ADMIN_ONLY_PERMISSION_CODES
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -39,7 +40,11 @@ def _require_any(permissions: frozenset[str], *codes: str) -> None:
 
 
 def _permission_rows_by_code(session: Session) -> dict[str, PermissionRow]:
-    return {row.code: row for row in repository.list_permissions(session)}
+    return {
+        row.code: row
+        for row in repository.list_permissions(session)
+        if row.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+    }
 
 
 def _resolve_permission_rows(
@@ -73,7 +78,9 @@ def _permission_codes_by_role(
 ) -> dict[UUID, set[str]]:
     role_ids = [role.id for role in roles]
     permission_by_id = {
-        row.id: row.code for row in repository.list_permissions(session)
+        row.id: row.code
+        for row in repository.list_permissions(session)
+        if row.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
     }
     result = {role_id: set() for role_id in role_ids}
     for assignment in repository.role_permission_rows(
@@ -118,6 +125,7 @@ def list_permissions(
             description=row.description,
         )
         for row in repository.list_permissions(session)
+        if row.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
     ]
 
 

@@ -14,6 +14,17 @@ from ..identity_models import (
 from ..tenant_modules import enabled_permission_modules
 
 
+PLATFORM_ADMIN_ONLY_PERMISSION_CODES = frozenset(
+    {
+        "support.ai.manage",
+        "support.ai.inspect",
+        "support.ai.test",
+        "knowledge.manage",
+        "knowledge.approve",
+    }
+)
+
+
 def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> frozenset[str]:
     statement = (
         select(PermissionRow.code, PermissionRow.module)
@@ -44,7 +55,10 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
     return frozenset(
         code
         for code, permission_module in session.execute(statement).all()
-        if permission_module in allowed_permission_modules
+        if (
+            permission_module in allowed_permission_modules
+            and code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+        )
     )
 
 
