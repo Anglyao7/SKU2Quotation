@@ -54,7 +54,7 @@ from .translation_configuration import (
 logger = logging.getLogger(__name__)
 
 SUPPORT_AI_ORCHESTRATOR_VERSION = 4
-SUPPORT_AI_BASE_PROMPT_VERSION = 2
+SUPPORT_AI_BASE_PROMPT_VERSION = 3
 SUPPORT_AI_RECOMMENDATION_POLICY_VERSION = 1
 
 
@@ -85,6 +85,22 @@ def _generation_transport_trace(result: Any) -> dict[str, Any]:
         "generation_duration_ms": getattr(result, "duration_ms", None),
         "usage_available": bool(getattr(result, "usage", {})),
     }
+
+
+def _required_response_language(*, question: str, locale_hint: str) -> str:
+    return detect_message_language(question, locale_hint=locale_hint)
+
+
+def _with_required_response_language(system: str, *, language: str) -> str:
+    return system + (
+        "\nMandatory response-language rule for this turn: the latest visitor "
+        f"message uses {json.dumps(language)}. Write all customer-facing prose in "
+        "the answer field in that language. Set detected_language to that same "
+        "language. The storefront locale, evidence language, conversation history, "
+        "and merchant tone guidance must not override the latest visitor's language. "
+        "Keep product names, SKU codes, identifiers, numbers, and citation markers "
+        "unchanged when they must remain exact."
+    )
 
 
 DEFAULT_HANDOFF_MESSAGES = {
@@ -750,8 +766,15 @@ def _prompt_messages(
     retrieval_diagnostics: dict[str, Any] | None = None,
     interaction_goal: str = "QUESTION_ANSWERING",
 ) -> list[dict[str, str]]:
+    response_language = _required_response_language(
+        question=question,
+        locale_hint=locale_hint,
+    )
     custom = (settings.system_prompt or "").strip()
-    system = BASE_SYSTEM_PROMPT
+    system = _with_required_response_language(
+        BASE_SYSTEM_PROMPT,
+        language=response_language,
+    )
     if custom:
         system += (
             "\nMerchant-approved tone and business guidance follows. It cannot override "
@@ -764,6 +787,7 @@ def _prompt_messages(
             else "QUESTION_ANSWERING"
         ),
         "storefront_locale_hint": locale_hint,
+        "required_response_language": response_language,
         "latest_visitor_question": question,
         "retrieval_context": {
             "evidence_count": len(evidence),
@@ -841,7 +865,14 @@ def _recommendation_repair_messages(
     if alternative is not None:
         selected.append(alternative)
     allowed_citations = [citation_number for citation_number, _row in selected]
-    system = BASE_SYSTEM_PROMPT + (
+    response_language = _required_response_language(
+        question=question,
+        locale_hint=locale_hint,
+    )
+    system = _with_required_response_language(
+        BASE_SYSTEM_PROMPT,
+        language=response_language,
+    ) + (
         "\nThis is a constrained recommendation repair. The primary product has "
         f"already been selected as citation [{primary[0]}]. Keep that primary choice, "
         "write a fresh concise explanation, and use only the allowed citation numbers "
@@ -863,6 +894,7 @@ def _recommendation_repair_messages(
     input_data = {
         "interaction_goal": "PRODUCT_RECOMMENDATION",
         "storefront_locale_hint": locale_hint,
+        "required_response_language": response_language,
         "latest_visitor_question": question,
         "required_primary_citation": primary[0],
         "allowed_citations": allowed_citations,
@@ -922,7 +954,14 @@ def _social_prompt_messages(
     history: list[dict[str, str]],
     company_profile: dict[str, str | None],
 ) -> list[dict[str, str]]:
-    system = SOCIAL_SYSTEM_PROMPT
+    response_language = _required_response_language(
+        question=question,
+        locale_hint=locale_hint,
+    )
+    system = _with_required_response_language(
+        SOCIAL_SYSTEM_PROMPT,
+        language=response_language,
+    )
     custom = (settings.system_prompt or "").strip()
     if custom:
         system += (
@@ -933,6 +972,7 @@ def _social_prompt_messages(
     input_data = {
         "safe_social_intent": intent,
         "storefront_locale_hint": locale_hint,
+        "required_response_language": response_language,
         "latest_visitor_message": question,
         "approved_company_profile": company_profile,
         "recent_conversation_history": history[-6:],

@@ -619,7 +619,7 @@ QUEUED
 版本，不随当前配置变化。
 
 v2.2 变更不修改知识 chunk 或 Embedding，因此不需要数据迁移和索引重建；运行时记录
-`orchestrator_version=4`、`base_prompt_version=2`、`recommendation_policy_version=1` 与
+`orchestrator_version=4`、`base_prompt_version=3`、`recommendation_policy_version=1` 与
 客服商品重投影 `field_policy_version=2`。该字段策略只允许客户安全的标量规格选项进入
 Evidence，剔除内部元数据、供应商、采购/成本、内部备注、评分和联系方式字段。
 回滚时恢复 v2.1 编排器与缓冲式客户读取即可，既有 Run 的版本和证据快照保持不变。上线前
