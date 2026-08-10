@@ -38,6 +38,7 @@ POSTGRESQL_MIGRATION_MANAGED_FOREIGN_KEYS = {
     # tenant/parent checks, while PostgreSQL receives the database-level FKs.
     "fk_memberships_tenant_parent_membership",
     "fk_public_quote_drafts_tenant_submitter",
+    "fk_tenants_identity_code_merchant_identity_profiles",
 }
 SQLITE_MIGRATION_MANAGED_UNIQUE_OBJECTS = {
     # SQLite represents this named composite unique constraint as an index
@@ -50,6 +51,7 @@ SQLITE_APPLICATION_MANAGED_CHECKS = {
     # SQLite to avoid a second membership-table rebuild. PostgreSQL owns the
     # database check and remains part of strict autogenerate comparison.
     "ck_memberships_account_scope_allowed",
+    "ck_tenants_module_access_mode_allowed",
 }
 _SQLITE_CHECK_NAMES: dict[str, frozenset[str]] = {}
 

@@ -20,7 +20,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 from .model_mixins import AuditTimestampMixin, utcnow
 from .tenant_subscriptions import default_sku_limit, default_subscription_expiry
-from .tenant_modules import default_tenant_modules
+from .tenant_modules import (
+    DEFAULT_MERCHANT_IDENTITY,
+    DEFAULT_TENANT_MODULE_ACCESS_MODE,
+    default_merchant_identity_modules,
+    default_tenant_modules,
+)
 
 
 JSON_DOCUMENT = JSON().with_variant(JSONB(none_as_null=True), "postgresql")
@@ -53,11 +58,42 @@ class OrganizationRow(AuditTimestampMixin, Base):
     tenants: Mapped[list["TenantRow"]] = relationship(back_populates="organization")
 
 
+class MerchantIdentityProfileRow(AuditTimestampMixin, Base):
+    """Platform-managed defaults for merchant-visible modules."""
+
+    __tablename__ = "merchant_identity_profiles"
+    __table_args__ = (
+        CheckConstraint("code IN ('ADMIN', 'USER')", name="code_allowed"),
+        CheckConstraint("version >= 1", name="version_positive"),
+    )
+
+    code: Mapped[str] = mapped_column(String(20), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    default_modules: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=default_merchant_identity_modules,
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class TenantRow(AuditTimestampMixin, Base):
     __tablename__ = "tenants"
     __table_args__ = (
         CheckConstraint("status IN ('active', 'suspended', 'archived')", name="status_allowed"),
+        CheckConstraint(
+            "module_access_mode IN ('INHERIT', 'CUSTOM')",
+            name="module_access_mode_allowed",
+        ),
         Index("ix_tenants_organization_status", "organization_id", "status"),
+        Index(
+            "ix_tenants_identity_module_access",
+            "identity_code",
+            "module_access_mode",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -69,6 +105,16 @@ class TenantRow(AuditTimestampMixin, Base):
     default_locale: Mapped[str] = mapped_column(String(20), default="zh-CN", nullable=False)
     default_currency: Mapped[str] = mapped_column(String(3), default="CNY", nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", nullable=False)
+    identity_code: Mapped[str] = mapped_column(
+        ForeignKey("merchant_identity_profiles.code", ondelete="RESTRICT"),
+        default=DEFAULT_MERCHANT_IDENTITY,
+        nullable=False,
+    )
+    module_access_mode: Mapped[str] = mapped_column(
+        String(20),
+        default=DEFAULT_TENANT_MODULE_ACCESS_MODE,
+        nullable=False,
+    )
     enabled_modules: Mapped[list[str]] = mapped_column(
         JSON_DOCUMENT,
         default=default_tenant_modules,

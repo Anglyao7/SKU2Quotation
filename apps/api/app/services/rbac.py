@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..identity_models import (
+    MerchantIdentityProfileRow,
     MembershipRoleRow,
     MembershipRow,
     PermissionRow,
@@ -11,7 +12,7 @@ from ..identity_models import (
     RoleRow,
     TenantRow,
 )
-from ..tenant_modules import enabled_permission_modules
+from ..tenant_modules import effective_tenant_modules, enabled_permission_modules
 
 
 PLATFORM_ADMIN_ONLY_PERMISSION_CODES = frozenset(
@@ -48,8 +49,30 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
         )
         .distinct()
     )
-    tenant_modules = session.scalar(
-        select(TenantRow.enabled_modules).where(TenantRow.id == tenant_id)
+    tenant_access = session.execute(
+        select(
+            TenantRow.identity_code,
+            TenantRow.module_access_mode,
+            TenantRow.enabled_modules,
+        ).where(TenantRow.id == tenant_id)
+    ).one_or_none()
+    identity_defaults = None
+    if tenant_access is not None:
+        identity_defaults = session.scalar(
+            select(MerchantIdentityProfileRow.default_modules).where(
+                MerchantIdentityProfileRow.code == tenant_access.identity_code,
+                MerchantIdentityProfileRow.deleted_at.is_(None),
+            )
+        )
+    tenant_modules = (
+        effective_tenant_modules(
+            identity_code=tenant_access.identity_code,
+            access_mode=tenant_access.module_access_mode,
+            custom_modules=tenant_access.enabled_modules,
+            identity_default_modules=identity_defaults,
+        )
+        if tenant_access is not None
+        else ()
     )
     allowed_permission_modules = enabled_permission_modules(tenant_modules)
     return frozenset(

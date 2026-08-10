@@ -12,6 +12,7 @@ from ..database import set_request_context
 from ..domain.errors import ApplicationError
 from ..identity_models import (
     LocalAccountCredentialRow,
+    MerchantIdentityProfileRow,
     MembershipRoleRow,
     MembershipRow,
     TenantSubscriptionRow,
@@ -20,6 +21,8 @@ from ..identity_models import (
 )
 from ..model_mixins import utcnow
 from ..platform_admin_schemas import (
+    PlatformMerchantIdentityProfile,
+    PlatformMerchantIdentityUpdate,
     PlatformMemberInvitation,
     PlatformMemberInvitationCreate,
     PlatformMerchantOwnerAccount,
@@ -49,7 +52,13 @@ from ..tenant_slugs import (
     is_reserved_tenant_slug,
     storefront_slug_from_name,
 )
-from ..tenant_modules import normalized_tenant_modules
+from ..tenant_modules import (
+    MERCHANT_IDENTITY_CODES,
+    effective_tenant_modules,
+    normalized_merchant_identity,
+    normalized_module_access_mode,
+    normalized_tenant_modules,
+)
 from ..tenant_subscriptions import (
     default_sku_limit,
     default_subscription_expiry,
@@ -93,6 +102,26 @@ def _tenant_scope(
         )
 
 
+def _tenant_effective_modules(
+    session: Session,
+    tenant: TenantRow,
+) -> tuple[str, str, tuple[str, ...]]:
+    identity_code = normalized_merchant_identity(tenant.identity_code)
+    access_mode = normalized_module_access_mode(tenant.module_access_mode)
+    identity_profile = session.get(MerchantIdentityProfileRow, identity_code)
+    modules = effective_tenant_modules(
+        identity_code=identity_code,
+        access_mode=access_mode,
+        custom_modules=tenant.enabled_modules,
+        identity_default_modules=(
+            identity_profile.default_modules
+            if identity_profile is not None
+            else None
+        ),
+    )
+    return identity_code, access_mode, modules
+
+
 def _summary(
     session: Session,
     *,
@@ -125,6 +154,10 @@ def _summary(
         if owner is not None
         else None
     )
+    identity_code, access_mode, effective_modules = _tenant_effective_modules(
+        session,
+        tenant,
+    )
     return PlatformTenantSummary(
         id=tenant.id,
         organization_id=tenant.organization_id,
@@ -135,7 +168,14 @@ def _summary(
         default_locale=tenant.default_locale,
         default_currency=tenant.default_currency,
         timezone=tenant.timezone,
-        enabled_modules=list(normalized_tenant_modules(tenant.enabled_modules)),
+        identity_code=identity_code,
+        module_access_mode=access_mode,
+        enabled_modules=list(effective_modules),
+        module_overrides=(
+            list(normalized_tenant_modules(tenant.enabled_modules))
+            if access_mode == "CUSTOM"
+            else None
+        ),
         subscription_tier=subscription_tier,  # type: ignore[arg-type]
         subscription_started_at=subscription_started_at,
         subscription_expires_at=subscription_expires_at,
@@ -182,6 +222,93 @@ def list_tenants(
     return [_summary(session, context=context, tenant=row) for row in repository.list_tenants(session)]
 
 
+def _identity_profile_response(
+    row: MerchantIdentityProfileRow,
+) -> PlatformMerchantIdentityProfile:
+    return PlatformMerchantIdentityProfile(
+        code=normalized_merchant_identity(row.code),
+        name=row.name,
+        enabled_modules=list(normalized_tenant_modules(row.default_modules)),
+        version=row.version,
+        updated_at=row.updated_at,
+    )
+
+
+def list_merchant_identities(
+    session: Session,
+    *,
+    context: RequestContext,
+) -> list[PlatformMerchantIdentityProfile]:
+    _require_platform_admin(context)
+    rows = {
+        row.code: row
+        for row in session.scalars(
+            select(MerchantIdentityProfileRow).where(
+                MerchantIdentityProfileRow.code.in_(MERCHANT_IDENTITY_CODES),
+                MerchantIdentityProfileRow.deleted_at.is_(None),
+            )
+        ).all()
+    }
+    return [
+        _identity_profile_response(rows[code])
+        for code in MERCHANT_IDENTITY_CODES
+        if code in rows
+    ]
+
+
+def update_merchant_identity(
+    session: Session,
+    *,
+    context: RequestContext,
+    identity_code: str,
+    request: PlatformMerchantIdentityUpdate,
+) -> PlatformMerchantIdentityProfile:
+    _require_platform_admin(context)
+    normalized_code = identity_code.strip().upper()
+    if normalized_code not in MERCHANT_IDENTITY_CODES:
+        raise ApplicationError(
+            "MERCHANT_IDENTITY_NOT_FOUND",
+            "Merchant identity was not found.",
+            kind="not_found",
+        )
+    profile = session.get(MerchantIdentityProfileRow, normalized_code)
+    if profile is None or profile.deleted_at is not None:
+        raise ApplicationError(
+            "MERCHANT_IDENTITY_NOT_FOUND",
+            "Merchant identity was not found.",
+            kind="not_found",
+        )
+    next_modules = list(request.enabled_modules)
+    changed = next_modules != list(normalized_tenant_modules(profile.default_modules))
+    if changed:
+        profile.default_modules = next_modules
+        profile.version += 1
+        profile.updated_by_user_id = context.user_id
+        profile.updated_at = utcnow()
+        inherited_tenant_ids = list(
+            session.scalars(
+                select(TenantRow.id).where(
+                    TenantRow.identity_code == normalized_code,
+                    TenantRow.module_access_mode == "INHERIT",
+                    TenantRow.deleted_at.is_(None),
+                )
+            ).all()
+        )
+        for tenant_id in inherited_tenant_ids:
+            with _tenant_scope(session, context=context, tenant_id=tenant_id):
+                session.execute(
+                    update(MembershipRow)
+                    .where(
+                        MembershipRow.tenant_id == tenant_id,
+                        MembershipRow.status.in_(("active", "invited", "suspended")),
+                        MembershipRow.deleted_at.is_(None),
+                    )
+                    .values(permission_version=MembershipRow.permission_version + 1)
+                )
+    session.commit()
+    return _identity_profile_response(profile)
+
+
 def create_tenant(
     session: Session,
     *,
@@ -222,6 +349,8 @@ def create_tenant(
         default_locale=request.default_locale,
         default_currency=request.default_currency,
         timezone=request.timezone,
+        identity_code=request.identity_code,
+        module_access_mode=request.module_access_mode,
         enabled_modules=list(request.enabled_modules),
         status="active" if request.active else "suspended",
     )
@@ -347,7 +476,18 @@ def update_tenant(
         next_slug = tenant.slug
     if request.active is not None:
         tenant.status = "active" if request.active else "suspended"
-    modules_changed = False
+    previous_effective_modules = _tenant_effective_modules(session, tenant)[2]
+    previous_access_mode = normalized_module_access_mode(tenant.module_access_mode)
+    if request.identity_code is not None:
+        tenant.identity_code = request.identity_code
+    if request.module_access_mode is not None:
+        if (
+            request.module_access_mode == "CUSTOM"
+            and previous_access_mode == "INHERIT"
+            and "enabled_modules" not in request.model_fields_set
+        ):
+            tenant.enabled_modules = list(previous_effective_modules)
+        tenant.module_access_mode = request.module_access_mode
     if "enabled_modules" in request.model_fields_set:
         if request.enabled_modules is None:
             raise ApplicationError(
@@ -355,11 +495,15 @@ def update_tenant(
                 "Enabled modules must be a list.",
                 kind="invalid",
             )
-        requested_modules = list(request.enabled_modules or [])
-        modules_changed = requested_modules != list(
-            normalized_tenant_modules(tenant.enabled_modules)
-        )
-        tenant.enabled_modules = requested_modules
+        tenant.enabled_modules = list(request.enabled_modules or [])
+        if "module_access_mode" not in request.model_fields_set:
+            # Backward-compatible behavior for the existing module endpoint:
+            # providing a list means the merchant is intentionally customized.
+            tenant.module_access_mode = "CUSTOM"
+    modules_changed = (
+        previous_effective_modules
+        != _tenant_effective_modules(session, tenant)[2]
+    )
     with _tenant_scope(session, context=context, tenant_id=tenant.id):
         profile = repository.get_public_profile(session, tenant.id)
         if profile is None:

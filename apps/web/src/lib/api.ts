@@ -3,6 +3,8 @@ import type {
   CatalogLanguagePackDescriptor,
   CatalogSharePublic,
   CreateQuoteInput,
+  MerchantIdentityCode,
+  MerchantIdentityProfile,
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
   ProductTag,
@@ -19,6 +21,7 @@ import type {
   StorefrontCategoryOption,
   StorefrontLocale,
   Tenant,
+  TenantAccessPayload,
   TenantModuleCode,
   TenantPayload,
   TenantSubscriptionPayload,
@@ -731,6 +734,17 @@ export const api = {
     const raw = await request<unknown>("/api/admin/tenants", {}, true);
     return normalizeList<Tenant>(raw).items.map(normalizeTenant);
   },
+  getMerchantIdentities: () =>
+    request<MerchantIdentityProfile[]>("/api/admin/merchant-identities", {}, true),
+  updateMerchantIdentity: (
+    identityCode: MerchantIdentityCode,
+    enabledModules: TenantModuleCode[],
+  ) =>
+    request<MerchantIdentityProfile>(
+      `/api/admin/merchant-identities/${encodeURIComponent(identityCode)}`,
+      { method: "PATCH", body: JSON.stringify({ enabled_modules: enabledModules }) },
+      true,
+    ),
   createTenant: (payload: TenantPayload) => {
     return request<Tenant>("/api/admin/tenants", { method: "POST", body: JSON.stringify({ ...payload, default_currency: "CNY" }) }, true);
   },
@@ -740,6 +754,12 @@ export const api = {
     request<Tenant>(
       `/api/admin/tenants/${encodeURIComponent(id)}`,
       { method: "PATCH", body: JSON.stringify({ enabled_modules: enabledModules }) },
+      true,
+    ),
+  updateTenantAccess: (id: string, payload: TenantAccessPayload) =>
+    request<Tenant>(
+      `/api/admin/tenants/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify(payload) },
       true,
     ),
   updateTenantSubscription: (id: string, payload: TenantSubscriptionPayload) =>

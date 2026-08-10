@@ -135,6 +135,7 @@ class SupportAIAgentStoreResponse(BaseModel):
 class SupportAIAgentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=4000)
+    provider_profile_id: str | None = Field(default=None, max_length=40)
     tenant_ids: list[UUID] = Field(default_factory=list, max_length=500)
 
     @field_validator("name", mode="before")

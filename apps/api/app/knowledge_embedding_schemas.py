@@ -69,6 +69,10 @@ class EmbeddingSettingsResponse(BaseModel):
     api_key_configured: bool
     api_key_hint: str | None = None
     updated_at: datetime | None = None
+    model_changed: bool = False
+    cleared_product_embeddings: int = Field(default=0, ge=0)
+    cleared_file_embeddings: int = Field(default=0, ge=0)
+    invalidated_products: int = Field(default=0, ge=0)
 
 
 class EmbeddingSettingsUpdateRequest(BaseModel):

@@ -683,6 +683,10 @@ export interface EmbeddingSettings {
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
   updatedAt?: string;
+  modelChanged: boolean;
+  clearedProductEmbeddings: number;
+  clearedFileEmbeddings: number;
+  invalidatedProducts: number;
 }
 
 export interface SupportAIProviderSettings {

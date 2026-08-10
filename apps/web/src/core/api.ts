@@ -1600,6 +1600,10 @@ interface ApiEmbeddingSettings {
   api_key_configured: boolean;
   api_key_hint?: string | null;
   updated_at?: string | null;
+  model_changed?: boolean;
+  cleared_product_embeddings?: number;
+  cleared_file_embeddings?: number;
+  invalidated_products?: number;
 }
 
 function mapEmbeddingSettings(row: ApiEmbeddingSettings): EmbeddingSettings {
@@ -1615,6 +1619,10 @@ function mapEmbeddingSettings(row: ApiEmbeddingSettings): EmbeddingSettings {
     apiKeyConfigured: row.api_key_configured,
     apiKeyHint: defined(row.api_key_hint),
     updatedAt: defined(row.updated_at),
+    modelChanged: row.model_changed ?? false,
+    clearedProductEmbeddings: row.cleared_product_embeddings ?? 0,
+    clearedFileEmbeddings: row.cleared_file_embeddings ?? 0,
+    invalidatedProducts: row.invalidated_products ?? 0,
   };
 }
 
@@ -1634,19 +1642,31 @@ export async function updateEmbeddingSettings(input: {
   timeoutSeconds: number;
   maxRetryCount: number;
 }): Promise<EmbeddingSettings> {
-  return mapEmbeddingSettings(
-    await request<ApiEmbeddingSettings>("/ai/embedding/settings", {
-      method: "PUT",
-      body: JSON.stringify({
-        base_url: input.baseUrl,
-        api_key: input.apiKey || undefined,
-        model_name: input.modelName,
-        dimensions: input.dimensions,
-        timeout_seconds: input.timeoutSeconds,
-        max_retry_count: input.maxRetryCount,
-      }),
-    }),
-  );
+  const body = JSON.stringify({
+    base_url: input.baseUrl,
+    api_key: input.apiKey || undefined,
+    model_name: input.modelName,
+    dimensions: input.dimensions,
+    timeout_seconds: input.timeoutSeconds,
+    max_retry_count: input.maxRetryCount,
+  });
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return mapEmbeddingSettings(
+        await request<ApiEmbeddingSettings>("/ai/embedding/settings", {
+          method: "PUT",
+          body,
+        }),
+      );
+    } catch (reason) {
+      lastError = reason;
+      const status = reason instanceof CoreApiError ? reason.status : 0;
+      if (![0, 500, 502, 503, 504].includes(status) || attempt === 2) throw reason;
+      await new Promise((resolve) => window.setTimeout(resolve, 300 * (2 ** attempt)));
+    }
+  }
+  throw lastError;
 }
 
 interface ApiTranslationSettings {
@@ -2885,6 +2905,7 @@ export async function getSupportAIAgent(agentId: string): Promise<SupportAIAgent
 export async function createSupportAIAgent(input: {
   name: string;
   description?: string;
+  providerProfileId?: string;
   tenantIds?: string[];
 }): Promise<SupportAIAgent> {
   return mapSupportAIAgent(
@@ -2893,6 +2914,7 @@ export async function createSupportAIAgent(input: {
       body: JSON.stringify({
         name: input.name,
         description: input.description || null,
+        provider_profile_id: input.providerProfileId || null,
         tenant_ids: input.tenantIds || [],
       }),
     }),

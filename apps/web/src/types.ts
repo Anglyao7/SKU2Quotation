@@ -9,6 +9,17 @@ export type TenantModuleCode =
   | "quotations"
   | "subaccounts";
 
+export type MerchantIdentityCode = "ADMIN" | "USER";
+export type TenantModuleAccessMode = "INHERIT" | "CUSTOM";
+
+export interface MerchantIdentityProfile {
+  code: MerchantIdentityCode;
+  name: string;
+  enabled_modules: TenantModuleCode[];
+  version: number;
+  updated_at: string;
+}
+
 export type TenantSubscriptionTier = "TRIAL" | "STANDARD" | "SILVER" | "ELITE";
 export type TenantSubscriptionStatus = "active" | "expiring_soon" | "expired";
 
@@ -23,7 +34,10 @@ export interface Tenant {
   sku_count?: number;
   quote_count?: number;
   owner_account?: MerchantOwnerAccount | null;
+  identity_code?: MerchantIdentityCode;
+  module_access_mode?: TenantModuleAccessMode;
   enabled_modules?: TenantModuleCode[];
+  module_overrides?: TenantModuleCode[] | null;
   subscription_tier: TenantSubscriptionTier;
   subscription_started_at: string;
   subscription_expires_at: string;
@@ -414,6 +428,14 @@ export interface TenantPayload {
   slug?: string;
   contact_email?: string;
   active: boolean;
+  identity_code?: MerchantIdentityCode;
+  module_access_mode?: TenantModuleAccessMode;
+  enabled_modules?: TenantModuleCode[];
+}
+
+export interface TenantAccessPayload {
+  identity_code: MerchantIdentityCode;
+  module_access_mode: TenantModuleAccessMode;
   enabled_modules?: TenantModuleCode[];
 }
 

@@ -127,6 +127,8 @@ def bootstrap_production_owner(
             organization_id=organization.id,
             slug=canonical_slug,
             name=tenant_name.strip(),
+            identity_code="ADMIN" if platform_admin else "USER",
+            module_access_mode="INHERIT",
             status="active",
         )
         session.add(tenant)
@@ -135,6 +137,8 @@ def bootstrap_production_owner(
         raise ValueError("bootstrap tenant identity does not match")
     elif tenant.status != "active":
         raise ValueError("existing tenant is not active")
+    elif platform_admin:
+        tenant.identity_code = "ADMIN"
 
     subscription = session.get(TenantSubscriptionRow, tenant_id)
     if subscription is None:
