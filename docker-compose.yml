@@ -6,7 +6,7 @@ x-image-build: &image-build
   args:
     ATC_RELEASE: local-compose
     ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:-local}
-    ATC_MIGRATION_HEAD: "20260810_0071"
+    ATC_MIGRATION_HEAD: "20260810_0072"
     ATC_CONFIG_VERSION: local-compose-v1
 
 x-runtime-environment: &runtime-environment

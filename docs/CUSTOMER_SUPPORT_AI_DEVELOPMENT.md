@@ -9,7 +9,7 @@
 
 本次已完成运行契约的首个可上线闭环（知识与证据基础、店铺级 SKU/文件 RAG、
 启用/关闭、多语言、引用和人工接管），
-数据库版本为 `20260810_0071`。当前实现入口如下：
+数据库版本为 `20260810_0072`。当前实现入口如下：
 
 - 平台配置中心：`/console/system/configuration`，集中配置翻译与 Embedding API。智能客服
   模型密钥不再出现在公共配置页，统一在对应智能体详情中维护。
@@ -60,7 +60,7 @@
 `20260809_0062_support_ai_store_profiles.py`、
 `20260809_0063_support_ai_agents.py`、
 `20260810_0070_support_ai_social_profiles.py` 与
-`20260810_0071_knowledge_index_checkpoints.py`。后续章节同时保留长期目标；标为 Phase 5/6
+`20260810_0072_knowledge_index_checkpoints.py`。后续章节同时保留长期目标；标为 Phase 5/6
 的能力不属于本次 v1 自动回答范围。
 
 ## 1. 文档目的

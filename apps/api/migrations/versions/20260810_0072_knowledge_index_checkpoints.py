@@ -1,7 +1,7 @@
 """Add resumable pause checkpoints to product knowledge indexing.
 
-Revision ID: 20260810_0071
-Revises: 20260810_0070
+Revision ID: 20260810_0072
+Revises: 20260810_0071
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 
-revision = "20260810_0071"
-down_revision = "20260810_0070"
+revision = "20260810_0072"
+down_revision = "20260810_0071"
 branch_labels = None
 depends_on = None
 
