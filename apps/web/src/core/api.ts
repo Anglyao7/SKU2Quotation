@@ -2773,6 +2773,8 @@ interface ApiSupportAIAgent {
   min_answer_confidence: number;
   max_sources: number;
   daily_auto_reply_limit: number;
+  public_company_introduction?: string | null;
+  public_service_scope?: string | null;
   system_prompt?: string | null;
   handoff_messages: Record<string, string>;
   stores: Array<{ tenant_id: string; tenant_name: string }>;
@@ -2799,6 +2801,8 @@ function mapSupportAIAgent(row: ApiSupportAIAgent): SupportAIAgent {
     minAnswerConfidence: row.min_answer_confidence,
     maxSources: row.max_sources,
     dailyAutoReplyLimit: row.daily_auto_reply_limit,
+    publicCompanyIntroduction: defined(row.public_company_introduction),
+    publicServiceScope: defined(row.public_service_scope),
     systemPrompt: defined(row.system_prompt),
     handoffMessages: row.handoff_messages || {},
     stores: row.stores.map((store) => ({
@@ -2859,6 +2863,8 @@ export interface SupportAIAgentUpdateInput {
   minAnswerConfidence?: number;
   maxSources?: number;
   dailyAutoReplyLimit?: number;
+  publicCompanyIntroduction?: string | null;
+  publicServiceScope?: string | null;
   systemPrompt?: string | null;
   handoffMessages?: Record<string, string>;
 }
@@ -2885,6 +2891,8 @@ export async function updateSupportAIAgent(
           min_answer_confidence: input.minAnswerConfidence,
           max_sources: input.maxSources,
           daily_auto_reply_limit: input.dailyAutoReplyLimit,
+          public_company_introduction: input.publicCompanyIntroduction,
+          public_service_scope: input.publicServiceScope,
           system_prompt: input.systemPrompt,
           handoff_messages: input.handoffMessages,
         }),
@@ -2902,6 +2910,8 @@ interface ApiSupportAISettings {
   min_answer_confidence: number;
   max_sources: number;
   daily_auto_reply_limit: number;
+  public_company_introduction?: string | null;
+  public_service_scope?: string | null;
   system_prompt?: string | null;
   handoff_messages: Record<string, string>;
   prompt_version: number;
@@ -2921,6 +2931,8 @@ function mapSupportAISettings(row: ApiSupportAISettings): SupportAISettings {
     minAnswerConfidence: row.min_answer_confidence,
     maxSources: row.max_sources,
     dailyAutoReplyLimit: row.daily_auto_reply_limit,
+    publicCompanyIntroduction: defined(row.public_company_introduction),
+    publicServiceScope: defined(row.public_service_scope),
     systemPrompt: defined(row.system_prompt),
     handoffMessages: row.handoff_messages || {},
     promptVersion: row.prompt_version,
@@ -2940,6 +2952,8 @@ export interface SupportAISettingsWriteInput {
   minAnswerConfidence: number;
   maxSources: number;
   dailyAutoReplyLimit: number;
+  publicCompanyIntroduction?: string;
+  publicServiceScope?: string;
   systemPrompt?: string;
   handoffMessages: Record<string, string>;
 }
@@ -2978,6 +2992,8 @@ export async function updateSupportAISettings(
           min_answer_confidence: input.minAnswerConfidence,
           max_sources: input.maxSources,
           daily_auto_reply_limit: input.dailyAutoReplyLimit,
+          public_company_introduction: input.publicCompanyIntroduction || null,
+          public_service_scope: input.publicServiceScope || null,
           system_prompt: input.systemPrompt || null,
           handoff_messages: input.handoffMessages,
         }),
