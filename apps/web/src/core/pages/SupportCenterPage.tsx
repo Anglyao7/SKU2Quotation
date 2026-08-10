@@ -8,7 +8,6 @@ import {
   Robot,
   Translate,
   UserCircle,
-  UserSwitch,
   XCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,7 +17,7 @@ import {
   listSupportConversations,
   previewSupportReplyTranslation,
   replySupportConversation,
-  updateSupportConversationAutomation,
+  resumeSupportConversationAI,
   updateSupportConversationStatus,
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
@@ -217,19 +216,17 @@ export function SupportCenterPage() {
     }
   };
 
-  const changeAutomation = async () => {
+  const resumeAutomation = async () => {
     if (
       !detail
       || automationBusy
-      || (detail.automationState === "AI_ACTIVE" ? !canReply : !isPlatformAdmin)
+      || detail.automationState !== "HUMAN_TAKEOVER"
+      || !isPlatformAdmin
     ) return;
     setAutomationBusy(true);
     setError("");
     try {
-      const next = await updateSupportConversationAutomation(
-        detail.id,
-        detail.automationState === "AI_ACTIVE" ? "HUMAN_TAKEOVER" : "AI_ACTIVE",
-      );
+      const next = await resumeSupportConversationAI(detail.id);
       setDetail(next);
       setItems((current) => current.map((item) => item.id === next.id ? {
         ...item,
@@ -237,7 +234,7 @@ export function SupportCenterPage() {
         aiProcessing: next.aiProcessing,
       } : item));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("会话接管状态更新失败"));
+      setError(caught instanceof Error ? caught.message : t("恢复 AI 接待失败"));
     } finally {
       setAutomationBusy(false);
     }
@@ -310,10 +307,10 @@ export function SupportCenterPage() {
                     <Badge color={detail.automationState === "AI_ACTIVE" ? "blue" : "amber"}>
                       {detail.aiProcessing ? t("AI 回答中") : detail.automationState === "AI_ACTIVE" ? t("AI 可接待") : t("人工接管")}
                     </Badge>
-                    {(detail.automationState === "AI_ACTIVE" ? canReply : isPlatformAdmin) ? (
-                      <Button size="1" variant="soft" color={detail.automationState === "AI_ACTIVE" ? "amber" : "blue"} onClick={() => void changeAutomation()} disabled={automationBusy}>
-                        {detail.automationState === "AI_ACTIVE" ? <UserSwitch /> : <Robot />}
-                        {detail.automationState === "AI_ACTIVE" ? t("人工接管") : t("恢复 AI")}
+                    {detail.automationState === "HUMAN_TAKEOVER" && isPlatformAdmin ? (
+                      <Button size="1" variant="soft" color="blue" onClick={() => void resumeAutomation()} disabled={automationBusy}>
+                        <Robot />
+                        {t("恢复 AI")}
                       </Button>
                     ) : null}
                     <Badge color={detail.status === "OPEN" ? "green" : "gray"}>{detail.status === "OPEN" ? t("进行中") : t("已结束")}</Badge>
