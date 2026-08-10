@@ -24,7 +24,10 @@ import { ErrorState } from "./components/States";
 import { useCoreAuth } from "./core/AuthContext";
 import { useLocale } from "./core/LocaleContext";
 import { api, ApiError } from "./lib/api";
-import { readStorefrontViewState } from "./lib/storefrontViewState";
+import {
+  readStorefrontCatalogSnapshot,
+  readStorefrontViewState,
+} from "./lib/storefrontViewState";
 import { normalizeStorefrontLocale } from "./lib/storefrontLocale";
 import {
   importWithChunkRecovery,
@@ -152,6 +155,18 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const savedView = shareToken ? undefined : readStorefrontViewState(tenantSlug);
+    const catalogSnapshot = shareToken
+      ? null
+      : readStorefrontCatalogSnapshot(tenantSlug, locale);
+    if (catalogSnapshot) {
+      const cachedStore = catalogSnapshot.store;
+      if (cachedStore.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
+        return redirect(
+          `/${encodeURIComponent(cachedStore.slug)}${currentUrl.search}${currentUrl.hash}`,
+        );
+      }
+      return cachedStore;
+    }
     const category = savedView?.secondaryCategory || savedView?.primaryCategory;
     void api.prefetchStoreProducts(tenantSlug, {
       q: savedView?.search.trim() || undefined,

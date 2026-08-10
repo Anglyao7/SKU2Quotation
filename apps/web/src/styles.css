@@ -10,6 +10,7 @@
   -moz-osx-font-smoothing: grayscale;
   --page: #f8f9fb;
   --page-soft: #eff1f5;
+  --image-matte: #e2e5e9;
   --surface: #ffffff;
   --surface-strong: #fafbfc;
   --text: #0f1117;
@@ -206,6 +207,7 @@
 :root[data-theme="dark"] {
   --page: #0a0c10;
   --page-soft: #12141a;
+  --image-matte: #2a2d34;
   --surface: #1a1d26;
   --surface-strong: #1f232e;
   --text: #e8eaed;
@@ -839,11 +841,11 @@ img { display: block; max-width: 100%; }
   position: relative;
   min-width: 0;
   padding: 0 !important;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 1 / 1;
   overflow: hidden;
   border: 1px solid var(--line) !important;
   border-radius: 24px !important;
-  background: var(--page-soft) !important;
+  background: var(--image-matte) !important;
   box-shadow: var(--shadow) !important;
 }
 .sku-detail-image-trigger {
@@ -854,15 +856,16 @@ img { display: block; max-width: 100%; }
   display: block;
   overflow: hidden;
   border: 0;
-  background: transparent;
+  background: var(--image-matte);
   color: #ffffff;
   cursor: zoom-in;
 }
 .sku-detail-image-trigger > img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  transition: transform 280ms cubic-bezier(.2, .75, .25, 1), filter 220ms ease;
+  object-fit: contain;
+  object-position: center;
+  transition: filter 220ms ease;
 }
 .sku-detail-image-affordance {
   position: absolute;
@@ -887,13 +890,13 @@ img { display: block; max-width: 100%; }
   -webkit-backdrop-filter: blur(14px) saturate(1.25);
 }
 .sku-detail-image-affordance svg { width: 16px; height: 16px; }
-.sku-detail-image-trigger:hover > img { transform: scale(1.018); filter: brightness(.94); }
+.sku-detail-image-trigger:hover > img { filter: brightness(.96); }
 .sku-detail-image-trigger:hover .sku-detail-image-affordance,
 .sku-detail-image-trigger:focus-visible .sku-detail-image-affordance {
   opacity: 1;
   transform: translateY(0);
 }
-.sku-detail-image-trigger:active > img { transform: scale(1.005); }
+.sku-detail-image-trigger:active > img { filter: brightness(.93); }
 .rt-DialogOverlay:has(.product-image-lightbox) {
   background: rgba(5, 7, 12, .76) !important;
   backdrop-filter: blur(18px) saturate(.85);

@@ -41,7 +41,12 @@ import {
   storefrontLocaleQuery,
   storefrontText,
 } from "../lib/storefrontLocale";
-import { readStorefrontViewState, writeStorefrontViewState } from "../lib/storefrontViewState";
+import {
+  readStorefrontCatalogSnapshot,
+  readStorefrontViewState,
+  writeStorefrontCatalogSnapshot,
+  writeStorefrontViewState,
+} from "../lib/storefrontViewState";
 import type { CatalogSharePublic, StoreProduct, Storefront, StorefrontLocale } from "../types";
 
 type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
@@ -82,6 +87,22 @@ function hidePaginationItemOnMobile(index: number, currentPage: number, pageCoun
   if (currentPage <= 4) return index === 3 || index === 4;
   if (currentPage >= pageCount - 3) return index === 2 || index === 3;
   return index === 2 || index === 4;
+}
+
+function catalogRequestKey(
+  slug: string,
+  locale: StorefrontLocale,
+  shareToken: string,
+  search: string,
+  category: string,
+) {
+  return JSON.stringify([
+    slug.toLocaleLowerCase(),
+    locale,
+    shareToken,
+    search.trim(),
+    category,
+  ]);
 }
 
 function CategoryScrollTrack({
@@ -208,15 +229,27 @@ export function StorePage() {
   const unsharedQuery = storefrontLocaleQuery(locale);
   const storefrontHome = `/${encodeURIComponent(tenantSlug)}${sharedQuery}`;
   const unsharedStorefrontHome = `/${encodeURIComponent(tenantSlug)}${unsharedQuery}`;
-  const [initialView] = useState(() => (
-    shareToken ? undefined : readStorefrontViewState(loadedStore.slug)
+  const [initialCatalogSnapshot] = useState(() => (
+    shareToken
+      ? null
+      : readStorefrontCatalogSnapshot(loadedStore.slug, locale)
   ));
-  const [store, setStore] = useState<Storefront>(loadedStore);
-  const [products, setProducts] = useState<StoreProduct[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(initialView?.page ?? 1);
-  const [pages, setPages] = useState(0);
+  const [initialView] = useState(() => (
+    initialCatalogSnapshot?.view
+      ?? (shareToken ? undefined : readStorefrontViewState(loadedStore.slug))
+  ));
+  const [store, setStore] = useState<Storefront>(
+    initialCatalogSnapshot?.store ?? loadedStore,
+  );
+  const [products, setProducts] = useState<StoreProduct[]>(
+    initialCatalogSnapshot?.products ?? [],
+  );
+  const [total, setTotal] = useState(initialCatalogSnapshot?.total ?? 0);
+  const [loading, setLoading] = useState(!initialCatalogSnapshot);
+  const [page, setPage] = useState(
+    initialCatalogSnapshot?.page ?? initialView?.page ?? 1,
+  );
+  const [pages, setPages] = useState(initialCatalogSnapshot?.pages ?? 0);
   const [error, setError] = useState("");
   const [catalogShare, setCatalogShare] = useState<CatalogSharePublic>();
   const [shareError, setShareError] = useState("");
@@ -240,9 +273,24 @@ export function StorePage() {
   const activeTenantRef = useRef(loadedStore.slug);
   const activeLocaleRef = useRef<StorefrontLocale>(locale);
   const activeShareTokenRef = useRef(shareToken);
-  const facetsLoadedRef = useRef(Boolean(loadedStore.categories?.length));
-  const initialLoadPageRef = useRef<number | null>(initialView?.page ?? 1);
+  const facetsLoadedRef = useRef(Boolean(
+    initialCatalogSnapshot || loadedStore.categories?.length,
+  ));
+  const initialLoadPageRef = useRef<number | null>(
+    initialCatalogSnapshot ? null : initialView?.page ?? 1,
+  );
   const pendingScrollRestoreRef = useRef<number | null>(initialView?.scrollY ?? null);
+  const restoredCatalogQueryRef = useRef<string | null>(
+    initialCatalogSnapshot
+      ? catalogRequestKey(
+          loadedStore.slug,
+          locale,
+          shareToken,
+          initialView?.search ?? "",
+          initialView?.secondaryCategory || initialView?.primaryCategory || "",
+        )
+      : null,
+  );
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setDeferredSearch(search.trim()), 280);
@@ -260,20 +308,40 @@ export function StorePage() {
     activeShareTokenRef.current = shareToken;
     facetsLoadedRef.current = false;
     const nextView = shareToken ? undefined : readStorefrontViewState(loadedStore.slug);
-    setSearch(nextView?.search ?? "");
-    setDeferredSearch(nextView?.search.trim() ?? "");
-    setPrimaryCategory(nextView?.primaryCategory ?? "");
-    setSecondaryCategory(nextView?.secondaryCategory ?? "");
-    setCategoryLayout(nextView?.categoryLayout ?? "horizontal");
-    setExpandedCategories(new Set(nextView?.expandedCategories ?? []));
+    const nextSnapshot = shareToken
+      ? null
+      : readStorefrontCatalogSnapshot(loadedStore.slug, locale);
+    const restoredView = nextSnapshot?.view ?? nextView;
+    setStore(nextSnapshot?.store ?? loadedStore);
+    setSearch(restoredView?.search ?? "");
+    setDeferredSearch(restoredView?.search.trim() ?? "");
+    setPrimaryCategory(restoredView?.primaryCategory ?? "");
+    setSecondaryCategory(restoredView?.secondaryCategory ?? "");
+    setCategoryLayout(restoredView?.categoryLayout ?? "horizontal");
+    setExpandedCategories(new Set(restoredView?.expandedCategories ?? []));
     if (tenantChanged) {
       setCart(readStoreCart(loadedStore.slug));
       setCartTenant(loadedStore.slug);
     }
-    initialLoadPageRef.current = nextView?.page ?? 1;
-    pendingScrollRestoreRef.current = nextView?.scrollY ?? null;
-    setPage(nextView?.page ?? 1);
-    setPages(0);
+    restoredCatalogQueryRef.current = nextSnapshot
+      ? catalogRequestKey(
+          loadedStore.slug,
+          locale,
+          shareToken,
+          restoredView?.search ?? "",
+          restoredView?.secondaryCategory || restoredView?.primaryCategory || "",
+        )
+      : null;
+    facetsLoadedRef.current = Boolean(
+      nextSnapshot || loadedStore.categories?.length,
+    );
+    initialLoadPageRef.current = nextSnapshot ? null : restoredView?.page ?? 1;
+    pendingScrollRestoreRef.current = restoredView?.scrollY ?? null;
+    setProducts(nextSnapshot?.products ?? []);
+    setTotal(nextSnapshot?.total ?? 0);
+    setPage(nextSnapshot?.page ?? restoredView?.page ?? 1);
+    setPages(nextSnapshot?.pages ?? 0);
+    setLoading(!nextSnapshot);
   }, [loadedStore, locale, shareToken]);
 
   useEffect(() => {
@@ -298,6 +366,13 @@ export function StorePage() {
   }, [cart, cartTenant, tenantSlug]);
 
   const category = secondaryCategory || primaryCategory;
+  const currentCatalogRequestKey = catalogRequestKey(
+    tenantSlug,
+    locale,
+    shareToken,
+    deferredSearch,
+    category,
+  );
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -361,9 +436,13 @@ export function StorePage() {
   }, [tenantSlug, deferredSearch, category, locale, shareToken, t]);
 
   useEffect(() => {
+    if (restoredCatalogQueryRef.current === currentCatalogRequestKey) {
+      return;
+    }
+    restoredCatalogQueryRef.current = null;
     const targetPage = initialLoadPageRef.current ?? 1;
     void loadProducts(targetPage);
-  }, [loadProducts]);
+  }, [currentCatalogRequestKey, loadProducts]);
 
   useEffect(
     () => subscribePublicCatalogRevision(() => {
@@ -439,10 +518,10 @@ export function StorePage() {
   useEffect(() => {
     if (loading || pendingScrollRestoreRef.current === null) return;
     const targetScrollY = pendingScrollRestoreRef.current;
-    pendingScrollRestoreRef.current = null;
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
       secondFrame = window.requestAnimationFrame(() => {
+        pendingScrollRestoreRef.current = null;
         window.scrollTo({ top: targetScrollY, left: 0, behavior: "auto" });
       });
     });
@@ -611,7 +690,7 @@ export function StorePage() {
   };
   const rememberCatalogPosition = () => {
     if (shareToken) return;
-    writeStorefrontViewState(tenantSlug, {
+    const viewState = {
       page,
       scrollY: window.scrollY,
       search,
@@ -619,7 +698,18 @@ export function StorePage() {
       secondaryCategory,
       categoryLayout,
       expandedCategories: Array.from(expandedCategories),
-    });
+    };
+    writeStorefrontViewState(tenantSlug, viewState);
+    if (!loading && !error && products.length > 0) {
+      writeStorefrontCatalogSnapshot(tenantSlug, locale, {
+        store,
+        products,
+        total,
+        page,
+        pages,
+        view: viewState,
+      });
+    }
   };
   const goToPage = (targetPage: number) => {
     if (loading || targetPage === page || targetPage < 1 || targetPage > pages) return;
