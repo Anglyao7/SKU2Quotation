@@ -1,3 +1,10 @@
+import type {
+  StoreProduct,
+  Storefront,
+  StorefrontLocale,
+} from "../types";
+import { currentPublicCatalogRevision } from "./publicCatalogRevision";
+
 export type StorefrontCategoryLayout = "horizontal" | "vertical";
 
 export interface StorefrontViewState {
@@ -12,9 +19,47 @@ export interface StorefrontViewState {
 }
 
 const VIEW_STATE_TTL_MS = 12 * 60 * 60 * 1_000;
+const CATALOG_SNAPSHOT_TTL_MS = 15 * 60 * 1_000;
+const CATALOG_SNAPSHOT_MAX_ENTRIES = 12;
+
+export interface StorefrontCatalogSnapshot {
+  store: Storefront;
+  products: StoreProduct[];
+  total: number;
+  page: number;
+  pages: number;
+  view: Omit<StorefrontViewState, "savedAt">;
+  locale: StorefrontLocale;
+  revision: string;
+  savedAt: number;
+}
+
+const catalogSnapshots = new Map<string, StorefrontCatalogSnapshot>();
 
 function storageKey(slug: string) {
   return `smart-trade-cloud:store-view:${slug.toLocaleLowerCase()}`;
+}
+
+function catalogSnapshotKey(slug: string, locale: StorefrontLocale) {
+  return `${slug.trim().toLocaleLowerCase()}:${locale}`;
+}
+
+function pruneCatalogSnapshots() {
+  const now = Date.now();
+  const revision = currentPublicCatalogRevision();
+  for (const [key, snapshot] of catalogSnapshots) {
+    if (
+      now - snapshot.savedAt > CATALOG_SNAPSHOT_TTL_MS
+      || snapshot.revision !== revision
+    ) {
+      catalogSnapshots.delete(key);
+    }
+  }
+  while (catalogSnapshots.size > CATALOG_SNAPSHOT_MAX_ENTRIES) {
+    const oldestKey = catalogSnapshots.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    catalogSnapshots.delete(oldestKey);
+  }
 }
 
 function normalizedString(value: unknown, maxLength = 500) {
@@ -69,4 +114,34 @@ export function writeStorefrontViewState(
   } catch {
     // Catalog navigation must still work when session storage is unavailable.
   }
+}
+
+export function readStorefrontCatalogSnapshot(
+  slug: string,
+  locale: StorefrontLocale,
+): StorefrontCatalogSnapshot | null {
+  pruneCatalogSnapshots();
+  const key = catalogSnapshotKey(slug, locale);
+  const snapshot = catalogSnapshots.get(key);
+  if (!snapshot) return null;
+  catalogSnapshots.delete(key);
+  catalogSnapshots.set(key, snapshot);
+  return snapshot;
+}
+
+export function writeStorefrontCatalogSnapshot(
+  slug: string,
+  locale: StorefrontLocale,
+  snapshot: Omit<StorefrontCatalogSnapshot, "locale" | "revision" | "savedAt">,
+) {
+  const key = catalogSnapshotKey(slug, locale);
+  catalogSnapshots.delete(key);
+  catalogSnapshots.set(key, {
+    ...snapshot,
+    products: [...snapshot.products],
+    locale,
+    revision: currentPublicCatalogRevision(),
+    savedAt: Date.now(),
+  });
+  pruneCatalogSnapshots();
 }
