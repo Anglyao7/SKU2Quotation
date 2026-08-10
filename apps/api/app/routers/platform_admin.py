@@ -10,6 +10,7 @@ from ..domain.errors import ApplicationError
 from ..platform_admin_schemas import (
     PlatformMemberInvitation,
     PlatformMemberInvitationCreate,
+    PlatformMerchantIdentityCreate,
     PlatformMerchantIdentityProfile,
     PlatformMerchantIdentityUpdate,
     PlatformMerchantOwnerAccount,
@@ -49,6 +50,26 @@ def merchant_identities_endpoint(
         raise application_http_error(exc) from exc
 
 
+@router.post(
+    "/merchant-identities",
+    response_model=PlatformMerchantIdentityProfile,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_merchant_identity_endpoint(
+    request: PlatformMerchantIdentityCreate,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> PlatformMerchantIdentityProfile:
+    try:
+        return use_cases.create_merchant_identity(
+            session,
+            context=context,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.patch(
     "/merchant-identities/{identity_code}",
     response_model=PlatformMerchantIdentityProfile,
@@ -65,6 +86,25 @@ def update_merchant_identity_endpoint(
             context=context,
             identity_code=identity_code,
             request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/merchant-identities/{identity_code}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_merchant_identity_endpoint(
+    identity_code: str,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> None:
+    try:
+        use_cases.delete_merchant_identity(
+            session,
+            context=context,
+            identity_code=identity_code,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

@@ -736,20 +736,42 @@ export const api = {
   },
   getMerchantIdentities: () =>
     request<MerchantIdentityProfile[]>("/api/admin/merchant-identities", {}, true),
+  createMerchantIdentity: (payload: { name: string; enabled_modules: TenantModuleCode[] }) =>
+    request<MerchantIdentityProfile>(
+      "/api/admin/merchant-identities",
+      { method: "POST", body: JSON.stringify(payload) },
+      true,
+    ),
   updateMerchantIdentity: (
     identityCode: MerchantIdentityCode,
-    enabledModules: TenantModuleCode[],
+    payload: { name?: string; enabled_modules?: TenantModuleCode[] },
   ) =>
     request<MerchantIdentityProfile>(
       `/api/admin/merchant-identities/${encodeURIComponent(identityCode)}`,
-      { method: "PATCH", body: JSON.stringify({ enabled_modules: enabledModules }) },
+      { method: "PATCH", body: JSON.stringify(payload) },
+      true,
+    ),
+  deleteMerchantIdentity: (identityCode: MerchantIdentityCode) =>
+    request<void>(
+      `/api/admin/merchant-identities/${encodeURIComponent(identityCode)}`,
+      { method: "DELETE" },
       true,
     ),
   createTenant: (payload: TenantPayload) => {
     return request<Tenant>("/api/admin/tenants", { method: "POST", body: JSON.stringify({ ...payload, default_currency: "CNY" }) }, true);
   },
   updateTenant: (id: string, payload: TenantPayload) =>
-    request<Tenant>(`/api/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify({ name: payload.name, contact_email: payload.contact_email || null, active: payload.active, ...(payload.enabled_modules ? { enabled_modules: payload.enabled_modules } : {}) }) }, true),
+    request<Tenant>(`/api/admin/tenants/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: payload.name,
+        contact_email: payload.contact_email || null,
+        active: payload.active,
+        ...(payload.identity_code ? { identity_code: payload.identity_code } : {}),
+        ...(payload.module_access_mode ? { module_access_mode: payload.module_access_mode } : {}),
+        ...(payload.enabled_modules ? { enabled_modules: payload.enabled_modules } : {}),
+      }),
+    }, true),
   updateTenantModules: (id: string, enabledModules: TenantModuleCode[]) =>
     request<Tenant>(
       `/api/admin/tenants/${encodeURIComponent(id)}`,

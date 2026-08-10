@@ -8,14 +8,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..customer_accounts_schemas import (
+    CUSTOMER_SUBACCOUNT_CAPABILITIES,
     CustomerPortalOrderSummary,
     CustomerPortalOverview,
+    CustomerSubaccountAccessUpdate,
     CustomerSubaccountCreate,
     CustomerSubaccountDashboard,
     CustomerSubaccountOrderPage,
     CustomerSubaccountOrderSummary,
     CustomerSubaccountStatusUpdate,
     CustomerSubaccountSummary,
+    normalize_capabilities,
 )
 from ..database import set_request_context
 from ..domain.errors import ApplicationError
@@ -41,6 +44,33 @@ from ..services.auth.password_accounts import (
 
 _CUSTOMER_SCOPE = "CUSTOMER_SUBACCOUNT"
 _PORTAL_ROLE = "CUSTOMER_SUBACCOUNT"
+_CAPABILITY_PERMISSIONS = {
+    "catalog": "customer_portal.access",
+    "submit_orders": "customer_portal.order_create",
+    "view_orders": "customer_portal.order_view_self",
+}
+
+
+def _capabilities_from_permissions(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return list(CUSTOMER_SUBACCOUNT_CAPABILITIES)
+    permissions = {str(code) for code in value}
+    return normalize_capabilities(
+        [
+            capability
+            for capability, permission in _CAPABILITY_PERMISSIONS.items()
+            if permission in permissions
+        ]
+    )
+
+
+def _permissions_from_capabilities(value: list[str]) -> list[str]:
+    selected = set(value)
+    return [
+        permission
+        for capability, permission in _CAPABILITY_PERMISSIONS.items()
+        if capability in selected
+    ]
 
 
 def _require_parent(context: RequestContext) -> None:
@@ -52,10 +82,13 @@ def _require_parent(context: RequestContext) -> None:
         )
 
 
-def _require_customer_portal(context: RequestContext) -> None:
+def _require_customer_portal(
+    context: RequestContext,
+    permission: str = "customer_portal.access",
+) -> None:
     if (
         context.account_scope != _CUSTOMER_SCOPE
-        or "customer_portal.access" not in context.permissions
+        or permission not in context.permissions
     ):
         raise ApplicationError(
             "CUSTOMER_PORTAL_ACCESS_DENIED",
@@ -141,6 +174,9 @@ def _summary_rows(
             login_identifier=membership.login_identifier or user.email_normalized or "—",
             email=user.email_normalized,
             status=membership.status,
+            capabilities=_capabilities_from_permissions(
+                membership.permission_overrides
+            ),
             created_at=membership.created_at,
             last_login_at=user.last_login_at or access.get(membership.id, (0, None))[1],
             login_count_30d=access.get(membership.id, (0, None))[0],
@@ -322,6 +358,7 @@ def create_customer_subaccount(
         login_identifier=request.login_identifier.casefold(),
         status="active",
         joined_at=utcnow(),
+        permission_overrides=_permissions_from_capabilities(request.capabilities),
     )
     identity_session.add(user)
     identity_session.add(membership)
@@ -402,6 +439,47 @@ def update_customer_subaccount_status(
     return next(summary for summary in summaries if summary.id == membership_id)
 
 
+def update_customer_subaccount_access(
+    identity_session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+    request: CustomerSubaccountAccessUpdate,
+) -> CustomerSubaccountSummary:
+    _require_parent(context)
+    set_request_context(
+        identity_session,
+        organization_id=context.organization_id,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+    )
+    membership = identity_session.scalar(
+        select(MembershipRow).where(
+            MembershipRow.id == membership_id,
+            MembershipRow.tenant_id == context.tenant_id,
+            MembershipRow.parent_membership_id == context.membership_id,
+            MembershipRow.account_scope == _CUSTOMER_SCOPE,
+        )
+    )
+    if membership is None:
+        raise ApplicationError(
+            "CUSTOMER_ACCOUNT_NOT_FOUND",
+            "Customer subaccount was not found.",
+            kind="not_found",
+        )
+    next_permissions = _permissions_from_capabilities(request.capabilities)
+    if membership.permission_overrides != next_permissions:
+        membership.permission_overrides = next_permissions
+        membership.permission_version += 1
+    identity_session.commit()
+    summaries = _summary_rows(
+        identity_session,
+        tenant_id=context.tenant_id,
+        parent_membership_id=context.membership_id,
+    )
+    return next(summary for summary in summaries if summary.id == membership_id)
+
+
 def get_customer_portal_overview(
     session: Session,
     *,
@@ -414,15 +492,18 @@ def get_customer_portal_overview(
         .join(UserRow, UserRow.id == MembershipRow.user_id)
         .where(MembershipRow.id == context.membership_id)
     ).one()
-    count, last_order = session.execute(
-        select(
-            func.count(PublicQuoteDraftRow.id),
-            func.max(PublicQuoteDraftRow.created_at),
-        ).where(
-            PublicQuoteDraftRow.tenant_id == context.tenant_id,
-            PublicQuoteDraftRow.submitted_by_membership_id == membership.id,
-        )
-    ).one()
+    if "customer_portal.order_view_self" in context.permissions:
+        count, last_order = session.execute(
+            select(
+                func.count(PublicQuoteDraftRow.id),
+                func.max(PublicQuoteDraftRow.created_at),
+            ).where(
+                PublicQuoteDraftRow.tenant_id == context.tenant_id,
+                PublicQuoteDraftRow.submitted_by_membership_id == membership.id,
+            )
+        ).one()
+    else:
+        count, last_order = 0, None
     return CustomerPortalOverview(
         display_name=user.display_name,
         tenant_name=tenant.name,
@@ -438,7 +519,7 @@ def list_customer_portal_orders(
     *,
     context: RequestContext,
 ) -> list[CustomerPortalOrderSummary]:
-    _require_customer_portal(context)
+    _require_customer_portal(context, "customer_portal.order_view_self")
     rows = session.scalars(
         select(PublicQuoteDraftRow)
         .where(
@@ -462,3 +543,4 @@ def list_customer_portal_orders(
         )
         for row in rows
     ]
+    CustomerSubaccountAccessUpdate,

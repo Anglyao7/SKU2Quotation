@@ -8,6 +8,7 @@ import type {
   CustomerPortalOrder,
   CustomerPortalOverview,
   CustomerSubaccount,
+  CustomerSubaccountCapability,
   CustomerSubaccountDashboard,
   CustomerSubaccountOrder,
   CustomerSubaccountOrderPage,
@@ -659,6 +660,8 @@ interface ApiCustomerSubaccount {
   login_identifier: string;
   email?: string | null;
   status: string;
+  identity_code: "SUBACCOUNT";
+  capabilities: CustomerSubaccountCapability[];
   created_at: string;
   last_login_at?: string | null;
   login_count_30d: number;
@@ -688,6 +691,8 @@ function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
     loginIdentifier: row.login_identifier,
     email: defined(row.email),
     status: row.status,
+    identityCode: row.identity_code,
+    capabilities: row.capabilities || ["catalog", "submit_orders", "view_orders"],
     createdAt: row.created_at,
     lastLoginAt: defined(row.last_login_at),
     loginCount30d: Number(row.login_count_30d || 0),
@@ -750,6 +755,7 @@ export async function createCustomerSubaccount(input: {
   loginIdentifier: string;
   password: string;
   email?: string;
+  capabilities: CustomerSubaccountCapability[];
 }): Promise<CustomerSubaccount> {
   const row = await request<ApiCustomerSubaccount>("/customer-accounts", {
     method: "POST",
@@ -758,8 +764,20 @@ export async function createCustomerSubaccount(input: {
       login_identifier: input.loginIdentifier,
       password: input.password,
       email: input.email || null,
+      capabilities: input.capabilities,
     }),
   });
+  return mapCustomerSubaccount(row);
+}
+
+export async function updateCustomerSubaccountAccess(
+  membershipId: string,
+  capabilities: CustomerSubaccountCapability[],
+): Promise<CustomerSubaccount> {
+  const row = await request<ApiCustomerSubaccount>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/access`,
+    { method: "PATCH", body: JSON.stringify({ capabilities }) },
+  );
   return mapCustomerSubaccount(row);
 }
 

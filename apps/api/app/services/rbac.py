@@ -56,6 +56,19 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
             TenantRow.enabled_modules,
         ).where(TenantRow.id == tenant_id)
     ).one_or_none()
+    account_overrides = session.scalar(
+        select(MembershipRow.permission_overrides).where(
+            MembershipRow.tenant_id == tenant_id,
+            MembershipRow.user_id == user_id,
+            MembershipRow.status == "active",
+            MembershipRow.deleted_at.is_(None),
+        )
+    )
+    account_permission_ceiling = (
+        {str(code) for code in account_overrides}
+        if isinstance(account_overrides, list)
+        else None
+    )
     identity_defaults = None
     if tenant_access is not None:
         identity_defaults = session.scalar(
@@ -81,6 +94,10 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
         if (
             permission_module in allowed_permission_modules
             and code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+            and (
+                account_permission_ceiling is None
+                or code in account_permission_ceiling
+            )
         )
     )
 

@@ -13,6 +13,7 @@ import {
   FileXls,
   GlobeHemisphereWest,
   Headset,
+  IdentificationCard,
   Megaphone,
   Pulse,
   Robot,
@@ -104,6 +105,7 @@ const navigationGroups = [
     icon: StoreIcon,
     items: [
       { to: "/console/tenants", label: "商家管理", mobileLabel: "商家", icon: StoreIcon, permissions: [], platformAdminOnly: true, mobilePrimary: false },
+      { to: "/console/identities", label: "身份管理", mobileLabel: "身份", icon: IdentificationCard, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/monitoring", label: "系统监控", mobileLabel: "监控", icon: Pulse, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/configuration", label: "配置中心", mobileLabel: "配置", icon: SlidersHorizontal, permissions: [], platformAdminOnly: true, mobilePrimary: false },
     ],
@@ -214,7 +216,7 @@ export function ConsoleLayout() {
     try { await switchTenant(membershipId); }
     catch (caught) { setTenantError(caught instanceof Error ? caught.message : t("工作区切换失败")); }
   };
-  const reloadTenants = async () => undefined;
+  const reloadTenants = reloadProfile;
 
   const openCurrencyDialog = () => {
     if (COMMON_CURRENCIES.includes(defaultCurrency as typeof COMMON_CURRENCIES[number])) {

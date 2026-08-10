@@ -356,15 +356,15 @@ def submit_public_quote_draft(
             "RATE_LIMIT_PUBLIC_QUOTE_WINDOW_SECONDS", 3_600, maximum=86_400
         ),
     )
-    submitter = use_cases.optional_customer_quote_submitter(
-        identity_session,
-        access_token=(
-            credentials.credentials
-            if credentials is not None and credentials.scheme.lower() == "bearer"
-            else None
-        ),
-    )
     try:
+        submitter = use_cases.optional_customer_quote_submitter(
+            identity_session,
+            access_token=(
+                credentials.credentials
+                if credentials is not None and credentials.scheme.lower() == "bearer"
+                else None
+            ),
+        )
         return use_cases.create_public_quote_draft(
             session,
             slug=tenant_slug,

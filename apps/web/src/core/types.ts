@@ -65,6 +65,8 @@ export interface PermissionSet {
   permissions: string[];
 }
 
+export type CustomerSubaccountCapability = "catalog" | "submit_orders" | "view_orders";
+
 export interface CustomerSubaccount {
   id: string;
   userId: string;
@@ -72,6 +74,8 @@ export interface CustomerSubaccount {
   loginIdentifier: string;
   email?: string;
   status: "active" | "suspended" | string;
+  identityCode: "SUBACCOUNT";
+  capabilities: CustomerSubaccountCapability[];
   createdAt: string;
   lastLoginAt?: string;
   loginCount30d: number;

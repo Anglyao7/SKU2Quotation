@@ -2,6 +2,7 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
   Dialog,
   Heading,
   Text,
@@ -15,6 +16,7 @@ import {
   FileText,
   Plus,
   Power,
+  SlidersHorizontal,
   UserPlus,
   UsersThree,
   WarningCircle,
@@ -25,6 +27,7 @@ import {
   getCustomerSubaccountDashboard,
   listCustomerSubaccountOrders,
   updateCustomerSubaccountStatus,
+  updateCustomerSubaccountAccess,
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
@@ -32,6 +35,7 @@ import { money } from "../../lib/format";
 import type {
   CustomerSubaccount,
   CustomerSubaccountDashboard,
+  CustomerSubaccountCapability,
   CustomerSubaccountOrderPage,
 } from "../types";
 
@@ -43,6 +47,11 @@ const orderStatusLabel: Record<string, string> = {
 };
 
 const ORDER_PAGE_SIZE = 20;
+const SUBACCOUNT_CAPABILITIES: Array<{ code: CustomerSubaccountCapability; label: string }> = [
+  { code: "catalog", label: "浏览商品" },
+  { code: "submit_orders", label: "提交报价" },
+  { code: "view_orders", label: "查看本人订单" },
+];
 
 export function CustomerAccountsPage() {
   const { t } = useLocale();
@@ -52,6 +61,7 @@ export function CustomerAccountsPage() {
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  const [accessEditor, setAccessEditor] = useState<CustomerSubaccount>();
   const [updatingId, setUpdatingId] = useState<string>();
 
   const load = useCallback(async (page = 1) => {
@@ -148,6 +158,7 @@ export function CustomerAccountsPage() {
               <span>{account.lastOrderAt ? t("最近 {date}", { date: coreDate(account.lastOrderAt) }) : t("尚无订单")}</span>
             </div>
             <Badge color={account.status === "active" ? "jade" : "gray"}>{t(account.status === "active" ? "已开通" : "已停用")}</Badge>
+            <Button size="1" variant="soft" color="gray" onClick={() => setAccessEditor(account)}><SlidersHorizontal />{t("权限")}</Button>
             <Button
               size="1"
               variant="soft"
@@ -205,6 +216,17 @@ export function CustomerAccountsPage() {
       onClose={() => setEditorOpen(false)}
       onCreated={async () => { setEditorOpen(false); await load(1); }}
     /> : null}
+    {accessEditor ? <CustomerAccountAccessDialog
+      account={accessEditor}
+      onClose={() => setAccessEditor(undefined)}
+      onSaved={(updated) => {
+        setData((current) => current ? {
+          ...current,
+          accounts: current.accounts.map((row) => row.id === updated.id ? updated : row),
+        } : current);
+        setAccessEditor(undefined);
+      }}
+    /> : null}
   </div>;
 }
 
@@ -218,6 +240,9 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
   const [identifier, setIdentifier] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [capabilities, setCapabilities] = useState<Set<CustomerSubaccountCapability>>(
+    new Set(SUBACCOUNT_CAPABILITIES.map((item) => item.code)),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const submit = async (event: FormEvent) => {
@@ -230,6 +255,7 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
         loginIdentifier: identifier.trim(),
         password,
         email: email.trim() || undefined,
+        capabilities: SUBACCOUNT_CAPABILITIES.map((item) => item.code).filter((code) => capabilities.has(code)),
       });
       await onCreated();
     } catch (caught) {
@@ -249,10 +275,76 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
           <label><Text size="2" weight="medium">{t("联系邮箱（可选）")}</Text><TextField.Root value={email} onChange={(event) => setEmail(event.target.value)} placeholder={t("name@example.com") } type="email" maxLength={320} /></label>
           <label><Text size="2" weight="medium">{t("初始密码")}</Text><TextField.Root value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("至少 8 位，包含字母和数字") } type="password" required minLength={8} maxLength={128} /></label>
         </div>
+        <div className="subaccount-access-options">
+          {SUBACCOUNT_CAPABILITIES.map((item) => <label key={item.code}>
+            <Checkbox
+              checked={capabilities.has(item.code)}
+              disabled={item.code === "catalog"}
+              onCheckedChange={(checked) => setCapabilities((current) => {
+                const next = new Set(current);
+                if (checked === true) next.add(item.code); else next.delete(item.code);
+                return next;
+              })}
+            />
+            <Text size="2">{t(item.label)}</Text>
+          </label>)}
+        </div>
         <div className="customer-account-dialog-note"><WarningCircle size={18} />{t("请将初始账号密码通过可靠渠道交给客户；密码不会在创建后再次显示。")}</div>
         {error ? <Text color="red" size="2">{error}</Text> : null}
         <div className="core-dialog-actions"><Button type="button" variant="soft" color="gray" onClick={onClose}>{t("取消")}</Button><Button type="submit" loading={saving}><UserPlus />{t(saving ? "正在开通" : "确认开通")}</Button></div>
       </form>
+    </Dialog.Content>
+  </Dialog.Root>;
+}
+
+function CustomerAccountAccessDialog({
+  account,
+  onClose,
+  onSaved,
+}: {
+  account: CustomerSubaccount;
+  onClose: () => void;
+  onSaved: (updated: CustomerSubaccount) => void;
+}) {
+  const { t } = useLocale();
+  const [selected, setSelected] = useState<Set<CustomerSubaccountCapability>>(
+    new Set(account.capabilities),
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const capabilities = SUBACCOUNT_CAPABILITIES
+        .map((item) => item.code)
+        .filter((code) => selected.has(code));
+      onSaved(await updateCustomerSubaccountAccess(account.id, capabilities));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("子账号权限保存失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
+    <Dialog.Content className="customer-account-dialog subaccount-access-dialog">
+      <Dialog.Title>{t("{name} 的可见范围", { name: account.displayName })}</Dialog.Title>
+      <div className="subaccount-access-options">
+        {SUBACCOUNT_CAPABILITIES.map((item) => <label key={item.code}>
+          <Checkbox
+            checked={selected.has(item.code)}
+            disabled={item.code === "catalog"}
+            onCheckedChange={(checked) => setSelected((current) => {
+              const next = new Set(current);
+              if (checked === true) next.add(item.code); else next.delete(item.code);
+              return next;
+            })}
+          />
+          <Text size="2">{t(item.label)}</Text>
+        </label>)}
+      </div>
+      {error ? <Text color="red" size="2">{error}</Text> : null}
+      <div className="core-dialog-actions"><Button variant="soft" color="gray" onClick={onClose}>{t("取消")}</Button><Button loading={saving} onClick={() => void save()}>{t("保存权限")}</Button></div>
     </Dialog.Content>
   </Dialog.Root>;
 }

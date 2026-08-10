@@ -3591,6 +3591,18 @@ def test_platform_admin_routes_reject_regular_members(
 ) -> None:
     from app.support_models import StorefrontChatConversationRow
 
+    suffix = uuid4().hex[:10]
+    tenant_response = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": f"Regular Merchant {suffix}",
+            "slug": f"regular-merchant-{suffix}",
+            "identity_code": "USER",
+            "active": True,
+        },
+    )
+    assert tenant_response.status_code == 201, tenant_response.text
+    regular_tenant_id = UUID(tenant_response.json()["id"])
     user_id = uuid4()
     membership_id = uuid4()
     conversation_id = uuid4()
@@ -3609,7 +3621,7 @@ def test_platform_admin_routes_reject_regular_members(
         session.add(
             MembershipRow(
                 id=membership_id,
-                tenant_id=DEFAULT_TENANT_ID,
+                tenant_id=regular_tenant_id,
                 user_id=user_id,
                 status="active",
             )
@@ -3617,7 +3629,7 @@ def test_platform_admin_routes_reject_regular_members(
         session.flush()
         owner_role = session.scalar(
             select(RoleRow).where(
-                RoleRow.tenant_id == DEFAULT_TENANT_ID,
+                RoleRow.tenant_id == regular_tenant_id,
                 RoleRow.code == "OWNER",
                 RoleRow.deleted_at.is_(None),
             )
@@ -3625,7 +3637,7 @@ def test_platform_admin_routes_reject_regular_members(
         assert owner_role is not None
         session.add(
             MembershipRoleRow(
-                tenant_id=DEFAULT_TENANT_ID,
+                tenant_id=regular_tenant_id,
                 membership_id=membership_id,
                 role_id=owner_role.id,
                 assigned_by_user_id=DEFAULT_OWNER_USER_ID,
@@ -3634,7 +3646,7 @@ def test_platform_admin_routes_reject_regular_members(
         session.add(
             StorefrontChatConversationRow(
                 id=conversation_id,
-                tenant_id=DEFAULT_TENANT_ID,
+                tenant_id=regular_tenant_id,
                 reference_number=f"SUP-BOUNDARY-{conversation_id.hex[:10]}",
                 visitor_token_hash=hashlib.sha256(
                     f"support-boundary:{conversation_id}".encode("utf-8")
@@ -3651,13 +3663,13 @@ def test_platform_admin_routes_reject_regular_members(
         with SessionLocal() as session:
             session.execute(
                 delete(MembershipRoleRow).where(
-                    MembershipRoleRow.tenant_id == DEFAULT_TENANT_ID,
+                    MembershipRoleRow.tenant_id == regular_tenant_id,
                     MembershipRoleRow.membership_id == membership_id,
                 )
             )
             session.execute(
                 delete(StorefrontChatConversationRow).where(
-                    StorefrontChatConversationRow.tenant_id == DEFAULT_TENANT_ID,
+                    StorefrontChatConversationRow.tenant_id == regular_tenant_id,
                     StorefrontChatConversationRow.id == conversation_id,
                 )
             )
@@ -3694,7 +3706,7 @@ def test_platform_admin_routes_reject_regular_members(
             == "PLATFORM_ADMIN_REQUIRED"
         )
         denied_module_update = regular_client.patch(
-            f"/api/admin/tenants/{DEFAULT_TENANT_ID}",
+            f"/api/admin/tenants/{regular_tenant_id}",
             headers={"Authorization": f"Bearer {token}"},
             json={"enabled_modules": ["products"]},
         )
@@ -3704,7 +3716,7 @@ def test_platform_admin_routes_reject_regular_members(
             == "PLATFORM_ADMIN_REQUIRED"
         )
         denied_invitation = regular_client.post(
-            f"/api/admin/tenants/{DEFAULT_TENANT_ID}/member-invitations",
+            f"/api/admin/tenants/{regular_tenant_id}/member-invitations",
             headers={"Authorization": f"Bearer {token}"},
             json={
                 "email": f"denied-{uuid4().hex}@example.test",
@@ -3909,7 +3921,9 @@ def test_platform_admin_controls_merchant_visible_modules() -> None:
     assert invalid.status_code == 422
 
 
-def test_merchant_identity_defaults_can_be_overridden_per_merchant() -> None:
+def test_merchant_identity_defaults_can_be_overridden_per_merchant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     identities = client.get("/api/admin/merchant-identities")
     assert identities.status_code == 200, identities.text
     profiles = {row["code"]: row for row in identities.json()}
@@ -4028,12 +4042,160 @@ def test_merchant_identity_defaults_can_be_overridden_per_merchant() -> None:
         assert inherited_again.status_code == 200, inherited_again.text
         assert inherited_again.json()["module_overrides"] is None
         assert inherited_again.json()["enabled_modules"] == ["support"]
+
+        promoted = client.patch(
+            f"/api/admin/tenants/{tenant_id}",
+            json={
+                "identity_code": "ADMIN",
+                "module_access_mode": "INHERIT",
+            },
+        )
+        assert promoted.status_code == 200, promoted.text
+        with SessionLocal() as session:
+            promoted_user = session.get(UserRow, user_id)
+            assert promoted_user is not None
+            assert promoted_user.is_platform_admin is True
+
+        with monkeypatch.context() as auth_environment:
+            auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+            with TestClient(app) as administrator_client:
+                login = administrator_client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "provider": "local_fake",
+                        "authorization_code": f"fake:{user_id}",
+                        "code_verifier": "A" * 43,
+                        "redirect_uri": "http://127.0.0.1:5173/login/callback",
+                    },
+                )
+                assert login.status_code == 200, login.text
+                assert login.json()["data"]["user"]["is_platform_admin"] is True
+                token = login.json()["data"]["access_token"]
+                metrics = administrator_client.get(
+                    "/api/v1/system/metrics",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                assert metrics.status_code == 200, metrics.text
+
+        demoted = client.patch(
+            f"/api/admin/tenants/{tenant_id}",
+            json={
+                "identity_code": "USER",
+                "module_access_mode": "INHERIT",
+            },
+        )
+        assert demoted.status_code == 200, demoted.text
+        with monkeypatch.context() as auth_environment:
+            auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+            with TestClient(app) as user_client:
+                login = user_client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "provider": "local_fake",
+                        "authorization_code": f"fake:{user_id}",
+                        "code_verifier": "B" * 43,
+                        "redirect_uri": "http://127.0.0.1:5173/login/callback",
+                    },
+                )
+                assert login.status_code == 200, login.text
+                assert login.json()["data"]["user"]["is_platform_admin"] is False
+                token = login.json()["data"]["access_token"]
+                metrics = user_client.get(
+                    "/api/v1/system/metrics",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                assert metrics.status_code == 403
     finally:
         restored = client.patch(
             "/api/admin/merchant-identities/USER",
             json={"enabled_modules": original_user_modules},
         )
         assert restored.status_code == 200, restored.text
+
+
+def test_admin_identity_is_fixed_and_custom_identities_are_extensible() -> None:
+    admin_update = client.patch(
+        "/api/admin/merchant-identities/ADMIN",
+        json={"enabled_modules": ["products"]},
+    )
+    assert admin_update.status_code == 409, admin_update.text
+    assert admin_update.json()["detail"]["code"] == "ADMIN_IDENTITY_IMMUTABLE"
+
+    created_identity = client.post(
+        "/api/admin/merchant-identities",
+        json={
+            "name": "Limited catalog",
+            "enabled_modules": ["products", "quotations"],
+        },
+    )
+    assert created_identity.status_code == 201, created_identity.text
+    identity = created_identity.json()
+    assert identity["code"].startswith("CUSTOM_")
+    assert identity["is_system"] is False
+    assert identity["editable"] is True
+
+    suffix = uuid4().hex[:10]
+    created_tenant = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": f"Custom Identity {suffix}",
+            "slug": f"custom-identity-{suffix}",
+            "identity_code": identity["code"],
+            "active": True,
+        },
+    )
+    assert created_tenant.status_code == 201, created_tenant.text
+    tenant_id = created_tenant.json()["id"]
+    assert created_tenant.json()["enabled_modules"] == ["products", "quotations"]
+
+    in_use = client.delete(
+        f"/api/admin/merchant-identities/{identity['code']}"
+    )
+    assert in_use.status_code == 409, in_use.text
+    assert in_use.json()["detail"]["code"] == "IDENTITY_IN_USE"
+
+    administrator = client.patch(
+        f"/api/admin/tenants/{tenant_id}",
+        json={
+            "identity_code": "ADMIN",
+            "module_access_mode": "CUSTOM",
+            "enabled_modules": ["products"],
+        },
+    )
+    assert administrator.status_code == 200, administrator.text
+    assert administrator.json()["module_access_mode"] == "INHERIT"
+    assert administrator.json()["enabled_modules"] == list(TENANT_MODULE_CODES)
+
+    restored = client.patch(
+        f"/api/admin/tenants/{tenant_id}",
+        json={"identity_code": "USER", "module_access_mode": "INHERIT"},
+    )
+    assert restored.status_code == 200, restored.text
+    deleted = client.delete(
+        f"/api/admin/merchant-identities/{identity['code']}"
+    )
+    assert deleted.status_code == 204, deleted.text
+
+
+def test_last_active_admin_merchant_cannot_be_demoted() -> None:
+    with SessionLocal() as session:
+        other_admins = session.scalars(
+            select(TenantRow).where(
+                TenantRow.id != DEFAULT_TENANT_ID,
+                TenantRow.identity_code == "ADMIN",
+                TenantRow.status == "active",
+            )
+        ).all()
+        for tenant in other_admins:
+            tenant.identity_code = "USER"
+        session.commit()
+
+    response = client.patch(
+        f"/api/admin/tenants/{DEFAULT_TENANT_ID}",
+        json={"identity_code": "USER"},
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "LAST_ADMIN_MERCHANT_REQUIRED"
 
 
 def test_system_monitoring_reports_server_resources_without_caching() -> None:
@@ -14591,7 +14753,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260810_0071"
+        ).scalar() == "20260810_0073"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -15205,6 +15367,8 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     assert created.status_code == 201, created.text
     account = created.json()
     assert account["status"] == "active"
+    assert account["identity_code"] == "SUBACCOUNT"
+    assert account["capabilities"] == ["catalog", "submit_orders", "view_orders"]
     assert account["login_count_30d"] == 0
 
     listing = client.get("/api/store/demo/skus", params={"page_size": 1})
@@ -15260,6 +15424,44 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     assert owner_orders.status_code == 200, owner_orders.text
     assert owner_orders.json()["total"] >= 1
     assert quote_id in {row["id"] for row in owner_orders.json()["items"]}
+
+    restricted = client.patch(
+        f"/api/v1/customer-accounts/{account['id']}/access",
+        json={"capabilities": ["catalog"]},
+    )
+    assert restricted.status_code == 200, restricted.text
+    assert restricted.json()["capabilities"] == ["catalog"]
+
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        with TestClient(app) as restricted_client:
+            login = restricted_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": f"customer-{suffix}",
+                    "password": f"Customer{suffix}9",
+                },
+            )
+            assert login.status_code == 200, login.text
+            headers = {
+                "Authorization": f"Bearer {login.json()['data']['access_token']}"
+            }
+            assert restricted_client.get(
+                "/api/v1/customer-portal/overview", headers=headers
+            ).status_code == 200
+            assert restricted_client.get(
+                "/api/v1/customer-portal/orders", headers=headers
+            ).status_code == 403
+            assert restricted_client.post(
+                "/api/store/demo/quotes",
+                headers=headers,
+                json={
+                    "customer_name": f"Downstream Customer {suffix}",
+                    "privacy_acknowledged": True,
+                    "items": [{"sku_id": sku_id, "quantity": 1}],
+                },
+            ).status_code == 403
 
     suspended = client.patch(
         f"/api/v1/customer-accounts/{account['id']}/status",

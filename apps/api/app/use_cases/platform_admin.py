@@ -21,6 +21,7 @@ from ..identity_models import (
 )
 from ..model_mixins import utcnow
 from ..platform_admin_schemas import (
+    PlatformMerchantIdentityCreate,
     PlatformMerchantIdentityProfile,
     PlatformMerchantIdentityUpdate,
     PlatformMemberInvitation,
@@ -53,7 +54,8 @@ from ..tenant_slugs import (
     storefront_slug_from_name,
 )
 from ..tenant_modules import (
-    MERCHANT_IDENTITY_CODES,
+    SYSTEM_MERCHANT_IDENTITY_CODES,
+    TENANT_MODULE_CODES,
     effective_tenant_modules,
     normalized_merchant_identity,
     normalized_module_access_mode,
@@ -107,7 +109,11 @@ def _tenant_effective_modules(
     tenant: TenantRow,
 ) -> tuple[str, str, tuple[str, ...]]:
     identity_code = normalized_merchant_identity(tenant.identity_code)
-    access_mode = normalized_module_access_mode(tenant.module_access_mode)
+    access_mode = (
+        "INHERIT"
+        if identity_code == "ADMIN"
+        else normalized_module_access_mode(tenant.module_access_mode)
+    )
     identity_profile = session.get(MerchantIdentityProfileRow, identity_code)
     modules = effective_tenant_modules(
         identity_code=identity_code,
@@ -120,6 +126,96 @@ def _tenant_effective_modules(
         ),
     )
     return identity_code, access_mode, modules
+
+
+def _identity_profile_or_error(
+    session: Session,
+    identity_code: object,
+) -> MerchantIdentityProfileRow:
+    normalized_code = normalized_merchant_identity(identity_code)
+    profile = session.get(MerchantIdentityProfileRow, normalized_code)
+    if profile is None or profile.deleted_at is not None:
+        raise ApplicationError(
+            "MERCHANT_IDENTITY_NOT_FOUND",
+            "Merchant identity was not found.",
+            kind="not_found",
+        )
+    return profile
+
+
+def _grant_platform_access_to_admin_merchant_staff(
+    session: Session,
+    *,
+    context: RequestContext,
+    tenant: TenantRow,
+) -> None:
+    """Keep the legacy database flag aligned for PostgreSQL policy helpers.
+
+    Runtime authorization is resolved from the active merchant identity. The
+    persisted flag remains a compatibility projection for constrained database
+    functions and historical RLS policies.
+    """
+
+    if normalized_merchant_identity(tenant.identity_code) != "ADMIN":
+        return
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        session.execute(
+            text(
+                "SELECT public.atc_grant_tenant_admin_identity("
+                ":actor_user_id, :actor_tenant_id, :target_tenant_id)"
+            ),
+            {
+                "actor_user_id": context.user_id,
+                "actor_tenant_id": context.tenant_id,
+                "target_tenant_id": tenant.id,
+            },
+        )
+        return
+    staff_user_ids = select(MembershipRow.user_id).where(
+        MembershipRow.tenant_id == tenant.id,
+        MembershipRow.account_scope == "STAFF",
+        MembershipRow.status == "active",
+        MembershipRow.deleted_at.is_(None),
+    )
+    session.execute(
+        update(UserRow)
+        .where(
+            UserRow.id.in_(staff_user_ids),
+            UserRow.deleted_at.is_(None),
+        )
+        .values(is_platform_admin=True)
+    )
+
+
+def _ensure_an_active_admin_merchant_remains(
+    session: Session,
+    *,
+    tenant: TenantRow,
+    next_identity_code: object,
+    next_status: str,
+) -> None:
+    if (
+        normalized_merchant_identity(tenant.identity_code) != "ADMIN"
+        or (
+            normalized_merchant_identity(next_identity_code) == "ADMIN"
+            and next_status == "active"
+        )
+    ):
+        return
+    another_admin = session.scalar(
+        select(TenantRow.id).where(
+            TenantRow.id != tenant.id,
+            TenantRow.identity_code == "ADMIN",
+            TenantRow.status == "active",
+            TenantRow.deleted_at.is_(None),
+        ).limit(1)
+    )
+    if another_admin is None:
+        raise ApplicationError(
+            "LAST_ADMIN_MERCHANT_REQUIRED",
+            "At least one active administrator merchant must remain.",
+            kind="conflict",
+        )
 
 
 def _summary(
@@ -229,6 +325,8 @@ def _identity_profile_response(
         code=normalized_merchant_identity(row.code),
         name=row.name,
         enabled_modules=list(normalized_tenant_modules(row.default_modules)),
+        is_system=row.is_system,
+        editable=row.code != "ADMIN",
         version=row.version,
         updated_at=row.updated_at,
     )
@@ -240,20 +338,48 @@ def list_merchant_identities(
     context: RequestContext,
 ) -> list[PlatformMerchantIdentityProfile]:
     _require_platform_admin(context)
-    rows = {
-        row.code: row
-        for row in session.scalars(
+    rows = list(
+        session.scalars(
             select(MerchantIdentityProfileRow).where(
-                MerchantIdentityProfileRow.code.in_(MERCHANT_IDENTITY_CODES),
                 MerchantIdentityProfileRow.deleted_at.is_(None),
             )
         ).all()
+    )
+    system_order = {
+        code: index for index, code in enumerate(SYSTEM_MERCHANT_IDENTITY_CODES)
     }
-    return [
-        _identity_profile_response(rows[code])
-        for code in MERCHANT_IDENTITY_CODES
-        if code in rows
-    ]
+    rows.sort(
+        key=lambda row: (
+            system_order.get(row.code, len(system_order)),
+            row.created_at,
+            row.code,
+        )
+    )
+    return [_identity_profile_response(row) for row in rows]
+
+
+def create_merchant_identity(
+    session: Session,
+    *,
+    context: RequestContext,
+    request: PlatformMerchantIdentityCreate,
+) -> PlatformMerchantIdentityProfile:
+    _require_platform_admin(context)
+    code = f"CUSTOM_{uuid4().hex[:8].upper()}"
+    while session.get(MerchantIdentityProfileRow, code) is not None:
+        code = f"CUSTOM_{uuid4().hex[:8].upper()}"
+    profile = MerchantIdentityProfileRow(
+        code=code,
+        name=request.name,
+        default_modules=list(request.enabled_modules),
+        is_system=False,
+        version=1,
+        updated_by_user_id=context.user_id,
+    )
+    session.add(profile)
+    session.commit()
+    session.refresh(profile)
+    return _identity_profile_response(profile)
 
 
 def update_merchant_identity(
@@ -265,26 +391,31 @@ def update_merchant_identity(
 ) -> PlatformMerchantIdentityProfile:
     _require_platform_admin(context)
     normalized_code = identity_code.strip().upper()
-    if normalized_code not in MERCHANT_IDENTITY_CODES:
+    profile = _identity_profile_or_error(session, normalized_code)
+    if normalized_code == "ADMIN":
         raise ApplicationError(
-            "MERCHANT_IDENTITY_NOT_FOUND",
-            "Merchant identity was not found.",
-            kind="not_found",
+            "ADMIN_IDENTITY_IMMUTABLE",
+            "The administrator identity always has full access and cannot be edited.",
+            kind="conflict",
         )
-    profile = session.get(MerchantIdentityProfileRow, normalized_code)
-    if profile is None or profile.deleted_at is not None:
-        raise ApplicationError(
-            "MERCHANT_IDENTITY_NOT_FOUND",
-            "Merchant identity was not found.",
-            kind="not_found",
+    modules_changed = False
+    changed = False
+    if request.name is not None and request.name != profile.name:
+        profile.name = request.name
+        changed = True
+    if request.enabled_modules is not None:
+        next_modules = list(request.enabled_modules)
+        modules_changed = next_modules != list(
+            normalized_tenant_modules(profile.default_modules)
         )
-    next_modules = list(request.enabled_modules)
-    changed = next_modules != list(normalized_tenant_modules(profile.default_modules))
+        if modules_changed:
+            profile.default_modules = next_modules
+            changed = True
     if changed:
-        profile.default_modules = next_modules
         profile.version += 1
         profile.updated_by_user_id = context.user_id
         profile.updated_at = utcnow()
+    if modules_changed:
         inherited_tenant_ids = list(
             session.scalars(
                 select(TenantRow.id).where(
@@ -309,6 +440,38 @@ def update_merchant_identity(
     return _identity_profile_response(profile)
 
 
+def delete_merchant_identity(
+    session: Session,
+    *,
+    context: RequestContext,
+    identity_code: str,
+) -> None:
+    _require_platform_admin(context)
+    profile = _identity_profile_or_error(session, identity_code)
+    if profile.is_system or profile.code in SYSTEM_MERCHANT_IDENTITY_CODES:
+        raise ApplicationError(
+            "SYSTEM_IDENTITY_IMMUTABLE",
+            "System identities cannot be deleted.",
+            kind="conflict",
+        )
+    tenant_id = session.scalar(
+        select(TenantRow.id).where(
+            TenantRow.identity_code == profile.code,
+            TenantRow.deleted_at.is_(None),
+        ).limit(1)
+    )
+    if tenant_id is not None:
+        raise ApplicationError(
+            "IDENTITY_IN_USE",
+            "Move merchants to another identity before deleting this identity.",
+            kind="conflict",
+        )
+    profile.deleted_at = utcnow()
+    profile.updated_at = utcnow()
+    profile.updated_by_user_id = context.user_id
+    session.commit()
+
+
 def create_tenant(
     session: Session,
     *,
@@ -316,6 +479,7 @@ def create_tenant(
     request: PlatformTenantCreate,
 ) -> PlatformTenantSummary:
     _require_platform_admin(context)
+    _identity_profile_or_error(session, request.identity_code)
     base_slug = (
         request.slug.casefold()
         if request.slug
@@ -342,6 +506,7 @@ def create_tenant(
         else allocate_storefront_slug(session, base=base_slug)
     )
     subscription_started_at = utcnow()
+    is_admin_identity = normalized_merchant_identity(request.identity_code) == "ADMIN"
     tenant = TenantRow(
         organization_id=context.organization_id,
         name=request.name,
@@ -350,8 +515,8 @@ def create_tenant(
         default_currency=request.default_currency,
         timezone=request.timezone,
         identity_code=request.identity_code,
-        module_access_mode=request.module_access_mode,
-        enabled_modules=list(request.enabled_modules),
+        module_access_mode=("INHERIT" if is_admin_identity else request.module_access_mode),
+        enabled_modules=(list(TENANT_MODULE_CODES) if is_admin_identity else list(request.enabled_modules)),
         status="active" if request.active else "suspended",
     )
     session.add(tenant)
@@ -458,12 +623,26 @@ def update_tenant(
     tenant = repository.get_tenant(session, tenant_id)
     if tenant is None:
         raise ApplicationError("TENANT_NOT_FOUND", "Tenant was not found.", kind="not_found")
+    if request.identity_code is not None:
+        _identity_profile_or_error(session, request.identity_code)
     if request.active is False and tenant.id == context.tenant_id:
         raise ApplicationError(
             "ACTIVE_TENANT_SUSPENSION_FORBIDDEN",
             "Switch to another active workspace before suspending this tenant.",
             kind="conflict",
         )
+    _ensure_an_active_admin_merchant_remains(
+        session,
+        tenant=tenant,
+        next_identity_code=request.identity_code or tenant.identity_code,
+        next_status=(
+            "active"
+            if request.active is True
+            else "suspended"
+            if request.active is False
+            else tenant.status
+        ),
+    )
     if request.name is not None:
         base_slug = storefront_slug_from_name(request.name)
         next_slug = allocate_storefront_slug(
@@ -500,6 +679,9 @@ def update_tenant(
             # Backward-compatible behavior for the existing module endpoint:
             # providing a list means the merchant is intentionally customized.
             tenant.module_access_mode = "CUSTOM"
+    if normalized_merchant_identity(tenant.identity_code) == "ADMIN":
+        tenant.module_access_mode = "INHERIT"
+        tenant.enabled_modules = list(TENANT_MODULE_CODES)
     modules_changed = (
         previous_effective_modules
         != _tenant_effective_modules(session, tenant)[2]
@@ -539,6 +721,11 @@ def update_tenant(
                 .values(permission_version=MembershipRow.permission_version + 1)
             )
         session.flush()
+        _grant_platform_access_to_admin_merchant_staff(
+            session,
+            context=context,
+            tenant=tenant,
+        )
     try:
         session.commit()
     except IntegrityError as exc:
@@ -700,6 +887,12 @@ def provision_merchant_owner(
                 code = "MERCHANT_OWNER_PROVISIONING_FAILED"
                 safe = "The merchant account could not be created. Check the account and try again."
             raise ApplicationError(code, safe, kind="conflict") from exc
+        _grant_platform_access_to_admin_merchant_staff(
+            session,
+            context=context,
+            tenant=tenant,
+        )
+        session.commit()
         return PlatformMerchantOwnerAccount(
             user_id=row["owner_user_id"],
             membership_id=row["owner_membership_id"],
@@ -723,6 +916,8 @@ def provision_merchant_owner(
         # it before replacing it with the direct-login owner in local mode.
         existing_owner[0].status = "removed"
     user = provisioned.user
+    if normalized_merchant_identity(tenant.identity_code) == "ADMIN":
+        user.is_platform_admin = True
     membership = MembershipRow(
         tenant_id=tenant.id,
         user_id=user.id,

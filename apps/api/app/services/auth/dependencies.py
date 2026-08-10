@@ -19,6 +19,7 @@ from ...constants import (
 )
 from ...database import get_auth_session, get_session, set_request_context
 from ...identity_models import MembershipRow, TenantRow, UserRow
+from ...tenant_modules import merchant_identity_is_platform_admin
 from ..rbac import list_permissions
 from .service import AuthError, session_from_access_token
 from .tokens import AccessTokenError, decode_access_token
@@ -221,7 +222,10 @@ def require_request_context(
         locale=user.locale,
         permission_version=membership.permission_version,
         permissions=permissions,
-        is_platform_admin=bool(user.is_platform_admin),
+        is_platform_admin=merchant_identity_is_platform_admin(
+            identity_code=tenant.identity_code,
+            account_scope=membership.account_scope,
+        ),
         account_scope=membership.account_scope,
     )
     session.info["request_context"] = context

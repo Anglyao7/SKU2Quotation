@@ -9,13 +9,15 @@ export type TenantModuleCode =
   | "quotations"
   | "subaccounts";
 
-export type MerchantIdentityCode = "ADMIN" | "USER";
+export type MerchantIdentityCode = string;
 export type TenantModuleAccessMode = "INHERIT" | "CUSTOM";
 
 export interface MerchantIdentityProfile {
   code: MerchantIdentityCode;
   name: string;
   enabled_modules: TenantModuleCode[];
+  is_system: boolean;
+  editable: boolean;
   version: number;
   updated_at: string;
 }

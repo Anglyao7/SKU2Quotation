@@ -16,13 +16,17 @@ TenantModuleCode: TypeAlias = Literal[
     "subaccounts",
 ]
 
-MerchantIdentityCode: TypeAlias = Literal["ADMIN", "USER"]
+# Identity codes are data, not an enum. ADMIN and USER are the two built-in
+# identities, while additional profiles can be created without a code deploy.
+MerchantIdentityCode: TypeAlias = str
 TenantModuleAccessMode: TypeAlias = Literal["INHERIT", "CUSTOM"]
 
-MERCHANT_IDENTITY_CODES: Final[tuple[MerchantIdentityCode, ...]] = (
+SYSTEM_MERCHANT_IDENTITY_CODES: Final[tuple[MerchantIdentityCode, ...]] = (
     "ADMIN",
     "USER",
 )
+# Backward-compatible export for callers that only need the built-in order.
+MERCHANT_IDENTITY_CODES = SYSTEM_MERCHANT_IDENTITY_CODES
 DEFAULT_MERCHANT_IDENTITY: Final[MerchantIdentityCode] = "USER"
 DEFAULT_TENANT_MODULE_ACCESS_MODE: Final[TenantModuleAccessMode] = "INHERIT"
 
@@ -74,8 +78,8 @@ def default_merchant_identity_modules(
     """Start both identities without removing access from existing merchants.
 
     Platform administrators can subsequently tune each identity template from
-    the merchant management screen.  Sensitive platform APIs still require
-    the server-owned ``is_platform_admin`` flag and are never granted here.
+    the merchant management screen. Platform-level access itself is resolved
+    from the active merchant's identity, independently of these module lists.
     """
 
     return default_tenant_modules()
@@ -83,9 +87,7 @@ def default_merchant_identity_modules(
 
 def normalized_merchant_identity(value: object) -> MerchantIdentityCode:
     normalized = str(value or DEFAULT_MERCHANT_IDENTITY).strip().upper()
-    if normalized == "ADMIN":
-        return "ADMIN"
-    return "USER"
+    return normalized or DEFAULT_MERCHANT_IDENTITY
 
 
 def normalized_module_access_mode(value: object) -> TenantModuleAccessMode:
@@ -93,6 +95,23 @@ def normalized_module_access_mode(value: object) -> TenantModuleAccessMode:
     if normalized == "CUSTOM":
         return "CUSTOM"
     return "INHERIT"
+
+
+def merchant_identity_is_platform_admin(
+    *,
+    identity_code: object,
+    account_scope: object,
+) -> bool:
+    """Resolve platform access from the active merchant identity.
+
+    Customer portal accounts never inherit operator privileges, even when the
+    storefront itself is the platform administrator's merchant.
+    """
+
+    return (
+        normalized_merchant_identity(identity_code) == "ADMIN"
+        and str(account_scope or "").strip().upper() == "STAFF"
+    )
 
 
 def normalized_tenant_modules(value: object) -> tuple[TenantModuleCode, ...]:
@@ -113,6 +132,10 @@ def effective_tenant_modules(
     custom_modules: object,
     identity_default_modules: object | None = None,
 ) -> tuple[TenantModuleCode, ...]:
+    # The administrator identity is a system invariant. It can never be
+    # reduced by an identity template or a per-merchant override.
+    if normalized_merchant_identity(identity_code) == "ADMIN":
+        return TENANT_MODULE_CODES
     if normalized_module_access_mode(access_mode) == "CUSTOM":
         return normalized_tenant_modules(custom_modules)
     defaults = (
