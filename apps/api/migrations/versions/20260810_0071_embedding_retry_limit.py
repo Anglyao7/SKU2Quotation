@@ -1,7 +1,7 @@
 """Add platform-managed embedding retry limit.
 
-Revision ID: 20260810_0070
-Revises: 20260809_0069
+Revision ID: 20260810_0071
+Revises: 20260810_0070
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "20260810_0070"
-down_revision = "20260809_0069"
+revision = "20260810_0071"
+down_revision = "20260810_0070"
 branch_labels = None
 depends_on = None
 
