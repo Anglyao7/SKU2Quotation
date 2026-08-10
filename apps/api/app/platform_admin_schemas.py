@@ -9,7 +9,11 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from .tenant_slugs import is_reserved_tenant_slug
 from .tenant_modules import (
+    DEFAULT_MERCHANT_IDENTITY,
+    DEFAULT_TENANT_MODULE_ACCESS_MODE,
+    MerchantIdentityCode,
     TenantModuleCode,
+    TenantModuleAccessMode,
     canonical_tenant_module_list,
     default_tenant_modules,
 )
@@ -75,7 +79,10 @@ class PlatformTenantSummary(BaseModel):
     default_locale: str
     default_currency: str
     timezone: str
+    identity_code: MerchantIdentityCode
+    module_access_mode: TenantModuleAccessMode
     enabled_modules: list[TenantModuleCode]
+    module_overrides: list[TenantModuleCode] | None = None
     subscription_tier: TenantSubscriptionTier
     subscription_started_at: datetime
     subscription_expires_at: datetime
@@ -101,6 +108,8 @@ class PlatformTenantCreate(BaseModel):
     default_locale: str = Field(default="zh-CN", min_length=2, max_length=20)
     default_currency: str = Field(default="CNY", min_length=3, max_length=3)
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    identity_code: MerchantIdentityCode = DEFAULT_MERCHANT_IDENTITY
+    module_access_mode: TenantModuleAccessMode = DEFAULT_TENANT_MODULE_ACCESS_MODE
     enabled_modules: list[TenantModuleCode] = Field(default_factory=default_tenant_modules)
 
     @field_validator("name", "slug", "contact_email", "default_locale", "timezone", mode="before")
@@ -120,6 +129,11 @@ class PlatformTenantCreate(BaseModel):
     def normalize_currency(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
 
+    @field_validator("identity_code", "module_access_mode", mode="before")
+    @classmethod
+    def normalize_access_value(cls, value: object) -> object:
+        return value.strip().upper() if isinstance(value, str) else value
+
     @field_validator("enabled_modules")
     @classmethod
     def normalize_modules(
@@ -133,12 +147,19 @@ class PlatformTenantUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     contact_email: str | None = Field(default=None, max_length=320)
     active: bool | None = None
+    identity_code: MerchantIdentityCode | None = None
+    module_access_mode: TenantModuleAccessMode | None = None
     enabled_modules: list[TenantModuleCode] | None = None
 
     @field_validator("name", "contact_email", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("identity_code", "module_access_mode", mode="before")
+    @classmethod
+    def normalize_access_value(cls, value: object) -> object:
+        return value.strip().upper() if isinstance(value, str) else value
 
     @field_validator("enabled_modules")
     @classmethod
@@ -147,6 +168,26 @@ class PlatformTenantUpdate(BaseModel):
         value: list[TenantModuleCode] | None,
     ) -> list[TenantModuleCode] | None:
         return None if value is None else canonical_tenant_module_list(value)
+
+
+class PlatformMerchantIdentityProfile(BaseModel):
+    code: MerchantIdentityCode
+    name: str
+    enabled_modules: list[TenantModuleCode]
+    version: int = Field(ge=1)
+    updated_at: datetime
+
+
+class PlatformMerchantIdentityUpdate(BaseModel):
+    enabled_modules: list[TenantModuleCode]
+
+    @field_validator("enabled_modules")
+    @classmethod
+    def normalize_modules(
+        cls,
+        value: list[TenantModuleCode],
+    ) -> list[TenantModuleCode]:
+        return canonical_tenant_module_list(value)
 
 
 class PlatformTenantSubscriptionUpdate(BaseModel):

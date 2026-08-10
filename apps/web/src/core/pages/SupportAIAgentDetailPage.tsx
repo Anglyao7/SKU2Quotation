@@ -14,25 +14,21 @@ import {
   CheckCircle,
   Database,
   FloppyDisk,
-  Key,
   Robot,
+  SlidersHorizontal,
   Storefront,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  createSupportAIProviderProfile,
   getSupportAIAgent,
-  listSupportAIProviderProfiles,
   listSupportAIStoreConfigurations,
   updateSupportAIAgent,
-  updateSupportAIProviderProfile,
 } from "../api";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type {
   SupportAIAgent,
-  SupportAIProviderSettings,
   SupportAIStoreConfiguration,
 } from "../types";
 import "./SupportAIAgentManagement.css";
@@ -42,11 +38,10 @@ export function SupportAIAgentDetailPage() {
   const { t } = useLocale();
   const [agent, setAgent] = useState<SupportAIAgent>();
   const [stores, setStores] = useState<SupportAIStoreConfiguration[]>([]);
-  const [profiles, setProfiles] = useState<SupportAIProviderSettings[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState<"basic" | "api" | "">("");
+  const [busy, setBusy] = useState<"basic" | "">("");
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -60,16 +55,6 @@ export function SupportAIAgentDetailPage() {
   const [maxSources, setMaxSources] = useState("5");
   const [dailyLimit, setDailyLimit] = useState("500");
   const [systemPrompt, setSystemPrompt] = useState("");
-
-  const [apiEnabled, setApiEnabled] = useState(true);
-  const [configurationName, setConfigurationName] = useState("");
-  const [displayModelName, setDisplayModelName] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [modelName, setModelName] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [timeoutSeconds, setTimeoutSeconds] = useState("45");
-  const [maxOutputTokens, setMaxOutputTokens] = useState("2048");
-  const [temperature, setTemperature] = useState("0.1");
 
   const applyAgent = useCallback((next: SupportAIAgent) => {
     setAgent(next);
@@ -87,39 +72,23 @@ export function SupportAIAgentDetailPage() {
     setSystemPrompt(next.systemPrompt || "");
   }, []);
 
-  const applyProfile = useCallback((nextAgent: SupportAIAgent, nextProfiles: SupportAIProviderSettings[]) => {
-    const profile = nextProfiles.find((item) => item.id === nextAgent.providerProfileId);
-    setConfigurationName(profile?.configurationName || `${t("智能体")} ${nextAgent.agentCode} API`);
-    setDisplayModelName(profile?.displayModelName || "");
-    setApiEnabled(profile?.enabled ?? true);
-    setBaseUrl(profile?.baseUrl || "");
-    setModelName(profile?.modelName || "");
-    setApiKey("");
-    setTimeoutSeconds(String(profile?.timeoutSeconds ?? 45));
-    setMaxOutputTokens(String(profile?.maxOutputTokens ?? 2048));
-    setTemperature(String(profile?.temperature ?? 0.1));
-  }, [t]);
-
   const load = useCallback(async () => {
     if (!agentId) return;
     setLoading(true);
     setError("");
     try {
-      const [nextAgent, nextStores, nextProfiles] = await Promise.all([
+      const [nextAgent, nextStores] = await Promise.all([
         getSupportAIAgent(agentId),
         listSupportAIStoreConfigurations(),
-        listSupportAIProviderProfiles(),
       ]);
       applyAgent(nextAgent);
       setStores(nextStores);
-      setProfiles(nextProfiles);
-      applyProfile(nextAgent, nextProfiles);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("智能体详情加载失败"));
     } finally {
       setLoading(false);
     }
-  }, [agentId, applyAgent, applyProfile, t]);
+  }, [agentId, applyAgent, t]);
 
   useEffect(() => {
     void load();
@@ -161,52 +130,6 @@ export function SupportAIAgentDetailPage() {
     }
   };
 
-  const saveApi = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!agent || busy) return;
-    if (!apiFormValid) {
-      setError(t("请完整填写模型 API 配置"));
-      return;
-    }
-    if (!agent.providerProfileId && !apiKey.trim()) {
-      setError(t("首次配置需要填写 API Key"));
-      return;
-    }
-    setBusy("api");
-    setError("");
-    setMessage("");
-    try {
-      const payload = {
-        configurationName: configurationName.trim(),
-        displayModelName: displayModelName.trim(),
-        enabled: apiEnabled,
-        baseUrl: baseUrl.trim(),
-        modelName: modelName.trim(),
-        apiKey: apiKey.trim() || undefined,
-        timeoutSeconds: Number(timeoutSeconds),
-        maxOutputTokens: Number(maxOutputTokens),
-        temperature: Number(temperature),
-      };
-      const profile = agent.providerProfileId
-        ? await updateSupportAIProviderProfile(agent.providerProfileId, payload)
-        : await createSupportAIProviderProfile(payload);
-      if (!profile.id) throw new Error(t("模型 API 配置保存失败"));
-      const next = await updateSupportAIAgent(agent.id, {
-        providerProfileId: profile.id,
-        enabled: apiEnabled ? agent.enabled : false,
-      });
-      const nextProfiles = [profile, ...profiles.filter((item) => item.id !== profile.id)];
-      setProfiles(nextProfiles);
-      applyAgent(next);
-      applyProfile(next, nextProfiles);
-      setMessage(t("模型 API 配置已保存"));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("模型 API 配置保存失败"));
-    } finally {
-      setBusy("");
-    }
-  };
-
   const policyValid = Number(minRetrievalScore) >= 0
     && Number(minRetrievalScore) <= 1
     && Number(minAnswerConfidence) >= 0
@@ -214,22 +137,6 @@ export function SupportAIAgentDetailPage() {
     && Number(maxSources) >= 1
     && Number(maxSources) <= 12
     && Number(dailyLimit) >= 1;
-  const apiFormValid = Boolean(
-    configurationName.trim()
-    && displayModelName.trim()
-    && baseUrl.trim()
-    && modelName.trim()
-    && Number.isInteger(Number(timeoutSeconds))
-    && Number(timeoutSeconds) >= 1
-    && Number(timeoutSeconds) <= 180
-    && Number.isInteger(Number(maxOutputTokens))
-    && Number(maxOutputTokens) >= 128
-    && Number(maxOutputTokens) <= 32768
-    && Number.isFinite(Number(temperature))
-    && Number(temperature) >= 0
-    && Number(temperature) <= 2,
-  );
-
   return (
     <div className="core-workspace support-agent-page">
       <CorePageHeading
@@ -238,6 +145,7 @@ export function SupportAIAgentDetailPage() {
         actions={(
           <>
             <Button asChild variant="soft" color="gray"><Link to="/console/agents"><ArrowLeft />{t("返回列表")}</Link></Button>
+            <Button asChild variant="soft" color="gray"><Link to="/console/system/configuration"><SlidersHorizontal />{t("API 配置中心")}</Link></Button>
             {agent ? <Button asChild variant="soft"><Link to={`/console/agents/knowledge?agent_id=${agent.id}`}><Database />{t("知识库")}</Link></Button> : null}
           </>
         )}
@@ -253,7 +161,7 @@ export function SupportAIAgentDetailPage() {
             <span><Robot weight="duotone" /></span>
             <div><Text size="1" color="gray">{t("智能体 ID")}</Text><code>{agent.agentCode}</code></div>
             <div><Text size="1" color="gray">{t("绑定店铺")}</Text><strong>{agent.stores.length}</strong></div>
-            <div><Text size="1" color="gray">{t("模型状态")}</Text><Badge color={agent.apiConfigured ? "jade" : "amber"}>{t(agent.apiConfigured ? "已配置" : "未配置")}</Badge></div>
+            <div><Text size="1" color="gray">{t("模型状态")}</Text><Badge color={agent.apiConfigured ? "jade" : "amber"}>{agent.apiConfigured ? (agent.modelDisplayName || t("已配置")) : t("未配置")}</Badge></div>
             <div><Text size="1" color="gray">{t("运行状态")}</Text><Badge color={agent.enabled ? "jade" : "gray"}>{t(agent.enabled ? "启用" : "停用")}</Badge></div>
           </Card>
 
@@ -300,23 +208,6 @@ export function SupportAIAgentDetailPage() {
             </Card>
           </form>
 
-          <form onSubmit={(event) => void saveApi(event)}>
-            <Card className="support-agent-config-card support-agent-api-card">
-              <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("模型接入")}</Text><Heading size="5">{t("API 配置")}</Heading></div><Key weight="duotone" /></div>
-              <div className="support-agent-form-grid support-agent-api-grid">
-                <label><Text size="1" color="gray">{t("配置名称")}</Text><TextField.Root value={configurationName} onChange={(event) => setConfigurationName(event.target.value)} required /></label>
-                <label><Text size="1" color="gray">{t("展示模型名")}</Text><TextField.Root value={displayModelName} onChange={(event) => setDisplayModelName(event.target.value)} required /></label>
-                <label className="support-agent-wide"><Text size="1" color="gray">Base URL</Text><TextField.Root type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" required /></label>
-                <label><Text size="1" color="gray">Model</Text><TextField.Root value={modelName} onChange={(event) => setModelName(event.target.value)} required /></label>
-                <label><Text size="1" color="gray">API Key</Text><TextField.Root type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={agent.apiConfigured ? t("留空则保持原密钥") : t("首次配置必须填写")} /></label>
-                <label><Text size="1" color="gray">{t("超时时间（秒）")}</Text><TextField.Root type="number" min="1" max="180" value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(event.target.value)} /></label>
-                <label><Text size="1" color="gray">{t("最大输出 Token")}</Text><TextField.Root type="number" min="128" max="32768" value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} /></label>
-                <label><Text size="1" color="gray">Temperature</Text><TextField.Root type="number" min="0" max="2" step="0.05" value={temperature} onChange={(event) => setTemperature(event.target.value)} /></label>
-                <label className="support-agent-switch"><span><strong>{t("启用 API")}</strong><small>{t("关闭后智能体无法生成回复")}</small></span><Switch checked={apiEnabled} onCheckedChange={setApiEnabled} /></label>
-              </div>
-              <div className="support-agent-card-actions"><Button type="submit" loading={busy === "api"} disabled={Boolean(busy) || !apiFormValid}><FloppyDisk />{t("保存 API 配置")}</Button></div>
-            </Card>
-          </form>
         </>
       ) : null}
     </div>

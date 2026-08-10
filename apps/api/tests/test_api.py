@@ -1259,6 +1259,20 @@ def test_platform_support_ai_agent_management_and_knowledge_binding(
         assert profile.status_code == 201, profile.text
         profile_id = profile.json()["id"]
 
+        created_with_profile = client.post(
+            "/api/v1/system/support-ai/agents",
+            json={
+                "name": "Profile assigned agent",
+                "provider_profile_id": profile_id,
+            },
+        )
+        assert created_with_profile.status_code == 201, created_with_profile.text
+        assigned_agent = created_with_profile.json()
+        agent_ids.append(UUID(assigned_agent["id"]))
+        assert assigned_agent["provider_profile_id"] == profile_id
+        assert assigned_agent["model_display_name"] == "Support model"
+        assert assigned_agent["api_configured"] is True
+
         configured = client.patch(
             f"/api/v1/system/support-ai/agents/{agent_id}",
             json={
@@ -3670,6 +3684,15 @@ def test_platform_admin_routes_reject_regular_members(
         )
         assert denied.status_code == 403
         assert denied.json()["detail"]["code"] == "PLATFORM_ADMIN_REQUIRED"
+        denied_identities = regular_client.get(
+            "/api/admin/merchant-identities",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied_identities.status_code == 403
+        assert (
+            denied_identities.json()["detail"]["code"]
+            == "PLATFORM_ADMIN_REQUIRED"
+        )
         denied_module_update = regular_client.patch(
             f"/api/admin/tenants/{DEFAULT_TENANT_ID}",
             headers={"Authorization": f"Bearer {token}"},
@@ -3809,6 +3832,9 @@ def test_platform_admin_controls_merchant_visible_modules() -> None:
     assert created.status_code == 201, created.text
     tenant = created.json()
     tenant_id = UUID(tenant["id"])
+    assert tenant["identity_code"] == "USER"
+    assert tenant["module_access_mode"] == "INHERIT"
+    assert tenant["module_overrides"] is None
     assert tenant["enabled_modules"] == list(TENANT_MODULE_CODES)
 
     user_id = uuid4()
@@ -3856,6 +3882,8 @@ def test_platform_admin_controls_merchant_visible_modules() -> None:
     )
     assert updated.status_code == 200, updated.text
     assert updated.json()["enabled_modules"] == ["products", "quotations"]
+    assert updated.json()["module_access_mode"] == "CUSTOM"
+    assert updated.json()["module_overrides"] == ["products", "quotations"]
 
     with SessionLocal() as session:
         membership = session.get(MembershipRow, membership_id)
@@ -3879,6 +3907,133 @@ def test_platform_admin_controls_merchant_visible_modules() -> None:
         json={"enabled_modules": ["products", "private_secrets"]},
     )
     assert invalid.status_code == 422
+
+
+def test_merchant_identity_defaults_can_be_overridden_per_merchant() -> None:
+    identities = client.get("/api/admin/merchant-identities")
+    assert identities.status_code == 200, identities.text
+    profiles = {row["code"]: row for row in identities.json()}
+    assert set(profiles) == {"ADMIN", "USER"}
+    original_user_modules = profiles["USER"]["enabled_modules"]
+
+    suffix = uuid4().hex[:10]
+    created = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": f"Identity Access {suffix}",
+            "slug": f"identity-access-{suffix}",
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    tenant_id = UUID(created.json()["id"])
+    user_id = uuid4()
+    membership_id = uuid4()
+    with SessionLocal() as session:
+        owner_role = session.scalar(
+            select(RoleRow).where(
+                RoleRow.tenant_id == tenant_id,
+                RoleRow.code == "OWNER",
+            )
+        )
+        assert owner_role is not None
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=f"{user_id.hex}@identity-access.test",
+                display_name="Identity Access Owner",
+                identity_provider="local-bootstrap",
+                identity_subject=str(user_id),
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                status="active",
+            )
+        )
+        session.flush()
+        session.add(
+            MembershipRoleRow(
+                tenant_id=tenant_id,
+                membership_id=membership_id,
+                role_id=owner_role.id,
+                assigned_by_user_id=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.commit()
+
+    try:
+        identity_update = client.patch(
+            "/api/admin/merchant-identities/USER",
+            json={"enabled_modules": ["quotations", "products"]},
+        )
+        assert identity_update.status_code == 200, identity_update.text
+        assert identity_update.json()["enabled_modules"] == [
+            "products",
+            "quotations",
+        ]
+
+        inherited = next(
+            row
+            for row in client.get("/api/admin/tenants").json()
+            if row["id"] == str(tenant_id)
+        )
+        assert inherited["module_access_mode"] == "INHERIT"
+        assert inherited["enabled_modules"] == ["products", "quotations"]
+        with SessionLocal() as session:
+            effective = list_permissions(
+                session,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+        assert "product.view" in effective
+        assert "quotation.view" in effective
+        assert "inventory.view" not in effective
+
+        customized = client.patch(
+            f"/api/admin/tenants/{tenant_id}",
+            json={
+                "identity_code": "USER",
+                "module_access_mode": "CUSTOM",
+                "enabled_modules": ["inventory"],
+            },
+        )
+        assert customized.status_code == 200, customized.text
+        assert customized.json()["enabled_modules"] == ["inventory"]
+        assert customized.json()["module_overrides"] == ["inventory"]
+
+        changed_default = client.patch(
+            "/api/admin/merchant-identities/USER",
+            json={"enabled_modules": ["support"]},
+        )
+        assert changed_default.status_code == 200, changed_default.text
+        still_custom = next(
+            row
+            for row in client.get("/api/admin/tenants").json()
+            if row["id"] == str(tenant_id)
+        )
+        assert still_custom["enabled_modules"] == ["inventory"]
+
+        inherited_again = client.patch(
+            f"/api/admin/tenants/{tenant_id}",
+            json={
+                "identity_code": "USER",
+                "module_access_mode": "INHERIT",
+            },
+        )
+        assert inherited_again.status_code == 200, inherited_again.text
+        assert inherited_again.json()["module_overrides"] is None
+        assert inherited_again.json()["enabled_modules"] == ["support"]
+    finally:
+        restored = client.patch(
+            "/api/admin/merchant-identities/USER",
+            json={"enabled_modules": original_user_modules},
+        )
+        assert restored.status_code == 200, restored.text
 
 
 def test_system_monitoring_reports_server_resources_without_caching() -> None:
@@ -5522,6 +5677,177 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
             assert row is not None
             assert row.api_key_ciphertext == original_ciphertext
             assert row.max_retry_count == 5
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(EmbeddingProviderSettingsRow))
+            session.commit()
+
+
+def test_embedding_model_change_clears_vectors_but_key_change_keeps_them() -> None:
+    category_id = uuid4()
+    product_id = uuid4()
+    document_id: UUID | None = None
+    chunk_ids: list[UUID] = []
+    embedding_ids: list[UUID] = []
+    with SessionLocal() as session:
+        session.execute(delete(EmbeddingProviderSettingsRow))
+        session.add(
+            ProductCategoryRow(
+                id=category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                code=f"MODEL-CHANGE-{category_id.hex[:8]}",
+                name="Embedding model change test",
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"MODEL-CHANGE-{product_id.hex[:8]}",
+                name="Vector invalidation test product",
+                description="The source document must remain while its vector is removed.",
+                category_id=category_id,
+                status="ACTIVE",
+            )
+        )
+        session.commit()
+        projected = project_product_knowledge(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            product_id=product_id,
+            embedder=DeterministicFeatureHashEmbedding(),
+        )
+        session.commit()
+        document_id = projected.document_id
+        chunk_ids = list(
+            session.scalars(
+                select(KnowledgeChunkRow.id).where(
+                    KnowledgeChunkRow.document_id == document_id
+                )
+            ).all()
+        )
+        embedding_ids = list(
+            session.scalars(
+                select(EmbeddingRow.id).where(
+                    EmbeddingRow.entity_id.in_(chunk_ids)
+                )
+            ).all()
+        )
+        assert embedding_ids
+
+    try:
+        changed = client.put(
+            "/api/v1/ai/embedding/settings",
+            json={
+                "base_url": "https://embedding-model-change.example.test/v1",
+                "api_key": "sk-model-change-first-1234",
+                "model_name": "multilingual-embedding-v1",
+                "dimensions": 1024,
+                "timeout_seconds": 20,
+                "max_retry_count": 3,
+            },
+        )
+        assert changed.status_code == 200, changed.text
+        changed_payload = changed.json()
+        assert changed_payload["model_changed"] is True
+        assert changed_payload["cleared_product_embeddings"] >= len(embedding_ids)
+        assert changed_payload["invalidated_products"] >= 1
+
+        with SessionLocal() as session:
+            assert not session.scalars(
+                select(EmbeddingRow.id).where(EmbeddingRow.id.in_(embedding_ids))
+            ).all()
+            assert session.get(KnowledgeDocumentRow, document_id) is not None
+            product = session.get(ProductRow, product_id)
+            assert product is not None
+            assert product.search_document_version == 0
+
+        unchanged = client.put(
+            "/api/v1/ai/embedding/settings",
+            json={
+                "base_url": "https://embedding-model-change.example.test/v1/",
+                "api_key": "sk-model-change-rotated-5678",
+                "model_name": "multilingual-embedding-v1",
+                "dimensions": 1024,
+                "timeout_seconds": 35,
+                "max_retry_count": 5,
+            },
+        )
+        assert unchanged.status_code == 200, unchanged.text
+        unchanged_payload = unchanged.json()
+        assert unchanged_payload["model_changed"] is False
+        assert unchanged_payload["cleared_product_embeddings"] == 0
+        assert unchanged_payload["cleared_file_embeddings"] == 0
+        assert unchanged_payload["invalidated_products"] == 0
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(EmbeddingProviderSettingsRow))
+            if chunk_ids:
+                session.execute(
+                    delete(EmbeddingRow).where(EmbeddingRow.entity_id.in_(chunk_ids))
+                )
+                session.execute(
+                    delete(KnowledgeChunkRow).where(KnowledgeChunkRow.id.in_(chunk_ids))
+                )
+            if document_id is not None:
+                session.execute(
+                    delete(KnowledgeDocumentRow).where(
+                        KnowledgeDocumentRow.id == document_id
+                    )
+                )
+            session.execute(delete(ProductRow).where(ProductRow.id == product_id))
+            session.execute(
+                delete(ProductCategoryRow).where(ProductCategoryRow.id == category_id)
+            )
+            session.commit()
+
+
+def test_embedding_settings_retry_transient_database_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    from app.use_cases import embedding_management as management_use_cases
+
+    real_save = management_use_cases.save_managed_embedding_settings
+    attempts = 0
+
+    def flaky_save(*args: object, **kwargs: object):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OperationalError(
+                "UPDATE embedding_provider_settings",
+                {},
+                sqlite3.OperationalError("database is locked"),
+            )
+        return real_save(*args, **kwargs)
+
+    monkeypatch.setattr(
+        management_use_cases,
+        "save_managed_embedding_settings",
+        flaky_save,
+    )
+    with SessionLocal() as session:
+        session.execute(delete(EmbeddingProviderSettingsRow))
+        session.commit()
+    try:
+        response = client.put(
+            "/api/v1/ai/embedding/settings",
+            json={
+                "base_url": "https://embedding-retry.example.test/v1",
+                "api_key": "sk-embedding-retry-test",
+                "model_name": "retry-model",
+                "dimensions": 1024,
+                "timeout_seconds": 20,
+                "max_retry_count": 3,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert attempts == 3
     finally:
         with SessionLocal() as session:
             session.execute(delete(EmbeddingProviderSettingsRow))
@@ -14265,7 +14591,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260810_0070"
+        ).scalar() == "20260810_0071"
     upgraded_engine.dispose()
     command.check(config)
 

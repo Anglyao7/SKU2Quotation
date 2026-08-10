@@ -10,6 +10,8 @@ from ..domain.errors import ApplicationError
 from ..platform_admin_schemas import (
     PlatformMemberInvitation,
     PlatformMemberInvitationCreate,
+    PlatformMerchantIdentityProfile,
+    PlatformMerchantIdentityUpdate,
     PlatformMerchantOwnerAccount,
     PlatformMerchantOwnerCreate,
     PlatformTenantCreate,
@@ -31,6 +33,41 @@ def _identity_write_session(session: Session, identity_session: Session) -> Sess
     if session.bind is not None and session.bind.dialect.name == "sqlite":
         return session
     return identity_session
+
+
+@router.get(
+    "/merchant-identities",
+    response_model=list[PlatformMerchantIdentityProfile],
+)
+def merchant_identities_endpoint(
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> list[PlatformMerchantIdentityProfile]:
+    try:
+        return use_cases.list_merchant_identities(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/merchant-identities/{identity_code}",
+    response_model=PlatformMerchantIdentityProfile,
+)
+def update_merchant_identity_endpoint(
+    identity_code: str,
+    request: PlatformMerchantIdentityUpdate,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> PlatformMerchantIdentityProfile:
+    try:
+        return use_cases.update_merchant_identity(
+            session,
+            context=context,
+            identity_code=identity_code,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
 
 
 @router.get("/tenants", response_model=list[PlatformTenantSummary])

@@ -654,12 +654,17 @@ def create_agent(
     request: SupportAIAgentCreate,
 ) -> SupportAIAgentResponse:
     _require_platform_admin(context)
+    _validate_profile_binding(
+        session,
+        profile_id=request.provider_profile_id,
+    )
     row = SupportAIAgentRow(
         id=uuid4(),
         agent_code=_new_agent_code(session),
         name=request.name,
         description=request.description,
         enabled=False,
+        provider_setting_id=request.provider_profile_id,
         created_by_user_id=context.user_id,
         updated_by_user_id=context.user_id,
     )

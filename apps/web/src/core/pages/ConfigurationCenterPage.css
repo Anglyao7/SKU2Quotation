@@ -24,6 +24,7 @@
 .configuration-ai-workspace { display: grid; gap: 18px; }
 .configuration-profile-layout { display: grid; grid-template-columns: minmax(210px, .65fr) minmax(0, 1.7fr); gap: 20px; align-items: start; }
 .configuration-profile-list { display: grid; gap: 8px; }
+.configuration-profile-list[aria-label] { max-height: 540px; padding-right: 3px; overflow-y: auto; overscroll-behavior: contain; }
 .configuration-profile-list > button { width: 100%; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: inherit; background: var(--surface-strong); text-align: left; cursor: pointer; }
 .configuration-profile-list > button.active { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); box-shadow: inset 3px 0 0 var(--accent); }
 .configuration-profile-list > button > span:first-child { min-width: 0; display: grid; gap: 3px; }
@@ -46,4 +47,5 @@
   .configuration-wide { grid-column: 1; }
   .configuration-profile-layout, .configuration-bulk-controls, .configuration-copy-options { grid-template-columns: 1fr; }
   .configuration-store-list { grid-template-columns: 1fr; }
+  .configuration-card-heading > .rt-Button { grid-column: 1 / -1; width: 100%; }
 }

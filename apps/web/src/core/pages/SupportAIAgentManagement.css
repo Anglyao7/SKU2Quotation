@@ -18,6 +18,10 @@
 .support-agent-name-cell strong, .support-agent-name-cell small, .support-agent-table-stack span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .support-agent-name-cell small, .support-agent-table-stack small { color: var(--text-soft); font-size: 10px; }
 .support-agent-table-stack small.is-warning { color: #a76d16; }
+.support-agent-model-assignment { min-width: 180px; display: grid; gap: 4px; }
+.support-agent-model-assignment > .rt-SelectTrigger { width: 100%; max-width: 230px; }
+.support-agent-model-assignment small { color: var(--text-soft); font-size: 10px; }
+.support-agent-model-assignment small.is-warning { color: #a76d16; }
 .support-agent-code, .support-agent-identity-strip code { color: var(--text); font-family: var(--font-sans); font-variant-numeric: tabular-nums; font-weight: 700; letter-spacing: .1em; }
 .support-agent-dialog-form { padding-top: 8px; display: grid; gap: 15px; }
 .support-agent-dialog-form > label { display: grid; gap: 7px; }

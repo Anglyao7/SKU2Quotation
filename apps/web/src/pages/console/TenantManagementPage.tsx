@@ -17,6 +17,7 @@ import {
   CheckCircle,
   Eye,
   EyeSlash,
+  IdentificationCard,
   NotePencil,
   Plus,
   SlidersHorizontal,
@@ -31,6 +32,8 @@ import { useLocale } from "../../core/LocaleContext";
 import { api, ApiError } from "../../lib/api";
 import { dateTime } from "../../lib/format";
 import type {
+  MerchantIdentityCode,
+  MerchantIdentityProfile,
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
   Tenant,
@@ -128,6 +131,14 @@ function enabledTenantModules(tenant: Tenant): TenantModuleCode[] {
   return DEFAULT_TENANT_MODULES.filter((code) => enabled.has(code));
 }
 
+function identityModules(
+  identities: MerchantIdentityProfile[],
+  code: MerchantIdentityCode,
+): TenantModuleCode[] {
+  return identities.find((identity) => identity.code === code)?.enabled_modules
+    ?? DEFAULT_TENANT_MODULES;
+}
+
 function apiErrorCode(caught: unknown): string | undefined {
   if (!(caught instanceof ApiError) || !caught.details || typeof caught.details !== "object") return undefined;
   const detail = (caught.details as { detail?: unknown }).detail;
@@ -178,6 +189,7 @@ export function TenantManagementPage() {
   const { reloadTenants } = useOutletContext<ConsoleOutletContext>();
   const { t } = useLocale();
   const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [identities, setIdentities] = useState<MerchantIdentityProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Tenant | "new" | null>(null);
@@ -185,12 +197,18 @@ export function TenantManagementPage() {
   const [moduleEditor, setModuleEditor] = useState<Tenant | null>(null);
   const [subscriptionEditor, setSubscriptionEditor] = useState<Tenant | null>(null);
   const [deleting, setDeleting] = useState<Tenant | null>(null);
+  const [identitySettingsOpen, setIdentitySettingsOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      setTenants(await api.getTenants());
+      const [nextTenants, nextIdentities] = await Promise.all([
+        api.getTenants(),
+        api.getMerchantIdentities(),
+      ]);
+      setTenants(nextTenants);
+      setIdentities(nextIdentities);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("商家列表加载失败。"));
     } finally {
@@ -225,10 +243,16 @@ export function TenantManagementPage() {
           <Text size="2" color="gray">{t("商家、登录账号与商品前台")}</Text>
           <Heading size="7">{t("商家管理")}</Heading>
         </div>
-        <Button onClick={() => setEditing("new")}>
-          <Plus size={18} />
-          {t("新增商家")}
-        </Button>
+        <div className="page-actions">
+          <Button variant="soft" color="gray" onClick={() => setIdentitySettingsOpen(true)}>
+            <IdentificationCard size={18} />
+            {t("身份设置")}
+          </Button>
+          <Button onClick={() => setEditing("new")}>
+            <Plus size={18} />
+            {t("新增商家")}
+          </Button>
+        </div>
       </div>
 
       {error ? (
@@ -253,6 +277,7 @@ export function TenantManagementPage() {
               <Table.Header>
                 <Table.Row>
                   <Table.ColumnHeaderCell>{t("商家")}</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>{t("身份")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("登录邮箱")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>{t("前台地址")}</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>SKU</Table.ColumnHeaderCell>
@@ -274,6 +299,15 @@ export function TenantManagementPage() {
                       <Table.RowHeaderCell>
                         <Text size="2" weight="medium">{tenant.name}</Text>
                       </Table.RowHeaderCell>
+                      <Table.Cell>
+                        <Badge
+                          size="1"
+                          variant="soft"
+                          color={tenant.identity_code === "ADMIN" ? "amber" : "blue"}
+                        >
+                          {t(tenant.identity_code === "ADMIN" ? "管理员" : "用户")}
+                        </Badge>
+                      </Table.Cell>
                       <Table.Cell>
                         {loginEmail ? (
                           <Text size="1">{loginEmail}</Text>
@@ -334,9 +368,8 @@ export function TenantManagementPage() {
                           onClick={() => setModuleEditor(tenant)}
                         >
                           <SlidersHorizontal size={15} />
-                          {t("{count} / {total} 个", {
+                          {t(tenant.module_access_mode === "CUSTOM" ? "单独设置 · {count} 个" : "跟随身份 · {count} 个", {
                             count: enabledTenantModules(tenant).length,
-                            total: TENANT_MODULES.length,
                           })}
                         </Button>
                       </Table.Cell>
@@ -425,6 +458,9 @@ export function TenantManagementPage() {
                       <Badge color={SUBSCRIPTION_TIER_COLORS[tenant.subscription_tier]}>
                         {t(subscriptionTierLabel(tenant.subscription_tier))}
                       </Badge>
+                      <Badge color={tenant.identity_code === "ADMIN" ? "amber" : "blue"}>
+                        {t(tenant.identity_code === "ADMIN" ? "管理员" : "用户")}
+                      </Badge>
                       <Badge color={tenant.status === "active" ? "jade" : "gray"}>
                         {t(tenant.status === "active" ? "启用" : "停用")}
                       </Badge>
@@ -471,7 +507,9 @@ export function TenantManagementPage() {
                         onClick={() => setModuleEditor(tenant)}
                       >
                         <SlidersHorizontal />
-                        {t("可见模块 {count}", { count: enabledTenantModules(tenant).length })}
+                        {t(tenant.module_access_mode === "CUSTOM" ? "单独设置 · {count} 个" : "跟随身份 · {count} 个", {
+                          count: enabledTenantModules(tenant).length,
+                        })}
                       </Button>
                       <Button asChild size="1" variant="soft">
                         <Link to={`/${tenant.slug}`}>{t("查看前台")}</Link>
@@ -532,9 +570,16 @@ export function TenantManagementPage() {
       />
       <TenantModuleDialog
         tenant={moduleEditor}
+        identities={identities}
         onOpenChange={(open) => {
           if (!open) setModuleEditor(null);
         }}
+        onSaved={refreshAll}
+      />
+      <IdentitySettingsDialog
+        open={identitySettingsOpen}
+        identities={identities}
+        onOpenChange={setIdentitySettingsOpen}
         onSaved={refreshAll}
       />
       <TenantSubscriptionDialog
@@ -825,23 +870,51 @@ function TenantSubscriptionDialog({
 
 function TenantModuleDialog({
   tenant,
+  identities,
   onOpenChange,
   onSaved,
 }: {
   tenant: Tenant | null;
+  identities: MerchantIdentityProfile[];
   onOpenChange: (open: boolean) => void;
   onSaved: () => Promise<void>;
 }) {
   const { t } = useLocale();
   const [selected, setSelected] = useState<Set<TenantModuleCode>>(new Set());
+  const [identityCode, setIdentityCode] = useState<MerchantIdentityCode>("USER");
+  const [inheritIdentity, setInheritIdentity] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (!tenant) return;
-    setSelected(new Set(enabledTenantModules(tenant)));
+    const nextIdentity = tenant.identity_code ?? "USER";
+    const nextInherit = tenant.module_access_mode !== "CUSTOM";
+    setIdentityCode(nextIdentity);
+    setInheritIdentity(nextInherit);
+    setSelected(new Set(
+      nextInherit
+        ? identityModules(identities, nextIdentity)
+        : tenant.module_overrides ?? enabledTenantModules(tenant),
+    ));
     setError("");
-  }, [tenant]);
+  }, [identities, tenant]);
+
+  const chooseIdentity = (code: MerchantIdentityCode) => {
+    setIdentityCode(code);
+    if (inheritIdentity) {
+      setSelected(new Set(identityModules(identities, code)));
+    }
+    setError("");
+  };
+
+  const chooseInheritance = (checked: boolean) => {
+    setInheritIdentity(checked);
+    if (checked) {
+      setSelected(new Set(identityModules(identities, identityCode)));
+    }
+    setError("");
+  };
 
   const toggle = (code: TenantModuleCode, checked: boolean) => {
     setSelected((current) => {
@@ -860,7 +933,11 @@ function TenantModuleDialog({
       const modules = TENANT_MODULES
         .map((module) => module.code)
         .filter((code) => selected.has(code));
-      await api.updateTenantModules(tenant.id, modules);
+      await api.updateTenantAccess(tenant.id, {
+        identity_code: identityCode,
+        module_access_mode: inheritIdentity ? "INHERIT" : "CUSTOM",
+        ...(inheritIdentity ? {} : { enabled_modules: modules }),
+      });
       await onSaved();
       onOpenChange(false);
     } catch (caught) {
@@ -875,14 +952,47 @@ function TenantModuleDialog({
       <Dialog.Content className="merchant-module-dialog">
         <Dialog.Title>{t("{name} 的可见模块", { name: tenant?.name ?? "" })}</Dialog.Title>
         <Dialog.Description>
-          {t("勾选商家后台可以使用的模块。概览、账户安全和商品前台始终保留。")}
+          {t("商家默认跟随身份权限，也可以切换为单独设置。概览、账户安全和商品前台始终保留。")}
         </Dialog.Description>
+
+        <div className="merchant-access-settings">
+          <label className="field-group">
+            <Text size="2" weight="medium">{t("商家身份")}</Text>
+            <Select.Root
+              value={identityCode}
+              onValueChange={(value) => chooseIdentity(value as MerchantIdentityCode)}
+            >
+              <Select.Trigger />
+              <Select.Content>
+                <Select.Item value="ADMIN">{t("管理员")}</Select.Item>
+                <Select.Item value="USER">{t("用户")}</Select.Item>
+              </Select.Content>
+            </Select.Root>
+          </label>
+          <label className={inheritIdentity ? "merchant-inherit-option is-selected" : "merchant-inherit-option"}>
+            <Checkbox
+              checked={inheritIdentity}
+              onCheckedChange={(value) => chooseInheritance(value === true)}
+            />
+            <span>
+              <Text as="div" size="2" weight="medium">{t("跟随身份默认权限")}</Text>
+              <Text as="div" size="1" color="gray">
+                {t("身份设置变化后，这个商家会自动同步。")}
+              </Text>
+            </span>
+          </label>
+        </div>
 
         <div className="merchant-module-toolbar">
           <Text size="2" color="gray">
-            {t("已选择 {count} 个模块", { count: selected.size })}
+            {inheritIdentity
+              ? t("来自“{identity}”身份 · {count} 个模块", {
+                identity: t(identityCode === "ADMIN" ? "管理员" : "用户"),
+                count: selected.size,
+              })
+              : t("已单独选择 {count} 个模块", { count: selected.size })}
           </Text>
-          <div>
+          {!inheritIdentity ? <div>
             <Button
               type="button"
               size="1"
@@ -901,7 +1011,7 @@ function TenantModuleDialog({
             >
               {t("清空")}
             </Button>
-          </div>
+          </div> : null}
         </div>
 
         <div className="merchant-module-grid">
@@ -909,11 +1019,12 @@ function TenantModuleDialog({
             const checked = selected.has(module.code);
             return (
               <label
-                className={checked ? "merchant-module-option is-selected" : "merchant-module-option"}
+                className={`${checked ? "merchant-module-option is-selected" : "merchant-module-option"}${inheritIdentity ? " is-disabled" : ""}`}
                 key={module.code}
               >
                 <Checkbox
                   checked={checked}
+                  disabled={inheritIdentity}
                   onCheckedChange={(value) => toggle(module.code, value === true)}
                 />
                 <span>
@@ -939,6 +1050,136 @@ function TenantModuleDialog({
           <Button type="button" loading={saving} onClick={() => void save()}>
             {t("保存可见模块")}
           </Button>
+        </div>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function IdentitySettingsDialog({
+  open,
+  identities,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  identities: MerchantIdentityProfile[];
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => Promise<void>;
+}) {
+  const { t } = useLocale();
+  const [identityCode, setIdentityCode] = useState<MerchantIdentityCode>("ADMIN");
+  const [selected, setSelected] = useState<Set<TenantModuleCode>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setSelected(new Set(identityModules(identities, identityCode)));
+    setError("");
+  }, [identities, identityCode, open]);
+
+  const chooseIdentity = (code: MerchantIdentityCode) => {
+    setIdentityCode(code);
+    setSelected(new Set(identityModules(identities, code)));
+    setError("");
+  };
+
+  const toggle = (code: TenantModuleCode, checked: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) next.add(code);
+      else next.delete(code);
+      return next;
+    });
+  };
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const modules = DEFAULT_TENANT_MODULES.filter((code) => selected.has(code));
+      await api.updateMerchantIdentity(identityCode, modules);
+      await onSaved();
+      onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("身份权限保存失败。"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Content className="merchant-module-dialog">
+        <Dialog.Title>{t("身份默认权限")}</Dialog.Title>
+        <Dialog.Description>
+          {t("管理员和用户是商家的默认权限模板；跟随身份的商家会自动使用这里的设置。")}
+        </Dialog.Description>
+
+        <div className="merchant-identity-selector" role="group" aria-label={t("选择身份")}>
+          {(["ADMIN", "USER"] as MerchantIdentityCode[]).map((code) => (
+            <button
+              type="button"
+              className={identityCode === code ? "is-selected" : ""}
+              key={code}
+              onClick={() => chooseIdentity(code)}
+            >
+              <IdentificationCard size={20} />
+              <span>
+                <Text as="span" size="2" weight="medium">
+                  {t(code === "ADMIN" ? "管理员" : "用户")}
+                </Text>
+                <Text as="span" size="1" color="gray">
+                  {t("默认 {count} 个模块", {
+                    count: identityModules(identities, code).length,
+                  })}
+                </Text>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="merchant-module-toolbar">
+          <Text size="2" color="gray">
+            {t("已选择 {count} 个模块", { count: selected.size })}
+          </Text>
+          <div>
+            <Button type="button" size="1" variant="ghost" color="gray" onClick={() => setSelected(new Set(DEFAULT_TENANT_MODULES))}>
+              {t("全选")}
+            </Button>
+            <Button type="button" size="1" variant="ghost" color="gray" onClick={() => setSelected(new Set())}>
+              {t("清空")}
+            </Button>
+          </div>
+        </div>
+
+        <div className="merchant-module-grid">
+          {TENANT_MODULES.map((module) => {
+            const checked = selected.has(module.code);
+            return (
+              <label className={checked ? "merchant-module-option is-selected" : "merchant-module-option"} key={module.code}>
+                <Checkbox checked={checked} onCheckedChange={(value) => toggle(module.code, value === true)} />
+                <span>
+                  <Text as="div" size="2" weight="medium">{t(module.label)}</Text>
+                  <Text as="div" size="1" color="gray">{t(module.description)}</Text>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        {error ? (
+          <Callout.Root color="red">
+            <Callout.Icon><WarningCircle /></Callout.Icon>
+            <Callout.Text>{error}</Callout.Text>
+          </Callout.Root>
+        ) : null}
+
+        <div className="dialog-actions">
+          <Dialog.Close><Button type="button" variant="soft" color="gray">{t("取消")}</Button></Dialog.Close>
+          <Button type="button" loading={saving} onClick={() => void save()}>{t("保存身份权限")}</Button>
         </div>
       </Dialog.Content>
     </Dialog.Root>
@@ -1103,6 +1344,8 @@ function TenantFormDialog({
         name,
         contact_email: loginEmail,
         active: true,
+        identity_code: String(data.get("identity_code") || "USER") as MerchantIdentityCode,
+        module_access_mode: "INHERIT",
       };
 
       let merchant = createdTenant;
@@ -1207,6 +1450,16 @@ function TenantFormDialog({
               </label>
             ) : (
               <>
+                <label className="field-group">
+                  <Text size="2" weight="medium">{t("商家身份")}</Text>
+                  <Select.Root name="identity_code" defaultValue="USER">
+                    <Select.Trigger />
+                    <Select.Content>
+                      <Select.Item value="USER">{t("用户")}</Select.Item>
+                      <Select.Item value="ADMIN">{t("管理员")}</Select.Item>
+                    </Select.Content>
+                  </Select.Root>
+                </label>
                 <label className="field-group">
                   <Text size="2" weight="medium">{t("登录邮箱")} *</Text>
                   <TextField.Root

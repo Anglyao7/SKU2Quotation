@@ -319,6 +319,8 @@ def seed_saas_foundation(session: Session) -> None:
             organization_id=DEFAULT_ORGANIZATION_ID,
             slug="demo",
             name="Local Demo Company",
+            identity_code="ADMIN",
+            module_access_mode="INHERIT",
         )
         session.add(tenant)
     elif tenant.deleted_at is not None:
@@ -328,6 +330,7 @@ def seed_saas_foundation(session: Session) -> None:
     # the earlier internal-only `local` slug.
     if tenant.status == "active":
         tenant.slug = "demo"
+    tenant.identity_code = "ADMIN"
 
     subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
     if subscription is None:
