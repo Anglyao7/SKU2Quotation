@@ -1,9 +1,9 @@
 # 智能客服开发设计
 
-> 状态：v1 可交付实现 + 后续路线图  
-> 版本：1.5
+> 状态：v2 回答决策架构已实现 + 后续路线图
+> 版本：2.0
 > 日期：2026-08-10
-> 规范来源：[客服 AI 运行契约 v1](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
+> 规范来源：[客服 AI 运行契约 v2](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
 
 ## 0. 当前交付状态
 
@@ -22,8 +22,8 @@
 - 商家人工工作台：`/console/support`，商家成员只查看和处理本店客服会话、AI 回答及其
   客户可见引用；可以人工接管，但不能恢复 AI、管理知识或修改任何 AI 配置。
 - 客户 Widget：按客户本次消息的实际语言回答，显示 AI 身份、处理状态和服务端引用；
-  业务问题证据不足、语言不一致、数字或引用校验失败时转人工，纯寒暄由 AI 基于批准的
-  企业对客资料生成且不会无故转人工。
+  商品证据充分时给出带引用的店铺答案；无命中、低分或检索降级时仍由 AI 提供通用建议、
+  无匹配说明或聚焦追问。语言、数字或引用校验失败时改发安全追问，不会因此自动转人工。
 
 已经落地的关键边界：
 
@@ -52,6 +52,13 @@
 11. 纯问候、致谢和告别由高精度规则分流，回复仍调用智能体绑定的大模型。模型只能使用
     店铺名称、管理员批准的企业对客简介和服务范围；Run 保存资料哈希且不执行向量检索。
     混合业务问题继续走 RAG，模型失败或日限额触发时使用多语言安全兜底并保持 AI 接待。
+12. 检索与回答决策已经解耦。客服商品检索复用现有 `hybrid_product_search` 的商品向量与
+    混合排序，只允许当前已发布、有效、可对客商品进入候选，再重新加载公开字段构造证据；
+    不再扫描“最近若干 chunk”，也不会把供应商字段放进客户上下文。
+13. 回答统一使用 `ANSWER / CLARIFY / NO_MATCH / HANDOFF` 与
+    `EVIDENCE / GENERAL_GUIDANCE` 两个正交维度。`0` 条证据、低检索分数、Embedding 降级、
+    模型失败或验证失败都不具有接管权限；只有客户明确要求人工或确需人工执行/审核的事务
+    才能产生 `HANDOFF`。
 
 主要实现文件为 `support_ai_models.py`、`support_ai_schemas.py`、
 `services/support_ai_*`、`routers/support_ai.py`、`use_cases/support_ai.py` 和迁移
@@ -89,6 +96,10 @@
     入口；店铺只保存执行所需快照。知识库、启停、试跑和运行审计均只对平台管理员开放。
 12. 安全社交意图使用确定性高精度路由，生成内容仍走店铺模型。企业对客简介与服务范围
     是独立、可审计的公开字段，不能用内部说明或自由提示词替代。
+13. 检索层只返回证据与诊断信息，不决定是否接管；回答层即使收到空证据也必须调用生成
+    模型。企业事实必须引用，通用建议必须显式使用 `GENERAL_GUIDANCE`。
+14. 人工接管是窄授权动作，不是错误兜底。低置信度、无命中、Embedding/模型/引用故障
+    默认发送多语言安全追问并保持 `AI_ACTIVE`。
 
 ## 3. 当前系统基线
 
@@ -153,19 +164,20 @@ Visitor message                        │
       ▼                                │
 Support AI Task -> Query Planner -> Policy-filtered Hybrid Retriever
       │                                      │
-      │                         optional read-only business tools
+      │                     evidence[] + retrieval diagnostics
       │                                      │
       └──────────────> Context/Evidence Builder
                                       │
-                              Structured LLM output
+                      Structured LLM decision (always called)
                                       │
                        Citation/Grounding/Safety Validator
                                       │
-                     ┌────────────────┴───────────────┐
-                     ▼                                ▼
-              AI message + citations            Human handoff
-                     │                                │
-                     └──────── Trace/Evaluation ──────┘
+       ┌──────────────────┬───────────┴──────────┬──────────────────┐
+       ▼                  ▼                      ▼                  ▼
+ ANSWER + citation     CLARIFY             NO_MATCH          authorized HANDOFF
+ or general advice   focused question   + next suggestion   human-only action
+       │                  │                      │                  │
+       └──────────────────┴────── Trace/Evaluation ────────────────┘
 ```
 
 ### 4.1 请求链路与索引链路分离
@@ -229,12 +241,12 @@ apps/api/app/
 1. 加载租户 AI 设置、会话状态和触发消息。
 2. 运行输入安全及是否允许 AI 接管的检查。
 3. 构建受控最近上下文，生成原始/改写查询和意图。
-4. 决定知识检索、只读工具或直接转人工。
+4. 执行知识检索或只读工具并记录诊断；空结果仍继续进入回答决策。
 5. 构建带 opaque evidence ID 的模型上下文。
-6. 请求结构化回答。
+6. 请求结构化回答动作和 grounding mode。
 7. 执行 citation、grounding、边界、PII、语言和重复校验。
 8. 在同一事务中保存 Run 结果、evidence use、AI message 和引用。
-9. 失败时执行有限重试、安全说明或人工接管。
+9. 失败时执行有限重试或多语言安全追问；只有授权原因可以人工接管。
 
 每一步产生可记录的 step result。不得把整个流程写成一个难以定位失败原因的函数。
 
@@ -270,16 +282,19 @@ class ChatModelPort(Protocol):
 
 ### 5.3 客服专用 Retriever
 
-新增 `retrieve_support_evidence()`，不能直接把 `hybrid_product_search()` 的完整返回作为
-客户上下文。可以抽取和复用其底层 lexical/vector 计算，但客服 Retriever 必须：
+当前 `support_ai_retrieval.py` 提供独立客服 Retriever。它复用
+`hybrid_product_search()` 的既有商品向量与混合排名，但绝不把搜索结果对象直接交给模型；
+只使用排名后的商品 ID，从公共目录白名单重新加载客户安全事实并生成 Evidence：
 
 - 强制 tenant、classification、approval、audience、status 和有效期过滤。
-- 不查询或计算 supplier score，不返回 supplier signal。
+- 客服调用明确关闭共享检索的 supplier scoring，不查询或返回 supplier identity、supplier
+  SKU、supplier score 或其他 supplier signal；客户上下文完全由公共目录重新投影。
 - 分别获取 Product 与 File 候选，按配置控制每类配额。
 - 先处理 SKU/商品编码、条码和精确名称，再进行语义召回。
 - 统一 rerank，并返回 `RetrievedEvidence`，而不是 UI Product result。
 - 保留 document/chunk/source version/locator 和所有分数。
-- 对冲突、低支持度和无结果返回明确 signal，而不是空列表后继续生成。
+- 对冲突、低支持度、无结果和语义检索降级返回明确 diagnostics；允许 Evidence 为空，但
+  编排器仍必须调用模型进入 `CLARIFY / NO_MATCH / GENERAL_GUIDANCE`。
 
 建议把现有通用向量候选和 tokenization 下沉为私有公共函数，内部商品搜索与客服检索分别
 维护自己的 field policy 和 ranking policy。
@@ -553,7 +568,8 @@ claim task
 ### 9.3 店铺启停行为
 
 - `关闭`：新客户消息不进入 AI 队列，知识和历史 Run 保留，人工客服不受影响。
-- `启用`：证据与置信度达到店铺阈值才发送；否则明确转人工。启用不表示无限自治。
+- `启用`：有证据且通过阈值时发送带引用的企业事实；无证据或低置信度时发送通用建议、
+  无匹配说明或聚焦追问并保持 AI 接待。启用不表示可以无依据断言企业事实。
 - 测试实验室：无论店铺是否启用都可执行 `TEST_ONLY` Run，但绝不写入客户会话。
 - 平台离线评估和不发送验证使用独立测试任务，不增加店铺状态枚举。
 
@@ -783,6 +799,9 @@ knowledge.approve
 - 一次 visitor message 只能创建一个 AITask/AI message。
 - 人工在模型运行期间回复会取消自动发送。
 - 文件撤销后退出新检索，但历史 Run 仍可审计。
+- 商品推荐复用现有混合检索，只把当前公开商品事实写入 Evidence，供应商字段永不出现。
+- 商品无命中、Embedding 降级、低分和模型验证失败均保持 `AI_ACTIVE` 并返回安全追问。
+- 客户明确要求人工以及人工专属事务才会写入授权 `handoff_reason`。
 
 ### 16.3 Agent 合约测试
 
@@ -794,6 +813,8 @@ knowledge.approve
 - 内部字段泄漏。
 - 无效 JSON、超长文本、错误语言和循环工具调用。
 - 超时、限流和部分工具失败。
+- 空 Evidence 下的 `CLARIFY / NO_MATCH / GENERAL_GUIDANCE`。
+- 模型试图以 `NO_CUSTOMER_SAFE_EVIDENCE` 等未授权原因为由转人工。
 
 ### 16.4 离线评估
 
@@ -812,14 +833,16 @@ knowledge.approve
 
 - 任务 queue wait、各 stage p50/p95、模型和工具错误率。
 - retrieval no-result、low-support、conflict、citation validation failure。
-- 测试集 correctness、线上 resolution/handoff/repeat contact 和人工接管率。
+- `ANSWER / CLARIFY / NO_MATCH / HANDOFF` 分布、grounding mode、无结果后继续解决率。
+- 测试集 correctness、线上 resolution/handoff/repeat contact、误接管率和人工接管率。
 - 每租户 Token、成本、日限额和 provider 限流。
 - 每来源命中、解决、失败和内容缺口。
 
 ### 17.2 告警与开关
 
 - 跨租户或敏感字段 guardrail 命中立即产生安全告警。
-- 引用验证失败、模型失败和 tool failure 持续升高时自动转人工或关闭店铺智能客服。
+- 引用验证失败、模型失败和 tool failure 持续升高时告警并按店铺策略关闭智能客服；不得
+  把系统性故障逐个自动转成人工会话，避免人工队列雪崩。
 - 支持平台 API 档案停用、店铺启停和单会话 suspend 三层停止方式。
 - Provider route、Prompt、策略和 Agent 版本可快速回退到上一个已批准版本。
 
@@ -843,10 +866,12 @@ knowledge.approve
 
 验收：边界、版本、跨租户、引用 renderer 和 migration 测试全部通过。
 
-### Phase 2：SKU 受控回答与平台验证（v1 已完成）
+### Phase 2：SKU 受控回答与平台验证（v2 已完成）
 
 - 实现 ChatModelPort/adapter、Provider route 和 FakeChatModel。
 - 实现客服 Retriever、编排器、结构化回答和 Validator 链。
+- 商品 Retriever 复用现有 AI 搜索索引与混合排名，并用公共目录二次投影 Evidence。
+- 实现无命中仍回答、检索诊断和窄授权人工接管决策。
 - 后台测试实验室、Run inspection 和人工草稿。
 - 建立离线评估与回归命令。
 
@@ -876,7 +901,8 @@ knowledge.approve
 - 每个工具单独评估选择、参数、权限、证据和失败行为。
 - 仍不开放退款、取消或资料修改。
 
-验收：动态事实不从 RAG 回答，工具证据带 observed_at，失败正确转人工。
+验收：动态事实不从 RAG 回答，工具证据带 observed_at；工具失败先安全说明或追问，只有
+需要人工专属动作时正确转人工。
 
 ### Phase 6：持续优化
 

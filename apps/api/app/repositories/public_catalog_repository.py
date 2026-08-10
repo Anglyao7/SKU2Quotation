@@ -592,6 +592,51 @@ def list_all_public_catalog_rows(
     )
 
 
+def list_public_catalog_product_ids(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+) -> list[UUID]:
+    """Return products that currently have at least one customer-visible offer."""
+
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query="",
+        category=None,
+    )
+    return list(
+        session.scalars(
+            statement.with_only_columns(ProductRow.id)
+            .order_by(None)
+            .distinct()
+            .order_by(ProductRow.id)
+        ).all()
+    )
+
+
+def list_public_catalog_rows_for_products(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    product_ids: list[UUID],
+):
+    """Load current public catalog facts for a bounded ranked product set."""
+
+    ordered_ids = list(dict.fromkeys(product_ids))
+    if not ordered_ids:
+        return []
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query="",
+        category=None,
+    ).where(ProductRow.id.in_(ordered_ids))
+    return list(session.execute(statement.order_by(ProductRow.id, SkuRow.id)).all())
+
+
 def count_public_catalog_rows(
     session: Session,
     *,
