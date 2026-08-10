@@ -28,7 +28,7 @@ from .saas_seed import demo_seed_enabled, seed_saas_foundation
 from .product_center_seed import seed_product_center_demo
 from .services.repository import seed_suppliers
 from .use_cases.legacy_operations import resume_deferred_imports
-from .use_cases.catalog_translations import recover_interrupted_translation_jobs
+from .use_cases.runtime_recovery import recover_interrupted_jobs
 def _initialize_runtime() -> None:
     validate_startup_configuration()
     init_database()
@@ -38,7 +38,7 @@ def _initialize_runtime() -> None:
             seed_suppliers(session)
             seed_product_center_demo(session)
     resume_deferred_imports()
-    recover_interrupted_translation_jobs()
+    recover_interrupted_jobs()
 def create_app() -> FastAPI:
     application = FastAPI(
         title="智贸云 API", version="0.3.0",

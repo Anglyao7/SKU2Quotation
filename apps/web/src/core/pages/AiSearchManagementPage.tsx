@@ -12,6 +12,8 @@ import {
   ArrowsClockwise,
   Database,
   MagnifyingGlass,
+  Pause,
+  Play,
   Sparkle,
 } from "@phosphor-icons/react";
 import {
@@ -25,6 +27,8 @@ import {
   getKnowledgeIndexJob,
   getKnowledgeIndexStatus,
   getLatestKnowledgeIndexJob,
+  pauseKnowledgeIndexJob,
+  resumeKnowledgeIndexJob,
   startKnowledgeIndexJob,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
@@ -37,6 +41,15 @@ import type {
 
 const ACTIVE_JOB_STATUSES = new Set(["QUEUED", "RUNNING"]);
 
+function checkpointTime(value: string, locale: string) {
+  return new Intl.DateTimeFormat(locale, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
 export function AiSearchManagementPage() {
   const { hasPermission } = useCoreAuth();
   const { locale, t } = useLocale();
@@ -45,6 +58,7 @@ export function AiSearchManagementPage() {
   const [job, setJob] = useState<KnowledgeIndexJob>();
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState<"" | "incremental" | "full">("");
+  const [controlling, setControlling] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [rebuildOpen, setRebuildOpen] = useState(false);
@@ -75,6 +89,9 @@ export function AiSearchManagementPage() {
   }, [loadStatus]);
 
   const jobIsActive = Boolean(job && ACTIVE_JOB_STATUSES.has(job.status));
+  const jobBlocksStart = Boolean(
+    job && (ACTIVE_JOB_STATUSES.has(job.status) || job.status === "PAUSED"),
+  );
 
   useEffect(() => {
     if (!job || !ACTIVE_JOB_STATUSES.has(job.status)) return;
@@ -104,6 +121,9 @@ export function AiSearchManagementPage() {
         } else if (next.status === "FAILED") {
           setError(next.errorMessage ?? t("智能索引更新失败"));
           setStarting("");
+        } else if (next.status === "PAUSED") {
+          setMessage(t("向量化已暂停，已完成的向量和断点会保留。"));
+          setStarting("");
         }
       } catch (reason) {
         if (!stopped) {
@@ -126,7 +146,7 @@ export function AiSearchManagementPage() {
   }, [job?.id, job?.status, locale, t]);
 
   const startIndex = async (fullRebuild: boolean) => {
-    if (!canManageIndex || jobIsActive || starting) return;
+    if (!canManageIndex || jobBlocksStart || starting) return;
     setStarting(fullRebuild ? "full" : "incremental");
     setError("");
     setMessage("");
@@ -147,6 +167,32 @@ export function AiSearchManagementPage() {
     }
   };
 
+  const controlIndexJob = async (action: "pause" | "resume") => {
+    if (!canManageIndex || !job || controlling) return;
+    setControlling(true);
+    setError("");
+    setMessage("");
+    try {
+      const next = action === "pause"
+        ? await pauseKnowledgeIndexJob(job.id)
+        : await resumeKnowledgeIndexJob(job.id);
+      setJob(next);
+      if (action === "pause") {
+        setMessage(next.status === "PAUSED"
+          ? t("向量化已暂停，已完成的向量和断点会保留。")
+          : t("正在完成当前向量批次，随后会安全暂停。"));
+      } else {
+        setMessage(t("向量化已从断点继续，只处理剩余商品。"));
+      }
+    } catch (reason) {
+      setError(reason instanceof Error
+        ? reason.message
+        : t(action === "pause" ? "暂停向量化失败。" : "继续向量化失败。"));
+    } finally {
+      setControlling(false);
+    }
+  };
+
   const indexedPercent = useMemo(() => {
     if (!status?.totalProducts) return 0;
     return Math.round(
@@ -154,13 +200,15 @@ export function AiSearchManagementPage() {
     );
   }, [status]);
 
-  const activeBusy = jobIsActive || Boolean(starting);
+  const activeBusy = jobBlocksStart || Boolean(starting);
   const jobBadgeColor =
     job?.status === "FAILED"
       ? "red"
-      : job?.status === "SUCCEEDED"
-        ? "jade"
-        : "amber";
+      : job?.status === "PAUSED"
+        ? "amber"
+        : job?.status === "SUCCEEDED"
+          ? "jade"
+          : "amber";
 
   return (
     <div className="core-workspace">
@@ -210,7 +258,12 @@ export function AiSearchManagementPage() {
                   {t("当前商家索引")}
                 </Text>
                 <Heading size="5">
-                  {jobIsActive
+                  {job?.status === "PAUSED"
+                    ? t("向量化已暂停：{done} / {total} 个商品", {
+                        done: job.processedProducts.toLocaleString(locale),
+                        total: job.totalProducts.toLocaleString(locale),
+                      })
+                    : jobIsActive
                     ? t("正在处理 {done} / {total} 个商品", {
                         done: job!.processedProducts.toLocaleString(locale),
                         total: job!.totalProducts.toLocaleString(locale),
@@ -223,8 +276,8 @@ export function AiSearchManagementPage() {
                       : t("商品索引已是最新")}
                 </Heading>
               </div>
-              <Badge color={jobIsActive ? "amber" : status.pendingProducts ? "amber" : "jade"}>
-                {t(jobIsActive ? "任务执行中" : status.pendingProducts ? "需要同步" : "可正常搜索")}
+              <Badge color={job?.status === "PAUSED" || jobIsActive ? "amber" : status.pendingProducts ? "amber" : "jade"}>
+                {t(job?.status === "PAUSED" ? "任务已暂停" : jobIsActive ? "任务执行中" : status.pendingProducts ? "需要同步" : "可正常搜索")}
               </Badge>
             </div>
 
@@ -242,7 +295,7 @@ export function AiSearchManagementPage() {
                   </span>
                   <Badge color={jobBadgeColor}>{t(job.status)}</Badge>
                 </div>
-                <Progress value={job.progressPercent} color={job.status === "FAILED" ? "red" : "jade"} />
+                <Progress value={job.progressPercent} color={job.status === "FAILED" ? "red" : job.status === "PAUSED" ? "amber" : "jade"} />
                 <div className="core-ai-job-meta">
                   <Text size="1" color="gray">
                     {t("完成 {percent}%", {
@@ -261,14 +314,24 @@ export function AiSearchManagementPage() {
                       })}
                     </Text>
                   ) : null}
+                  {job.checkpointAt && job.remainingProducts ? (
+                    <Text size="1" color="gray">
+                      {t("剩余 {count} 个商品 · 断点 {time}", {
+                        count: job.remainingProducts.toLocaleString(locale),
+                        time: checkpointTime(job.checkpointAt, locale),
+                      })}
+                    </Text>
+                  ) : null}
                 </div>
                 {jobIsActive ? (
                   <Text size="1" color="gray">
-                    {t("任务在后台继续执行，离开本页不会中断。")}
+                    {t(job.pauseRequested
+                      ? "系统会先保存当前批次，再进入暂停状态，不会丢失已完成的向量。"
+                      : "任务在后台继续执行，离开本页不会中断。")}
                   </Text>
                 ) : null}
                 {job.errorMessage ? (
-                  <Text size="2" color="red">
+                  <Text size="2" color={job.status === "FAILED" ? "red" : "gray"}>
                     {job.errorMessage}
                   </Text>
                 ) : null}
@@ -291,6 +354,30 @@ export function AiSearchManagementPage() {
             <div className="core-ai-index-actions">
               {canManageIndex ? (
                 <>
+                  {job && (
+                    job.resumable
+                    || (ACTIVE_JOB_STATUSES.has(job.status) && !job.pauseRequested)
+                    || (job.status === "RUNNING" && job.pauseRequested)
+                  ) ? (
+                    <Button
+                      size="3"
+                      variant="soft"
+                      color={job.resumable || job.pauseRequested ? "blue" : "amber"}
+                      disabled={controlling}
+                      onClick={() => void controlIndexJob(
+                        job.resumable || job.pauseRequested ? "resume" : "pause",
+                      )}
+                    >
+                      {job.resumable || job.pauseRequested ? <Play /> : <Pause />}
+                      {t(controlling
+                        ? "处理中…"
+                        : job.resumable
+                          ? "从断点继续"
+                          : job.pauseRequested
+                            ? "取消暂停"
+                            : "暂停向量化")}
+                    </Button>
+                  ) : null}
                   <Button
                     size="3"
                     disabled={

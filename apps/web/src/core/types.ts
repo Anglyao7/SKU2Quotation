@@ -646,7 +646,7 @@ export interface KnowledgeIndexStatus {
   embeddings?: number;
 }
 
-export type KnowledgeIndexJobStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+export type KnowledgeIndexJobStatus = "QUEUED" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
 
 export interface KnowledgeIndexJob {
   id: string;
@@ -656,10 +656,16 @@ export interface KnowledgeIndexJob {
   processedProducts: number;
   failedProducts: number;
   embeddings: number;
+  remainingProducts: number;
   progressPercent: number;
   currentProductId?: string;
   currentProductName?: string;
   errorMessage?: string;
+  pauseRequested: boolean;
+  pauseRequestedAt?: string;
+  pausedAt?: string;
+  resumable: boolean;
+  checkpointAt?: string;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;

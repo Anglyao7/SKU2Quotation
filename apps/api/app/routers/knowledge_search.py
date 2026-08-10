@@ -153,6 +153,44 @@ def get_index_job(
 
 
 @router.post(
+    "/knowledge/index/jobs/{job_id}/pause",
+    response_model=KnowledgeIndexJobResponse,
+)
+def pause_index_job(
+    job_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> KnowledgeIndexJobResponse:
+    context = current_context(session)
+    try:
+        return use_cases.pause_index_job(
+            session,
+            context=context,
+            job_id=job_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/knowledge/index/jobs/{job_id}/resume",
+    response_model=KnowledgeIndexJobResponse,
+)
+def resume_index_job(
+    job_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> KnowledgeIndexJobResponse:
+    context = current_context(session)
+    try:
+        return use_cases.resume_index_job(
+            session,
+            context=context,
+            job_id=job_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
     "/knowledge/index/update",
     response_model=KnowledgeIndexUpdateResponse,
 )

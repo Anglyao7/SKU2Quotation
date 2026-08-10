@@ -222,6 +222,7 @@ from app.use_cases.product_center import upsert_public_offer as upsert_public_of
 from app.product_center_schemas import PublicCatalogOfferUpsertRequest
 from app.use_cases.workspace import create_supplier as create_supplier_use_case
 from app.use_cases import catalog_translations as catalog_translation_use_cases
+from app.use_cases import knowledge_search as knowledge_search_use_cases
 from app.use_cases import public_catalog as public_catalog_use_cases
 from app.use_cases import storefront_analytics as storefront_analytics_use_cases
 from app.workspace_schemas import SupplierCreateRequest
@@ -5627,6 +5628,369 @@ def test_observable_knowledge_index_job_reports_determinate_progress() -> None:
             )
         )
         session.commit()
+
+
+def test_knowledge_index_job_can_pause_and_resume_at_safe_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product_id = uuid4()
+    dispatches: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        knowledge_search_use_cases,
+        "_dispatch_index_job",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+    with SessionLocal() as session:
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"PAUSE-INDEX-{product_id.hex[:8]}",
+                name="Pause checkpoint product",
+                description="A product used to verify safe indexing pauses.",
+                status="ACTIVE",
+                search_document_version=0,
+            )
+        )
+        session.commit()
+
+    started = client.post(
+        "/api/v1/ai/knowledge/index/jobs",
+        json={"mode": "INCREMENTAL"},
+    )
+    assert started.status_code == 202, started.text
+    job_id = UUID(started.json()["id"])
+    assert started.json()["remaining_products"] >= 1
+    assert len(dispatches) == 1
+
+    try:
+        with SessionLocal() as session:
+            row = session.get(KnowledgeIndexJobRow, job_id)
+            assert row is not None
+            row.status = "RUNNING"
+            row.started_at = datetime.now(UTC)
+            session.commit()
+
+        requested = client.post(
+            f"/api/v1/ai/knowledge/index/jobs/{job_id}/pause"
+        )
+        assert requested.status_code == 200, requested.text
+        assert requested.json()["status"] == "RUNNING"
+        assert requested.json()["pause_requested"] is True
+
+        with SessionLocal() as session:
+            row = session.get(KnowledgeIndexJobRow, job_id)
+            assert row is not None
+            assert knowledge_search_use_cases._pause_at_safe_checkpoint(
+                session,
+                row,
+            ) is True
+
+        paused = client.get(f"/api/v1/ai/knowledge/index/jobs/{job_id}")
+        assert paused.status_code == 200, paused.text
+        assert paused.json()["status"] == "PAUSED"
+        assert paused.json()["resumable"] is True
+        assert paused.json()["remaining_products"] >= 1
+        assert paused.json()["checkpoint_at"] is not None
+
+        duplicate = client.post(
+            "/api/v1/ai/knowledge/index/jobs",
+            json={"mode": "INCREMENTAL"},
+        )
+        assert duplicate.status_code == 202, duplicate.text
+        assert duplicate.json()["id"] == str(job_id)
+        assert duplicate.json()["status"] == "PAUSED"
+
+        resumed = client.post(
+            f"/api/v1/ai/knowledge/index/jobs/{job_id}/resume"
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["status"] == "QUEUED"
+        assert resumed.json()["pause_requested"] is False
+        assert len(dispatches) == 2
+
+        duplicate_resume = client.post(
+            f"/api/v1/ai/knowledge/index/jobs/{job_id}/resume"
+        )
+        assert duplicate_resume.status_code == 409, duplicate_resume.text
+        assert len(dispatches) == 2
+
+        paused_again = client.post(
+            f"/api/v1/ai/knowledge/index/jobs/{job_id}/pause"
+        )
+        assert paused_again.status_code == 200, paused_again.text
+        assert paused_again.json()["status"] == "PAUSED"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(KnowledgeIndexJobRow).where(
+                    KnowledgeIndexJobRow.id == job_id
+                )
+            )
+            session.execute(delete(ProductRow).where(ProductRow.id == product_id))
+            session.commit()
+
+
+def test_knowledge_index_failed_job_resumes_only_remaining_products(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product_ids = [uuid4(), uuid4()]
+    with SessionLocal() as session:
+        embedder = knowledge_search_use_cases.resolved_text_embedding_provider(session)
+        for index, product_id in enumerate(product_ids, start=1):
+            session.add(
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"RESUME-INDEX-{product_id.hex[:8]}",
+                    name=f"Resume checkpoint product {index}",
+                    description="A product used to verify durable vector checkpoints.",
+                    status="ACTIVE",
+                    search_document_version=0,
+                )
+            )
+        job = KnowledgeIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="FULL_REBUILD",
+            status="QUEUED",
+            total_products=2,
+            processed_products=0,
+            failed_products=0,
+            embeddings=0,
+            model_provider=embedder.identity.provider,
+            model_name=embedder.identity.model_name,
+            model_version=embedder.identity.model_version,
+            dimensions=embedder.identity.dimensions,
+            remaining_product_ids=[str(product_id) for product_id in product_ids],
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    attempts: list[list[UUID]] = []
+
+    def interrupted_update(
+        session: object,
+        *,
+        target_product_ids: list[UUID],
+        progress_callback: object,
+        **_kwargs: object,
+    ) -> SimpleNamespace:
+        attempt = list(target_product_ids)
+        attempts.append(attempt)
+        callback = progress_callback
+        assert callable(callback)
+        callback(0, len(attempt), 0, attempt[0] if attempt else None, "pending")
+        session.commit()
+        callback(1, len(attempt), 2, attempt[1] if len(attempt) > 1 else None, None)
+        session.commit()
+        if len(attempts) == 1:
+            raise EmbeddingProviderError("temporary embedding outage")
+        return SimpleNamespace(paused=False)
+
+    monkeypatch.setattr(
+        knowledge_search_use_cases,
+        "update_knowledge_index",
+        interrupted_update,
+    )
+    monkeypatch.setattr(
+        knowledge_search_use_cases,
+        "knowledge_index_target_products",
+        lambda _session, *, product_ids=None, **_kwargs: (
+            [(product_id, "checkpoint") for product_id in product_ids]
+            if product_ids is not None
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        knowledge_search_use_cases,
+        "_dispatch_index_job",
+        lambda **kwargs: knowledge_search_use_cases._run_index_job(**kwargs),
+    )
+
+    try:
+        knowledge_search_use_cases._run_index_job(
+            job_id=job_id,
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            tenant_id=DEFAULT_TENANT_ID,
+            user_id=DEFAULT_OWNER_USER_ID,
+        )
+        failed = client.get(f"/api/v1/ai/knowledge/index/jobs/{job_id}")
+        assert failed.status_code == 200, failed.text
+        assert failed.json()["status"] == "FAILED"
+        assert failed.json()["processed_products"] == 1
+        assert failed.json()["remaining_products"] == 1
+        assert failed.json()["resumable"] is True
+        assert "断点" in failed.json()["error_message"]
+
+        resumed = client.post(
+            f"/api/v1/ai/knowledge/index/jobs/{job_id}/resume"
+        )
+        assert resumed.status_code == 200, resumed.text
+        finished = client.get(f"/api/v1/ai/knowledge/index/jobs/{job_id}")
+        assert finished.status_code == 200, finished.text
+        assert finished.json()["status"] == "SUCCEEDED"
+        assert finished.json()["processed_products"] == 2
+        assert finished.json()["remaining_products"] == 0
+        assert finished.json()["resumable"] is False
+        assert attempts == [product_ids, [product_ids[1]]]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(KnowledgeIndexJobRow).where(
+                    KnowledgeIndexJobRow.id == job_id
+                )
+            )
+            session.execute(
+                delete(ProductRow).where(ProductRow.id.in_(product_ids))
+            )
+            session.commit()
+
+
+def test_knowledge_index_resume_merges_products_changed_after_final_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product_id = uuid4()
+    with SessionLocal() as session:
+        embedder = knowledge_search_use_cases.resolved_text_embedding_provider(session)
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"FINAL-CHECKPOINT-{product_id.hex[:8]}",
+                name="Product changed after the final checkpoint",
+                description="Verifies that resume also discovers later changes.",
+                status="ACTIVE",
+                search_document_version=0,
+            )
+        )
+        job = KnowledgeIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="QUEUED",
+            total_products=1,
+            processed_products=1,
+            failed_products=0,
+            embeddings=2,
+            model_provider=embedder.identity.provider,
+            model_name=embedder.identity.model_name,
+            model_version=embedder.identity.model_version,
+            dimensions=embedder.identity.dimensions,
+            remaining_product_ids=[],
+            started_at=datetime.now(UTC),
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    attempts: list[list[UUID]] = []
+
+    def target_products(
+        _session: object,
+        *,
+        product_ids: list[UUID] | None = None,
+        **_kwargs: object,
+    ) -> list[tuple[UUID, str]]:
+        if product_ids is not None:
+            return []
+        return [(product_id, "changed after checkpoint")]
+
+    def finish_update(
+        session: object,
+        *,
+        target_product_ids: list[UUID],
+        progress_callback: object,
+        **_kwargs: object,
+    ) -> SimpleNamespace:
+        attempts.append(list(target_product_ids))
+        callback = progress_callback
+        assert callable(callback)
+        callback(1, 1, 2, None, None)
+        session.commit()
+        return SimpleNamespace(paused=False)
+
+    monkeypatch.setattr(
+        knowledge_search_use_cases,
+        "knowledge_index_target_products",
+        target_products,
+    )
+    monkeypatch.setattr(
+        knowledge_search_use_cases,
+        "update_knowledge_index",
+        finish_update,
+    )
+
+    try:
+        knowledge_search_use_cases._run_index_job(
+            job_id=job_id,
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            tenant_id=DEFAULT_TENANT_ID,
+            user_id=DEFAULT_OWNER_USER_ID,
+        )
+        finished = client.get(f"/api/v1/ai/knowledge/index/jobs/{job_id}")
+        assert finished.status_code == 200, finished.text
+        assert finished.json()["status"] == "SUCCEEDED"
+        assert finished.json()["processed_products"] == 2
+        assert finished.json()["total_products"] == 2
+        assert attempts == [[product_id]]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(KnowledgeIndexJobRow).where(
+                    KnowledgeIndexJobRow.id == job_id
+                )
+            )
+            session.execute(delete(ProductRow).where(ProductRow.id == product_id))
+            session.commit()
+
+
+def test_interrupted_knowledge_index_job_recovers_as_paused() -> None:
+    product_id = uuid4()
+    with SessionLocal() as session:
+        embedder = knowledge_search_use_cases.resolved_text_embedding_provider(session)
+        job = KnowledgeIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="RUNNING",
+            total_products=1,
+            processed_products=0,
+            failed_products=0,
+            embeddings=0,
+            current_product_id=product_id,
+            current_product_name="Interrupted checkpoint product",
+            model_provider=embedder.identity.provider,
+            model_name=embedder.identity.model_name,
+            model_version=embedder.identity.model_version,
+            dimensions=embedder.identity.dimensions,
+            remaining_product_ids=[str(product_id)],
+            started_at=datetime.now(UTC),
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    try:
+        assert knowledge_search_use_cases.recover_interrupted_index_jobs() == 1
+        recovered = client.get(f"/api/v1/ai/knowledge/index/jobs/{job_id}")
+        assert recovered.status_code == 200, recovered.text
+        assert recovered.json()["status"] == "PAUSED"
+        assert recovered.json()["remaining_products"] == 1
+        assert recovered.json()["resumable"] is True
+        assert "服务重启" in recovered.json()["error_message"]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(KnowledgeIndexJobRow).where(
+                    KnowledgeIndexJobRow.id == job_id
+                )
+            )
+            session.commit()
 
 
 def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
@@ -14405,6 +14769,17 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "pause_requested_at",
         "paused_at",
     }.issubset(translation_job_columns)
+    knowledge_index_job_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns(
+            "knowledge_index_jobs"
+        )
+    }
+    assert {
+        "remaining_product_ids",
+        "pause_requested_at",
+        "paused_at",
+    }.issubset(knowledge_index_job_columns)
     translation_settings_columns = {
         column["name"]
         for column in inspect(upgraded_engine).get_columns(
@@ -14446,7 +14821,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260810_0070"
+        ).scalar() == "20260810_0071"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -14826,6 +15201,9 @@ def test_embedding_management_migration_is_reversible_on_sqlite(
         "failed_products",
         "current_product_name",
         "error_message",
+        "remaining_product_ids",
+        "pause_requested_at",
+        "paused_at",
     }.issubset(job_columns)
     upgraded_engine.dispose()
 
