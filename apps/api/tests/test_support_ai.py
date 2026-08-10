@@ -205,6 +205,32 @@ def test_no_evidence_general_guidance_is_publishable_without_citations() -> None
     assert trace["citations_valid"] is True
 
 
+def test_numeric_grounding_normalizes_decimals_and_ignores_list_ordinals() -> None:
+    evidence = replace(
+        _evidence(),
+        excerpt="容量为1.80L，公开价格为398.00元。",
+    )
+    result = _validated_model_output(
+        {
+            "detected_language": "zh-CN",
+            "response_action": "ANSWER",
+            "grounding_mode": "EVIDENCE",
+            "answer": "**3. 珐琅锅**\n容量1.8L，价格398元。[1]",
+            "confidence": 0.9,
+            "citations": [1],
+            "handoff_reason": None,
+        },
+        question="请介绍珐琅锅。",
+        evidence=[evidence],
+        fallback_language="zh-CN",
+    )
+    _, _, confidence, requires_safe_fallback, reason, trace = result
+    assert requires_safe_fallback is False
+    assert reason is None
+    assert confidence > 0.6
+    assert trace["numbers_grounded"] is True
+
+
 def test_missing_evidence_cannot_authorize_model_handoff() -> None:
     result = _validated_model_output(
         {

@@ -209,8 +209,16 @@ SAFE_SOCIAL_FALLBACKS: dict[str, dict[str, str]] = {
     },
 }
 
-NUMBER_PATTERN = re.compile(r"(?<![\w])\d+(?:[.,]\d+)?")
+# Python's Unicode ``\w`` includes CJK characters, so a boundary such as
+# ``(?<!\w)`` incorrectly turns ``售价312.50元`` into the claim ``50``.
+# Only suppress digits embedded in Latin identifiers (for example ``A18``);
+# numbers adjacent to CJK text and units remain factual claims to validate.
+NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?")
 CITATION_PATTERN = re.compile(r"\[(\d{1,2})\]")
+PRESENTATION_ORDINAL_PATTERN = re.compile(
+    r"(?m)^\s*(?:#{1,6}\s*)?(?:[-+]\s*)?(?:\*{1,2}|_{1,2})?"
+    r"\d{1,2}[.)、．]\s+"
+)
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 SENSITIVE_OUTPUT_PATTERN = re.compile(
     r"(?:sk-[A-Za-z0-9_-]{12,}|AKIA[A-Z0-9]{16}|Bearer\s+[A-Za-z0-9._~+/-]{12,}|"
@@ -524,17 +532,24 @@ def _assistance_fallback_answer(*, language: str) -> str:
 
 
 def _supported_numbers_from_text(question: str, answer: str, ground: str) -> bool:
+    def normalized_numbers(value: str) -> set[str]:
+        result: set[str] = set()
+        for raw in NUMBER_PATTERN.findall(value):
+            try:
+                result.add(format(Decimal(raw.replace(",", ".")).normalize(), "f"))
+            except ArithmeticError:
+                result.add(raw.replace(",", "."))
+        return result
+
     answer_without_citations = CITATION_PATTERN.sub("", answer)
-    claims = {
-        value.replace(",", ".")
-        for value in NUMBER_PATTERN.findall(answer_without_citations)
-    }
+    answer_without_ordinals = PRESENTATION_ORDINAL_PATTERN.sub(
+        "",
+        answer_without_citations,
+    )
+    claims = normalized_numbers(answer_without_ordinals)
     if not claims:
         return True
-    allowed = {
-        value.replace(",", ".")
-        for value in NUMBER_PATTERN.findall(question + "\n" + ground)
-    }
+    allowed = normalized_numbers(question + "\n" + ground)
     return claims <= allowed
 
 
@@ -1713,19 +1728,6 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
     _persist_evidence(session, run=run, evidence=evidence)
     session.flush()
 
-    provider = resolved_support_ai_provider(
-        session,
-        tenant_id=run.tenant_id,
-        profile_id=run.provider_setting_id,
-    )
-    run.provider = provider.identity.provider
-    run.model_name = provider.identity.model_name
-    if not run.model_display_name:
-        run.model_display_name = support_ai_provider_snapshot(
-            session,
-            tenant_id=run.tenant_id,
-            profile_id=run.provider_setting_id,
-        ).display_model_name
     messages = _prompt_messages(
         settings=settings,
         question=run.question,
@@ -1737,7 +1739,38 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
     prompt_hash = hashlib.sha256(
         json.dumps(messages, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
-    result = provider.generate_json(messages=messages)
+    try:
+        provider = resolved_support_ai_provider(
+            session,
+            tenant_id=run.tenant_id,
+            profile_id=run.provider_setting_id,
+        )
+        run.provider = provider.identity.provider
+        run.model_name = provider.identity.model_name
+        if not run.model_display_name:
+            run.model_display_name = support_ai_provider_snapshot(
+                session,
+                tenant_id=run.tenant_id,
+                profile_id=run.provider_setting_id,
+            ).display_model_name
+        result = provider.generate_json(messages=messages)
+    except ChatGenerationError as exc:
+        _complete_assistance_fallback(
+            session,
+            run=run,
+            task=task,
+            language=detected,
+            reason="PROVIDER_FAILED",
+            model_called=True,
+            retrieval_diagnostics=retrieval.diagnostics,
+            model_trace={
+                "safe_error_code": "SUPPORT_AI_PROVIDER_FAILED",
+                "safe_error_message": str(exc)[:240],
+                "prompt_hash": prompt_hash,
+            },
+        )
+        session.commit()
+        return
     (
         model_language,
         answer,
@@ -1837,7 +1870,7 @@ def process_support_ai_run(
         return
     try:
         _process_run(session, run=run)
-    except ChatGenerationError:
+    except ChatGenerationError as exc:
         session.rollback()
         run = session.get(SupportAIRunRow, run_id)
         if run is None:
@@ -1870,7 +1903,10 @@ def process_support_ai_run(
             ),
             reason="PROVIDER_FAILED",
             model_called=True,
-            model_trace={"safe_error_code": "SUPPORT_AI_PROVIDER_FAILED"},
+            model_trace={
+                "safe_error_code": "SUPPORT_AI_PROVIDER_FAILED",
+                "safe_error_message": str(exc)[:240],
+            },
         )
         session.commit()
     except Exception:
