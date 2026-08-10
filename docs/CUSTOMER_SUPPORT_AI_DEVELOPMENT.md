@@ -1,9 +1,9 @@
 # 智能客服开发设计
 
-> 状态：v2.1 对话式推荐架构已实现 + 后续路线图
-> 版本：2.1
+> 状态：v2.2 安全流式对话架构已实现 + 后续路线图
+> 版本：2.2
 > 日期：2026-08-11
-> 规范来源：[客服 AI 运行契约 v2.1](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
+> 规范来源：[客服 AI 运行契约 v2.2](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
 
 ## 0. 当前交付状态
 
@@ -21,7 +21,8 @@
   重建企业知识文件；文件按该智能体当前绑定的店铺隔离写入，运行时仍遵守 tenant 边界。
 - 商家人工工作台：`/console/support`，商家成员只查看和处理本店客服会话、AI 回答及其
   客户可见引用；可以人工接管，但不能恢复 AI、管理知识或修改任何 AI 配置。
-- 客户 Widget：按客户本次消息的实际语言回答，显示 AI 身份、处理状态和服务端引用；
+- 客户 Widget：按客户本次消息的实际语言回答，通过带请求头令牌的 SSE 实时显示处理状态并
+  增量呈现已校验回答，同时显示 AI 身份和服务端引用；
   商品证据充分时给出带引用的店铺答案；无命中、低分或检索降级时仍由 AI 提供通用建议、
   无匹配说明或聚焦追问。语言、数字或引用校验失败时改发安全追问，不会因此自动转人工。
 
@@ -554,7 +555,8 @@ tenants/{tenant_id}/knowledge/{source_id}/{sha256}/source/{safe_filename}
 1. 读取租户 mode 和会话 automation state。
 2. mode 不是 `OFF` 时，以 `support:{tenant}:{conversation}:{message}` 创建幂等 AITask。
 3. 提交事务后通知 worker；接口立即返回访客消息。
-4. Widget 初期继续使用现有刷新机制读取 AI 消息，后续再按需要增加 SSE/WebSocket。
+4. Widget 建立带 `X-Support-Token` 的 fetch/SSE 通道；状态变化实时推送，断线时自动重连并
+   用普通会话读取兜底，不再依赖 4 秒轮询。
 
 模型调用不得发生在数据库事务或访客 HTTP 请求等待路径中。
 
@@ -575,7 +577,26 @@ claim task
 
 最后一次 ownership check 防止模型运行期间人工已经回复，但 AI 仍追加一条自动回答。
 
-### 9.3 店铺启停行为
+### 9.3 安全流式链路
+
+```text
+模型 SSE -> 服务端累积结构化 JSON -> Validator 链 -> 原子落库
+                                                    -> 客户 SSE 增量呈现
+```
+
+- `OpenAICompatibleChatGeneration.generate_json_stream()` 解析上游 `data:` 事件，记录
+  `transport_mode=STREAM` 和 `first_delta_ms`；不支持流式的兼容网关显式降级到缓冲请求。
+- 编排器只消费累积后的结构化结果。未经引用、数字、语言、MOQ 和敏感字段校验的原始模型
+  token 不进入客户通道。
+- `GET /api/store/{slug}/support/conversations/current/events` 使用请求头会话令牌，发送
+  `conversation / message_start / message_delta / message_end`，设置 `X-Accel-Buffering: no`、
+  `Cache-Control: no-transform` 和 `Content-Encoding: identity`，并每 12 秒发送心跳。
+- AI 处理中以 250ms 读取会话快照，空闲时为 500ms；连接约 50 秒主动轮换，前端 750ms 后
+  重连。消息 ID 用于去重，断线后以数据库中的完整消息恢复。
+- 客户流只对已经落库的最终回答做快速分片：短回答每 8 个字符一段，长回答动态增大分片并
+  最多发送 80 段，每段约 12ms，客户端呈现额外耗时上限约 1 秒。
+
+### 9.4 店铺启停行为
 
 - `关闭`：新客户消息不进入 AI 队列，知识和历史 Run 保留，人工客服不受影响。
 - `启用`：有证据且通过阈值时发送带引用的企业事实；无证据或低置信度时发送通用建议、
@@ -707,6 +728,17 @@ SUPPORT_AI_STALE_JOB_SECONDS
 URL 必须由服务端 allowlisted renderer 生成，不能直接使用模型输出或对象存储键。
 回答中的 `[1]` 等显示编号也由服务端根据已验证的 claim/evidence 映射插入；模型返回的
 编号文本不具有引用效力。
+
+公共客户实时通道：
+
+```text
+GET /api/store/{tenant_slug}/support/conversations/current/events
+X-Support-Token: <opaque session token>
+Accept: text/event-stream
+```
+
+令牌不得作为 query parameter。SSE 只是已持久化会话的增量视图，不是第二份回答状态；重连
+和普通 GET 返回的最终消息必须完全一致。
 
 ## 12. 权限与 RLS
 
@@ -852,6 +884,7 @@ knowledge.approve
 ### 17.1 指标
 
 - 任务 queue wait、各 stage p50/p95、模型和工具错误率。
+- 模型 `first_delta_ms`、生成完成耗时、回答落库到客户首分片耗时、SSE 重连率和缓冲降级率。
 - retrieval no-result、low-support、conflict、citation validation failure。
 - `ANSWER / CLARIFY / NO_MATCH / HANDOFF` 分布、grounding mode、无结果后继续解决率。
 - 测试集 correctness、线上 resolution/handoff/repeat contact、误接管率和人工接管率。
@@ -909,7 +942,7 @@ knowledge.approve
 ### Phase 4：店铺级安全自动回答（功能已完成，生产启用由运营控制）
 
 - 仅开放批准的商品/品牌知识主题。
-- Widget 展示 AI、引用、处理状态和转人工。
+- Widget 展示 AI、引用、实时处理状态、安全流式回答和转人工。
 - 人工接管、并发 ownership 和失败降级完整上线。
 - 先小店铺/小流量灰度，持续对比平台验证集与人工结果。
 
@@ -927,7 +960,7 @@ knowledge.approve
 ### Phase 6：持续优化
 
 - 内容缺口、低质量来源和人工修改分析。
-- Retriever/reranker、缓存、流式响应和多语言优化。
+- Retriever/reranker、缓存和多语言优化；持续监控流式链路首分片与重连指标。
 - 只有在单编排器持续出现复杂 Prompt 或工具选择问题时，才评估专用 Agent；新增 Agent
   不能改变运行契约。
 

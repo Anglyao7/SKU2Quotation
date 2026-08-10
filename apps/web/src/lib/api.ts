@@ -11,6 +11,8 @@ import type {
   ProductTagList,
   ProductTagPayload,
   PublicSupportConversation,
+  PublicSupportMessage,
+  PublicSupportStreamEvent,
   Quote,
   Sku,
   SkuList,
@@ -703,6 +705,111 @@ export const api = {
       headers: { "X-Support-Token": token },
     },
   ),
+  streamSupportConversation: async (
+    slug: string,
+    token: string,
+    onEvent: (event: PublicSupportStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    let response: Response;
+    try {
+      response = await fetch(apiUrl(
+        `/api/store/${encodeURIComponent(slug)}/support/conversations/current/events`,
+      ), {
+        cache: "no-store",
+        credentials: "include",
+        headers: {
+          Accept: "text/event-stream",
+          "X-Support-Token": token,
+        },
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new ApiError("无法连接服务器，请检查网络后重试。", 0, error);
+    }
+    if (!response.ok) {
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json")
+        ? await response.json().catch(() => null)
+        : await response.text().catch(() => "");
+      throw new ApiError(
+        getMessage(payload, `请求失败（${response.status}）`),
+        response.status,
+        payload,
+      );
+    }
+    if (!response.body) {
+      throw new ApiError("当前浏览器无法接收客服实时回复。", 0);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const dispatchBlock = (block: string) => {
+      let eventName = "message";
+      const dataLines: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith(":")) continue;
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+      }
+      if (!dataLines.length) return;
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (eventName === "conversation" && data.conversation) {
+        onEvent({
+          type: "conversation",
+          conversation: data.conversation as PublicSupportConversation,
+        });
+      } else if (eventName === "message_start" && data.message) {
+        onEvent({
+          type: "message_start",
+          message: data.message as PublicSupportMessage,
+        });
+      } else if (
+        eventName === "message_delta"
+        && typeof data.message_id === "string"
+        && typeof data.delta === "string"
+      ) {
+        onEvent({
+          type: "message_delta",
+          message_id: data.message_id,
+          delta: data.delta,
+        });
+      } else if (
+        eventName === "message_end"
+        && data.message
+        && data.conversation
+      ) {
+        onEvent({
+          type: "message_end",
+          message: data.message as PublicSupportMessage,
+          conversation: data.conversation as PublicSupportConversation,
+        });
+      } else if (eventName === "stream_error" && typeof data.code === "string") {
+        onEvent({ type: "stream_error", code: data.code });
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      buffer = buffer.replace(/\r\n/g, "\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        dispatchBlock(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf("\n\n");
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) dispatchBlock(buffer);
+  },
 
   getProductTags(category = "", limit = 200, offset = 0) {
     const params = new URLSearchParams({

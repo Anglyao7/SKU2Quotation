@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import time
+from collections.abc import AsyncIterator
 from typing import Literal
 from uuid import UUID
 
@@ -17,8 +21,9 @@ from fastapi import (
     status,
 )
 from sqlalchemy.orm import Session
+from starlette.responses import StreamingResponse
 
-from ..database import get_session
+from ..database import SessionLocal, get_session
 from ..domain.errors import ApplicationError
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..services.rate_limit import configured_limit, enforce_rate_limit
@@ -46,6 +51,128 @@ from .errors import application_http_error
 
 router = APIRouter(tags=["storefront-support"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+SUPPORT_STREAM_HEADERS = {
+    "Cache-Control": "no-cache, no-store, no-transform",
+    "Connection": "keep-alive",
+    "Content-Encoding": "identity",
+    "X-Accel-Buffering": "no",
+}
+
+
+def _support_sse_event(event: str, payload: object) -> str:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+def _support_snapshot_signature(payload: dict[str, object]) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _support_answer_chunks(body: str, size: int | None = None) -> list[str]:
+    # Keep short answers smooth while capping long answers at 80 events, so the
+    # presentation layer never adds more than roughly one second of delay.
+    chunk_size = size or max(8, (len(body) + 79) // 80)
+    return [
+        body[index : index + chunk_size]
+        for index in range(0, len(body), chunk_size)
+    ]
+
+
+def _load_public_support_snapshot(
+    *,
+    tenant_slug: str,
+    token: str,
+) -> PublicChatConversationResponse:
+    with SessionLocal() as session:
+        return use_cases.get_public_conversation(
+            session,
+            slug=tenant_slug,
+            token=token,
+        )
+
+
+async def _public_support_event_stream(
+    *,
+    request: Request,
+    tenant_slug: str,
+    token: str,
+    initial: PublicChatConversationResponse,
+) -> AsyncIterator[str]:
+    current = initial
+    initial_payload = current.model_dump(mode="json")
+    signature = _support_snapshot_signature(initial_payload)
+    known_message_ids = {str(message.id) for message in current.messages}
+    last_event_at = time.monotonic()
+    reconnect_at = last_event_at + 50
+    yield _support_sse_event("conversation", {"conversation": initial_payload})
+
+    while time.monotonic() < reconnect_at:
+        if await request.is_disconnected():
+            return
+        await asyncio.sleep(0.25 if current.ai_processing else 0.5)
+        try:
+            next_snapshot = await asyncio.to_thread(
+                _load_public_support_snapshot,
+                tenant_slug=tenant_slug,
+                token=token,
+            )
+        except ApplicationError:
+            yield _support_sse_event(
+                "stream_error",
+                {"code": "SUPPORT_STREAM_UNAVAILABLE"},
+            )
+            return
+
+        next_payload = next_snapshot.model_dump(mode="json")
+        next_signature = _support_snapshot_signature(next_payload)
+        if next_signature != signature:
+            new_ai_messages = [
+                message
+                for message in next_snapshot.messages
+                if str(message.id) not in known_message_ids
+                and message.sender_type == "AI"
+            ]
+            if len(new_ai_messages) == 1:
+                message = new_ai_messages[0]
+                message_payload = message.model_dump(mode="json")
+                yield _support_sse_event(
+                    "message_start",
+                    {
+                        "message": {
+                            **message_payload,
+                            "body": "",
+                            "citations": [],
+                        }
+                    },
+                )
+                for delta in _support_answer_chunks(message.body):
+                    if await request.is_disconnected():
+                        return
+                    yield _support_sse_event(
+                        "message_delta",
+                        {"message_id": str(message.id), "delta": delta},
+                    )
+                    # Keep incremental rendering perceptible without adding a
+                    # second-scale artificial typing delay.
+                    await asyncio.sleep(0.012)
+                yield _support_sse_event(
+                    "message_end",
+                    {"message": message_payload, "conversation": next_payload},
+                )
+            else:
+                yield _support_sse_event(
+                    "conversation",
+                    {"conversation": next_payload},
+                )
+            current = next_snapshot
+            signature = next_signature
+            known_message_ids = {
+                str(message.id) for message in next_snapshot.messages
+            }
+            last_event_at = time.monotonic()
+        elif time.monotonic() - last_event_at >= 12:
+            yield ": keep-alive\n\n"
+            last_event_at = time.monotonic()
 
 
 @router.get("/api/v1/support/settings", response_model=SupportSettingsResponse)
@@ -345,6 +472,39 @@ def get_public_support_conversation(
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+
+
+@router.get("/api/store/{tenant_slug}/support/conversations/current/events")
+async def stream_public_support_conversation(
+    tenant_slug: str,
+    request: Request,
+    x_support_token: str = Header(..., max_length=500),
+) -> StreamingResponse:
+    enforce_rate_limit(
+        request,
+        scope="public-support-conversation-stream",
+        limit=configured_limit("RATE_LIMIT_PUBLIC_SUPPORT_STREAMS", 90),
+        window_seconds=60,
+        token=x_support_token,
+    )
+    try:
+        initial = await asyncio.to_thread(
+            _load_public_support_snapshot,
+            tenant_slug=tenant_slug,
+            token=x_support_token,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return StreamingResponse(
+        _public_support_event_stream(
+            request=request,
+            tenant_slug=tenant_slug,
+            token=x_support_token,
+            initial=initial,
+        ),
+        media_type="text/event-stream",
+        headers=SUPPORT_STREAM_HEADERS,
+    )
 
 
 @router.post(

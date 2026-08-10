@@ -664,12 +664,9 @@ def create_public_conversation(
 
     enqueue_chat_run(session, conversation=row, message=message)
     session.commit()
-    _translate_visitor_messages(
-        session,
-        conversation=row,
-        messages=[message],
-        force=True,
-    )
+    # Visitor translation is an operator-side concern and must not delay the
+    # acknowledgement or scheduling of the AI reply. Merchant reads still resolve
+    # pending translations through get_conversation().
     session.refresh(row)
     return _public_conversation_response(session, row, access_token=token)
 
@@ -756,12 +753,6 @@ def send_public_message(
 
         enqueue_chat_run(session, conversation=row, message=existing)
         session.commit()
-        _translate_visitor_messages(
-            session,
-            conversation=row,
-            messages=[existing],
-            force=True,
-        )
         session.refresh(row)
     return _public_conversation_response(session, row)
 

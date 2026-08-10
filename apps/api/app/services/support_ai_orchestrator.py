@@ -40,7 +40,11 @@ from .support_ai_language import (
     detect_message_language,
     preserved_identifiers,
 )
-from .translation import TranslationProviderError, catalog_translation_is_configured, configured_catalog_translator
+from .translation import (
+    TranslationProviderError,
+    catalog_translation_is_configured,
+    configured_catalog_translator,
+)
 from .translation_configuration import (
     resolved_catalog_translator,
     translation_provider_is_configured,
@@ -49,9 +53,38 @@ from .translation_configuration import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_AI_ORCHESTRATOR_VERSION = 3
+SUPPORT_AI_ORCHESTRATOR_VERSION = 4
 SUPPORT_AI_BASE_PROMPT_VERSION = 2
 SUPPORT_AI_RECOMMENDATION_POLICY_VERSION = 1
+
+
+def _generate_model_json(
+    provider: Any,
+    *,
+    messages: list[dict[str, str]],
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+) -> Any:
+    """Prefer an upstream stream while retaining compatibility with test providers."""
+
+    stream = getattr(provider, "generate_json_stream", None)
+    kwargs = {
+        "messages": messages,
+        "temperature": temperature,
+        "max_output_tokens": max_output_tokens,
+    }
+    if callable(stream):
+        return stream(**kwargs)
+    return provider.generate_json(**kwargs)
+
+
+def _generation_transport_trace(result: Any) -> dict[str, Any]:
+    return {
+        "transport_mode": str(getattr(result, "transport_mode", "BUFFERED")),
+        "first_delta_ms": getattr(result, "first_delta_ms", None),
+        "generation_duration_ms": getattr(result, "duration_ms", None),
+        "usage_available": bool(getattr(result, "usage", {})),
+    }
 
 
 DEFAULT_HANDOFF_MESSAGES = {
@@ -638,11 +671,17 @@ def _normalized_retrieval_query(
     if not multilingual_enabled:
         return question
     translated = ""
-    if translation_provider_is_configured(
+    language_base = (
+        detected_language.strip().replace("_", "-").split("-", 1)[0].casefold()
+    )
+    # Product embeddings are built from the Chinese product corpus. Translating an
+    # already-Chinese question to English only adds a serial provider call and can
+    # make retrieval less accurate; foreign-language questions still get a Chinese
+    # retrieval companion while the model always sees the visitor's original text.
+    if language_base != "zh" and translation_provider_is_configured(
         session,
         environment_check=catalog_translation_is_configured,
     ):
-        target_locale = "en-US" if detected_language == "zh-CN" else "zh-CN"
         try:
             translator = resolved_catalog_translator(
                 session,
@@ -651,7 +690,7 @@ def _normalized_retrieval_query(
             translated = translator.translate(
                 question,
                 source_locale="auto",
-                target_locale=target_locale,
+                target_locale="zh-CN",
             ).strip()
         except (TranslationProviderError, ValueError):
             translated = ""
@@ -2079,7 +2118,7 @@ def _process_social_run(
                 tenant_id=run.tenant_id,
                 profile_id=run.provider_setting_id,
             ).display_model_name
-        result = provider.generate_json(messages=messages)
+        result = _generate_model_json(provider, messages=messages)
     except ChatGenerationError:
         _complete_social_fallback(
             session,
@@ -2128,6 +2167,7 @@ def _process_social_run(
                 "model_validation": validation_trace,
                 "usage": result.usage,
                 "finish_reason": result.finish_reason,
+                **_generation_transport_trace(result),
             }
         )
         session.commit()
@@ -2148,6 +2188,7 @@ def _process_social_run(
             "prompt_hash": prompt_hash,
             "usage": result.usage,
             "finish_reason": result.finish_reason,
+            **_generation_transport_trace(result),
         },
     )
     session.commit()
@@ -2400,7 +2441,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
                 tenant_id=run.tenant_id,
                 profile_id=run.provider_setting_id,
             ).display_model_name
-        result = provider.generate_json(messages=messages)
+        result = _generate_model_json(provider, messages=messages)
     except ChatGenerationError as exc:
         _complete_assistance_fallback(
             session,
@@ -2462,12 +2503,14 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
             "initial_prompt_hash": prompt_hash,
             "initial_usage": result.usage,
             "initial_finish_reason": result.finish_reason,
+            "initial_transport": _generation_transport_trace(result),
             "required_primary_citation": recommended_citation,
             "allowed_citations": allowed_citations,
             "repair_prompt_hash": repair_prompt_hash,
         }
         try:
-            repair_result = provider.generate_json(
+            repair_result = _generate_model_json(
+                provider,
                 messages=repair_messages,
                 temperature=0.0,
                 max_output_tokens=1200,
@@ -2499,6 +2542,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
                 {
                     "succeeded": not requires_safe_fallback,
                     "final_validation": validation_trace,
+                    "final_transport": _generation_transport_trace(repair_result),
                 }
             )
             result = repair_result
@@ -2521,6 +2565,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
         "prompt_hash": prompt_hash,
         "usage": result.usage,
         "finish_reason": result.finish_reason,
+        **_generation_transport_trace(result),
         **(
             {"recommendation_repair": recommendation_repair_trace}
             if recommendation_repair_trace is not None

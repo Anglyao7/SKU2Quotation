@@ -265,6 +265,17 @@
 .support-message.is-welcome > .support-message-content { background: var(--accent-a3); }
 .support-message.is-ai .support-message-content { border: 1px solid var(--accent-a4); background: var(--accent-a2); }
 .support-message.is-ai small:first-letter { text-transform: none; }
+.support-stream-caret {
+  width: 2px;
+  height: 1em;
+  margin-inline-start: 3px;
+  display: inline-block;
+  vertical-align: -0.12em;
+  border-radius: 2px;
+  background: var(--accent-10);
+  animation: support-caret 700ms steps(1, end) infinite;
+}
+@keyframes support-caret { 50% { opacity: 0; } }
 .support-message.is-system { max-width: 92%; align-self: center; justify-items: center; }
 .support-message.is-system .support-message-content { padding: 8px 11px; border-radius: 11px; color: var(--gray-10); background: var(--gray-a2); }
 .support-message.is-system .support-message-content > span { font-size: 11px; }
@@ -355,5 +366,6 @@
   .storefront-support-panel,
   .storefront-support-orb,
   .storefront-support-action-preview { transition: none; }
-  .support-message-loading i { animation: none; }
+  .support-message-loading i,
+  .support-stream-caret { animation: none; }
 }

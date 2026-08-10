@@ -10,6 +10,8 @@ import { api, ApiError } from "../lib/api";
 import { storefrontText } from "../lib/storefrontLocale";
 import type {
   PublicSupportConversation,
+  PublicSupportMessage,
+  PublicSupportStreamEvent,
   PublicSupportWidget,
   StorefrontLocale,
 } from "../types";
@@ -59,6 +61,7 @@ export function StorefrontSupportWidget({
   const [activeActionSlot, setActiveActionSlot] = useState<2 | 3 | null>(null);
   const [hoveredActionSlot, setHoveredActionSlot] = useState<2 | 3 | null>(null);
   const [conversation, setConversation] = useState<PublicSupportConversation>();
+  const [streamingMessage, setStreamingMessage] = useState<PublicSupportMessage>();
   const [token, setToken] = useState(() => storedToken(tenantSlug));
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
@@ -83,6 +86,7 @@ export function StorefrontSupportWidget({
     const next = storedToken(tenantSlug);
     setToken(next);
     setConversation(undefined);
+    setStreamingMessage(undefined);
     setActiveActionSlot(null);
     setHoveredActionSlot(null);
   }, [tenantSlug]);
@@ -109,12 +113,64 @@ export function StorefrontSupportWidget({
 
   useEffect(() => {
     if (!open || !token) return;
+    let stopped = false;
+    let reconnectTimer: number | undefined;
+    const controller = new AbortController();
+
+    const handleStreamEvent = (event: PublicSupportStreamEvent) => {
+      if (event.type === "conversation") {
+        setConversation(event.conversation);
+        setStreamingMessage((current) => (
+          current && event.conversation.messages.some((item) => item.id === current.id)
+            ? undefined
+            : current
+        ));
+      } else if (event.type === "message_start") {
+        setStreamingMessage(event.message);
+      } else if (event.type === "message_delta") {
+        setStreamingMessage((current) => (
+          current?.id === event.message_id
+            ? { ...current, body: `${current.body}${event.delta}` }
+            : current
+        ));
+      } else if (event.type === "message_end") {
+        setConversation(event.conversation);
+        setStreamingMessage(undefined);
+      }
+    };
+
+    const connect = async () => {
+      try {
+        await api.streamSupportConversation(
+          tenantSlug,
+          token,
+          handleStreamEvent,
+          controller.signal,
+        );
+      } catch (caught) {
+        if (stopped || controller.signal.aborted) return;
+        if (caught instanceof ApiError && [401, 404].includes(caught.status)) {
+          saveToken(tenantSlug, "");
+          setToken("");
+          setConversation(undefined);
+          setStreamingMessage(undefined);
+          return;
+        }
+        await refreshConversation(true);
+      }
+      if (!stopped && !controller.signal.aborted) {
+        reconnectTimer = window.setTimeout(() => void connect(), 750);
+      }
+    };
+
     void refreshConversation();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refreshConversation(true);
-    }, 4_000);
-    return () => window.clearInterval(interval);
-  }, [open, refreshConversation, token]);
+    void connect();
+    return () => {
+      stopped = true;
+      controller.abort();
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+    };
+  }, [open, refreshConversation, tenantSlug, token]);
 
   useEffect(() => {
     if (!open) return;
@@ -126,7 +182,7 @@ export function StorefrontSupportWidget({
       top: messageListRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [conversation?.messages.length, open]);
+  }, [conversation?.messages.length, open, streamingMessage?.body.length]);
 
   useEffect(() => {
     if (!open && activeActionSlot === null) return;
@@ -186,6 +242,7 @@ export function StorefrontSupportWidget({
     saveToken(tenantSlug, "");
     setToken("");
     setConversation(undefined);
+    setStreamingMessage(undefined);
     setError("");
     window.setTimeout(() => textAreaRef.current?.focus(), 0);
   };
@@ -266,7 +323,26 @@ export function StorefrontSupportWidget({
               </div>
             );
           })}
-          {conversation?.ai_processing ? (
+          {streamingMessage && !conversation?.messages.some(
+            (message) => message.id === streamingMessage.id,
+          ) ? (
+            <div className="support-message is-ai is-streaming" key={streamingMessage.id}>
+              <div className="support-message-content">
+                <span dir="auto">
+                  {streamingMessage.body}
+                  <i className="support-stream-caret" aria-hidden="true" />
+                </span>
+              </div>
+              <small>
+                {t("AI 客服")}
+                {" · "}
+                {new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(
+                  new Date(streamingMessage.created_at),
+                )}
+              </small>
+            </div>
+          ) : null}
+          {conversation?.ai_processing && !streamingMessage ? (
             <div className="support-ai-processing" role="status">
               <div className="support-message-loading"><i /><i /><i /></div>
               <small>{t("正在查找可信资料并生成回答…")}</small>
