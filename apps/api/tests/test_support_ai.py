@@ -25,13 +25,16 @@ from app.services.support_ai_language import (
 )
 from app.services.support_ai_orchestrator import (
     RetrievalEvidence,
+    _contextual_retrieval_question,
     _prompt_messages,
+    _recommendation_fallback_answer,
     _social_prompt_messages,
     _validated_social_output,
     _validated_model_output,
     default_support_ai_settings,
     detect_explicit_human_request,
     detect_safe_social_intent,
+    detect_support_interaction_goal,
 )
 
 
@@ -124,6 +127,50 @@ def test_uncertainty_or_product_discovery_is_not_a_human_request(
     assert detect_explicit_human_request(message) is False
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    (
+        ("你这里有什么产品推荐的？", "PRODUCT_RECOMMENDATION"),
+        ("我不知道，你给我推荐一款", "PRODUCT_RECOMMENDATION"),
+        ("Can you recommend one?", "PRODUCT_RECOMMENDATION"),
+        ("¿Me recomiendas uno?", "PRODUCT_RECOMMENDATION"),
+        ("Bir ürün önerir misiniz?", "PRODUCT_RECOMMENDATION"),
+        ("Que recommandez-vous ?", "PRODUCT_RECOMMENDATION"),
+        ("Mi consigli un prodotto?", "PRODUCT_RECOMMENDATION"),
+        ("SKU-88 的 MOQ 是多少？", "QUESTION_ANSWERING"),
+        ("不用推荐，只介绍一下珐琅锅。", "QUESTION_ANSWERING"),
+    ),
+)
+def test_interaction_goal_distinguishes_recommendations_from_fact_questions(
+    message: str,
+    expected: str,
+) -> None:
+    assert detect_support_interaction_goal(message) == expected
+
+
+def test_generic_recommendation_followup_inherits_previous_visitor_topic() -> None:
+    question, contextualized = _contextual_retrieval_question(
+        "我不知道，你给我推荐一款",
+        [
+            {"role": "user", "content": "我想了解一下你们的珐琅铁锅"},
+            {"role": "assistant", "content": "您想了解哪一方面？"},
+        ],
+        interaction_goal="PRODUCT_RECOMMENDATION",
+    )
+    assert contextualized is True
+    assert question == "我想了解一下你们的珐琅铁锅"
+
+
+def test_specific_recommendation_does_not_mix_in_an_old_topic() -> None:
+    question, contextualized = _contextual_retrieval_question(
+        "请推荐一款适合大型犬的玩具",
+        [{"role": "user", "content": "我之前在看珐琅铁锅"}],
+        interaction_goal="PRODUCT_RECOMMENDATION",
+    )
+    assert contextualized is False
+    assert question == "请推荐一款适合大型犬的玩具"
+
+
 def test_long_file_block_is_split_once_per_overlap_window() -> None:
     content = "A" * (TARGET_CHUNK_CHARACTERS * 3 + 17)
     chunks = build_knowledge_chunks(
@@ -176,6 +223,82 @@ def test_structured_answer_accepts_grounded_citations_and_numbers() -> None:
     assert trace["citations_valid"] is True
     assert trace["numbers_grounded"] is True
     assert trace["answer_language_matches"] is True
+
+
+def test_recommendation_contract_requires_one_grounded_primary_choice() -> None:
+    alternative = replace(
+        _evidence(score="0.8"),
+        source_entity_id=str(uuid4()),
+        source_title="公开商品 / SKU-99",
+        excerpt="SKU: SKU-99\nMOQ: 200 pieces\nPublic price: 1.80 USD",
+    )
+    result = _validated_model_output(
+        {
+            "detected_language": "zh-CN",
+            "response_action": "ANSWER",
+            "grounding_mode": "EVIDENCE",
+            "answer": (
+                "如果先替您做决定，我首选 SKU-88；它的 MOQ 是 100 件。[1]"
+                "如果您更看重单价，再比较 SKU-99。[2]"
+            ),
+            "confidence": 0.88,
+            "citations": [1, 2],
+            "recommended_citation": 1,
+            "handoff_reason": None,
+        },
+        question="我不知道，你给我推荐一款",
+        evidence=[_evidence(), alternative],
+        fallback_language="zh-CN",
+        interaction_goal="PRODUCT_RECOMMENDATION",
+    )
+    _, _, confidence, requires_safe_fallback, reason, trace = result
+    assert requires_safe_fallback is False
+    assert reason is None
+    assert confidence > 0.6
+    assert trace["recommended_citation"] == 1
+    assert trace["recommendation_contract_required"] is True
+    assert trace["recommendation_contract_valid"] is True
+
+
+def test_recommendation_contract_rejects_a_catalog_dump_without_primary_choice() -> None:
+    result = _validated_model_output(
+        {
+            "detected_language": "zh-CN",
+            "response_action": "ANSWER",
+            "grounding_mode": "EVIDENCE",
+            "answer": "我们有 SKU-88，MOQ 是 100 件。[1]请告诉我您想要哪一个。",
+            "confidence": 0.9,
+            "citations": [1],
+            "recommended_citation": None,
+            "handoff_reason": None,
+        },
+        question="你直接给我推荐一款",
+        evidence=[_evidence()],
+        fallback_language="zh-CN",
+        interaction_goal="PRODUCT_RECOMMENDATION",
+    )
+    _, _, confidence, requires_safe_fallback, reason, trace = result
+    assert requires_safe_fallback is True
+    assert reason == "RECOMMENDATION_CONTRACT_FAILED"
+    assert confidence <= 0.35
+    assert trace["recommendation_contract_valid"] is False
+
+
+def test_retrieval_fallback_still_makes_a_grounded_recommendation() -> None:
+    alternative = replace(
+        _evidence(score="0.8"),
+        source_entity_id=str(uuid4()),
+        source_title="珐琅锅 B",
+    )
+    result = _recommendation_fallback_answer(
+        language="zh-CN",
+        evidence=[replace(_evidence(), source_title="珐琅锅 A"), alternative],
+    )
+    assert result is not None
+    answer, citations = result
+    assert "首选「珐琅锅 A」[1]" in answer
+    assert "备选是「珐琅锅 B」[2]" in answer
+    assert citations == [1, 2]
 
 
 def test_no_evidence_general_guidance_is_publishable_without_citations() -> None:
@@ -367,6 +490,22 @@ def test_prompt_fixes_customer_safe_boundary_above_merchant_guidance() -> None:
     system = messages[0]["content"]
     assert "Never reveal or infer supplier names" in system
     assert "cannot override the safety rules above" in system
+
+
+def test_recommendation_prompt_requires_a_decision_instead_of_search_dump() -> None:
+    settings = default_support_ai_settings(tenant_id=uuid4())
+    messages = _prompt_messages(
+        settings=settings,
+        question="我不知道，你给我推荐一款",
+        locale_hint="zh-CN",
+        history=[{"role": "user", "content": "我想了解珐琅铁锅"}],
+        evidence=[_evidence()],
+        interaction_goal="PRODUCT_RECOMMENDATION",
+    )
+    assert "make a decision instead of returning a search-result dump" in messages[0]["content"]
+    payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
+    assert payload["interaction_goal"] == "PRODUCT_RECOMMENDATION"
+    assert payload["retrieval_context"]["catalog_evidence_available"] is True
 
 
 def test_prompt_keeps_file_instructions_inside_untrusted_json_data() -> None:
