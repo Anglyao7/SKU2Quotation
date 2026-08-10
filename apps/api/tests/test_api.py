@@ -1,6 +1,7 @@
 import atexit
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -1395,6 +1396,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         OpenAICompatibleChatGeneration,
     )
     from app.services import support_ai_orchestrator
+    from app.services.support_ai_retrieval import RetrievalBundle
     from app.support_ai_models import (
         SupportAIEvidenceUseRow,
         SupportAIKnowledgeSourceRow,
@@ -1418,6 +1420,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
     )
     source_id: UUID | None = None
     run_id: UUID | None = None
+    no_match_run_id: UUID | None = None
     task_id: UUID | None = None
     conversation_ids: set[UUID] = set()
     object_key: str | None = None
@@ -1606,14 +1609,32 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
                         "handoff_reason": None,
                     }
                 else:
-                    data = {
-                        "detected_language": "en-US",
-                        "answer": "Standard dispatch takes three business days. [1]",
-                        "confidence": 0.92,
-                        "citations": [1],
-                        "handoff": False,
-                        "handoff_reason": None,
-                    }
+                    prompt_payload = json.loads(
+                        messages[-1]["content"].split("\n", 1)[1]
+                    )
+                    if prompt_payload["approved_evidence"]:
+                        data = {
+                            "detected_language": "en-US",
+                            "response_action": "ANSWER",
+                            "grounding_mode": "EVIDENCE",
+                            "answer": "Standard dispatch takes three business days. [1]",
+                            "confidence": 0.92,
+                            "citations": [1],
+                            "handoff_reason": None,
+                        }
+                    else:
+                        data = {
+                            "detected_language": "zh-CN",
+                            "response_action": "CLARIFY",
+                            "grounding_mode": "GENERAL_GUIDANCE",
+                            "answer": (
+                                "我暂时没有找到精确匹配，但可以继续帮您筛选。"
+                                "您更看重耐咬程度、材质还是互动方式？"
+                            ),
+                            "confidence": 0.82,
+                            "citations": [],
+                            "handoff_reason": None,
+                        }
                 return ChatGenerationResult(
                     content="",
                     data=data,
@@ -1649,6 +1670,45 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         assert run_payload["evidence"][0]["source_entity_id"] == str(source_id)
         assert run_payload["evidence"][0]["classification"] == "CUSTOMER_APPROVED"
         assert run_payload["decision_trace"]["citations_valid"] is True
+
+        real_retrieval = (
+            support_ai_orchestrator.retrieve_customer_evidence_with_trace
+        )
+        monkeypatch.setattr(
+            support_ai_orchestrator,
+            "retrieve_customer_evidence_with_trace",
+            lambda *_args, **_kwargs: RetrievalBundle(
+                evidence=[],
+                diagnostics={
+                    "query_embedding": "AVAILABLE",
+                    "candidate_count": 0,
+                    "accepted_count": 0,
+                },
+            ),
+        )
+        no_match_run = client.post(
+            "/api/v1/support/ai/test-runs",
+            json={
+                "question": "你们这里有没有适合大型犬的玩具？",
+                "locale": "zh-CN",
+            },
+        )
+        assert no_match_run.status_code == 200, no_match_run.text
+        no_match_payload = no_match_run.json()
+        no_match_run_id = UUID(no_match_payload["id"])
+        assert no_match_payload["status"] == "SUCCEEDED"
+        assert no_match_payload["retrieval_count"] == 0
+        assert no_match_payload["handoff_reason"] is None
+        assert no_match_payload["decision_trace"]["response_action"] == "CLARIFY"
+        assert no_match_payload["decision_trace"]["grounding_mode"] == (
+            "GENERAL_GUIDANCE"
+        )
+        assert "继续帮您筛选" in no_match_payload["answer"]
+        monkeypatch.setattr(
+            support_ai_orchestrator,
+            "retrieve_customer_evidence_with_trace",
+            real_retrieval,
+        )
 
         social_settings = client.patch(
             "/api/v1/support/ai/settings",
@@ -1786,8 +1846,8 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         )
         assert limited_chat.status_code == 201, limited_chat.text
         conversation_ids.add(UUID(limited_chat.json()["id"]))
-        assert limited_chat.json()["automation_state"] == "HUMAN_TAKEOVER"
-        assert limited_chat.json()["messages"][-1]["sender_type"] == "SYSTEM"
+        assert limited_chat.json()["automation_state"] == "AI_ACTIVE"
+        assert limited_chat.json()["messages"][-1]["sender_type"] == "AI"
 
         with SessionLocal() as session:
             limited_run = session.scalar(
@@ -1797,7 +1857,11 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
             )
             assert limited_run is not None
             assert limited_run.status == "SKIPPED"
-            assert limited_run.handoff_reason == "DAILY_AUTO_REPLY_LIMIT_REACHED"
+            assert limited_run.handoff_reason is None
+            assert limited_run.decision_trace["response_action"] == "CLARIFY"
+            assert limited_run.decision_trace["fallback_reason"] == (
+                "DAILY_AUTO_REPLY_LIMIT_REACHED"
+            )
             assert limited_run.decision_trace["model_called"] is False
 
         limited_greeting = client.post(
@@ -1824,6 +1888,43 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
             assert limited_greeting_run.decision_trace["intent"] == "GREETING"
             assert limited_greeting_run.decision_trace["publish_decision"] == "AUTO_REPLY"
 
+        explicit_handoff = client.post(
+            "/api/store/demo/support/conversations",
+            json={
+                "message": "Please transfer me to a human agent",
+                "client_message_id": str(uuid4()),
+                "locale": "en-US",
+            },
+        )
+        assert explicit_handoff.status_code == 201, explicit_handoff.text
+        explicit_handoff_id = UUID(explicit_handoff.json()["id"])
+        conversation_ids.add(explicit_handoff_id)
+        explicit_handoff_public = client.get(
+            "/api/store/demo/support/conversations/current",
+            headers={
+                "X-Support-Token": explicit_handoff.json()["access_token"]
+            },
+        )
+        assert explicit_handoff_public.status_code == 200
+        assert (
+            explicit_handoff_public.json()["automation_state"]
+            == "HUMAN_TAKEOVER"
+        )
+        assert (
+            explicit_handoff_public.json()["messages"][-1]["sender_type"]
+            == "SYSTEM"
+        )
+        with SessionLocal() as session:
+            explicit_run = session.scalar(
+                select(SupportAIRunRow).where(
+                    SupportAIRunRow.conversation_id == explicit_handoff_id
+                )
+            )
+            assert explicit_run is not None
+            assert explicit_run.status == "HANDOFF"
+            assert explicit_run.handoff_reason == "CUSTOMER_REQUESTED_HUMAN"
+            assert explicit_run.decision_trace["model_called"] is False
+
         revoked = client.delete(
             f"/api/v1/support/ai/knowledge/sources/{source_id}"
         )
@@ -1833,10 +1934,14 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         with SessionLocal() as session:
             run_rows = session.scalars(
                 select(SupportAIRunRow).where(
-                    SupportAIRunRow.id == run_id
+                    (
+                        (SupportAIRunRow.id == run_id)
+                        | (SupportAIRunRow.id == no_match_run_id)
+                    )
                     if not conversation_ids
                     else (
                         (SupportAIRunRow.id == run_id)
+                        | (SupportAIRunRow.id == no_match_run_id)
                         | SupportAIRunRow.conversation_id.in_(conversation_ids)
                     )
                 )
@@ -5883,6 +5988,129 @@ def test_uncategorized_product_is_removed_from_the_smart_index() -> None:
                     ProductCategoryRow.id == category_id
                 )
             )
+            session.commit()
+
+
+def test_support_product_retrieval_reuses_hybrid_index_and_public_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import hybrid_search as hybrid_search_service
+    from app.services.support_ai_orchestrator import default_support_ai_settings
+    from app.services.support_ai_retrieval import (
+        retrieve_customer_evidence_with_trace,
+    )
+
+    def supplier_scoring_must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("customer support retrieval must not read supplier scores")
+
+    monkeypatch.setattr(
+        hybrid_search_service,
+        "_supplier_scores",
+        supplier_scoring_must_not_run,
+    )
+
+    product_id = uuid4()
+    sku_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"DOG-TOY-{product_id.hex[:8]}",
+                name="大型犬耐咬互动玩具",
+                description="适合大型犬互动和日常啃咬的橡胶玩具。",
+                status="ACTIVE",
+            )
+        )
+        session.flush()
+        session.add(
+            SkuRow(
+                id=sku_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                sku_code=f"DOG-SKU-{sku_id.hex[:8]}",
+                name="大型犬款",
+                option_values={"适用体型": "大型犬", "材质": "橡胶"},
+                default_moq=Decimal("12"),
+                moq_unit="piece",
+                status="ACTIVE",
+            )
+        )
+        session.flush()
+        session.add(
+            PublicCatalogOfferRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                sku_id=sku_id,
+                unit_price=Decimal("39.90"),
+                currency="CNY",
+                tags=["大型犬", "耐咬", "互动玩具"],
+                publication_status="PUBLISHED",
+                published_at=datetime.now(UTC),
+            )
+        )
+        session.flush()
+        project_product_knowledge(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            product_id=product_id,
+        )
+        session.commit()
+
+    try:
+        with SessionLocal() as session:
+            settings = default_support_ai_settings(tenant_id=DEFAULT_TENANT_ID)
+            settings.file_knowledge_enabled = False
+            settings.min_retrieval_score = Decimal("0")
+            bundle = retrieve_customer_evidence_with_trace(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                query="你们这里有没有适合大型犬的玩具",
+                settings=settings,
+            )
+        product_evidence = next(
+            row for row in bundle.evidence if row.source_entity_id == str(product_id)
+        )
+        assert product_evidence.locator["type"] == "public_product"
+        assert "大型犬" in product_evidence.excerpt
+        assert "MOQ=12" in product_evidence.excerpt
+        assert "public_price=39.90 CNY" in product_evidence.excerpt
+        assert "supplier" not in product_evidence.excerpt.casefold()
+        assert bundle.diagnostics["product"]["engine"] == "HYBRID_PRODUCT_SEARCH"
+        assert bundle.diagnostics["product"]["public_eligible_products"] >= 1
+    finally:
+        with SessionLocal() as session:
+            document_ids = session.scalars(
+                select(KnowledgeDocumentRow.id).where(
+                    KnowledgeDocumentRow.source_entity_id == product_id
+                )
+            ).all()
+            chunk_ids = session.scalars(
+                select(KnowledgeChunkRow.id).where(
+                    KnowledgeChunkRow.document_id.in_(document_ids)
+                )
+            ).all()
+            if chunk_ids:
+                session.execute(
+                    delete(EmbeddingRow).where(EmbeddingRow.entity_id.in_(chunk_ids))
+                )
+                session.execute(
+                    delete(KnowledgeChunkRow).where(
+                        KnowledgeChunkRow.id.in_(chunk_ids)
+                    )
+                )
+            if document_ids:
+                session.execute(
+                    delete(KnowledgeDocumentRow).where(
+                        KnowledgeDocumentRow.id.in_(document_ids)
+                    )
+                )
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.sku_id == sku_id
+                )
+            )
+            session.execute(delete(SkuRow).where(SkuRow.id == sku_id))
+            session.execute(delete(ProductRow).where(ProductRow.id == product_id))
             session.commit()
 
 

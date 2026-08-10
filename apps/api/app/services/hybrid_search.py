@@ -473,6 +473,9 @@ def hybrid_product_search(
     limit: int = 10,
     product_ids: Collection[UUID] | None = None,
     embedder: EmbeddingProvider | None = None,
+    precomputed_query_vector: list[float] | None = None,
+    semantic_search_enabled: bool = True,
+    supplier_scoring_enabled: bool = True,
 ) -> dict[str, Any]:
     embedder = embedder or resolved_text_embedding_provider(session)
     normalized_query = normalize_text(query)
@@ -519,17 +522,21 @@ def hybrid_product_search(
     else:
         allowed_product_ids = None
 
-    query_vector: list[float] | None = None
+    query_vector = precomputed_query_vector
     preselected_semantic_by_chunk: dict[UUID, float] | None = None
-    semantic_unavailable = False
+    semantic_unavailable = not semantic_search_enabled
     if session.bind is not None and session.bind.dialect.name == "postgresql":
         # PostgreSQL can rank vectors before ORM hydration. Keeping this candidate
         # set bounded prevents a large catalog search from materializing every
         # document, chunk, attribute, tag and supplier row in the API process.
         candidate_limit = min(2_000, max(96, limit * 8))
         vector_candidate_limit = max(64, candidate_limit * 3 // 4)
-        try:
-            query_vector = embedder.embed([query])[0]
+        if query_vector is None and semantic_search_enabled:
+            try:
+                query_vector = embedder.embed([query])[0]
+            except EmbeddingProviderError:
+                semantic_unavailable = True
+        if query_vector is not None:
             semantic_rows = _postgres_semantic_candidate_rows(
                 session,
                 tenant_id=tenant_id,
@@ -538,8 +545,7 @@ def hybrid_product_search(
                 candidate_limit=vector_candidate_limit,
                 product_ids=allowed_product_ids,
             )
-        except EmbeddingProviderError:
-            semantic_unavailable = True
+        else:
             semantic_rows = []
         candidate_product_ids = set(
             dict.fromkeys(
@@ -701,7 +707,15 @@ def hybrid_product_search(
     product_ids = [product.id for _, product in document_rows]
     attribute_text = _attribute_texts(session, tenant_id=tenant_id, product_ids=product_ids)
     tag_text = _tag_texts(session, tenant_id=tenant_id, product_ids=product_ids)
-    supplier_scores = _supplier_scores(session, tenant_id=tenant_id, product_ids=product_ids)
+    supplier_scores = (
+        _supplier_scores(
+            session,
+            tenant_id=tenant_id,
+            product_ids=product_ids,
+        )
+        if supplier_scoring_enabled
+        else {}
+    )
     degraded_channels: list[str] = []
     if not semantic_by_chunk:
         degraded_channels.append("semantic")
@@ -744,7 +758,11 @@ def hybrid_product_search(
             default=None,
         )
         semantic = semantic_by_chunk.get(best_chunk.id, 0.0) if best_chunk else 0.0
-        supplier, supplier_status = supplier_scores.get(product.id, (0.5, "UNKNOWN"))
+        supplier, supplier_status = (
+            supplier_scores.get(product.id, (0.5, "UNKNOWN"))
+            if supplier_scoring_enabled
+            else (0.0, "DISABLED")
+        )
         final_score = (
             WEIGHTS["keyword"] * keyword
             + WEIGHTS["semantic"] * semantic

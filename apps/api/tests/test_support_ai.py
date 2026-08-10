@@ -30,6 +30,7 @@ from app.services.support_ai_orchestrator import (
     _validated_social_output,
     _validated_model_output,
     default_support_ai_settings,
+    detect_explicit_human_request,
     detect_safe_social_intent,
 )
 
@@ -95,6 +96,34 @@ def test_safe_social_intent_never_claims_mixed_business_messages(
     assert detect_safe_social_intent(message) is None
 
 
+@pytest.mark.parametrize(
+    "message",
+    (
+        "请帮我转人工客服",
+        "我想找真人处理",
+        "I want to speak to a human agent",
+        "Can I talk to a real person?",
+    ),
+)
+def test_explicit_human_request_requires_clear_customer_intent(message: str) -> None:
+    assert detect_explicit_human_request(message) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "不需要转人工，你继续回答",
+        "不用人工客服",
+        "I don't need a human agent",
+        "你有什么产品推荐？",
+    ),
+)
+def test_uncertainty_or_product_discovery_is_not_a_human_request(
+    message: str,
+) -> None:
+    assert detect_explicit_human_request(message) is False
+
+
 def test_long_file_block_is_split_once_per_overlap_window() -> None:
     content = "A" * (TARGET_CHUNK_CHARACTERS * 3 + 17)
     chunks = build_knowledge_chunks(
@@ -126,7 +155,7 @@ def _evidence(*, score: str = "0.9") -> RetrievalEvidence:
 
 
 def test_structured_answer_accepts_grounded_citations_and_numbers() -> None:
-    language, answer, confidence, handoff, reason, trace = _validated_model_output(
+    result = _validated_model_output(
         {
             "detected_language": "zh-CN",
             "answer": "SKU-88 的最低起订量是 100 件。[1]",
@@ -138,18 +167,88 @@ def test_structured_answer_accepts_grounded_citations_and_numbers() -> None:
         evidence=[_evidence()],
         fallback_language="zh-CN",
     )
+    language, answer, confidence, requires_safe_fallback, reason, trace = result
     assert language == "zh-CN"
     assert answer.endswith("[1]")
     assert confidence > 0.6
-    assert handoff is False
+    assert requires_safe_fallback is False
     assert reason is None
     assert trace["citations_valid"] is True
     assert trace["numbers_grounded"] is True
     assert trace["answer_language_matches"] is True
 
 
-def test_structured_answer_hands_off_invalid_citation_or_number() -> None:
-    _, _, confidence, handoff, reason, trace = _validated_model_output(
+def test_no_evidence_general_guidance_is_publishable_without_citations() -> None:
+    result = _validated_model_output(
+        {
+            "detected_language": "zh-CN",
+            "response_action": "CLARIFY",
+            "grounding_mode": "GENERAL_GUIDANCE",
+            "answer": "我暂时没有找到精确匹配，可以继续按耐咬程度、材质和使用场景帮您筛选。您更需要互动类还是独处玩具？",
+            "confidence": 0.78,
+            "citations": [],
+            "handoff_reason": None,
+        },
+        question="有没有适合大型犬的玩具？",
+        evidence=[],
+        fallback_language="zh-CN",
+    )
+    language, answer, confidence, requires_safe_fallback, reason, trace = result
+    assert language == "zh-CN"
+    assert answer.startswith("我暂时")
+    assert confidence > 0.7
+    assert requires_safe_fallback is False
+    assert reason is None
+    assert trace["response_action"] == "CLARIFY"
+    assert trace["grounding_mode"] == "GENERAL_GUIDANCE"
+    assert trace["citations_required"] is False
+    assert trace["citations_valid"] is True
+
+
+def test_missing_evidence_cannot_authorize_model_handoff() -> None:
+    result = _validated_model_output(
+        {
+            "detected_language": "zh-CN",
+            "response_action": "HANDOFF",
+            "grounding_mode": "GENERAL_GUIDANCE",
+            "answer": "没有资料，所以转人工。",
+            "confidence": 0.9,
+            "citations": [],
+            "handoff_reason": "NO_CUSTOMER_SAFE_EVIDENCE",
+        },
+        question="有没有适合大型犬的玩具？",
+        evidence=[],
+        fallback_language="zh-CN",
+    )
+    _, _, confidence, requires_safe_fallback, reason, trace = result
+    assert requires_safe_fallback is True
+    assert reason == "HANDOFF_NOT_AUTHORIZED"
+    assert confidence <= 0.25
+    assert trace["handoff_authorized"] is False
+
+
+def test_merchant_only_action_can_authorize_model_handoff() -> None:
+    _, _, _, requires_safe_fallback, reason, trace = _validated_model_output(
+        {
+            "detected_language": "zh-CN",
+            "response_action": "HANDOFF",
+            "grounding_mode": "GENERAL_GUIDANCE",
+            "answer": "这项退款操作需要客服人员处理。",
+            "confidence": 0.88,
+            "citations": [],
+            "handoff_reason": "PAYMENT_OR_REFUND_ACTION_REQUIRED",
+        },
+        question="请帮我退掉已经支付的订单。",
+        evidence=[],
+        fallback_language="zh-CN",
+    )
+    assert requires_safe_fallback is False
+    assert reason == "PAYMENT_OR_REFUND_ACTION_REQUIRED"
+    assert trace["handoff_authorized"] is True
+
+
+def test_structured_answer_requires_fallback_for_invalid_citation_or_number() -> None:
+    result = _validated_model_output(
         {
             "detected_language": "en-US",
             "answer": "The MOQ is 999 pieces. [7]",
@@ -161,7 +260,8 @@ def test_structured_answer_hands_off_invalid_citation_or_number() -> None:
         evidence=[_evidence()],
         fallback_language="en-US",
     )
-    assert handoff is True
+    _, _, confidence, requires_safe_fallback, reason, trace = result
+    assert requires_safe_fallback is True
     assert reason == "CITATION_VALIDATION_FAILED"
     assert confidence <= 0.25
     assert trace["citations_valid"] is False
@@ -169,7 +269,7 @@ def test_structured_answer_hands_off_invalid_citation_or_number() -> None:
 
 
 def test_script_language_conflict_is_never_auto_publishable() -> None:
-    language, _, confidence, handoff, reason, trace = _validated_model_output(
+    result = _validated_model_output(
         {
             "detected_language": "en-US",
             "answer": "The MOQ is 100 pieces. [1]",
@@ -181,8 +281,9 @@ def test_script_language_conflict_is_never_auto_publishable() -> None:
         evidence=[_evidence()],
         fallback_language="zh-CN",
     )
+    language, _, confidence, requires_safe_fallback, reason, trace = result
     assert language == "zh-CN"
-    assert handoff is True
+    assert requires_safe_fallback is True
     assert reason == "ANSWER_LANGUAGE_MISMATCH"
     assert confidence <= 0.3
     assert trace["language_confirmation_conflict"] is True
@@ -201,11 +302,11 @@ def test_script_language_conflict_is_never_auto_publishable() -> None:
         ),
     ),
 )
-def test_unapproved_links_and_secret_shaped_output_force_handoff(
+def test_unapproved_links_and_secret_shaped_output_require_fallback(
     answer: str,
     expected_reason: str,
 ) -> None:
-    _, _, confidence, handoff, reason, trace = _validated_model_output(
+    result = _validated_model_output(
         {
             "detected_language": "en-US",
             "answer": answer,
@@ -217,7 +318,8 @@ def test_unapproved_links_and_secret_shaped_output_force_handoff(
         evidence=[_evidence()],
         fallback_language="en-US",
     )
-    assert handoff is True
+    _, _, confidence, requires_safe_fallback, reason, trace = result
+    assert requires_safe_fallback is True
     assert reason == expected_reason
     assert confidence <= 0.25
     if expected_reason == "LINK_VALIDATION_FAILED":
