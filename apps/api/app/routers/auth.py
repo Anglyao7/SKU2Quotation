@@ -44,6 +44,7 @@ from ..services.auth.contracts import IdentityProviderError
 from ..services.auth.oidc_provider import public_oidc_config
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.rbac import list_permissions
+from ..tenant_modules import merchant_identity_is_platform_admin
 from ..domain.errors import ApplicationError
 from ..localization import normalize_ui_locale
 from ..use_cases.authentication import get_current_user
@@ -115,7 +116,14 @@ def _token_response(
                 id=result.user.id,
                 display_name=result.user.display_name,
                 email=_masked_email(result.user.email_normalized),
-                is_platform_admin=bool(result.user.is_platform_admin),
+                is_platform_admin=(
+                    merchant_identity_is_platform_admin(
+                        identity_code=result.tenant.identity_code,
+                        account_scope=result.membership.account_scope,
+                    )
+                    if result.tenant is not None and result.membership is not None
+                    else False
+                ),
                 locale=normalize_ui_locale(result.user.locale),
             ),
             context=AuthContext(

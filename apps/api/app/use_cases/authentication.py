@@ -7,6 +7,7 @@ from ..domain.errors import ApplicationError
 from ..localization import normalize_ui_locale
 from ..repositories.identity_repository import get_membership, get_tenant
 from ..services.auth.dependencies import RequestContext
+from ..tenant_modules import merchant_identity_is_platform_admin
 
 
 def _masked_email(email: str | None) -> str | None:
@@ -31,7 +32,10 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
             id=user.id,
             display_name=user.display_name,
             email=_masked_email(user.email_normalized),
-            is_platform_admin=bool(user.is_platform_admin),
+            is_platform_admin=merchant_identity_is_platform_admin(
+                identity_code=tenant.identity_code,
+                account_scope=membership.account_scope,
+            ),
             locale=normalize_ui_locale(user.locale),
         ),
         context=AuthContext(

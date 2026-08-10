@@ -108,7 +108,12 @@ class PlatformTenantCreate(BaseModel):
     default_locale: str = Field(default="zh-CN", min_length=2, max_length=20)
     default_currency: str = Field(default="CNY", min_length=3, max_length=3)
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
-    identity_code: MerchantIdentityCode = DEFAULT_MERCHANT_IDENTITY
+    identity_code: MerchantIdentityCode = Field(
+        default=DEFAULT_MERCHANT_IDENTITY,
+        min_length=1,
+        max_length=20,
+        pattern=r"^[A-Z][A-Z0-9_]*$",
+    )
     module_access_mode: TenantModuleAccessMode = DEFAULT_TENANT_MODULE_ACCESS_MODE
     enabled_modules: list[TenantModuleCode] = Field(default_factory=default_tenant_modules)
 
@@ -147,7 +152,12 @@ class PlatformTenantUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     contact_email: str | None = Field(default=None, max_length=320)
     active: bool | None = None
-    identity_code: MerchantIdentityCode | None = None
+    identity_code: MerchantIdentityCode | None = Field(
+        default=None,
+        min_length=1,
+        max_length=20,
+        pattern=r"^[A-Z][A-Z0-9_]*$",
+    )
     module_access_mode: TenantModuleAccessMode | None = None
     enabled_modules: list[TenantModuleCode] | None = None
 
@@ -174,12 +184,20 @@ class PlatformMerchantIdentityProfile(BaseModel):
     code: MerchantIdentityCode
     name: str
     enabled_modules: list[TenantModuleCode]
+    is_system: bool
+    editable: bool
     version: int = Field(ge=1)
     updated_at: datetime
 
 
-class PlatformMerchantIdentityUpdate(BaseModel):
-    enabled_modules: list[TenantModuleCode]
+class PlatformMerchantIdentityCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    enabled_modules: list[TenantModuleCode] = Field(default_factory=default_tenant_modules)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("enabled_modules")
     @classmethod
@@ -188,6 +206,24 @@ class PlatformMerchantIdentityUpdate(BaseModel):
         value: list[TenantModuleCode],
     ) -> list[TenantModuleCode]:
         return canonical_tenant_module_list(value)
+
+
+class PlatformMerchantIdentityUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    enabled_modules: list[TenantModuleCode] | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("enabled_modules")
+    @classmethod
+    def normalize_modules(
+        cls,
+        value: list[TenantModuleCode] | None,
+    ) -> list[TenantModuleCode] | None:
+        return None if value is None else canonical_tenant_module_list(value)
 
 
 class PlatformTenantSubscriptionUpdate(BaseModel):

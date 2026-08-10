@@ -192,6 +192,14 @@ def grant_runtime_roles() -> dict[str, object]:
                     "uuid, uuid, uuid, uuid, text, text, text, text, text) TO {}"
                 ).format(sql.Identifier(auth_role))
             )
+            for role_name in (app_role, auth_role):
+                cursor.execute(
+                    sql.SQL(
+                        "GRANT EXECUTE ON FUNCTION "
+                        "public.atc_grant_tenant_admin_identity("
+                        "uuid, uuid, uuid) TO {}"
+                    ).format(sql.Identifier(role_name))
+                )
             _grant_tables(cursor, role_name=worker_role, tables=WORKER_TABLES)
             _grant_tables(
                 cursor,

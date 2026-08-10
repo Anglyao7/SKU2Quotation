@@ -278,7 +278,11 @@ def optional_customer_quote_submitter(
         tenant_id=membership.tenant_id,
         user_id=user.id,
     ):
-        return None
+        raise ApplicationError(
+            "CUSTOMER_ORDER_CREATE_DENIED",
+            "This subaccount is not allowed to submit quotations.",
+            kind="forbidden",
+        )
     return CustomerQuoteSubmitter(
         membership_id=membership.id,
         tenant_id=membership.tenant_id,

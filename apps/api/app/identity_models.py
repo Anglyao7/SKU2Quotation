@@ -63,7 +63,6 @@ class MerchantIdentityProfileRow(AuditTimestampMixin, Base):
 
     __tablename__ = "merchant_identity_profiles"
     __table_args__ = (
-        CheckConstraint("code IN ('ADMIN', 'USER')", name="code_allowed"),
         CheckConstraint("version >= 1", name="version_positive"),
     )
 
@@ -74,6 +73,7 @@ class MerchantIdentityProfileRow(AuditTimestampMixin, Base):
         default=default_merchant_identity_modules,
         nullable=False,
     )
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
     updated_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -235,6 +235,13 @@ class MembershipRow(AuditTimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(30), default="invited", nullable=False)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     permission_version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    # NULL means "use the assigned role as-is". A concrete list is an
+    # account-level ceiling and is primarily used by a parent account to give
+    # each direct subaccount a different visible/action scope.
+    permission_overrides: Mapped[list[str] | None] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=True,
+    )
 
     tenant: Mapped[TenantRow] = relationship(back_populates="memberships")
     user: Mapped[UserRow] = relationship(back_populates="memberships")

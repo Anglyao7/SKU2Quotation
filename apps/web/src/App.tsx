@@ -49,6 +49,7 @@ const SkuDetailPage = recoverableLazy(() => import("./pages/SkuDetailPage").then
 const PrivacyPage = recoverableLazy(() => import("./pages/PrivacyPage").then((module) => ({ default: module.PrivacyPage })));
 const ConsoleLayout = recoverableLazy(() => import("./pages/console/ConsoleLayout").then((module) => ({ default: module.ConsoleLayout })));
 const TenantManagementPage = recoverableLazy(() => import("./pages/console/TenantManagementPage").then((module) => ({ default: module.TenantManagementPage })));
+const IdentityManagementPage = recoverableLazy(() => import("./pages/console/IdentityManagementPage").then((module) => ({ default: module.IdentityManagementPage })));
 const NotFoundPage = recoverableLazy(() => import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })));
 const AiSearchPage = recoverableLazy(() => import("./core/pages/AiSearchPage").then((module) => ({ default: module.AiSearchPage })));
 const AiSearchManagementPage = recoverableLazy(() => import("./core/pages/AiSearchManagementPage").then((module) => ({ default: module.AiSearchManagementPage })));
@@ -144,7 +145,7 @@ function PlatformAdminGate({ children }: { children: ReactNode }) {
   const { profile } = useCoreAuth();
   const { t } = useLocale();
   if (profile?.user.isPlatformAdmin) return children;
-  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("仅平台管理员可以管理商家")}</Heading><Text size="2" color="gray">{t("租户创建、启停和平台级状态不属于商家成员权限。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
+  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("当前商家不是管理员身份")}</Heading><Text size="2" color="gray">{t("配置中心、商家管理和系统功能仅对管理员身份开放。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
 }
 
 async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
@@ -339,6 +340,7 @@ const router = createBrowserRouter([{
         { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },
         { path: "tenants", element: <PlatformAdminGate><TenantManagementPage /></PlatformAdminGate> },
+        { path: "identities", element: <PlatformAdminGate><IdentityManagementPage /></PlatformAdminGate> },
       ],
       }],
     }, {

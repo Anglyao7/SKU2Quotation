@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..customer_accounts_schemas import (
     CustomerPortalOrderSummary,
     CustomerPortalOverview,
+    CustomerSubaccountAccessUpdate,
     CustomerSubaccountCreate,
     CustomerSubaccountDashboard,
     CustomerSubaccountOrderPage,
@@ -104,11 +105,30 @@ def update_customer_account_status(
     membership_id: UUID,
     request: CustomerSubaccountStatusUpdate,
     session: Session = Depends(get_authenticated_session),
-    identity_session: Session = Depends(get_auth_session),
 ) -> CustomerSubaccountSummary:
     try:
         return use_cases.update_customer_subaccount_status(
-            _identity_write_session(session, identity_session),
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/customer-accounts/{membership_id}/access",
+    response_model=CustomerSubaccountSummary,
+)
+def update_customer_account_access(
+    membership_id: UUID,
+    request: CustomerSubaccountAccessUpdate,
+    session: Session = Depends(get_authenticated_session),
+) -> CustomerSubaccountSummary:
+    try:
+        return use_cases.update_customer_subaccount_access(
+            session,
             context=current_context(session),
             membership_id=membership_id,
             request=request,
