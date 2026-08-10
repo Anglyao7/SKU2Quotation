@@ -1475,7 +1475,10 @@ function mapKnowledgeIndexStatus(row: ApiKnowledgeIndexStatus): KnowledgeIndexSt
 
 export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
   return mapKnowledgeIndexStatus(
-    await request<ApiKnowledgeIndexStatus>("/ai/knowledge/index"),
+    await request<ApiKnowledgeIndexStatus>("/ai/knowledge/index", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    }),
   );
 }
 
@@ -1531,6 +1534,10 @@ export async function startKnowledgeIndexJob(
 export async function getLatestKnowledgeIndexJob(): Promise<KnowledgeIndexJob | undefined> {
   const row = await request<ApiKnowledgeIndexJob | null>(
     "/ai/knowledge/index/jobs/latest",
+    {
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    },
   );
   return row ? mapKnowledgeIndexJob(row) : undefined;
 }
@@ -1539,6 +1546,10 @@ export async function getKnowledgeIndexJob(jobId: string): Promise<KnowledgeInde
   return mapKnowledgeIndexJob(
     await request<ApiKnowledgeIndexJob>(
       `/ai/knowledge/index/jobs/${encodeURIComponent(jobId)}`,
+      {
+        cache: "no-store",
+        signal: AbortSignal.timeout(15_000),
+      },
     ),
   );
 }
