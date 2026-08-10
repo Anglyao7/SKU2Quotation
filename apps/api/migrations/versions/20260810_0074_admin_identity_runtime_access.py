@@ -1,7 +1,7 @@
 """Make the active ADMIN merchant identity grant platform access.
 
-Revision ID: 20260810_0072
-Revises: 20260810_0071
+Revision ID: 20260810_0074
+Revises: 20260810_0073
 """
 
 from __future__ import annotations
@@ -9,8 +9,8 @@ from __future__ import annotations
 from alembic import op
 
 
-revision = "20260810_0072"
-down_revision = "20260810_0071"
+revision = "20260810_0074"
+down_revision = "20260810_0073"
 branch_labels = None
 depends_on = None
 
@@ -130,7 +130,7 @@ def upgrade() -> None:
     )
     op.execute(f"REVOKE ALL ON FUNCTION {FUNCTION_SIGNATURE} FROM PUBLIC")
 
-    # Existing platform operators were migrated to an ADMIN merchant in 0071.
+    # Existing platform operators were migrated to an ADMIN merchant in 0073.
     # Keep the legacy flag as a database-policy compatibility projection.
     for table_name in ("tenants", "memberships", "users"):
         op.execute(f'ALTER TABLE "{table_name}" NO FORCE ROW LEVEL SECURITY')

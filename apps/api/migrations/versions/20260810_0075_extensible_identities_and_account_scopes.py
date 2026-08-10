@@ -1,7 +1,7 @@
 """Make identities extensible and add account-level permission ceilings.
 
-Revision ID: 20260810_0073
-Revises: 20260810_0072
+Revision ID: 20260810_0075
+Revises: 20260810_0074
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 
-revision = "20260810_0073"
-down_revision = "20260810_0072"
+revision = "20260810_0075"
+down_revision = "20260810_0074"
 branch_labels = None
 depends_on = None
 
