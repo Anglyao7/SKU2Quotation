@@ -208,7 +208,7 @@ Follow these rules in priority order:
 6. For EVIDENCE answers, put a citation like [1] immediately after each merchant or product factual claim. Citation numbers must refer to supplied evidence.
 7. Missing or weak evidence is not a reason to transfer to a human. Choose CLARIFY or NO_MATCH, or choose ANSWER with GENERAL_GUIDANCE; give useful general reasoning without implying that the merchant sells a particular product, and ask one focused follow-up question when it would improve the answer.
 8. Choose HANDOFF only when the visitor explicitly requests a human or the request requires a merchant-only action or commitment such as an account/order change, payment/refund action, complaint resolution, custom commercial commitment, or safety/legal review. Product discovery, weak retrieval, uncertainty, and low confidence alone never justify HANDOFF.
-9. If evidence contains multiple MOQ values, preserve their SKU association or present them as supported options. If the visitor has not identified the SKU, list the options or ask which SKU they mean; never select or invent a default MOQ.
+9. If evidence contains multiple MOQ values, preserve their SKU association or present them as supported options. If the visitor has not identified the SKU, list the options or ask which SKU they mean; never select or invent a default MOQ. An omitted MOQ means unknown, never zero, unlimited, or no minimum.
 10. Do not claim that a price, stock level, delivery date, certification, policy, product property, or product suitability is certain unless evidence states it.
 11. GENERAL_GUIDANCE may use broad, non-merchant-specific knowledge, but must be framed as general guidance, avoid unsupported precise numbers or links, and must not claim that a catalog item has an unstated property.
 12. When interaction_goal is PRODUCT_RECOMMENDATION and catalog evidence is available, make a decision instead of returning a search-result dump: choose exactly one primary product now, state the assumption behind the choice, and explain two or three fit reasons supported by evidence. You may mention at most one materially different alternative and its trade-off. Ask at most one focused follow-up only after giving the recommendation; never make the visitor answer a generic questionnaire first.
@@ -318,6 +318,26 @@ PRESENTATION_ORDINAL_PATTERN = re.compile(
     r"\d{1,2}[.)、．]\s+"
 )
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+", re.IGNORECASE)
+MOQ_ABSENCE_CLAIM_PATTERN = re.compile(
+    r"(?:无|無|没有|沒有|无需|無需|不设|不設|不受).{0,10}"
+    r"(?:MOQ|起订|起訂|最低订购|最低訂購)"
+    r"|(?:MOQ|起订量|起訂量|最低订购量|最低訂購量).{0,10}"
+    r"(?:不限|无限制|無限制|不要求|不設限|"
+    r"(?:为|是)?\s*(?<!\d)0(?:[.,]0+)?(?!\d))"
+    r"|\b(?:no|without)(?: an?| any)? (?:MOQ|minimum order)\b"
+    r"|\bMOQ (?:is )?(?:unlimited|not required|none|zero)\b"
+    r"|\b(?:sin|sem|sans) (?:MOQ|pedido m[ií]nimo|minimum de commande)\b"
+    r"|\bkeine mindestbestellmenge\b|\bsenza ordine minimo\b"
+    r"|(?:最低注文|MOQ).{0,8}(?:なし|不要|ありません)"
+    r"|(?:최소 주문|MOQ).{0,8}(?:없|불필요)"
+    r"|(?:без минимального заказа|لا يوجد حد أدنى|minimum sipariş.{0,8}yok)",
+    re.IGNORECASE,
+)
+EXPLICIT_NO_MOQ_EVIDENCE_PATTERN = re.compile(
+    r"(?:MOQ|起订量|起訂量|minimum order).{0,16}"
+    r"(?:=\s*0(?:[.,]0+)?\b|no minimum|not required|none|不限|无最低|無最低)",
+    re.IGNORECASE,
+)
 SENSITIVE_OUTPUT_PATTERN = re.compile(
     r"(?:sk-[A-Za-z0-9_-]{12,}|AKIA[A-Z0-9]{16}|Bearer\s+[A-Za-z0-9._~+/-]{12,}|"
     r"(?:api[_ -]?key|password|secret)\s*[:=]\s*\S+|"
@@ -757,6 +777,7 @@ def _recommendation_repair_messages(
     locale_hint: str,
     evidence: list[RetrievalEvidence],
     recommended_citation: int,
+    repair_reason: str | None = None,
 ) -> tuple[list[dict[str, str]], list[int]]:
     catalog_evidence = [
         (citation_number, row)
@@ -788,6 +809,12 @@ def _recommendation_repair_messages(
         f"{allowed_citations}. Mention at most the one supplied alternative. Do not "
         "list, discuss, or cite any other product."
     )
+    if repair_reason == "UNSUPPORTED_MOQ_ABSENCE_CLAIM":
+        system += (
+            "\nThe prior draft incorrectly treated an omitted MOQ as no minimum. "
+            "Do not repeat that inference. Mention MOQ only when the selected evidence "
+            "states it explicitly; otherwise leave it unknown."
+        )
     custom = (settings.system_prompt or "").strip()
     if custom:
         system += (
@@ -990,6 +1017,51 @@ def _supported_links(answer: str, evidence: list[RetrievalEvidence]) -> bool:
         answer,
         "\n".join(row.excerpt for row in evidence),
     )
+
+
+def _moq_absence_claims_grounded(
+    answer: str,
+    evidence: list[RetrievalEvidence],
+) -> bool:
+    for match in MOQ_ABSENCE_CLAIM_PATTERN.finditer(answer):
+        left_boundaries = [
+            answer.rfind(delimiter, 0, match.start())
+            for delimiter in ("。", "！", "？", ".", "!", "?", "\n")
+        ]
+        left = max(left_boundaries) + 1
+        right_candidates = [
+            position
+            for delimiter in ("。", "！", "？", ".", "!", "?", "\n")
+            if (position := answer.find(delimiter, match.end())) >= 0
+        ]
+        right = min(right_candidates) if right_candidates else len(answer)
+        citation_tail = re.match(
+            r"[。.!！？?]?\s*(?:\[\d{1,2}\]\s*)+",
+            answer[right:],
+        )
+        sentence_end = (
+            right + citation_tail.end()
+            if citation_tail is not None
+            else right
+        )
+        sentence = answer[left:sentence_end]
+        citation_numbers = {
+            int(value) for value in CITATION_PATTERN.findall(sentence)
+        }
+        if not citation_numbers:
+            return False
+        supported = False
+        for citation_number in citation_numbers:
+            if not 1 <= citation_number <= len(evidence):
+                continue
+            if EXPLICIT_NO_MOQ_EVIDENCE_PATTERN.search(
+                evidence[citation_number - 1].excerpt
+            ):
+                supported = True
+                break
+        if not supported:
+            return False
+    return True
 
 
 def _validated_social_output(
@@ -1228,6 +1300,10 @@ def _validated_model_output(
     )
     numbers_grounded = _supported_numbers(question, answer, evidence)
     links_grounded = _supported_links(answer, evidence)
+    moq_absence_claims_grounded = _moq_absence_claims_grounded(
+        answer,
+        evidence,
+    )
     sensitive_output_detected = bool(SENSITIVE_OUTPUT_PATTERN.search(answer))
     answer_language = detect_message_language(
         CITATION_PATTERN.sub("", answer),
@@ -1251,6 +1327,11 @@ def _validated_model_output(
         confidence = min(confidence, 0.25)
     if not links_grounded and not handoff_authorized:
         validation_reason = validation_reason or "LINK_VALIDATION_FAILED"
+        confidence = min(confidence, 0.25)
+    if not moq_absence_claims_grounded and not handoff_authorized:
+        validation_reason = (
+            validation_reason or "UNSUPPORTED_MOQ_ABSENCE_CLAIM"
+        )
         confidence = min(confidence, 0.25)
     if sensitive_output_detected and not handoff_authorized:
         # Security leakage is the dominant audit reason even when the same
@@ -1294,6 +1375,7 @@ def _validated_model_output(
         "recommendation_contract_valid": recommendation_contract_valid,
         "numbers_grounded": numbers_grounded,
         "links_grounded": links_grounded,
+        "moq_absence_claims_grounded": moq_absence_claims_grounded,
         "sensitive_output_detected": sensitive_output_detected,
         "heuristic_language": heuristic_language,
         "model_language": model_language,
@@ -1319,7 +1401,10 @@ def _recommendation_output_can_be_repaired(
     *,
     evidence: list[RetrievalEvidence],
 ) -> bool:
-    if trace.get("validation_reason") != "RECOMMENDATION_CONTRACT_FAILED":
+    if trace.get("validation_reason") not in {
+        "RECOMMENDATION_CONTRACT_FAILED",
+        "UNSUPPORTED_MOQ_ABSENCE_CLAIM",
+    }:
         return False
     if (
         trace.get("response_action") != "ANSWER"
@@ -2362,6 +2447,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
             locale_hint=run.visitor_locale,
             evidence=evidence,
             recommended_citation=recommended_citation,
+            repair_reason=str(validation_trace.get("validation_reason") or ""),
         )
         repair_prompt_hash = hashlib.sha256(
             json.dumps(

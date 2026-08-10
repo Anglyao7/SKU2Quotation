@@ -280,6 +280,9 @@ UPLOADED -> QUARANTINED -> SCANNING -> PARSING -> REVIEW_REQUIRED
 `GENERAL_GUIDANCE` 表示没有把模型常识当作企业事实。没有证据时必须使用
 `GENERAL_GUIDANCE`，不得仅因无证据进入 `HANDOFF`。
 
+任何字段未出现在 Evidence 中都只能解释为“未知”。尤其是缺少 MOQ 不等于 MOQ 为 0、
+不限或无需起订；只有来源明确写明无最低订购量时，模型才可以作出该断言。
+
 ### 7.5 商品推荐决策
 
 推荐不是检索结果展示。`PRODUCT_RECOMMENDATION` 在存在当前公开商品证据时必须：
@@ -396,7 +399,8 @@ UPLOADED -> QUARANTINED -> SCANNING -> PARSING -> REVIEW_REQUIRED
 1. JSON/schema 和最大长度校验。
 2. tenant、会话状态和 AI 是否仍有接管权校验。
 3. 引用 ID、来源状态、引用模式和 claim 映射校验。
-4. Grounding、矛盾、数字和单位一致性校验。
+4. Grounding、矛盾、数字和单位一致性校验；同时拒绝把缺失 MOQ 推断为 0、无限制或无需
+   起订的否定性事实。
 5. 敏感字段、PII、密钥、内部链接和越权内容校验。
 6. 输出语言、品牌语气和允许链接校验。
 7. 重复回复、循环和最大回合数校验。

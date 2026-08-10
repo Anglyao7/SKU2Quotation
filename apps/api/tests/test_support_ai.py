@@ -286,6 +286,70 @@ def test_recommendation_contract_rejects_a_catalog_dump_without_primary_choice()
     assert trace["recommendation_contract_valid"] is False
 
 
+def test_omitted_moq_cannot_be_claimed_as_no_minimum_order() -> None:
+    evidence = [
+        replace(
+            _evidence(),
+            excerpt="SKU: SKU-88\nPublic price: 2.50 USD",
+        )
+    ]
+    result = _validated_model_output(
+        {
+            "detected_language": "zh-CN",
+            "response_action": "ANSWER",
+            "grounding_mode": "EVIDENCE",
+            "answer": "我推荐 SKU-88，目前没有起订量限制。[1]",
+            "confidence": 0.9,
+            "citations": [1],
+            "recommended_citation": 1,
+            "handoff_reason": None,
+        },
+        question="请推荐一款产品",
+        evidence=evidence,
+        fallback_language="zh-CN",
+        interaction_goal="PRODUCT_RECOMMENDATION",
+    )
+    trace = result[5]
+    assert result[3] is True
+    assert result[4] == "UNSUPPORTED_MOQ_ABSENCE_CLAIM"
+    assert trace["moq_absence_claims_grounded"] is False
+    assert trace["recommendation_contract_valid"] is True
+    assert _recommendation_output_can_be_repaired(trace, evidence=evidence) is True
+
+    settings = default_support_ai_settings(tenant_id=uuid4())
+    messages, _allowed = _recommendation_repair_messages(
+        settings=settings,
+        question="请推荐一款产品",
+        locale_hint="zh-CN",
+        evidence=evidence,
+        recommended_citation=1,
+        repair_reason="UNSUPPORTED_MOQ_ABSENCE_CLAIM",
+    )
+    assert "omitted MOQ as no minimum" in messages[0]["content"]
+
+
+def test_explicit_no_minimum_order_evidence_can_support_the_claim() -> None:
+    result = _validated_model_output(
+        {
+            "detected_language": "en-US",
+            "response_action": "ANSWER",
+            "grounding_mode": "EVIDENCE",
+            "answer": "I recommend SKU-88; there is no minimum order. [1]",
+            "confidence": 0.85,
+            "citations": [1],
+            "recommended_citation": 1,
+            "handoff_reason": None,
+        },
+        question="Please recommend one.",
+        evidence=[replace(_evidence(), excerpt="SKU: SKU-88\nMOQ: no minimum")],
+        fallback_language="en-US",
+        interaction_goal="PRODUCT_RECOMMENDATION",
+    )
+    assert result[3] is False
+    assert result[4] is None
+    assert result[5]["moq_absence_claims_grounded"] is True
+
+
 def test_safe_catalog_dump_can_be_repaired_with_a_two_product_shortlist() -> None:
     evidence = [
         _evidence(),
