@@ -726,6 +726,8 @@ export interface SupportAIAgent {
   minAnswerConfidence: number;
   maxSources: number;
   dailyAutoReplyLimit: number;
+  publicCompanyIntroduction?: string;
+  publicServiceScope?: string;
   systemPrompt?: string;
   handoffMessages: Record<string, string>;
   stores: SupportAIAgentStore[];
@@ -744,6 +746,8 @@ export interface SupportAISettings {
   minAnswerConfidence: number;
   maxSources: number;
   dailyAutoReplyLimit: number;
+  publicCompanyIntroduction?: string;
+  publicServiceScope?: string;
   systemPrompt?: string;
   handoffMessages: Record<string, string>;
   promptVersion: number;

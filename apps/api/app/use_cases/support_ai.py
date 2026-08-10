@@ -513,6 +513,8 @@ def _agent_response(
         min_answer_confidence=float(row.min_answer_confidence),
         max_sources=row.max_sources,
         daily_auto_reply_limit=row.daily_auto_reply_limit,
+        public_company_introduction=row.public_company_introduction,
+        public_service_scope=row.public_service_scope,
         system_prompt=row.system_prompt,
         handoff_messages=_normalized_handoff_messages(row.handoff_messages),
         stores=stores,
@@ -588,6 +590,8 @@ def _copy_agent_policy_to_store(
     settings.min_answer_confidence = agent.min_answer_confidence
     settings.max_sources = agent.max_sources
     settings.daily_auto_reply_limit = agent.daily_auto_reply_limit
+    settings.public_company_introduction = agent.public_company_introduction
+    settings.public_service_scope = agent.public_service_scope
     settings.system_prompt = agent.system_prompt
     settings.handoff_messages = _normalized_handoff_messages(
         agent.handoff_messages
@@ -726,6 +730,9 @@ def update_agent(
             value = getattr(request, field)
             if value is not None:
                 setattr(row, field, Decimal(str(value)))
+    for field in ("public_company_introduction", "public_service_scope"):
+        if field in fields:
+            setattr(row, field, getattr(request, field))
     if "system_prompt" in fields:
         row.system_prompt = request.system_prompt
     if "handoff_messages" in fields:
@@ -996,6 +1003,8 @@ def copy_store_configuration(
             "min_answer_confidence": source.min_answer_confidence,
             "max_sources": source.max_sources,
             "daily_auto_reply_limit": source.daily_auto_reply_limit,
+            "public_company_introduction": source.public_company_introduction,
+            "public_service_scope": source.public_service_scope,
             "system_prompt": source.system_prompt,
             "handoff_messages": _normalized_handoff_messages(
                 source.handoff_messages
@@ -1022,6 +1031,8 @@ def copy_store_configuration(
                     "min_answer_confidence",
                     "max_sources",
                     "daily_auto_reply_limit",
+                    "public_company_introduction",
+                    "public_service_scope",
                     "system_prompt",
                     "handoff_messages",
                 ):
@@ -1073,6 +1084,8 @@ def _settings_response(
         min_answer_confidence=float(row.min_answer_confidence),
         max_sources=row.max_sources,
         daily_auto_reply_limit=row.daily_auto_reply_limit,
+        public_company_introduction=row.public_company_introduction,
+        public_service_scope=row.public_service_scope,
         system_prompt=row.system_prompt,
         handoff_messages=_normalized_handoff_messages(row.handoff_messages),
         prompt_version=row.prompt_version,
@@ -1133,6 +1146,8 @@ def update_settings(
         row.min_answer_confidence = request.min_answer_confidence
         row.max_sources = request.max_sources
         row.daily_auto_reply_limit = request.daily_auto_reply_limit
+        row.public_company_introduction = request.public_company_introduction
+        row.public_service_scope = request.public_service_scope
         row.system_prompt = request.system_prompt
         row.handoff_messages = request.handoff_messages
         row.prompt_version += 1

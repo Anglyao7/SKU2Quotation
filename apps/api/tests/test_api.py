@@ -1266,11 +1266,16 @@ def test_platform_support_ai_agent_management_and_knowledge_binding(
                 "enabled": True,
                 "min_retrieval_score": 0.22,
                 "daily_auto_reply_limit": 1200,
+                "public_company_introduction": "We provide approved catalog products.",
+                "public_service_scope": "Product selection, MOQ, and packaging.",
             },
         )
         assert configured.status_code == 200, configured.text
         assert configured.json()["api_configured"] is True
         assert configured.json()["enabled"] is True
+        assert configured.json()["public_company_introduction"].startswith(
+            "We provide"
+        )
         with SessionLocal() as session:
             for tenant_id in tenant_ids:
                 settings = session.get(SupportAISettingsRow, tenant_id)
@@ -1279,6 +1284,12 @@ def test_platform_support_ai_agent_management_and_knowledge_binding(
                 assert settings.provider_setting_id == profile_id
                 assert settings.enabled is True
                 assert settings.min_retrieval_score == Decimal("0.22000")
+                assert settings.public_company_introduction == (
+                    "We provide approved catalog products."
+                )
+                assert settings.public_service_scope == (
+                    "Product selection, MOQ, and packaging."
+                )
 
         uploaded = client.post(
             f"/api/v1/system/support-ai/agents/{agent_id}/knowledge/sources/upload",
@@ -1348,6 +1359,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.services.chat_generation import (
+        ChatGenerationError,
         ChatGenerationIdentity,
         ChatGenerationResult,
         OpenAICompatibleChatGeneration,
@@ -1549,15 +1561,29 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
                 temperature: float | None = None,
                 max_output_tokens: int | None = None,
             ) -> ChatGenerationResult:
-                del messages, temperature, max_output_tokens
-                data = {
-                    "detected_language": "en-US",
-                    "answer": "Standard dispatch takes three business days. [1]",
-                    "confidence": 0.92,
-                    "citations": [1],
-                    "handoff": False,
-                    "handoff_reason": None,
-                }
+                del temperature, max_output_tokens
+                if '"safe_social_intent":"GREETING"' in messages[-1]["content"]:
+                    data = {
+                        "detected_language": "en-US",
+                        "answer": (
+                            "Hello! Welcome to Local Demo Company. We provide "
+                            "approved catalog products and can help with product "
+                            "selection or packaging. What are you looking for?"
+                        ),
+                        "confidence": 0.94,
+                        "citations": [],
+                        "handoff": False,
+                        "handoff_reason": None,
+                    }
+                else:
+                    data = {
+                        "detected_language": "en-US",
+                        "answer": "Standard dispatch takes three business days. [1]",
+                        "confidence": 0.92,
+                        "citations": [1],
+                        "handoff": False,
+                        "handoff_reason": None,
+                    }
                 return ChatGenerationResult(
                     content="",
                     data=data,
@@ -1594,9 +1620,110 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         assert run_payload["evidence"][0]["classification"] == "CUSTOMER_APPROVED"
         assert run_payload["decision_trace"]["citations_valid"] is True
 
+        social_settings = client.patch(
+            "/api/v1/support/ai/settings",
+            json={
+                "enabled": True,
+                "daily_auto_reply_limit": 500,
+                "public_company_introduction": (
+                    "We provide approved catalog products."
+                ),
+                "public_service_scope": "Product selection and packaging.",
+            },
+        )
+        assert social_settings.status_code == 200, social_settings.text
+        greeting_chat = client.post(
+            "/api/store/demo/support/conversations",
+            json={
+                "message": "hi",
+                "client_message_id": str(uuid4()),
+                "locale": "en-US",
+            },
+        )
+        assert greeting_chat.status_code == 201, greeting_chat.text
+        greeting_conversation_id = UUID(greeting_chat.json()["id"])
+        conversation_ids.add(greeting_conversation_id)
+        greeting_public = client.get(
+            "/api/store/demo/support/conversations/current",
+            headers={"X-Support-Token": greeting_chat.json()["access_token"]},
+        )
+        assert greeting_public.status_code == 200, greeting_public.text
+        assert greeting_public.json()["automation_state"] == "AI_ACTIVE"
+        greeting_message = greeting_public.json()["messages"][-1]
+        assert greeting_message["sender_type"] == "AI"
+        assert "Local Demo Company" in greeting_message["body"]
+        assert greeting_message["citations"] == []
+        with SessionLocal() as session:
+            greeting_run = session.scalar(
+                select(SupportAIRunRow).where(
+                    SupportAIRunRow.conversation_id == greeting_conversation_id
+                )
+            )
+            assert greeting_run is not None
+            assert greeting_run.status == "SUCCEEDED"
+            assert greeting_run.retrieval_count == 0
+            assert greeting_run.decision_trace["intent"] == "GREETING"
+            assert greeting_run.decision_trace["generation_mode"] == "MODEL"
+
+        class FailingSupportGenerationProvider(FakeSupportGenerationProvider):
+            def generate_json(
+                self,
+                *,
+                messages: list[dict[str, str]],
+                temperature: float | None = None,
+                max_output_tokens: int | None = None,
+            ) -> ChatGenerationResult:
+                del messages, temperature, max_output_tokens
+                raise ChatGenerationError("provider unavailable")
+
+        monkeypatch.setattr(
+            support_ai_orchestrator,
+            "resolved_support_ai_provider",
+            lambda _session, **_kwargs: FailingSupportGenerationProvider(),
+        )
+        failed_generation_chat = client.post(
+            "/api/store/demo/support/conversations",
+            json={
+                "message": "thanks",
+                "client_message_id": str(uuid4()),
+                "locale": "en-US",
+            },
+        )
+        assert failed_generation_chat.status_code == 201, failed_generation_chat.text
+        failed_generation_id = UUID(failed_generation_chat.json()["id"])
+        conversation_ids.add(failed_generation_id)
+        failed_generation_public = client.get(
+            "/api/store/demo/support/conversations/current",
+            headers={
+                "X-Support-Token": failed_generation_chat.json()["access_token"]
+            },
+        )
+        assert failed_generation_public.status_code == 200
+        assert failed_generation_public.json()["automation_state"] == "AI_ACTIVE"
+        assert failed_generation_public.json()["messages"][-1]["sender_type"] == "AI"
+        with SessionLocal() as session:
+            failed_generation_run = session.scalar(
+                select(SupportAIRunRow).where(
+                    SupportAIRunRow.conversation_id == failed_generation_id
+                )
+            )
+            assert failed_generation_run is not None
+            assert failed_generation_run.status == "SUCCEEDED"
+            assert failed_generation_run.decision_trace["generation_mode"] == (
+                "SAFE_FALLBACK"
+            )
+            assert failed_generation_run.decision_trace["fallback_reason"] == (
+                "PROVIDER_FAILED"
+            )
+        monkeypatch.setattr(
+            support_ai_orchestrator,
+            "resolved_support_ai_provider",
+            lambda _session, **_kwargs: FakeSupportGenerationProvider(),
+        )
+
         auto_settings = client.patch(
             "/api/v1/support/ai/settings",
-            json={"enabled": True, "daily_auto_reply_limit": 1},
+            json={"enabled": True, "daily_auto_reply_limit": 3},
         )
         assert auto_settings.status_code == 200, auto_settings.text
 
@@ -1642,6 +1769,30 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
             assert limited_run.status == "SKIPPED"
             assert limited_run.handoff_reason == "DAILY_AUTO_REPLY_LIMIT_REACHED"
             assert limited_run.decision_trace["model_called"] is False
+
+        limited_greeting = client.post(
+            "/api/store/demo/support/conversations",
+            json={
+                "message": "hello",
+                "client_message_id": str(uuid4()),
+                "locale": "en-US",
+            },
+        )
+        assert limited_greeting.status_code == 201, limited_greeting.text
+        limited_greeting_id = UUID(limited_greeting.json()["id"])
+        conversation_ids.add(limited_greeting_id)
+        assert limited_greeting.json()["automation_state"] == "AI_ACTIVE"
+        assert limited_greeting.json()["messages"][-1]["sender_type"] == "AI"
+        with SessionLocal() as session:
+            limited_greeting_run = session.scalar(
+                select(SupportAIRunRow).where(
+                    SupportAIRunRow.conversation_id == limited_greeting_id
+                )
+            )
+            assert limited_greeting_run is not None
+            assert limited_greeting_run.status == "SKIPPED"
+            assert limited_greeting_run.decision_trace["intent"] == "GREETING"
+            assert limited_greeting_run.decision_trace["publish_decision"] == "AUTO_REPLY"
 
         revoked = client.delete(
             f"/api/v1/support/ai/knowledge/sources/{source_id}"
@@ -14247,10 +14398,26 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "catalog_batch_size",
         "catalog_batch_characters",
     }.issubset(translation_settings_columns)
-    assert "agent_id" in {
+    support_ai_settings_columns = {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("support_ai_settings")
     }
+    assert {
+        "agent_id",
+        "public_company_introduction",
+        "public_service_scope",
+    }.issubset(support_ai_settings_columns)
+    assert {
+        "public_company_introduction",
+        "public_service_scope",
+    }.issubset(
+        {
+            column["name"]
+            for column in inspect(upgraded_engine).get_columns(
+                "support_ai_agents"
+            )
+        }
+    )
     assert "agent_id" in {
         column["name"]
         for column in inspect(upgraded_engine).get_columns(
@@ -14260,7 +14427,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0069"
+        ).scalar() == "20260810_0070"
     upgraded_engine.dispose()
     command.check(config)
 

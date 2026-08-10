@@ -59,6 +59,8 @@ export function SupportAIAgentDetailPage() {
   const [minAnswerConfidence, setMinAnswerConfidence] = useState("0.65");
   const [maxSources, setMaxSources] = useState("5");
   const [dailyLimit, setDailyLimit] = useState("500");
+  const [publicCompanyIntroduction, setPublicCompanyIntroduction] = useState("");
+  const [publicServiceScope, setPublicServiceScope] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
 
   const [apiEnabled, setApiEnabled] = useState(true);
@@ -84,6 +86,8 @@ export function SupportAIAgentDetailPage() {
     setMinAnswerConfidence(String(next.minAnswerConfidence));
     setMaxSources(String(next.maxSources));
     setDailyLimit(String(next.dailyAutoReplyLimit));
+    setPublicCompanyIntroduction(next.publicCompanyIntroduction || "");
+    setPublicServiceScope(next.publicServiceScope || "");
     setSystemPrompt(next.systemPrompt || "");
   }, []);
 
@@ -150,6 +154,8 @@ export function SupportAIAgentDetailPage() {
         minAnswerConfidence: Number(minAnswerConfidence),
         maxSources: Number(maxSources),
         dailyAutoReplyLimit: Number(dailyLimit),
+        publicCompanyIntroduction: publicCompanyIntroduction.trim() || null,
+        publicServiceScope: publicServiceScope.trim() || null,
         systemPrompt: systemPrompt.trim() || null,
       });
       applyAgent(next);
@@ -290,12 +296,15 @@ export function SupportAIAgentDetailPage() {
                 <label className="support-agent-switch"><span><strong>{t("多语言回答")}</strong><small>{t("按访客语言回复")}</small></span><Switch checked={multilingualEnabled} onCheckedChange={setMultilingualEnabled} /></label>
               </div>
               <div className="support-agent-form-grid">
+                <label className="support-agent-wide"><Text size="1" color="gray">{t("企业对客简介（AI 可引用）")}</Text><TextArea value={publicCompanyIntroduction} onChange={(event) => setPublicCompanyIntroduction(event.target.value)} maxLength={2000} placeholder={t("填写经管理员确认、允许向客户公开的一句话或短介绍。")} /></label>
+                <label className="support-agent-wide"><Text size="1" color="gray">{t("对客服务范围（AI 可引用）")}</Text><TextArea value={publicServiceScope} onChange={(event) => setPublicServiceScope(event.target.value)} maxLength={2000} placeholder={t("例如产品选型、规格、MOQ、包装与售前咨询。")} /></label>
                 <label><Text size="1" color="gray">{t("最低检索分数")}</Text><TextField.Root type="number" min="0" max="1" step="0.01" value={minRetrievalScore} onChange={(event) => setMinRetrievalScore(event.target.value)} /></label>
                 <label><Text size="1" color="gray">{t("最低回答置信度")}</Text><TextField.Root type="number" min="0" max="1" step="0.01" value={minAnswerConfidence} onChange={(event) => setMinAnswerConfidence(event.target.value)} /></label>
                 <label><Text size="1" color="gray">{t("单次最大来源数")}</Text><TextField.Root type="number" min="1" max="12" value={maxSources} onChange={(event) => setMaxSources(event.target.value)} /></label>
                 <label><Text size="1" color="gray">{t("每日自动回复上限")}</Text><TextField.Root type="number" min="1" max="100000" value={dailyLimit} onChange={(event) => setDailyLimit(event.target.value)} /></label>
                 <label className="support-agent-wide"><Text size="1" color="gray">{t("系统提示词（选填）")}</Text><TextArea value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} maxLength={12000} /></label>
               </div>
+              <Text size="1" color="gray">{t("寒暄回复会由 AI 基于以上已批准内容生成；内部说明和系统提示词不会被当作企业事实。")}</Text>
               <div className="support-agent-card-actions"><Button type="submit" loading={busy === "basic"} disabled={!name.trim() || !policyValid || Boolean(busy)}><FloppyDisk />{t("保存智能体配置")}</Button></div>
             </Card>
           </form>

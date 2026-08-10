@@ -109,6 +109,10 @@ class SupportAIAgentRow(AuditTimestampMixin, Base):
     agent_code: Mapped[str] = mapped_column(String(8), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_company_introduction: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    public_service_scope: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     provider_setting_id: Mapped[str | None] = mapped_column(
         ForeignKey("support_ai_provider_settings.id", ondelete="RESTRICT"),
@@ -183,6 +187,10 @@ class SupportAISettingsRow(AuditTimestampMixin, Base):
         ForeignKey("support_ai_provider_settings.id", ondelete="RESTRICT"),
         nullable=True,
     )
+    public_company_introduction: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    public_service_scope: Mapped[str | None] = mapped_column(Text, nullable=True)
     sku_knowledge_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )

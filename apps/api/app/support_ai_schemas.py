@@ -168,6 +168,8 @@ class SupportAIAgentUpdate(BaseModel):
     min_answer_confidence: float | None = Field(default=None, ge=0, le=1)
     max_sources: int | None = Field(default=None, ge=1, le=12)
     daily_auto_reply_limit: int | None = Field(default=None, ge=1, le=100000)
+    public_company_introduction: str | None = Field(default=None, max_length=2000)
+    public_service_scope: str | None = Field(default=None, max_length=2000)
     system_prompt: str | None = Field(default=None, max_length=12000)
     handoff_messages: dict[str, str] | None = None
 
@@ -176,7 +178,13 @@ class SupportAIAgentUpdate(BaseModel):
     def normalize_optional_name(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
-    @field_validator("description", "system_prompt", mode="before")
+    @field_validator(
+        "description",
+        "public_company_introduction",
+        "public_service_scope",
+        "system_prompt",
+        mode="before",
+    )
     @classmethod
     def normalize_optional_text(cls, value: object) -> object:
         if not isinstance(value, str):
@@ -220,6 +228,8 @@ class SupportAIAgentResponse(BaseModel):
     min_answer_confidence: float = Field(ge=0, le=1)
     max_sources: int = Field(ge=1, le=12)
     daily_auto_reply_limit: int = Field(ge=1, le=100000)
+    public_company_introduction: str | None = None
+    public_service_scope: str | None = None
     system_prompt: str | None = None
     handoff_messages: dict[str, str] = Field(default_factory=dict)
     stores: list[SupportAIAgentStoreResponse] = Field(default_factory=list)
@@ -238,6 +248,8 @@ class SupportAISettingsResponse(BaseModel):
     min_answer_confidence: float = Field(ge=0, le=1)
     max_sources: int = Field(ge=1, le=12)
     daily_auto_reply_limit: int = Field(ge=1, le=100000)
+    public_company_introduction: str | None = None
+    public_service_scope: str | None = None
     system_prompt: str | None = None
     handoff_messages: dict[str, str] = Field(default_factory=dict)
     prompt_version: int = Field(ge=1)
@@ -256,10 +268,17 @@ class SupportAISettingsUpdate(BaseModel):
     min_answer_confidence: float = Field(default=0.65, ge=0, le=1)
     max_sources: int = Field(default=5, ge=1, le=12)
     daily_auto_reply_limit: int = Field(default=500, ge=1, le=100000)
+    public_company_introduction: str | None = Field(default=None, max_length=2000)
+    public_service_scope: str | None = Field(default=None, max_length=2000)
     system_prompt: str | None = Field(default=None, max_length=12000)
     handoff_messages: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("system_prompt", mode="before")
+    @field_validator(
+        "public_company_introduction",
+        "public_service_scope",
+        "system_prompt",
+        mode="before",
+    )
     @classmethod
     def normalize_prompt(cls, value: object) -> object:
         if not isinstance(value, str):
