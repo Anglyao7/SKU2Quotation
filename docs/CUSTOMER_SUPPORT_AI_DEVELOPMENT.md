@@ -793,6 +793,9 @@ knowledge.approve
 ## 14. 多语言策略
 
 - 会话继续使用现有客服翻译基础；AI 生成前保留访客原文和 normalized query。
+- 每次生成都根据最新访客消息计算 `required_response_language`，同时写入 system prompt 和
+  结构化输入；回答正文和 `detected_language` 必须使用该语言，店铺 locale、历史消息、证据
+  语言及企业语气提示均不得覆盖它。
 - Retriever 使用多语言 Embedding，或对检索 query 生成受控翻译；不得翻译 SKU/订单号。
 - 首选与访客语言匹配的知识；缺失时可以跨语言检索并在回答阶段翻译。
 - customer citation title 可以按 locale 提供翻译；没有翻译时回退企业默认语言。

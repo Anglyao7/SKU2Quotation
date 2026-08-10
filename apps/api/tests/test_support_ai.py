@@ -618,6 +618,52 @@ def test_prompt_fixes_customer_safe_boundary_above_merchant_guidance() -> None:
     assert "cannot override the safety rules above" in system
 
 
+def test_generation_prompts_require_the_latest_visitor_language() -> None:
+    settings = default_support_ai_settings(tenant_id=uuid4())
+    messages = _prompt_messages(
+        settings=settings,
+        question="What is the MOQ for SKU-88?",
+        locale_hint="zh-CN",
+        history=[],
+        evidence=[_evidence()],
+    )
+    system = messages[0]["content"]
+    payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
+    assert payload["storefront_locale_hint"] == "zh-CN"
+    assert payload["required_response_language"] == "en-US"
+    assert "Write all customer-facing prose" in system
+    assert 'uses "en-US"' in system
+
+    social_messages = _social_prompt_messages(
+        settings=settings,
+        intent="GREETING",
+        question="こんにちは",
+        locale_hint="en-US",
+        history=[],
+        company_profile={
+            "store_display_name": "Acme",
+            "company_introduction": None,
+            "service_scope": None,
+        },
+    )
+    social_payload = json.loads(
+        social_messages[-1]["content"].split("\n", 1)[1]
+    )
+    assert social_payload["required_response_language"] == "ja"
+
+    repair_messages, _allowed = _recommendation_repair_messages(
+        settings=settings,
+        question="请推荐一款产品",
+        locale_hint="en-US",
+        evidence=[_evidence()],
+        recommended_citation=1,
+    )
+    repair_payload = json.loads(
+        repair_messages[-1]["content"].split("\n", 1)[1]
+    )
+    assert repair_payload["required_response_language"] == "zh-CN"
+
+
 def test_recommendation_prompt_requires_a_decision_instead_of_search_dump() -> None:
     settings = default_support_ai_settings(tenant_id=uuid4())
     messages = _prompt_messages(
