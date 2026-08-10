@@ -1151,6 +1151,21 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     assert detail.json()["unread"] is False
     assert detail.json()["automation_state"] == "AI_ACTIVE"
 
+    direct_takeover = client.patch(
+        f"/api/v1/support/conversations/{conversation_id}/automation",
+        json={"automation_state": "HUMAN_TAKEOVER"},
+    )
+    assert direct_takeover.status_code == 409, direct_takeover.text
+    assert (
+        direct_takeover.json()["detail"]["code"]
+        == "SUPPORT_TAKEOVER_REQUIRES_REPLY_OR_AI_HANDOFF"
+    )
+    still_ai_owned = client.get(
+        f"/api/v1/support/conversations/{conversation_id}"
+    )
+    assert still_ai_owned.status_code == 200, still_ai_owned.text
+    assert still_ai_owned.json()["automation_state"] == "AI_ACTIVE"
+
     replied = client.post(
         f"/api/v1/support/conversations/{conversation_id}/messages",
         json={"message": "Yes, blue is available."},
@@ -3934,7 +3949,11 @@ def test_platform_admin_routes_reject_regular_members(
             headers={"Authorization": f"Bearer {token}"},
             json={"automation_state": "HUMAN_TAKEOVER"},
         )
-        assert manual_takeover.status_code == 200, manual_takeover.text
+        assert manual_takeover.status_code == 409, manual_takeover.text
+        assert (
+            manual_takeover.json()["detail"]["code"]
+            == "SUPPORT_TAKEOVER_REQUIRES_REPLY_OR_AI_HANDOFF"
+        )
         denied_ai_resume = regular_client.patch(
             f"/api/v1/support/conversations/{conversation_id}/automation",
             headers={"Authorization": f"Bearer {token}"},

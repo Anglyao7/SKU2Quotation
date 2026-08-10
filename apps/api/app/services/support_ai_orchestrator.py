@@ -1098,7 +1098,7 @@ def _conversation_is_still_ai_owned(
 ) -> bool:
     if run.conversation_id is None or run.input_message_id is None:
         return False
-    conversation = support_repository.get_conversation(
+    conversation = support_repository.get_conversation_for_update(
         session,
         tenant_id=run.tenant_id,
         conversation_id=run.conversation_id,

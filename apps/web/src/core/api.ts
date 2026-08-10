@@ -3645,16 +3645,15 @@ export async function updateSupportConversationStatus(
   ) as SupportConversationDetail;
 }
 
-export async function updateSupportConversationAutomation(
+export async function resumeSupportConversationAI(
   conversationId: string,
-  automationState: SupportAutomationState,
 ): Promise<SupportConversationDetail> {
   return mapSupportSummary(
     await request<ApiSupportConversationDetail>(
       `/support/conversations/${encodeURIComponent(conversationId)}/automation`,
       {
         method: "PATCH",
-        body: JSON.stringify({ automation_state: automationState }),
+        body: JSON.stringify({ automation_state: "AI_ACTIVE" }),
       },
     ),
   ) as SupportConversationDetail;

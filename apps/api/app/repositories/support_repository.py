@@ -26,6 +26,22 @@ def get_conversation(
     )
 
 
+def get_conversation_for_update(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    conversation_id: UUID,
+) -> StorefrontChatConversationRow | None:
+    return session.scalar(
+        select(StorefrontChatConversationRow)
+        .where(
+            StorefrontChatConversationRow.tenant_id == tenant_id,
+            StorefrontChatConversationRow.id == conversation_id,
+        )
+        .with_for_update()
+    )
+
+
 def get_conversation_by_token_hash(
     session: Session,
     *,

@@ -891,7 +891,7 @@ def send_merchant_message(
     request: SupportMerchantMessageWrite,
 ) -> SupportConversationDetailResponse:
     _require(permissions, "support.reply")
-    row = repository.get_conversation(
+    row = repository.get_conversation_for_update(
         session,
         tenant_id=tenant_id,
         conversation_id=conversation_id,
@@ -1068,16 +1068,20 @@ def update_conversation_automation(
     is_platform_admin: bool,
     request: SupportConversationAutomationUpdate,
 ) -> SupportConversationDetailResponse:
-    if request.automation_state == "AI_ACTIVE":
-        if not is_platform_admin:
-            raise ApplicationError(
-                "PLATFORM_ADMIN_REQUIRED",
-                "只有平台管理员可以恢复 AI 接待。",
-                kind="forbidden",
-            )
-    else:
+    if request.automation_state == "HUMAN_TAKEOVER":
         _require(permissions, "support.reply")
-    row = repository.get_conversation(
+        raise ApplicationError(
+            "SUPPORT_TAKEOVER_REQUIRES_REPLY_OR_AI_HANDOFF",
+            "人工接管只能在客服实际发送回复，或 AI 明确转交人工时发生。",
+            kind="conflict",
+        )
+    if not is_platform_admin:
+        raise ApplicationError(
+            "PLATFORM_ADMIN_REQUIRED",
+            "只有平台管理员可以恢复 AI 接待。",
+            kind="forbidden",
+        )
+    row = repository.get_conversation_for_update(
         session,
         tenant_id=tenant_id,
         conversation_id=conversation_id,
@@ -1088,17 +1092,9 @@ def update_conversation_automation(
             "客服会话不存在。",
             kind="not_found",
         )
-    row.automation_state = request.automation_state
-    row.automation_state_changed_at = utcnow()
-    if request.automation_state == "HUMAN_TAKEOVER":
-        from ..services.support_ai_orchestrator import cancel_queued_runs_for_conversation
-
-        cancel_queued_runs_for_conversation(
-            session,
-            tenant_id=tenant_id,
-            conversation_id=row.id,
-            reason="MANUAL_TAKEOVER",
-        )
+    if row.automation_state != "AI_ACTIVE":
+        row.automation_state = "AI_ACTIVE"
+        row.automation_state_changed_at = utcnow()
     session.commit()
     return get_conversation(
         session,
