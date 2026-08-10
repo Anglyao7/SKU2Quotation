@@ -59,6 +59,7 @@ class EmbeddingSettingsResponse(BaseModel):
     model_version: str
     dimensions: int = Field(ge=1, le=2000)
     timeout_seconds: int = Field(ge=1, le=120)
+    max_retry_count: int = Field(ge=0, le=10)
     api_key_configured: bool
     api_key_hint: str | None = None
     updated_at: datetime | None = None
@@ -70,6 +71,7 @@ class EmbeddingSettingsUpdateRequest(BaseModel):
     model_name: str = Field(min_length=1, max_length=300)
     dimensions: int = Field(default=1024, ge=1, le=2000)
     timeout_seconds: int = Field(default=20, ge=1, le=120)
+    max_retry_count: int = Field(default=3, ge=0, le=10)
 
 
 class HybridSearchRequest(BaseModel):

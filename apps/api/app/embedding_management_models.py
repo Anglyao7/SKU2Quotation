@@ -38,6 +38,10 @@ class EmbeddingProviderSettingsRow(AuditTimestampMixin, Base):
             "timeout_seconds >= 1 AND timeout_seconds <= 120",
             name="timeout_supported",
         ),
+        CheckConstraint(
+            "max_retry_count >= 0 AND max_retry_count <= 10",
+            name="max_retry_count_supported",
+        ),
         CheckConstraint("version >= 1", name="version_positive"),
     )
 
@@ -50,6 +54,11 @@ class EmbeddingProviderSettingsRow(AuditTimestampMixin, Base):
     model_version: Mapped[str] = mapped_column(String(120), nullable=False)
     dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
+    max_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        default=3,
+        nullable=False,
+    )
     api_key_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     api_key_last_four: Mapped[str | None] = mapped_column(String(4), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

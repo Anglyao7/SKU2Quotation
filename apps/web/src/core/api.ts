@@ -1551,6 +1551,7 @@ interface ApiEmbeddingSettings {
   model_version: string;
   dimensions: number;
   timeout_seconds: number;
+  max_retry_count?: number;
   api_key_configured: boolean;
   api_key_hint?: string | null;
   updated_at?: string | null;
@@ -1565,6 +1566,7 @@ function mapEmbeddingSettings(row: ApiEmbeddingSettings): EmbeddingSettings {
     modelVersion: row.model_version,
     dimensions: row.dimensions,
     timeoutSeconds: row.timeout_seconds,
+    maxRetryCount: row.max_retry_count ?? 3,
     apiKeyConfigured: row.api_key_configured,
     apiKeyHint: defined(row.api_key_hint),
     updatedAt: defined(row.updated_at),
@@ -1585,6 +1587,7 @@ export async function updateEmbeddingSettings(input: {
   modelName: string;
   dimensions: number;
   timeoutSeconds: number;
+  maxRetryCount: number;
 }): Promise<EmbeddingSettings> {
   return mapEmbeddingSettings(
     await request<ApiEmbeddingSettings>("/ai/embedding/settings", {
@@ -1595,6 +1598,7 @@ export async function updateEmbeddingSettings(input: {
         model_name: input.modelName,
         dimensions: input.dimensions,
         timeout_seconds: input.timeoutSeconds,
+        max_retry_count: input.maxRetryCount,
       }),
     }),
   );

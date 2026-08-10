@@ -5479,6 +5479,7 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
                 "model_name": "text-embedding-test",
                 "dimensions": 1024,
                 "timeout_seconds": 25,
+                "max_retry_count": 4,
             },
         )
         assert saved.status_code == 200
@@ -5487,6 +5488,7 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
         assert payload["source"] == "database"
         assert payload["api_key_configured"] is True
         assert payload["api_key_hint"] == "••••9876"
+        assert payload["max_retry_count"] == 4
         assert raw_api_key not in saved.text
         assert "api_key_ciphertext" not in payload
 
@@ -5498,6 +5500,7 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
             assert row is not None
             assert raw_api_key not in row.api_key_ciphertext
             assert decrypt_api_key(row.api_key_ciphertext) == raw_api_key
+            assert row.max_retry_count == 4
             original_ciphertext = row.api_key_ciphertext
 
         retained = client.put(
@@ -5507,6 +5510,7 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
                 "model_name": "text-embedding-test-v2",
                 "dimensions": 1024,
                 "timeout_seconds": 25,
+                "max_retry_count": 5,
             },
         )
         assert retained.status_code == 200
@@ -5517,6 +5521,7 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
             )
             assert row is not None
             assert row.api_key_ciphertext == original_ciphertext
+            assert row.max_retry_count == 5
     finally:
         with SessionLocal() as session:
             session.execute(delete(EmbeddingProviderSettingsRow))
@@ -14260,7 +14265,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260809_0069"
+        ).scalar() == "20260810_0070"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -14641,6 +14646,13 @@ def test_embedding_management_migration_is_reversible_on_sqlite(
         "current_product_name",
         "error_message",
     }.issubset(job_columns)
+    provider_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns(
+            "embedding_provider_settings"
+        )
+    }
+    assert "max_retry_count" in provider_columns
     upgraded_engine.dispose()
 
     command.downgrade(config, "20260726_0033")
