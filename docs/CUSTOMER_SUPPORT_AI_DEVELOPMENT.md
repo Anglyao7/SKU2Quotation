@@ -9,7 +9,7 @@
 
 本次已完成运行契约的首个可上线闭环（知识与证据基础、店铺级 SKU/文件 RAG、
 启用/关闭、多语言、引用和人工接管），
-数据库版本为 `20260810_0070`。当前实现入口如下：
+数据库版本为 `20260810_0071`。当前实现入口如下：
 
 - 平台配置中心：`/console/system/configuration`，集中配置翻译与 Embedding API。智能客服
   模型密钥不再出现在公共配置页，统一在对应智能体详情中维护。
@@ -59,7 +59,8 @@
 `20260809_0061_tenant_module_entitlements.py`、
 `20260809_0062_support_ai_store_profiles.py`、
 `20260809_0063_support_ai_agents.py`、
-`20260810_0070_support_ai_social_profiles.py`。后续章节同时保留长期目标；标为 Phase 5/6
+`20260810_0070_support_ai_social_profiles.py` 与
+`20260810_0071_knowledge_index_checkpoints.py`。后续章节同时保留长期目标；标为 Phase 5/6
 的能力不属于本次 v1 自动回答范围。
 
 ## 1. 文档目的
@@ -102,7 +103,8 @@
 - [`services/hybrid_search.py`](../apps/api/app/services/hybrid_search.py)：lexical/vector 候选、
   PostgreSQL 有界预选和现有排序基础。
 - [`embedding_management_models.py`](../apps/api/app/embedding_management_models.py)：可观测
-  索引任务和模型版本记录。
+  索引任务和模型版本记录。商品向量化按批次原子提交向量与剩余商品断点，支持暂停、继续、
+  临时失败续跑以及 API 服务重启后的断点恢复；继续任务不得重复处理已提交商品。
 - [`support_models.py`](../apps/api/app/support_models.py)：前台会话、消息、翻译，以及已支持的
   `AI` sender type。
 - [`use_cases/support.py`](../apps/api/app/use_cases/support.py)：访客/商家消息、租户解析和客服

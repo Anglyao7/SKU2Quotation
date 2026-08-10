@@ -1360,6 +1360,14 @@ const english: Record<string, string> = {
     "Incremental update complete. Processed {count} products.",
   "当前没有需要更新的商品。": "No products need updating.",
   "智能索引更新失败": "Could not update the AI index",
+  "向量化已暂停，已完成的向量和断点会保留。":
+    "Vectorization paused. Completed vectors and the checkpoint are preserved.",
+  "正在完成当前向量批次，随后会安全暂停。":
+    "Finishing the current vector batch before pausing safely.",
+  "向量化已从断点继续，只处理剩余商品。":
+    "Vectorization resumed from the checkpoint. Only remaining products will be processed.",
+  "暂停向量化失败。": "Could not pause vectorization.",
+  "继续向量化失败。": "Could not resume vectorization.",
   "控制当前商家商品知识的向量索引。商品导入和编辑不会自动产生模型费用，由你决定何时更新。":
     "Manage the vector index for this merchant. Imports and edits do not trigger model charges automatically—you decide when to update.",
   "打开 AI 搜索": "Open AI Search",
@@ -1381,18 +1389,29 @@ const english: Record<string, string> = {
     "The indexing job is running. Keep this page open.",
   "正在处理 {done} / {total} 个商品":
     "Processing {done} / {total} products",
+  "向量化已暂停：{done} / {total} 个商品":
+    "Vectorization paused: {done} / {total} products",
   "任务执行中": "Job running",
+  "任务已暂停": "Job paused",
   "全量重建任务": "Full rebuild job",
   "增量更新任务": "Incremental update job",
   "QUEUED": "Queued",
   "RUNNING": "Running",
+  "PAUSED": "Paused",
   "SUCCEEDED": "Completed",
   "FAILED": "Failed",
   "完成 {percent}%": "{percent}% complete",
   "已生成 {count} 条向量": "{count} vectors generated",
   "当前批次：{name}": "Current batch: {name}",
+  "剩余 {count} 个商品 · 断点 {time}":
+    "{count} products remaining · checkpoint {time}",
   "任务在后台继续执行，离开本页不会中断。":
     "The job continues in the background and will not stop if you leave this page.",
+  "系统会先保存当前批次，再进入暂停状态，不会丢失已完成的向量。":
+    "The current batch is saved before pausing, so completed vectors are never lost.",
+  "处理中…": "Working…",
+  "取消暂停": "Cancel pause",
+  "暂停向量化": "Pause vectorization",
   "建议操作": "Recommended action",
   "通常只需增量更新": "Incremental updates are usually enough",
   "导入新商品，或修改商品名称、描述、分类与标签后，使用“更新智能索引”即可。系统只处理发生变化的商品。":

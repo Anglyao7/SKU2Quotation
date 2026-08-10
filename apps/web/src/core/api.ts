@@ -1485,15 +1485,21 @@ export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
 interface ApiKnowledgeIndexJob {
   id: string;
   mode: "INCREMENTAL" | "FULL_REBUILD";
-  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  status: "QUEUED" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
   total_products: number;
   processed_products: number;
   failed_products: number;
   embeddings: number;
+  remaining_products: number;
   progress_percent: number;
   current_product_id?: string | null;
   current_product_name?: string | null;
   error_message?: string | null;
+  pause_requested: boolean;
+  pause_requested_at?: string | null;
+  paused_at?: string | null;
+  resumable: boolean;
+  checkpoint_at?: string | null;
   created_at: string;
   started_at?: string | null;
   completed_at?: string | null;
@@ -1508,10 +1514,16 @@ function mapKnowledgeIndexJob(row: ApiKnowledgeIndexJob): KnowledgeIndexJob {
     processedProducts: row.processed_products,
     failedProducts: row.failed_products,
     embeddings: row.embeddings,
+    remainingProducts: row.remaining_products,
     progressPercent: row.progress_percent,
     currentProductId: defined(row.current_product_id),
     currentProductName: defined(row.current_product_name),
     errorMessage: defined(row.error_message),
+    pauseRequested: row.pause_requested,
+    pauseRequestedAt: defined(row.pause_requested_at),
+    pausedAt: defined(row.paused_at),
+    resumable: row.resumable,
+    checkpointAt: defined(row.checkpoint_at),
     createdAt: row.created_at,
     startedAt: defined(row.started_at),
     completedAt: defined(row.completed_at),
@@ -1550,6 +1562,28 @@ export async function getKnowledgeIndexJob(jobId: string): Promise<KnowledgeInde
         cache: "no-store",
         signal: AbortSignal.timeout(15_000),
       },
+    ),
+  );
+}
+
+export async function pauseKnowledgeIndexJob(
+  jobId: string,
+): Promise<KnowledgeIndexJob> {
+  return mapKnowledgeIndexJob(
+    await request<ApiKnowledgeIndexJob>(
+      `/ai/knowledge/index/jobs/${encodeURIComponent(jobId)}/pause`,
+      { method: "POST" },
+    ),
+  );
+}
+
+export async function resumeKnowledgeIndexJob(
+  jobId: string,
+): Promise<KnowledgeIndexJob> {
+  return mapKnowledgeIndexJob(
+    await request<ApiKnowledgeIndexJob>(
+      `/ai/knowledge/index/jobs/${encodeURIComponent(jobId)}/resume`,
+      { method: "POST" },
     ),
   );
 }

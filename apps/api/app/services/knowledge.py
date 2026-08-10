@@ -81,6 +81,7 @@ class KnowledgeIndexUpdateResult:
     model_name: str
     model_version: str
     dimensions: int
+    paused: bool = False
 
 
 def _json_value(value: Any) -> Any:
@@ -824,6 +825,59 @@ def knowledge_index_status(
     )
 
 
+def knowledge_index_target_products(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    full_rebuild: bool,
+    embedder: EmbeddingProvider | None = None,
+    product_ids: list[UUID] | None = None,
+) -> list[tuple[UUID, str]]:
+    """Return a stable, eligible target list for a durable indexing checkpoint."""
+
+    embedder = embedder or resolved_text_embedding_provider(session)
+    all_products = list(
+        session.execute(
+            select(ProductRow.id, ProductRow.name)
+            .outerjoin(
+                ProductCategoryRow,
+                (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+                & (ProductCategoryRow.id == ProductRow.category_id)
+                & (ProductCategoryRow.status == "ACTIVE"),
+            )
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.status == "ACTIVE",
+                or_(
+                    ProductCategoryRow.id.is_(None),
+                    func.trim(ProductCategoryRow.name)
+                    != UNCATEGORIZED_CATEGORY_NAME,
+                ),
+            )
+            .order_by(ProductRow.id)
+        ).all()
+    )
+    if product_ids is not None:
+        product_names = {product_id: name for product_id, name in all_products}
+        return [
+            (product_id, product_names[product_id])
+            for product_id in dict.fromkeys(product_ids)
+            if product_id in product_names
+        ]
+    if full_rebuild:
+        return all_products
+    current_indexed_ids = indexed_product_ids(
+        session,
+        tenant_id=tenant_id,
+        embedder=embedder,
+    )
+    return [
+        (product_id, product_name)
+        for product_id, product_name in all_products
+        if product_id not in current_indexed_ids
+    ]
+
+
 def update_knowledge_index(
     session: Session,
     *,
@@ -831,9 +885,11 @@ def update_knowledge_index(
     full_rebuild: bool,
     batch_size: int = 16,
     embedder: EmbeddingProvider | None = None,
+    target_product_ids: list[UUID] | None = None,
     progress_callback: (
         Callable[[int, int, int, UUID | None, str | None], None] | None
     ) = None,
+    pause_callback: Callable[[], bool] | None = None,
 ) -> KnowledgeIndexUpdateResult:
     embedder = embedder or resolved_text_embedding_provider(session)
     excluded_product_ids = list(
@@ -859,72 +915,53 @@ def update_knowledge_index(
             product_ids=excluded_product_ids,
         )
         session.commit()
-    all_products = list(
-        session.execute(
-            select(ProductRow.id, ProductRow.name)
-            .outerjoin(
-                ProductCategoryRow,
-                (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
-                & (ProductCategoryRow.id == ProductRow.category_id)
-                & (ProductCategoryRow.status == "ACTIVE"),
-            )
-            .where(
-                ProductRow.tenant_id == tenant_id,
-                ProductRow.status == "ACTIVE",
-                or_(
-                    ProductCategoryRow.id.is_(None),
-                    func.trim(ProductCategoryRow.name)
-                    != UNCATEGORIZED_CATEGORY_NAME,
-                ),
-            )
-            .order_by(ProductRow.id)
-        ).all()
+    target_products = knowledge_index_target_products(
+        session,
+        tenant_id=tenant_id,
+        full_rebuild=full_rebuild,
+        embedder=embedder,
+        product_ids=target_product_ids,
     )
-    if full_rebuild:
-        target_products = all_products
-    else:
-        current_indexed_ids = indexed_product_ids(
-            session,
-            tenant_id=tenant_id,
-            embedder=embedder,
-        )
-        target_products = [
-            (product_id, product_name)
-            for product_id, product_name in all_products
-            if product_id not in current_indexed_ids
-        ]
 
     total_targets = len(target_products)
     embedding_count = 0
+    processed = 0
+    paused = False
     if progress_callback is not None:
         first = target_products[0] if target_products else (None, None)
         progress_callback(0, total_targets, 0, first[0], first[1])
         session.commit()
-    for start in range(0, total_targets, batch_size):
-        batch = target_products[start : start + batch_size]
-        results = project_products_knowledge(
-            session,
-            tenant_id=tenant_id,
-            product_ids=[product_id for product_id, _name in batch],
-            embedder=embedder,
-            force_reembed=full_rebuild,
-        )
-        embedding_count += sum(result.embeddings for result in results)
-        processed = min(start + len(batch), total_targets)
-        next_product = (
-            target_products[processed]
-            if processed < total_targets
-            else (None, None)
-        )
-        if progress_callback is not None:
-            progress_callback(
-                processed,
-                total_targets,
-                embedding_count,
-                next_product[0],
-                next_product[1],
+    if pause_callback is not None and pause_callback():
+        paused = True
+    else:
+        for start in range(0, total_targets, batch_size):
+            batch = target_products[start : start + batch_size]
+            results = project_products_knowledge(
+                session,
+                tenant_id=tenant_id,
+                product_ids=[product_id for product_id, _name in batch],
+                embedder=embedder,
+                force_reembed=full_rebuild,
             )
-        session.commit()
+            embedding_count += sum(result.embeddings for result in results)
+            processed = min(start + len(batch), total_targets)
+            next_product = (
+                target_products[processed]
+                if processed < total_targets
+                else (None, None)
+            )
+            if progress_callback is not None:
+                progress_callback(
+                    processed,
+                    total_targets,
+                    embedding_count,
+                    next_product[0],
+                    next_product[1],
+                )
+            session.commit()
+            if pause_callback is not None and pause_callback():
+                paused = True
+                break
 
     status = knowledge_index_status(
         session,
@@ -933,7 +970,7 @@ def update_knowledge_index(
     )
     return KnowledgeIndexUpdateResult(
         mode="FULL_REBUILD" if full_rebuild else "INCREMENTAL",
-        processed_products=total_targets,
+        processed_products=processed,
         total_products=status.total_products,
         indexed_products=status.indexed_products,
         pending_products=status.pending_products,
@@ -942,4 +979,5 @@ def update_knowledge_index(
         model_name=status.model_name,
         model_version=status.model_version,
         dimensions=status.dimensions,
+        paused=paused,
     )

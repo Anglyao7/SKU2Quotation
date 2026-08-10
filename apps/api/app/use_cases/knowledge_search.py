@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from uuid import UUID
 
+import psycopg
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -31,6 +33,7 @@ from ..services.hybrid_search import hybrid_product_search
 from ..services.knowledge import (
     KnowledgeProjectionError,
     knowledge_index_status,
+    knowledge_index_target_products,
     project_product_knowledge,
     update_knowledge_index,
 )
@@ -44,6 +47,7 @@ _index_executor = ThreadPoolExecutor(
 )
 _stale_job_after = timedelta(minutes=10)
 logger = logging.getLogger(__name__)
+_ZERO_IDENTITY = UUID(int=0)
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -157,6 +161,16 @@ def search_products(
     return HybridSearchResponse.model_validate(result)
 
 
+def _remaining_product_ids(job: KnowledgeIndexJobRow) -> list[UUID]:
+    values: list[UUID] = []
+    for raw in job.remaining_product_ids or []:
+        try:
+            values.append(UUID(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(values))
+
+
 def _job_response(job: KnowledgeIndexJobRow) -> KnowledgeIndexJobResponse:
     if job.total_products == 0:
         progress_percent = 100.0 if job.status == "SUCCEEDED" else 0.0
@@ -165,6 +179,9 @@ def _job_response(job: KnowledgeIndexJobRow) -> KnowledgeIndexJobResponse:
             100.0,
             round(job.processed_products / job.total_products * 100, 1),
         )
+    remaining_products = len(_remaining_product_ids(job))
+    if remaining_products == 0 and job.processed_products < job.total_products:
+        remaining_products = job.total_products - job.processed_products
     return KnowledgeIndexJobResponse(
         id=job.id,
         mode=job.mode,
@@ -173,10 +190,23 @@ def _job_response(job: KnowledgeIndexJobRow) -> KnowledgeIndexJobResponse:
         processed_products=job.processed_products,
         failed_products=job.failed_products,
         embeddings=job.embeddings,
+        remaining_products=remaining_products,
         progress_percent=progress_percent,
         current_product_id=job.current_product_id,
         current_product_name=job.current_product_name,
         error_message=job.error_message,
+        pause_requested=(
+            job.status in {"QUEUED", "RUNNING"}
+            and job.pause_requested_at is not None
+        ),
+        pause_requested_at=job.pause_requested_at,
+        paused_at=job.paused_at,
+        resumable=job.status in {"PAUSED", "FAILED"},
+        checkpoint_at=(
+            job.updated_at
+            if job.started_at is not None or job.processed_products > 0
+            else None
+        ),
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
@@ -192,7 +222,7 @@ def _active_job(
         select(KnowledgeIndexJobRow)
         .where(
             KnowledgeIndexJobRow.tenant_id == tenant_id,
-            KnowledgeIndexJobRow.status.in_(("QUEUED", "RUNNING")),
+            KnowledgeIndexJobRow.status.in_(("QUEUED", "RUNNING", "PAUSED")),
         )
         .order_by(KnowledgeIndexJobRow.created_at.desc())
         .limit(1)
@@ -209,19 +239,18 @@ def _expire_stale_job(
     tenant_id: UUID,
 ) -> None:
     active = _active_job(session, tenant_id=tenant_id)
-    if active is None:
+    if active is None or active.status == "PAUSED":
         return
     if _as_utc(active.updated_at) >= utcnow() - _stale_job_after:
         return
-    active.status = "FAILED"
-    active.failed_products = max(
-        0,
-        active.total_products - active.processed_products,
-    )
-    active.error_message = "索引任务因服务中断而停止，请重新发起。"
+    active.status = "PAUSED"
+    active.failed_products = 0
+    active.error_message = "索引服务曾中断，已保留最近批次的断点，可继续向量化。"
     active.current_product_id = None
     active.current_product_name = None
-    active.completed_at = utcnow()
+    active.pause_requested_at = None
+    active.paused_at = utcnow()
+    active.completed_at = None
     session.commit()
 
 
@@ -272,6 +301,33 @@ def _safe_job_error(exc: Exception) -> str:
     return "智能索引任务执行失败，请检查模型配置或服务日志。"
 
 
+def _pause_at_safe_checkpoint(
+    session: Session,
+    job: KnowledgeIndexJobRow,
+) -> bool:
+    """Acknowledge a cross-process pause request between embedding batches."""
+
+    session.refresh(
+        job,
+        attribute_names=("status", "pause_requested_at", "updated_at"),
+    )
+    if job.status == "PAUSED":
+        return True
+    if job.status != "RUNNING":
+        return True
+    if job.pause_requested_at is None:
+        return False
+    now = utcnow()
+    job.status = "PAUSED"
+    job.failed_products = 0
+    job.paused_at = now
+    job.current_product_id = None
+    job.current_product_name = None
+    job.updated_at = now
+    session.commit()
+    return True
+
+
 def _run_index_job(
     *,
     job_id: UUID,
@@ -290,19 +346,93 @@ def _run_index_job(
             select(KnowledgeIndexJobRow).where(
                 KnowledgeIndexJobRow.tenant_id == tenant_id,
                 KnowledgeIndexJobRow.id == job_id,
-            )
+                KnowledgeIndexJobRow.status == "QUEUED",
+            ).with_for_update(skip_locked=True)
         )
-        if job is None or job.status != "QUEUED":
+        if job is None:
             return
         try:
             embedder = resolved_text_embedding_provider(session)
+            identity = embedder.identity
+            identity_changed = (
+                job.model_provider,
+                job.model_name,
+                job.model_version,
+                job.dimensions,
+            ) != (
+                identity.provider,
+                identity.model_name,
+                identity.model_version,
+                identity.dimensions,
+            )
+            stored_remaining = _remaining_product_ids(job)
+            if identity_changed:
+                target_products = knowledge_index_target_products(
+                    session,
+                    tenant_id=tenant_id,
+                    full_rebuild=job.mode == "FULL_REBUILD",
+                    embedder=embedder,
+                )
+                job.processed_products = 0
+                job.embeddings = 0
+            elif stored_remaining or (
+                job.started_at is not None
+                and job.processed_products >= job.total_products
+            ):
+                target_products = knowledge_index_target_products(
+                    session,
+                    tenant_id=tenant_id,
+                    full_rebuild=job.mode == "FULL_REBUILD",
+                    embedder=embedder,
+                    product_ids=stored_remaining,
+                )
+                if job.started_at is not None:
+                    target_ids = {
+                        product_id for product_id, _name in target_products
+                    }
+                    newly_pending = knowledge_index_target_products(
+                        session,
+                        tenant_id=tenant_id,
+                        full_rebuild=False,
+                        embedder=embedder,
+                    )
+                    target_products.extend(
+                        (product_id, product_name)
+                        for product_id, product_name in newly_pending
+                        if product_id not in target_ids
+                    )
+            elif job.processed_products < job.total_products:
+                # Legacy jobs did not persist target IDs. Current-model pending
+                # rows are the safe recovery set and avoid repeating committed work.
+                target_products = knowledge_index_target_products(
+                    session,
+                    tenant_id=tenant_id,
+                    full_rebuild=False,
+                    embedder=embedder,
+                )
+            else:
+                target_products = []
+
+            target_ids = [product_id for product_id, _name in target_products]
+            base_processed = job.processed_products
+            base_embeddings = job.embeddings
             job.status = "RUNNING"
-            job.started_at = utcnow()
-            job.model_provider = embedder.identity.provider
-            job.model_name = embedder.identity.model_name
-            job.model_version = embedder.identity.model_version
-            job.dimensions = embedder.identity.dimensions
+            if job.started_at is None:
+                job.started_at = utcnow()
+            job.model_provider = identity.provider
+            job.model_name = identity.model_name
+            job.model_version = identity.model_version
+            job.dimensions = identity.dimensions
+            job.total_products = base_processed + len(target_ids)
+            job.remaining_product_ids = [str(product_id) for product_id in target_ids]
+            job.failed_products = 0
+            job.error_message = None
+            job.paused_at = None
+            job.completed_at = None
             session.commit()
+
+            if _pause_at_safe_checkpoint(session, job):
+                return
 
             def record_progress(
                 processed: int,
@@ -311,9 +441,12 @@ def _run_index_job(
                 current_product_id: UUID | None,
                 current_product_name: str | None,
             ) -> None:
-                job.total_products = total
-                job.processed_products = processed
-                job.embeddings = embeddings
+                job.total_products = base_processed + total
+                job.processed_products = base_processed + processed
+                job.embeddings = base_embeddings + embeddings
+                job.remaining_product_ids = [
+                    str(product_id) for product_id in target_ids[processed:]
+                ]
                 job.current_product_id = current_product_id
                 job.current_product_name = current_product_name
                 job.updated_at = utcnow()
@@ -323,16 +456,47 @@ def _run_index_job(
                 tenant_id=tenant_id,
                 full_rebuild=job.mode == "FULL_REBUILD",
                 embedder=embedder,
+                target_product_ids=target_ids,
                 progress_callback=record_progress,
+                pause_callback=lambda: _pause_at_safe_checkpoint(session, job),
             )
-            job.status = "SUCCEEDED"
-            job.total_products = result.processed_products
-            job.processed_products = result.processed_products
-            job.embeddings = result.embeddings
-            job.failed_products = 0
-            job.current_product_id = None
-            job.current_product_name = None
-            job.completed_at = utcnow()
+            if result.paused:
+                return
+
+            completed_job = session.scalar(
+                select(KnowledgeIndexJobRow)
+                .where(
+                    KnowledgeIndexJobRow.tenant_id == tenant_id,
+                    KnowledgeIndexJobRow.id == job_id,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if completed_job is None:
+                return
+            if completed_job.pause_requested_at is not None:
+                now = utcnow()
+                completed_job.status = "PAUSED"
+                completed_job.failed_products = 0
+                completed_job.paused_at = now
+                completed_job.current_product_id = None
+                completed_job.current_product_name = None
+                completed_job.updated_at = now
+                session.commit()
+                return
+            if completed_job.status != "RUNNING":
+                session.rollback()
+                return
+            completed_job.status = "SUCCEEDED"
+            completed_job.processed_products = completed_job.total_products
+            completed_job.remaining_product_ids = []
+            completed_job.failed_products = 0
+            completed_job.current_product_id = None
+            completed_job.current_product_name = None
+            completed_job.pause_requested_at = None
+            completed_job.paused_at = None
+            completed_job.error_message = None
+            completed_job.completed_at = utcnow()
             session.commit()
         except Exception as exc:
             logger.exception("knowledge index job %s failed", job_id)
@@ -347,12 +511,16 @@ def _run_index_job(
                 return
             failed_job.status = "FAILED"
             failed_job.failed_products = max(
-                0,
+                len(_remaining_product_ids(failed_job)),
                 failed_job.total_products - failed_job.processed_products,
             )
-            failed_job.error_message = _safe_job_error(exc)
+            failed_job.error_message = (
+                f"{_safe_job_error(exc)} 已完成批次和向量已保留，可从断点继续。"
+            )
             failed_job.current_product_id = None
             failed_job.current_product_name = None
+            failed_job.pause_requested_at = None
+            failed_job.paused_at = None
             failed_job.completed_at = utcnow()
             session.commit()
 
@@ -371,6 +539,121 @@ def _dispatch_index_job(
         tenant_id=tenant_id,
         user_id=user_id,
     )
+
+
+def _index_job_tenant_ids(session: Session) -> tuple[UUID, ...]:
+    dialect = session.bind.dialect.name if session.bind is not None else "unknown"
+    if dialect != "postgresql":
+        return tuple(
+            session.scalars(
+                select(KnowledgeIndexJobRow.tenant_id)
+                .where(
+                    KnowledgeIndexJobRow.status.in_(("QUEUED", "RUNNING")),
+                    KnowledgeIndexJobRow.deleted_at.is_(None),
+                )
+                .distinct()
+            ).all()
+        )
+
+    directory_url = os.getenv("TENANT_DIRECTORY_DATABASE_URL", "").strip()
+    if not directory_url:
+        logger.warning(
+            "knowledge index checkpoint recovery skipped: tenant directory is not configured"
+        )
+        return ()
+    psycopg_url = directory_url.replace(
+        "postgresql+psycopg://",
+        "postgresql://",
+        1,
+    )
+    try:
+        with psycopg.connect(psycopg_url, connect_timeout=5) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM tenants "
+                    "WHERE status = 'active' AND deleted_at IS NULL ORDER BY id"
+                )
+                return tuple(UUID(str(row[0])) for row in cursor.fetchall())
+    except psycopg.Error:
+        logger.exception(
+            "knowledge index checkpoint recovery could not read tenant directory"
+        )
+        return ()
+
+
+def recover_interrupted_index_jobs() -> int:
+    """Turn process-owned unfinished jobs into resumable checkpoints."""
+
+    with SessionLocal() as session:
+        tenant_ids = _index_job_tenant_ids(session)
+        session.rollback()
+
+    recovered = 0
+    for tenant_id in tenant_ids:
+        try:
+            with SessionLocal() as session:
+                set_request_context(
+                    session,
+                    organization_id=_ZERO_IDENTITY,
+                    tenant_id=tenant_id,
+                    user_id=_ZERO_IDENTITY,
+                )
+                interrupted = list(
+                    session.scalars(
+                        select(KnowledgeIndexJobRow).where(
+                            KnowledgeIndexJobRow.tenant_id == tenant_id,
+                            KnowledgeIndexJobRow.status.in_(("QUEUED", "RUNNING")),
+                            KnowledgeIndexJobRow.deleted_at.is_(None),
+                        )
+                    ).all()
+                )
+                if not interrupted:
+                    session.rollback()
+                    continue
+                now = utcnow()
+                for job in interrupted:
+                    job.status = "PAUSED"
+                    job.failed_products = 0
+                    job.pause_requested_at = None
+                    job.paused_at = now
+                    job.current_product_id = None
+                    job.current_product_name = None
+                    job.error_message = (
+                        "服务重启前的向量化进度已保存，可从最近完成的批次继续。"
+                    )
+                    job.completed_at = None
+                    job.updated_at = now
+                session.commit()
+                recovered += len(interrupted)
+        except Exception:
+            logger.exception(
+                "knowledge index checkpoint recovery failed for tenant %s",
+                tenant_id,
+            )
+    return recovered
+
+
+def _managed_job(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    job_id: UUID,
+    for_update: bool = False,
+) -> KnowledgeIndexJobRow:
+    statement = select(KnowledgeIndexJobRow).where(
+        KnowledgeIndexJobRow.tenant_id == tenant_id,
+        KnowledgeIndexJobRow.id == job_id,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    job = session.scalar(statement)
+    if job is None:
+        raise ApplicationError(
+            "KNOWLEDGE_INDEX_JOB_NOT_FOUND",
+            "智能索引任务不存在。",
+            kind="not_found",
+        )
+    return job
 
 
 def start_index_job(
@@ -392,9 +675,10 @@ def start_index_job(
 
     try:
         embedder = resolved_text_embedding_provider(session)
-        index_status = knowledge_index_status(
+        target_products = knowledge_index_target_products(
             session,
             tenant_id=context.tenant_id,
+            full_rebuild=request.mode == "FULL_REBUILD",
             embedder=embedder,
         )
     except (ValueError, EmbeddingProviderError) as exc:
@@ -403,11 +687,8 @@ def start_index_job(
             str(exc),
         ) from exc
 
-    total_products = (
-        index_status.total_products
-        if request.mode == "FULL_REBUILD"
-        else index_status.pending_products
-    )
+    target_ids = [product_id for product_id, _name in target_products]
+    total_products = len(target_ids)
     now = utcnow()
     job = KnowledgeIndexJobRow(
         tenant_id=context.tenant_id,
@@ -421,6 +702,7 @@ def start_index_job(
         model_name=embedder.identity.model_name,
         model_version=embedder.identity.model_version,
         dimensions=embedder.identity.dimensions,
+        remaining_product_ids=[str(product_id) for product_id in target_ids],
         completed_at=now if total_products == 0 else None,
     )
     session.add(job)
@@ -455,4 +737,147 @@ def start_index_job(
                 "KNOWLEDGE_INDEX_JOB_DISPATCH_FAILED",
                 job.error_message,
             ) from exc
+    return _job_response(job)
+
+
+def pause_index_job(
+    session: Session,
+    *,
+    context: RequestContext,
+    job_id: UUID,
+) -> KnowledgeIndexJobResponse:
+    _require(context.permissions, "product.edit")
+    job = _managed_job(
+        session,
+        tenant_id=context.tenant_id,
+        job_id=job_id,
+        for_update=True,
+    )
+    if job.status == "PAUSED":
+        return _job_response(job)
+    if job.status not in {"QUEUED", "RUNNING"}:
+        raise ApplicationError(
+            "KNOWLEDGE_INDEX_JOB_NOT_PAUSABLE",
+            "当前向量化任务已经结束，无法暂停。",
+            kind="conflict",
+        )
+    now = utcnow()
+    job.pause_requested_at = now
+    if job.status == "QUEUED":
+        job.status = "PAUSED"
+        job.paused_at = now
+        job.current_product_id = None
+        job.current_product_name = None
+    session.commit()
+    return _job_response(job)
+
+
+def resume_index_job(
+    session: Session,
+    *,
+    context: RequestContext,
+    job_id: UUID,
+) -> KnowledgeIndexJobResponse:
+    _require(context.permissions, "product.edit")
+    job = _managed_job(
+        session,
+        tenant_id=context.tenant_id,
+        job_id=job_id,
+        for_update=True,
+    )
+    if job.status == "RUNNING" and job.pause_requested_at is not None:
+        job.pause_requested_at = None
+        session.commit()
+        return _job_response(job)
+    if job.status not in {"PAUSED", "FAILED"}:
+        raise ApplicationError(
+            "KNOWLEDGE_INDEX_JOB_NOT_RESUMABLE",
+            "只有已暂停或中断的向量化任务可以继续。",
+            kind="conflict",
+        )
+    existing = _active_job(session, tenant_id=context.tenant_id)
+    if existing is not None and existing.id != job.id:
+        raise ApplicationError(
+            "KNOWLEDGE_INDEX_JOB_CONFLICT",
+            "当前商家已有另一个向量化任务。",
+            kind="conflict",
+        )
+
+    try:
+        embedder = resolved_text_embedding_provider(session)
+    except (ValueError, EmbeddingProviderError) as exc:
+        raise ApplicationError(
+            "KNOWLEDGE_INDEX_CONFIGURATION_INVALID",
+            str(exc),
+        ) from exc
+    identity = embedder.identity
+    identity_changed = (
+        job.model_provider,
+        job.model_name,
+        job.model_version,
+        job.dimensions,
+    ) != (
+        identity.provider,
+        identity.model_name,
+        identity.model_version,
+        identity.dimensions,
+    )
+    remaining_ids = _remaining_product_ids(job)
+    if identity_changed or (
+        not remaining_ids and job.processed_products < job.total_products
+    ):
+        targets = knowledge_index_target_products(
+            session,
+            tenant_id=context.tenant_id,
+            full_rebuild=(
+                job.mode == "FULL_REBUILD" if identity_changed else False
+            ),
+            embedder=embedder,
+        )
+        remaining_ids = [product_id for product_id, _name in targets]
+        if identity_changed:
+            job.processed_products = 0
+            job.embeddings = 0
+            job.model_provider = identity.provider
+            job.model_name = identity.model_name
+            job.model_version = identity.model_version
+            job.dimensions = identity.dimensions
+        job.total_products = job.processed_products + len(remaining_ids)
+        job.remaining_product_ids = [
+            str(product_id) for product_id in remaining_ids
+        ]
+
+    job.status = "QUEUED"
+    job.pause_requested_at = None
+    job.paused_at = None
+    job.failed_products = 0
+    job.error_message = None
+    job.current_product_id = None
+    job.current_product_name = None
+    job.completed_at = None
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "KNOWLEDGE_INDEX_JOB_CONFLICT",
+            "当前商家已有另一个向量化任务。",
+            kind="conflict",
+        ) from exc
+    try:
+        _dispatch_index_job(
+            job_id=job.id,
+            organization_id=context.organization_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+    except RuntimeError as exc:
+        job.status = "PAUSED"
+        job.paused_at = utcnow()
+        job.error_message = "向量化任务暂时无法继续，请稍后重试。"
+        session.commit()
+        raise ApplicationError(
+            "KNOWLEDGE_INDEX_RESUME_FAILED",
+            job.error_message,
+        ) from exc
     return _job_response(job)

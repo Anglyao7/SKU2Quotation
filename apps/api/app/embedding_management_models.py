@@ -17,6 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from .ai_data_models import JSON_DOCUMENT
 from .database import Base
 from .model_mixins import AuditTimestampMixin
 
@@ -78,7 +79,7 @@ class KnowledgeIndexJobRow(AuditTimestampMixin, Base):
             name="mode_allowed",
         ),
         CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED')",
+            "status IN ('QUEUED', 'RUNNING', 'PAUSED', 'SUCCEEDED', 'FAILED')",
             name="status_allowed",
         ),
         CheckConstraint("total_products >= 0", name="total_products_nonnegative"),
@@ -109,10 +110,10 @@ class KnowledgeIndexJobRow(AuditTimestampMixin, Base):
             "tenant_id",
             unique=True,
             postgresql_where=text(
-                "status IN ('QUEUED', 'RUNNING') AND deleted_at IS NULL"
+                "status IN ('QUEUED', 'RUNNING', 'PAUSED') AND deleted_at IS NULL"
             ),
             sqlite_where=text(
-                "status IN ('QUEUED', 'RUNNING') AND deleted_at IS NULL"
+                "status IN ('QUEUED', 'RUNNING', 'PAUSED') AND deleted_at IS NULL"
             ),
         ),
     )
@@ -137,8 +138,19 @@ class KnowledgeIndexJobRow(AuditTimestampMixin, Base):
     model_name: Mapped[str] = mapped_column(String(300), nullable=False)
     model_version: Mapped[str] = mapped_column(String(120), nullable=False)
     dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+    remaining_product_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=list,
+        nullable=False,
+    )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pause_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paused_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     completed_at: Mapped[datetime | None] = mapped_column(
