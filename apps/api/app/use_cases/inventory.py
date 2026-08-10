@@ -49,6 +49,7 @@ from ..inventory_schemas import (
 from ..inventory_seed import ensure_default_warehouse
 from ..model_mixins import utcnow
 from ..repositories import inventory_repository as repository
+from ..services import query_cache
 
 
 ZERO = Decimal("0")
@@ -312,6 +313,23 @@ def list_stock(
         warehouse_id=warehouse_id,
         membership_id=membership_id,
     )
+    cache_slot = query_cache.lookup(
+        tenant_id=tenant_id,
+        domain=query_cache.DOMAIN_INVENTORY,
+        identity={
+            "kind": "stock-page",
+            "warehouse_id": str(warehouse.id),
+            "query": query.casefold().strip(),
+            "low_stock_only": low_stock_only,
+            "page": page,
+            "page_size": page_size,
+        },
+    )
+    if cache_slot.hit:
+        try:
+            return InventoryStockPage.model_validate(cache_slot.value)
+        except (TypeError, ValueError):
+            pass
     rows, total = repository.list_stock_rows(
         session,
         tenant_id=tenant_id,
@@ -321,7 +339,7 @@ def list_stock(
         page=page,
         page_size=page_size,
     )
-    return InventoryStockPage(
+    response = InventoryStockPage(
         items=[
             _stock_response(
                 warehouse=warehouse,
@@ -337,6 +355,16 @@ def list_stock(
         total=total,
         pages=ceil(total / page_size) if total else 0,
     )
+    query_cache.store(
+        cache_slot,
+        response.model_dump(mode="json"),
+        ttl_seconds=query_cache.configured_ttl(
+            "QUERY_CACHE_INVENTORY_TTL_SECONDS",
+            20,
+            maximum=300,
+        ),
+    )
+    return response
 
 
 def inventory_overview(
@@ -354,6 +382,19 @@ def inventory_overview(
         warehouse_id=warehouse_id,
         membership_id=membership_id,
     )
+    cache_slot = query_cache.lookup(
+        tenant_id=tenant_id,
+        domain=query_cache.DOMAIN_INVENTORY,
+        identity={
+            "kind": "inventory-overview",
+            "warehouse_id": str(warehouse.id),
+        },
+    )
+    if cache_slot.hit:
+        try:
+            return InventoryOverviewResponse.model_validate(cache_slot.value)
+        except (TypeError, ValueError):
+            pass
     aggregates = repository.inventory_aggregates(
         session, tenant_id=tenant_id, warehouse_id=warehouse.id
     )
@@ -368,7 +409,7 @@ def inventory_overview(
     )
     on_hand = Decimal(aggregates["on_hand_quantity"])
     reserved = Decimal(aggregates["reserved_quantity"])
-    return InventoryOverviewResponse(
+    response = InventoryOverviewResponse(
         warehouse_id=warehouse.id,
         warehouse_name=warehouse.name,
         currency=warehouse.currency,
@@ -392,6 +433,16 @@ def inventory_overview(
             for row in low_rows
         ],
     )
+    query_cache.store(
+        cache_slot,
+        response.model_dump(mode="json"),
+        ttl_seconds=query_cache.configured_ttl(
+            "QUERY_CACHE_INVENTORY_TTL_SECONDS",
+            20,
+            maximum=300,
+        ),
+    )
+    return response
 
 
 def _ensure_balance(

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..db_models import SupplierRow
 from ..domain.errors import ApplicationError
 from ..repositories import workspace_repository as repository
+from ..services import query_cache
 from ..workspace_schemas import (
     DashboardDataHealth,
     DashboardImport,
@@ -49,6 +50,22 @@ def get_dashboard(
     now = datetime.now(UTC)
     start_of_day = datetime.combine(now.date(), time.min, tzinfo=UTC)
     tenant_scope = bool({"system.user_manage", "supplier.manage", "quotation.approve"} & permissions)
+    cache_slot = query_cache.lookup(
+        tenant_id=tenant_id,
+        domain=query_cache.DOMAIN_DASHBOARD,
+        identity={
+            "kind": "dashboard",
+            "membership_id": str(membership_id),
+            "tenant_scope": tenant_scope,
+            "permissions": sorted(permissions),
+            "import_limit": import_limit,
+        },
+    )
+    if cache_slot.hit:
+        try:
+            return DashboardResponse.model_validate(cache_slot.value)
+        except (TypeError, ValueError):
+            pass
     data = repository.dashboard_snapshot(
         session,
         tenant_id=tenant_id,
@@ -111,13 +128,23 @@ def get_dashboard(
         )
         for job, source in data["recent_imports"]
     ] if "product.import" in permissions else []
-    return DashboardResponse(
+    response = DashboardResponse(
         generated_at=now,
         data_scope="TENANT" if tenant_scope else "SELF",
         metrics=metrics,
         recent_imports=recent_imports,
         data_health=data_health,
     )
+    query_cache.store(
+        cache_slot,
+        response.model_dump(mode="json"),
+        ttl_seconds=query_cache.configured_ttl(
+            "QUERY_CACHE_DASHBOARD_TTL_SECONDS",
+            30,
+            maximum=300,
+        ),
+    )
+    return response
 
 
 def _score(row: object | None) -> SupplierScoreSummary | None:

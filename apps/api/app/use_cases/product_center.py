@@ -69,6 +69,7 @@ from ..product_supplier_models import (
 from ..identity_models import TenantRow
 from ..public_catalog_models import PublicCatalogOfferRow, TenantPublicProfileRow
 from ..repositories import product_center_repository as repository
+from ..services import query_cache
 from ..services.category_template_import import (
     CategoryTemplateParseResult,
     category_name_key,
@@ -463,6 +464,46 @@ def list_skus(
             f"Unsupported SKU status: {', '.join(sorted(invalid_statuses))}",
         )
 
+    cache_slot = query_cache.lookup(
+        tenant_id=tenant_id,
+        domain=query_cache.DOMAIN_CATALOG,
+        identity={
+            "kind": "sku-page",
+            "query": query.casefold().strip(),
+            "category_id": str(category_id) if category_id else None,
+            "statuses": normalized_statuses,
+            "missing_images_only": missing_images_only,
+            "page": page,
+            "page_size": page_size,
+            "include_supplier_summary": include_supplier_summary,
+        },
+    )
+    if cache_slot.hit:
+        try:
+            return SkuListPage.model_validate(cache_slot.value)
+        except (TypeError, ValueError):
+            pass
+
+    count_cache_slot = query_cache.lookup(
+        tenant_id=tenant_id,
+        domain=query_cache.DOMAIN_CATALOG,
+        identity={
+            "kind": "sku-count",
+            "query": query.casefold().strip(),
+            "category_id": str(category_id) if category_id else None,
+            "statuses": normalized_statuses,
+            "missing_images_only": missing_images_only,
+        },
+    )
+    known_total = (
+        int(count_cache_slot.value)
+        if count_cache_slot.hit
+        and isinstance(count_cache_slot.value, int)
+        and not isinstance(count_cache_slot.value, bool)
+        and count_cache_slot.value >= 0
+        else None
+    )
+
     rows, total = repository.list_sku_page_rows(
         session,
         tenant_id=tenant_id,
@@ -472,7 +513,18 @@ def list_skus(
         missing_images_only=missing_images_only,
         page=page,
         page_size=page_size,
+        known_total=known_total,
     )
+    if known_total is None:
+        query_cache.store(
+            count_cache_slot,
+            total,
+            ttl_seconds=query_cache.configured_ttl(
+                "QUERY_CACHE_CATALOG_TTL_SECONDS",
+                30,
+                maximum=300,
+            ),
+        )
     sku_ids = {row.sku.id for row in rows}
     product_ids = {row.product.id for row in rows}
     direct_suppliers = {
@@ -597,13 +649,23 @@ def list_skus(
             )
         )
 
-    return SkuListPage(
+    response = SkuListPage(
         items=items,
         page=page,
         page_size=page_size,
         total=total,
         pages=(total + page_size - 1) // page_size,
     )
+    query_cache.store(
+        cache_slot,
+        response.model_dump(mode="json"),
+        ttl_seconds=query_cache.configured_ttl(
+            "QUERY_CACHE_CATALOG_TTL_SECONDS",
+            30,
+            maximum=300,
+        ),
+    )
+    return response
 
 
 def export_sku_catalog(
@@ -1319,7 +1381,17 @@ def list_categories(
     session: Session, *, tenant_id: UUID, permissions: frozenset[str]
 ) -> list[CategoryResponse]:
     _require(permissions, "product.view")
-    return [
+    cache_slot = query_cache.lookup(
+        tenant_id=tenant_id,
+        domain=query_cache.DOMAIN_METADATA,
+        identity={"kind": "categories"},
+    )
+    if cache_slot.hit and isinstance(cache_slot.value, list):
+        try:
+            return [CategoryResponse.model_validate(row) for row in cache_slot.value]
+        except (TypeError, ValueError):
+            pass
+    response = [
         CategoryResponse(
             id=row.id,
             parent_id=row.parent_id,
@@ -1333,6 +1405,16 @@ def list_categories(
         )
         for row in repository.list_categories(session, tenant_id=tenant_id)
     ]
+    query_cache.store(
+        cache_slot,
+        [row.model_dump(mode="json") for row in response],
+        ttl_seconds=query_cache.configured_ttl(
+            "QUERY_CACHE_METADATA_TTL_SECONDS",
+            300,
+            maximum=1_800,
+        ),
+    )
+    return response
 
 
 def get_category_layout(
@@ -1342,6 +1424,16 @@ def get_category_layout(
     permissions: frozenset[str],
 ) -> CategoryLayoutResponse:
     _require(permissions, "product.view")
+    cache_slot = query_cache.lookup(
+        tenant_id=tenant_id,
+        domain=query_cache.DOMAIN_METADATA,
+        identity={"kind": "category-layout"},
+    )
+    if cache_slot.hit:
+        try:
+            return CategoryLayoutResponse.model_validate(cache_slot.value)
+        except (TypeError, ValueError):
+            pass
     root_count = len(
         repository.list_sibling_categories(
             session, tenant_id=tenant_id, parent_id=None
@@ -1356,10 +1448,20 @@ def get_category_layout(
         max(0, int(profile.all_products_position or 0)) if profile else 0,
         root_count,
     )
-    return CategoryLayoutResponse(
+    response = CategoryLayoutResponse(
         all_products_position=position,
         root_category_count=root_count,
     )
+    query_cache.store(
+        cache_slot,
+        response.model_dump(mode="json"),
+        ttl_seconds=query_cache.configured_ttl(
+            "QUERY_CACHE_METADATA_TTL_SECONDS",
+            300,
+            maximum=1_800,
+        ),
+    )
+    return response
 
 
 def update_category_layout(

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..services import tag_service
+from ..services import query_cache, tag_service
 from ..services.auth.dependencies import (
     RequestContext,
     current_context,
@@ -84,6 +84,21 @@ def list_tags(
     """列出所有标签"""
     context = _context(session)
     _require_any(context, "product.view", "product.edit")
+    cache_slot = query_cache.lookup(
+        tenant_id=context.tenant_id,
+        domain=query_cache.DOMAIN_METADATA,
+        identity={
+            "kind": "tags",
+            "category": category.strip() if category else None,
+            "limit": limit,
+            "offset": offset,
+        },
+    )
+    if cache_slot.hit:
+        try:
+            return TagListResponse.model_validate(cache_slot.value)
+        except (TypeError, ValueError):
+            pass
     tags, total = tag_service.list_tags(
         session,
         tenant_id=context.tenant_id,
@@ -91,12 +106,22 @@ def list_tags(
         limit=limit,
         offset=offset,
     )
-    return TagListResponse(
+    response = TagListResponse(
         tags=[_tag_to_response(tag) for tag in tags],
         total=total,
         limit=limit,
         offset=offset,
     )
+    query_cache.store(
+        cache_slot,
+        response.model_dump(mode="json"),
+        ttl_seconds=query_cache.configured_ttl(
+            "QUERY_CACHE_METADATA_TTL_SECONDS",
+            300,
+            maximum=1_800,
+        ),
+    )
+    return response
 
 
 @router.post("", response_model=TagResponse, status_code=201)

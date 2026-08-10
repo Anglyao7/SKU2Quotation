@@ -268,7 +268,9 @@ def _semantic_scores(
         return {}
     filters = (
         EmbeddingRow.tenant_id == tenant_id,
+        EmbeddingRow.entity_type == "KNOWLEDGE_CHUNK",
         EmbeddingRow.entity_id.in_(chunk_ids),
+        EmbeddingRow.embedding_type == "KNOWLEDGE_CHUNK",
         EmbeddingRow.model_provider == embedder.identity.provider,
         EmbeddingRow.model_name == embedder.identity.model_name,
         EmbeddingRow.model_version == embedder.identity.model_version,

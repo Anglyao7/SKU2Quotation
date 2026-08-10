@@ -305,6 +305,7 @@ def list_sku_page_rows(
     page: int,
     page_size: int,
     sku_ids: set[UUID] | None = None,
+    known_total: int | None = None,
 ) -> tuple[list[SkuListRow], int]:
     conditions = [
         SkuRow.tenant_id == tenant_id,
@@ -363,14 +364,18 @@ def list_sku_page_rows(
         ProductRow.tenant_id == SkuRow.tenant_id,
         ProductRow.id == SkuRow.product_id,
     )
-    total = int(
-        session.scalar(
-            select(func.count())
-            .select_from(SkuRow)
-            .join(ProductRow, sku_product_join)
-            .where(*conditions)
+    total = (
+        int(known_total)
+        if known_total is not None
+        else int(
+            session.scalar(
+                select(func.count())
+                .select_from(SkuRow)
+                .join(ProductRow, sku_product_join)
+                .where(*conditions)
+            )
+            or 0
         )
-        or 0
     )
 
     statement = (
