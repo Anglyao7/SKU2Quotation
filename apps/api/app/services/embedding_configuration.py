@@ -13,9 +13,12 @@ from sqlalchemy.orm import Session
 from ..embedding_management_models import EmbeddingProviderSettingsRow
 from ..model_mixins import utcnow
 from .embedding import (
+    DEFAULT_EMBEDDING_RETRY_COUNT,
     EmbeddingProvider,
     EmbeddingProviderError,
     _embedding_endpoint,
+    configured_embedding_retry_base_seconds,
+    configured_embedding_retry_count,
     configured_text_embedding_provider,
     openai_compatible_embedding_provider,
 )
@@ -33,6 +36,7 @@ class EmbeddingConfigurationSnapshot:
     model_version: str
     dimensions: int
     timeout_seconds: int
+    max_retry_count: int
     api_key_configured: bool
     api_key_hint: str | None
     updated_at: datetime | None
@@ -105,6 +109,8 @@ def resolved_text_embedding_provider(session: Session) -> EmbeddingProvider:
         dimensions=settings.dimensions,
         model_version=settings.model_version,
         timeout_seconds=float(settings.timeout_seconds),
+        max_retry_count=settings.max_retry_count,
+        retry_base_seconds=configured_embedding_retry_base_seconds(),
     )
 
 
@@ -121,6 +127,7 @@ def embedding_configuration_snapshot(
             model_version=settings.model_version,
             dimensions=settings.dimensions,
             timeout_seconds=settings.timeout_seconds,
+            max_retry_count=settings.max_retry_count,
             api_key_configured=bool(settings.api_key_ciphertext),
             api_key_hint=(
                 f"••••{settings.api_key_last_four}"
@@ -147,6 +154,11 @@ def embedding_configuration_snapshot(
         timeout_seconds=int(
             float(os.getenv("TEXT_EMBEDDING_TIMEOUT_SECONDS", "20"))
         ),
+        max_retry_count=(
+            configured_embedding_retry_count()
+            if is_remote
+            else DEFAULT_EMBEDDING_RETRY_COUNT
+        ),
         api_key_configured=bool(raw_api_key) if is_remote else False,
         api_key_hint=f"••••{raw_api_key[-4:]}" if is_remote and raw_api_key else None,
         updated_at=None,
@@ -160,6 +172,7 @@ def save_managed_embedding_settings(
     model_name: str,
     dimensions: int,
     timeout_seconds: int,
+    max_retry_count: int,
     api_key: str | None,
     updated_by_user_id: UUID,
 ) -> EmbeddingProviderSettingsRow:
@@ -168,6 +181,10 @@ def save_managed_embedding_settings(
     _embedding_endpoint(normalized_base_url)
     if not normalized_model:
         raise EmbeddingProviderError("embedding model is required")
+    if max_retry_count < 0 or max_retry_count > 10:
+        raise EmbeddingProviderError(
+            "embedding retry count must be between 0 and 10"
+        )
 
     settings = get_managed_embedding_settings(session)
     normalized_key = api_key.strip() if api_key is not None else ""
@@ -190,6 +207,7 @@ def save_managed_embedding_settings(
             ),
             dimensions=dimensions,
             timeout_seconds=timeout_seconds,
+            max_retry_count=max_retry_count,
             api_key_ciphertext=encrypt_api_key(normalized_key),
             api_key_last_four=normalized_key[-4:] or None,
             is_active=True,
@@ -207,6 +225,7 @@ def save_managed_embedding_settings(
         )
         settings.dimensions = dimensions
         settings.timeout_seconds = timeout_seconds
+        settings.max_retry_count = max_retry_count
         settings.is_active = True
         settings.version += 1
         settings.updated_by_user_id = updated_by_user_id

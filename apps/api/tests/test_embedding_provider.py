@@ -33,6 +33,8 @@ def test_embedding_configuration_builds_openai_compatible_provider(
         dimensions: int,
         model_version: str,
         timeout_seconds: float,
+        max_retry_count: int,
+        retry_base_seconds: float,
     ) -> object:
         captured.update(
             api_key=api_key,
@@ -41,6 +43,8 @@ def test_embedding_configuration_builds_openai_compatible_provider(
             dimensions=dimensions,
             model_version=model_version,
             timeout_seconds=timeout_seconds,
+            max_retry_count=max_retry_count,
+            retry_base_seconds=retry_base_seconds,
         )
         return configured_provider
 
@@ -58,6 +62,8 @@ def test_embedding_configuration_builds_openai_compatible_provider(
             "TEXT_EMBEDDING_MODEL_VERSION": "test-d1024",
             "TEXT_EMBEDDING_DIMENSIONS": "1024",
             "TEXT_EMBEDDING_TIMEOUT_SECONDS": "20",
+            "TEXT_EMBEDDING_PROVIDER_RETRIES": "4",
+            "TEXT_EMBEDDING_RETRY_BASE_SECONDS": "1.5",
         }
     )
 
@@ -69,6 +75,8 @@ def test_embedding_configuration_builds_openai_compatible_provider(
         "dimensions": 1024,
         "model_version": "test-d1024",
         "timeout_seconds": 20.0,
+        "max_retry_count": 4,
+        "retry_base_seconds": 1.5,
     }
 
 
@@ -125,3 +133,93 @@ def test_openai_compatible_embedding_returns_safe_http_error() -> None:
             match="embedding provider returned HTTP 404",
         ):
             provider.embed(["query"])
+
+
+def test_openai_compatible_embedding_retries_transient_http_errors() -> None:
+    statuses = iter((503, 429, 200))
+    attempts = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        status = next(statuses)
+        if status != 200:
+            return httpx.Response(status, headers={"Retry-After": "0"})
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleEmbedding(
+            api_key="test-secret",
+            base_url="https://embedding.example",
+            model_name="text-embedding-3-large",
+            model_version="test-d2",
+            dimensions=2,
+            max_retry_count=2,
+            retry_base_seconds=0,
+            client=client,
+        )
+        vectors = provider.embed(["query"])
+
+    assert attempts == 3
+    assert vectors == [[1.0, 0.0]]
+
+
+def test_openai_compatible_embedding_retries_timeout() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("temporary timeout", request=request)
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleEmbedding(
+            api_key="test-secret",
+            base_url="https://embedding.example",
+            model_name="text-embedding-3-large",
+            model_version="test-d2",
+            dimensions=2,
+            max_retry_count=1,
+            retry_base_seconds=0,
+            client=client,
+        )
+        vectors = provider.embed(["query"])
+
+    assert attempts == 2
+    assert vectors == [[1.0, 0.0]]
+
+
+def test_openai_compatible_embedding_does_not_retry_authentication_error() -> None:
+    attempts = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(401)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleEmbedding(
+            api_key="test-secret",
+            base_url="https://embedding.example",
+            model_name="text-embedding-3-large",
+            model_version="test-d2",
+            dimensions=2,
+            max_retry_count=3,
+            retry_base_seconds=0,
+            client=client,
+        )
+        with pytest.raises(
+            EmbeddingProviderError,
+            match="embedding provider returned HTTP 401",
+        ):
+            provider.embed(["query"])
+
+    assert attempts == 1

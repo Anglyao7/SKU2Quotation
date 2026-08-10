@@ -47,6 +47,7 @@ function EmbeddingSettingsPanel() {
   const [apiKey, setApiKey] = useState("");
   const [dimensions, setDimensions] = useState("1024");
   const [timeoutSeconds, setTimeoutSeconds] = useState("20");
+  const [maxRetryCount, setMaxRetryCount] = useState("3");
 
   const apply = useCallback((next: EmbeddingSettings) => {
     setSettings(next);
@@ -54,6 +55,7 @@ function EmbeddingSettingsPanel() {
     setModelName(next.modelName);
     setDimensions(String(next.dimensions));
     setTimeoutSeconds(String(next.timeoutSeconds));
+    setMaxRetryCount(String(next.maxRetryCount ?? 3));
     setApiKey("");
   }, []);
 
@@ -82,7 +84,10 @@ function EmbeddingSettingsPanel() {
     && Number(dimensions) <= 8192
     && Number.isInteger(Number(timeoutSeconds))
     && Number(timeoutSeconds) >= 1
-    && Number(timeoutSeconds) <= 120,
+    && Number(timeoutSeconds) <= 120
+    && Number.isInteger(Number(maxRetryCount))
+    && Number(maxRetryCount) >= 0
+    && Number(maxRetryCount) <= 10,
   );
 
   const save = async (event: FormEvent<HTMLFormElement>) => {
@@ -98,6 +103,7 @@ function EmbeddingSettingsPanel() {
         apiKey: apiKey.trim() || undefined,
         dimensions: Number(dimensions),
         timeoutSeconds: Number(timeoutSeconds),
+        maxRetryCount: Number(maxRetryCount),
       }));
       setMessage(t("Embedding 配置已保存。模型或维度变更后请到 AI 搜索管理执行全量重建。"));
     } catch (reason) {
@@ -152,6 +158,11 @@ function EmbeddingSettingsPanel() {
         <label>
           <Text size="1" color="gray">{t("请求超时（秒）")}</Text>
           <TextField.Root type="number" min="1" max="120" value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(event.target.value)} required />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("失败后最多重试次数")}</Text>
+          <TextField.Root type="number" min="0" max="10" value={maxRetryCount} onChange={(event) => setMaxRetryCount(event.target.value)} required />
+          <Text size="1" color="gray">{t("仅临时错误会自动重试；次数不包含首次请求，建议设置为 2–3。")}</Text>
         </label>
         <div className="configuration-actions configuration-wide">
           <Button type="submit" size="3" disabled={!valid || saving}><FloppyDisk />{t(saving ? "保存中…" : "保存配置")}</Button>

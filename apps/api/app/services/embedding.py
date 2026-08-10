@@ -1,7 +1,9 @@
 import hashlib
+import logging
 import math
 import os
 import re
+import time
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -12,7 +14,14 @@ from urllib.parse import urlsplit
 import httpx
 
 
+logger = logging.getLogger(__name__)
+
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]", re.IGNORECASE)
+DEFAULT_EMBEDDING_RETRY_COUNT = 3
+MAX_EMBEDDING_RETRY_COUNT = 10
+DEFAULT_EMBEDDING_RETRY_BASE_SECONDS = 1.0
+MAX_EMBEDDING_RETRY_DELAY_SECONDS = 30.0
+_RETRYABLE_EMBEDDING_HTTP_STATUSES = {408, 409, 425, 429}
 
 # This deterministic vocabulary bridge is intentionally small. It makes local tests useful
 # without pretending to be a production semantic model or making an external AI call.
@@ -121,6 +130,8 @@ class OpenAICompatibleEmbedding:
         dimensions: int,
         model_version: str,
         timeout_seconds: float = 20.0,
+        max_retry_count: int = DEFAULT_EMBEDDING_RETRY_COUNT,
+        retry_base_seconds: float = DEFAULT_EMBEDDING_RETRY_BASE_SECONDS,
         client: httpx.Client | None = None,
     ) -> None:
         if not api_key.strip():
@@ -135,9 +146,19 @@ class OpenAICompatibleEmbedding:
             raise EmbeddingProviderError(
                 "TEXT_EMBEDDING_TIMEOUT_SECONDS must be between 0 and 120"
             )
+        if max_retry_count < 0 or max_retry_count > MAX_EMBEDDING_RETRY_COUNT:
+            raise EmbeddingProviderError(
+                "TEXT_EMBEDDING_PROVIDER_RETRIES must be between 0 and 10"
+            )
+        if retry_base_seconds < 0 or retry_base_seconds > 30:
+            raise EmbeddingProviderError(
+                "TEXT_EMBEDDING_RETRY_BASE_SECONDS must be between 0 and 30"
+            )
         self._api_key = api_key.strip()
         self._endpoint = _embedding_endpoint(base_url)
         self._timeout_seconds = timeout_seconds
+        self.max_retry_count = max_retry_count
+        self._retry_base_seconds = retry_base_seconds
         self._client = client or httpx.Client()
         self.identity = EmbeddingIdentity(
             provider="openai-compatible",
@@ -159,39 +180,120 @@ class OpenAICompatibleEmbedding:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        try:
-            response = self._client.post(
-                self._endpoint,
-                headers=headers,
-                json=payload,
-                timeout=self._timeout_seconds,
-            )
-        except httpx.TimeoutException as exc:
-            raise EmbeddingProviderError("embedding provider request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise EmbeddingProviderError("embedding provider request failed") from exc
-        if response.status_code < 200 or response.status_code >= 300:
-            raise EmbeddingProviderError(
-                f"embedding provider returned HTTP {response.status_code}"
-            )
-        try:
-            body = response.json()
-            rows = body["data"]
-            ordered = sorted(rows, key=lambda item: int(item["index"]))
-            vectors = [
-                [float(value) for value in item["embedding"]]
-                for item in ordered
-            ]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise EmbeddingProviderError(
-                "embedding provider returned an invalid response"
-            ) from exc
-        validate_vectors(
-            vectors,
-            expected_count=len(texts),
-            dimensions=self.identity.dimensions,
+        for attempt in range(self.max_retry_count + 1):
+            try:
+                response = self._client.post(
+                    self._endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=self._timeout_seconds,
+                )
+            except httpx.TimeoutException as exc:
+                if attempt < self.max_retry_count:
+                    self._wait_before_retry(attempt, reason="request timeout")
+                    continue
+                raise EmbeddingProviderError(
+                    "embedding provider request timed out"
+                ) from exc
+            except httpx.HTTPError as exc:
+                if attempt < self.max_retry_count:
+                    self._wait_before_retry(
+                        attempt,
+                        reason=f"network error ({type(exc).__name__})",
+                    )
+                    continue
+                raise EmbeddingProviderError(
+                    "embedding provider request failed"
+                ) from exc
+
+            if response.status_code < 200 or response.status_code >= 300:
+                error = EmbeddingProviderError(
+                    f"embedding provider returned HTTP {response.status_code}"
+                )
+                if (
+                    attempt < self.max_retry_count
+                    and _retryable_embedding_status(response.status_code)
+                ):
+                    self._wait_before_retry(
+                        attempt,
+                        reason=f"HTTP {response.status_code}",
+                        response=response,
+                    )
+                    continue
+                raise error
+
+            try:
+                body = response.json()
+                rows = body["data"]
+                ordered = sorted(rows, key=lambda item: int(item["index"]))
+                vectors = [
+                    [float(value) for value in item["embedding"]]
+                    for item in ordered
+                ]
+                validate_vectors(
+                    vectors,
+                    expected_count=len(texts),
+                    dimensions=self.identity.dimensions,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                if attempt < self.max_retry_count:
+                    self._wait_before_retry(attempt, reason="invalid response")
+                    continue
+                raise EmbeddingProviderError(
+                    "embedding provider returned an invalid response"
+                ) from exc
+            return vectors
+
+        raise EmbeddingProviderError("embedding provider request failed")
+
+    def _wait_before_retry(
+        self,
+        attempt: int,
+        *,
+        reason: str,
+        response: httpx.Response | None = None,
+    ) -> None:
+        retry_number = attempt + 1
+        delay = min(
+            self._retry_base_seconds * (2**attempt),
+            MAX_EMBEDDING_RETRY_DELAY_SECONDS,
         )
-        return vectors
+        if response is not None:
+            retry_after = _retry_after_seconds(response)
+            if retry_after is not None:
+                delay = min(
+                    max(delay, retry_after),
+                    MAX_EMBEDDING_RETRY_DELAY_SECONDS,
+                )
+        logger.warning(
+            "embedding provider retry %s/%s in %.2fs after %s",
+            retry_number,
+            self.max_retry_count,
+            delay,
+            reason,
+        )
+        if delay > 0:
+            time.sleep(delay)
+
+
+def _retryable_embedding_status(status_code: int) -> bool:
+    return (
+        status_code in _RETRYABLE_EMBEDDING_HTTP_STATUSES
+        or 500 <= status_code <= 599
+    )
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    raw_value = response.headers.get("Retry-After", "").strip()
+    if not raw_value:
+        return None
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
 
 
 def _embedding_endpoint(base_url: str) -> str:
@@ -208,6 +310,50 @@ def _embedding_endpoint(base_url: str) -> str:
     if normalized.endswith("/v1"):
         return f"{normalized}/embeddings"
     return f"{normalized}/v1/embeddings"
+
+
+def configured_embedding_retry_count(
+    values: Mapping[str, str] | None = None,
+) -> int:
+    if values is None:
+        values = os.environ
+    raw_value = values.get(
+        "TEXT_EMBEDDING_PROVIDER_RETRIES",
+        str(DEFAULT_EMBEDDING_RETRY_COUNT),
+    ).strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise EmbeddingProviderError(
+            "TEXT_EMBEDDING_PROVIDER_RETRIES must be an integer"
+        ) from exc
+    if value < 0 or value > MAX_EMBEDDING_RETRY_COUNT:
+        raise EmbeddingProviderError(
+            "TEXT_EMBEDDING_PROVIDER_RETRIES must be between 0 and 10"
+        )
+    return value
+
+
+def configured_embedding_retry_base_seconds(
+    values: Mapping[str, str] | None = None,
+) -> float:
+    if values is None:
+        values = os.environ
+    raw_value = values.get(
+        "TEXT_EMBEDDING_RETRY_BASE_SECONDS",
+        str(DEFAULT_EMBEDDING_RETRY_BASE_SECONDS),
+    ).strip()
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise EmbeddingProviderError(
+            "TEXT_EMBEDDING_RETRY_BASE_SECONDS must be numeric"
+        ) from exc
+    if value < 0 or value > 30:
+        raise EmbeddingProviderError(
+            "TEXT_EMBEDDING_RETRY_BASE_SECONDS must be between 0 and 30"
+        )
+    return value
 
 
 def configured_text_embedding_provider(
@@ -233,6 +379,8 @@ def configured_text_embedding_provider(
         raise EmbeddingProviderError(
             "text embedding dimensions or timeout is invalid"
         ) from exc
+    max_retry_count = configured_embedding_retry_count(values)
+    retry_base_seconds = configured_embedding_retry_base_seconds(values)
     return openai_compatible_embedding_provider(
         api_key=values.get("TEXT_EMBEDDING_API_KEY", ""),
         base_url=values.get("TEXT_EMBEDDING_BASE_URL", ""),
@@ -243,6 +391,8 @@ def configured_text_embedding_provider(
             f"1-d{dimensions}",
         ),
         timeout_seconds=timeout_seconds,
+        max_retry_count=max_retry_count,
+        retry_base_seconds=retry_base_seconds,
     )
 
 
@@ -254,6 +404,8 @@ def _configured_openai_compatible_provider(
     dimensions: int,
     model_version: str,
     timeout_seconds: float,
+    max_retry_count: int,
+    retry_base_seconds: float,
 ) -> OpenAICompatibleEmbedding:
     return OpenAICompatibleEmbedding(
         api_key=api_key,
@@ -262,6 +414,8 @@ def _configured_openai_compatible_provider(
         dimensions=dimensions,
         model_version=model_version,
         timeout_seconds=timeout_seconds,
+        max_retry_count=max_retry_count,
+        retry_base_seconds=retry_base_seconds,
     )
 
 
@@ -273,6 +427,8 @@ def openai_compatible_embedding_provider(
     dimensions: int,
     model_version: str,
     timeout_seconds: float,
+    max_retry_count: int = DEFAULT_EMBEDDING_RETRY_COUNT,
+    retry_base_seconds: float = DEFAULT_EMBEDDING_RETRY_BASE_SECONDS,
 ) -> OpenAICompatibleEmbedding:
     """Reuse clients for identical credential and model configurations."""
 
@@ -283,6 +439,8 @@ def openai_compatible_embedding_provider(
         dimensions,
         model_version,
         timeout_seconds,
+        max_retry_count,
+        retry_base_seconds,
     )
 
 

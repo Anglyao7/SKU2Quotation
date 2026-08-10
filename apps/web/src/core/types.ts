@@ -673,6 +673,7 @@ export interface EmbeddingSettings {
   modelVersion: string;
   dimensions: number;
   timeoutSeconds: number;
+  maxRetryCount: number;
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
   updatedAt?: string;

@@ -54,6 +54,7 @@ def update_settings(
             model_name=request.model_name,
             dimensions=request.dimensions,
             timeout_seconds=request.timeout_seconds,
+            max_retry_count=request.max_retry_count,
             api_key=(
                 request.api_key.get_secret_value()
                 if request.api_key is not None
