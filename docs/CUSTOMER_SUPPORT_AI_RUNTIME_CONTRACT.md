@@ -294,6 +294,9 @@ UPLOADED -> QUARANTINED -> SCANNING -> PARSING -> REVIEW_REQUIRED
   推荐之后只问一个高信息量问题，不能先发通用问卷阻断回答。
 - 没有商品证据时不得编造店铺商品；模型仍应使用 `GENERAL_GUIDANCE` 给出选择思路或一个
   聚焦追问，并保持 AI 接待。
+- 如果首轮模型已经给出有效主推荐且所有事实安全校验通过，但因引用商品过多而不符合展示
+  契约，编排器可以执行一次受限重写：保留模型选出的主商品，只向模型提供该商品和一个
+  备选的公开证据。重写仍未通过时才进入 `RETRIEVAL_FALLBACK`，不得发送原始商品列表。
 
 ## 8. 证据与引用契约
 
@@ -597,8 +600,10 @@ QUEUED
 契约升级必须附带数据迁移、索引重建、回滚方式和回归结果。历史 Run 始终记录运行当时的
 版本，不随当前配置变化。
 
-v2.1 变更不修改知识投影、chunk 或 Embedding，因此不需要数据迁移和索引重建；运行时记录
-`orchestrator_version=3`、`base_prompt_version=2` 与 `recommendation_policy_version=1`。
+v2.1 变更不修改知识 chunk 或 Embedding，因此不需要数据迁移和索引重建；运行时记录
+`orchestrator_version=3`、`base_prompt_version=2`、`recommendation_policy_version=1` 与
+客服商品重投影 `field_policy_version=2`。该字段策略只允许客户安全的标量规格选项进入
+Evidence，剔除内部元数据、供应商、采购/成本、内部备注、评分和联系方式字段。
 回滚时恢复 v2 编排器与 Prompt 即可，既有 Run 的版本和证据快照保持不变。上线前必须通过
 推荐意图、上下文继承、推荐引用契约、模型超时检索兜底及既有数字/敏感字段回归用例。
 

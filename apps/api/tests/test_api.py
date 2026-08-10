@@ -6030,7 +6030,16 @@ def test_support_product_retrieval_reuses_hybrid_index_and_public_facts(
                 product_id=product_id,
                 sku_code=f"DOG-SKU-{sku_id.hex[:8]}",
                 name="大型犬款",
-                option_values={"适用体型": "大型犬", "材质": "橡胶"},
+                option_values={
+                    "适用体型": "大型犬",
+                    "材质": "橡胶",
+                    "备注": "供应商：绝不能进入客服上下文",
+                    "采购价": "1.00 CNY",
+                    "_sku2quotation": {
+                        "source": "PRIVATE_IMPORT",
+                        "variant_option_keys": ["适用体型"],
+                    },
+                },
                 default_moq=Decimal("12"),
                 moq_unit="piece",
                 status="ACTIVE",
@@ -6075,6 +6084,13 @@ def test_support_product_retrieval_reuses_hybrid_index_and_public_facts(
         assert "MOQ=12" in product_evidence.excerpt
         assert "public_price=39.90 CNY" in product_evidence.excerpt
         assert "supplier" not in product_evidence.excerpt.casefold()
+        assert "供应商" not in product_evidence.excerpt
+        assert "绝不能进入客服上下文" not in product_evidence.excerpt
+        assert "采购价" not in product_evidence.excerpt
+        assert "_sku2quotation" not in product_evidence.excerpt
+        assert '"材质":"橡胶"' in product_evidence.excerpt
+        assert product_evidence.locator["field_policy_version"] == 2
+        assert bundle.diagnostics["customer_product_field_policy_version"] == 2
         assert bundle.diagnostics["product"]["engine"] == "HYBRID_PRODUCT_SEARCH"
         assert bundle.diagnostics["product"]["public_eligible_products"] >= 1
     finally:

@@ -26,8 +26,22 @@ from ..model_mixins import utcnow
 
 
 logger = logging.getLogger(__name__)
+CUSTOMER_PRODUCT_FIELD_POLICY_VERSION = 2
 SEARCH_SEGMENT_PATTERN = re.compile(
     r"[a-z0-9]+|[\u4e00-\u9fff]+",
+    re.IGNORECASE,
+)
+CUSTOMER_UNSAFE_OPTION_LABEL_PATTERN = re.compile(
+    r"(?:^_|supplier|vendor|factory|manufacturer|采购|採購|进货|進貨|成本|利润|利潤|"
+    r"供应商|供應商|厂家|廠家|工厂|工廠|内部|內部|备注|備註|note|remark|"
+    r"评分|評分|rating|score|联系人|聯繫人|联系方式|聯繫方式|phone|email|"
+    r"source)",
+    re.IGNORECASE,
+)
+CUSTOMER_UNSAFE_OPTION_VALUE_PATTERN = re.compile(
+    r"(?:supplier\s*[:：]|vendor\s*[:：]|供应商\s*[:：]|供應商\s*[:：]|"
+    r"采购价\s*[:：]|採購價\s*[:：]|成本价\s*[:：]|成本價\s*[:：]|"
+    r"internal\s*[:：])",
     re.IGNORECASE,
 )
 
@@ -175,11 +189,12 @@ def _public_product_excerpt(rows: list[object]) -> str:
         details = [f"SKU: {sku.sku_code}"]
         if sku.name:
             details.append(f"name={sku.name}")
-        if sku.option_values:
+        customer_safe_options = _customer_safe_option_values(sku.option_values)
+        if customer_safe_options:
             details.append(
                 "options="
                 + json.dumps(
-                    sku.option_values,
+                    customer_safe_options,
                     ensure_ascii=False,
                     sort_keys=True,
                     separators=(",", ":"),
@@ -192,6 +207,25 @@ def _public_product_excerpt(rows: list[object]) -> str:
         details.append(f"public_price={offer.unit_price} {offer.currency}")
         pieces.append("; ".join(details))
     return "\n".join(pieces)[:2200]
+
+
+def _customer_safe_option_values(values: object) -> dict[str, str]:
+    """Project only scalar, customer-safe SKU options into model evidence."""
+
+    if not isinstance(values, dict):
+        return {}
+    projected: dict[str, str] = {}
+    for raw_label, raw_value in values.items():
+        label = " ".join(str(raw_label).split())[:120]
+        if not label or CUSTOMER_UNSAFE_OPTION_LABEL_PATTERN.search(label):
+            continue
+        if isinstance(raw_value, (dict, list, tuple, set)):
+            continue
+        value = " ".join(str(raw_value).split())[:500]
+        if not value or CUSTOMER_UNSAFE_OPTION_VALUE_PATTERN.search(value):
+            continue
+        projected[label] = value
+    return projected
 
 
 def _lexical_public_product_evidence(
@@ -234,6 +268,9 @@ def _lexical_public_product_evidence(
                     "type": "public_product",
                     "product_id": str(product_id),
                     "sku_ids": [str(row[1].id) for row in product_rows[:3]],
+                    "field_policy_version": (
+                        CUSTOMER_PRODUCT_FIELD_POLICY_VERSION
+                    ),
                 },
                 excerpt=excerpt,
                 content_hash=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
@@ -324,6 +361,9 @@ def _product_evidence(
                     "product_id": str(product_id),
                     "sku_ids": [str(row[1].id) for row in product_rows[:3]],
                     "ranking_version": result.get("ranking_version"),
+                    "field_policy_version": (
+                        CUSTOMER_PRODUCT_FIELD_POLICY_VERSION
+                    ),
                 },
                 excerpt=excerpt,
                 content_hash=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
@@ -474,6 +514,9 @@ def retrieve_customer_evidence_with_trace(
         "minimum_score": minimum,
         "top_candidate_score": round(ranked[0].score, 6) if ranked else None,
         "accepted_scores": [round(row.score, 6) for row in unique],
+        "customer_product_field_policy_version": (
+            CUSTOMER_PRODUCT_FIELD_POLICY_VERSION
+        ),
     }
     return RetrievalBundle(evidence=unique, diagnostics=diagnostics)
 

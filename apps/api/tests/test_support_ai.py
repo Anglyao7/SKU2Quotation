@@ -28,6 +28,8 @@ from app.services.support_ai_orchestrator import (
     _contextual_retrieval_question,
     _prompt_messages,
     _recommendation_fallback_answer,
+    _recommendation_output_can_be_repaired,
+    _recommendation_repair_messages,
     _social_prompt_messages,
     _validated_social_output,
     _validated_model_output,
@@ -284,6 +286,63 @@ def test_recommendation_contract_rejects_a_catalog_dump_without_primary_choice()
     assert trace["recommendation_contract_valid"] is False
 
 
+def test_safe_catalog_dump_can_be_repaired_with_a_two_product_shortlist() -> None:
+    evidence = [
+        _evidence(),
+        replace(
+            _evidence(score="0.8"),
+            source_entity_id=str(uuid4()),
+            source_title="公开商品 / SKU-99",
+            excerpt="SKU: SKU-99\nMOQ: 200 pieces",
+        ),
+        replace(
+            _evidence(score="0.7"),
+            source_entity_id=str(uuid4()),
+            source_title="公开商品 / SKU-77",
+            excerpt="SKU: SKU-77\nMOQ: 300 pieces",
+        ),
+    ]
+    result = _validated_model_output(
+        {
+            "detected_language": "zh-CN",
+            "response_action": "ANSWER",
+            "grounding_mode": "EVIDENCE",
+            "answer": (
+                "我首选 SKU-99。[2]另外还可以看 SKU-88。[1]"
+                "以及 SKU-77。[3]"
+            ),
+            "confidence": 0.9,
+            "citations": [2, 1, 3],
+            "recommended_citation": 2,
+            "handoff_reason": None,
+        },
+        question="请推荐一款产品",
+        evidence=evidence,
+        fallback_language="zh-CN",
+        interaction_goal="PRODUCT_RECOMMENDATION",
+    )
+    trace = result[5]
+    assert result[4] == "RECOMMENDATION_CONTRACT_FAILED"
+    assert _recommendation_output_can_be_repaired(trace, evidence=evidence) is True
+
+    settings = default_support_ai_settings(tenant_id=uuid4())
+    messages, allowed = _recommendation_repair_messages(
+        settings=settings,
+        question="请推荐一款产品",
+        locale_hint="zh-CN",
+        evidence=evidence,
+        recommended_citation=2,
+    )
+    payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
+    assert allowed == [2, 1]
+    assert payload["required_primary_citation"] == 2
+    assert payload["allowed_citations"] == [2, 1]
+    assert [row["citation_number"] for row in payload["approved_evidence"]] == [
+        2,
+        1,
+    ]
+
+
 def test_retrieval_fallback_still_makes_a_grounded_recommendation() -> None:
     alternative = replace(
         _evidence(score="0.8"),
@@ -506,6 +565,14 @@ def test_recommendation_prompt_requires_a_decision_instead_of_search_dump() -> N
     payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
     assert payload["interaction_goal"] == "PRODUCT_RECOMMENDATION"
     assert payload["retrieval_context"]["catalog_evidence_available"] is True
+    assert payload["recommendation_output_contract"] == {
+        "primary_recommendation_count": 1,
+        "maximum_alternatives": 1,
+        "maximum_distinct_citations": 2,
+        "recommended_citation_must_be_inline": True,
+        "catalog_dump_forbidden": True,
+        "recommend_before_follow_up": True,
+    }
 
 
 def test_prompt_keeps_file_instructions_inside_untrusted_json_data() -> None:
