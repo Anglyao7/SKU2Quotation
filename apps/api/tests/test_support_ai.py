@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -26,6 +28,7 @@ from app.services.support_ai_language import (
 from app.services.support_ai_orchestrator import (
     RetrievalEvidence,
     _contextual_retrieval_question,
+    _normalized_retrieval_query,
     _prompt_messages,
     _recommendation_fallback_answer,
     _recommendation_output_can_be_repaired,
@@ -772,6 +775,142 @@ def test_generation_provider_retries_one_transient_response() -> None:
     result = provider.generate_json(messages=[{"role": "user", "content": "hi"}])
     assert calls == 2
     assert result.data == {"answer": "ok"}
+
+
+def test_generation_provider_receives_structured_output_as_sse() -> None:
+    request_payload: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_payload.update(json.loads(request.content))
+        events = (
+            'data: {"choices":[{"delta":{"content":"{\\"answer\\":"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"\\"ok\\"}"},'
+            '"finish_reason":null}],"usage":{"total_tokens":4}}\n\n'
+            "data: this-must-not-be-read-after-complete-json\n\n"
+        )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=events.encode(),
+        )
+
+    provider = OpenAICompatibleChatGeneration(
+        api_key="test-key",
+        base_url="https://generation.example/v1",
+        model_name="test-model",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    result = provider.generate_json_stream(
+        messages=[{"role": "user", "content": "hi"}]
+    )
+    assert request_payload["stream"] is True
+    assert result.data == {"answer": "ok"}
+    assert result.transport_mode == "STREAM"
+    assert result.first_delta_ms is not None
+    assert result.duration_ms is not None
+    assert result.usage == {"total_tokens": 4}
+
+
+def test_chinese_retrieval_query_skips_serial_translation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import support_ai_orchestrator
+
+    monkeypatch.setattr(
+        support_ai_orchestrator,
+        "translation_provider_is_configured",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        support_ai_orchestrator,
+        "resolved_catalog_translator",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Chinese retrieval must not wait for translation"
+        ),
+    )
+    assert _normalized_retrieval_query(
+        None,  # type: ignore[arg-type]
+        question="我想了解你们的珐琅铁锅 SKU-88",
+        detected_language="zh-CN",
+        multilingual_enabled=True,
+    ) == "我想了解你们的珐琅铁锅 SKU-88\nIdentifiers: SKU-88"
+
+
+def test_public_support_event_stream_pushes_validated_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.routers import support as support_router
+    from app.support_schemas import (
+        PublicChatConversationResponse,
+        PublicSupportChatMessageResponse,
+    )
+
+    conversation_id = uuid4()
+    visitor_message = PublicSupportChatMessageResponse(
+        id=uuid4(),
+        sender_type="VISITOR",
+        body="请推荐一个产品",
+        created_at=datetime.now(UTC),
+    )
+    ai_message = PublicSupportChatMessageResponse(
+        id=uuid4(),
+        sender_type="AI",
+        body="可以，先告诉我您的使用场景。",
+        created_at=datetime.now(UTC),
+    )
+    initial = PublicChatConversationResponse(
+        id=conversation_id,
+        reference_number="CS-STREAM-1",
+        status="OPEN",
+        messages=[visitor_message],
+        ai_processing=True,
+    )
+    completed = PublicChatConversationResponse(
+        id=conversation_id,
+        reference_number="CS-STREAM-1",
+        status="OPEN",
+        messages=[visitor_message, ai_message],
+        ai_processing=False,
+    )
+    monkeypatch.setattr(
+        support_router,
+        "_load_public_support_snapshot",
+        lambda **_kwargs: completed,
+    )
+
+    class ConnectedRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def collect_events() -> list[str]:
+        stream = support_router._public_support_event_stream(
+            request=ConnectedRequest(),  # type: ignore[arg-type]
+            tenant_slug="demo",
+            token="test-token",
+            initial=initial,
+        )
+        events: list[str] = []
+        async for event in stream:
+            events.append(event)
+            if event.startswith("event: message_end"):
+                break
+        await stream.aclose()
+        return events
+
+    events = asyncio.run(collect_events())
+    event_names = [event.split("\n", 1)[0] for event in events]
+    assert event_names[0] == "event: conversation"
+    assert "event: message_start" in event_names
+    assert event_names[-1] == "event: message_end"
+    deltas = [
+        json.loads(event.split("data: ", 1)[1])["delta"]
+        for event in events
+        if event.startswith("event: message_delta")
+    ]
+    assert "".join(deltas) == ai_message.body
+    long_chunks = support_router._support_answer_chunks("x" * 4_000)
+    assert len(long_chunks) <= 80
+    assert "".join(long_chunks) == "x" * 4_000
 
 
 def test_support_ai_api_key_encryption_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:

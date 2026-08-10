@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Protocol
@@ -11,6 +12,10 @@ import httpx
 
 class ChatGenerationError(ValueError):
     """A credential-safe model failure suitable for logs and operator UI."""
+
+
+class _ChatGenerationTransportError(ChatGenerationError):
+    """A request transport failure that is safe to retry once."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +30,9 @@ class ChatGenerationResult:
     data: dict[str, Any]
     finish_reason: str | None
     usage: dict[str, int]
+    transport_mode: str = "BUFFERED"
+    first_delta_ms: int | None = None
+    duration_ms: int | None = None
 
 
 class ChatGenerationProvider(Protocol):
@@ -68,7 +76,9 @@ def _json_object(value: str) -> dict[str, Any]:
         start = normalized.find("{")
         end = normalized.rfind("}")
         if start < 0 or end <= start:
-            raise ChatGenerationError("generation provider returned invalid structured output") from exc
+            raise ChatGenerationError(
+                "generation provider returned invalid structured output"
+            ) from exc
         try:
             payload = json.loads(normalized[start : end + 1])
         except json.JSONDecodeError as nested:
@@ -78,6 +88,63 @@ def _json_object(value: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ChatGenerationError("generation provider returned a non-object response")
     return payload
+
+
+def _content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(
+            str(block.get("text") or "")
+            for block in value
+            if isinstance(block, dict)
+        )
+    return ""
+
+
+def _response_json(response: httpx.Response) -> Any:
+    try:
+        return response.json()
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ChatGenerationError(
+            "generation provider returned an invalid response"
+        ) from exc
+
+
+def _result_from_body(
+    body: Any,
+    *,
+    transport_mode: str = "BUFFERED",
+    first_delta_ms: int | None = None,
+    duration_ms: int | None = None,
+) -> ChatGenerationResult:
+    try:
+        choice = body["choices"][0]
+        content = _content_text(choice["message"]["content"])
+        finish_reason = (
+            str(choice.get("finish_reason"))
+            if choice.get("finish_reason") is not None
+            else None
+        )
+        raw_usage = body.get("usage") or {}
+        usage = {
+            str(key): int(value)
+            for key, value in raw_usage.items()
+            if isinstance(value, (int, float))
+        }
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        raise ChatGenerationError(
+            "generation provider returned an invalid response"
+        ) from exc
+    return ChatGenerationResult(
+        content=content,
+        data=_json_object(content),
+        finish_reason=finish_reason,
+        usage=usage,
+        transport_mode=transport_mode,
+        first_delta_ms=first_delta_ms,
+        duration_ms=duration_ms,
+    )
 
 
 class OpenAICompatibleChatGeneration:
@@ -127,9 +194,13 @@ class OpenAICompatibleChatGeneration:
                 timeout=self._timeout_seconds,
             )
         except httpx.TimeoutException as exc:
-            raise ChatGenerationError("generation provider request timed out") from exc
+            raise _ChatGenerationTransportError(
+                "generation provider request timed out"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise ChatGenerationError("generation provider request failed") from exc
+            raise _ChatGenerationTransportError(
+                "generation provider request failed"
+            ) from exc
 
     def _request_with_transient_retry(
         self,
@@ -154,6 +225,161 @@ class OpenAICompatibleChatGeneration:
         assert last_error is not None
         raise last_error
 
+    def _stream_request(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[int, ChatGenerationResult | None]:
+        started_at = time.perf_counter()
+        try:
+            with self._client.stream(
+                "POST",
+                self._endpoint,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                },
+                json=payload,
+                timeout=self._timeout_seconds,
+            ) as response:
+                if response.status_code < 200 or response.status_code >= 300:
+                    response.read()
+                    return response.status_code, None
+
+                # Some compatible gateways ignore stream=true and return the normal
+                # JSON envelope. Accept it without weakening response validation.
+                content_type = response.headers.get("content-type", "").casefold()
+                if "text/event-stream" not in content_type:
+                    response.read()
+                    return response.status_code, _result_from_body(
+                        _response_json(response),
+                        duration_ms=max(
+                            0,
+                            round((time.perf_counter() - started_at) * 1000),
+                        ),
+                    )
+
+                content_parts: list[str] = []
+                event_data: list[str] = []
+                finish_reason: str | None = None
+                usage: dict[str, int] = {}
+                first_delta_ms: int | None = None
+
+                def consume_event() -> bool:
+                    nonlocal finish_reason, first_delta_ms, usage
+                    if not event_data:
+                        return False
+                    raw_event = "\n".join(event_data).strip()
+                    event_data.clear()
+                    if raw_event == "[DONE]":
+                        return True
+                    if not raw_event:
+                        return False
+                    try:
+                        event = json.loads(raw_event)
+                    except json.JSONDecodeError as exc:
+                        raise ChatGenerationError(
+                            "generation provider returned an invalid stream"
+                        ) from exc
+                    if not isinstance(event, dict):
+                        return False
+                    raw_usage = event.get("usage") or {}
+                    if isinstance(raw_usage, dict):
+                        usage = {
+                            str(key): int(value)
+                            for key, value in raw_usage.items()
+                            if isinstance(value, (int, float))
+                        }
+                    choices = event.get("choices") or []
+                    if not isinstance(choices, list) or not choices:
+                        return False
+                    choice = choices[0]
+                    if not isinstance(choice, dict):
+                        return False
+                    delta = choice.get("delta") or {}
+                    text_delta = (
+                        _content_text(delta.get("content"))
+                        if isinstance(delta, dict)
+                        else ""
+                    )
+                    # A few gateways send a full message in their final SSE event.
+                    if not text_delta and isinstance(choice.get("message"), dict):
+                        text_delta = _content_text(choice["message"].get("content"))
+                    if text_delta:
+                        if first_delta_ms is None:
+                            first_delta_ms = max(
+                                0,
+                                round((time.perf_counter() - started_at) * 1000),
+                            )
+                        content_parts.append(text_delta)
+                    if choice.get("finish_reason") is not None:
+                        finish_reason = str(choice["finish_reason"])
+                        return True
+                    # Some gateways hold the SSE connection open long after their
+                    # upstream has completed. A fully parseable JSON object is a
+                    # deterministic terminal condition for this structured API.
+                    if text_delta and "}" in text_delta:
+                        try:
+                            _json_object("".join(content_parts))
+                        except ChatGenerationError:
+                            pass
+                        else:
+                            finish_reason = "structured_output_complete"
+                            return True
+                    return False
+
+                for line in response.iter_lines():
+                    if line == "":
+                        if consume_event():
+                            break
+                    elif line.startswith("data:"):
+                        event_data.append(line[5:].lstrip())
+                if event_data:
+                    consume_event()
+        except httpx.TimeoutException as exc:
+            raise _ChatGenerationTransportError(
+                "generation provider request timed out"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise _ChatGenerationTransportError(
+                "generation provider request failed"
+            ) from exc
+
+        content = "".join(content_parts)
+        return 200, ChatGenerationResult(
+            content=content,
+            data=_json_object(content),
+            finish_reason=finish_reason,
+            usage=usage,
+            transport_mode="STREAM",
+            first_delta_ms=first_delta_ms,
+            duration_ms=max(
+                0,
+                round((time.perf_counter() - started_at) * 1000),
+            ),
+        )
+
+    def _stream_request_with_transient_retry(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[int, ChatGenerationResult | None]:
+        """Retry one safe stream attempt before any answer is published."""
+
+        last_error: _ChatGenerationTransportError | None = None
+        for attempt in range(2):
+            try:
+                status_code, result = self._stream_request(payload)
+            except _ChatGenerationTransportError as exc:
+                last_error = exc
+                if attempt == 0:
+                    continue
+                raise
+            if attempt == 0 and (status_code == 429 or status_code >= 500):
+                continue
+            return status_code, result
+        assert last_error is not None
+        raise last_error
+
     def generate_json(
         self,
         *,
@@ -163,6 +389,7 @@ class OpenAICompatibleChatGeneration:
     ) -> ChatGenerationResult:
         if not messages:
             raise ChatGenerationError("generation messages are required")
+        started_at = time.perf_counter()
         payload: dict[str, Any] = {
             "model": self.identity.model_name,
             "messages": messages,
@@ -184,39 +411,52 @@ class OpenAICompatibleChatGeneration:
             raise ChatGenerationError(
                 f"generation provider returned HTTP {response.status_code}"
             )
-        try:
-            body = response.json()
-            choice = body["choices"][0]
-            content_value = choice["message"]["content"]
-            if isinstance(content_value, list):
-                content = "".join(
-                    str(block.get("text") or "")
-                    for block in content_value
-                    if isinstance(block, dict)
-                )
-            else:
-                content = str(content_value)
-            finish_reason = (
-                str(choice.get("finish_reason"))
-                if choice.get("finish_reason") is not None
-                else None
-            )
-            raw_usage = body.get("usage") or {}
-            usage = {
-                str(key): int(value)
-                for key, value in raw_usage.items()
-                if isinstance(value, (int, float))
-            }
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ChatGenerationError(
-                "generation provider returned an invalid response"
-            ) from exc
-        return ChatGenerationResult(
-            content=content,
-            data=_json_object(content),
-            finish_reason=finish_reason,
-            usage=usage,
+        return _result_from_body(
+            _response_json(response),
+            duration_ms=max(
+                0,
+                round((time.perf_counter() - started_at) * 1000),
+            ),
         )
+
+    def generate_json_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+    ) -> ChatGenerationResult:
+        if not messages:
+            raise ChatGenerationError("generation messages are required")
+        payload: dict[str, Any] = {
+            "model": self.identity.model_name,
+            "messages": messages,
+            "temperature": self._temperature if temperature is None else temperature,
+            "max_tokens": (
+                self._max_output_tokens
+                if max_output_tokens is None
+                else max_output_tokens
+            ),
+            "response_format": {"type": "json_object"},
+            "stream": True,
+        }
+        status_code, result = self._stream_request_with_transient_retry(payload)
+        if status_code in {400, 404, 422}:
+            payload.pop("response_format", None)
+            status_code, result = self._stream_request_with_transient_retry(payload)
+        if result is None and status_code in {400, 404, 422}:
+            # Preserve availability for older OpenAI-compatible gateways while
+            # making the transport downgrade visible in the returned trace.
+            return self.generate_json(
+                messages=messages,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+        if result is None:
+            raise ChatGenerationError(
+                f"generation provider returned HTTP {status_code}"
+            )
+        return result
 
 
 @lru_cache(maxsize=8)

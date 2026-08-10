@@ -145,6 +145,17 @@ export interface PublicSupportConversation {
   ai_processing?: boolean;
 }
 
+export type PublicSupportStreamEvent =
+  | { type: "conversation"; conversation: PublicSupportConversation }
+  | { type: "message_start"; message: PublicSupportMessage }
+  | { type: "message_delta"; message_id: string; delta: string }
+  | {
+      type: "message_end";
+      message: PublicSupportMessage;
+      conversation: PublicSupportConversation;
+    }
+  | { type: "stream_error"; code: string };
+
 export type StorefrontLocale =
   | "zh-CN"
   | "en-US"
