@@ -11888,6 +11888,62 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
         ) == image_row.id
         assert get_object_storage().exists(image_row.object_key)
 
+    downloaded = client.get(
+        f"/api/v1/products/{product_id}/images/main/download"
+    )
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"].startswith("image/webp")
+    assert "attachment" in downloaded.headers["content-disposition"]
+    assert "catalog-main.webp" in downloaded.headers["content-disposition"]
+    with Image.open(BytesIO(downloaded.content)) as downloaded_image:
+        assert downloaded_image.size == (320, 240)
+
+    first_image_id = UUID(uploaded_payload["id"])
+    replacement_buffer = BytesIO()
+    Image.new("RGB", (180, 180), color=(212, 175, 55)).save(
+        replacement_buffer,
+        format="JPEG",
+    )
+    replaced = client.post(
+        f"/api/v1/products/{product_id}/images/main",
+        files={
+            "image": (
+                "catalog-replacement.jpg",
+                replacement_buffer.getvalue(),
+                "image/jpeg",
+            )
+        },
+    )
+    assert replaced.status_code == 201, replaced.text
+    uploaded_payload = replaced.json()
+    assert UUID(uploaded_payload["id"]) != first_image_id
+    assert uploaded_payload["width"] == 180
+    assert uploaded_payload["height"] == 180
+
+    with SessionLocal() as session:
+        all_images = list(
+            session.scalars(
+                select(ProductImageRow)
+                .where(
+                    ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductImageRow.product_id == product_id,
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+        )
+        assert len([row for row in all_images if row.deleted_at is None]) == 1
+        assert next(row for row in all_images if row.id == first_image_id).deleted_at is not None
+
+    replacement_download = client.get(
+        f"/api/v1/products/{product_id}/images/main/download"
+    )
+    assert replacement_download.status_code == 200, replacement_download.text
+    assert "catalog-replacement.webp" in replacement_download.headers[
+        "content-disposition"
+    ]
+    with Image.open(BytesIO(replacement_download.content)) as downloaded_image:
+        assert downloaded_image.size == (180, 180)
+
     listed = client.get(
         "/api/v1/product-center/skus",
         params={"q": f"IMG-SKU-{suffix}", "page": 1, "page_size": 20},
