@@ -35,6 +35,10 @@ class ProductCategoryRow(AuditTimestampMixin, Base):
         CheckConstraint("status IN ('ACTIVE', 'INACTIVE', 'ARCHIVED')", name="status_allowed"),
         CheckConstraint("sort_order >= 0", name="sort_nonnegative"),
         CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(
+            "cover_source IN ('NONE', 'UPLOAD', 'PRODUCT')",
+            name="cover_source_allowed",
+        ),
         CheckConstraint("parent_id IS NULL OR parent_id <> id", name="not_self_parent"),
         UniqueConstraint("tenant_id", "id", name="uq_product_categories_tenant_identity"),
         UniqueConstraint("tenant_id", "code", name="uq_product_categories_tenant_code"),
@@ -54,6 +58,11 @@ class ProductCategoryRow(AuditTimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     path: Mapped[str | None] = mapped_column(Text, nullable=True)
     display_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    cover_source: Mapped[str] = mapped_column(
+        String(20), default="NONE", nullable=False
+    )
+    cover_object_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    cover_product_id: Mapped[UUID | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)

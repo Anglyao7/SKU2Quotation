@@ -60,11 +60,94 @@
   margin-top: 22px;
 }
 
+.core-catalog-share-branding {
+  margin-top: 18px;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--gray-5);
+  border-radius: 14px;
+  background: var(--gray-2);
+}
+
+.core-catalog-share-branding > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.core-catalog-share-logo-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(88px, 1fr));
+  gap: 8px;
+}
+
+.core-catalog-share-logo-options > button {
+  min-width: 0;
+  min-height: 68px;
+  padding: 7px 9px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--gray-6);
+  border-radius: 11px;
+  color: var(--gray-11);
+  background: var(--color-panel-solid);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.core-catalog-share-logo-options > button:hover:not(:disabled) {
+  border-color: var(--accent-7);
+  color: var(--gray-12);
+}
+
+.core-catalog-share-logo-options > button.is-selected {
+  border-color: var(--accent-8);
+  color: var(--accent-11);
+  box-shadow: 0 0 0 1px var(--accent-7);
+}
+
+.core-catalog-share-logo-options > button:disabled {
+  opacity: .44;
+  cursor: not-allowed;
+}
+
+.core-catalog-share-logo-option-preview {
+  position: relative;
+  width: 34px;
+  height: 42px;
+  display: block;
+  border: 1px solid color-mix(in srgb, #d4af37 55%, transparent);
+  border-radius: 6px;
+  background: linear-gradient(145deg, #17112e, #2d1b69);
+}
+
+.core-catalog-share-logo-option-preview i {
+  position: absolute;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: #fff;
+}
+
+.core-catalog-share-logo-option-preview.is-top-left i { left: 4px; }
+.core-catalog-share-logo-option-preview.is-top-right i { right: 4px; }
+
 .core-catalog-share-card {
   position: relative;
   overflow: hidden;
-  min-height: 500px;
+  aspect-ratio: 4 / 5;
+  min-height: 470px;
   padding: 28px;
+  display: flex;
+  flex-direction: column;
   border: 1px solid rgba(212, 175, 55, 0.58);
   border-radius: 26px;
   background:
@@ -89,58 +172,61 @@
   88%, 100% { transform: translateX(85%); }
 }
 
-.core-catalog-share-brand {
+.core-catalog-share-merchant {
   position: relative;
   z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.core-catalog-share-brand > img,
-.core-catalog-share-brand > span {
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
+  min-width: 0;
   display: grid;
-  place-items: center;
-  border-radius: 14px;
-  background: rgba(255,255,255,.12);
-  border: 1px solid rgba(255,255,255,.2);
-  object-fit: cover;
+  justify-items: end;
+  gap: 5px;
+  text-align: right;
 }
 
-.core-catalog-share-brand > span svg { width: 24px; height: 24px; }
-.core-catalog-share-brand div { min-width: 0; display: grid; gap: 2px; }
-.core-catalog-share-brand small { color: rgba(255,255,255,.62); }
-.core-catalog-share-brand strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.core-catalog-share-merchant.has-top-left-logo {
+  max-width: calc(100% - 82px);
+  margin-left: auto;
+}
+
+.core-catalog-share-merchant.has-top-right-logo {
+  padding-top: 78px;
+}
+
+.core-catalog-share-logo {
+  position: absolute;
+  z-index: 2;
+  top: 28px;
+  width: 64px;
+  height: 64px;
+  padding: 7px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.45);
+  border-radius: 15px;
+  background: rgba(255,255,255,.92);
+  box-shadow: 0 10px 26px rgba(7,5,15,.2);
+}
+
+.core-catalog-share-logo.is-top-left { left: 28px; }
+.core-catalog-share-logo.is-top-right { right: 28px; }
+.core-catalog-share-logo img { width: 100%; height: 100%; object-fit: contain; }
+
+.core-catalog-share-merchant strong,
+.core-catalog-share-merchant span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.core-catalog-share-merchant strong { font: 600 21px/1.25 var(--font-display); letter-spacing: -.02em; }
+.core-catalog-share-merchant span { color: rgba(255,255,255,.64); font-size: 12px; }
 
 .core-catalog-share-qr {
   position: relative;
   z-index: 1;
-  width: min(78%, 280px);
+  width: min(82%, 290px);
   aspect-ratio: 1;
-  margin: 36px auto 26px;
+  margin: auto;
   padding: 12px;
-  border-radius: 20px;
+  border-radius: 18px;
   background: #fff;
   box-shadow: 0 16px 38px rgba(7, 5, 15, .28);
 }
 
 .core-catalog-share-qr img { display: block; width: 100%; height: 100%; }
-
-.core-catalog-share-card-copy {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  justify-items: center;
-  gap: 5px;
-  text-align: center;
-}
-
-.core-catalog-share-card-copy strong { max-width: 100%; font: 600 22px/1.3 var(--font-display); }
-.core-catalog-share-card-copy span { color: #e7cf80; font-size: 14px; }
-.core-catalog-share-card-copy small { color: rgba(255,255,255,.64); }
 
 .core-catalog-share-actions { display: grid; gap: 24px; min-width: 0; }
 .core-catalog-share-actions > div:first-child { display: grid; gap: 7px; }
@@ -162,7 +248,7 @@
 .store-share-banner-wrap { padding-top: 18px; }
 .store-share-banner {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
   padding: 14px 16px;
@@ -188,16 +274,22 @@
 
 @media (max-width: 720px) {
   .core-catalog-share-dialog { max-height: 92dvh; }
+  .core-catalog-share-branding { grid-template-columns: 1fr; }
+  .core-catalog-share-logo-options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .core-catalog-share-logo-options > button { min-height: 58px; grid-template-columns: 28px minmax(0, 1fr); padding: 6px; }
+  .core-catalog-share-logo-option-preview { width: 28px; height: 36px; }
   .core-catalog-share-layout { grid-template-columns: 1fr; gap: 20px; }
   .core-catalog-share-card { min-height: 0; padding: 20px; border-radius: 20px; }
-  .core-catalog-share-qr { width: min(72%, 230px); margin: 24px auto 18px; }
+  .core-catalog-share-logo { top: 20px; width: 54px; height: 54px; border-radius: 13px; }
+  .core-catalog-share-logo.is-top-left { left: 20px; }
+  .core-catalog-share-logo.is-top-right { right: 20px; }
+  .core-catalog-share-merchant.has-top-left-logo { max-width: calc(100% - 68px); }
+  .core-catalog-share-merchant.has-top-right-logo { padding-top: 66px; }
+  .core-catalog-share-qr { width: min(76%, 230px); }
   .core-catalog-share-action-row { display: grid; grid-template-columns: 1fr; }
   .core-catalog-share-action-row button { width: 100%; }
   .store-share-banner-wrap { padding-top: 12px; }
   .store-share-banner { grid-template-columns: auto minmax(0, 1fr); padding: 12px; }
-  .store-share-banner > a { grid-column: 1 / -1; width: 100%; }
-  .store-share-banner > a button,
-  .store-share-banner > button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -557,7 +649,7 @@ img { display: block; max-width: 100%; }
   gap: 0;
 }
 .results-container.has-sidebar {
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 208px 1fr;
   gap: 24px;
   margin-top: 28px;
 }
@@ -662,6 +754,22 @@ img { display: block; max-width: 100%; }
 .results-main {
   min-width: 0;
 }
+.category-secondary-nav { min-width: 0; padding: 7px 0 2px; }
+.category-secondary-nav .category-browser-track { padding-block: 2px 6px; }
+.category-showcase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
+.category-showcase-card { min-width: 0; padding: 0 0 15px; overflow: hidden; display: grid; gap: 11px; border: 1px solid var(--line); border-radius: 18px; color: var(--text); background: var(--surface); box-shadow: var(--shadow-sm); text-align: left; cursor: pointer; transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+.category-showcase-card:hover { border-color: var(--accent); box-shadow: 0 12px 36px rgba(0, 0, 0, .09); transform: translateY(-3px); }
+.category-showcase-card:active { transform: translateY(-1px) scale(.99); }
+.category-showcase-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.category-showcase-image { aspect-ratio: 1 / 1; overflow: hidden; display: grid; place-items: center; background: var(--page-soft); }
+.category-showcase-image > img { width: 100%; height: 100%; object-fit: cover; transition: transform 280ms ease; }
+.category-showcase-card:hover .category-showcase-image > img { transform: scale(1.035); }
+.category-showcase-image > span { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 18px; color: var(--accent-strong); background: var(--accent-soft); }
+.category-showcase-image svg { width: 29px; height: 29px; }
+.category-showcase-card > strong, .category-showcase-card > span:last-child { margin-inline: 16px; }
+.category-showcase-card > strong { overflow: hidden; font-family: var(--font-display); font-size: 17px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.category-showcase-card > span:last-child { display: inline-flex; align-items: center; gap: 4px; color: var(--text-soft); font-size: 11px; }
+.category-showcase-card > span:last-child svg { width: 12px; height: 12px; }
 .results-header { scroll-margin-top: 88px; display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: 40px 2px 20px; }
 .results-header > div { display: grid; gap: 6px; }
 .results-header h2 { letter-spacing: -0.035em; }
@@ -1612,6 +1720,15 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   }
   .results-container.has-sidebar .results-header > .rt-Badge { justify-self: start; }
   .results-container.has-sidebar .results-body { padding-top: 12px; }
+  .category-secondary-nav { padding-top: 0; }
+  .category-secondary-nav .category-browser-option { min-height: 32px; padding: 7px 10px; font-size: 10px; }
+  .category-showcase-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .category-showcase-card { padding-bottom: 9px; gap: 6px; border-radius: 12px; }
+  .category-showcase-image > span { width: 38px; height: 38px; border-radius: 12px; }
+  .category-showcase-image svg { width: 20px; height: 20px; }
+  .category-showcase-card > strong, .category-showcase-card > span:last-child { margin-inline: 8px; }
+  .category-showcase-card > strong { font-family: var(--font-sans); font-size: 11px; }
+  .category-showcase-card > span:last-child { font-size: 9px; }
   .results-container.has-sidebar .sku-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 7px;

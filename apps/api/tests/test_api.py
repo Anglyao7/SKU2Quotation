@@ -39,6 +39,7 @@ os.environ["AUTH_PROFILE"] = "local_fake"
 os.environ["AUTH_TEST_BYPASS"] = "true"
 
 from app.main import app
+from app.catalog_merchandising import POPULAR_CATEGORY_CODE
 from app.domain.errors import ApplicationError
 from app.routers.auth import _set_refresh_cookie
 from app.database import API_ROOT, SessionLocal, engine
@@ -874,6 +875,98 @@ def test_merchant_controls_hot_product_merchandising() -> None:
             profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
             assert profile is not None
             profile.hot_products_enabled = original
+            session.commit()
+
+
+def test_merchant_controls_optional_share_card_subtitle() -> None:
+    subtitle = f"专注精选商品 {uuid4().hex[:6]}"
+    share_id: UUID | None = None
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original = profile.description
+
+    try:
+        updated = client.patch(
+            "/api/v1/me/merchant",
+            json={"share_card_subtitle": subtitle},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["share_card_subtitle"] == subtitle
+
+        listing = client.get(
+            "/api/store/demo/skus",
+            params={"page": 1, "page_size": 1, "include_facets": "false"},
+        )
+        assert listing.status_code == 200, listing.text
+        created = client.post(
+            "/api/v1/catalog-shares",
+            json={
+                "target_type": "PRODUCTS",
+                "sku_ids": [listing.json()["items"][0]["id"]],
+            },
+        )
+        assert created.status_code == 201, created.text
+        share_id = UUID(created.json()["id"])
+        assert created.json()["store_subtitle"] == subtitle
+
+        cleared = client.patch(
+            "/api/v1/me/merchant",
+            json={"share_card_subtitle": ""},
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["share_card_subtitle"] is None
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.description = original
+            if share_id is not None:
+                session.execute(
+                    delete(CatalogShareRow).where(CatalogShareRow.id == share_id)
+                )
+            session.commit()
+
+
+def test_merchant_logo_upload_is_normalized_and_served_from_object_storage() -> None:
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_logo_url = profile.logo_url
+        original_object_key = profile.logo_object_key
+
+    image_bytes = BytesIO()
+    Image.new("RGBA", (360, 180), (45, 27, 105, 255)).save(image_bytes, "PNG")
+    uploaded_object_key: str | None = None
+    try:
+        response = client.post(
+            "/api/v1/me/merchant/logo",
+            files={"logo": ("brand.png", image_bytes.getvalue(), "image/png")},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["logo_url"].startswith("/api/store/demo/logo?v=")
+
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None and profile.logo_object_key
+            uploaded_object_key = profile.logo_object_key
+            assert profile.logo_url is None
+            assert get_object_storage().exists(uploaded_object_key)
+
+        public_logo = client.get(response.json()["logo_url"])
+        assert public_logo.status_code == 200, public_logo.text
+        assert public_logo.headers["content-type"].startswith("image/webp")
+        with Image.open(BytesIO(public_logo.content)) as normalized:
+            assert normalized.format == "WEBP"
+            assert normalized.size == (360, 180)
+    finally:
+        if uploaded_object_key:
+            get_object_storage().delete(uploaded_object_key)
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.logo_url = original_logo_url
+            profile.logo_object_key = original_object_key
             session.commit()
 
 
@@ -12409,7 +12502,12 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
     category_id = uuid4()
     product_ids = [uuid4(), uuid4()]
     sku_ids = [uuid4(), uuid4(), uuid4()]
+    original_logo_url: str | None = None
     with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_logo_url = profile.logo_url
+        profile.logo_url = "/static/test-merchant-logo.svg"
         session.add(
             ProductCategoryRow(
                 id=category_id,
@@ -12495,7 +12593,9 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
         share = created.json()
         assert share["target_type"] == "PRODUCTS"
         assert share["item_count"] == 2
-        assert share["share_path"] == f"/demo?share={share['token']}"
+        assert share["logo_position"] == "NONE"
+        share_identifier = share["id"].replace("-", "")
+        assert share["share_path"] == f"/demo/share/{share_identifier}"
 
         repeated = client.post(
             "/api/v1/catalog-shares",
@@ -12507,19 +12607,60 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
         assert repeated.status_code == 201, repeated.text
         assert repeated.json()["id"] == share["id"]
 
-        metadata = client.get(f"/api/store/demo/shares/{share['token']}")
+        branded = client.post(
+            "/api/v1/catalog-shares",
+            json={
+                "target_type": "PRODUCTS",
+                "sku_ids": [str(sku_id) for sku_id in sku_ids],
+                "logo_position": "TOP_LEFT",
+            },
+        )
+        assert branded.status_code == 201, branded.text
+        assert branded.json()["id"] != share["id"]
+        assert branded.json()["logo_position"] == "TOP_LEFT"
+        assert branded.json()["store_logo_url"] == "/static/test-merchant-logo.svg"
+        branded_metadata = client.get(
+            f"/api/store/demo/shares/{branded.json()['id'].replace('-', '')}"
+        )
+        assert branded_metadata.status_code == 200, branded_metadata.text
+        assert branded_metadata.json()["logo_position"] == "TOP_LEFT"
+
+        metadata = client.get(f"/api/store/demo/shares/{share_identifier}")
         assert metadata.status_code == 200, metadata.text
         assert metadata.json()["store_name"] == "Local Demo Company"
+        legacy_metadata = client.get(f"/api/store/demo/shares/{share['token']}")
+        assert legacy_metadata.status_code == 200, legacy_metadata.text
 
         scoped = client.get(
             "/api/store/demo/products",
-            params={"share": share["token"], "include_facets": "false"},
+            params={"share": share_identifier, "include_facets": "false"},
         )
         assert scoped.status_code == 200, scoped.text
         assert scoped.json()["total"] == 2
         assert {item["id"] for item in scoped.json()["items"]} == {
             str(product_id) for product_id in product_ids
         }
+
+        shared_detail = client.get(
+            f"/api/store/demo/products/{product_ids[0]}",
+            params={"share": share_identifier},
+        )
+        assert shared_detail.status_code == 200, shared_detail.text
+        unshared_catalog = client.get(
+            "/api/store/demo/products",
+            params={"page_size": 100, "include_facets": "false"},
+        )
+        assert unshared_catalog.status_code == 200, unshared_catalog.text
+        unrelated_product = next(
+            item
+            for item in unshared_catalog.json()["items"]
+            if item["id"] not in {str(value) for value in product_ids}
+        )
+        blocked_detail = client.get(
+            f"/api/store/demo/products/{unrelated_product['id']}",
+            params={"share": share_identifier},
+        )
+        assert blocked_detail.status_code == 404
 
         category_created = client.post(
             "/api/v1/catalog-shares",
@@ -12531,7 +12672,7 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
         category_scoped = client.get(
             "/api/store/demo/products",
             params={
-                "share": category_share["token"],
+                "share": category_share["id"].replace("-", ""),
                 "category": "不存在的分类",
                 "include_facets": "false",
             },
@@ -12551,6 +12692,13 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
                             hashlib.sha256(
                                 ("PRODUCTS:" + ",".join(sorted(str(value) for value in product_ids))).encode("utf-8")
                             ).hexdigest(),
+                            hashlib.sha256(
+                                (
+                                    "PRODUCTS:"
+                                    + ",".join(sorted(str(value) for value in product_ids))
+                                    + ":LOGO:TOP_LEFT"
+                                ).encode("utf-8")
+                            ).hexdigest(),
                             hashlib.sha256(f"CATEGORY:{category_id}".encode("utf-8")).hexdigest(),
                         ]
                     ),
@@ -12566,6 +12714,9 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
             session.execute(
                 delete(ProductCategoryRow).where(ProductCategoryRow.id == category_id)
             )
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.logo_url = original_logo_url
             session.commit()
 
 
@@ -12647,6 +12798,19 @@ def test_storefront_detail_views_are_idempotent_and_tenant_analytics_are_aggrega
     assert any(item["country_code"] == "ZZ" for item in payload["countries"])
     assert "ip_address" not in dashboard.text
 
+    ranking = client.get(
+        "/api/v1/storefront-analytics/product-ranking",
+        params={"days": 30, "page": 1, "page_size": 50},
+    )
+    assert ranking.status_code == 200, ranking.text
+    ranked_product = next(
+        item
+        for item in ranking.json()["items"]
+        if item["product_id"] == sku["product_id"]
+    )
+    assert ranked_product["views"] >= 1
+    assert ranked_product["rank"] >= 1
+
     with SessionLocal() as session:
         with pytest.raises(ApplicationError) as denied:
             storefront_analytics_use_cases.get_storefront_analytics(
@@ -12656,6 +12820,252 @@ def test_storefront_detail_views_are_idempotent_and_tenant_analytics_are_aggrega
                 days=30,
             )
         assert denied.value.code == "PERMISSION_REQUIRED"
+        with pytest.raises(ApplicationError) as ranking_denied:
+            storefront_analytics_use_cases.get_product_ranking(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                permissions=frozenset(),
+                days=30,
+                page=1,
+                page_size=50,
+            )
+        assert ranking_denied.value.code == "PERMISSION_REQUIRED"
+
+
+def test_product_view_ranking_can_assign_popular_category_with_pins_first() -> None:
+    suffix = uuid4().hex[:8].upper()
+    category_id = uuid4()
+    pinned_product_id = uuid4()
+    popular_product_id = uuid4()
+    normal_product_id = uuid4()
+    pinned_sku_id = uuid4()
+    popular_sku_id = uuid4()
+    normal_sku_id = uuid4()
+    product_ids = [pinned_product_id, popular_product_id, normal_product_id]
+    sku_ids = [pinned_sku_id, popular_sku_id, normal_sku_id]
+    now = datetime.now(UTC)
+
+    with SessionLocal() as session:
+        original_categories = {
+            row.id: {
+                "parent_id": row.parent_id,
+                "code": row.code,
+                "name": row.name,
+                "path": row.path,
+                "display_color": row.display_color,
+                "status": row.status,
+                "sort_order": row.sort_order,
+                "version": row.version,
+                "deleted_at": row.deleted_at,
+                "updated_at": row.updated_at,
+            }
+            for row in session.scalars(
+                select(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            ).all()
+        }
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_hot_products_enabled = bool(profile.hot_products_enabled)
+        profile.hot_products_enabled = True
+        category_name = f"Popular action {suffix}"
+        session.add(
+            ProductCategoryRow(
+                id=category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                code=f"POPULAR-ACTION-{suffix}",
+                name=category_name,
+                path=category_name,
+                status="ACTIVE",
+                sort_order=50_000,
+            )
+        )
+        session.flush()
+        product_names = [
+            f"Pinned product {suffix}",
+            f"Popular product {suffix}",
+            f"High score normal product {suffix}",
+        ]
+        session.add_all(
+            [
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"POPULAR-{suffix}-{index}",
+                    name=name,
+                    category_id=category_id,
+                    status="ACTIVE",
+                    storefront_pinned_at=(
+                        now + timedelta(seconds=1) if index == 1 else None
+                    ),
+                )
+                for index, (product_id, name) in enumerate(
+                    zip(product_ids, product_names, strict=True),
+                    start=1,
+                )
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"POPULAR-{suffix}-{index}",
+                    name=name,
+                    default_moq=Decimal("1"),
+                    moq_unit="piece",
+                    option_values={},
+                    status="ACTIVE",
+                )
+                for index, (sku_id, product_id, name) in enumerate(
+                    zip(sku_ids, product_ids, product_names, strict=True),
+                    start=1,
+                )
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                PublicCatalogOfferRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    sku_id=sku_id,
+                    unit_price=Decimal("10"),
+                    currency="CNY",
+                    tags=[],
+                    publication_status="PUBLISHED",
+                    published_at=now,
+                )
+                for sku_id in sku_ids
+            ]
+        )
+        session.add_all(
+            [
+                StorefrontProductViewDailyRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    viewed_on=now.date(),
+                    product_id=popular_product_id,
+                    sku_id=popular_sku_id,
+                    sku_code_snapshot=f"POPULAR-{suffix}-2",
+                    product_name_snapshot=product_names[1],
+                    country_code="ZZ",
+                    view_count=3,
+                ),
+                StorefrontProductViewDailyRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    viewed_on=now.date(),
+                    product_id=normal_product_id,
+                    sku_id=normal_sku_id,
+                    sku_code_snapshot=f"POPULAR-{suffix}-3",
+                    product_name_snapshot=product_names[2],
+                    country_code="ZZ",
+                    view_count=100,
+                ),
+            ]
+        )
+        session.commit()
+
+    popular_category_id: UUID | None = None
+    try:
+        ranking = client.get(
+            "/api/v1/storefront-analytics/product-ranking",
+            params={"days": 30, "page": 1, "page_size": 200},
+        )
+        assert ranking.status_code == 200, ranking.text
+        ranked_ids = [row["product_id"] for row in ranking.json()["items"]]
+        assert ranked_ids.index(str(normal_product_id)) < ranked_ids.index(
+            str(popular_product_id)
+        )
+
+        assigned = client.post(
+            "/api/v1/storefront-analytics/popular-category",
+            json={"product_ids": [str(popular_product_id)]},
+        )
+        assert assigned.status_code == 200, assigned.text
+        assigned_payload = assigned.json()
+        assert assigned_payload["moved_count"] == 1
+        assert assigned_payload["category_name"] == "热门"
+        popular_category_id = UUID(assigned_payload["category_id"])
+
+        repeated = client.post(
+            "/api/v1/storefront-analytics/popular-category",
+            json={"product_ids": [str(popular_product_id)]},
+        )
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["moved_count"] == 0
+
+        with SessionLocal() as session:
+            popular = session.get(ProductCategoryRow, popular_category_id)
+            selected = session.get(ProductRow, popular_product_id)
+            assert popular is not None
+            assert popular.code == POPULAR_CATEGORY_CODE
+            assert popular.name == "热门"
+            assert popular.parent_id is None
+            assert popular.sort_order == 0
+            assert selected is not None and selected.category_id == popular.id
+
+        categories = client.get("/api/v1/categories")
+        assert categories.status_code == 200, categories.text
+        root_categories = [row for row in categories.json() if row["parent_id"] is None]
+        assert root_categories[0]["code"] == POPULAR_CATEGORY_CODE
+
+        storefront = client.get(
+            "/api/store/demo/products",
+            params={"page_size": 100, "include_facets": "false"},
+        )
+        assert storefront.status_code == 200, storefront.text
+        ordered_ids = [UUID(row["id"]) for row in storefront.json()["items"]]
+        assert ordered_ids.index(pinned_product_id) < ordered_ids.index(
+            popular_product_id
+        )
+        assert ordered_ids.index(popular_product_id) < ordered_ids.index(
+            normal_product_id
+        )
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.hot_products_enabled = original_hot_products_enabled
+            session.execute(
+                delete(StorefrontProductViewDailyRow).where(
+                    StorefrontProductViewDailyRow.product_id.in_(product_ids)
+                )
+            )
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.sku_id.in_(sku_ids)
+                )
+            )
+            session.execute(delete(SkuRow).where(SkuRow.id.in_(sku_ids)))
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductAuditEventRow.entity_id.in_(
+                        [str(value) for value in [*product_ids, popular_category_id] if value]
+                    ),
+                )
+            )
+            session.execute(delete(ProductRow).where(ProductRow.id.in_(product_ids)))
+            for category_record_id, snapshot in original_categories.items():
+                category = session.get(ProductCategoryRow, category_record_id)
+                if category is None:
+                    continue
+                for field, value in snapshot.items():
+                    setattr(category, field, value)
+            session.flush()
+            new_category_ids = [category_id]
+            if popular_category_id not in original_categories:
+                new_category_ids.append(popular_category_id)
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.id.in_(
+                        [value for value in new_category_ids if value is not None]
+                    )
+                )
+            )
+            session.commit()
 
 
 def test_storefront_visitor_headers_require_a_matching_trusted_client_ip(
@@ -13794,12 +14204,16 @@ def test_all_products_position_is_merchant_controlled_and_publicly_projected() -
     try:
         updated_response = client.patch(
             "/api/v1/categories/layout",
-            json={"all_products_position": target_position},
+            json={
+                "all_products_position": target_position,
+                "category_showcase_enabled": False,
+            },
         )
         assert updated_response.status_code == 200, updated_response.text
         assert updated_response.json() == {
             "all_products_position": target_position,
             "root_category_count": root_count,
+            "category_showcase_enabled": False,
         }
 
         persisted_response = client.get("/api/v1/categories/layout")
@@ -13808,6 +14222,7 @@ def test_all_products_position_is_merchant_controlled_and_publicly_projected() -
             persisted_response.json()["all_products_position"]
             == target_position
         )
+        assert persisted_response.json()["category_showcase_enabled"] is False
 
         public_response = client.get("/api/store/demo/skus")
         assert public_response.status_code == 200, public_response.text
@@ -13854,7 +14269,10 @@ def test_all_products_position_is_merchant_controlled_and_publicly_projected() -
                 "all_products_position": min(
                     initial_layout["all_products_position"],
                     root_count,
-                )
+                ),
+                "category_showcase_enabled": initial_layout[
+                    "category_showcase_enabled"
+                ],
             },
         )
         assert restored.status_code == 200, restored.text
@@ -14571,6 +14989,85 @@ def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
                 session.commit()
 
 
+def test_secondary_category_cover_upload_is_publicly_served() -> None:
+    suffix = uuid4().hex[:10].upper()
+    category_ids: list[UUID] = []
+    object_key: str | None = None
+    try:
+        root_response = client.post(
+            "/api/v1/categories",
+            json={
+                "code": f"COVER-ROOT-{suffix}",
+                "name": f"门面测试-{suffix}",
+                "sort_order": 0,
+            },
+        )
+        assert root_response.status_code == 201, root_response.text
+        root = root_response.json()
+        category_ids.append(UUID(root["id"]))
+
+        image_buffer = io.BytesIO()
+        Image.new("RGB", (96, 96), (45, 27, 105)).save(image_buffer, "PNG")
+        root_cover = client.post(
+            f"/api/v1/categories/{root['id']}/cover",
+            files={"image": ("root.png", image_buffer.getvalue(), "image/png")},
+        )
+        assert root_cover.status_code == 409
+        assert root_cover.json()["detail"]["code"] == "CATEGORY_COVER_LEVEL_INVALID"
+
+        child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"COVER-CHILD-{suffix}",
+                "name": "二级门面",
+                "sort_order": 0,
+            },
+        )
+        assert child_response.status_code == 201, child_response.text
+        child = child_response.json()
+        child_id = UUID(child["id"])
+        category_ids.append(child_id)
+
+        uploaded = client.post(
+            f"/api/v1/categories/{child['id']}/cover",
+            files={"image": ("cover.png", image_buffer.getvalue(), "image/png")},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        payload = uploaded.json()
+        assert payload["cover_source"] == "UPLOAD"
+        assert payload["cover_image_url"].startswith(
+            f"/api/store/demo/categories/{child['id']}/cover"
+        )
+
+        public_cover = client.get(payload["cover_image_url"])
+        assert public_cover.status_code == 200, public_cover.text
+        assert public_cover.headers["content-type"].startswith("image/webp")
+        with SessionLocal() as session:
+            category = session.get(ProductCategoryRow, child_id)
+            assert category is not None
+            object_key = category.cover_object_key
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.entity_type == "CATEGORY",
+                    ProductAuditEventRow.entity_id.in_(
+                        [str(category_id) for category_id in category_ids]
+                    ),
+                )
+            )
+            for category_id in reversed(category_ids):
+                session.execute(
+                    delete(ProductCategoryRow).where(
+                        ProductCategoryRow.id == category_id
+                    )
+                )
+            session.commit()
+        if object_key:
+            get_object_storage().delete(object_key)
+
+
 def test_public_media_uses_tenant_scoped_relative_proxy_when_no_cdn_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14910,6 +15407,85 @@ def test_supplier_manage_creates_unique_tenant_supplier_before_import() -> None:
         row for row in current_directory.json() if row["supplier_code"] == supplier_code
     ]
     assert [row["id"] for row in matching] == [payload["id"]]
+
+
+def test_supply_chain_partner_contact_crud_and_pagination() -> None:
+    suffix = uuid4().hex[:10].upper()
+    created = client.post(
+        "/api/v1/supply-chain",
+        json={
+            "name": f"Supply Chain Factory {suffix}",
+            "contact_name": "Lin Chen",
+            "phone": "+86 138 0000 0000",
+            "email": f"factory-{suffix.casefold()}@example.test",
+            "whatsapp": "+86 138 0000 0000",
+            "wechat": f"factory_{suffix.casefold()}",
+            "country_region": "China · Guangdong",
+            "address": "No. 18 Factory Road",
+            "website": "https://factory.example.test",
+            "business_scope": "Packaging and assembly",
+            "notes": "Primary packaging partner",
+        },
+    )
+    assert created.status_code == 201, created.text
+    partner = created.json()
+    assert partner["supplier_code"].startswith("SC-")
+    assert partner["contact_name"] == "Lin Chen"
+    assert partner["active_products"] == 0
+    assert partner["active_skus"] == 0
+
+    listing = client.get(
+        "/api/v1/supply-chain",
+        params={"query": suffix, "page": 1, "page_size": 10},
+    )
+    assert listing.status_code == 200, listing.text
+    page = listing.json()
+    assert page["total"] == 1
+    assert page["pages"] == 1
+    assert [row["id"] for row in page["items"]] == [partner["id"]]
+
+    updated = client.patch(
+        f"/api/v1/supply-chain/{partner['id']}",
+        json={
+            "expected_version": partner["version"],
+            "name": f"Updated Supply Chain Factory {suffix}",
+            "contact_name": "Amy Lin",
+            "phone": "+86 139 0000 0000",
+            "email": None,
+            "whatsapp": None,
+            "wechat": "amy_factory",
+            "country_region": "China · Zhejiang",
+            "address": None,
+            "website": None,
+            "business_scope": "Packaging",
+            "notes": None,
+            "status": "INACTIVE",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    updated_partner = updated.json()
+    assert updated_partner["name"].startswith("Updated")
+    assert updated_partner["contact_name"] == "Amy Lin"
+    assert updated_partner["email"] is None
+    assert updated_partner["status"] == "INACTIVE"
+    assert updated_partner["version"] == partner["version"] + 1
+
+    stale = client.patch(
+        f"/api/v1/supply-chain/{partner['id']}",
+        json={"expected_version": partner["version"], "phone": "stale"},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "SUPPLY_CHAIN_VERSION_CONFLICT"
+
+    deleted = client.delete(f"/api/v1/supply-chain/{partner['id']}")
+    assert deleted.status_code == 204, deleted.text
+
+    after_delete = client.get(
+        "/api/v1/supply-chain",
+        params={"query": suffix, "page": 1, "page_size": 10},
+    )
+    assert after_delete.status_code == 200
+    assert after_delete.json()["total"] == 0
 
 
 def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safety() -> None:
@@ -15440,6 +16016,18 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert profile_columns["hot_products_enabled"]["nullable"] is False
     assert "support_widget_config" in profile_columns
     assert profile_columns["support_widget_config"]["nullable"] is False
+    assert "logo_object_key" in profile_columns
+    assert "category_showcase_enabled" in profile_columns
+    assert profile_columns["category_showcase_enabled"]["nullable"] is False
+    category_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("product_categories")
+    }
+    assert {
+        "cover_source",
+        "cover_object_key",
+        "cover_product_id",
+    }.issubset(category_columns)
     share_columns = {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("catalog_shares")
@@ -15453,6 +16041,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "title",
         "item_count",
         "fingerprint",
+        "logo_position",
     }.issubset(share_columns)
     product_columns = {
         column["name"]: column
@@ -15542,7 +16131,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260810_0075"
+        ).scalar() == "20260811_0078"
     upgraded_engine.dispose()
     command.check(config)
 

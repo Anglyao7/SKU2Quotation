@@ -64,6 +64,7 @@ from ..services.hybrid_search import (
     hybrid_product_search,
 )
 from ..services.rbac import list_permissions
+from ..services.storefront_branding import storefront_logo_url
 from ..services.translation import (
     TranslationProvider,
     TranslationProviderError,
@@ -439,6 +440,101 @@ def _ordered_category_paths(
     )
 
 
+def _ordered_visible_category_rows(
+    visible_category_ids: set[UUID], *, all_categories: list[object]
+) -> list[object]:
+    categories_by_id = {
+        getattr(category, "id"): category
+        for category in all_categories
+        if getattr(category, "id", None) is not None
+    }
+    included_ids: set[UUID] = set()
+    for category_id in visible_category_ids:
+        category = categories_by_id.get(category_id)
+        if category is None or not _category_path(category):
+            continue
+        included_ids.add(category_id)
+        parent_id = getattr(category, "parent_id", None)
+        if parent_id in categories_by_id:
+            included_ids.add(parent_id)
+
+    def sort_key(category: object):
+        parent = categories_by_id.get(getattr(category, "parent_id", None))
+        root = parent or category
+        return (
+            int(getattr(root, "sort_order", 0) or 0),
+            str(getattr(root, "name", "") or "").casefold(),
+            1 if parent is not None else 0,
+            int(getattr(category, "sort_order", 0) or 0),
+            str(getattr(category, "name", "") or "").casefold(),
+        )
+
+    return sorted(
+        (categories_by_id[category_id] for category_id in included_ids),
+        key=sort_key,
+    )
+
+
+def _public_category_options(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    slug: str,
+    visible_category_ids: set[UUID],
+    all_categories: list[object],
+    labels: dict[str, str],
+) -> list[PublicCategoryOption]:
+    rows = _ordered_visible_category_rows(
+        visible_category_ids,
+        all_categories=all_categories,
+    )
+    cover_product_ids = {
+        getattr(row, "cover_product_id", None)
+        for row in rows
+        if str(getattr(row, "cover_source", "NONE") or "NONE").upper()
+        == "PRODUCT"
+        and getattr(row, "cover_product_id", None) is not None
+    }
+    cover_images = repository.approved_image_map(
+        session,
+        tenant_id=tenant_id,
+        product_ids=cover_product_ids,
+    )
+    result: list[PublicCategoryOption] = []
+    for row in rows:
+        path = _category_path(row)
+        cover_source = str(getattr(row, "cover_source", "NONE") or "NONE").upper()
+        cover_url = None
+        if cover_source == "UPLOAD" and str(
+            getattr(row, "cover_object_key", "") or ""
+        ).strip():
+            object_key = str(getattr(row, "cover_object_key", "") or "").strip()
+            media_base_url = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
+            cover_url = (
+                f"{media_base_url}/{quote(object_key.lstrip('/'), safe='/')}"
+                if media_base_url
+                else (
+                    f"/api/store/{quote(slug, safe='')}/categories/{row.id}/cover"
+                    f"?v={getattr(row, 'version', 1)}"
+                )
+            )
+        elif cover_source == "PRODUCT":
+            cover_url = _public_image_url(
+                cover_images.get(getattr(row, "cover_product_id", None)),
+                slug=slug,
+            )
+        result.append(
+            PublicCategoryOption(
+                id=row.id,
+                parent_id=getattr(row, "parent_id", None),
+                value=path,
+                label=labels.get(path, path),
+                cover_image_url=cover_url,
+            )
+        )
+    return result
+
+
 def _effective_all_products_position(
     raw_position: int,
     *,
@@ -507,6 +603,52 @@ def get_public_media(
         ) from exc
 
 
+def get_public_store_logo(session: Session, *, slug: str) -> tuple[bytes, str]:
+    _tenant, profile = _resolve_store(session, slug=slug)
+    object_key = str(profile.logo_object_key or "").strip()
+    if not object_key:
+        raise ApplicationError(
+            "PUBLIC_LOGO_NOT_FOUND", "Store logo was not found.", kind="not_found"
+        )
+    try:
+        with get_object_storage().materialize(object_key) as path:
+            return path.read_bytes(), "image/webp"
+    except Exception as exc:
+        raise ApplicationError(
+            "PUBLIC_LOGO_NOT_FOUND", "Store logo was not found.", kind="not_found"
+        ) from exc
+
+
+def get_public_category_cover(
+    session: Session,
+    *,
+    slug: str,
+    category_id: UUID,
+) -> tuple[bytes, str]:
+    tenant, _profile = _resolve_store(session, slug=slug)
+    category = repository.get_catalog_category(
+        session,
+        tenant_id=tenant.id,
+        category_id=category_id,
+    )
+    object_key = str(getattr(category, "cover_object_key", "") or "").strip()
+    if category is None or category.status != "ACTIVE" or not object_key:
+        raise ApplicationError(
+            "PUBLIC_CATEGORY_COVER_NOT_FOUND",
+            "Category cover was not found.",
+            kind="not_found",
+        )
+    try:
+        with get_object_storage().materialize(object_key) as path:
+            return path.read_bytes(), "image/webp"
+    except Exception as exc:
+        raise ApplicationError(
+            "PUBLIC_CATEGORY_COVER_NOT_FOUND",
+            "Category cover was not found.",
+            kind="not_found",
+        ) from exc
+
+
 def _resolve_store(session: Session, *, slug: str):
     normalized = slug.casefold().strip()
     profile = repository.find_published_profile_by_slug(session, slug=normalized)
@@ -541,7 +683,7 @@ def get_store(
         slug=tenant.slug,
         name=tenant.name,
         description=profile.description,
-        logo_url=profile.logo_url,
+        logo_url=storefront_logo_url(profile),
         contact_email=profile.contact_email,
         contact_phone=profile.contact_phone,
         default_currency=tenant.default_currency,
@@ -550,6 +692,7 @@ def get_store(
         available_locales=available_locales,
         all_products_position=max(0, int(profile.all_products_position or 0)),
         hot_products_enabled=bool(profile.hot_products_enabled),
+        category_showcase_enabled=bool(profile.category_showcase_enabled),
         announcements=announcement_use_cases.public_announcements(
             session,
             tenant_id=tenant.id,
@@ -1830,6 +1973,13 @@ def list_public_products(
         visible_category_ids,
         all_categories=all_categories,
     )
+    category_option_paths = [
+        _category_path(row)
+        for row in _ordered_visible_category_rows(
+            visible_category_ids,
+            all_categories=all_categories,
+        )
+    ]
     category_rows_by_id = {row.id: row for row in all_categories}
     category_colors_by_id = {
         row.id: (
@@ -1860,7 +2010,7 @@ def list_public_products(
     )
     category_labels = (
         _live_category_labels(
-            categories,
+            category_option_paths,
             tenant_id=tenant.id,
             translator=translator,
             source_locale=source_locale,
@@ -1892,13 +2042,14 @@ def list_public_products(
         page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
         categories=categories,
-        category_options=[
-            PublicCategoryOption(
-                value=category_path,
-                label=category_labels.get(category_path, category_path),
-            )
-            for category_path in categories
-        ],
+        category_options=_public_category_options(
+            session,
+            tenant_id=tenant.id,
+            slug=tenant.slug,
+            visible_category_ids=visible_category_ids,
+            all_categories=all_categories,
+            labels=category_labels,
+        ),
         # Product tags remain part of each product and semantic-search input.
         # The storefront no longer renders a global tag facet, so avoid a
         # full-catalog scan solely to populate unused chips.
@@ -1915,6 +2066,7 @@ def list_public_products(
             else 0
         ),
         hot_products_enabled=bool(profile.hot_products_enabled),
+        category_showcase_enabled=bool(profile.category_showcase_enabled),
         hot_sort_applied=hot_sort_applied,
     )
 
@@ -1925,8 +2077,27 @@ def get_public_product(
     slug: str,
     product_id: UUID,
     locale: str | None = None,
+    share_token: str | None = None,
 ) -> PublicProductDetail:
     tenant, profile = _resolve_store(session, slug=slug)
+    shared_category: str | None = None
+    if share_token:
+        from .catalog_shares import resolve_share_constraint
+
+        share_constraint = resolve_share_constraint(
+            session, tenant_id=tenant.id, token=share_token
+        )
+        if (
+            share_constraint.target_type == "PRODUCTS"
+            and product_id not in set(share_constraint.product_ids)
+        ):
+            raise ApplicationError(
+                "PUBLIC_PRODUCT_NOT_FOUND",
+                "Public product was not found.",
+                kind="not_found",
+            )
+        if share_constraint.target_type == "CATEGORY":
+            shared_category = share_constraint.category_path
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
             session,
@@ -1940,7 +2111,7 @@ def get_public_product(
         tenant_id=tenant.id,
         product_ids=[product_id],
         now=utcnow(),
-        category=None,
+        category=shared_category,
     )
     if not rows:
         raise ApplicationError(
@@ -2190,6 +2361,13 @@ def list_public_skus(
         visible_category_ids,
         all_categories=all_categories,
     )
+    category_option_paths = [
+        _category_path(row)
+        for row in _ordered_visible_category_rows(
+            visible_category_ids,
+            all_categories=all_categories,
+        )
+    ]
     category_rows_by_id = {row.id: row for row in all_categories}
     category_colors_by_id = {
         row.id: (
@@ -2228,7 +2406,7 @@ def list_public_skus(
     )
     category_labels = (
         _live_category_labels(
-            categories,
+            category_option_paths,
             tenant_id=tenant.id,
             translator=translator,
             source_locale=source_locale,
@@ -2260,13 +2438,14 @@ def list_public_skus(
         page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
         categories=categories,
-        category_options=[
-            PublicCategoryOption(
-                value=category_path,
-                label=category_labels.get(category_path, category_path),
-            )
-            for category_path in categories
-        ],
+        category_options=_public_category_options(
+            session,
+            tenant_id=tenant.id,
+            slug=tenant.slug,
+            visible_category_ids=visible_category_ids,
+            all_categories=all_categories,
+            labels=category_labels,
+        ),
         # Storefront tag chips were removed. Individual SKU tags remain in
         # each card and in semantic search, but the first page no longer scans
         # every public offer just to build an unused global facet.
@@ -2282,6 +2461,7 @@ def list_public_skus(
             if include_facets
             else 0
         ),
+        category_showcase_enabled=bool(profile.category_showcase_enabled),
     )
 
 
@@ -2291,6 +2471,7 @@ def get_public_sku(
     slug: str,
     sku_id: UUID,
     locale: str | None = None,
+    share_token: str | None = None,
 ) -> PublicSkuResponse:
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
@@ -2314,6 +2495,28 @@ def get_public_sku(
             kind="not_found",
         )
     row = rows[0]
+    if share_token:
+        from .catalog_shares import resolve_share_constraint
+
+        share_constraint = resolve_share_constraint(
+            session, tenant_id=tenant.id, token=share_token
+        )
+        allowed = row[2].id in set(share_constraint.product_ids)
+        if share_constraint.target_type == "CATEGORY":
+            allowed_rows = repository.list_public_catalog_rows_by_product_ids(
+                session,
+                tenant_id=tenant.id,
+                product_ids=[row[2].id],
+                now=utcnow(),
+                category=share_constraint.category_path,
+            )
+            allowed = any(candidate[1].id == sku_id for candidate in allowed_rows)
+        if not allowed:
+            raise ApplicationError(
+                "PUBLIC_SKU_NOT_FOUND",
+                "Public SKU was not found.",
+                kind="not_found",
+            )
     categories = repository.list_catalog_categories(
         session, tenant_id=tenant.id
     )

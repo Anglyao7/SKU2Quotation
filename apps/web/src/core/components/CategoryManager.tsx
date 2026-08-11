@@ -1,15 +1,19 @@
 import { AlertDialog, Badge, Button, Select, Spinner, Text, TextField } from "@radix-ui/themes";
 import {
+  CheckCircle,
   CaretDown,
   CaretRight,
   DotsSixVertical,
   Folder,
   FolderOpen,
+  ImageSquare,
+  MagnifyingGlass,
   Plus,
   ShareNetwork,
   Storefront,
   Trash,
   TreeStructure,
+  UploadSimple,
   WarningCircle,
 } from "@phosphor-icons/react";
 import {
@@ -25,17 +29,21 @@ import {
   createCategory,
   deleteCategory,
   getCategoryDeleteImpact,
+  listSkus,
   reorderCategories,
+  uploadCategoryCover,
   updateCategory,
   type CategoryDeleteImpact,
 } from "../api";
 import { useLocale } from "../LocaleContext";
 import { automaticTagColor, TAG_COLOR_PALETTE, tagGlassStyle } from "../../lib/tagColors";
-import type { ProductCategory } from "../types";
+import type { ProductCategory, SkuListItem } from "../types";
+
+type CategoryCoverSource = ProductCategory["coverSource"];
 
 type Draft =
   | { mode: "create"; parentId?: string; name: string; sortOrder: number; displayColor?: string; status: "ACTIVE" }
-  | { mode: "edit"; id: string; parentId?: string; name: string; sortOrder: number; displayColor?: string; status: "ACTIVE" | "INACTIVE"; version: number };
+  | { mode: "edit"; id: string; parentId?: string; name: string; sortOrder: number; displayColor?: string; status: "ACTIVE" | "INACTIVE"; version: number; coverSource: CategoryCoverSource; coverProductId?: string; coverProductName?: string; coverImageUrl?: string; uploadedCoverImageUrl?: string; coverProductImageUrl?: string };
 
 type DropPlacement = "before" | "after";
 
@@ -130,6 +138,11 @@ export function CategoryManager({
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [coverQuery, setCoverQuery] = useState("");
+  const [coverCandidates, setCoverCandidates] = useState<SkuListItem[]>([]);
+  const [coverCandidatesLoading, setCoverCandidatesLoading] = useState(false);
+  const [coverUploadBusy, setCoverUploadBusy] = useState(false);
+  const [coverError, setCoverError] = useState("");
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [collapsedRootIds, setCollapsedRootIds] = useState(readCollapsedRoots);
   const dragStateRef = useRef<DragState | null>(null);
@@ -137,6 +150,7 @@ export function CategoryManager({
   const deleteRequestIdRef = useRef(0);
   const editorRef = useRef<HTMLElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const coverInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setDisplayCategories(categories);
@@ -145,7 +159,18 @@ export function CategoryManager({
       if (current.mode !== "edit") return current;
       const latest = categories.find((category) => category.id === current.id);
       return latest
-        ? { ...current, version: latest.version, sortOrder: latest.sortOrder, displayColor: latest.displayColor }
+        ? {
+            ...current,
+            version: latest.version,
+            sortOrder: latest.sortOrder,
+            displayColor: latest.displayColor,
+            coverSource: latest.coverSource,
+            coverProductId: latest.coverProductId,
+            coverProductName: latest.coverProductName,
+            coverImageUrl: latest.coverImageUrl,
+            uploadedCoverImageUrl: latest.uploadedCoverImageUrl,
+            coverProductImageUrl: latest.coverProductImageUrl,
+          }
         : current;
     });
   }, [allProductsPosition, categories]);
@@ -264,6 +289,8 @@ export function CategoryManager({
 
   const beginEdit = (category: ProductCategory) => {
     setError("");
+    setCoverError("");
+    setCoverQuery("");
     setDraft({
       mode: "edit",
       id: category.id,
@@ -273,6 +300,12 @@ export function CategoryManager({
       displayColor: category.displayColor,
       status: category.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
       version: category.version,
+      coverSource: category.coverSource,
+      coverProductId: category.coverProductId,
+      coverProductName: category.coverProductName,
+      coverImageUrl: category.coverImageUrl,
+      uploadedCoverImageUrl: category.uploadedCoverImageUrl,
+      coverProductImageUrl: category.coverProductImageUrl,
     });
     revealEditorOnCompactLayout();
   };
@@ -283,6 +316,7 @@ export function CategoryManager({
   const selectedChildren = draft.mode === "edit" ? childrenByParent.get(draft.id) ?? [] : [];
   const parentLocked = selectedChildren.length > 0;
   const selectedParent = draft.parentId ? roots.find((root) => root.id === draft.parentId) : undefined;
+  const coverEditor = draft.mode === "edit" && draft.parentId ? draft : undefined;
   const colorPreviewName = draft.name.trim() || t("一级分类");
   const activeCategoryColor = draft.displayColor || automaticTagColor(colorPreviewName);
   const changeParent = (value: string) => {
@@ -299,10 +333,90 @@ export function CategoryManager({
     });
   };
 
+  useEffect(() => {
+    if (!coverEditor || coverEditor.coverSource !== "PRODUCT") {
+      setCoverCandidates([]);
+      setCoverCandidatesLoading(false);
+      return;
+    }
+    let active = true;
+    const timeout = window.setTimeout(() => {
+      setCoverCandidatesLoading(true);
+      setCoverError("");
+      void listSkus({
+        q: coverQuery.trim() || undefined,
+        categoryId: coverEditor.id,
+        statuses: ["ACTIVE"],
+        page: 1,
+        pageSize: 30,
+      }).then((result) => {
+        if (!active) return;
+        const seen = new Set<string>();
+        setCoverCandidates(result.items.filter((item) => {
+          if (!item.thumbnailUrl || seen.has(item.productId)) return false;
+          seen.add(item.productId);
+          return true;
+        }));
+      }).catch((reason) => {
+        if (!active) return;
+        setCoverError(reason instanceof Error ? reason.message : t("商品读取失败。"));
+      }).finally(() => {
+        if (active) setCoverCandidatesLoading(false);
+      });
+    }, 220);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [coverEditor?.coverSource, coverEditor?.id, coverQuery, t]);
+
+  const chooseCoverSource = (source: CategoryCoverSource) => {
+    if (draft.mode !== "edit" || !draft.parentId) return;
+    setCoverError("");
+    if (source === "UPLOAD" && !draft.uploadedCoverImageUrl) {
+      coverInputRef.current?.click();
+      return;
+    }
+    setDraft({
+      ...draft,
+      coverSource: source,
+      coverProductId: source === "PRODUCT" ? draft.coverProductId : undefined,
+      coverProductName: source === "PRODUCT" ? draft.coverProductName : undefined,
+      coverImageUrl: source === "UPLOAD"
+        ? draft.uploadedCoverImageUrl
+        : source === "PRODUCT"
+          ? draft.coverProductImageUrl
+          : undefined,
+    });
+  };
+
+  const uploadCover = async (file?: File) => {
+    if (!file || draft.mode !== "edit" || !draft.parentId || coverUploadBusy) return;
+    if (!file.type.startsWith("image/")) {
+      setCoverError(t("请选择 PNG、JPG 或 WebP 图片。"));
+      return;
+    }
+    setCoverUploadBusy(true);
+    setCoverError("");
+    try {
+      const updated = await uploadCategoryCover(draft.id, file);
+      await onChanged();
+      beginEdit(updated);
+    } catch (reason) {
+      setCoverError(reason instanceof Error ? reason.message : t("分类图片上传失败。"));
+    } finally {
+      setCoverUploadBusy(false);
+    }
+  };
+
   const save = async () => {
     const name = draft.name.trim();
     if (!name) {
       setError(t("请填写分类名称。"));
+      return;
+    }
+    if (draft.mode === "edit" && draft.coverSource === "PRODUCT" && !draft.coverProductId) {
+      setError(t("请选择一个商品作为分类门面。"));
       return;
     }
     setSaving(true);
@@ -326,6 +440,8 @@ export function CategoryManager({
           sortOrder: draft.sortOrder,
           status: draft.status,
           displayColor: draft.parentId ? null : draft.displayColor ?? null,
+          coverSource: draft.parentId ? draft.coverSource : "NONE",
+          coverProductId: draft.parentId ? draft.coverProductId : undefined,
         });
         await onChanged();
         beginEdit(updated);
@@ -853,6 +969,128 @@ export function CategoryManager({
             </div>
           </div>
         )}
+        {draft.mode === "edit" && draft.parentId ? (
+          <section className="core-category-cover-field">
+            <div className="core-category-cover-heading">
+              <span>
+                <Text size="2" weight="medium">{t("分类门面")}</Text>
+                <Text size="1" color="gray">{t("访客进入一级分类后看到的图片")}</Text>
+              </span>
+              {draft.coverSource !== "NONE" ? (
+                <Badge color="jade" variant="soft">{t("已设置")}</Badge>
+              ) : null}
+            </div>
+
+            <input
+              ref={coverInputRef}
+              hidden
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.currentTarget.value = "";
+                void uploadCover(file);
+              }}
+            />
+
+            <div className="core-category-cover-sources" role="group" aria-label={t("分类门面来源")}>
+              <button
+                type="button"
+                className={draft.coverSource === "NONE" ? "is-active" : ""}
+                onClick={() => chooseCoverSource("NONE")}
+              >
+                <Folder weight="duotone" />
+                <span><strong>{t("不设置图片")}</strong><small>{t("使用默认分类图标")}</small></span>
+                {draft.coverSource === "NONE" ? <CheckCircle weight="fill" /> : null}
+              </button>
+              <button
+                type="button"
+                className={draft.coverSource === "UPLOAD" ? "is-active" : ""}
+                disabled={coverUploadBusy}
+                onClick={() => chooseCoverSource("UPLOAD")}
+              >
+                <UploadSimple weight="duotone" />
+                <span><strong>{t("上传图片")}</strong><small>{t("自行维护分类主图")}</small></span>
+                {draft.coverSource === "UPLOAD" ? <CheckCircle weight="fill" /> : null}
+              </button>
+              <button
+                type="button"
+                className={draft.coverSource === "PRODUCT" ? "is-active" : ""}
+                onClick={() => chooseCoverSource("PRODUCT")}
+              >
+                <ImageSquare weight="duotone" />
+                <span><strong>{t("选择商品")}</strong><small>{t("使用商品主图充当门面")}</small></span>
+                {draft.coverSource === "PRODUCT" ? <CheckCircle weight="fill" /> : null}
+              </button>
+            </div>
+
+            {draft.coverSource === "UPLOAD" ? (
+              <div className="core-category-cover-preview">
+                {draft.uploadedCoverImageUrl ? (
+                  <img src={draft.uploadedCoverImageUrl} alt={t("{name} 分类门面", { name: draft.name })} />
+                ) : (
+                  <span><ImageSquare weight="duotone" /></span>
+                )}
+                <div>
+                  <strong>{t(coverUploadBusy ? "正在上传…" : "自定义分类图片")}</strong>
+                  <small>{t("建议使用清晰的正方形图片")}</small>
+                </div>
+                <Button
+                  size="1"
+                  variant="soft"
+                  disabled={coverUploadBusy}
+                  onClick={() => coverInputRef.current?.click()}
+                >
+                  <UploadSimple />{t(draft.uploadedCoverImageUrl ? "更换图片" : "上传图片")}
+                </Button>
+              </div>
+            ) : null}
+
+            {draft.coverSource === "PRODUCT" ? (
+              <div className="core-category-cover-products">
+                <TextField.Root
+                  size="2"
+                  value={coverQuery}
+                  placeholder={t("搜索当前分类内的商品")}
+                  onChange={(event) => setCoverQuery(event.target.value)}
+                >
+                  <TextField.Slot><MagnifyingGlass /></TextField.Slot>
+                </TextField.Root>
+                {draft.coverProductId && draft.coverProductName ? (
+                  <div className="core-category-cover-selected">
+                    {draft.coverProductImageUrl ? <img src={draft.coverProductImageUrl} alt="" /> : <span><ImageSquare /></span>}
+                    <div><small>{t("当前门面")}</small><strong>{draft.coverProductName}</strong></div>
+                    <CheckCircle weight="fill" />
+                  </div>
+                ) : null}
+                <div className="core-category-cover-product-list" aria-busy={coverCandidatesLoading}>
+                  {coverCandidates.map((candidate) => (
+                    <button
+                      type="button"
+                      className={draft.coverProductId === candidate.productId ? "is-active" : ""}
+                      key={candidate.productId}
+                      onClick={() => setDraft({
+                        ...draft,
+                        coverSource: "PRODUCT",
+                        coverProductId: candidate.productId,
+                        coverProductName: candidate.productName,
+                        coverProductImageUrl: candidate.thumbnailUrl,
+                        coverImageUrl: candidate.thumbnailUrl,
+                      })}
+                    >
+                      {candidate.thumbnailUrl ? <img src={candidate.thumbnailUrl} alt="" /> : <span><ImageSquare /></span>}
+                      <span><strong>{candidate.productName}</strong><small>{candidate.productCode || candidate.skuCode}</small></span>
+                      {draft.coverProductId === candidate.productId ? <CheckCircle weight="fill" /> : null}
+                    </button>
+                  ))}
+                  {coverCandidatesLoading ? <Text size="1" color="gray">{t("正在读取商品…")}</Text> : null}
+                  {!coverCandidatesLoading && !coverCandidates.length ? <Text size="1" color="gray">{t("当前分类暂无可选商品")}</Text> : null}
+                </div>
+              </div>
+            ) : null}
+            {coverError ? <Text size="1" color="red">{coverError}</Text> : null}
+          </section>
+        ) : null}
         {draft.mode === "edit" ? (
           <details className="core-category-advanced">
             <summary><span>{t("更多设置")}</span><CaretDown weight="bold" /></summary>

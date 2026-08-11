@@ -11,6 +11,7 @@ import {
   DotsThreeOutline,
   FileText,
   FileXls,
+  Factory,
   GlobeHemisphereWest,
   Headset,
   IdentificationCard,
@@ -76,6 +77,7 @@ const navigationGroups = [
     icon: Warehouse,
     items: [
       { to: "/console/inventory", label: "进销存", mobileLabel: "库存", icon: Warehouse, permissions: ["inventory.view"], platformAdminOnly: false, mobilePrimary: true },
+      { to: "/console/supply-chain", label: "供应链", mobileLabel: "供应链", icon: Factory, permissions: ["supplier.view", "supplier.manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/announcements", label: "公告管理", mobileLabel: "公告", icon: Megaphone, permissions: ["announcement.manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/support", label: "客服管理", mobileLabel: "客服", icon: Headset, end: true, permissions: ["support.view"], platformAdminOnly: false, mobilePrimary: false },
     ],

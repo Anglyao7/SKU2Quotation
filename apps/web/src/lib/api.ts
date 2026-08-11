@@ -364,7 +364,7 @@ async function getCachedStoreSkus(
       pages: Number(meta.pages || 0),
       categories: Array.isArray(meta.categories) ? (meta.categories as string[]) : undefined,
       category_options: Array.isArray(meta.category_options)
-        ? (meta.category_options as Array<{ value: string; label: string }>)
+        ? (meta.category_options as StorefrontCategoryOption[])
         : undefined,
       tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : undefined,
       source_locale: typeof meta.source_locale === "string"
@@ -376,6 +376,7 @@ async function getCachedStoreSkus(
       all_products_position: Number.isFinite(Number(meta.all_products_position))
         ? Number(meta.all_products_position)
         : undefined,
+      category_showcase_enabled: meta.category_showcase_enabled !== false,
     };
     if (languagePack) {
       result.items = result.items.map((sku) => localizeSku(sku, languagePack));
@@ -454,7 +455,7 @@ async function getCachedStoreProducts(
           ? (meta.categories as string[])
           : undefined,
         category_options: Array.isArray(meta.category_options)
-          ? (meta.category_options as Array<{ value: string; label: string }>)
+          ? (meta.category_options as StorefrontCategoryOption[])
           : undefined,
         tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : undefined,
         source_locale: typeof meta.source_locale === "string"
@@ -469,6 +470,7 @@ async function getCachedStoreProducts(
           ? Number(meta.all_products_position)
           : undefined,
         hot_products_enabled: meta.hot_products_enabled === true,
+        category_showcase_enabled: meta.category_showcase_enabled !== false,
         hot_sort_applied: meta.hot_sort_applied === true,
       };
       if (languagePack) {
@@ -582,9 +584,13 @@ export const api = {
     slug: string,
     productId: string,
     locale?: StorefrontLocale,
+    shareToken?: string,
   ): Promise<StoreProductDetail> {
     const languagePack = await storefrontLanguagePack(slug, locale);
-    const path = storeProductPath(slug, productId);
+    const sourcePath = storeProductPath(slug, productId);
+    const path = shareToken
+      ? `${sourcePath}?share=${encodeURIComponent(shareToken)}`
+      : sourcePath;
     const cachePath = languagePack
       ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
       : path;
@@ -611,8 +617,9 @@ export const api = {
     slug: string,
     productId: string,
     locale?: StorefrontLocale,
+    shareToken?: string,
   ) => {
-    await api.getStoreProduct(slug, productId, locale);
+    await api.getStoreProduct(slug, productId, locale, shareToken);
   },
   async getStoreProducts(
     slug: string,
@@ -626,9 +633,12 @@ export const api = {
   ) => {
     await getCachedStoreProducts(slug, filters);
   },
-  async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale): Promise<Sku> {
+  async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale, shareToken?: string): Promise<Sku> {
     const languagePack = await storefrontLanguagePack(slug, locale);
-    const path = storeSkuPath(slug, skuId);
+    const sourcePath = storeSkuPath(slug, skuId);
+    const path = shareToken
+      ? `${sourcePath}?share=${encodeURIComponent(shareToken)}`
+      : sourcePath;
     const cachePath = languagePack
       ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
       : path;

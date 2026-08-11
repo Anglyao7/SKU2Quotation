@@ -131,6 +131,49 @@ def list_supplier_rows(session: Session, *, tenant_id: UUID) -> list[SupplierRow
     return list(session.scalars(select(SupplierRow).where(SupplierRow.tenant_id == tenant_id).order_by(SupplierRow.updated_at.desc(), SupplierRow.id)))
 
 
+def list_supply_chain_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    query: str | None,
+    status: str | None,
+    offset: int,
+    limit: int,
+) -> tuple[list[SupplierRow], int]:
+    filters = [SupplierRow.tenant_id == tenant_id]
+    normalized_query = " ".join((query or "").split()).casefold()
+    if normalized_query:
+        pattern = f"%{normalized_query}%"
+        filters.append(
+            or_(
+                func.lower(SupplierRow.name).like(pattern),
+                func.lower(SupplierRow.supplier_code).like(pattern),
+                func.lower(func.coalesce(SupplierRow.contact_name, "")).like(pattern),
+                func.lower(func.coalesce(SupplierRow.phone, "")).like(pattern),
+                func.lower(func.coalesce(SupplierRow.email, "")).like(pattern),
+                func.lower(func.coalesce(SupplierRow.country_region, "")).like(pattern),
+            )
+        )
+    if status:
+        filters.append(SupplierRow.status == status)
+    total = int(
+        session.scalar(
+            select(func.count()).select_from(SupplierRow).where(*filters)
+        )
+        or 0
+    )
+    rows = list(
+        session.scalars(
+            select(SupplierRow)
+            .where(*filters)
+            .order_by(SupplierRow.updated_at.desc(), SupplierRow.name, SupplierRow.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    return rows, total
+
+
 def get_supplier_row(session: Session, *, tenant_id: UUID, supplier_id: str) -> SupplierRow | None:
     return session.scalar(select(SupplierRow).where(SupplierRow.tenant_id == tenant_id, SupplierRow.id == supplier_id))
 
@@ -146,28 +189,171 @@ def supplier_code_exists(session: Session, *, tenant_id: UUID, supplier_code: st
     )
 
 
-def supplier_name_exists(session: Session, *, tenant_id: UUID, name: str) -> bool:
+def supplier_name_exists(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    name: str,
+    exclude_supplier_id: str | None = None,
+) -> bool:
+    filters = [
+        SupplierRow.tenant_id == tenant_id,
+        func.lower(SupplierRow.name) == name.casefold(),
+    ]
+    if exclude_supplier_id is not None:
+        filters.append(SupplierRow.id != exclude_supplier_id)
     return bool(
         session.scalar(
-            select(func.count()).select_from(SupplierRow).where(
-                SupplierRow.tenant_id == tenant_id,
-                func.lower(SupplierRow.name) == name.casefold(),
-            )
+            select(func.count()).select_from(SupplierRow).where(*filters)
         )
     )
 
 
-def supplier_aggregate_maps(session: Session, *, tenant_id: UUID, now: datetime) -> dict[str, dict[str, object]]:
-    product_counts = dict(session.execute(select(SupplierProductRow.supplier_id, func.count(func.distinct(SupplierProductRow.product_id))).where(SupplierProductRow.tenant_id == tenant_id, SupplierProductRow.status == "ACTIVE").group_by(SupplierProductRow.supplier_id)).all())
-    sku_counts = dict(session.execute(select(SupplierProductRow.supplier_id, func.count(func.distinct(SupplierProductRow.sku_id))).where(SupplierProductRow.tenant_id == tenant_id, SupplierProductRow.status == "ACTIVE", SupplierProductRow.sku_id.is_not(None)).group_by(SupplierProductRow.supplier_id)).all())
-    review_counts = dict(session.execute(select(ImportJobRow.supplier_id, func.count(ReviewItemRow.id)).join(ReviewItemRow, and_(ReviewItemRow.tenant_id == ImportJobRow.tenant_id, ReviewItemRow.job_id == ImportJobRow.id)).where(ImportJobRow.tenant_id == tenant_id, ImportJobRow.supplier_id.is_not(None), ReviewItemRow.status == "pending").group_by(ImportJobRow.supplier_id)).all())
-    latest_imports = dict(session.execute(select(ImportJobRow.supplier_id, func.max(ImportJobRow.created_at)).where(ImportJobRow.tenant_id == tenant_id, ImportJobRow.supplier_id.is_not(None)).group_by(ImportJobRow.supplier_id)).all())
-    valid_prices = dict(session.execute(select(SupplierProductRow.supplier_id, func.count(func.distinct(SupplierPriceRow.supplier_product_id))).join(SupplierPriceRow, and_(SupplierPriceRow.tenant_id == SupplierProductRow.tenant_id, SupplierPriceRow.supplier_product_id == SupplierProductRow.id)).where(SupplierProductRow.tenant_id == tenant_id, SupplierPriceRow.status == "CONFIRMED", SupplierPriceRow.valid_from <= now, or_(SupplierPriceRow.valid_to.is_(None), SupplierPriceRow.valid_to >= now)).group_by(SupplierProductRow.supplier_id)).all())
-    expired_prices = dict(session.execute(select(SupplierProductRow.supplier_id, func.count(func.distinct(SupplierPriceRow.supplier_product_id))).join(SupplierPriceRow, and_(SupplierPriceRow.tenant_id == SupplierProductRow.tenant_id, SupplierPriceRow.supplier_product_id == SupplierProductRow.id)).where(SupplierProductRow.tenant_id == tenant_id, SupplierPriceRow.status == "CONFIRMED", SupplierPriceRow.valid_to.is_not(None), SupplierPriceRow.valid_to < now).group_by(SupplierProductRow.supplier_id)).all())
+def supplier_aggregate_maps(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    supplier_ids: set[str] | None = None,
+) -> dict[str, dict[str, object]]:
+    if supplier_ids is not None and not supplier_ids:
+        return {
+            "products": {},
+            "skus": {},
+            "reviews": {},
+            "imports": {},
+            "valid_prices": {},
+            "expired_prices": {},
+            "scores": {},
+        }
+
+    source_scope = (
+        []
+        if supplier_ids is None
+        else [SupplierProductRow.supplier_id.in_(supplier_ids)]
+    )
+    import_scope = (
+        [] if supplier_ids is None else [ImportJobRow.supplier_id.in_(supplier_ids)]
+    )
+    score_scope = (
+        [] if supplier_ids is None else [SupplierScoreRow.supplier_id.in_(supplier_ids)]
+    )
+    product_counts = dict(
+        session.execute(
+            select(
+                SupplierProductRow.supplier_id,
+                func.count(func.distinct(SupplierProductRow.product_id)),
+            )
+            .where(
+                SupplierProductRow.tenant_id == tenant_id,
+                SupplierProductRow.status == "ACTIVE",
+                *source_scope,
+            )
+            .group_by(SupplierProductRow.supplier_id)
+        ).all()
+    )
+    sku_counts = dict(
+        session.execute(
+            select(
+                SupplierProductRow.supplier_id,
+                func.count(func.distinct(SupplierProductRow.sku_id)),
+            )
+            .where(
+                SupplierProductRow.tenant_id == tenant_id,
+                SupplierProductRow.status == "ACTIVE",
+                SupplierProductRow.sku_id.is_not(None),
+                *source_scope,
+            )
+            .group_by(SupplierProductRow.supplier_id)
+        ).all()
+    )
+    review_counts = dict(
+        session.execute(
+            select(ImportJobRow.supplier_id, func.count(ReviewItemRow.id))
+            .join(
+                ReviewItemRow,
+                and_(
+                    ReviewItemRow.tenant_id == ImportJobRow.tenant_id,
+                    ReviewItemRow.job_id == ImportJobRow.id,
+                ),
+            )
+            .where(
+                ImportJobRow.tenant_id == tenant_id,
+                ImportJobRow.supplier_id.is_not(None),
+                ReviewItemRow.status == "pending",
+                *import_scope,
+            )
+            .group_by(ImportJobRow.supplier_id)
+        ).all()
+    )
+    latest_imports = dict(
+        session.execute(
+            select(ImportJobRow.supplier_id, func.max(ImportJobRow.created_at))
+            .where(
+                ImportJobRow.tenant_id == tenant_id,
+                ImportJobRow.supplier_id.is_not(None),
+                *import_scope,
+            )
+            .group_by(ImportJobRow.supplier_id)
+        ).all()
+    )
+    price_join = and_(
+        SupplierPriceRow.tenant_id == SupplierProductRow.tenant_id,
+        SupplierPriceRow.supplier_product_id == SupplierProductRow.id,
+    )
+    valid_prices = dict(
+        session.execute(
+            select(
+                SupplierProductRow.supplier_id,
+                func.count(func.distinct(SupplierPriceRow.supplier_product_id)),
+            )
+            .join(SupplierPriceRow, price_join)
+            .where(
+                SupplierProductRow.tenant_id == tenant_id,
+                SupplierPriceRow.status == "CONFIRMED",
+                SupplierPriceRow.valid_from <= now,
+                or_(
+                    SupplierPriceRow.valid_to.is_(None),
+                    SupplierPriceRow.valid_to >= now,
+                ),
+                *source_scope,
+            )
+            .group_by(SupplierProductRow.supplier_id)
+        ).all()
+    )
+    expired_prices = dict(
+        session.execute(
+            select(
+                SupplierProductRow.supplier_id,
+                func.count(func.distinct(SupplierPriceRow.supplier_product_id)),
+            )
+            .join(SupplierPriceRow, price_join)
+            .where(
+                SupplierProductRow.tenant_id == tenant_id,
+                SupplierPriceRow.status == "CONFIRMED",
+                SupplierPriceRow.valid_to.is_not(None),
+                SupplierPriceRow.valid_to < now,
+                *source_scope,
+            )
+            .group_by(SupplierProductRow.supplier_id)
+        ).all()
+    )
     scores: dict[str, SupplierScoreRow] = {}
-    for score in session.scalars(select(SupplierScoreRow).where(SupplierScoreRow.tenant_id == tenant_id).order_by(SupplierScoreRow.calculated_at.desc())):
+    for score in session.scalars(
+        select(SupplierScoreRow)
+        .where(SupplierScoreRow.tenant_id == tenant_id, *score_scope)
+        .order_by(SupplierScoreRow.calculated_at.desc())
+    ):
         scores.setdefault(score.supplier_id, score)
-    return {"products": product_counts, "skus": sku_counts, "reviews": review_counts, "imports": latest_imports, "valid_prices": valid_prices, "expired_prices": expired_prices, "scores": scores}
+    return {
+        "products": product_counts,
+        "skus": sku_counts,
+        "reviews": review_counts,
+        "imports": latest_imports,
+        "valid_prices": valid_prices,
+        "expired_prices": expired_prices,
+        "scores": scores,
+    }
 
 
 def list_supplier_sources(session: Session, *, tenant_id: UUID, supplier_id: str, now: datetime, limit: int) -> list[tuple[SupplierProductRow, ProductRow, SupplierPriceRow | None]]:

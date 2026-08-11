@@ -5,7 +5,6 @@ import {
   Copy,
   DownloadSimple,
   LinkSimple,
-  QrCode,
   ShareNetwork,
   X,
 } from "@phosphor-icons/react";
@@ -14,7 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { createCatalogShare } from "../api";
 import { useLocale } from "../LocaleContext";
-import type { CatalogShare } from "../types";
+import type { CatalogShare, CatalogShareLogoPosition } from "../types";
 
 export type CatalogShareTarget =
   | { type: "PRODUCTS"; skuIds: string[] }
@@ -67,62 +66,99 @@ async function imageFromUrl(url: string) {
   });
 }
 
+async function remoteImageFromUrl(url: string) {
+  const response = await fetch(url, { credentials: "include" });
+  if (!response.ok) throw new Error("Unable to load logo");
+  const objectUrl = URL.createObjectURL(await response.blob());
+  try {
+    return await imageFromUrl(objectUrl);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function drawContainedImage(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+  const drawWidth = image.naturalWidth * scale;
+  const drawHeight = image.naturalHeight * scale;
+  context.drawImage(
+    image,
+    x + (width - drawWidth) / 2,
+    y + (height - drawHeight) / 2,
+    drawWidth,
+    drawHeight,
+  );
+}
+
 async function downloadShareCard(
   share: CatalogShare,
-  shareUrl: string,
   qrDataUrl: string,
 ) {
   const canvas = document.createElement("canvas");
   canvas.width = 1080;
-  canvas.height = 1440;
+  canvas.height = 1350;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Canvas is unavailable");
 
-  const background = context.createLinearGradient(0, 0, 1080, 1440);
-  background.addColorStop(0, "#17112e");
-  background.addColorStop(0.55, "#2d1b69");
-  background.addColorStop(1, "#12101d");
+  const background = context.createLinearGradient(0, 0, 1080, 1350);
+  background.addColorStop(0, "#161121");
+  background.addColorStop(0.58, "#2d1b69");
+  background.addColorStop(1, "#20152f");
   context.fillStyle = background;
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  context.strokeStyle = "rgba(212, 175, 55, 0.78)";
-  context.lineWidth = 3;
-  context.strokeRect(54, 54, 972, 1332);
-  context.fillStyle = "rgba(255, 255, 255, 0.08)";
-  context.fillRect(92, 112, 896, 1216);
+  const glow = context.createRadialGradient(860, 110, 0, 860, 110, 520);
+  glow.addColorStop(0, "rgba(212, 175, 55, .19)");
+  glow.addColorStop(1, "rgba(212, 175, 55, 0)");
+  context.fillStyle = glow;
+  context.fillRect(0, 0, canvas.width, canvas.height);
 
-  context.textAlign = "center";
-  context.fillStyle = "#d4af37";
-  context.font = '600 30px "Noto Sans SC", sans-serif';
-  context.fillText("智贸云 · 商品分享", 540, 205);
+  context.strokeStyle = "rgba(212, 175, 55, 0.58)";
+  context.lineWidth = 2;
+  context.strokeRect(52, 52, 976, 1246);
+
+  const hasLogo = share.logoPosition !== "NONE" && Boolean(share.storeLogoUrl);
+  if (hasLogo && share.storeLogoUrl) {
+    const logoSize = 142;
+    const logoX = share.logoPosition === "TOP_LEFT" ? 92 : 846;
+    const logoY = 90;
+    context.fillStyle = "rgba(255,255,255,.94)";
+    context.beginPath();
+    context.roundRect(logoX, logoY, logoSize, logoSize, 22);
+    context.fill();
+    const logoImage = await remoteImageFromUrl(share.storeLogoUrl);
+    drawContainedImage(context, logoImage, logoX + 14, logoY + 14, logoSize - 28, logoSize - 28);
+  }
+
+  const merchantNameY = share.logoPosition === "TOP_RIGHT" && hasLogo ? 292 : 174;
+  context.textAlign = "right";
   context.fillStyle = "#ffffff";
-  context.font = '700 56px "Noto Serif SC", serif';
-  context.fillText(fitCanvasText(context, share.storeName, 820), 540, 302);
-  context.fillStyle = "rgba(255,255,255,.78)";
-  context.font = '400 34px "Noto Sans SC", sans-serif';
-  context.fillText(fitCanvasText(context, share.title, 820), 540, 372);
+  context.font = '600 50px "Noto Serif SC", serif';
+  context.fillText(fitCanvasText(context, share.storeName, hasLogo ? 680 : 760), 946, merchantNameY);
+  if (share.storeSubtitle) {
+    context.fillStyle = "rgba(255,255,255,.68)";
+    context.font = '400 27px "Noto Sans SC", sans-serif';
+    context.fillText(fitCanvasText(context, share.storeSubtitle, hasLogo ? 680 : 760), 946, merchantNameY + 52);
+  }
 
   context.fillStyle = "#ffffff";
-  context.fillRect(226, 454, 628, 628);
+  context.fillRect(190, 355, 700, 700);
   const qrImage = await imageFromUrl(qrDataUrl);
-  context.drawImage(qrImage, 248, 476, 584, 584);
-
-  context.fillStyle = "#d4af37";
-  context.font = '600 30px "Noto Sans SC", sans-serif';
-  context.fillText(`${share.itemCount} 件商品`, 540, 1162);
-  context.fillStyle = "rgba(255,255,255,.9)";
-  context.font = '500 30px "Noto Sans SC", sans-serif';
-  context.fillText("扫码查看商家精选商品", 540, 1220);
-  context.fillStyle = "rgba(255,255,255,.5)";
-  context.font = '400 21px "Noto Sans SC", sans-serif';
-  context.fillText(fitCanvasText(context, shareUrl, 820), 540, 1278);
+  context.drawImage(qrImage, 222, 387, 636, 636);
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("Unable to create share card");
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${share.storeName}-${share.title}-分享名片.png`.replace(/[\\/:*?"<>|]/g, "-");
+  anchor.download = `${share.storeName}-分享名片.png`.replace(/[\\/:*?"<>|]/g, "-");
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -141,10 +177,19 @@ export function CatalogShareDialog({
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [logoPosition, setLogoPosition] = useState<CatalogShareLogoPosition>("NONE");
+  const [availableLogoUrl, setAvailableLogoUrl] = useState("");
   const shareUrl = useMemo(
     () => (share ? absoluteShareUrl(share.sharePath) : ""),
     [share],
   );
+
+  useEffect(() => {
+    if (!open) {
+      setLogoPosition("NONE");
+      setAvailableLogoUrl("");
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open || !target) return;
@@ -156,8 +201,8 @@ export function CatalogShareDialog({
     setCopied(false);
     void createCatalogShare(
       target.type === "PRODUCTS"
-        ? { targetType: "PRODUCTS", skuIds: target.skuIds }
-        : { targetType: "CATEGORY", categoryId: target.categoryId },
+        ? { targetType: "PRODUCTS", skuIds: target.skuIds, logoPosition }
+        : { targetType: "CATEGORY", categoryId: target.categoryId, logoPosition },
     )
       .then(async (created) => {
         const url = absoluteShareUrl(created.sharePath);
@@ -168,6 +213,7 @@ export function CatalogShareDialog({
           color: { dark: "#17112eff", light: "#ffffffff" },
         });
         if (!active) return;
+        setAvailableLogoUrl(created.storeLogoUrl ?? "");
         setShare(created);
         setQrDataUrl(qr);
       })
@@ -179,7 +225,7 @@ export function CatalogShareDialog({
         if (active) setLoading(false);
       });
     return () => { active = false; };
-  }, [open, target, t]);
+  }, [logoPosition, open, target, t]);
 
   const handleCopy = async () => {
     if (!shareUrl) return;
@@ -197,7 +243,7 @@ export function CatalogShareDialog({
     setDownloading(true);
     setError("");
     try {
-      await downloadShareCard(share, shareUrl, qrDataUrl);
+      await downloadShareCard(share, qrDataUrl);
     } catch {
       setError(t("分享名片生成失败，请稍后重试。"));
     } finally {
@@ -212,7 +258,7 @@ export function CatalogShareDialog({
           <div>
             <Text size="1" color="gray">{t("商品前台")}</Text>
             <Dialog.Title>{t("分享商品")}</Dialog.Title>
-            <Dialog.Description>{t("复制专属链接，或下载带商家信息的二维码名片。")}</Dialog.Description>
+            <Dialog.Description>{t("二维码和链接只展示本次选择的商品。")}</Dialog.Description>
           </div>
           <Button variant="ghost" color="gray" onClick={() => onOpenChange(false)} aria-label={t("关闭")}>
             <X />
@@ -233,29 +279,61 @@ export function CatalogShareDialog({
           </Callout.Root>
         ) : null}
 
+        {share || availableLogoUrl ? (
+        <section className="core-catalog-share-branding" aria-labelledby="catalog-share-branding-title">
+          <div>
+            <Text id="catalog-share-branding-title" size="2" weight="bold">{t("名片 Logo")}</Text>
+            <Text size="1" color="gray">
+              {availableLogoUrl
+                ? t("选择本次分享名片是否展示 Logo，以及 Logo 的位置。")
+                : t("当前未上传商家 Logo，可在账户与商家资料中上传。")}
+            </Text>
+          </div>
+          <div className="core-catalog-share-logo-options" role="radiogroup" aria-label={t("名片 Logo 位置")}>
+            {([
+              ["NONE", t("不带 Logo")],
+              ["TOP_LEFT", t("左上角")],
+              ["TOP_RIGHT", t("右上角")],
+            ] as Array<[CatalogShareLogoPosition, string]>).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={logoPosition === value ? "is-selected" : ""}
+                role="radio"
+                aria-checked={logoPosition === value}
+                disabled={loading || (value !== "NONE" && !availableLogoUrl)}
+                onClick={() => setLogoPosition(value)}
+              >
+                <span className={`core-catalog-share-logo-option-preview is-${value.toLowerCase().replace("_", "-")}`}>
+                  {value !== "NONE" ? <i /> : null}
+                </span>
+                {label}
+              </button>
+            ))}
+          </div>
+        </section>
+        ) : null}
+
         {share && qrDataUrl ? (
           <div className="core-catalog-share-layout">
             <section className="core-catalog-share-card" aria-label={t("二维码分享名片预览")}>
-              <div className="core-catalog-share-brand">
-                {share.storeLogoUrl ? <img src={share.storeLogoUrl} alt="" /> : <span><QrCode weight="duotone" /></span>}
-                <div>
-                  <small>{t("商品分享名片")}</small>
-                  <strong>{share.storeName}</strong>
+              {share.logoPosition !== "NONE" && share.storeLogoUrl ? (
+                <div className={`core-catalog-share-logo is-${share.logoPosition.toLowerCase().replace("_", "-")}`}>
+                  <img src={share.storeLogoUrl} alt={t("{store} Logo", { store: share.storeName })} />
                 </div>
+              ) : null}
+              <div className={`core-catalog-share-merchant${share.logoPosition === "TOP_RIGHT" && share.storeLogoUrl ? " has-top-right-logo" : ""}${share.logoPosition === "TOP_LEFT" && share.storeLogoUrl ? " has-top-left-logo" : ""}`}>
+                <strong>{share.storeName}</strong>
+                {share.storeSubtitle ? <span>{share.storeSubtitle}</span> : null}
               </div>
               <div className="core-catalog-share-qr"><img src={qrDataUrl} alt={t("商品分享二维码")} /></div>
-              <div className="core-catalog-share-card-copy">
-                <strong>{share.title}</strong>
-                <span>{t("共 {count} 件商品", { count: share.itemCount })}</span>
-                <small>{t("扫码查看商家精选商品")}</small>
-              </div>
             </section>
 
             <section className="core-catalog-share-actions">
               <div>
-                <Text size="1" color="gray">{t("分享范围")}</Text>
+                <Text size="1" color="gray">{t("分享内容")}</Text>
                 <Text size="5" weight="bold" as="div">{share.title}</Text>
-                <Text size="2" color="gray">{t("访客只能在本次分享范围内浏览商品。")}</Text>
+                <Text size="2" color="gray">{t("共 {count} 件商品", { count: share.itemCount })}</Text>
               </div>
               <label className="core-catalog-share-link">
                 <span><LinkSimple />{t("分享链接")}</span>

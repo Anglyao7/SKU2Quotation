@@ -7,17 +7,20 @@ import {
   Eye,
   EyeSlash,
   Fire,
+  ImageSquare,
   Info,
   LockKey,
   ShieldCheck,
+  UploadSimple,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useCoreAuth } from "../AuthContext";
 import {
   changePassword,
   CoreApiError,
   getMerchantSettings,
+  uploadMerchantLogo,
   updateMerchantSettings,
 } from "../api";
 import {
@@ -60,6 +63,11 @@ export function AccountSettingsPage() {
   const [merchantSubmitting, setMerchantSubmitting] = useState(false);
   const [merchantSettingsLoading, setMerchantSettingsLoading] = useState(true);
   const [merchantSettingsReady, setMerchantSettingsReady] = useState(false);
+  const [shareCardSubtitle, setShareCardSubtitle] = useState("");
+  const [savedShareCardSubtitle, setSavedShareCardSubtitle] = useState("");
+  const [merchantLogoUrl, setMerchantLogoUrl] = useState("");
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const [hotProductsEnabled, setHotProductsEnabled] = useState(false);
   const [savedHotProductsEnabled, setSavedHotProductsEnabled] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -107,6 +115,9 @@ export function AccountSettingsPage() {
         if (!active) return;
         setMerchantName(settings.name);
         setMerchantSlug(settings.slug);
+        setMerchantLogoUrl(settings.logoUrl ?? "");
+        setShareCardSubtitle(settings.shareCardSubtitle ?? "");
+        setSavedShareCardSubtitle(settings.shareCardSubtitle ?? "");
         setHotProductsEnabled(settings.hotProductsEnabled);
         setSavedHotProductsEnabled(settings.hotProductsEnabled);
         setMerchantSettingsReady(true);
@@ -123,6 +134,7 @@ export function AccountSettingsPage() {
   }, [profile?.context.tenantId, t]);
 
   const hotProductsChanged = hotProductsEnabled !== savedHotProductsEnabled;
+  const shareCardSubtitleChanged = shareCardSubtitle.trim() !== savedShareCardSubtitle;
 
   const clearFeedback = (field: keyof PasswordChangeValidation) => {
     setFieldErrors((current) => {
@@ -192,17 +204,21 @@ export function AccountSettingsPage() {
       || !normalized
     ) return;
     const nameChanged = normalized !== profile?.context.tenantName;
-    if (!nameChanged && !hotProductsChanged) return;
+    if (!nameChanged && !hotProductsChanged && !shareCardSubtitleChanged) return;
     setMerchantSubmitting(true);
     setMerchantError("");
     setMerchantSuccess("");
     try {
       const updated = await updateMerchantSettings({
         name: nameChanged ? normalized : undefined,
+        shareCardSubtitle: shareCardSubtitleChanged ? shareCardSubtitle.trim() : undefined,
         hotProductsEnabled: hotProductsChanged ? hotProductsEnabled : undefined,
       });
       setMerchantName(updated.name);
       setMerchantSlug(updated.slug);
+      setMerchantLogoUrl(updated.logoUrl ?? "");
+      setShareCardSubtitle(updated.shareCardSubtitle ?? "");
+      setSavedShareCardSubtitle(updated.shareCardSubtitle ?? "");
       setHotProductsEnabled(updated.hotProductsEnabled);
       setSavedHotProductsEnabled(updated.hotProductsEnabled);
       await reloadProfile();
@@ -219,6 +235,29 @@ export function AccountSettingsPage() {
       }
     } finally {
       setMerchantSubmitting(false);
+    }
+  };
+
+  const uploadLogo = async (file: File | undefined) => {
+    if (!file || !canManageMerchant || logoUploading) return;
+    setLogoUploading(true);
+    setMerchantError("");
+    setMerchantSuccess("");
+    try {
+      const updated = await uploadMerchantLogo(file);
+      setMerchantLogoUrl(updated.logoUrl ?? "");
+      setMerchantSuccess(t("商家 Logo 已上传，商品前台与新生成的分享名片将使用新 Logo。"));
+    } catch (caught) {
+      if (caught instanceof CoreApiError && caught.status === 413) {
+        setMerchantError(t("Logo 图片过大，请上传不超过 5 MB 的图片。"));
+      } else if (caught instanceof CoreApiError && caught.status === 403) {
+        setMerchantError(t("当前成员没有修改商家资料的权限。"));
+      } else {
+        setMerchantError(t("Logo 上传失败，请确认图片格式后重试。"));
+      }
+    } finally {
+      setLogoUploading(false);
+      if (logoInputRef.current) logoInputRef.current.value = "";
     }
   };
 
@@ -242,6 +281,7 @@ export function AccountSettingsPage() {
                   {t(user?.isPlatformAdmin ? "平台管理员" : "商家成员")}
                 </Badge>
               </div>
+
             </div>
 
             <dl className="account-detail-list">
@@ -286,6 +326,41 @@ export function AccountSettingsPage() {
             </div>
 
             <form className="account-merchant-form" onSubmit={submitMerchant}>
+              <section className="account-logo-setting" aria-labelledby="account-logo-title">
+                <div className={`account-logo-preview${logoUploading ? " is-uploading" : ""}`}>
+                  {merchantLogoUrl ? (
+                    <img src={merchantLogoUrl} alt={t("当前商家 Logo")} />
+                  ) : (
+                    <ImageSquare size={28} weight="duotone" aria-hidden="true" />
+                  )}
+                </div>
+                <div className="account-logo-copy">
+                  <Text id="account-logo-title" size="2" weight="bold">{t("商家 Logo")}</Text>
+                  <Text size="1" color="gray">
+                    {t("用于商品前台与二维码分享名片，支持 PNG、JPG 和 WebP。")}
+                  </Text>
+                </div>
+                <input
+                  ref={logoInputRef}
+                  className="account-logo-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(event) => void uploadLogo(event.currentTarget.files?.[0])}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                />
+                <Button
+                  type="button"
+                  variant="soft"
+                  loading={logoUploading}
+                  disabled={!canManageMerchant || merchantSettingsLoading || !merchantSettingsReady}
+                  onClick={() => logoInputRef.current?.click()}
+                >
+                  <UploadSimple />
+                  {t(merchantLogoUrl ? "替换 Logo" : "上传 Logo")}
+                </Button>
+              </section>
+
               <div className="account-field">
                 <label htmlFor="account-merchant-name">{t("商家名称")}</label>
                 <TextField.Root
@@ -304,6 +379,26 @@ export function AccountSettingsPage() {
                 />
                 <Text size="1" color="gray">
                   {t("中文可直接用于路径；空格和标点会自动整理。修改后已有链接仍然有效。")}
+                </Text>
+              </div>
+
+              <div className="account-field">
+                <label htmlFor="account-share-card-subtitle">{t("分享名片副标题")}</label>
+                <TextField.Root
+                  id="account-share-card-subtitle"
+                  size="3"
+                  value={shareCardSubtitle}
+                  onChange={(event) => {
+                    setShareCardSubtitle(event.target.value);
+                    setMerchantError("");
+                    setMerchantSuccess("");
+                  }}
+                  maxLength={120}
+                  disabled={!canManageMerchant}
+                  placeholder={t("选填，例如：专注宠物用品出口十年")}
+                />
+                <Text size="1" color="gray">
+                  {t("显示在二维码分享名片的商家名称下方；留空则不显示。")}
                 </Text>
               </div>
 
@@ -387,6 +482,7 @@ export function AccountSettingsPage() {
                     || (
                       merchantName.trim() === profile?.context.tenantName
                       && !hotProductsChanged
+                      && !shareCardSubtitleChanged
                     )
                   }
                 >

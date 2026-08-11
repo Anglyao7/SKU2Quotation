@@ -1,5 +1,5 @@
-import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowDown, ArrowUp, ArrowsClockwise, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, ShareNetwork, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
+import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
+import { ArrowDown, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, ShareNetwork, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -1675,9 +1675,13 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
   const [imageUploading, setImageUploading] = useState(false);
   const [imageError, setImageError] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
+  const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
   const canEdit = hasPermission("product.edit");
 
   useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
+  useEffect(() => {
+    setActiveTab(selectedSkuId ? "skus" : "product");
+  }, [product.id, selectedSkuId]);
 
   const uploadImage = async (file?: File) => {
     if (!file || imageUploading || !canEdit) return;
@@ -1710,35 +1714,59 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
         <Badge color={product.status === "ACTIVE" ? "jade" : "gray"}>{t(skuStatusLabel[product.status as ProductSku["status"]] ?? product.status)}</Badge>
         <Text size="2" color="gray">{t("{count} 个 SKU", { count: product.skus.length })}</Text>
       </div>
-      <section className="core-product-image-editor">
-        <div className="core-product-image-preview">
-          {product.primaryImageUrl && !imageFailed ? (
-            <img src={product.primaryImageUrl} alt={product.name} onError={() => setImageFailed(true)} />
-          ) : <ImageSquare aria-hidden="true" />}
-        </div>
-        <div>
-          <Text size="2" weight="bold">{t("商品主图")}</Text>
-          <Text size="1" color="gray">{t("PNG、JPG 或 WebP，最大 20 MB")}</Text>
-          {canEdit ? (
-            <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
-              <FileArrowUp />{t(product.primaryImageUrl ? "替换图片" : "上传图片")}
-            </Button>
-          ) : null}
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            hidden
-            onChange={(event) => void uploadImage(event.target.files?.[0])}
-          />
-        </div>
-        {imageError ? <div className="core-form-error" role="alert">{imageError}</div> : null}
-      </section>
-      <section className="core-product-description">
-        <Text size="1" color="gray">{t("商品描述")}</Text>
-        <p>{product.description || t("暂无描述")}</p>
-      </section>
-      <SkuPanel product={product} initialSkuId={selectedSkuId} managedTags={managedTags} onChanged={onChanged} />
+      <Tabs.Root
+        className="core-product-detail-tabs-root"
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as "product" | "skus")}
+      >
+        <Tabs.List className="core-product-detail-tabs" aria-label={t("选择详情类型")}>
+          <Tabs.Trigger value="product"><ImageSquare />{t("商品详情")}</Tabs.Trigger>
+          <Tabs.Trigger value="skus"><Tag />{t("SKU 详情")}<span className="core-product-detail-tab-count">{product.skus.length}</span></Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="product" className="core-product-detail-tab-panel">
+          <div className="core-product-overview">
+            <section className="core-product-image-editor">
+              <div className="core-product-image-preview">
+                {product.primaryImageUrl && !imageFailed ? (
+                  <img src={product.primaryImageUrl} alt={product.name} onError={() => setImageFailed(true)} />
+                ) : <ImageSquare aria-hidden="true" />}
+              </div>
+              <div className="core-product-image-controls">
+                <Text size="2" weight="bold">{t("商品主图")}</Text>
+                <Text size="1" color="gray">{t("PNG、JPG 或 WebP，最大 20 MB")}</Text>
+                {canEdit ? (
+                  <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
+                    <FileArrowUp />{t(product.primaryImageUrl ? "替换图片" : "上传图片")}
+                  </Button>
+                ) : null}
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  hidden
+                  onChange={(event) => void uploadImage(event.target.files?.[0])}
+                />
+              </div>
+              {imageError ? <div className="core-form-error" role="alert">{imageError}</div> : null}
+            </section>
+            <div className="core-product-overview-content">
+              <dl className="core-product-facts">
+                <div><dt>{t("商品编码")}</dt><dd className="core-tabular">{product.productCode || t("未设置")}</dd></div>
+                <div><dt>{t("分类")}</dt><dd>{primaryCategoryLabel(product.category) || t("未分类")}</dd></div>
+                <div><dt>{t("计量单位")}</dt><dd>{product.defaultUnit || t("未设置")}</dd></div>
+                <div><dt>{t("供应商")}</dt><dd>{product.supplier || t("未设置")}</dd></div>
+              </dl>
+              <section className="core-product-description">
+                <Text size="1" color="gray">{t("商品描述")}</Text>
+                <p>{product.description || t("暂无描述")}</p>
+              </section>
+            </div>
+          </div>
+        </Tabs.Content>
+        <Tabs.Content value="skus" className="core-product-detail-tab-panel">
+          <SkuPanel product={product} initialSkuId={selectedSkuId} managedTags={managedTags} onChanged={onChanged} />
+        </Tabs.Content>
+      </Tabs.Root>
     </>
   );
 }
@@ -1758,12 +1786,16 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
   const [skuCode, setSkuCode] = useState(`${product.productCode ?? "SKU"}-${product.skus.length + 1}`);
   const [skuName, setSkuName] = useState(product.name);
   const [createOpen, setCreateOpen] = useState(false);
-  const [editingSkuId, setEditingSkuId] = useState<string | undefined>(initialSkuId);
+  const [editingSkuId, setEditingSkuId] = useState<string>();
+  const [expandedSkuIds, setExpandedSkuIds] = useState<Set<string>>(() => new Set(initialSkuId ? [initialSkuId] : []));
   const [busySkuId, setBusySkuId] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => setEditingSkuId(initialSkuId), [initialSkuId]);
+  useEffect(() => {
+    setEditingSkuId(undefined);
+    setExpandedSkuIds(new Set(initialSkuId ? [initialSkuId] : []));
+  }, [initialSkuId, product.id]);
   const loadOffers = useCallback(async () => {
     if (!canViewCatalog) { setOffers([]); return; }
     try { setOffers(await listPublicCatalogOffers(product.id)); }
@@ -1802,10 +1834,27 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
     }
   };
 
+  const toggleSkuDetails = (skuId: string) => {
+    setExpandedSkuIds((current) => {
+      const next = new Set(current);
+      if (next.has(skuId)) next.delete(skuId);
+      else next.add(skuId);
+      return next;
+    });
+  };
+
+  const editSku = (skuId: string) => {
+    setExpandedSkuIds((current) => new Set(current).add(skuId));
+    setEditingSkuId((current) => current === skuId ? undefined : skuId);
+  };
+
   return (
     <section className="core-sku-detail-section">
       <div className="core-sku-detail-heading">
-        <Heading size="4">SKU</Heading>
+        <div>
+          <Heading size="4">{t("SKU 详情")}</Heading>
+          <Text size="1" color="gray">{t("共 {count} 个 SKU，可逐条展开查看", { count: product.skus.length })}</Text>
+        </div>
         {canEdit ? <Button size="2" variant={createOpen ? "soft" : "solid"} color={createOpen ? "gray" : undefined} onClick={() => setCreateOpen((open) => !open)}><Plus />{t(createOpen ? "取消" : "添加 SKU")}</Button> : null}
       </div>
       {createOpen ? (
@@ -1821,13 +1870,22 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
           const offer = offers.find((item) => item.skuId === sku.id);
           const skuLabel = sku.name || Object.values(sku.optionValues).join(" · ") || t("基础款");
           const editing = editingSkuId === sku.id;
+          const expanded = expandedSkuIds.has(sku.id);
+          const options = Object.entries(sku.optionValues).filter(([, value]) => value !== "" && value !== undefined && value !== null);
           return (
-            <Card className="core-sku-detail-card" data-editing={editing || undefined} key={sku.id}>
+            <Card className="core-sku-detail-card" data-expanded={expanded || undefined} data-editing={editing || undefined} key={sku.id}>
               <div className="core-sku-detail-row">
-                <div className="core-sku-detail-main">
+                <button
+                  type="button"
+                  className="core-sku-detail-main"
+                  aria-expanded={expanded}
+                  aria-controls={`sku-details-${sku.id}`}
+                  onClick={() => toggleSkuDetails(sku.id)}
+                >
                   <Tag />
                   <span><strong>{sku.skuCode}</strong><small>{skuLabel}</small></span>
-                </div>
+                  <CaretDown className="core-sku-detail-caret" aria-hidden="true" />
+                </button>
                 <div className="core-sku-detail-tags">
                   {offer?.tags.slice(0, 3).map((tag) => <Badge color="gray" key={tag}>{tag}</Badge>)}
                   {offer && offer.tags.length > 3 ? <small>+{offer.tags.length - 3}</small> : null}
@@ -1836,7 +1894,10 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
                 <strong className="core-sku-detail-price core-tabular">{offer ? `${offer.currency} ${offer.unitPrice.toFixed(2)}` : "—"}</strong>
                 <Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge>
                 <div className="core-sku-detail-actions">
-                  {canPublish ? <Button size="1" variant="soft" color="gray" onClick={() => setEditingSkuId(editing ? undefined : sku.id)}><PencilSimple />{t(editing ? "收起" : "编辑")}</Button> : null}
+                  <Button size="1" variant="ghost" color="gray" onClick={() => toggleSkuDetails(sku.id)}>
+                    <CaretDown className="core-sku-detail-action-caret" data-expanded={expanded || undefined} />{t(expanded ? "收起" : "展开")}
+                  </Button>
+                  {canPublish ? <Button size="1" variant="soft" color="gray" onClick={() => editSku(sku.id)}><PencilSimple />{t(editing ? "取消编辑" : "编辑")}</Button> : null}
                   {canEdit ? (
                     <Button
                       size="1"
@@ -1850,6 +1911,24 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
                   ) : null}
                 </div>
               </div>
+              {expanded ? (
+                <div className="core-sku-expanded-details" id={`sku-details-${sku.id}`}>
+                  <div className="core-sku-expanded-field is-wide">
+                    <span>{t("规格")}</span>
+                    {options.length ? (
+                      <div className="core-sku-option-list">
+                        {options.map(([name, value]) => <Badge key={name} color="gray">{name} · {String(value)}</Badge>)}
+                      </div>
+                    ) : <strong>{t("暂无规格")}</strong>}
+                  </div>
+                  <div className="core-sku-expanded-field"><span>{t("SKU 名称")}</span><strong>{sku.name || product.name}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("条码")}</span><strong className="core-tabular">{sku.barcode || t("未设置")}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("起订数")}</span><strong className="core-tabular">{sku.defaultMoq === undefined ? t("未设置") : `${sku.defaultMoq} ${sku.moqUnit ?? ""}`.trim()}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("毛重")}</span><strong className="core-tabular">{sku.weight === undefined ? t("未设置") : `${sku.weight} ${sku.weightUnit ?? ""}`.trim()}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("公开价")}</span><strong className="core-tabular">{offer ? `${offer.currency} ${offer.unitPrice.toFixed(2)}` : t("未设置")}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("最后更新")}</span><strong>{skuUpdatedDate(sku.updatedAt)}</strong></div>
+                </div>
+              ) : null}
               {editing && canPublish ? (
                 <SkuQuickEditor
                   sku={sku}

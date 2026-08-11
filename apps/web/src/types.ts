@@ -75,6 +75,7 @@ export interface Storefront {
   tags?: string[];
   all_products_position?: number;
   hot_products_enabled?: boolean;
+  category_showcase_enabled?: boolean;
   announcements?: PublicAnnouncement[];
   support_widget?: PublicSupportWidget;
 }
@@ -92,6 +93,7 @@ export interface CatalogSharePublic {
   category_path?: string | null;
   share_path: string;
   store_name: string;
+  store_subtitle?: string | null;
   store_logo_url?: string | null;
   created_at: string;
 }
@@ -255,6 +257,9 @@ export interface PublicAnnouncementRelatedSku {
 export interface StorefrontCategoryOption {
   value: string;
   label: string;
+  id?: string;
+  parent_id?: string | null;
+  cover_image_url?: string | null;
 }
 
 export interface Sku {
@@ -301,6 +306,7 @@ export interface SkuList {
   source_locale?: StorefrontLocale;
   locale?: StorefrontLocale;
   all_products_position?: number;
+  category_showcase_enabled?: boolean;
 }
 
 export interface StoreProduct {
@@ -344,6 +350,7 @@ export interface StoreProductList {
   locale?: StorefrontLocale;
   all_products_position?: number;
   hot_products_enabled?: boolean;
+  category_showcase_enabled?: boolean;
   hot_sort_applied?: boolean;
 }
 

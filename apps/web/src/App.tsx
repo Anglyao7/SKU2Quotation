@@ -58,6 +58,7 @@ const CategoriesPage = recoverableLazy(() => import("./core/pages/CategoriesPage
 const CoreDashboardPage = recoverableLazy(() => import("./core/pages/DashboardPage").then((module) => ({ default: module.CoreDashboardPage })));
 const InquiryPage = recoverableLazy(() => import("./core/pages/InquiryPage").then((module) => ({ default: module.InquiryPage })));
 const InventoryPage = recoverableLazy(() => import("./core/pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
+const SupplyChainPage = recoverableLazy(() => import("./core/pages/SupplyChainPage").then((module) => ({ default: module.SupplyChainPage })));
 const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMonitoringPage").then((module) => ({ default: module.SystemMonitoringPage })));
 const ConfigurationCenterPage = recoverableLazy(() => import("./core/pages/ConfigurationCenterPage").then((module) => ({ default: module.ConfigurationCenterPage })));
 const LanguagePackagesPage = recoverableLazy(() => import("./core/pages/LanguagePackagesPage").then((module) => ({ default: module.LanguagePackagesPage })));
@@ -153,7 +154,11 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
-  const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
+  const pathShareId = params.shareId?.trim();
+  const shareToken = pathShareId || currentUrl.searchParams.get("share")?.trim() || undefined;
+  const storefrontPath = (slug: string) => pathShareId
+    ? `/${encodeURIComponent(slug)}/share/${encodeURIComponent(pathShareId)}`
+    : `/${encodeURIComponent(slug)}`;
   try {
     const savedView = shareToken ? undefined : readStorefrontViewState(tenantSlug);
     const catalogSnapshot = shareToken
@@ -180,7 +185,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     }).catch(() => undefined);
     const store = await api.getStore(tenantSlug, locale);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
-      return redirect(`/${encodeURIComponent(store.slug)}${currentUrl.search}${currentUrl.hash}`);
+      return redirect(`${storefrontPath(store.slug)}${currentUrl.search}${currentUrl.hash}`);
     }
     return store;
   }
@@ -188,7 +193,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     if (error instanceof ApiError && error.status === 422 && currentUrl.searchParams.has("lang")) {
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
-      return redirect(`/${encodeURIComponent(tenantSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`);
+      return redirect(`${storefrontPath(tenantSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`);
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
     throw error;
@@ -201,10 +206,11 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   if (!tenantSlug || !productId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
+  const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const [store, product] = await Promise.all([
       api.getStore(tenantSlug, locale),
-      api.getStoreProduct(tenantSlug, productId, locale),
+      api.getStoreProduct(tenantSlug, productId, locale, shareToken),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
@@ -232,10 +238,11 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   if (!tenantSlug || !skuId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
+  const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const [store, sku] = await Promise.all([
       api.getStore(tenantSlug, locale),
-      api.getStoreSku(tenantSlug, skuId, locale),
+      api.getStoreSku(tenantSlug, skuId, locale, shareToken),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
@@ -318,8 +325,9 @@ const router = createBrowserRouter([{
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
         { path: "languages", element: <PermissionGate anyOf={["product.view"]}><LanguagePackagesPage /></PermissionGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
+        { path: "supply-chain", element: <PermissionGate anyOf={["supplier.view", "supplier.manage"]}><SupplyChainPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
-        { path: "suppliers", element: <Navigate to="/console/products" replace /> },
+        { path: "suppliers", element: <Navigate to="/console/supply-chain" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
         { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
@@ -352,11 +360,17 @@ const router = createBrowserRouter([{
   { path: "/ai-search", element: <Navigate to="/console/ai-search" replace /> },
   { path: "/products", element: <Navigate to="/console/products" replace /> },
   { path: "/inventory", element: <Navigate to="/console/inventory" replace /> },
-  { path: "/suppliers", element: <Navigate to="/console/products" replace /> },
+  { path: "/suppliers", element: <Navigate to="/console/supply-chain" replace /> },
   { path: "/review", element: <Navigate to="/console/products" replace /> },
   { path: "/inquiries", element: <Navigate to="/console/inquiries" replace /> },
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },
   { path: "/account", element: <Navigate to="/console/account" replace /> },
+  {
+    path: "/:tenantSlug/share/:shareId",
+    loader: storefrontLoader,
+    element: <StorePage />,
+    errorElement: <StorefrontRouteError />,
+  },
   {
     path: "/:tenantSlug/products/:productId",
     loader: storefrontProductLoader,

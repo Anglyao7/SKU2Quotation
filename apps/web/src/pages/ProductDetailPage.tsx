@@ -80,9 +80,10 @@ export function ProductDetailPage() {
   const shareToken = new URLSearchParams(location.search).get("share")?.trim() || "";
   const storefrontQuery = new URLSearchParams();
   if (locale !== "zh-CN") storefrontQuery.set("lang", locale);
-  if (shareToken) storefrontQuery.set("share", shareToken);
   const storefrontSearch = storefrontQuery.toString();
-  const storefrontHome = `/${encodeURIComponent(store.slug)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
+  const storefrontHome = shareToken
+    ? `/${encodeURIComponent(store.slug)}/share/${encodeURIComponent(shareToken)}${storefrontSearch ? `?${storefrontSearch}` : ""}`
+    : `/${encodeURIComponent(store.slug)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(store.slug),

@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import Text, case, cast, exists, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from ..catalog_merchandising import POPULAR_CATEGORY_CODE
 from ..identity_models import TenantRow
 from ..product_center_models import SkuRow
 from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
@@ -242,6 +243,20 @@ def _ordered_public_catalog_statement(statement, *, query: str):
         # scopes the same rule to that category.
         case((ProductRow.storefront_pinned_at.is_not(None), 0), else_=1),
         ProductRow.storefront_pinned_at.desc(),
+        case(
+            (
+                func.upper(
+                    func.coalesce(
+                        ParentProductCategoryRow.code,
+                        ProductCategoryRow.code,
+                        "",
+                    )
+                )
+                == POPULAR_CATEGORY_CODE,
+                0,
+            ),
+            else_=1,
+        ),
         # The category tree is also the storefront merchandising order.
         # Products without a category remain visible, but always come last.
         case((ProductCategoryRow.id.is_(None), 1), else_=0),
@@ -381,6 +396,20 @@ def _public_product_id_statement(
     child_name = func.lower(func.coalesce(ProductCategoryRow.name, ""))
     pinned_rank = case((ProductRow.storefront_pinned_at.is_not(None), 0), else_=1)
     pinned_at = ProductRow.storefront_pinned_at
+    popular_rank = case(
+        (
+            func.upper(
+                func.coalesce(
+                    ParentProductCategoryRow.code,
+                    ProductCategoryRow.code,
+                    "",
+                )
+            )
+            == POPULAR_CATEGORY_CODE,
+            0,
+        ),
+        else_=1,
+    )
     product_name = func.lower(ProductRow.name)
     normalized = query.casefold().strip()
     match_rank = func.min(
@@ -400,6 +429,7 @@ def _public_product_id_statement(
             child_name.label("child_name"),
             pinned_rank.label("pinned_rank"),
             pinned_at.label("pinned_at"),
+            popular_rank.label("popular_rank"),
             product_name.label("product_name"),
             match_rank.label("match_rank"),
         )
@@ -413,12 +443,16 @@ def _public_product_id_statement(
             child_name,
             pinned_rank,
             pinned_at,
+            popular_rank,
             product_name,
         )
     )
     if normalized:
         return grouped.order_by(
             match_rank,
+            pinned_rank,
+            pinned_at.desc(),
+            popular_rank,
             uncategorized,
             root_sort,
             root_name,
@@ -485,6 +519,7 @@ def _public_product_id_statement(
             .order_by(
                 catalog_products.c.pinned_rank,
                 catalog_products.c.pinned_at.desc(),
+                catalog_products.c.popular_rank,
                 hot_score.desc(),
                 order_count.desc(),
                 view_count.desc(),
@@ -500,6 +535,7 @@ def _public_product_id_statement(
     return grouped.order_by(
         pinned_rank,
         pinned_at.desc(),
+        popular_rank,
         uncategorized,
         root_sort,
         root_name,
@@ -713,6 +749,7 @@ def get_catalog_category(
         select(ProductCategoryRow).where(
             ProductCategoryRow.tenant_id == tenant_id,
             ProductCategoryRow.id == category_id,
+            ProductCategoryRow.deleted_at.is_(None),
         )
     )
 
@@ -795,6 +832,7 @@ def approved_image_map(
             ProductImageRow.tenant_id == tenant_id,
             ProductImageRow.product_id.in_(product_ids),
             ProductImageRow.approval_status == "APPROVED",
+            ProductImageRow.deleted_at.is_(None),
         )
         .order_by(
             ProductImageRow.product_id,

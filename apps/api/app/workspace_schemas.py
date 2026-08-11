@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -64,6 +65,15 @@ class SupplierProfileSummary(BaseModel):
     category_summary: str | None
     country_code: str | None
     website: str | None
+    contact_name: str | None
+    phone: str | None
+    email: str | None
+    whatsapp: str | None
+    wechat: str | None
+    country_region: str | None
+    address: str | None
+    business_scope: str | None
+    notes: str | None
     status: str
     risk_level: str
     health: str
@@ -104,6 +114,94 @@ class SupplierCreateRequest(BaseModel):
     @classmethod
     def normalize_website(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
+
+
+class SupplyChainCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=300)
+    contact_name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=320)
+    whatsapp: str | None = Field(default=None, max_length=100)
+    wechat: str | None = Field(default=None, max_length=100)
+    country_region: str | None = Field(default=None, max_length=200)
+    address: str | None = Field(default=None, max_length=2000)
+    website: str | None = Field(default=None, max_length=1000)
+    business_scope: str | None = Field(default=None, max_length=2000)
+    notes: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("name")
+    @classmethod
+    def trim_supply_chain_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Factory or partner name is required.")
+        return normalized
+
+    @field_validator(
+        "contact_name",
+        "phone",
+        "email",
+        "whatsapp",
+        "wechat",
+        "country_region",
+        "address",
+        "website",
+        "business_scope",
+        "notes",
+    )
+    @classmethod
+    def normalize_optional_supply_chain_text(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+
+class SupplyChainUpdateRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=300)
+    contact_name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=320)
+    whatsapp: str | None = Field(default=None, max_length=100)
+    wechat: str | None = Field(default=None, max_length=100)
+    country_region: str | None = Field(default=None, max_length=200)
+    address: str | None = Field(default=None, max_length=2000)
+    website: str | None = Field(default=None, max_length=1000)
+    business_scope: str | None = Field(default=None, max_length=2000)
+    notes: str | None = Field(default=None, max_length=4000)
+    status: Literal["ACTIVE", "INACTIVE"] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def trim_optional_supply_chain_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Factory or partner name is required.")
+        return normalized
+
+    @field_validator(
+        "contact_name",
+        "phone",
+        "email",
+        "whatsapp",
+        "wechat",
+        "country_region",
+        "address",
+        "website",
+        "business_scope",
+        "notes",
+    )
+    @classmethod
+    def normalize_optional_supply_chain_update_text(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+
+class SupplyChainPageResponse(BaseModel):
+    items: list[SupplierProfileSummary]
+    total: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    pages: int = Field(ge=0)
 
 
 class SupplierSourceSummary(BaseModel):

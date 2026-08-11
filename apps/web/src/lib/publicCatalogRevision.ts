@@ -1,5 +1,6 @@
 const REVISION_STORAGE_KEY = "atc.publicCatalogRevision";
 const REVISION_EVENT = "atc:public-catalog-revision";
+const CACHE_SCHEMA_VERSION = "v2";
 
 let memoryRevision = "0";
 
@@ -13,7 +14,7 @@ export function currentPublicCatalogRevision() {
 }
 
 export function publicCatalogCacheKey(scope: string, path: string) {
-  return `${scope}:${currentPublicCatalogRevision()}:${path}`;
+  return `${CACHE_SCHEMA_VERSION}:${scope}:${currentPublicCatalogRevision()}:${path}`;
 }
 
 export function bumpPublicCatalogRevision() {
