@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -41,6 +42,7 @@ from app.services.support_ai_orchestrator import (
     detect_safe_social_intent,
     detect_support_interaction_goal,
 )
+from app.services.support_ai_retrieval import _public_product_excerpt
 
 
 @pytest.mark.parametrize(
@@ -69,6 +71,33 @@ def test_preserved_identifiers_keeps_customer_product_codes() -> None:
         "AB-1200/X",
         "SKU-88",
     ]
+
+
+def test_support_evidence_uses_the_customer_visible_product_code() -> None:
+    offer = SimpleNamespace(tags=[], unit_price=Decimal("30.00"), currency="CNY")
+    sku = SimpleNamespace(
+        sku_code="PUBLIC-SKU-88",
+        name="公开规格",
+        option_values={},
+        default_moq=30,
+        moq_unit="piece",
+    )
+    product = SimpleNamespace(
+        name="月亮椅",
+        product_code="TPL-INTERNAL-88",
+        description=None,
+    )
+    excerpt = _public_product_excerpt(
+        [(offer, sku, product, SimpleNamespace(path="户外椅", name="户外椅"))]
+    )
+    assert "Product code: PUBLIC-SKU-88" in excerpt
+    assert "TPL-INTERNAL-88" not in excerpt
+
+    sku.option_values = {"商品型号": "MOON-CHAIR-01"}
+    model_excerpt = _public_product_excerpt(
+        [(offer, sku, product, SimpleNamespace(path="户外椅", name="户外椅"))]
+    )
+    assert "Product code: MOON-CHAIR-01" in model_excerpt
 
 
 @pytest.mark.parametrize(

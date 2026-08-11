@@ -26,7 +26,7 @@ from ..model_mixins import utcnow
 
 
 logger = logging.getLogger(__name__)
-CUSTOMER_PRODUCT_FIELD_POLICY_VERSION = 2
+CUSTOMER_PRODUCT_FIELD_POLICY_VERSION = 3
 SEARCH_SEGMENT_PATTERN = re.compile(
     r"[a-z0-9]+|[\u4e00-\u9fff]+",
     re.IGNORECASE,
@@ -163,11 +163,24 @@ def _query_embedding(session: Session, query: str) -> QueryEmbeddingState:
     )
 
 
+def _customer_visible_product_code(product: object, first_sku: object) -> str:
+    product_model = str(
+        (getattr(first_sku, "option_values", None) or {}).get("商品型号") or ""
+    ).strip()
+    stored_product_code = str(getattr(product, "product_code", "") or "").strip()
+    if product_model:
+        return product_model
+    if stored_product_code.startswith(("TPL-", "TPLX-")):
+        return str(getattr(first_sku, "sku_code", "") or "").strip()
+    return stored_product_code
+
+
 def _public_product_excerpt(rows: list[object]) -> str:
-    _first_offer, _first_sku, product, category = rows[0]
+    _first_offer, first_sku, product, category = rows[0]
     pieces = [f"Product: {product.name}"]
-    if product.product_code:
-        pieces.append(f"Product code: {product.product_code}")
+    public_product_code = _customer_visible_product_code(product, first_sku)
+    if public_product_code:
+        pieces.append(f"Product code: {public_product_code}")
     if product.description:
         pieces.append(f"Description: {product.description}")
     category_value = None
