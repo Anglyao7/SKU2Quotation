@@ -141,22 +141,36 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        if connection.dialect.name == "sqlite":
-            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        is_sqlite = connection.dialect.name == "sqlite"
+        if is_sqlite:
+            # Alembic batch mode rebuilds tables for operations SQLite cannot
+            # express with ALTER TABLE. Parent tables may already be referenced
+            # by live rows, so enforcement must be disabled for the migration
+            # connection and verified once the replacement tables are in place.
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
             include_object=include_object,
-            render_as_batch=connection.dialect.name == "sqlite",
+            render_as_batch=is_sqlite,
         )
         with context.begin_transaction():
             context.run_migrations()
         # SQLite is reported as non-transactional DDL by Alembic, while data
         # backfills still open a SQLAlchemy transaction. Commit that unit
         # explicitly so version rows and backfills are not rolled back on close.
-        if connection.dialect.name == "sqlite" and connection.in_transaction():
+        if is_sqlite and connection.in_transaction():
             connection.commit()
+        if is_sqlite:
+            violations = connection.exec_driver_sql(
+                "PRAGMA foreign_key_check"
+            ).fetchall()
+            if violations:
+                raise RuntimeError(
+                    "SQLite foreign key violations after migrations: "
+                    f"{violations!r}"
+                )
 
 
 if context.is_offline_mode():

@@ -45,7 +45,6 @@ def upgrade() -> None:
             )
         )
 
-
 def downgrade() -> None:
     with op.batch_alter_table("tenant_public_profiles") as batch:
         batch.drop_column("category_showcase_enabled")

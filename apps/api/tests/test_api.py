@@ -16161,6 +16161,79 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     command.check(config)
 
 
+def test_category_showcase_migration_rebuilds_referenced_sqlite_parent(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "category-showcase-parent-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    seed_engine = create_engine(migration_url)
+    with seed_engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        connection.exec_driver_sql(
+            "CREATE TABLE product_categories (id TEXT PRIMARY KEY)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE products ("
+            "id TEXT PRIMARY KEY, "
+            "category_id TEXT NOT NULL REFERENCES product_categories(id)"
+            ")"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE tenant_public_profiles (tenant_id TEXT PRIMARY KEY)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO product_categories (id) VALUES ('category-1')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO products (id, category_id) "
+            "VALUES ('product-1', 'category-1')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO tenant_public_profiles (tenant_id) VALUES ('tenant-1')"
+        )
+    seed_engine.dispose()
+
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+    command.stamp(config, "20260811_0077")
+    command.upgrade(config, "20260811_0078")
+
+    upgraded_engine = create_engine(migration_url)
+    with upgraded_engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        assert connection.exec_driver_sql(
+            "SELECT category_id FROM products WHERE id = 'product-1'"
+        ).scalar_one() == "category-1"
+        assert connection.exec_driver_sql(
+            "PRAGMA foreign_key_check"
+        ).fetchall() == []
+    assert {
+        "cover_source",
+        "cover_object_key",
+        "cover_product_id",
+    }.issubset(
+        {
+            column["name"]
+            for column in inspect(upgraded_engine).get_columns(
+                "product_categories"
+            )
+        }
+    )
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260811_0077")
+    downgraded_engine = create_engine(migration_url)
+    with downgraded_engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        assert connection.exec_driver_sql(
+            "SELECT category_id FROM products WHERE id = 'product-1'"
+        ).scalar_one() == "category-1"
+        assert connection.exec_driver_sql(
+            "PRAGMA foreign_key_check"
+        ).fetchall() == []
+    downgraded_engine.dispose()
+
+
 def test_support_ai_agent_migration_preserves_existing_store_configuration(
     tmp_path: Path,
 ) -> None:
