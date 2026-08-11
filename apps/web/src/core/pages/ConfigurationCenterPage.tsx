@@ -15,9 +15,7 @@ import {
   Copy,
   Database,
   FloppyDisk,
-  Key,
   Plus,
-  ShieldCheck,
   Translate,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
@@ -39,13 +37,6 @@ import "./ConfigurationCenterPage.css";
 type ConfigurationSection = "support-ai" | "translation" | "embedding";
 
 const SECTIONS = new Set<ConfigurationSection>(["support-ai", "translation", "embedding"]);
-
-function sourceLabel(source?: string) {
-  if (source === "database") return "后台配置";
-  if (source === "environment") return "环境变量";
-  if (source === "deterministic") return "本地降级模型";
-  return "未配置";
-}
 
 function GenerationSettingsPanel() {
   const { t } = useLocale();
@@ -182,7 +173,7 @@ function GenerationSettingsPanel() {
     try {
       const copied = await copySupportAIProviderProfile(selectedProfile.id, copyName);
       await load(copied.id);
-      setMessage(t("配置已复制，API Key 仍以密文保存。"));
+      setMessage(t("配置已复制。"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("智能体 API 配置复制失败"));
     } finally {
@@ -198,9 +189,9 @@ function GenerationSettingsPanel() {
       <div className="configuration-card-heading">
         <span><Brain weight="duotone" /></span>
         <div>
-          <Text size="1" color="gray">{t("平台智能体模型")}</Text>
+          <Text size="1" color="gray">{t("智能体")}</Text>
           <Heading size="5">{t("智能体 API")}</Heading>
-          <Text size="2" color="gray">{t("统一保存多套模型接口；智能体只分配配置，不再直接接触 Base URL、API Key 或内部模型名。")}</Text>
+          <Text size="2" color="gray">{t("管理智能体可使用的模型配置。")}</Text>
         </div>
         <Button variant="soft" onClick={startNewProfile}><Plus />{t("新增配置")}</Button>
       </div>
@@ -216,7 +207,7 @@ function GenerationSettingsPanel() {
             >
               <span>
                 <strong>{profile.displayModelName || profile.configurationName}</strong>
-                <small>{profile.configurationName} · {profile.modelName}</small>
+                <small>{profile.configurationName}</small>
               </span>
               <Badge color={profile.enabled ? "jade" : "gray"}>{t(profile.enabled ? "可分配" : "已停用")}</Badge>
             </button>
@@ -226,7 +217,7 @@ function GenerationSettingsPanel() {
 
         <form className="configuration-form" onSubmit={(event) => void save(event)}>
           <label>
-            <Text size="1" color="gray">{t("内部配置名称")}</Text>
+            <Text size="1" color="gray">{t("配置名称")}</Text>
             <TextField.Root value={configurationName} onChange={(event) => setConfigurationName(event.target.value)} placeholder={t("例如：主客服接口")} required />
           </label>
           <label>
@@ -243,7 +234,7 @@ function GenerationSettingsPanel() {
             <small>{t("可填写服务根地址、/v1，或完整的 /v1/chat/completions 地址。")}</small>
           </label>
           <label>
-            <Text size="1" color="gray">{t("内部模型名称")}</Text>
+            <Text size="1" color="gray">{t("模型名称")}</Text>
             <TextField.Root value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="gpt-4.1-mini" required />
           </label>
           <label>
@@ -272,7 +263,6 @@ function GenerationSettingsPanel() {
           <div className="configuration-actions configuration-wide">
             <Button type="submit" size="3" disabled={!valid || Boolean(busy)} loading={busy === "save"}><FloppyDisk />{t("保存配置")}</Button>
             {selectedProfile ? <Button type="button" variant="soft" color="gray" disabled={Boolean(busy)} loading={busy === "copy"} onClick={() => void duplicate()}><Copy />{t("复制配置")}</Button> : null}
-            <Text size="1" color="gray"><Key /> {t("密钥加密保存，页面不会返回明文。")}</Text>
           </div>
         </form>
       </div>
@@ -382,11 +372,10 @@ function EmbeddingSettingsPanel() {
         <div>
           <Text size="1" color="gray">{t("商品与文件知识检索")}</Text>
           <Heading size="5">Embedding API</Heading>
-          <Text size="2" color="gray">{t("商品知识和企业文件共用这套向量模型；供应商名称、供应商 SKU 与供应商评分不会进入向量文本。")}</Text>
+          <Text size="2" color="gray">{t("管理商品搜索与知识库使用的检索配置。")}</Text>
         </div>
         <div className="configuration-statuses">
-          <Badge color={settings?.apiKeyConfigured ? "jade" : "amber"}>{t(settings?.apiKeyConfigured ? "密钥已配置" : "使用降级模型")}</Badge>
-          <Badge color={settings?.source === "database" ? "blue" : "gray"}>{t(sourceLabel(settings?.source))}</Badge>
+          <Badge color={settings?.apiKeyConfigured ? "jade" : "amber"}>{t(settings?.apiKeyConfigured ? "已配置" : "待配置")}</Badge>
         </div>
       </div>
 
@@ -450,17 +439,9 @@ export function ConfigurationCenterPage() {
       <CorePageHeading
         eyebrow={t("平台设置")}
         title={t("配置中心")}
-        description={t("集中管理智能体、翻译与向量检索 API；密钥和内部模型参数只在平台配置中心维护。")}
+        description={t("管理智能体、翻译与商品搜索配置。")}
         actions={<Button variant="soft" color="gray" onClick={() => window.location.reload()}><ArrowClockwise />{t("刷新")}</Button>}
       />
-
-      <Card className="configuration-security-note">
-        <ShieldCheck weight="duotone" />
-        <div>
-          <Text weight="bold" as="div">{t("统一密钥边界")}</Text>
-          <Text size="2" color="gray">{t("配置写入后加密保存，页面只展示脱敏状态；这里不执行额外的连接测试。")}</Text>
-        </div>
-      </Card>
 
       <Tabs.Root value={section} onValueChange={changeSection}>
         <Tabs.List className="configuration-tabs">

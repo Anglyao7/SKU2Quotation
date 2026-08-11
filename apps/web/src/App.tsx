@@ -93,7 +93,7 @@ function ApplicationRouteError() {
         <Text size="3" color="gray">
           {t(staleBundle
             ? "系统检测到浏览器仍在使用旧版页面资源，重新加载后会自动切换到最新版。"
-            : "系统没有丢失你的数据。请重新加载页面；若问题持续出现，再联系平台管理员。")}
+            : "系统没有丢失你的数据。请重新加载页面；若问题持续出现，请联系技术支持。")}
         </Text>
         {import.meta.env.DEV && detail ? <code>{detail}</code> : null}
         <div className="application-error-actions">
@@ -138,14 +138,14 @@ function PermissionGate({ anyOf, children }: { anyOf: string[]; children: ReactN
   const { hasAnyPermission } = useCoreAuth();
   const { t } = useLocale();
   if (hasAnyPermission(...anyOf)) return children;
-  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("当前成员没有此工作区权限")}</Heading><Text size="2" color="gray">{t("需要以下任一服务端权限：{permissions}", { permissions: anyOf.join(" / ") })}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
+  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("无法访问此页面")}</Heading><Text size="2" color="gray">{t("当前账户未开通此功能，如需使用请联系账户负责人。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
 }
 
 function PlatformAdminGate({ children }: { children: ReactNode }) {
   const { profile } = useCoreAuth();
   const { t } = useLocale();
   if (profile?.user.isPlatformAdmin) return children;
-  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("当前商家不是管理员身份")}</Heading><Text size="2" color="gray">{t("配置中心、商家管理和系统功能仅对管理员身份开放。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
+  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("无法访问此页面")}</Heading><Text size="2" color="gray">{t("当前账户未开通此功能，如需使用请联系账户负责人。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
 }
 
 async function storefrontLoader({ params, request }: LoaderFunctionArgs) {

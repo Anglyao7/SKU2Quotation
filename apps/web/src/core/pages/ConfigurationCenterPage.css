@@ -1,7 +1,4 @@
 .configuration-center-page { align-content: start; }
-.configuration-security-note { min-height: 76px; padding: 16px 18px !important; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; background: color-mix(in srgb, var(--accent-soft) 56%, var(--surface)) !important; }
-.configuration-security-note > svg { width: 25px; height: 25px; color: var(--accent); }
-.configuration-security-note > div { display: grid; gap: 3px; }
 .configuration-tabs { width: 100%; display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .configuration-tabs .rt-TabsTrigger { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .configuration-tabs svg { width: 18px; height: 18px; }

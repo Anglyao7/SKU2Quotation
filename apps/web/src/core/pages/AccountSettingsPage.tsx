@@ -269,7 +269,7 @@ export function AccountSettingsPage() {
             <div>
               <Heading size="3">{t("账户资料")}</Heading>
               <Text size="2" color="gray">
-                {t("登录邮箱和成员名称由管理员统一维护。已配置的账号或手机号也可以用于登录。")}
+                {t("如需修改登录邮箱或成员名称，请联系账户负责人。已配置的账号或手机号均可用于登录。")}
               </Text>
             </div>
           </Card>
