@@ -63,9 +63,12 @@ export function SkuDetailPage() {
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
-  const localeQuery = storefrontLocaleQuery(locale);
-  const storefrontHome = `/${encodeURIComponent(store.slug)}${localeQuery}`;
   const location = useLocation();
+  const shareToken = new URLSearchParams(location.search).get("share")?.trim() || "";
+  const localeQuery = storefrontLocaleQuery(locale);
+  const storefrontHome = shareToken
+    ? `/${encodeURIComponent(store.slug)}/share/${encodeURIComponent(shareToken)}${localeQuery}`
+    : `/${encodeURIComponent(store.slug)}${localeQuery}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(store.slug),

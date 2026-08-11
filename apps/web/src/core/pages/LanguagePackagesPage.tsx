@@ -13,10 +13,7 @@ import {
   ArrowsClockwise,
   Check,
   CheckCircle,
-  CloudArrowUp,
-  Database,
   GlobeHemisphereWest,
-  Info,
   LockSimple,
   Package,
   Pause,
@@ -55,9 +52,9 @@ const TARGET_LANGUAGES = STOREFRONT_LANGUAGE_OPTIONS.filter(
 const stageCopy: Record<CatalogTranslationJobStage, string> = {
   QUEUED: "等待开始",
   PREPARING: "核对变更",
-  TRANSLATING: "调用翻译 API",
-  PACKAGING: "整理语言包",
-  UPLOADING: "上传语言包",
+  TRANSLATING: "正在翻译",
+  PACKAGING: "整理翻译内容",
+  UPLOADING: "正在发布",
   PAUSED: "翻译已暂停",
   PUBLISHED: "发布完成",
   FAILED: "任务失败",
@@ -132,7 +129,7 @@ export function LanguagePackagesPage() {
       })
       .catch((caught) => {
         if (active) {
-          setError(caught instanceof Error ? caught.message : t("语言包状态读取失败。"));
+          setError(caught instanceof Error ? caught.message : t("翻译状态读取失败。"));
         }
       })
       .finally(() => {
@@ -148,7 +145,7 @@ export function LanguagePackagesPage() {
     let active = true;
     setError("");
     void refreshStatus(selectedLocale).catch((caught) => {
-      if (active) setError(caught instanceof Error ? caught.message : t("语言包状态读取失败。"));
+      if (active) setError(caught instanceof Error ? caught.message : t("翻译状态读取失败。"));
     });
     return () => {
       active = false;
@@ -172,7 +169,7 @@ export function LanguagePackagesPage() {
             void refreshStatus(next.targetLocale).then((latest) => {
               if (cancelled) return;
               if (next.status === "SUCCEEDED" && latest.package) {
-                setSuccess(t("语言包已发布，前台将在下一次版本检查后自动使用。"));
+                setSuccess(t("翻译内容已更新，前台将自动使用最新版本。"));
               }
             });
           }
@@ -208,7 +205,7 @@ export function LanguagePackagesPage() {
       const updated = await updateMerchantSettings({ storefrontLocales: enabledLocales });
       setEnabledLocales(updated.storefrontLocales);
       setSavedLocales(updated.storefrontLocales);
-      setSuccess(t("前台语言已更新。尚未发布语言包的语言会暂时回退到原文。"));
+      setSuccess(t("前台语言已更新。尚未完成翻译的内容会暂时显示原文。"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("前台语言保存失败。"));
     } finally {
@@ -226,7 +223,7 @@ export function LanguagePackagesPage() {
       setJob(next);
       if (next.status === "SUCCEEDED") {
         await refreshStatus(selectedLocale);
-        setSuccess(t("当前语言包已经是最新版本。"));
+        setSuccess(t("当前翻译内容已经是最新版本。"));
       }
     } catch (caught) {
       const message = caught instanceof CoreApiError || caught instanceof Error
@@ -274,9 +271,9 @@ export function LanguagePackagesPage() {
       <div className="core-page-heading language-pack-heading">
         <div>
           <Text size="2" color="gray">{t("商品资料")}</Text>
-          <Heading size="8">{t("多语言与语言包")}</Heading>
+          <Heading size="8">{t("多语言")}</Heading>
           <Text size="2" color="gray">
-            {t("集中管理前台语言、翻译任务与云端语言包。访客下载一次后会保存在当前浏览器。")}
+            {t("管理商品前台可用语言，并更新各语言的商品内容。")}
           </Text>
         </div>
       </div>
@@ -376,7 +373,7 @@ export function LanguagePackagesPage() {
                 </Select.Content>
               </Select.Root>
               <Badge color={status?.packageOutdated ? "amber" : status?.package ? "green" : "gray"}>
-                {t(status?.packageOutdated ? "有变更待发布" : status?.package ? "语言包最新" : "尚未生成")}
+                {t(status?.packageOutdated ? "有内容待更新" : status?.package ? "内容已是最新" : "尚未翻译")}
               </Badge>
             </div>
           </div>
@@ -384,7 +381,7 @@ export function LanguagePackagesPage() {
             <div><strong>{status?.totalSkus ?? 0}</strong><span>{t("公开 SKU")}</span></div>
             <div><strong>{status?.translatedSkus ?? 0}</strong><span>{t("已翻译")}</span></div>
             <div><strong>{status?.pendingSkus ?? 0}</strong><span>{t("新增或变更")}</span></div>
-            <div><strong>{coverage}%</strong><span>{t("数据库覆盖")}</span></div>
+            <div><strong>{coverage}%</strong><span>{t("翻译覆盖")}</span></div>
           </div>
           <Progress value={coverage} size="3" color={coverage === 100 ? "green" : "blue"} />
           <div className="language-pack-actions">
@@ -411,7 +408,7 @@ export function LanguagePackagesPage() {
               <AlertDialog.Content maxWidth="480px">
                 <AlertDialog.Title>{t("全量重新翻译 {language}？", { language: selectedLanguage.label })}</AlertDialog.Title>
                 <AlertDialog.Description>
-                  {t("系统会重新核对全部商品，并用当前翻译模型生成一个新的不可变语言包。旧包会继续可用，直到新包完整上传后才切换。")}
+                  {t("系统会重新翻译全部商品。完成前，前台会继续使用现有翻译内容。")}
                 </AlertDialog.Description>
                 <div className="language-pack-dialog-actions">
                   <AlertDialog.Cancel><Button variant="soft" color="gray">{t("取消")}</Button></AlertDialog.Cancel>
@@ -449,20 +446,6 @@ export function LanguagePackagesPage() {
               {t("系统会先保存当前批次，再进入暂停状态，不会丢失已完成的翻译。")}
             </Text>
           ) : null}
-          {!status?.providerConfigured ? (
-            <Callout.Root color="amber">
-              <Callout.Icon><Info /></Callout.Icon>
-              <Callout.Text>{t("平台尚未配置可用的翻译 API。")}</Callout.Text>
-            </Callout.Root>
-          ) : null}
-          {status && !status.packageStorageConfigured ? (
-            <Callout.Root color="red">
-              <Callout.Icon><CloudArrowUp /></Callout.Icon>
-              <Callout.Text>
-                {t("语言包存储暂不可用，请联系平台管理员。")}
-              </Callout.Text>
-            </Callout.Root>
-          ) : null}
         </Card>
 
         <Card className="language-package-release-card">
@@ -476,17 +459,9 @@ export function LanguagePackagesPage() {
           <dl className="language-package-details">
             <div><dt>{t("发布时间")}</dt><dd>{formatDate(status?.package?.publishedAt)}</dd></div>
             <div><dt>{t("源数据截止")}</dt><dd>{formatDate(status?.package?.sourceCutoffAt)}</dd></div>
-            <div><dt>{t("压缩后大小")}</dt><dd>{formatBytes(status?.package?.byteSize)}</dd></div>
+            <div><dt>{t("内容大小")}</dt><dd>{formatBytes(status?.package?.byteSize)}</dd></div>
             <div><dt>{t("包含内容")}</dt><dd>{status?.package ? `${status.package.productCount} Products · ${status.package.skuCount} SKUs` : "—"}</dd></div>
-            <div><dt>{t("发布方式")}</dt><dd>{t("云端语言包")}</dd></div>
-            <div><dt>{t("浏览器策略")}</dt><dd>{t("IndexedDB 按版本长期保存")}</dd></div>
           </dl>
-          <Callout.Root color="blue">
-            <Callout.Icon><Database /></Callout.Icon>
-            <Callout.Text>
-              {t("前台只会请求一个很小的版本清单；版本未变化时直接读取浏览器本地语言包，不会重复下载。")}
-            </Callout.Text>
-          </Callout.Root>
         </Card>
       </div>
 
@@ -532,7 +507,7 @@ export function LanguagePackagesPage() {
             ) : null}
             {job.currentSkuName ? <span>{job.currentSkuName}</span> : null}
             {job.status === "PAUSED" ? <span>{t("继续后将从剩余商品开始")}</span> : null}
-            {job.packagePublished ? <span>{t("已发布语言包 v{version}", { version: job.packageVersion ?? "—" })}</span> : null}
+            {job.packagePublished ? <span>{t("已发布版本 v{version}", { version: job.packageVersion ?? "—" })}</span> : null}
           </div>
           {job.errorMessage ? <Text color="red" size="2">{job.errorMessage}</Text> : null}
         </Card>

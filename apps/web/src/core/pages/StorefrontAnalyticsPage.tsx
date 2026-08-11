@@ -2,25 +2,38 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
   Heading,
   Text,
 } from "@radix-ui/themes";
 import {
   ArrowClockwise,
+  CaretLeft,
+  CaretRight,
   ChartLineUp,
   CursorClick,
+  Fire,
   GlobeHemisphereWest,
   Info,
   Package,
+  PushPin,
   UsersThree,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { EChartsOption } from "echarts";
-import { getStorefrontAnalytics } from "../api";
+import {
+  assignProductsToPopularCategory,
+  getStorefrontAnalytics,
+  getStorefrontProductRanking,
+} from "../api";
+import { useCoreAuth } from "../AuthContext";
 import { EChart, type EChartPalette } from "../components/EChart";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
-import type { StorefrontAnalyticsSnapshot } from "../types";
+import type {
+  StorefrontAnalyticsSnapshot,
+  StorefrontProductRankingPage,
+} from "../types";
 
 type AnalyticsRange = 7 | 30 | 60;
 
@@ -53,10 +66,21 @@ function axis(palette: EChartPalette) {
 
 export function StorefrontAnalyticsPage() {
   const { locale, t } = useLocale();
+  const { hasPermission } = useCoreAuth();
   const [range, setRange] = useState<AnalyticsRange>(30);
   const [snapshot, setSnapshot] = useState<StorefrontAnalyticsSnapshot>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [ranking, setRanking] = useState<StorefrontProductRankingPage>();
+  const [rankingPage, setRankingPage] = useState(1);
+  const [rankingLoading, setRankingLoading] = useState(true);
+  const [rankingError, setRankingError] = useState("");
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [assigningPopular, setAssigningPopular] = useState(false);
+  const [popularMessage, setPopularMessage] = useState("");
+  const canEditProducts = hasPermission("product.edit");
 
   const load = useCallback(async (nextRange: AnalyticsRange = range) => {
     setLoading(true);
@@ -74,9 +98,32 @@ export function StorefrontAnalyticsPage() {
     }
   }, [range, t]);
 
+  const loadRanking = useCallback(async (
+    nextRange: AnalyticsRange = range,
+    nextPage: number = rankingPage,
+  ) => {
+    setRankingLoading(true);
+    setRankingError("");
+    try {
+      setRanking(await getStorefrontProductRanking(nextRange, nextPage, 50));
+    } catch (caught) {
+      setRankingError(
+        caught instanceof Error
+          ? caught.message
+          : t("商品访问排行加载失败"),
+      );
+    } finally {
+      setRankingLoading(false);
+    }
+  }, [range, rankingPage, t]);
+
   useEffect(() => {
     void load(range);
   }, [load, range]);
+
+  useEffect(() => {
+    void loadRanking(range, rankingPage);
+  }, [loadRanking, range, rankingPage]);
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -87,7 +134,69 @@ export function StorefrontAnalyticsPage() {
   }, [t]);
 
   const changeRange = (nextRange: AnalyticsRange) => {
-    if (nextRange !== range) setRange(nextRange);
+    if (nextRange !== range) {
+      setRange(nextRange);
+      setRankingPage(1);
+      setSelectedProductIds(new Set());
+      setPopularMessage("");
+    }
+  };
+
+  const selectableRankingRows = (ranking?.items || []).filter(
+    (item) => !item.isPopular,
+  );
+  const selectedOnPage = selectableRankingRows.filter((item) => (
+    selectedProductIds.has(item.productId)
+  ));
+  const allOnPageSelected = selectableRankingRows.length > 0
+    && selectedOnPage.length === selectableRankingRows.length;
+
+  const toggleProduct = (productId: string, checked: boolean) => {
+    setPopularMessage("");
+    setSelectedProductIds((previous) => {
+      const next = new Set(previous);
+      if (checked) next.add(productId);
+      else next.delete(productId);
+      return next;
+    });
+  };
+
+  const toggleCurrentPage = (checked: boolean) => {
+    setPopularMessage("");
+    setSelectedProductIds((previous) => {
+      const next = new Set(previous);
+      for (const item of selectableRankingRows) {
+        if (checked) next.add(item.productId);
+        else next.delete(item.productId);
+      }
+      return next;
+    });
+  };
+
+  const assignSelectedToPopular = async () => {
+    if (!selectedProductIds.size || assigningPopular) return;
+    setAssigningPopular(true);
+    setRankingError("");
+    setPopularMessage("");
+    try {
+      const result = await assignProductsToPopularCategory(
+        Array.from(selectedProductIds),
+      );
+      setSelectedProductIds(new Set());
+      setPopularMessage(t("已将 {count} 件商品归入热门", {
+        count: result.movedCount,
+      }));
+      await Promise.all([
+        loadRanking(range, rankingPage),
+        load(range),
+      ]);
+    } catch (caught) {
+      setRankingError(
+        caught instanceof Error ? caught.message : t("归入热门失败"),
+      );
+    } finally {
+      setAssigningPopular(false);
+    }
   };
 
   const trendOption = useMemo(
@@ -317,8 +426,11 @@ export function StorefrontAnalyticsPage() {
             <Button
               variant="soft"
               color="gray"
-              loading={loading && Boolean(snapshot)}
-              onClick={() => void load(range)}
+              loading={(loading || rankingLoading) && Boolean(snapshot)}
+              onClick={() => void Promise.all([
+                load(range),
+                loadRanking(range, rankingPage),
+              ])}
             >
               <ArrowClockwise />
               {t("刷新")}
@@ -441,6 +553,174 @@ export function StorefrontAnalyticsPage() {
               </Card>
             </section>
           )}
+
+          <Card className="storefront-product-ranking">
+            <div className="storefront-product-ranking-heading">
+              <span className="storefront-product-ranking-icon">
+                <Fire weight="duotone" />
+              </span>
+              <div>
+                <Text size="1" color="gray">{t("商品热度")}</Text>
+                <Heading size="4">{t("商品访问量排行榜")}</Heading>
+              </div>
+              <Badge variant="soft" color="gray">
+                {t("共 {count} 件", { count: ranking?.total || 0 })}
+              </Badge>
+              {canEditProducts ? (
+                <Button
+                  disabled={!selectedProductIds.size}
+                  loading={assigningPopular}
+                  onClick={() => void assignSelectedToPopular()}
+                >
+                  <Fire weight="fill" />
+                  {t("一键归入热门")}
+                  {selectedProductIds.size ? ` · ${selectedProductIds.size}` : ""}
+                </Button>
+              ) : null}
+            </div>
+
+            {rankingError ? (
+              <div className="storefront-product-ranking-message is-error">
+                <Text size="2" color="red">{rankingError}</Text>
+                <Button
+                  size="1"
+                  variant="soft"
+                  color="gray"
+                  onClick={() => void loadRanking(range, rankingPage)}
+                >
+                  {t("重试")}
+                </Button>
+              </div>
+            ) : null}
+            {popularMessage ? (
+              <div className="storefront-product-ranking-message is-success">
+                <Text size="2">{popularMessage}</Text>
+              </div>
+            ) : null}
+
+            {rankingLoading && !ranking ? (
+              <div className="storefront-product-ranking-loading">
+                <ArrowClockwise className="is-spinning" />
+                <Text size="2" color="gray">{t("正在加载商品排行")}</Text>
+              </div>
+            ) : null}
+
+            {ranking && ranking.items.length ? (
+              <div className="storefront-product-ranking-table" role="table">
+                <div className="storefront-product-ranking-row is-head" role="row">
+                  <span>
+                    {canEditProducts ? (
+                      <Checkbox
+                        aria-label={t("选择本页商品")}
+                        checked={
+                          allOnPageSelected
+                            ? true
+                            : selectedOnPage.length
+                              ? "indeterminate"
+                              : false
+                        }
+                        disabled={!selectableRankingRows.length}
+                        onCheckedChange={(value) => toggleCurrentPage(value === true)}
+                      />
+                    ) : null}
+                  </span>
+                  <span>{t("排名")}</span>
+                  <span>{t("商品")}</span>
+                  <span>{t("当前分类")}</span>
+                  <span>{t("访问量")}</span>
+                </div>
+                {ranking.items.map((item) => (
+                  <div
+                    className={`storefront-product-ranking-row${item.isPopular ? " is-popular" : ""}`}
+                    role="row"
+                    key={item.productId}
+                  >
+                    <span className="storefront-product-ranking-check">
+                      {canEditProducts ? (
+                        <Checkbox
+                          aria-label={t("选择商品 {name}", { name: item.name })}
+                          checked={selectedProductIds.has(item.productId)}
+                          disabled={item.isPopular}
+                          onCheckedChange={(value) => toggleProduct(
+                            item.productId,
+                            value === true,
+                          )}
+                        />
+                      ) : null}
+                    </span>
+                    <span className="storefront-product-ranking-rank">
+                      #{item.rank}
+                    </span>
+                    <span className="storefront-product-ranking-product">
+                      <strong>{item.name}</strong>
+                      <small>{item.productCode || t("未设置商品编码")}</small>
+                    </span>
+                    <span className="storefront-product-ranking-category">
+                      <Badge
+                        variant="soft"
+                        color={item.isPopular ? "amber" : "gray"}
+                      >
+                        {item.isPopular ? t("热门") : item.categoryName || t("未分类")}
+                      </Badge>
+                      {item.isPinned ? (
+                        <Badge variant="soft" color="blue">
+                          <PushPin weight="fill" />
+                          {t("已置顶")}
+                        </Badge>
+                      ) : null}
+                    </span>
+                    <span className="storefront-product-ranking-views">
+                      <strong>{number(item.views, locale)}</strong>
+                      <small>{t("次访问")}</small>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {ranking && !ranking.items.length && !rankingLoading ? (
+              <div className="storefront-product-ranking-empty">
+                <Package weight="duotone" />
+                <Text size="2" color="gray">{t("当前时间范围内还没有商品访问记录")}</Text>
+              </div>
+            ) : null}
+
+            {ranking && ranking.total > ranking.pageSize ? (
+              <div className="storefront-product-ranking-pagination">
+                <Text size="1" color="gray">
+                  {t("第 {page} / {pages} 页", {
+                    page: ranking.page,
+                    pages: Math.ceil(ranking.total / ranking.pageSize),
+                  })}
+                </Text>
+                <span>
+                  <Button
+                    size="1"
+                    variant="soft"
+                    color="gray"
+                    aria-label={t("上一页")}
+                    disabled={ranking.page <= 1 || rankingLoading}
+                    onClick={() => setRankingPage((page) => Math.max(1, page - 1))}
+                  >
+                    <CaretLeft />
+                  </Button>
+                  <Button
+                    size="1"
+                    variant="soft"
+                    color="gray"
+                    aria-label={t("下一页")}
+                    disabled={
+                      ranking.page >= Math.ceil(ranking.total / ranking.pageSize)
+                      || rankingLoading
+                    }
+                    onClick={() => setRankingPage((page) => page + 1)}
+                  >
+                    <CaretRight />
+                  </Button>
+                </span>
+              </div>
+            ) : null}
+          </Card>
 
           <Card className="storefront-analytics-note">
             <Info weight="duotone" />

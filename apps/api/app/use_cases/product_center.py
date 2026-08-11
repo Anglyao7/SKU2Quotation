@@ -99,6 +99,10 @@ MAX_PRODUCT_IMAGE_EDGE = max(
     320,
     int(os.getenv("PRODUCT_IMAGE_MAX_EDGE", "2400")),
 )
+MAX_CATEGORY_COVER_BYTES = max(
+    1,
+    int(os.getenv("CATEGORY_COVER_MAX_BYTES", str(20 * 1024 * 1024))),
+)
 MAX_SKU_EXPORT_ROWS = max(
     1,
     int(os.getenv("SKU_EXPORT_MAX_ROWS", "100000")),
@@ -1391,20 +1395,11 @@ def list_categories(
             return [CategoryResponse.model_validate(row) for row in cache_slot.value]
         except (TypeError, ValueError):
             pass
-    response = [
-        CategoryResponse(
-            id=row.id,
-            parent_id=row.parent_id,
-            code=row.code,
-            name=row.name,
-            sort_order=row.sort_order,
-            display_color=row.display_color,
-            path=row.path,
-            status=row.status,
-            version=row.version,
-        )
-        for row in repository.list_categories(session, tenant_id=tenant_id)
-    ]
+    response = _category_responses(
+        session,
+        tenant_id=tenant_id,
+        rows=repository.list_categories(session, tenant_id=tenant_id),
+    )
     query_cache.store(
         cache_slot,
         [row.model_dump(mode="json") for row in response],
@@ -1451,6 +1446,9 @@ def get_category_layout(
     response = CategoryLayoutResponse(
         all_products_position=position,
         root_category_count=root_count,
+        category_showcase_enabled=(
+            bool(profile.category_showcase_enabled) if profile else True
+        ),
     )
     query_cache.store(
         cache_slot,
@@ -1507,7 +1505,9 @@ def update_category_layout(
         session.add(profile)
         session.flush()
     previous = max(0, int(profile.all_products_position or 0))
+    previous_showcase_enabled = bool(profile.category_showcase_enabled)
     profile.all_products_position = request.all_products_position
+    profile.category_showcase_enabled = request.category_showcase_enabled
     session.add(
         ProductAuditEventRow(
             tenant_id=tenant_id,
@@ -1515,8 +1515,14 @@ def update_category_layout(
             entity_type="CATEGORY",
             entity_id=str(tenant_id),
             action="category_layout.updated",
-            before={"all_products_position": previous},
-            after={"all_products_position": request.all_products_position},
+            before={
+                "all_products_position": previous,
+                "category_showcase_enabled": previous_showcase_enabled,
+            },
+            after={
+                "all_products_position": request.all_products_position,
+                "category_showcase_enabled": request.category_showcase_enabled,
+            },
             actor_membership_id=membership_id,
         )
     )
@@ -1528,10 +1534,25 @@ def update_category_layout(
     return CategoryLayoutResponse(
         all_products_position=request.all_products_position,
         root_category_count=root_count,
+        category_showcase_enabled=request.category_showcase_enabled,
     )
 
 
-def _category_response(row: ProductCategoryRow) -> CategoryResponse:
+def _category_response(
+    row: ProductCategoryRow,
+    *,
+    uploaded_cover_image_url: str | None = None,
+    cover_product_name: str | None = None,
+    cover_product_image_url: str | None = None,
+) -> CategoryResponse:
+    cover_source = str(row.cover_source or "NONE").upper()
+    cover_image_url = (
+        uploaded_cover_image_url
+        if cover_source == "UPLOAD"
+        else cover_product_image_url
+        if cover_source == "PRODUCT"
+        else None
+    )
     return CategoryResponse(
         id=row.id,
         parent_id=row.parent_id,
@@ -1542,7 +1563,74 @@ def _category_response(row: ProductCategoryRow) -> CategoryResponse:
         path=row.path,
         status=row.status,
         version=row.version,
+        cover_source=cover_source,
+        cover_product_id=row.cover_product_id,
+        cover_product_name=cover_product_name,
+        cover_image_url=cover_image_url,
+        uploaded_cover_image_url=uploaded_cover_image_url,
+        cover_product_image_url=cover_product_image_url,
     )
+
+
+def _category_responses(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    rows: list[ProductCategoryRow],
+) -> list[CategoryResponse]:
+    if not rows:
+        return []
+    storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
+    product_ids = {
+        row.cover_product_id for row in rows if row.cover_product_id is not None
+    }
+    products_by_id = {
+        product.id: product
+        for product in session.scalars(
+            select(ProductRow).where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.id.in_(product_ids),
+                ProductRow.deleted_at.is_(None),
+            )
+        ).all()
+    } if product_ids else {}
+    images_by_product_id: dict[UUID, ProductImageRow] = {}
+    for image in repository.list_images_for_products(
+        session,
+        tenant_id=tenant_id,
+        product_ids=product_ids,
+    ):
+        if image.approval_status == "APPROVED":
+            images_by_product_id.setdefault(image.product_id, image)
+
+    responses: list[CategoryResponse] = []
+    for row in rows:
+        uploaded_cover_image_url = None
+        if row.cover_object_key and storefront_slug:
+            media_base_url = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
+            uploaded_cover_image_url = (
+                f"{media_base_url}/{quote(row.cover_object_key.lstrip('/'), safe='/')}"
+                if media_base_url
+                else (
+                    f"/api/store/{quote(storefront_slug, safe='')}/categories/"
+                    f"{row.id}/cover?v={row.version}"
+                )
+            )
+        product = products_by_id.get(row.cover_product_id)
+        product_image = images_by_product_id.get(row.cover_product_id)
+        responses.append(
+            _category_response(
+                row,
+                uploaded_cover_image_url=uploaded_cover_image_url,
+                cover_product_name=product.name if product is not None else None,
+                cover_product_image_url=(
+                    _sku_thumbnail_url(product_image, storefront_slug=storefront_slug)
+                    if product_image is not None
+                    else None
+                ),
+            )
+        )
+    return responses
 
 
 def create_category(
@@ -1942,6 +2030,47 @@ def update_category(
         )
 
     before = _category_response(row).model_dump(mode="json")
+    if request.cover_source in {"UPLOAD", "PRODUCT"} and request.parent_id is None:
+        raise ApplicationError(
+            "CATEGORY_COVER_LEVEL_INVALID",
+            "分类门面仅用于二级分类。",
+            kind="conflict",
+        )
+    if request.cover_source == "UPLOAD" and not row.cover_object_key:
+        raise ApplicationError(
+            "CATEGORY_COVER_UPLOAD_REQUIRED",
+            "请先上传分类图片。",
+            kind="conflict",
+        )
+    if request.cover_source == "PRODUCT":
+        cover_product = repository.get_product_row(
+            session,
+            tenant_id=tenant_id,
+            product_id=request.cover_product_id,
+        )
+        if (
+            cover_product is None
+            or cover_product.category_id != row.id
+            or cover_product.status == "ARCHIVED"
+        ):
+            raise ApplicationError(
+                "CATEGORY_COVER_PRODUCT_INVALID",
+                "只能选择当前二级分类内的商品作为门面。",
+                kind="conflict",
+            )
+        if not any(
+            image.approval_status == "APPROVED"
+            for image in repository.list_images(
+                session,
+                tenant_id=tenant_id,
+                product_id=cover_product.id,
+            )
+        ):
+            raise ApplicationError(
+                "CATEGORY_COVER_PRODUCT_IMAGE_REQUIRED",
+                "该商品还没有可公开展示的图片，请先上传商品图片。",
+                kind="conflict",
+            )
     row.parent_id = request.parent_id
     row.name = request.name
     row.path = f"{parent.name}/{request.name}" if parent else request.name
@@ -1951,6 +2080,14 @@ def update_category(
         row.display_color = None
     elif "display_color" in request.model_fields_set:
         row.display_color = request.display_color
+    if request.parent_id is None:
+        row.cover_source = "NONE"
+        row.cover_product_id = None
+    elif request.cover_source is not None:
+        row.cover_source = request.cover_source
+        row.cover_product_id = (
+            request.cover_product_id if request.cover_source == "PRODUCT" else None
+        )
     row.version += 1
     if children:
         for child in children:
@@ -1985,7 +2122,106 @@ def update_category(
         conflict_code="CATEGORY_UPDATE_CONFLICT",
         conflict_message="分类保存失败，请刷新后重试。",
     )
-    return _category_response(row)
+    return _category_responses(session, tenant_id=tenant_id, rows=[row])[0]
+
+
+def upload_category_cover(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    category_id: UUID,
+    content: bytes,
+) -> CategoryResponse:
+    _require(permissions, "product.edit")
+    if not content:
+        raise ApplicationError("CATEGORY_COVER_EMPTY", "请选择一张分类图片。")
+    if len(content) > MAX_CATEGORY_COVER_BYTES:
+        raise ApplicationError(
+            "CATEGORY_COVER_TOO_LARGE",
+            f"分类图片不能超过 {MAX_CATEGORY_COVER_BYTES // (1024 * 1024)} MB。",
+            kind="too_large",
+        )
+    category = repository.get_category(
+        session,
+        tenant_id=tenant_id,
+        category_id=category_id,
+    )
+    if category is None:
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND", "分类不存在。", kind="not_found"
+        )
+    if category.parent_id is None:
+        raise ApplicationError(
+            "CATEGORY_COVER_LEVEL_INVALID",
+            "分类门面仅用于二级分类。",
+            kind="conflict",
+        )
+
+    processed, _width, _height = _normalized_product_image(content)
+    object_key = (
+        f"tenants/{tenant_id}/categories/{category_id}/cover/"
+        f"{uuid4().hex}.webp"
+    )
+    storage = get_object_storage()
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".webp") as temporary:
+            temporary.write(processed)
+            temporary.flush()
+            storage.put_file(
+                Path(temporary.name),
+                object_key=object_key,
+                content_type="image/webp",
+            )
+    except Exception as exc:
+        raise ApplicationError(
+            "CATEGORY_COVER_STORAGE_UNAVAILABLE",
+            "分类图片上传到对象存储失败，请稍后重试。",
+            kind="unavailable",
+        ) from exc
+
+    previous_object_key = str(category.cover_object_key or "").strip() or None
+    before = _category_response(category).model_dump(mode="json")
+    category.cover_object_key = object_key
+    category.cover_source = "UPLOAD"
+    category.cover_product_id = None
+    category.version += 1
+    after = _category_response(category).model_dump(mode="json")
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=None,
+            entity_type="CATEGORY",
+            entity_id=str(category.id),
+            action="category.cover_uploaded",
+            before=before,
+            after=after,
+            actor_membership_id=membership_id,
+        )
+    )
+    try:
+        _commit(
+            session,
+            conflict_code="CATEGORY_COVER_CONFLICT",
+            conflict_message="分类图片保存失败，请刷新后重试。",
+        )
+    except Exception:
+        try:
+            storage.delete(object_key)
+        except Exception:
+            pass
+        raise
+    if previous_object_key and previous_object_key != object_key:
+        try:
+            storage.delete(previous_object_key)
+        except Exception:
+            pass
+    return _category_responses(
+        session,
+        tenant_id=tenant_id,
+        rows=[category],
+    )[0]
 
 
 def _category_delete_scope(

@@ -53,6 +53,8 @@ export interface MerchantSettings {
   name: string;
   slug: string;
   storefrontPath: string;
+  logoUrl?: string;
+  shareCardSubtitle?: string;
   businessMode: BusinessMode;
   defaultCurrency: string;
   storefrontLocales: StorefrontLocale[];
@@ -218,6 +220,51 @@ export interface DashboardSnapshot {
   };
 }
 
+export type SupplyChainStatus = "ACTIVE" | "INACTIVE" | "BLOCKED" | "ARCHIVED";
+
+export interface SupplyChainPartner {
+  id: string;
+  code: string;
+  name: string;
+  contactName?: string;
+  phone?: string;
+  email?: string;
+  whatsapp?: string;
+  wechat?: string;
+  countryRegion?: string;
+  address?: string;
+  website?: string;
+  businessScope?: string;
+  notes?: string;
+  status: SupplyChainStatus;
+  version: number;
+  activeProducts: number;
+  activeSkus: number;
+  updatedAt: string;
+}
+
+export interface SupplyChainPage {
+  items: SupplyChainPartner[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+}
+
+export interface SupplyChainPartnerInput {
+  name: string;
+  contactName?: string;
+  phone?: string;
+  email?: string;
+  whatsapp?: string;
+  wechat?: string;
+  countryRegion?: string;
+  address?: string;
+  website?: string;
+  businessScope?: string;
+  notes?: string;
+}
+
 export interface ProductOffer {
   supplierProductId: string;
   supplierId: string;
@@ -381,12 +428,19 @@ export interface ProductCategory {
   name: string;
   path?: string;
   displayColor?: string;
+  coverSource: "NONE" | "UPLOAD" | "PRODUCT";
+  coverProductId?: string;
+  coverProductName?: string;
+  coverImageUrl?: string;
+  uploadedCoverImageUrl?: string;
+  coverProductImageUrl?: string;
   status: string;
   sortOrder: number;
   version: number;
 }
 
 export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY";
+export type CatalogShareLogoPosition = "NONE" | "TOP_LEFT" | "TOP_RIGHT";
 
 export interface CatalogShare {
   id: string;
@@ -399,13 +453,16 @@ export interface CatalogShare {
   categoryPath?: string;
   sharePath: string;
   storeName: string;
+  storeSubtitle?: string;
   storeLogoUrl?: string;
+  logoPosition: CatalogShareLogoPosition;
   createdAt: string;
 }
 
 export interface CategoryLayout {
   allProductsPosition: number;
   rootCategoryCount: number;
+  categoryShowcaseEnabled: boolean;
 }
 
 export interface CpuUsage {
@@ -466,6 +523,36 @@ export interface StorefrontAnalyticsSnapshot {
     views: number;
   }>;
   countryProducts: Array<{ countryCode: string; skuId: string; views: number }>;
+}
+
+export interface StorefrontProductRankingItem {
+  rank: number;
+  productId: string;
+  productCode?: string;
+  name: string;
+  categoryId?: string;
+  categoryName?: string;
+  views: number;
+  isPinned: boolean;
+  isPopular: boolean;
+}
+
+export interface StorefrontProductRankingPage {
+  startDate: string;
+  endDate: string;
+  days: number;
+  page: number;
+  pageSize: number;
+  total: number;
+  items: StorefrontProductRankingItem[];
+}
+
+export interface PopularCategoryAssignResult {
+  categoryId: string;
+  categoryName: string;
+  selectedCount: number;
+  movedCount: number;
+  popularProductCount: number;
 }
 
 export type AnnouncementDisplayType = "TICKER" | "MODAL";

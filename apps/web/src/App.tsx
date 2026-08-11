@@ -58,6 +58,7 @@ const CategoriesPage = recoverableLazy(() => import("./core/pages/CategoriesPage
 const CoreDashboardPage = recoverableLazy(() => import("./core/pages/DashboardPage").then((module) => ({ default: module.CoreDashboardPage })));
 const InquiryPage = recoverableLazy(() => import("./core/pages/InquiryPage").then((module) => ({ default: module.InquiryPage })));
 const InventoryPage = recoverableLazy(() => import("./core/pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
+const SupplyChainPage = recoverableLazy(() => import("./core/pages/SupplyChainPage").then((module) => ({ default: module.SupplyChainPage })));
 const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMonitoringPage").then((module) => ({ default: module.SystemMonitoringPage })));
 const ConfigurationCenterPage = recoverableLazy(() => import("./core/pages/ConfigurationCenterPage").then((module) => ({ default: module.ConfigurationCenterPage })));
 const LanguagePackagesPage = recoverableLazy(() => import("./core/pages/LanguagePackagesPage").then((module) => ({ default: module.LanguagePackagesPage })));
@@ -93,7 +94,7 @@ function ApplicationRouteError() {
         <Text size="3" color="gray">
           {t(staleBundle
             ? "系统检测到浏览器仍在使用旧版页面资源，重新加载后会自动切换到最新版。"
-            : "系统没有丢失你的数据。请重新加载页面；若问题持续出现，再联系平台管理员。")}
+            : "系统没有丢失你的数据。请重新加载页面；若问题持续出现，请联系技术支持。")}
         </Text>
         {import.meta.env.DEV && detail ? <code>{detail}</code> : null}
         <div className="application-error-actions">
@@ -138,14 +139,14 @@ function PermissionGate({ anyOf, children }: { anyOf: string[]; children: ReactN
   const { hasAnyPermission } = useCoreAuth();
   const { t } = useLocale();
   if (hasAnyPermission(...anyOf)) return children;
-  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("当前成员没有此工作区权限")}</Heading><Text size="2" color="gray">{t("需要以下任一服务端权限：{permissions}", { permissions: anyOf.join(" / ") })}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
+  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("无法访问此页面")}</Heading><Text size="2" color="gray">{t("当前账户未开通此功能，如需使用请联系账户负责人。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
 }
 
 function PlatformAdminGate({ children }: { children: ReactNode }) {
   const { profile } = useCoreAuth();
   const { t } = useLocale();
   if (profile?.user.isPlatformAdmin) return children;
-  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("当前商家不是管理员身份")}</Heading><Text size="2" color="gray">{t("配置中心、商家管理和系统功能仅对管理员身份开放。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
+  return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("无法访问此页面")}</Heading><Text size="2" color="gray">{t("当前账户未开通此功能，如需使用请联系账户负责人。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
 }
 
 async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
@@ -153,7 +154,11 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
-  const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
+  const pathShareId = params.shareId?.trim();
+  const shareToken = pathShareId || currentUrl.searchParams.get("share")?.trim() || undefined;
+  const storefrontPath = (slug: string) => pathShareId
+    ? `/${encodeURIComponent(slug)}/share/${encodeURIComponent(pathShareId)}`
+    : `/${encodeURIComponent(slug)}`;
   try {
     const savedView = shareToken ? undefined : readStorefrontViewState(tenantSlug);
     const catalogSnapshot = shareToken
@@ -180,7 +185,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     }).catch(() => undefined);
     const store = await api.getStore(tenantSlug, locale);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
-      return redirect(`/${encodeURIComponent(store.slug)}${currentUrl.search}${currentUrl.hash}`);
+      return redirect(`${storefrontPath(store.slug)}${currentUrl.search}${currentUrl.hash}`);
     }
     return store;
   }
@@ -188,7 +193,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     if (error instanceof ApiError && error.status === 422 && currentUrl.searchParams.has("lang")) {
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
-      return redirect(`/${encodeURIComponent(tenantSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`);
+      return redirect(`${storefrontPath(tenantSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`);
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
     throw error;
@@ -201,10 +206,11 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   if (!tenantSlug || !productId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
+  const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const [store, product] = await Promise.all([
       api.getStore(tenantSlug, locale),
-      api.getStoreProduct(tenantSlug, productId, locale),
+      api.getStoreProduct(tenantSlug, productId, locale, shareToken),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
@@ -232,10 +238,11 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   if (!tenantSlug || !skuId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
+  const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const [store, sku] = await Promise.all([
       api.getStore(tenantSlug, locale),
-      api.getStoreSku(tenantSlug, skuId, locale),
+      api.getStoreSku(tenantSlug, skuId, locale, shareToken),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
@@ -318,8 +325,9 @@ const router = createBrowserRouter([{
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
         { path: "languages", element: <PermissionGate anyOf={["product.view"]}><LanguagePackagesPage /></PermissionGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
+        { path: "supply-chain", element: <PermissionGate anyOf={["supplier.view", "supplier.manage"]}><SupplyChainPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
-        { path: "suppliers", element: <Navigate to="/console/products" replace /> },
+        { path: "suppliers", element: <Navigate to="/console/supply-chain" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
         { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
@@ -352,11 +360,17 @@ const router = createBrowserRouter([{
   { path: "/ai-search", element: <Navigate to="/console/ai-search" replace /> },
   { path: "/products", element: <Navigate to="/console/products" replace /> },
   { path: "/inventory", element: <Navigate to="/console/inventory" replace /> },
-  { path: "/suppliers", element: <Navigate to="/console/products" replace /> },
+  { path: "/suppliers", element: <Navigate to="/console/supply-chain" replace /> },
   { path: "/review", element: <Navigate to="/console/products" replace /> },
   { path: "/inquiries", element: <Navigate to="/console/inquiries" replace /> },
   { path: "/quotations", element: <Navigate to="/console/quotes" replace /> },
   { path: "/account", element: <Navigate to="/console/account" replace /> },
+  {
+    path: "/:tenantSlug/share/:shareId",
+    loader: storefrontLoader,
+    element: <StorePage />,
+    errorElement: <StorefrontRouteError />,
+  },
   {
     path: "/:tenantSlug/products/:productId",
     loader: storefrontProductLoader,

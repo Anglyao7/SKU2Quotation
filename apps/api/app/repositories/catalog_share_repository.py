@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..product_center_models import SkuRow
@@ -13,10 +13,16 @@ from ..public_catalog_models import CatalogShareRow
 def find_by_token(
     session: Session, *, tenant_id: UUID, token: str
 ) -> CatalogShareRow | None:
+    normalized = token.strip()
+    identifiers = [CatalogShareRow.share_token == normalized]
+    try:
+        identifiers.append(CatalogShareRow.id == UUID(normalized))
+    except (TypeError, ValueError, AttributeError):
+        pass
     return session.scalar(
         select(CatalogShareRow).where(
             CatalogShareRow.tenant_id == tenant_id,
-            CatalogShareRow.share_token == token,
+            or_(*identifiers),
             CatalogShareRow.deleted_at.is_(None),
         )
     )

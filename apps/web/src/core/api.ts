@@ -53,7 +53,13 @@ import type {
   SkuListItem,
   SkuListPage,
   StorefrontAnalyticsSnapshot,
+  StorefrontProductRankingPage,
+  PopularCategoryAssignResult,
   StorefrontAnnouncement,
+  SupplyChainPage,
+  SupplyChainPartner,
+  SupplyChainPartnerInput,
+  SupplyChainStatus,
   SupportActionSettings,
   SupportAIAgent,
   SupportAIAgentKnowledgeSource,
@@ -79,6 +85,7 @@ import type {
   TranslationReasoningEffort,
   CatalogLanguagePackInfo,
   CatalogShare,
+  CatalogShareLogoPosition,
   CatalogShareTargetType,
   CatalogTranslationJob,
   CatalogTranslationStatus,
@@ -599,6 +606,8 @@ interface ApiMerchantSettings {
   name: string;
   slug: string;
   storefront_path: string;
+  logo_url?: string | null;
+  share_card_subtitle?: string | null;
   business_mode: "DOMESTIC" | "EXPORT";
   default_currency: string;
   storefront_locales: MerchantSettings["storefrontLocales"];
@@ -610,6 +619,8 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
     name: row.name,
     slug: row.slug,
     storefrontPath: row.storefront_path,
+    logoUrl: defined(row.logo_url),
+    shareCardSubtitle: defined(row.share_card_subtitle),
     businessMode: row.business_mode,
     defaultCurrency: row.default_currency,
     storefrontLocales: row.storefront_locales,
@@ -623,6 +634,7 @@ export async function getMerchantSettings(): Promise<MerchantSettings> {
 
 export async function updateMerchantSettings(input: {
   name?: string;
+  shareCardSubtitle?: string;
   businessMode?: "DOMESTIC" | "EXPORT";
   defaultCurrency?: string;
   storefrontLocales?: MerchantSettings["storefrontLocales"];
@@ -634,6 +646,7 @@ export async function updateMerchantSettings(input: {
       method: "PATCH",
       body: JSON.stringify({
         name: input.name,
+        share_card_subtitle: input.shareCardSubtitle,
         business_mode: input.businessMode,
         default_currency: input.defaultCurrency,
         storefront_locales: input.storefrontLocales,
@@ -641,6 +654,17 @@ export async function updateMerchantSettings(input: {
       }),
     },
   );
+  bumpPublicCatalogRevision();
+  return mapMerchantSettings(row);
+}
+
+export async function uploadMerchantLogo(logo: File): Promise<MerchantSettings> {
+  const body = new FormData();
+  body.append("logo", logo);
+  const row = await request<ApiMerchantSettings>("/me/merchant/logo", {
+    method: "POST",
+    body,
+  });
   bumpPublicCatalogRevision();
   return mapMerchantSettings(row);
 }
@@ -2128,7 +2152,7 @@ export async function upsertPublicCatalogOffer(
   }));
 }
 
-interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; display_color?: string | null; status: string; sort_order: number; version: number }
+interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; display_color?: string | null; status: string; sort_order: number; version: number; cover_source?: ProductCategory["coverSource"]; cover_product_id?: string | null; cover_product_name?: string | null; cover_image_url?: string | null; uploaded_cover_image_url?: string | null; cover_product_image_url?: string | null }
 interface ApiAttributeDefinition { id: string; category_id?: string | null; attribute_key: string; display_name: string; data_type: AttributeDefinition["dataType"]; unit_code?: string | null; enum_values?: string[] | null; is_required: boolean; is_variant: boolean; is_filterable: boolean; is_matchable: boolean; status: string; version: number }
 
 interface ApiCategoryImportResult {
@@ -2202,7 +2226,9 @@ interface ApiCatalogShare {
   category_path?: string | null;
   share_path: string;
   store_name: string;
+  store_subtitle?: string | null;
   store_logo_url?: string | null;
+  logo_position: CatalogShareLogoPosition;
   created_at: string;
 }
 
@@ -2218,7 +2244,9 @@ function mapCatalogShare(row: ApiCatalogShare): CatalogShare {
     categoryPath: defined(row.category_path),
     sharePath: row.share_path,
     storeName: row.store_name,
+    storeSubtitle: defined(row.store_subtitle),
     storeLogoUrl: defined(row.store_logo_url),
+    logoPosition: row.logo_position,
     createdAt: row.created_at,
   };
 }
@@ -2227,6 +2255,7 @@ export async function createCatalogShare(input: {
   targetType: CatalogShareTargetType;
   skuIds?: string[];
   categoryId?: string;
+  logoPosition?: CatalogShareLogoPosition;
 }): Promise<CatalogShare> {
   return mapCatalogShare(await request<ApiCatalogShare>("/catalog-shares", {
     method: "POST",
@@ -2234,6 +2263,7 @@ export async function createCatalogShare(input: {
       target_type: input.targetType,
       sku_ids: input.skuIds ?? [],
       category_id: input.categoryId ?? null,
+      logo_position: input.logoPosition ?? "NONE",
     }),
   }));
 }
@@ -2294,12 +2324,14 @@ export async function deleteCategory(
 interface ApiCategoryLayout {
   all_products_position: number;
   root_category_count: number;
+  category_showcase_enabled: boolean;
 }
 
 function mapCategoryLayout(row: ApiCategoryLayout): CategoryLayout {
   return {
     allProductsPosition: row.all_products_position,
     rootCategoryCount: row.root_category_count,
+    categoryShowcaseEnabled: row.category_showcase_enabled !== false,
   };
 }
 
@@ -2308,18 +2340,23 @@ export async function getCategoryLayout(): Promise<CategoryLayout> {
 }
 
 export async function updateCategoryLayout(
-  allProductsPosition: number,
+  input: number | { allProductsPosition: number; categoryShowcaseEnabled: boolean },
 ): Promise<CategoryLayout> {
+  const allProductsPosition = typeof input === "number" ? input : input.allProductsPosition;
+  const categoryShowcaseEnabled = typeof input === "number" ? true : input.categoryShowcaseEnabled;
   const saved = mapCategoryLayout(await request<ApiCategoryLayout>("/categories/layout", {
     method: "PATCH",
-    body: JSON.stringify({ all_products_position: allProductsPosition }),
+    body: JSON.stringify({
+      all_products_position: allProductsPosition,
+      category_showcase_enabled: categoryShowcaseEnabled,
+    }),
   }));
   bumpPublicCatalogRevision();
   return saved;
 }
 
 function mapCategory(row: ApiCategory): ProductCategory {
-  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), displayColor: defined(row.display_color), status: row.status, sortOrder: row.sort_order, version: row.version };
+  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), displayColor: defined(row.display_color), coverSource: row.cover_source ?? "NONE", coverProductId: defined(row.cover_product_id), coverProductName: defined(row.cover_product_name), coverImageUrl: defined(row.cover_image_url), uploadedCoverImageUrl: defined(row.uploaded_cover_image_url), coverProductImageUrl: defined(row.cover_product_image_url), status: row.status, sortOrder: row.sort_order, version: row.version };
 }
 
 export async function createCategory(input: { name: string; parentId?: string; sortOrder?: number; displayColor?: string }): Promise<ProductCategory> {
@@ -2338,7 +2375,7 @@ export async function createCategory(input: { name: string; parentId?: string; s
   return created;
 }
 
-export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE"; displayColor?: string | null }): Promise<ProductCategory> {
+export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE"; displayColor?: string | null; coverSource?: ProductCategory["coverSource"]; coverProductId?: string }): Promise<ProductCategory> {
   const updated = mapCategory(await request<ApiCategory>(`/categories/${encodeURIComponent(input.id)}`, {
     method: "PATCH",
     body: JSON.stringify({
@@ -2348,8 +2385,24 @@ export async function updateCategory(input: { id: string; expectedVersion: numbe
       sort_order: input.sortOrder,
       status: input.status,
       display_color: input.displayColor,
+      cover_source: input.coverSource,
+      cover_product_id: input.coverSource === "PRODUCT" ? input.coverProductId : null,
     }),
   }));
+  bumpPublicCatalogRevision();
+  return updated;
+}
+
+export async function uploadCategoryCover(
+  categoryId: string,
+  image: File,
+): Promise<ProductCategory> {
+  const body = new FormData();
+  body.append("image", image);
+  const updated = mapCategory(await request<ApiCategory>(
+    `/categories/${encodeURIComponent(categoryId)}/cover`,
+    { method: "POST", body },
+  ));
   bumpPublicCatalogRevision();
   return updated;
 }
@@ -2496,6 +2549,77 @@ export async function getStorefrontAnalytics(
       skuId: item.sku_id,
       views: Number(item.views || 0),
     })),
+  };
+}
+
+export async function getStorefrontProductRanking(
+  days: 7 | 30 | 60,
+  page = 1,
+  pageSize = 100,
+): Promise<StorefrontProductRankingPage> {
+  const row = await request<{
+    start_date: string;
+    end_date: string;
+    days: number;
+    page: number;
+    page_size: number;
+    total: number;
+    items: Array<{
+      rank: number;
+      product_id: string;
+      product_code?: string | null;
+      name: string;
+      category_id?: string | null;
+      category_name?: string | null;
+      views: number;
+      is_pinned: boolean;
+      is_popular: boolean;
+    }>;
+  }>(
+    `/storefront-analytics/product-ranking?days=${days}&page=${page}&page_size=${pageSize}`,
+    { cache: "no-store" },
+  );
+  return {
+    startDate: row.start_date,
+    endDate: row.end_date,
+    days: row.days,
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    items: row.items.map((item) => ({
+      rank: item.rank,
+      productId: item.product_id,
+      productCode: defined(item.product_code),
+      name: item.name,
+      categoryId: defined(item.category_id),
+      categoryName: defined(item.category_name),
+      views: Number(item.views || 0),
+      isPinned: Boolean(item.is_pinned),
+      isPopular: Boolean(item.is_popular),
+    })),
+  };
+}
+
+export async function assignProductsToPopularCategory(
+  productIds: string[],
+): Promise<PopularCategoryAssignResult> {
+  const row = await request<{
+    category_id: string;
+    category_name: string;
+    selected_count: number;
+    moved_count: number;
+    popular_product_count: number;
+  }>("/storefront-analytics/popular-category", {
+    method: "POST",
+    body: JSON.stringify({ product_ids: productIds }),
+  });
+  bumpPublicCatalogRevision();
+  return {
+    categoryId: row.category_id,
+    categoryName: row.category_name,
+    selectedCount: Number(row.selected_count || 0),
+    movedCount: Number(row.moved_count || 0),
+    popularProductCount: Number(row.popular_product_count || 0),
   };
 }
 
@@ -3766,6 +3890,131 @@ interface ApiDashboard { generated_at: string; data_scope: "TENANT" | "SELF"; me
 export async function getDashboard(): Promise<DashboardSnapshot> {
   const row = await request<ApiDashboard>("/dashboard");
   return { generatedAt: row.generated_at, dataScope: row.data_scope, metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, sourceType: item.source_type, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })), dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined };
+}
+
+interface ApiSupplyChainPartner {
+  id: string;
+  supplier_code: string;
+  name: string;
+  contact_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  whatsapp?: string | null;
+  wechat?: string | null;
+  country_region?: string | null;
+  address?: string | null;
+  website?: string | null;
+  business_scope?: string | null;
+  notes?: string | null;
+  status: SupplyChainStatus;
+  version: number;
+  active_products: number;
+  active_skus: number;
+  updated_at: string;
+}
+
+interface ApiSupplyChainPage {
+  items: ApiSupplyChainPartner[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+function mapSupplyChainPartner(row: ApiSupplyChainPartner): SupplyChainPartner {
+  return {
+    id: row.id,
+    code: row.supplier_code,
+    name: row.name,
+    contactName: defined(row.contact_name),
+    phone: defined(row.phone),
+    email: defined(row.email),
+    whatsapp: defined(row.whatsapp),
+    wechat: defined(row.wechat),
+    countryRegion: defined(row.country_region),
+    address: defined(row.address),
+    website: defined(row.website),
+    businessScope: defined(row.business_scope),
+    notes: defined(row.notes),
+    status: row.status,
+    version: row.version,
+    activeProducts: row.active_products,
+    activeSkus: row.active_skus,
+    updatedAt: row.updated_at,
+  };
+}
+
+function supplyChainPayload(input: SupplyChainPartnerInput) {
+  return {
+    name: input.name,
+    contact_name: input.contactName || null,
+    phone: input.phone || null,
+    email: input.email || null,
+    whatsapp: input.whatsapp || null,
+    wechat: input.wechat || null,
+    country_region: input.countryRegion || null,
+    address: input.address || null,
+    website: input.website || null,
+    business_scope: input.businessScope || null,
+    notes: input.notes || null,
+  };
+}
+
+export async function listSupplyChainPartners(input: {
+  query?: string;
+  status?: Exclude<SupplyChainStatus, "ARCHIVED">;
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<SupplyChainPage> {
+  const query = new URLSearchParams();
+  if (input.query?.trim()) query.set("query", input.query.trim());
+  if (input.status) query.set("status", input.status);
+  query.set("page", String(input.page ?? 1));
+  query.set("page_size", String(input.pageSize ?? 30));
+  const row = await request<ApiSupplyChainPage>(`/supply-chain?${query}`);
+  return {
+    items: row.items.map(mapSupplyChainPartner),
+    total: row.total,
+    page: row.page,
+    pageSize: row.page_size,
+    pages: row.pages,
+  };
+}
+
+export async function createSupplyChainPartner(
+  input: SupplyChainPartnerInput,
+): Promise<SupplyChainPartner> {
+  return mapSupplyChainPartner(
+    await request<ApiSupplyChainPartner>("/supply-chain", {
+      method: "POST",
+      body: JSON.stringify(supplyChainPayload(input)),
+    }),
+  );
+}
+
+export async function updateSupplyChainPartner(
+  partner: SupplyChainPartner,
+  input: SupplyChainPartnerInput & { status: "ACTIVE" | "INACTIVE" },
+): Promise<SupplyChainPartner> {
+  return mapSupplyChainPartner(
+    await request<ApiSupplyChainPartner>(
+      `/supply-chain/${encodeURIComponent(partner.id)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          expected_version: partner.version,
+          ...supplyChainPayload(input),
+          status: input.status,
+        }),
+      },
+    ),
+  );
+}
+
+export async function deleteSupplyChainPartner(partnerId: string): Promise<void> {
+  await request<void>(`/supply-chain/${encodeURIComponent(partnerId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function searchImage(file: File) {

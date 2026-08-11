@@ -337,10 +337,19 @@ export function localizeCategoryOptions(
   options: StorefrontCategoryOption[] | undefined,
   pack: CatalogLanguagePack,
 ) {
-  return options?.map((option) => ({
-    ...option,
-    label: pack.categories[option.value] || option.label,
-  }));
+  return options?.map((option) => {
+    let label: string | undefined = pack.categories[option.value];
+    if (!label && !option.parent_id) {
+      const child = Object.entries(pack.categories).find(([path]) => (
+        path.replace("／", "/").startsWith(`${option.value.replace("／", "/")}/`)
+      ));
+      label = child?.[1]?.replace("／", "/").split("/")[0];
+    }
+    return {
+      ...option,
+      label: label || option.label,
+    };
+  });
 }
 
 export function localizedLocale(pack: CatalogLanguagePack | undefined, fallback?: StorefrontLocale) {

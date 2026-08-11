@@ -8,6 +8,7 @@ const preloads: Record<string, () => Promise<unknown>> = {
   "/console/products/tags": () => import("../pages/console/TagManagementPage"),
   "/console/languages": () => import("./pages/LanguagePackagesPage"),
   "/console/inventory": () => import("./pages/InventoryPage"),
+  "/console/supply-chain": () => import("./pages/SupplyChainPage"),
   "/console/announcements": () => import("./pages/AnnouncementsPage"),
   "/console/support": () => import("./pages/SupportCenterPage"),
   "/console/agents": () => import("./pages/SupportAIAgentsPage"),

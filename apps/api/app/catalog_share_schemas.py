@@ -11,6 +11,7 @@ class CatalogShareCreate(BaseModel):
     target_type: Literal["PRODUCTS", "CATEGORY"]
     sku_ids: list[UUID] = Field(default_factory=list, max_length=500)
     category_id: UUID | None = None
+    logo_position: Literal["NONE", "TOP_LEFT", "TOP_RIGHT"] = "NONE"
 
     @model_validator(mode="after")
     def validate_target(self) -> "CatalogShareCreate":
@@ -35,5 +36,7 @@ class CatalogShareResponse(BaseModel):
     category_path: str | None = None
     share_path: str
     store_name: str
+    store_subtitle: str | None = None
     store_logo_url: str | None = None
+    logo_position: Literal["NONE", "TOP_LEFT", "TOP_RIGHT"] = "NONE"
     created_at: datetime

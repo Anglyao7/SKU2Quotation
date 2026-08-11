@@ -35,23 +35,21 @@ const english: Record<string, string> = {
   "已绑定店铺": "Bound stores",
   "绑定店铺": "Bind stores",
   "运行中": "Running",
+  "已配置": "Configured",
+  "待配置": "Setup needed",
   "运行状态": "Runtime status",
   "模型状态": "Model status",
   "模型接入": "Model connection",
   "API 配置": "API configuration",
   "API 配置中心": "API configuration center",
   "智能体 API": "Agent APIs",
-  "平台智能体模型": "Platform agent models",
   "智能体 API 配置列表": "Agent API configurations",
   "智能体 API 配置读取失败": "Could not load agent API configurations",
   "智能体 API 配置保存失败": "Could not save the agent API configuration",
   "智能体 API 配置复制失败": "Could not copy the agent API configuration",
   "正在读取智能体 API 配置": "Loading agent API configurations",
-  "统一保存多套模型接口；智能体只分配配置，不再直接接触 Base URL、API Key 或内部模型名。":
-    "Save multiple model endpoints centrally. Agents only receive an assigned configuration and never expose the Base URL, API key, or internal model name.",
   "新增配置": "New configuration",
-  "内部配置名称": "Internal configuration name",
-  "内部模型名称": "Internal model name",
+  "管理智能体可使用的模型配置。": "Manage the model configurations available to agents.",
   "例如：主客服接口": "e.g. Primary support endpoint",
   "例如：专业客服模型": "e.g. Professional support model",
   "允许分配": "Available for assignment",
@@ -60,11 +58,14 @@ const english: Record<string, string> = {
     "Disabled configurations are hidden from new assignments while existing bindings are retained.",
   "复制配置": "Copy configuration",
   "副本": "Copy",
-  "密钥加密保存，页面不会返回明文。": "The key is encrypted at rest and is never returned in plaintext.",
   "还没有智能体 API 配置。": "No agent API configurations yet.",
   "智能体 API 配置已保存，可在智能体列表中按展示模型名分配。":
     "The agent API configuration was saved. Assign it by display model name from the agent list.",
-  "配置已复制，API Key 仍以密文保存。": "Configuration copied. The API key remains encrypted.",
+  "配置已复制。": "Configuration copied.",
+  "管理商品搜索与知识库使用的检索配置。":
+    "Manage search settings used by product search and knowledge bases.",
+  "管理智能体、翻译与商品搜索配置。":
+    "Manage agent, translation, and product search settings.",
   "模型配置（选填）": "Model configuration (optional)",
   "创建后再分配": "Assign after creation",
   "不分配模型": "No model",
@@ -172,6 +173,46 @@ const english: Record<string, string> = {
   "替换图片": "Replace image",
   "商品图片不能超过 20 MB。": "Product images cannot exceed 20 MB.",
   "商品图片上传失败": "Could not upload the product image",
+  "选择详情类型": "Choose detail view",
+  "商品详情": "Product details",
+  "共 {count} 个 SKU，可逐条展开查看": "{count} SKUs · expand any row for details",
+  "展开": "Expand",
+  "收起": "Collapse",
+  "取消编辑": "Stop editing",
+  "规格": "Options",
+  "暂无规格": "No options",
+  "暂无描述": "No description",
+  "未设置商品编码": "No product code",
+  "点击“添加 SKU”开始创建。": "Select Add SKU to create one.",
+  "分享名片副标题": "Share-card subtitle",
+  "选填，例如：专注宠物用品出口十年": "Optional, e.g. Ten years in pet-product exports",
+  "显示在二维码分享名片的商家名称下方；留空则不显示。":
+    "Shown below the merchant name on QR share cards. Leave blank to hide it.",
+  "商家 Logo": "Merchant logo",
+  "当前商家 Logo": "Current merchant logo",
+  "用于商品前台与二维码分享名片，支持 PNG、JPG 和 WebP。":
+    "Used on the storefront and QR share cards. Supports PNG, JPG, and WebP.",
+  "上传 Logo": "Upload logo",
+  "替换 Logo": "Replace logo",
+  "商家 Logo 已上传，商品前台与新生成的分享名片将使用新 Logo。":
+    "Merchant logo uploaded. The storefront and new share cards will use it.",
+  "Logo 图片过大，请上传不超过 5 MB 的图片。":
+    "The logo is too large. Upload an image no larger than 5 MB.",
+  "Logo 上传失败，请确认图片格式后重试。":
+    "Logo upload failed. Check the image format and try again.",
+  "二维码和链接只展示本次选择的商品。":
+    "The QR code and link show only the products selected for this share.",
+  "名片 Logo": "Card logo",
+  "选择本次分享名片是否展示 Logo，以及 Logo 的位置。":
+    "Choose whether this share card shows the logo and where it appears.",
+  "当前未上传商家 Logo，可在账户与商家资料中上传。":
+    "No merchant logo has been uploaded. Add one from Account and merchant profile.",
+  "名片 Logo 位置": "Card logo position",
+  "不带 Logo": "No logo",
+  "左上角": "Top left",
+  "右上角": "Top right",
+  "{store} Logo": "{store} logo",
+  "分享内容": "Shared content",
   "分类管理": "Categories",
   "分类": "Categories",
   "全部商品": "All products",
@@ -191,6 +232,58 @@ const english: Record<string, string> = {
   "一级与二级分类顺序会同步控制前台分类导航和“全部商品”的陈列顺序；拖动“全部商品”只调整入口位置。":
     "Primary and secondary category order controls storefront navigation and the All products listing. Drag All products only to reposition its entry.",
   "经营": "Operations",
+  "供应链": "Supply chain",
+  "新增供应链": "New partner",
+  "保存": "Save",
+  "删除": "Delete",
+  "编辑供应链": "Edit partner",
+  "搜索工厂、联系人、电话或邮箱": "Search factory, contact, phone, or email",
+  "搜索供应链": "Search supply chain",
+  "按合作状态筛选": "Filter by status",
+  "合作中": "Active",
+  "已暂停": "Paused",
+  "供应链加载失败": "Could not load the supply chain",
+  "供应链资料保存失败": "Could not save the supply-chain partner",
+  "供应链删除失败": "Could not delete the supply-chain partner",
+  "正在读取供应链": "Loading supply chain",
+  "没有符合条件的供应链": "No matching supply-chain partners",
+  "还没有供应链资料": "No supply-chain partners yet",
+  "请调整搜索或筛选条件。": "Adjust the search or filter.",
+  "新增工厂或合作方后，可在这里统一维护联系方式。":
+    "Add a factory or partner to manage its contact details here.",
+  "共 {total} 条 · 当前 {start}–{end}": "{total} total · showing {start}–{end}",
+  "工厂 / 合作方": "Factory / partner",
+  "联系方式": "Contact details",
+  "地区": "Region",
+  "{products} 个商品 / {skus} 个 SKU": "{products} products / {skus} SKUs",
+  "基本资料": "Basic details",
+  "工厂或合作方名称": "Factory or partner name",
+  "例如：广州星河包装厂": "e.g. Galaxy Packaging Factory",
+  "电话": "Phone",
+  "邮箱": "Email",
+  "微信": "WeChat",
+  "国家 / 地区": "Country / region",
+  "网站": "Website",
+  "合作信息": "Partnership details",
+  "主营产品 / 服务": "Products / services",
+  "合作状态": "Partnership status",
+  "请填写工厂或合作方名称。": "Enter the factory or partner name.",
+  "请选择合作状态。": "Select a partnership status.",
+  "请输入有效的邮箱地址。": "Enter a valid email address.",
+  "每页": "Per page",
+  "删除供应链？": "Delete supply-chain partner?",
+  "将删除“{name}”。已关联商品的供应链不能删除，可改为停用。":
+    "This will delete “{name}”. A partner linked to products cannot be deleted; disable it instead.",
+  "已存在同名供应链，请确认后再保存。":
+    "A supply-chain partner with this name already exists.",
+  "供应链资料与现有记录冲突，请确认后再保存。":
+    "The supply-chain details conflict with an existing record.",
+  "没有找到这条供应链资料。": "This supply-chain partner was not found.",
+  "这条供应链资料已被更新，请刷新后重试。":
+    "This supply-chain partner was updated elsewhere. Refresh and try again.",
+  "没有需要保存的修改。": "There are no changes to save.",
+  "这条供应链已关联商品，不能删除；可以将它停用。":
+    "This partner is linked to products and cannot be deleted. You can disable it instead.",
   "公告管理": "Announcements",
   "公告": "Announcements",
   "按时间发布顶部滚动字幕或富内容弹窗；进入有效期后立即生效，访客可在本次访问中关闭。":
@@ -461,8 +554,8 @@ const english: Record<string, string> = {
   "监控": "Monitor",
   "翻译 API": "Translation API",
   "平台设置": "Platform settings",
-  "统一管理商品、分类与客服翻译使用的模型接口；配置对所有商家立即生效。":
-    "Manage the model endpoint used for product, category, and support translations. Changes apply to every merchant immediately.",
+  "管理翻译服务配置。": "Manage translation settings.",
+  "选择翻译方式并调整运行参数。": "Choose a translation method and adjust its runtime settings.",
   "刷新配置": "Refresh settings",
   "正在读取翻译 API 配置": "Loading translation API settings",
   "翻译 API 配置读取失败": "Could not load the translation API settings",
@@ -473,19 +566,12 @@ const english: Record<string, string> = {
   "大模型兼容接口": "LLM-compatible endpoint",
   "翻译服务商": "Translation provider",
   "全局翻译服务": "Global translation service",
-  "调用 /v1/chat/completions，支持自定义 Base URL 与模型。":
-    "Uses /v1/chat/completions with a custom base URL and model.",
-  "使用机器翻译通用版与批量接口，优先降低商品翻译等待时间。":
-    "Uses the General Edition and batch API to reduce catalog translation latency.",
-  "商品字段会优先通过批量翻译接口提交；单次最多 50 段文本。":
-    "Product fields use the batch translation API first, with up to 50 text segments per request.",
-  "保留现有大模型翻译能力，适合需要更强上下文理解的内容。":
-    "Keeps the existing LLM translation path for content that needs stronger contextual understanding.",
+  "适合大批量商品内容翻译。": "Suitable for large product catalogs.",
+  "适合需要上下文理解的翻译内容。": "Suitable for content that requires contextual understanding.",
   "已启用": "Enabled",
   "服务已停用": "Disabled",
   "启用翻译服务": "Enable translation service",
-  "关闭后，前台商品翻译、后台翻译任务与客服翻译都会停止调用。":
-    "When disabled, storefront, background catalog, and support translations stop calling the provider.",
+  "关闭后，所有翻译任务将暂停。": "All translation jobs pause when this is disabled.",
   "可以填写服务根地址、/v1，或完整的 /v1/chat/completions 地址。":
     "Enter the service root, /v1, or the complete /v1/chat/completions URL.",
   "地域": "Region",
@@ -505,25 +591,11 @@ const english: Record<string, string> = {
   "测试中…": "Testing…",
   "测试连接": "Test connection",
   "保存并生效": "Save and apply",
-  "新密钥会加密保存，后台与接口都不会再显示明文。":
-    "New keys are encrypted at rest and are never returned in plaintext by the console or API.",
-  "AccessKey ID 与 Secret 都会加密保存，接口不会返回明文。":
-    "The AccessKey ID and Secret are encrypted at rest and never returned in plaintext.",
   "连接成功 · {latency} ms": "Connected · {latency} ms",
   "翻译 API 配置已保存并立即生效。":
     "Translation API settings were saved and are active immediately.",
   "翻译 API 配置保存失败": "Could not save the translation API settings",
   "翻译 API 连接测试失败": "Translation API connection test failed",
-  "权限与密钥": "Access and secrets",
-  "仅平台管理员可见": "Visible only to platform administrators",
-  "商家成员无法读取或修改翻译配置，API Key 只以密文写入数据库。":
-    "Merchant members cannot read or edit these settings. The API key is stored only as ciphertext.",
-  "商家成员无法读取或修改翻译配置，所有访问凭据只以密文写入数据库。":
-    "Merchant members cannot read or edit these settings. All credentials are stored only as ciphertext.",
-  "生效范围": "Scope",
-  "一处配置，全站共用": "One configuration across the platform",
-  "商品名称、描述、分类、标签与客服消息均使用这套配置；已有翻译缓存不受影响。":
-    "Product names, descriptions, categories, tags, and support messages use this configuration. Existing translation cache remains valid.",
   "网站监测": "Storefront analytics",
   "商家前台": "Storefront",
   "观察商品详情访问趋势、主要访问国家，以及不同国家最常查看的商品。":
@@ -551,6 +623,21 @@ const english: Record<string, string> = {
   "商品热度": "Product interest",
   "访问最多的商品": "Most-viewed products",
   "访问最多的商品条形图": "Bar chart of most-viewed products",
+  "商品访问量排行榜": "Product view ranking",
+  "商品访问排行加载失败": "Could not load the product view ranking",
+  "共 {count} 件": "{count} products",
+  "一键归入热门": "Add to Popular",
+  "已将 {count} 件商品归入热门": "Added {count} products to Popular",
+  "归入热门失败": "Could not add products to Popular",
+  "选择本页商品": "Select products on this page",
+  "选择商品 {name}": "Select {name}",
+  "排名": "Rank",
+  "当前分类": "Current category",
+  "访问量": "Views",
+  "热门": "Popular",
+  "次访问": "views",
+  "正在加载商品排行": "Loading product ranking",
+  "当前时间范围内还没有商品访问记录": "No product views in this date range",
   "国家分布": "Country distribution",
   "访问来自哪些国家": "Where visitors come from",
   "访问国家分布柱状图": "Bar chart of visitor countries",
@@ -569,13 +656,13 @@ const english: Record<string, string> = {
   "这个页面暂时无法打开": "This page could not be opened",
   "系统检测到浏览器仍在使用旧版页面资源，重新加载后会自动切换到最新版。":
     "Your browser is still using files from an earlier release. Reload to switch to the latest version automatically.",
-  "系统没有丢失你的数据。请重新加载页面；若问题持续出现，再联系平台管理员。":
-    "Your data is safe. Reload the page, and contact the platform administrator if the problem continues.",
+  "系统没有丢失你的数据。请重新加载页面；若问题持续出现，请联系技术支持。":
+    "Your data is safe. Reload the page, and contact support if the problem continues.",
   "重新加载最新版": "Reload latest version",
   "返回首页": "Back to home",
   "平台运维": "Platform operations",
-  "持续观察服务器 CPU、内存与云盘容量；数据每 10 秒自动刷新，仅平台管理员可见。":
-    "Track server CPU, memory, and cloud-disk capacity. Data refreshes every 10 seconds and is visible only to platform administrators.",
+  "查看 CPU、内存与云盘使用情况；数据每 10 秒自动刷新。":
+    "View CPU, memory, and disk usage. Data refreshes every 10 seconds.",
   "采样于 {time}": "Sampled at {time}",
   "立即刷新": "Refresh now",
   "正在读取服务器资源": "Loading server resources",
@@ -597,19 +684,19 @@ const english: Record<string, string> = {
   "1 分钟负载": "1-minute load",
   "5 分钟负载": "5-minute load",
   "15 分钟负载": "15-minute load",
-  "当前 API 容器 CPU 配额：{count} 核":
-    "Current API container CPU quota: {count} cores",
+  "服务 CPU 配额：{count} 核":
+    "Service CPU quota: {count} cores",
   "内存": "Memory",
   "运行内存": "System memory",
   "已使用": "Used",
   "总容量": "Total",
-  "API 容器：{used} / {total}": "API container: {used} / {total}",
+  "服务内存：{used} / {total}": "Service memory: {used} / {total}",
   "云盘": "Cloud disk",
   "存储空间": "Storage",
-  "挂载点 {path} · 总容量 {total}": "Mount {path} · {total} total",
+  "总容量 {total}": "{total} total",
   "监控口径": "Measurement scope",
-  "CPU、内存取服务器主机视角；容器存在单独配额时会额外标注。云盘统计当前服务挂载盘，不包含对象存储或图床容量。":
-    "CPU and memory are measured from the server host. Container quotas are shown separately when present. Cloud-disk usage covers the mounted service disk, excluding object storage and image hosting.",
+  "监控数据反映当前服务的资源使用情况。":
+    "Monitoring reflects resource usage for the current service.",
   "{days} 天 {hours} 小时": "{days}d {hours}h",
   "{hours} 小时 {minutes} 分钟": "{hours}h {minutes}m",
   "设置": "Settings",
@@ -627,9 +714,6 @@ const english: Record<string, string> = {
   "当前成员": "Current member",
   "安全会话": "Secure session",
   "平台管理员": "Platform admin",
-  "当前商家不是管理员身份": "The current merchant does not have the administrator identity",
-  "配置中心、商家管理和系统功能仅对管理员身份开放。":
-    "Configuration, merchant management, and system features are available only to the administrator identity.",
   "控制台导航": "Console navigation",
   "移动端控制台导航": "Mobile console navigation",
   "打开账户菜单": "Open account menu",
@@ -676,12 +760,10 @@ const english: Record<string, string> = {
   "正在加载页面": "Loading page",
   "正在恢复安全会话": "Restoring secure session",
   "当前成员没有此工作区权限": "No access to this workspace",
-  "需要以下任一服务端权限：{permissions}":
-    "One of these server permissions is required: {permissions}",
+  "无法访问此页面": "This page is unavailable",
+  "当前账户未开通此功能，如需使用请联系账户负责人。":
+    "This feature is not enabled for the current account. Contact the account owner if you need access.",
   "查看我的权限": "View my permissions",
-  "仅平台管理员可以管理商家": "Platform administrators only",
-  "租户创建、启停和平台级状态不属于商家成员权限。":
-    "Merchant creation, activation, and platform-level status require platform administrator access.",
   "返回仪表盘": "Back to dashboard",
   "工作区切换失败": "Could not switch workspace",
   "有效 SKU": "Active SKUs",
@@ -1286,9 +1368,8 @@ const english: Record<string, string> = {
   "商品标签": "Product tags",
   "多语言管理": "Languages",
   "多语言": "Languages",
-  "多语言与语言包": "Languages and packages",
-  "集中管理前台语言、翻译任务与云端语言包。访客下载一次后会保存在当前浏览器。":
-    "Manage storefront languages, translation jobs, and cloud language packages. Each package is persisted in the visitor's browser after its first download.",
+  "管理商品前台可用语言，并更新各语言的商品内容。":
+    "Manage storefront languages and update product content for each language.",
   "每分钟最大请求数（RPM）": "Maximum requests per minute (RPM)",
   "达到上限后请求会排队等待，已完成的翻译和断点不会丢失。":
     "Requests wait in a queue after the limit is reached; completed translations and checkpoints are preserved.",
@@ -1304,49 +1385,38 @@ const english: Record<string, string> = {
   "单批字符上限": "Characters per batch",
   "默认 10,000，超出后自动拆分，不会丢失断点。":
     "Default: 10,000. Oversized batches are split without losing the checkpoint.",
-  "语言包状态读取失败。": "Could not load language package status.",
-  "语言包已发布，前台将在下一次版本检查后自动使用。":
-    "The language package is published and will be used after the storefront's next version check.",
+  "翻译状态读取失败。": "Could not load translation status.",
+  "翻译内容已更新，前台将自动使用最新版本。":
+    "Translations updated. The storefront will use the latest version automatically.",
   "前台语言": "Storefront languages",
   "勾选后会出现在访客语言菜单；简体中文始终保留。翻译与是否展示分开管理。":
     "Selected languages appear in the visitor menu. Simplified Chinese is always retained, while publication and translation are managed independently.",
   "保存语言": "Save languages",
   "源语言": "Source language",
   "展示 {language}": "Show {language}",
-  "前台语言已更新。尚未发布语言包的语言会暂时回退到原文。":
-    "Storefront languages updated. Languages without a published package temporarily fall back to source content.",
+  "前台语言已更新。尚未完成翻译的内容会暂时显示原文。":
+    "Storefront languages updated. Content not yet translated will temporarily show its source text.",
   "前台语言保存失败。": "Could not save storefront languages.",
-  "有变更待发布": "Changes to publish",
-  "语言包最新": "Package up to date",
-  "尚未生成": "Not generated",
+  "有内容待更新": "Content needs updating",
+  "内容已是最新": "Content is up to date",
+  "尚未翻译": "Not translated",
   "公开 SKU": "Public SKUs",
   "已翻译": "Translated",
   "新增或变更": "New or changed",
-  "数据库覆盖": "Database coverage",
   "全量翻译": "Full translation",
   "全量重新翻译 {language}？": "Fully retranslate {language}?",
-  "系统会重新核对全部商品，并用当前翻译模型生成一个新的不可变语言包。旧包会继续可用，直到新包完整上传后才切换。":
-    "The full catalog will be checked and a new immutable package generated with the current translation model. The previous package remains active until the new one is uploaded completely.",
+  "系统会重新翻译全部商品。完成前，前台会继续使用现有翻译内容。":
+    "All products will be translated again. Existing translations remain available until the job finishes.",
   "确认全量翻译": "Confirm full translation",
-  "平台尚未配置可用的翻译 API。": "No usable translation API is configured for the platform.",
-  "语言包存储暂不可用，请联系平台管理员。":
-    "Language-package storage is temporarily unavailable. Contact the platform administrator.",
   "当前发布版本": "Current release",
   "发布时间": "Published at",
   "源数据截止": "Source data cutoff",
-  "压缩后大小": "Compressed size",
+  "内容大小": "Content size",
   "包含内容": "Contents",
-  "发布方式": "Delivery method",
-  "云端语言包": "Cloud language package",
-  "浏览器策略": "Browser policy",
-  "IndexedDB 按版本长期保存": "Persist by version in IndexedDB",
-  "前台只会请求一个很小的版本清单；版本未变化时直接读取浏览器本地语言包，不会重复下载。":
-    "The storefront requests only a tiny version manifest. If the version is unchanged, it reads the local browser package without downloading it again.",
   "最近任务": "Latest job",
   "核对变更": "Checking changes",
-  "调用翻译 API": "Calling translation API",
-  "整理语言包": "Building package",
-  "上传语言包": "Uploading language package",
+  "整理翻译内容": "Preparing translations",
+  "正在发布": "Publishing",
   "发布完成": "Published",
   "任务失败": "Job failed",
   "任务中断，断点已保存": "Interrupted — checkpoint saved",
@@ -1359,8 +1429,8 @@ const english: Record<string, string> = {
     "Maximum 25 MB. Files are security-scanned, stored securely, and parsed asynchronously.",
   "翻译任务已从断点继续，只会处理剩余商品。":
     "Translation resumed from its checkpoint. Only remaining products will be processed.",
-  "已发布语言包 v{version}": "Published language package v{version}",
-  "当前语言包已经是最新版本。": "The current language package is already up to date.",
+  "已发布版本 v{version}": "Published version v{version}",
+  "当前翻译内容已经是最新版本。": "Translations are already up to date.",
   "翻译任务启动失败。": "Could not start the translation job.",
   "翻译": "Translate",
   "商品翻译状态读取失败": "Could not load the product translation status",
@@ -1371,11 +1441,7 @@ const english: Record<string, string> = {
   "商品翻译任务失败": "Product translation failed",
   "当前没有需要翻译或更新的商品。":
     "No products need translating or updating.",
-  "预先翻译商品名称、描述、分类与标签，并缓存到数据库。访客浏览时不会实时请求翻译接口。":
-    "Translate product names, descriptions, categories, and tags in advance and cache them in the database. Storefront visits never call the provider in real time.",
   "正在核对商品翻译状态": "Checking product translations",
-  "翻译服务尚未配置，平台管理员需要先注入 DeepLX 环境密钥。":
-    "The translation service is not configured. A platform administrator must inject the DeepLX secret first.",
   "中文 → 英文": "Chinese → English",
   "正在翻译 {done} / {total} 个 SKU":
     "Translating {done} of {total} SKUs",
@@ -1395,7 +1461,6 @@ const english: Record<string, string> = {
   "翻译一次，前台直接读取": "Translate once, serve from cache",
   "商品发生新增或名称、描述、分类、标签变更后，执行增量翻译即可。未翻译或翻译失效的字段会自动回退中文原文。":
     "Run an incremental translation after products are added or their names, descriptions, categories, or tags change. Missing or stale translations automatically fall back to the Chinese source.",
-  "当前提供方": "Active provider",
   "服务": "Service",
   "待更新": "Pending",
   "失效缓存": "Stale cache",
@@ -1403,8 +1468,6 @@ const english: Record<string, string> = {
   "未成功翻译的 SKU": "SKUs not translated",
   "未知 SKU": "Unknown SKU",
   "全量重新翻译商品？": "Retranslate the full catalog?",
-  "系统会忽略现有缓存，使用当前 DeepLX 配置重新翻译全部 {count} 个 SKU。通常仅在更换翻译规则或缓存异常时使用。":
-    "Existing cache entries will be ignored and all {count} SKUs will be retranslated with the current DeepLX configuration. Use this only after changing translation rules or when the cache is inconsistent.",
   "确认重新翻译": "Confirm retranslation",
   "前台展示标签": "Storefront display tag",
   "暂无可选标签": "No tags available",
@@ -1446,8 +1509,8 @@ const english: Record<string, string> = {
     "Vectorization resumed from the checkpoint. Only remaining products will be processed.",
   "暂停向量化失败。": "Could not pause vectorization.",
   "继续向量化失败。": "Could not resume vectorization.",
-  "控制当前商家商品知识的向量索引。商品导入和编辑不会自动产生模型费用，由你决定何时更新。":
-    "Manage the vector index for this merchant. Imports and edits do not trigger model charges automatically—you decide when to update.",
+  "管理当前工作区的商品搜索数据。商品导入或编辑后，可在这里更新。":
+    "Manage product search data for this workspace. Update it here after importing or editing products.",
   "打开 AI 搜索": "Open AI Search",
   "刷新状态": "Refresh status",
   "正在核对商品与智能索引": "Checking products and AI index",
@@ -1479,7 +1542,7 @@ const english: Record<string, string> = {
   "SUCCEEDED": "Completed",
   "FAILED": "Failed",
   "完成 {percent}%": "{percent}% complete",
-  "已生成 {count} 条向量": "{count} vectors generated",
+  "已更新 {count} 条搜索数据": "Updated {count} search records",
   "当前批次：{name}": "Current batch: {name}",
   "剩余 {count} 个商品 · 断点 {time}":
     "{count} products remaining · checkpoint {time}",
@@ -1494,10 +1557,6 @@ const english: Record<string, string> = {
   "通常只需增量更新": "Incremental updates are usually enough",
   "导入新商品，或修改商品名称、描述、分类与标签后，使用“更新智能索引”即可。系统只处理发生变化的商品。":
     "After importing products or changing names, descriptions, categories, or tags, run an incremental update. Only changed products are processed.",
-  "配置边界": "Configuration boundary",
-  "平台统一托管": "Managed by the platform",
-  "模型、接口地址与密钥由平台管理员统一维护；商家账号仅管理当前工作区的索引任务。":
-    "Models, endpoints, and credentials are managed by platform administrators. Merchant accounts only manage index jobs for their own workspace.",
   "模型配置": "Model configuration",
   "当前生效模型": "Active model",
   "模型": "Model",
@@ -1505,10 +1564,8 @@ const english: Record<string, string> = {
   "提供方": "Provider",
   "模型版本": "Model version",
   "全量重建智能索引？": "Rebuild the full AI index?",
-  "系统会重新处理当前商家的全部 {count} 个商品。通常仅在平台升级检索能力或索引异常时使用。":
-    "The system will reprocess all {count} products for this merchant. Use this only after a platform search upgrade or when the index is inconsistent.",
-  "系统会使用当前的 {model}，重新向量化当前商家的全部 {count} 个商品。通常仅在更换模型或索引异常时使用。":
-    "The current {model} will re-embed all {count} products for this merchant. Use this only after changing models or when the index is inconsistent.",
+  "系统会重新处理当前工作区的全部 {count} 个商品。适合搜索结果异常或需要完整同步时使用。":
+    "The system will reprocess all {count} products in this workspace. Use it when search results are inconsistent or a full sync is needed.",
   "确认全量重建": "Confirm full rebuild",
   "Embedding 配置读取失败": "Could not load the embedding configuration",
   "Embedding 配置保存失败": "Could not save the embedding configuration",
@@ -1518,21 +1575,13 @@ const english: Record<string, string> = {
     "Embedding settings saved. The model did not change, so existing vectors were kept.",
   "Embedding 模型配置已保存；请执行全量重建以使用新模型。":
     "Embedding settings saved. Run a full rebuild to use the new model.",
-  "平台级配置": "Platform configuration",
   "Embedding 模型": "Embedding model",
-  "仅平台管理员可以修改；配置对所有商家生效。":
-    "Only platform administrators can edit this configuration. It applies to every merchant.",
-  "后台配置": "Managed configuration",
-  "环境变量": "Environment variables",
-  "本地测试模型": "Local test model",
   "API Key": "API key",
   "已配置 {hint}，留空则保持不变":
     "{hint} is configured; leave blank to keep it",
   "请输入 API Key": "Enter an API key",
   "超时（秒）": "Timeout (seconds)",
   "保存模型配置": "Save model settings",
-  "密钥加密保存，保存后不会显示明文。":
-    "The key is encrypted at rest and is never shown in plaintext after saving.",
   "适合巴西市场的小型防水狗玩具":
     "Small waterproof dog toys suitable for the Brazilian market",
   "食品级硅胶水瓶，目标价低于 20 元":
@@ -2091,8 +2140,8 @@ const english: Record<string, string> = {
   "可访问工作区": "Accessible workspaces",
   "{count} 个": "{count}",
   "账户资料": "Account profile",
-  "登录邮箱和成员名称由管理员统一维护。已配置的账号或手机号也可以用于登录。":
-    "Sign-in email and member name are managed by administrators. Configured usernames or phone numbers can also be used to sign in.",
+  "如需修改登录邮箱或成员名称，请联系账户负责人。已配置的账号或手机号均可用于登录。":
+    "Contact the account owner to change the sign-in email or member name. Configured usernames and phone numbers can also be used to sign in.",
   "商家资料": "Merchant profile",
   "商家名称会同步成为商品前台地址。":
     "The merchant name is also used for the storefront address.",

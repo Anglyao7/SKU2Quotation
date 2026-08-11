@@ -2,9 +2,20 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..auth_schemas import (
     AuthContext,
@@ -508,6 +519,26 @@ def update_merchant_settings_endpoint(
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+
+
+@router.post("/me/merchant/logo", response_model=MerchantSettingsResponse)
+async def upload_merchant_logo_endpoint(
+    logo: UploadFile = File(...),
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> MerchantSettingsResponse:
+    content = await logo.read(tenant_settings.MAX_MERCHANT_LOGO_BYTES + 1)
+    try:
+        return await run_in_threadpool(
+            tenant_settings.upload_merchant_logo,
+            session,
+            context=context,
+            content=content,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    finally:
+        await logo.close()
 
 
 @router.patch("/me/preferences", response_model=UserPreferencesResponse)

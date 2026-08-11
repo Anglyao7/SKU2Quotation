@@ -508,6 +508,30 @@ def update_category(
         raise application_http_error(exc) from exc
 
 
+@router.post("/categories/{category_id}/cover", response_model=CategoryResponse)
+async def upload_category_cover(
+    category_id: UUID,
+    image: UploadFile = File(...),
+    session: Session = Depends(get_authenticated_session),
+) -> CategoryResponse:
+    context = _context(session)
+    content = await image.read(use_cases.MAX_CATEGORY_COVER_BYTES + 1)
+    try:
+        return await run_in_threadpool(
+            use_cases.upload_category_cover,
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            category_id=category_id,
+            content=content,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    finally:
+        await image.close()
+
+
 @router.get(
     "/categories/{category_id}/delete-impact",
     response_model=CategoryDeleteImpactResponse,

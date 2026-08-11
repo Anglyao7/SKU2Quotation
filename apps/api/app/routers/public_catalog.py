@@ -248,6 +248,7 @@ def get_public_product(
     request: Request,
     response: Response,
     locale: str | None = Query(default=None, max_length=20),
+    share: str | None = Query(default=None, min_length=8, max_length=64),
     session: Session = Depends(get_session),
 ) -> PublicProductDetail:
     response.headers.update(PUBLIC_DETAIL_CACHE_HEADERS)
@@ -271,6 +272,7 @@ def get_public_product(
             slug=tenant_slug,
             product_id=product_id,
             locale=locale,
+            share_token=share,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -286,6 +288,7 @@ def get_public_sku(
     request: Request,
     response: Response,
     locale: str | None = Query(default=None, max_length=20),
+    share: str | None = Query(default=None, min_length=8, max_length=64),
     session: Session = Depends(get_session),
 ) -> PublicSkuResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -306,6 +309,7 @@ def get_public_sku(
             slug=tenant_slug,
             sku_id=sku_id,
             locale=locale,
+            share_token=share,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -328,6 +332,51 @@ def get_public_media(
         media_type=content_type,
         headers={
             "Cache-Control": "public, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/api/store/{tenant_slug}/logo")
+def get_public_store_logo(
+    tenant_slug: str,
+    session: Session = Depends(get_session),
+) -> Response:
+    try:
+        content, content_type = use_cases.get_public_store_logo(
+            session, slug=tenant_slug
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/api/store/{tenant_slug}/categories/{category_id}/cover")
+def get_public_category_cover(
+    tenant_slug: str,
+    category_id: UUID,
+    session: Session = Depends(get_session),
+) -> Response:
+    try:
+        content, content_type = use_cases.get_public_category_cover(
+            session,
+            slug=tenant_slug,
+            category_id=category_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
             "X-Content-Type-Options": "nosniff",
         },
     )

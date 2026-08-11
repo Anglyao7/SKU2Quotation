@@ -14,6 +14,7 @@ from ..model_mixins import utcnow
 from ..public_catalog_models import CatalogShareRow
 from ..repositories import catalog_share_repository as repository
 from ..repositories import public_catalog_repository
+from ..services.storefront_branding import storefront_logo_url
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ def _response(
     row: CatalogShareRow,
     store_name: str,
     store_slug: str,
+    store_subtitle: str | None,
     store_logo_url: str | None,
 ) -> CatalogShareResponse:
     response_category_path = row.category_path
@@ -126,9 +128,11 @@ def _response(
         category_id=row.category_id,
         category_name=_category_name(session, row),
         category_path=response_category_path,
-        share_path=f"/{store_slug}?share={row.share_token}",
+        share_path=f"/{store_slug}/share/{row.id.hex}",
         store_name=store_name,
+        store_subtitle=(store_subtitle or "").strip() or None,
         store_logo_url=store_logo_url,
+        logo_position=row.logo_position,
         created_at=row.created_at,
     )
 
@@ -143,6 +147,13 @@ def create_share(
 ) -> CatalogShareResponse:
     _require_permission(permissions, "catalog.publish")
     tenant, profile = _published_store(session, tenant_id=tenant_id)
+    logo_url = storefront_logo_url(profile)
+    if request.logo_position != "NONE" and not logo_url:
+        raise ApplicationError(
+            "CATALOG_SHARE_LOGO_REQUIRED",
+            "请先上传商家 Logo，再选择名片 Logo 位置。",
+            kind="conflict",
+        )
     now = utcnow()
     product_ids: list[UUID] = []
     category_id: UUID | None = None
@@ -220,6 +231,8 @@ def create_share(
         title = category.name
         fingerprint_source = f"CATEGORY:{category_id}"
 
+    if request.logo_position != "NONE":
+        fingerprint_source = f"{fingerprint_source}:LOGO:{request.logo_position}"
     fingerprint = sha256(fingerprint_source.encode("utf-8")).hexdigest()
     existing = repository.find_by_fingerprint(
         session, tenant_id=tenant_id, fingerprint=fingerprint
@@ -230,7 +243,8 @@ def create_share(
             row=existing,
             store_name=tenant.name,
             store_slug=profile.slug,
-            store_logo_url=profile.logo_url,
+            store_subtitle=profile.description,
+            store_logo_url=logo_url,
         )
 
     token = ""
@@ -259,6 +273,7 @@ def create_share(
             category_path=category_path,
             title=title,
             item_count=item_count,
+            logo_position=request.logo_position,
             fingerprint=fingerprint,
             created_by_user_id=user_id,
         ),
@@ -270,7 +285,8 @@ def create_share(
         row=row,
         store_name=tenant.name,
         store_slug=profile.slug,
-        store_logo_url=profile.logo_url,
+        store_subtitle=profile.description,
+        store_logo_url=logo_url,
     )
 
 
@@ -290,7 +306,8 @@ def resolve_share(
         row=row,
         store_name=tenant.name,
         store_slug=profile.slug,
-        store_logo_url=profile.logo_url,
+        store_subtitle=profile.description,
+        store_logo_url=storefront_logo_url(profile),
     )
 
 

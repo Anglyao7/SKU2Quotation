@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..db_models import SupplierRow
 from ..domain.errors import ApplicationError
+from ..model_mixins import mark_deleted
 from ..repositories import workspace_repository as repository
 from ..services import query_cache
 from ..workspace_schemas import (
@@ -16,6 +17,9 @@ from ..workspace_schemas import (
     DashboardImport,
     DashboardMetric,
     DashboardResponse,
+    SupplyChainCreateRequest,
+    SupplyChainPageResponse,
+    SupplyChainUpdateRequest,
     SupplierImportSummary,
     SupplierCreateRequest,
     SupplierProfileDetail,
@@ -88,7 +92,7 @@ def get_dashboard(
     if "product.review" in permissions:
         metrics.append(DashboardMetric(key="pending_product_reviews", label="等待复核", value=data["pending_reviews"], destination="/review"))
     if "supplier.view" in permissions:
-        metrics.append(DashboardMetric(key="active_suppliers", label="有效供应商", value=data["active_suppliers"], destination="/suppliers"))
+        metrics.append(DashboardMetric(key="active_suppliers", label="合作供应链", value=data["active_suppliers"], destination="/supply-chain"))
 
     active_products = int(data["active_products"])
     data_health = None
@@ -172,12 +176,24 @@ def _supplier_summary(row: object, maps: dict[str, dict[str, object]]) -> Suppli
         category_summary=row.category_summary,
         country_code=row.country_code,
         website=row.website,
+        contact_name=row.contact_name,
+        phone=row.phone,
+        email=row.email,
+        whatsapp=row.whatsapp,
+        wechat=row.wechat,
+        country_region=row.country_region,
+        address=row.address,
+        business_scope=row.business_scope,
+        notes=row.notes,
         status=row.status,
         risk_level=row.risk_level,
         health=row.health,
         version=row.version,
         active_products=int(maps["products"].get(row.id, 0)),
-        active_skus=int(maps["skus"].get(row.id, 0)),
+        active_skus=max(
+            int(maps["skus"].get(row.id, 0)),
+            int(row.active_skus or 0),
+        ),
         pending_reviews=int(maps["reviews"].get(row.id, 0)),
         valid_prices=int(maps["valid_prices"].get(row.id, 0)),
         expired_prices=int(maps["expired_prices"].get(row.id, 0)),
@@ -190,8 +206,14 @@ def _supplier_summary(row: object, maps: dict[str, dict[str, object]]) -> Suppli
 def list_suppliers(session: Session, *, tenant_id: UUID, permissions: frozenset[str]) -> list[SupplierProfileSummary]:
     _require_any(permissions, "supplier.view", "supplier.manage")
     now = datetime.now(UTC)
-    maps = repository.supplier_aggregate_maps(session, tenant_id=tenant_id, now=now)
-    return [_supplier_summary(row, maps) for row in repository.list_supplier_rows(session, tenant_id=tenant_id)]
+    rows = repository.list_supplier_rows(session, tenant_id=tenant_id)
+    maps = repository.supplier_aggregate_maps(
+        session,
+        tenant_id=tenant_id,
+        now=now,
+        supplier_ids={row.id for row in rows},
+    )
+    return [_supplier_summary(row, maps) for row in rows]
 
 
 def create_supplier(
@@ -241,7 +263,10 @@ def create_supplier(
         ) from exc
     session.refresh(row)
     maps = repository.supplier_aggregate_maps(
-        session, tenant_id=tenant_id, now=datetime.now(UTC)
+        session,
+        tenant_id=tenant_id,
+        now=datetime.now(UTC),
+        supplier_ids={row.id},
     )
     return _supplier_summary(row, maps)
 
@@ -252,7 +277,12 @@ def get_supplier(session: Session, *, tenant_id: UUID, permissions: frozenset[st
     if row is None:
         raise ApplicationError("SUPPLIER_NOT_FOUND", "Supplier was not found.", kind="not_found")
     now = datetime.now(UTC)
-    maps = repository.supplier_aggregate_maps(session, tenant_id=tenant_id, now=now)
+    maps = repository.supplier_aggregate_maps(
+        session,
+        tenant_id=tenant_id,
+        now=now,
+        supplier_ids={row.id},
+    )
     summary = _supplier_summary(row, maps)
     sources: list[SupplierSourceSummary] = []
     for source, product, price in repository.list_supplier_sources(session, tenant_id=tenant_id, supplier_id=supplier_id, now=now, limit=100):
@@ -290,3 +320,215 @@ def get_supplier(session: Session, *, tenant_id: UUID, permissions: frozenset[st
         for job, source in repository.list_supplier_imports(session, tenant_id=tenant_id, supplier_id=supplier_id, limit=20)
     ]
     return SupplierProfileDetail(**summary.model_dump(), sources=sources, recent_imports=imports)
+
+
+def list_supply_chain_partners(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    query: str | None,
+    status: str | None,
+    page: int,
+    page_size: int,
+) -> SupplyChainPageResponse:
+    _require_any(permissions, "supplier.view", "supplier.manage")
+    rows, total = repository.list_supply_chain_rows(
+        session,
+        tenant_id=tenant_id,
+        query=query,
+        status=status,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
+    maps = repository.supplier_aggregate_maps(
+        session,
+        tenant_id=tenant_id,
+        now=datetime.now(UTC),
+        supplier_ids={row.id for row in rows},
+    )
+    return SupplyChainPageResponse(
+        items=[_supplier_summary(row, maps) for row in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=(total + page_size - 1) // page_size if total else 0,
+    )
+
+
+def create_supply_chain_partner(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    request: SupplyChainCreateRequest,
+) -> SupplierProfileSummary:
+    _require(permissions, "supplier.manage")
+    if repository.supplier_name_exists(
+        session,
+        tenant_id=tenant_id,
+        name=request.name,
+    ):
+        raise ApplicationError(
+            "SUPPLY_CHAIN_NAME_CONFLICT",
+            "已存在同名供应链，请确认后再保存。",
+            kind="conflict",
+        )
+    row = SupplierRow(
+        id=f"SUP-{uuid4().hex[:12].upper()}",
+        tenant_id=tenant_id,
+        supplier_code=f"SC-{uuid4().hex[:10].upper()}",
+        name=request.name,
+        category="供应链",
+        category_summary="供应链资料",
+        contact_name=request.contact_name,
+        phone=request.phone,
+        email=request.email,
+        whatsapp=request.whatsapp,
+        wechat=request.wechat,
+        country_region=request.country_region,
+        address=request.address,
+        website=request.website,
+        business_scope=request.business_scope,
+        notes=request.notes,
+        status="ACTIVE",
+        risk_level="UNKNOWN",
+        health="good",
+    )
+    session.add(row)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "SUPPLY_CHAIN_CONFLICT",
+            "供应链资料与现有记录冲突，请确认后再保存。",
+            kind="conflict",
+        ) from exc
+    session.refresh(row)
+    maps = repository.supplier_aggregate_maps(
+        session,
+        tenant_id=tenant_id,
+        now=datetime.now(UTC),
+        supplier_ids={row.id},
+    )
+    return _supplier_summary(row, maps)
+
+
+def update_supply_chain_partner(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    supplier_id: str,
+    request: SupplyChainUpdateRequest,
+) -> SupplierProfileSummary:
+    _require(permissions, "supplier.manage")
+    row = repository.get_supplier_row(
+        session,
+        tenant_id=tenant_id,
+        supplier_id=supplier_id,
+    )
+    if row is None:
+        raise ApplicationError(
+            "SUPPLY_CHAIN_NOT_FOUND",
+            "没有找到这条供应链资料。",
+            kind="not_found",
+        )
+    if row.version != request.expected_version:
+        raise ApplicationError(
+            "SUPPLY_CHAIN_VERSION_CONFLICT",
+            "这条供应链资料已被更新，请刷新后重试。",
+            kind="conflict",
+        )
+    changed_fields = request.model_fields_set - {"expected_version"}
+    if not changed_fields:
+        raise ApplicationError(
+            "SUPPLY_CHAIN_NO_CHANGES",
+            "没有需要保存的修改。",
+        )
+    if "status" in changed_fields and request.status is None:
+        raise ApplicationError(
+            "SUPPLY_CHAIN_STATUS_REQUIRED",
+            "请选择合作状态。",
+        )
+    if "name" in changed_fields:
+        if not request.name:
+            raise ApplicationError(
+                "SUPPLY_CHAIN_NAME_REQUIRED",
+                "请填写工厂或合作方名称。",
+            )
+        if repository.supplier_name_exists(
+            session,
+            tenant_id=tenant_id,
+            name=request.name,
+            exclude_supplier_id=supplier_id,
+        ):
+            raise ApplicationError(
+                "SUPPLY_CHAIN_NAME_CONFLICT",
+                "已存在同名供应链，请确认后再保存。",
+                kind="conflict",
+            )
+    values = request.model_dump(
+        exclude={"expected_version"},
+        exclude_unset=True,
+    )
+    for field, value in values.items():
+        setattr(row, field, value)
+    row.version += 1
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "SUPPLY_CHAIN_CONFLICT",
+            "供应链资料与现有记录冲突，请确认后再保存。",
+            kind="conflict",
+        ) from exc
+    session.refresh(row)
+    maps = repository.supplier_aggregate_maps(
+        session,
+        tenant_id=tenant_id,
+        now=datetime.now(UTC),
+        supplier_ids={row.id},
+    )
+    return _supplier_summary(row, maps)
+
+
+def delete_supply_chain_partner(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    supplier_id: str,
+) -> None:
+    _require(permissions, "supplier.manage")
+    row = repository.get_supplier_row(
+        session,
+        tenant_id=tenant_id,
+        supplier_id=supplier_id,
+    )
+    if row is None:
+        raise ApplicationError(
+            "SUPPLY_CHAIN_NOT_FOUND",
+            "没有找到这条供应链资料。",
+            kind="not_found",
+        )
+    maps = repository.supplier_aggregate_maps(
+        session,
+        tenant_id=tenant_id,
+        now=datetime.now(UTC),
+        supplier_ids={row.id},
+    )
+    linked_products = int(maps["products"].get(row.id, 0))
+    linked_skus = int(maps["skus"].get(row.id, 0))
+    if linked_products or linked_skus or row.active_skus:
+        raise ApplicationError(
+            "SUPPLY_CHAIN_IN_USE",
+            "这条供应链已关联商品，不能删除；可以将它停用。",
+            kind="conflict",
+        )
+    row.status = "ARCHIVED"
+    row.version += 1
+    mark_deleted(row)
+    session.commit()

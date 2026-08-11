@@ -133,7 +133,7 @@ export function SystemMonitoringPage() {
       <CorePageHeading
         eyebrow={t("平台运维")}
         title={t("系统监控")}
-        description={t("持续观察服务器 CPU、内存与云盘容量；数据每 10 秒自动刷新，仅平台管理员可见。")}
+        description={t("查看 CPU、内存与云盘使用情况；数据每 10 秒自动刷新。")}
         actions={(
           <>
             <span className="core-system-monitor-sampled">
@@ -216,7 +216,7 @@ export function SystemMonitoringPage() {
               </div>
               {snapshot.cpu.quotaCores !== undefined ? (
                 <Text size="1" color="gray">
-                  {t("当前 API 容器 CPU 配额：{count} 核", { count: snapshot.cpu.quotaCores })}
+                  {t("服务 CPU 配额：{count} 核", { count: snapshot.cpu.quotaCores })}
                 </Text>
               ) : null}
             </Card>
@@ -235,7 +235,7 @@ export function SystemMonitoringPage() {
                 </div>
                 {snapshot.memory.containerLimitBytes !== undefined ? (
                   <Text size="1" color="gray">
-                    {t("API 容器：{used} / {total}", {
+                    {t("服务内存：{used} / {total}", {
                       used: formatBytes(snapshot.memory.containerUsedBytes, locale),
                       total: formatBytes(snapshot.memory.containerLimitBytes, locale),
                     })}
@@ -255,8 +255,7 @@ export function SystemMonitoringPage() {
                   <span><small>{t("可用")}</small><b>{formatBytes(snapshot.disk.availableBytes, locale)}</b></span>
                 </div>
                 <Text size="1" color="gray">
-                  {t("挂载点 {path} · 总容量 {total}", {
-                    path: snapshot.disk.mountPath,
+                  {t("总容量 {total}", {
                     total: formatBytes(snapshot.disk.totalBytes, locale),
                   })}
                 </Text>
@@ -269,7 +268,7 @@ export function SystemMonitoringPage() {
             <div>
               <strong>{t("监控口径")}</strong>
               <Text size="2" color="gray">
-                {t("CPU、内存取服务器主机视角；容器存在单独配额时会额外标注。云盘统计当前服务挂载盘，不包含对象存储或图床容量。")}
+                {t("监控数据反映当前服务的资源使用情况。")}
               </Text>
             </div>
           </Card>
