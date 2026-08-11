@@ -1,6 +1,6 @@
 import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
 import { ArrowDown, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, ShareNetwork, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   batchDeleteSkus,
@@ -12,6 +12,7 @@ import {
   createSkus,
   deleteAllProducts,
   detectFile,
+  downloadProductMainImage,
   exportSkuCatalog,
   getDeleteAllProductsJob,
   getImport,
@@ -1672,7 +1673,10 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
   const { hasPermission } = useCoreAuth();
   const { t } = useLocale();
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const imageDragDepthRef = useRef(0);
   const [imageUploading, setImageUploading] = useState(false);
+  const [imageDownloading, setImageDownloading] = useState(false);
+  const [imageDragging, setImageDragging] = useState(false);
   const [imageError, setImageError] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
@@ -1681,11 +1685,19 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
   useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
   useEffect(() => {
     setActiveTab(selectedSkuId ? "skus" : "product");
+    imageDragDepthRef.current = 0;
+    setImageDragging(false);
+    setImageError("");
   }, [product.id, selectedSkuId]);
 
   const uploadImage = async (file?: File) => {
     if (!file || imageUploading || !canEdit) return;
     setImageError("");
+    const supportedExtension = /\.(png|jpe?g|webp)$/i.test(file.name);
+    if ((file.type && !file.type.startsWith("image/")) || (!file.type && !supportedExtension)) {
+      setImageError(t("请选择 PNG、JPG 或 WebP 图片。"));
+      return;
+    }
     if (file.size > 20 * 1024 * 1024) {
       setImageError(t("商品图片不能超过 20 MB。"));
       return;
@@ -1700,6 +1712,52 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
       setImageUploading(false);
       if (imageInputRef.current) imageInputRef.current.value = "";
     }
+  };
+
+  const downloadImage = async () => {
+    if (imageDownloading || product.imageStatus === "NONE") return;
+    const safeName = (product.productCode || product.name || "product-image")
+      .replace(/[\\/:*?"<>|]/g, "-")
+      .slice(0, 100);
+    setImageDownloading(true);
+    setImageError("");
+    try {
+      await downloadProductMainImage(product.id, `${safeName || "product-image"}-主图.webp`);
+    } catch (reason) {
+      setImageError(reason instanceof Error ? reason.message : t("商品图片下载失败"));
+    } finally {
+      setImageDownloading(false);
+    }
+  };
+
+  const dragContainsFiles = (event: DragEvent<HTMLElement>) => (
+    Array.from(event.dataTransfer.types).includes("Files")
+  );
+  const beginImageDrag = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit || imageUploading || !dragContainsFiles(event)) return;
+    event.preventDefault();
+    imageDragDepthRef.current += 1;
+    setImageDragging(true);
+  };
+  const continueImageDrag = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit || imageUploading || !dragContainsFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setImageDragging(true);
+  };
+  const endImageDrag = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit) return;
+    event.preventDefault();
+    imageDragDepthRef.current = Math.max(0, imageDragDepthRef.current - 1);
+    if (imageDragDepthRef.current === 0) setImageDragging(false);
+  };
+  const dropImage = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit) return;
+    event.preventDefault();
+    imageDragDepthRef.current = 0;
+    setImageDragging(false);
+    if (imageUploading || !dragContainsFiles(event)) return;
+    void uploadImage(event.dataTransfer.files[0]);
   };
   return (
     <>
@@ -1725,20 +1783,50 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
         </Tabs.List>
         <Tabs.Content value="product" className="core-product-detail-tab-panel">
           <div className="core-product-overview">
-            <section className="core-product-image-editor">
+            <section
+              className="core-product-image-editor"
+              data-dragging={imageDragging || undefined}
+              data-uploading={imageUploading || undefined}
+              onDragEnter={beginImageDrag}
+              onDragOver={continueImageDrag}
+              onDragLeave={endImageDrag}
+              onDrop={dropImage}
+            >
               <div className="core-product-image-preview">
                 {product.primaryImageUrl && !imageFailed ? (
                   <img src={product.primaryImageUrl} alt={product.name} onError={() => setImageFailed(true)} />
                 ) : <ImageSquare aria-hidden="true" />}
+                {imageDragging ? (
+                  <span className="core-product-image-drop-state" aria-hidden="true">
+                    <FileArrowUp weight="duotone" />
+                    <strong>{t("松开即可替换商品主图")}</strong>
+                  </span>
+                ) : imageUploading ? (
+                  <span className="core-product-image-drop-state is-uploading" aria-live="polite">
+                    <FileArrowUp weight="duotone" />
+                    <strong>{t("正在上传新图片…")}</strong>
+                  </span>
+                ) : null}
               </div>
               <div className="core-product-image-controls">
-                <Text size="2" weight="bold">{t("商品主图")}</Text>
-                <Text size="1" color="gray">{t("PNG、JPG 或 WebP，最大 20 MB")}</Text>
-                {canEdit ? (
-                  <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
-                    <FileArrowUp />{t(product.primaryImageUrl ? "替换图片" : "上传图片")}
-                  </Button>
-                ) : null}
+                <span className="core-product-image-copy">
+                  <Text size="2" weight="bold">{t("商品主图")}</Text>
+                  <Text size="1" color="gray">
+                    {t(canEdit ? "拖入新图片即可替换" : "PNG、JPG 或 WebP，最大 20 MB")}
+                  </Text>
+                </span>
+                <span className="core-product-image-actions">
+                  {product.imageStatus !== "NONE" ? (
+                    <Button size="2" variant="ghost" color="gray" disabled={imageDownloading || imageUploading} loading={imageDownloading} onClick={() => void downloadImage()}>
+                      <DownloadSimple />{t("下载图片")}
+                    </Button>
+                  ) : null}
+                  {canEdit ? (
+                    <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
+                      <FileArrowUp />{t(product.imageStatus !== "NONE" ? "替换图片" : "上传图片")}
+                    </Button>
+                  ) : null}
+                </span>
                 <input
                   ref={imageInputRef}
                   type="file"

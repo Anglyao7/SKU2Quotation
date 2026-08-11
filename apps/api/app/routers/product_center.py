@@ -254,6 +254,35 @@ async def upload_product_main_image(
         await image.close()
 
 
+@router.get("/products/{product_id}/images/main/download")
+def download_product_main_image(
+    product_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> Response:
+    context = _context(session)
+    try:
+        content, content_type, filename = use_cases.download_product_main_image(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            product_id=product_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="product-image"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.post(
     "/products/{product_id}/skus",
     response_model=list[SkuResponse],

@@ -452,6 +452,7 @@ async function downloadCoreRequest(
   filename: string,
   init: RequestInit = {},
   retrySession = true,
+  preferResponseFilename = false,
 ): Promise<void> {
   await prepareCoreRequestAuth(path);
   const headers = new Headers(init.headers);
@@ -467,7 +468,7 @@ async function downloadCoreRequest(
   });
   if (response.status === 401 && retrySession) {
     const restored = await refreshAuthSession();
-    if (restored) return downloadCoreRequest(path, filename, init, false);
+    if (restored) return downloadCoreRequest(path, filename, init, false, preferResponseFilename);
     window.dispatchEvent(new CustomEvent("atc:auth-expired"));
   }
   if (!response.ok) {
@@ -485,7 +486,17 @@ async function downloadCoreRequest(
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = filename;
+  const disposition = response.headers.get("content-disposition") || "";
+  const encodedFilename = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+  let responseFilename: string | undefined;
+  if (preferResponseFilename && encodedFilename) {
+    try {
+      responseFilename = decodeURIComponent(encodedFilename);
+    } catch {
+      responseFilename = undefined;
+    }
+  }
+  anchor.download = responseFilename || filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -496,8 +507,9 @@ async function downloadCoreFile(
   path: string,
   filename: string,
   retrySession = true,
+  preferResponseFilename = false,
 ): Promise<void> {
-  return downloadCoreRequest(path, filename, {}, retrySession);
+  return downloadCoreRequest(path, filename, {}, retrySession, preferResponseFilename);
 }
 
 export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
@@ -1361,6 +1373,18 @@ export async function uploadProductMainImage(
     width: defined(row.width),
     height: defined(row.height),
   };
+}
+
+export async function downloadProductMainImage(
+  productId: string,
+  filename: string,
+): Promise<void> {
+  await downloadCoreFile(
+    `/products/${encodeURIComponent(productId)}/images/main/download`,
+    filename,
+    true,
+    true,
+  );
 }
 
 export interface SkuBatchOperationResult {

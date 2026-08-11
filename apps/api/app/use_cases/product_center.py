@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
+import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -73,6 +74,11 @@ from ..services import query_cache
 from ..services.category_template_import import (
     CategoryTemplateParseResult,
     category_name_key,
+)
+from ..services.external_image_migration import (
+    ImageMigrationError,
+    SourcePolicy,
+    download_image,
 )
 from ..adapters.object_storage import get_object_storage
 from ..services.sku_catalog_export import build_sku_catalog_workbook
@@ -941,6 +947,136 @@ def upload_product_main_image(
     return _image_response(
         image,
         storefront_slug=_storefront_slug(session, tenant_id=tenant_id),
+    )
+
+
+_PRODUCT_IMAGE_DOWNLOAD_EXTENSIONS = {
+    "image/avif": "avif",
+    "image/bmp": "bmp",
+    "image/gif": "gif",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+
+
+def _product_image_download_filename(
+    *,
+    product: ProductRow,
+    image: ProductImageRow,
+    content_type: str,
+) -> str:
+    source_name = Path(image.original_filename or product.name or "product-image").stem
+    safe_stem = "".join(
+        character
+        for character in source_name
+        if character not in {"/", "\\", "\r", "\n", "\t"}
+        and ord(character) >= 32
+    ).strip(" .")[:120]
+    extension = _PRODUCT_IMAGE_DOWNLOAD_EXTENSIONS.get(content_type, "bin")
+    return f"{safe_stem or 'product-image'}.{extension}"
+
+
+def download_product_main_image(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+) -> tuple[bytes, str, str]:
+    _require(permissions, "product.view")
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if product is None:
+        raise ApplicationError(
+            "PRODUCT_NOT_FOUND",
+            "Product was not found.",
+            kind="not_found",
+        )
+    images = repository.list_images(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    image = next(
+        (candidate for candidate in images if candidate.image_role == "MAIN"),
+        images[0] if images else None,
+    )
+    if image is None or not str(image.object_key or "").strip():
+        raise ApplicationError(
+            "PRODUCT_IMAGE_NOT_FOUND",
+            "该商品还没有可下载的图片。",
+            kind="not_found",
+        )
+
+    object_key = str(image.object_key).strip()
+    if object_key.startswith(("https://", "http://")):
+        try:
+            with tempfile.TemporaryDirectory(prefix="atc-image-download-") as directory:
+                target = Path(directory) / "source-image"
+                with httpx.Client(
+                    timeout=httpx.Timeout(20.0, connect=5.0),
+                    follow_redirects=False,
+                ) as client:
+                    metadata = download_image(
+                        client,
+                        source_url=object_key,
+                        destination=target,
+                        policy=SourcePolicy((), allow_all_public_hosts=True),
+                        max_bytes=MAX_PRODUCT_IMAGE_BYTES,
+                        max_pixels=100_000_000,
+                        max_redirects=4,
+                    )
+                content = target.read_bytes()
+        except (ImageMigrationError, OSError) as exc:
+            raise ApplicationError(
+                "PRODUCT_IMAGE_DOWNLOAD_UNAVAILABLE",
+                "原图片暂时无法下载，请稍后重试。",
+                kind="unavailable",
+            ) from exc
+        content_type = metadata.content_type
+    else:
+        try:
+            with get_object_storage().materialize(object_key) as path:
+                byte_size = path.stat().st_size
+                if byte_size > MAX_PRODUCT_IMAGE_BYTES:
+                    raise ApplicationError(
+                        "PRODUCT_IMAGE_TOO_LARGE",
+                        f"商品图片不能超过 {MAX_PRODUCT_IMAGE_BYTES // (1024 * 1024)} MB。",
+                        kind="too_large",
+                    )
+                content = path.read_bytes()
+        except ApplicationError:
+            raise
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ApplicationError(
+                "PRODUCT_IMAGE_DOWNLOAD_UNAVAILABLE",
+                "图片文件暂时不可用，请稍后重试。",
+                kind="unavailable",
+            ) from exc
+        content_type = (
+            image.content_type
+            if str(image.content_type or "").startswith("image/")
+            else "application/octet-stream"
+        )
+
+    if not content:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_DOWNLOAD_UNAVAILABLE",
+            "图片文件暂时不可用，请稍后重试。",
+            kind="unavailable",
+        )
+    return (
+        content,
+        content_type,
+        _product_image_download_filename(
+            product=product,
+            image=image,
+            content_type=content_type,
+        ),
     )
 
 
