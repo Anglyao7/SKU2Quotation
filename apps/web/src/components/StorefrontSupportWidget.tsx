@@ -1,4 +1,5 @@
 import {
+  ArrowRight,
   ChatCenteredDots,
   ImageSquare,
   PaperPlaneTilt,
@@ -6,13 +7,16 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
-import { storefrontText } from "../lib/storefrontLocale";
+import { money } from "../lib/format";
+import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
 import type {
   PublicSupportConversation,
   PublicSupportMessage,
   PublicSupportStreamEvent,
   PublicSupportWidget,
+  StoreProduct,
   StorefrontLocale,
 } from "../types";
 import "./StorefrontSupportWidget.css";
@@ -46,6 +50,79 @@ function saveToken(slug: string, token: string) {
   }
 }
 
+function supportProductPrice(product: StoreProduct) {
+  const priceFrom = Number(product.price_from);
+  const priceTo = Number(product.price_to);
+  if (
+    Number.isFinite(priceFrom)
+    && Number.isFinite(priceTo)
+    && Math.abs(priceFrom - priceTo) > 0.0001
+  ) {
+    return (
+      `${money(product.price_from, product.currency)} – `
+      + money(product.price_to, product.currency)
+    );
+  }
+  return money(product.price_from, product.currency);
+}
+
+function SupportProductCard({
+  product,
+  citationNumber,
+  detailsHref,
+  locale,
+  onOpen,
+}: {
+  product: StoreProduct;
+  citationNumber: number;
+  detailsHref: string;
+  locale: StorefrontLocale;
+  onOpen: () => void;
+}) {
+  const [imageFailed, setImageFailed] = useState(!product.image_url);
+  const t = (source: string) => storefrontText(locale, source);
+
+  useEffect(() => {
+    setImageFailed(!product.image_url);
+  }, [product.image_url]);
+
+  return (
+    <Link
+      className="support-product-card"
+      to={detailsHref}
+      state={{ fromStorefrontCatalog: true }}
+      onClick={onOpen}
+      aria-label={`${t("查看商品")}：${product.name}`}
+    >
+      <span className="support-product-image">
+        {product.image_url && !imageFailed ? (
+          <img
+            src={product.image_url}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            onError={() => setImageFailed(true)}
+          />
+        ) : (
+          <ImageSquare weight="duotone" aria-hidden="true" />
+        )}
+      </span>
+      <span className="support-product-copy">
+        <small>
+          [{citationNumber}]
+          {product.product_code ? ` · ${product.product_code}` : ""}
+        </small>
+        <strong dir="auto">{product.name}</strong>
+        <span>{supportProductPrice(product)}</span>
+        <em>
+          {t("查看商品")}
+          <ArrowRight weight="bold" aria-hidden="true" />
+        </em>
+      </span>
+    </Link>
+  );
+}
+
 export function StorefrontSupportWidget({
   tenantSlug,
   storeName,
@@ -62,6 +139,9 @@ export function StorefrontSupportWidget({
   const [hoveredActionSlot, setHoveredActionSlot] = useState<2 | 3 | null>(null);
   const [conversation, setConversation] = useState<PublicSupportConversation>();
   const [streamingMessage, setStreamingMessage] = useState<PublicSupportMessage>();
+  const [supportProducts, setSupportProducts] = useState<
+    Record<string, StoreProduct | null>
+  >({});
   const [token, setToken] = useState(() => storedToken(tenantSlug));
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
@@ -70,6 +150,8 @@ export function StorefrontSupportWidget({
   const messageListRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const widgetRef = useRef<HTMLElement>(null);
+  const requestedProductIdsRef = useRef(new Set<string>());
+  const productScopeRef = useRef("");
   const widget = config ?? {
     enabled: true,
     title: "AI 智能客服",
@@ -81,6 +163,7 @@ export function StorefrontSupportWidget({
     () => (widget.custom_actions || []).filter((item) => item.visible),
     [widget.custom_actions],
   );
+  const supportProductCount = Object.keys(supportProducts).length;
 
   useEffect(() => {
     const next = storedToken(tenantSlug);
@@ -90,6 +173,39 @@ export function StorefrontSupportWidget({
     setActiveActionSlot(null);
     setHoveredActionSlot(null);
   }, [tenantSlug]);
+
+  useEffect(() => {
+    productScopeRef.current = `${tenantSlug}:${locale}`;
+    requestedProductIdsRef.current.clear();
+    setSupportProducts({});
+  }, [locale, tenantSlug]);
+
+  useEffect(() => {
+    if (!open) return;
+    const scope = `${tenantSlug}:${locale}`;
+    const productIds = Array.from(new Set(
+      (conversation?.messages || []).flatMap((message) => (
+        message.sender_type === "AI"
+          ? (message.citations || [])
+            .filter((citation) => citation.source_type === "SKU")
+            .map((citation) => citation.source_entity_id)
+          : []
+      )),
+    ));
+    for (const productId of productIds) {
+      if (requestedProductIdsRef.current.has(productId)) continue;
+      requestedProductIdsRef.current.add(productId);
+      void api.getStoreProduct(tenantSlug, productId, locale)
+        .then((product) => {
+          if (productScopeRef.current !== scope) return;
+          setSupportProducts((current) => ({ ...current, [productId]: product }));
+        })
+        .catch(() => {
+          if (productScopeRef.current !== scope) return;
+          setSupportProducts((current) => ({ ...current, [productId]: null }));
+        });
+    }
+  }, [conversation?.messages, locale, open, tenantSlug]);
 
   const refreshConversation = useCallback(async (quiet = false) => {
     if (!token) return;
@@ -182,7 +298,12 @@ export function StorefrontSupportWidget({
       top: messageListRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [conversation?.messages.length, open, streamingMessage?.body.length]);
+  }, [
+    conversation?.messages.length,
+    open,
+    streamingMessage?.body.length,
+    supportProductCount,
+  ]);
 
   useEffect(() => {
     if (!open && activeActionSlot === null) return;
@@ -296,8 +417,24 @@ export function StorefrontSupportWidget({
                 : message.sender_type === "SYSTEM"
                   ? "is-system"
                   : "is-merchant";
+            const productCitations = (message.citations || []).filter(
+              (citation, index, citations) => (
+                citation.source_type === "SKU"
+                && citations.findIndex((candidate) => (
+                  candidate.source_type === "SKU"
+                  && candidate.source_entity_id === citation.source_entity_id
+                )) === index
+                && supportProducts[citation.source_entity_id] !== null
+              ),
+            );
             return (
-              <div className={`support-message ${senderClass}`} key={message.id}>
+              <div
+                className={
+                  `support-message ${senderClass}`
+                  + (productCitations.length ? " has-product-cards" : "")
+                }
+                key={message.id}
+              >
                 <div className="support-message-content">
                   <span dir="auto">{message.body}</span>
                   {message.sender_type === "AI" && message.citations?.length ? (
@@ -315,6 +452,45 @@ export function StorefrontSupportWidget({
                     </details>
                   ) : null}
                 </div>
+                {productCitations.length ? (
+                  <section
+                    className="storefront-support-products"
+                    aria-label={t("相关商品")}
+                  >
+                    <strong>{t("相关商品")}</strong>
+                    <div>
+                      {productCitations.map((citation) => {
+                        const product = supportProducts[citation.source_entity_id];
+                        if (!product) {
+                          return (
+                            <span
+                              className="support-product-card is-loading"
+                              key={citation.source_entity_id}
+                              aria-hidden="true"
+                            >
+                              <i />
+                              <span><i /><i /><i /></span>
+                            </span>
+                          );
+                        }
+                        return (
+                          <SupportProductCard
+                            key={citation.source_entity_id}
+                            product={product}
+                            citationNumber={citation.citation_number}
+                            detailsHref={
+                              `/${encodeURIComponent(tenantSlug)}/products/`
+                              + encodeURIComponent(product.id)
+                              + storefrontLocaleQuery(locale)
+                            }
+                            locale={locale}
+                            onOpen={() => setOpen(false)}
+                          />
+                        );
+                      })}
+                    </div>
+                  </section>
+                ) : null}
                 <small>
                   {message.sender_type === "VISITOR" ? t("我") : message.sender_type === "AI" ? t("AI 客服") : message.sender_type === "SYSTEM" ? t("系统") : storeName}
                   {" · "}

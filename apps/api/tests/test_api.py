@@ -6089,8 +6089,8 @@ def test_support_product_retrieval_reuses_hybrid_index_and_public_facts(
         assert "采购价" not in product_evidence.excerpt
         assert "_sku2quotation" not in product_evidence.excerpt
         assert '"材质":"橡胶"' in product_evidence.excerpt
-        assert product_evidence.locator["field_policy_version"] == 2
-        assert bundle.diagnostics["customer_product_field_policy_version"] == 2
+        assert product_evidence.locator["field_policy_version"] == 3
+        assert bundle.diagnostics["customer_product_field_policy_version"] == 3
         assert bundle.diagnostics["product"]["engine"] == "HYBRID_PRODUCT_SEARCH"
         assert bundle.diagnostics["product"]["public_eligible_products"] >= 1
     finally:
