@@ -1,0 +1,61 @@
+# Cloudflare is the only public TLS endpoint in the managed-container topology.
+# Trust its visitor-IP header only when the TCP peer is one of Cloudflare's
+# published proxy ranges. Direct origin requests retain their real peer IP.
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
+real_ip_recursive on;
+
+map $http_upgrade $atc_outer_connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name __ATC_DOMAIN__ www.__ATC_DOMAIN__ auth.__ATC_DOMAIN__;
+
+    # The inner Web Nginx enforces the application limit as well. Keeping the
+    # same outer bound avoids buffering oversized uploads in two proxy layers.
+    client_max_body_size 260m;
+    access_log off;
+
+    location / {
+        proxy_pass http://127.0.0.1:__ATC_NGINX_EDGE_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header CF-Connecting-IP $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $atc_outer_connection_upgrade;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

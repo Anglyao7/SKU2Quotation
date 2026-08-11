@@ -31,6 +31,17 @@ for name in "${boolean_values[@]}"; do
   [[ "${!name}" =~ ^(true|false)$ ]] || die "${name} must be true or false"
 done
 
+[[ "${ATC_EDGE_PROXY}" =~ ^(caddy|nginx)$ ]] \
+  || die "ATC_EDGE_PROXY must be caddy or nginx"
+if [[ "${ATC_EDGE_PROXY}" == "nginx" ]]; then
+  [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]] \
+    || die "ATC_EDGE_PROXY=nginx is supported only by compact production"
+  [[ "${ATC_NGINX_EDGE_PORT}" =~ ^[0-9]+$ ]] \
+    || die "ATC_NGINX_EDGE_PORT must be an integer"
+  (( ATC_NGINX_EDGE_PORT >= 1024 && ATC_NGINX_EDGE_PORT <= 65535 )) \
+    || die "ATC_NGINX_EDGE_PORT must be between 1024 and 65535"
+fi
+
 if [[ "${ATC_DEPLOYMENT_PROFILE}" == "standard" ]]; then
   [[ "${ATC_ENABLE_SMTP}" == "true" ]] \
     || die "standard production requires ATC_ENABLE_SMTP=true"

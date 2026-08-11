@@ -8,6 +8,7 @@ ENV_FILE="${ATC_ENV_FILE:-${REPOSITORY_ROOT}/.env.production}"
 STANDARD_COMPOSE_FILE="${PRODUCTION_DIR}/compose.yaml"
 COMPACT_COMPOSE_FILE="${PRODUCTION_DIR}/compose.compact.yaml"
 COMPACT_LEGACY_WWW_COMPOSE_FILE="${PRODUCTION_DIR}/compose.compact.legacy-www.yaml"
+COMPACT_NGINX_EDGE_COMPOSE_FILE="${PRODUCTION_DIR}/compose.compact.nginx-edge.yaml"
 COMPOSE_FILE="${STANDARD_COMPOSE_FILE}"
 DEPLOYMENT_STATE_DIR="${REPOSITORY_ROOT}/.deployments"
 RUNTIME_DIR="${REPOSITORY_ROOT}/.runtime"
@@ -63,6 +64,8 @@ load_release_metadata() {
 
 configure_deployment_profile() {
   ATC_DEPLOYMENT_PROFILE="${ATC_DEPLOYMENT_PROFILE:-standard}"
+  ATC_EDGE_PROXY="${ATC_EDGE_PROXY:-caddy}"
+  ATC_NGINX_EDGE_PORT="${ATC_NGINX_EDGE_PORT:-18080}"
   case "${ATC_DEPLOYMENT_PROFILE}" in
     standard)
       COMPOSE_FILE="${STANDARD_COMPOSE_FILE}"
@@ -79,13 +82,29 @@ configure_deployment_profile() {
       die "ATC_DEPLOYMENT_PROFILE must be standard or compact"
       ;;
   esac
+  case "${ATC_EDGE_PROXY}" in
+    caddy)
+      ;;
+    nginx)
+      [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]] \
+        || die "ATC_EDGE_PROXY=nginx is supported only by compact production"
+      ;;
+    *)
+      die "ATC_EDGE_PROXY must be caddy or nginx"
+      ;;
+  esac
   export ATC_DEPLOYMENT_PROFILE ATC_ENABLE_SMTP ATC_ENABLE_REMOTE_BACKUP
   export ATC_ENABLE_LEGACY_WWW ATC_ENABLE_WORKERS
   export ATC_CONFIRMED_EXPAND_CONTRACT
+  export ATC_EDGE_PROXY ATC_NGINX_EDGE_PORT
 }
 
 compose_file_arguments() {
   COMPOSE_FILE_ARGUMENTS=(--file "${COMPOSE_FILE}")
+  if [[ "${ATC_DEPLOYMENT_PROFILE:-standard}" == "compact" \
+    && "${ATC_EDGE_PROXY:-caddy}" == "nginx" ]]; then
+    COMPOSE_FILE_ARGUMENTS+=(--file "${COMPACT_NGINX_EDGE_COMPOSE_FILE}")
+  fi
   if [[ "${ATC_DEPLOYMENT_PROFILE:-standard}" == "compact" \
     && "${ATC_ENABLE_LEGACY_WWW:-false}" == "true" ]]; then
     COMPOSE_FILE_ARGUMENTS+=(--file "${COMPACT_LEGACY_WWW_COMPOSE_FILE}")
@@ -227,6 +246,8 @@ write_release_metadata() {
     printf 'ATC_IMAGE_DIGEST=%q\n' "${ATC_IMAGE_DIGEST}"
     printf 'ATC_CONFIG_VERSION=%q\n' "${ATC_CONFIG_VERSION}"
     printf 'ATC_DEPLOYMENT_PROFILE=%q\n' "${ATC_DEPLOYMENT_PROFILE:-standard}"
+    printf 'ATC_EDGE_PROXY=%q\n' "${ATC_EDGE_PROXY:-caddy}"
+    printf 'ATC_NGINX_EDGE_PORT=%q\n' "${ATC_NGINX_EDGE_PORT:-18080}"
     printf 'ATC_ENABLE_WORKERS=%q\n' "${ATC_ENABLE_WORKERS:-false}"
   } >"${destination}"
   chmod 600 "${destination}"
