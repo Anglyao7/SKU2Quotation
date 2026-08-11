@@ -22,6 +22,7 @@ boolean_values=(
   ATC_ENABLE_LEGACY_WWW
   ATC_ENABLE_WORKERS
   ATC_CONFIRMED_EXPAND_CONTRACT
+  ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS
 )
 if [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]]; then
   boolean_values+=(ATC_COMPACT_MANAGE_SWAP)
@@ -40,6 +41,11 @@ if [[ "${ATC_EDGE_PROXY}" == "nginx" ]]; then
     || die "ATC_NGINX_EDGE_PORT must be an integer"
   (( ATC_NGINX_EDGE_PORT >= 1024 && ATC_NGINX_EDGE_PORT <= 65535 )) \
     || die "ATC_NGINX_EDGE_PORT must be between 1024 and 65535"
+fi
+if [[ "${ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS}" == "true" ]]; then
+  [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" \
+    && "${ATC_EDGE_PROXY}" == "nginx" ]] \
+    || die "ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS=true requires compact production with ATC_EDGE_PROXY=nginx"
 fi
 
 if [[ "${ATC_DEPLOYMENT_PROFILE}" == "standard" ]]; then

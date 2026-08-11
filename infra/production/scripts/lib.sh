@@ -9,6 +9,7 @@ STANDARD_COMPOSE_FILE="${PRODUCTION_DIR}/compose.yaml"
 COMPACT_COMPOSE_FILE="${PRODUCTION_DIR}/compose.compact.yaml"
 COMPACT_LEGACY_WWW_COMPOSE_FILE="${PRODUCTION_DIR}/compose.compact.legacy-www.yaml"
 COMPACT_NGINX_EDGE_COMPOSE_FILE="${PRODUCTION_DIR}/compose.compact.nginx-edge.yaml"
+COMPACT_NGINX_EDGE_NO_CGROUP_LIMITS_COMPOSE_FILE="${PRODUCTION_DIR}/compose.compact.nginx-edge.no-cgroup-limits.yaml"
 COMPOSE_FILE="${STANDARD_COMPOSE_FILE}"
 DEPLOYMENT_STATE_DIR="${REPOSITORY_ROOT}/.deployments"
 RUNTIME_DIR="${REPOSITORY_ROOT}/.runtime"
@@ -66,6 +67,7 @@ configure_deployment_profile() {
   ATC_DEPLOYMENT_PROFILE="${ATC_DEPLOYMENT_PROFILE:-standard}"
   ATC_EDGE_PROXY="${ATC_EDGE_PROXY:-caddy}"
   ATC_NGINX_EDGE_PORT="${ATC_NGINX_EDGE_PORT:-18080}"
+  ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS="${ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS:-false}"
   case "${ATC_DEPLOYMENT_PROFILE}" in
     standard)
       COMPOSE_FILE="${STANDARD_COMPOSE_FILE}"
@@ -93,10 +95,16 @@ configure_deployment_profile() {
       die "ATC_EDGE_PROXY must be caddy or nginx"
       ;;
   esac
+  if [[ "${ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS}" == "true" ]]; then
+    [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" \
+      && "${ATC_EDGE_PROXY}" == "nginx" ]] \
+      || die "ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS=true requires compact production with the outer Nginx topology"
+  fi
   export ATC_DEPLOYMENT_PROFILE ATC_ENABLE_SMTP ATC_ENABLE_REMOTE_BACKUP
   export ATC_ENABLE_LEGACY_WWW ATC_ENABLE_WORKERS
   export ATC_CONFIRMED_EXPAND_CONTRACT
   export ATC_EDGE_PROXY ATC_NGINX_EDGE_PORT
+  export ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS
 }
 
 compose_file_arguments() {
@@ -104,6 +112,9 @@ compose_file_arguments() {
   if [[ "${ATC_DEPLOYMENT_PROFILE:-standard}" == "compact" \
     && "${ATC_EDGE_PROXY:-caddy}" == "nginx" ]]; then
     COMPOSE_FILE_ARGUMENTS+=(--file "${COMPACT_NGINX_EDGE_COMPOSE_FILE}")
+    if [[ "${ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS:-false}" == "true" ]]; then
+      COMPOSE_FILE_ARGUMENTS+=(--file "${COMPACT_NGINX_EDGE_NO_CGROUP_LIMITS_COMPOSE_FILE}")
+    fi
   fi
   if [[ "${ATC_DEPLOYMENT_PROFILE:-standard}" == "compact" \
     && "${ATC_ENABLE_LEGACY_WWW:-false}" == "true" ]]; then
@@ -248,6 +259,7 @@ write_release_metadata() {
     printf 'ATC_DEPLOYMENT_PROFILE=%q\n' "${ATC_DEPLOYMENT_PROFILE:-standard}"
     printf 'ATC_EDGE_PROXY=%q\n' "${ATC_EDGE_PROXY:-caddy}"
     printf 'ATC_NGINX_EDGE_PORT=%q\n' "${ATC_NGINX_EDGE_PORT:-18080}"
+    printf 'ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS=%q\n' "${ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS:-false}"
     printf 'ATC_ENABLE_WORKERS=%q\n' "${ATC_ENABLE_WORKERS:-false}"
   } >"${destination}"
   chmod 600 "${destination}"

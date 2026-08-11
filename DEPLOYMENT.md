@@ -114,6 +114,12 @@ ATC_NGINX_EDGE_PORT=18080
 
 该端口只绑定 `127.0.0.1`，不得在安全组或容器端口映射中公开。
 
+若服务商交付的嵌套 Docker 因 cgroup v2 处于 `domain threaded` 而无法
+应用资源限制，可在运营者明确接受共享宿主资源竞争风险后临时设置
+`ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS=true`。该开关仅移除内层 Compose
+的 cgroup 限制并为 Keycloak 设置固定堆上限；它不能替代外层容器的真实
+CPU、内存、进程和磁盘配额。服务商修复委派后必须恢复为 `false`。
+
 `KEYCLOAK_INITIAL_USER_PASSWORD` 不能使用纯 hex：它必须至少 16 位并同时
 包含大写字母、小写字母、数字和特殊字符。可用下列命令生成后，以单引号
 包裹写入环境文件：

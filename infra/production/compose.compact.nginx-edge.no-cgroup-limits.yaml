@@ -1,0 +1,27 @@
+# Temporary compatibility layer for a provider-managed nested Docker daemon
+# without domain cgroup v2 delegation. The outer container must provide the
+# real CPU/memory quota. Remove this override as soon as delegation is fixed.
+services:
+  caddy:
+    deploy: !override {}
+
+  web:
+    deploy: !override {}
+
+  api:
+    deploy: !override {}
+
+  postgres:
+    deploy: !override {}
+
+  redis:
+    deploy: !override {}
+
+  keycloak-postgres:
+    deploy: !override {}
+
+  keycloak:
+    environment:
+      # Percentage-based sizing would see the unrestricted physical host.
+      JAVA_OPTS_KC_HEAP: -Xms256m -Xmx640m
+    deploy: !override {}

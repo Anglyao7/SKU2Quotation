@@ -15,6 +15,9 @@ load_production_env
   || die "managed-container deployment requires ATC_DEPLOYMENT_PROFILE=compact"
 [[ "${ATC_EDGE_PROXY}" == "nginx" ]] \
   || die "managed-container deployment requires ATC_EDGE_PROXY=nginx"
+if [[ "${ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS}" == "true" ]]; then
+  info "WARNING: inner cgroup resource limits are disabled; the provider-managed outer container must enforce the real quota"
+fi
 
 "${SCRIPT_DIR}/scripts/validate_env.sh"
 "${SCRIPT_DIR}/configure-nginx-edge.sh"
