@@ -180,6 +180,36 @@ export interface ImportJob {
   resultDetails: ImportResultDetails;
 }
 
+export interface CatalogImportBatchCategory {
+  id: string;
+  name: string;
+  skuCount: number;
+}
+
+export interface CatalogImportBatch {
+  id: string;
+  status: "ACTIVE" | "PARTIALLY_REVOKED" | "REVOKED";
+  expectedFileCount: number;
+  fileCount: number;
+  remainingSkuCount: number;
+  createdAt: string;
+  jobs: ImportJob[];
+  categories: CatalogImportBatchCategory[];
+}
+
+export interface CatalogImportRollbackResult {
+  batchId: string;
+  status: CatalogImportBatch["status"];
+  deletedSkuCount: number;
+  archivedProductCount: number;
+  removedImageCount: number;
+  deletedStorageImageCount: number;
+  preservedExternalImageCount: number;
+  retainedSharedImageCount: number;
+  storageDeleteFailures: number;
+  remainingSkuCount: number;
+}
+
 export interface FileDetection {
   filename: string;
   detected_type: string;

@@ -4054,7 +4054,14 @@ def process_product_template_import(
         _store_new_embedded_images(
             source_path,
             specs=embedded_specs,
-            existing_object_keys=set(images),
+            # A withdrawn batch leaves soft-deleted image rows for audit. The
+            # corresponding R2 objects have already been removed, so only
+            # active rows can suppress a fresh upload on a later re-import.
+            existing_object_keys={
+                object_key
+                for object_key, image in images.items()
+                if image.deleted_at is None
+            },
             progress_callback=lambda processed, total: _record_import_progress(
                 job_id=job.id,
                 tenant_id=tenant_id,

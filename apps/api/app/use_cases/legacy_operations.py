@@ -13,7 +13,7 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, set_request_context
@@ -37,6 +37,7 @@ from ..repositories.legacy_repository import (
 )
 from ..repositories.file_security_repository import add_file_security_records
 from ..adapters.object_storage import get_object_storage
+from ..catalog_operation_models import CatalogImportBatchRow
 from ..file_security_models import MediaObjectRow, WorkerJobRow
 from ..db_models import ImportJobRow, SourceFileRow
 from ..model_mixins import utcnow
@@ -126,6 +127,7 @@ async def create_import(
     user_id: UUID,
     permissions: frozenset[str],
     defer_inline_worker: bool = False,
+    batch_id: UUID | None = None,
 ) -> SupplierFileImportResponse:
     _require_permission(permissions, "product.import")
     original_filename = Path(upload.filename or "unnamed").name
@@ -136,6 +138,43 @@ async def create_import(
         # importer from escalating into product editing or catalog publishing.
         _require_permission(permissions, "product.edit")
         _require_permission(permissions, "catalog.publish")
+        if batch_id is not None:
+            batch = session.scalar(
+                select(CatalogImportBatchRow).where(
+                    CatalogImportBatchRow.tenant_id == tenant_id,
+                    CatalogImportBatchRow.id == batch_id,
+                    CatalogImportBatchRow.deleted_at.is_(None),
+                )
+            )
+            if batch is None:
+                raise ApplicationError(
+                    "IMPORT_BATCH_NOT_FOUND",
+                    "导入批次不存在，请重新开始批量导入。",
+                    kind="not_found",
+                )
+            if batch.status == "REVOKED":
+                raise ApplicationError(
+                    "IMPORT_BATCH_REVOKED",
+                    "已撤回的批次不能继续上传文件。",
+                    kind="conflict",
+                )
+            uploaded_files = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(ImportJobRow)
+                    .where(
+                        ImportJobRow.tenant_id == tenant_id,
+                        ImportJobRow.batch_id == batch_id,
+                    )
+                )
+                or 0
+            )
+            if uploaded_files >= batch.expected_file_count:
+                raise ApplicationError(
+                    "IMPORT_BATCH_FILE_LIMIT_REACHED",
+                    "该批次文件已经全部提交，请新建批次后继续上传。",
+                    kind="conflict",
+                )
     if (
         normalized_source_type == "PRODUCT_TEMPLATE"
         and Path(original_filename).suffix.lower() != ".xlsx"
@@ -221,6 +260,7 @@ async def create_import(
         id=job_id,
         tenant_id=tenant_id,
         source_file_id=source_id,
+        batch_id=batch_id,
         supplier_id=supplier.id if supplier else None,
         supplier_name=(
             supplier.name

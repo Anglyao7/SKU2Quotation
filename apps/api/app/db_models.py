@@ -145,6 +145,13 @@ class ImportJobRow(AuditTimestampMixin, Base):
             name="fk_import_jobs_tenant_supplier",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "batch_id"],
+            ["catalog_import_batches.tenant_id", "catalog_import_batches.id"],
+            name="fk_import_jobs_tenant_batch",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_import_jobs_tenant_batch", "tenant_id", "batch_id"),
         Index("ix_import_jobs_created_at", "created_at"),
     )
 
@@ -153,6 +160,7 @@ class ImportJobRow(AuditTimestampMixin, Base):
         ForeignKey("tenants.id", ondelete="CASCADE"), default=DEFAULT_TENANT_ID, nullable=False
     )
     source_file_id: Mapped[str] = mapped_column(String(40), index=True)
+    batch_id: Mapped[UUID | None] = mapped_column(nullable=True)
     supplier_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     supplier_name: Mapped[str] = mapped_column(String(200), default="待选择供应商")
     source_type: Mapped[str] = mapped_column(String(40), default="UNKNOWN")
@@ -306,7 +314,10 @@ from .catalog_translation_models import (  # noqa: E402,F401
     CatalogTranslationJobRow,
 )
 
-from .catalog_operation_models import CatalogDeleteJobRow  # noqa: E402,F401
+from .catalog_operation_models import (  # noqa: E402,F401
+    CatalogDeleteJobRow,
+    CatalogImportBatchRow,
+)
 
 from .storefront_analytics_models import (  # noqa: E402,F401
     StorefrontProductViewDailyRow,

@@ -18,6 +18,8 @@ import type {
   FileDetection,
   HybridSearchResponse,
   ImportJob,
+  CatalogImportBatch,
+  CatalogImportRollbackResult,
   InquiryMatch,
   InquiryRecord,
   InventoryDocument,
@@ -1069,6 +1071,7 @@ async function uploadProductTemplate(
         ));
         return;
       }
+      getResponseCache.clear();
       onUploadProgress?.(100);
       resolve(payload as ApiImportJob);
     };
@@ -1079,12 +1082,87 @@ async function uploadProductTemplate(
 export async function createProductTemplateImport(
   file: File,
   onUploadProgress?: (percent: number) => void,
+  batchId?: string,
 ) {
   const body = new FormData();
   body.append("file", file);
   body.append("source_type", "PRODUCT_TEMPLATE");
   body.append("defer_processing", "true");
+  if (batchId) body.append("batch_id", batchId);
   return mapImport(await uploadProductTemplate(body, onUploadProgress, true));
+}
+
+interface ApiCatalogImportBatch {
+  id: string;
+  status: CatalogImportBatch["status"];
+  expected_file_count: number;
+  file_count: number;
+  remaining_sku_count: number;
+  created_at: string;
+  jobs: ApiImportJob[];
+  categories: Array<{ id: string; name: string; sku_count: number }>;
+}
+
+function mapCatalogImportBatch(row: ApiCatalogImportBatch): CatalogImportBatch {
+  return {
+    id: row.id,
+    status: row.status,
+    expectedFileCount: row.expected_file_count,
+    fileCount: row.file_count,
+    remainingSkuCount: row.remaining_sku_count,
+    createdAt: row.created_at,
+    jobs: row.jobs.map(mapImport),
+    categories: row.categories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      skuCount: category.sku_count,
+    })),
+  };
+}
+
+export async function createCatalogImportBatch(expectedFileCount: number) {
+  const row = await request<ApiCatalogImportBatch>("/import-batches", {
+    method: "POST",
+    body: JSON.stringify({ expected_file_count: expectedFileCount }),
+  });
+  return mapCatalogImportBatch(row);
+}
+
+export async function listCatalogImportBatches(limit = 30) {
+  const rows = await request<ApiCatalogImportBatch[]>(`/import-batches?limit=${limit}`, {
+    cache: "no-store",
+  });
+  return rows.map(mapCatalogImportBatch);
+}
+
+export async function rollbackCatalogImportBatch(batchId: string, categoryId?: string) {
+  const row = await request<{
+    batch_id: string;
+    status: CatalogImportBatch["status"];
+    deleted_sku_count: number;
+    archived_product_count: number;
+    removed_image_count: number;
+    deleted_storage_image_count: number;
+    preserved_external_image_count: number;
+    retained_shared_image_count: number;
+    storage_delete_failures: number;
+    remaining_sku_count: number;
+  }>(`/import-batches/${encodeURIComponent(batchId)}/rollback`, {
+    method: "POST",
+    body: JSON.stringify({ category_id: categoryId || null }),
+  });
+  return {
+    batchId: row.batch_id,
+    status: row.status,
+    deletedSkuCount: row.deleted_sku_count,
+    archivedProductCount: row.archived_product_count,
+    removedImageCount: row.removed_image_count,
+    deletedStorageImageCount: row.deleted_storage_image_count,
+    preservedExternalImageCount: row.preserved_external_image_count,
+    retainedSharedImageCount: row.retained_shared_image_count,
+    storageDeleteFailures: row.storage_delete_failures,
+    remainingSkuCount: row.remaining_sku_count,
+  } satisfies CatalogImportRollbackResult;
 }
 
 interface ApiOffer {

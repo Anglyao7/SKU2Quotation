@@ -92,3 +92,53 @@ class CatalogDeleteJobRow(AuditTimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class CatalogImportBatchRow(AuditTimestampMixin, Base):
+    """One user-selected group of product workbooks imported together."""
+
+    __tablename__ = "catalog_import_batches"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ACTIVE', 'PARTIALLY_REVOKED', 'REVOKED')",
+            name="status_allowed",
+        ),
+        CheckConstraint(
+            "expected_file_count > 0 AND expected_file_count <= 100",
+            name="expected_file_count_valid",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_catalog_import_batches_tenant_identity",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_catalog_import_batches_tenant_creator",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_catalog_import_batches_tenant_created",
+            "tenant_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by_membership_id: Mapped[UUID] = mapped_column(nullable=False)
+    created_by_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    expected_file_count: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(30), default="ACTIVE", nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

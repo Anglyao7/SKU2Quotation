@@ -8258,6 +8258,226 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
     assert empty_listing.json()["total"] == 0
 
 
+def test_import_batch_rollback_is_latest_job_scoped_and_cleans_owned_images() -> None:
+    suffix = uuid4().hex[:10].upper()
+    created = client.post(
+        "/api/v1/import-batches",
+        json={"expected_file_count": 1},
+    )
+    assert created.status_code == 201, created.text
+    batch_id = UUID(created.json()["id"])
+    job_id = f"JOB-BATCH-{suffix}"
+    source_id = f"SRC-BATCH-{suffix}"
+    category_id = uuid4()
+    orphan_product_id = uuid4()
+    shared_product_id = uuid4()
+    orphan_sku_id = uuid4()
+    shared_batch_sku_id = uuid4()
+    shared_later_sku_id = uuid4()
+    r2_key = f"tenants/{DEFAULT_TENANT_ID}/approved-media/product-template/{suffix}/main.png"
+    shared_key = f"tenants/{DEFAULT_TENANT_ID}/approved-media/product-template/{suffix}/shared.png"
+    external_url = f"https://images.example.test/{suffix}.png"
+    storage = get_object_storage()
+    image_source = TEST_RUNTIME / f"{suffix}.png"
+    image_source.write_bytes(b"batch-owned-image")
+    storage.put_file(image_source, object_key=r2_key, content_type="image/png")
+    storage.put_file(image_source, object_key=shared_key, content_type="image/png")
+
+    with SessionLocal() as session:
+        session.add(
+            SourceFileRow(
+                id=source_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                media_object_id=None,
+                security_status="LEGACY_ACCEPTED",
+                original_filename=f"batch-{suffix}.xlsx",
+                stored_filename=f"batch-{suffix}.xlsx",
+                local_path="",
+                sha256="a" * 64,
+                byte_size=100,
+                extension=".xlsx",
+                detected_type="OOXML / XLSX",
+                extension_matches=True,
+                parser="openpyxl",
+            )
+        )
+        session.add(
+            ImportJobRow(
+                id=job_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                source_file_id=source_id,
+                batch_id=batch_id,
+                supplier_name="商品模版",
+                source_type="PRODUCT_TEMPLATE",
+                status="published",
+                progress=100,
+                products_count=2,
+            )
+        )
+        session.add(
+            ProductCategoryRow(
+                id=category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                code=f"BATCH-ROLLBACK-{suffix}",
+                name=f"Batch Rollback {suffix}",
+                path=f"Batch Rollback {suffix}",
+                status="ACTIVE",
+            )
+        )
+        session.add_all(
+            [
+                ProductRow(
+                    id=orphan_product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"ORPHAN-{suffix}",
+                    name=f"Orphan {suffix}",
+                    category_id=category_id,
+                    status="ACTIVE",
+                ),
+                ProductRow(
+                    id=shared_product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"SHARED-{suffix}",
+                    name=f"Shared {suffix}",
+                    category_id=category_id,
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=orphan_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=orphan_product_id,
+                    latest_import_job_id=job_id,
+                    sku_code=f"ORPHAN-SKU-{suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=shared_batch_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=shared_product_id,
+                    latest_import_job_id=job_id,
+                    sku_code=f"SHARED-BATCH-SKU-{suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=shared_later_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=shared_product_id,
+                    sku_code=f"SHARED-LATER-SKU-{suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                ProductImageRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=orphan_product_id,
+                    storage_provider="S3",
+                    bucket="product-template",
+                    object_key=r2_key,
+                    content_type="image/png",
+                    byte_size=17,
+                    sha256="b" * 64,
+                    image_role="MAIN",
+                    approval_status="APPROVED",
+                ),
+                ProductImageRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=orphan_product_id,
+                    storage_provider="EXTERNAL",
+                    bucket="product-template",
+                    object_key=external_url,
+                    content_type="image/png",
+                    byte_size=0,
+                    sha256="c" * 64,
+                    image_role="GALLERY",
+                    sort_order=1,
+                    approval_status="APPROVED",
+                ),
+                ProductImageRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=shared_product_id,
+                    storage_provider="S3",
+                    bucket="product-template",
+                    object_key=shared_key,
+                    content_type="image/png",
+                    byte_size=17,
+                    sha256="d" * 64,
+                    image_role="MAIN",
+                    approval_status="APPROVED",
+                ),
+            ]
+        )
+        session.commit()
+
+    listed = client.get("/api/v1/import-batches")
+    assert listed.status_code == 200, listed.text
+    listed_batch = next(row for row in listed.json() if row["id"] == str(batch_id))
+    assert listed_batch["file_count"] == 1
+    assert listed_batch["remaining_sku_count"] == 2
+    assert listed_batch["jobs"][0]["filename"] == f"batch-{suffix}.xlsx"
+    assert listed_batch["categories"] == [
+        {
+            "id": str(category_id),
+            "name": f"Batch Rollback {suffix}",
+            "sku_count": 2,
+        }
+    ]
+
+    rolled_back = client.post(
+        f"/api/v1/import-batches/{batch_id}/rollback",
+        json={"category_id": None},
+    )
+    assert rolled_back.status_code == 200, rolled_back.text
+    payload = rolled_back.json()
+    assert payload["status"] == "REVOKED"
+    assert payload["deleted_sku_count"] == 2
+    assert payload["archived_product_count"] == 1
+    assert payload["deleted_storage_image_count"] == 1
+    assert payload["preserved_external_image_count"] == 1
+    assert payload["retained_shared_image_count"] == 1
+    assert payload["remaining_sku_count"] == 0
+    assert not storage.exists(r2_key)
+    assert storage.exists(shared_key)
+
+    with SessionLocal() as session:
+        orphan_sku = session.scalar(
+            select(SkuRow)
+            .where(SkuRow.id == orphan_sku_id)
+            .execution_options(include_deleted=True)
+        )
+        shared_batch_sku = session.scalar(
+            select(SkuRow)
+            .where(SkuRow.id == shared_batch_sku_id)
+            .execution_options(include_deleted=True)
+        )
+        shared_later_sku = session.get(SkuRow, shared_later_sku_id)
+        orphan_product = session.get(ProductRow, orphan_product_id)
+        shared_product = session.get(ProductRow, shared_product_id)
+        images = session.scalars(
+            select(ProductImageRow)
+            .where(ProductImageRow.object_key.in_([r2_key, external_url, shared_key]))
+            .execution_options(include_deleted=True)
+        ).all()
+        images_by_key = {image.object_key: image for image in images}
+        assert orphan_sku is not None and orphan_sku.deleted_at is not None
+        assert shared_batch_sku is not None and shared_batch_sku.deleted_at is not None
+        assert shared_later_sku is not None and shared_later_sku.deleted_at is None
+        assert orphan_product is not None and orphan_product.status == "ARCHIVED"
+        assert shared_product is not None and shared_product.status == "ACTIVE"
+        assert images_by_key[r2_key].deleted_at is not None
+        assert images_by_key[external_url].deleted_at is not None
+        assert images_by_key[shared_key].deleted_at is None
+
+
 def test_batch_merchandising_updates_category_pin_status_and_storefront_order() -> None:
     suffix = uuid4().hex[:8].upper()
     source_category_id = uuid4()
@@ -16321,7 +16541,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260812_0079"
+        ).scalar() == "20260812_0080"
     upgraded_engine.dispose()
     command.check(config)
 
