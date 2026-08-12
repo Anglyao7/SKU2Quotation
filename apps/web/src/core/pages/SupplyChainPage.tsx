@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Dialog,
+  IconButton,
   Select,
   Text,
   TextArea,
@@ -21,6 +22,7 @@ import {
   Plus,
   Trash,
   User,
+  X,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
@@ -361,8 +363,23 @@ export function SupplyChainPage() {
         if (!saving) setDialogOpen(open);
       }}>
         <Dialog.Content className="supply-chain-dialog">
-          <Dialog.Title>{t(selected ? "编辑供应链" : "新增供应链")}</Dialog.Title>
-          <form onSubmit={(event) => void submit(event)}>
+          <div className="supply-chain-dialog-header">
+            <Dialog.Title trim="normal" mb="0">
+              {t(selected ? "编辑供应链" : "新增供应链")}
+            </Dialog.Title>
+            <Dialog.Close>
+              <IconButton
+                type="button"
+                variant="ghost"
+                color="gray"
+                disabled={saving}
+                aria-label={t("关闭")}
+              >
+                <X />
+              </IconButton>
+            </Dialog.Close>
+          </div>
+          <form className="supply-chain-dialog-form" onSubmit={(event) => void submit(event)}>
             <div className="supply-chain-form-scroll">
               <section className="supply-chain-form-section">
                 <Text size="2" weight="bold">{t("基本资料")}</Text>

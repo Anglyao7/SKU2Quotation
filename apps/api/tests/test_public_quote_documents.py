@@ -79,6 +79,7 @@ def _document(
         total_amount=Decimal("100.00"),
         valid_until=now + timedelta(days=7),
         created_at=now,
+        updated_at=now,
         content_hash="a" * 64,
         items=[item],
     )

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from typing import cast
+from uuid import UUID
+
 from sqlalchemy.orm import Session
 
 from ..auth_schemas import AuthContext, AuthUser, MeResponse, MembershipSummary
 from ..domain.errors import ApplicationError
+from ..identity_models import TenantSubscriptionRow
 from ..localization import normalize_ui_locale
 from ..repositories.identity_repository import get_membership, get_tenant
 from ..services.auth.dependencies import RequestContext
 from ..tenant_modules import merchant_identity_is_platform_admin
+from ..tenant_subscriptions import TenantSubscriptionTier
 
 
 def _masked_email(email: str | None) -> str | None:
@@ -15,6 +20,17 @@ def _masked_email(email: str | None) -> str | None:
         return None
     local, domain = email.split("@", 1)
     return f"{local[:1]}***@{domain}"
+
+
+def get_tenant_subscription_tier(
+    session: Session,
+    *,
+    tenant_id: UUID,
+) -> TenantSubscriptionTier:
+    subscription = session.get(TenantSubscriptionRow, tenant_id)
+    if subscription is None:
+        return "TRIAL"
+    return cast(TenantSubscriptionTier, subscription.subscription_tier)
 
 
 def get_current_user(session: Session, *, context: RequestContext) -> MeResponse:
@@ -55,6 +71,10 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
                 else "dashboard"
             ),
             account_scope=membership.account_scope,
+            subscription_tier=get_tenant_subscription_tier(
+                session,
+                tenant_id=tenant.id,
+            ),
         ),
         memberships=[
             MembershipSummary(

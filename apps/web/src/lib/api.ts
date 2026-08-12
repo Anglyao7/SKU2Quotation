@@ -22,12 +22,14 @@ import type {
   Storefront,
   StorefrontCategoryOption,
   StorefrontLocale,
+  StorefrontVisitorQuote,
   Tenant,
   TenantAccessPayload,
   TenantModuleCode,
   TenantPayload,
   TenantSubscriptionPayload,
 } from "../types";
+import { ensureStorefrontVisitorToken } from "./storefrontVisitor";
 import {
   clearCoreAuthSession,
   ensureFreshCoreAccessToken,
@@ -549,7 +551,11 @@ async function download(
 export const api = {
   getStore: async (slug: string, locale?: StorefrontLocale) => {
     const languagePack = await storefrontLanguagePack(slug, locale);
-    const path = storePath(slug);
+    // Always ask the server for the selected locale. A language package is an
+    // optimization, not a prerequisite: without one the API can still return
+    // live translations or source-text fallbacks while keeping the selected
+    // locale and language menu intact.
+    const path = storePath(slug, locale);
     const cachePath = languagePack
       ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
       : path;
@@ -676,7 +682,20 @@ export const api = {
     normalizeQuote(await request<Quote>(`/api/store/${encodeURIComponent(slug)}/quotes`, {
       method: "POST",
       body: JSON.stringify(payload),
+      headers: {
+        "X-Storefront-Visitor-Token": ensureStorefrontVisitorToken(slug),
+      },
     }, Boolean(getCoreAccessToken()))),
+  listStorefrontVisitorQuotes: (slug: string) =>
+    request<StorefrontVisitorQuote[]>(
+      `/api/store/${encodeURIComponent(slug)}/visitor/quotes`,
+      {
+        cache: "no-store",
+        headers: {
+          "X-Storefront-Visitor-Token": ensureStorefrontVisitorToken(slug),
+        },
+      },
+    ),
   downloadStoreQuote: (quoteId: string, type: "pdf" | "xlsx", token?: string | null) =>
     download(
       `/api/quotes/${encodeURIComponent(quoteId)}/${type}`,

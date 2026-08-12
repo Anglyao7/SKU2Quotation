@@ -97,6 +97,43 @@ FIELD_LABELS = {
     "description": "产品描述",
 }
 
+SKU_PACKING_QUANTITY_KEYS = (
+    "装箱数",
+    "一箱个数",
+    "packing_quantity",
+    "units_per_carton",
+)
+
+
+def _packing_quantity(option_values: dict[str, Any] | None) -> str | None:
+    for key in SKU_PACKING_QUANTITY_KEYS:
+        value = (option_values or {}).get(key)
+        if value not in (None, ""):
+            return str(value).strip() or None
+    return None
+
+
+def _with_packing_quantity(
+    option_values: dict[str, Any],
+    packing_quantity: Decimal | None,
+    *,
+    preserve_existing_when_unset: bool = False,
+) -> dict[str, Any]:
+    values = dict(option_values)
+    if packing_quantity is None and preserve_existing_when_unset:
+        existing = _packing_quantity(values)
+        if existing is None:
+            return values
+        for key in SKU_PACKING_QUANTITY_KEYS:
+            values.pop(key, None)
+        values["装箱数"] = existing
+        return values
+    for key in SKU_PACKING_QUANTITY_KEYS:
+        values.pop(key, None)
+    if packing_quantity is not None:
+        values["装箱数"] = format(packing_quantity, "f")
+    return values
+
 MAX_PRODUCT_IMAGE_BYTES = max(
     1,
     int(os.getenv("PRODUCT_IMAGE_MAX_BYTES", str(20 * 1024 * 1024))),
@@ -641,6 +678,7 @@ def list_skus(
                 ),
                 default_moq=row.sku.default_moq,
                 moq_unit=row.sku.moq_unit,
+                packing_quantity=_packing_quantity(row.sku.option_values),
                 public_price=offer.unit_price if offer else None,
                 public_currency=offer.currency if offer else None,
                 public_offer_status=offer.publication_status if offer else None,
@@ -1169,7 +1207,7 @@ def create_manual_product(
         product_id=product.id,
         sku_code=sku_code,
         name=request.sku_name or request.name,
-        option_values={},
+        option_values=_with_packing_quantity({}, request.packing_quantity),
         barcode=request.barcode,
         default_moq=request.default_moq,
         moq_unit=request.moq_unit,
@@ -1252,6 +1290,7 @@ def create_manual_product(
                     "barcode": sku.barcode,
                     "default_moq": request_snapshot["default_moq"],
                     "moq_unit": sku.moq_unit,
+                    "packing_quantity": request_snapshot["packing_quantity"],
                     "weight": request_snapshot["weight"],
                     "weight_unit": sku.weight_unit,
                     "status": sku.status,
@@ -1317,7 +1356,14 @@ def create_skus(
                 f"SKU code already exists: {item.sku_code}",
                 kind="conflict",
             )
-        invalid_keys = set(item.option_values) - variant_keys
+        # Older clients stored carton quantity alongside variant attributes.
+        # It is operational SKU metadata rather than a category-owned variant,
+        # so accept the known aliases here and canonicalize them below.
+        invalid_keys = (
+            set(item.option_values)
+            - variant_keys
+            - set(SKU_PACKING_QUANTITY_KEYS)
+        )
         if invalid_keys:
             raise ApplicationError(
                 "SKU_VARIANT_ATTRIBUTE_INVALID",
@@ -1336,7 +1382,11 @@ def create_skus(
             product_id=product_id,
             sku_code=item.sku_code,
             name=item.name,
-            option_values=item.option_values,
+            option_values=_with_packing_quantity(
+                item.option_values,
+                item.packing_quantity,
+                preserve_existing_when_unset=True,
+            ),
             barcode=item.barcode,
             default_moq=item.default_moq,
             moq_unit=item.moq_unit,
@@ -1388,7 +1438,11 @@ def update_sku(
             kind="conflict",
         )
     before = _sku_response(row).model_dump(mode="json")
-    for field, value in request.model_dump(exclude={"expected_version"}, exclude_unset=True).items():
+    changes = request.model_dump(exclude={"expected_version"}, exclude_unset=True)
+    packing_quantity_supplied = "packing_quantity" in changes
+    packing_quantity = changes.pop("packing_quantity", None)
+    option_values_supplied = "option_values" in changes
+    for field, value in changes.items():
         if field == "option_values" and value is not None:
             # Template ownership is server-managed metadata. Users may edit
             # visible variant values, but cannot remove or forge the marker
@@ -1404,6 +1458,17 @@ def update_sku(
                     editable_values.pop("备注", None)
             value = editable_values
         setattr(row, field, value)
+    if packing_quantity_supplied:
+        row.option_values = _with_packing_quantity(
+            row.option_values,
+            packing_quantity,
+        )
+    elif option_values_supplied:
+        row.option_values = _with_packing_quantity(
+            row.option_values,
+            None,
+            preserve_existing_when_unset=True,
+        )
     row.version += 1
     row.updated_by_user_id = user_id
     product = repository.get_product_row(

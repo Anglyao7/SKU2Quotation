@@ -200,7 +200,7 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
     __tablename__ = "public_quote_drafts"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('PENDING_CONFIRMATION', 'CONFIRMED', 'CANCELLED', 'EXPIRED')",
+            "status IN ('PENDING_CONFIRMATION', 'CONFIRMED', 'COMPLETED', 'CANCELLED', 'EXPIRED')",
             name="status_allowed",
         ),
         CheckConstraint("subtotal_amount >= 0", name="subtotal_nonnegative"),
@@ -232,6 +232,12 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
             "submitted_by_membership_id",
             "created_at",
         ),
+        Index(
+            "ix_public_quote_drafts_tenant_visitor_updated",
+            "tenant_id",
+            "visitor_token_hash",
+            "updated_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -243,6 +249,11 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
         String(30), default="PENDING_CONFIRMATION", nullable=False
     )
     submitted_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    visitor_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    visitor_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     customer_name: Mapped[str] = mapped_column(String(160), nullable=False)
     customer_company: Mapped[str | None] = mapped_column(String(200), nullable=True)
     customer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)

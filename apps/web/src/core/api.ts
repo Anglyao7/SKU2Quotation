@@ -249,6 +249,7 @@ interface ApiAuthTokenData {
     default_currency?: string | null;
     default_workspace?: string | null;
     account_scope?: "STAFF" | "CUSTOMER_SUBACCOUNT" | null;
+    subscription_tier?: "TRIAL" | "STANDARD" | "SILVER" | "ELITE" | null;
   };
   memberships?: ApiMembershipSummary[];
   permission_version?: number | null;
@@ -286,6 +287,7 @@ function mapAuthData(row: ApiAuthTokenData): AuthTokenData {
       defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
       accountScope: defined(row.context.account_scope),
+      subscriptionTier: defined(row.context.subscription_tier),
     },
     memberships: Array.isArray(row.memberships)
       ? row.memberships.map(mapMembership)
@@ -590,6 +592,7 @@ function mapCurrentUser(row: ApiCurrentUserResponse): CurrentUser {
       defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
       accountScope: defined(row.context.account_scope),
+      subscriptionTier: defined(row.context.subscription_tier),
     },
     memberships: row.memberships.map(mapMembership),
   };
@@ -1148,6 +1151,9 @@ interface ApiSkuListItem {
     primary_supplier_name?: string | null;
     names: string[];
   };
+  default_moq?: number | string | null;
+  moq_unit?: string | null;
+  packing_quantity?: string | null;
   public_price?: number | string | null;
   public_currency?: string | null;
   public_offer_status?: SkuListItem["publicOfferStatus"] | null;
@@ -1251,6 +1257,9 @@ function mapSkuListItem(row: ApiSkuListItem): SkuListItem {
       primarySupplierName: defined(row.supplier_summary.primary_supplier_name),
       names: row.supplier_summary.names ?? [],
     },
+    defaultMoq: row.default_moq == null ? undefined : Number(row.default_moq),
+    moqUnit: defined(row.moq_unit),
+    packingQuantity: defined(row.packing_quantity),
     publicPrice: row.public_price == null ? undefined : Number(row.public_price),
     publicCurrency: defined(row.public_currency),
     publicOfferStatus: defined(row.public_offer_status),
@@ -2083,6 +2092,7 @@ export async function createManualProduct(
       barcode: input.barcode,
       default_moq: input.defaultMoq,
       moq_unit: input.moqUnit,
+      packing_quantity: input.packingQuantity,
       weight: input.weight,
       weight_unit: input.weightUnit,
       unit_price: input.unitPrice,
@@ -2095,18 +2105,56 @@ export async function createManualProduct(
   return mapProductDetail(row);
 }
 
-export async function createSkus(productId: string, items: Array<{ skuCode: string; name?: string; optionValues: Record<string, string>; status?: ProductSku["status"] }>) {
+export async function createSkus(productId: string, items: Array<{
+  skuCode: string;
+  name?: string;
+  optionValues: Record<string, string>;
+  defaultMoq?: number;
+  moqUnit?: string;
+  packingQuantity?: number;
+  status?: ProductSku["status"];
+}>) {
   const rows = await request<ApiSku[]>(`/products/${encodeURIComponent(productId)}/skus`, {
     method: "POST",
-    body: JSON.stringify({ items: items.map((item) => ({ sku_code: item.skuCode, name: item.name, option_values: item.optionValues, status: item.status ?? "DRAFT" })) }),
+    body: JSON.stringify({ items: items.map((item) => ({
+      sku_code: item.skuCode,
+      name: item.name,
+      option_values: item.optionValues,
+      default_moq: item.defaultMoq,
+      moq_unit: item.moqUnit,
+      packing_quantity: item.packingQuantity,
+      status: item.status ?? "DRAFT",
+    })) }),
   });
   return rows.map(mapSku);
 }
 
-export async function updateSku(skuId: string, input: Partial<Omit<ProductSku, "id" | "productId" | "skuCode" | "version" | "updatedAt">> & { expectedVersion: number }) {
+export async function updateSku(skuId: string, input: {
+  expectedVersion: number;
+  name?: string | null;
+  optionValues?: Record<string, string | number | boolean>;
+  barcode?: string | null;
+  defaultMoq?: number | null;
+  moqUnit?: string | null;
+  packingQuantity?: number | null;
+  weight?: number | null;
+  weightUnit?: string | null;
+  status?: ProductSku["status"];
+}) {
   return mapSku(await request<ApiSku>(`/skus/${encodeURIComponent(skuId)}`, {
     method: "PATCH",
-    body: JSON.stringify({ expected_version: input.expectedVersion, name: input.name, option_values: input.optionValues, barcode: input.barcode, weight: input.weight, weight_unit: input.weightUnit, status: input.status }),
+    body: JSON.stringify({
+      expected_version: input.expectedVersion,
+      name: input.name,
+      option_values: input.optionValues,
+      barcode: input.barcode,
+      default_moq: input.defaultMoq,
+      moq_unit: input.moqUnit,
+      packing_quantity: input.packingQuantity,
+      weight: input.weight,
+      weight_unit: input.weightUnit,
+      status: input.status,
+    }),
   }));
 }
 
@@ -4117,8 +4165,8 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
 }
 
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
-interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
+interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
 
 function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
   return {
@@ -4137,6 +4185,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     total: Number(row.total),
     validUntil: row.valid_until,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
     contentHash: row.content_hash,
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
@@ -4146,11 +4195,21 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
 
 export async function listPublicQuoteDrafts(): Promise<PublicQuoteDraftSummary[]> {
   const rows = await request<ApiPublicQuoteDraftSummary[]>("/public-quote-drafts");
-  return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), locale: row.locale, currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at }));
+  return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), locale: row.locale, currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at, updatedAt: row.updated_at }));
 }
 
 export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(`/public-quote-drafts/${encodeURIComponent(draftId)}`));
+}
+
+export async function updatePublicQuoteDraftStatus(
+  draftId: string,
+  status: "CONFIRMED" | "COMPLETED" | "CANCELLED",
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/status`,
+    { method: "PATCH", body: JSON.stringify({ status }) },
+  ));
 }
 
 export async function downloadPublicQuoteDraftDocument(

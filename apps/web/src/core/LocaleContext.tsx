@@ -14,6 +14,8 @@ import type { UiLocale } from "./types";
 const STORAGE_KEY = "zhimaoyun.console.locale";
 
 const english: Record<string, string> = {
+  "支持新版双表、历史模板和单元格内嵌图片":
+    "Supports Product + SKU workbooks, legacy templates, and images embedded in cells",
   "工作": "Workspace",
   "概览": "Overview",
   "AI 搜索": "AI Search",
@@ -161,6 +163,8 @@ const english: Record<string, string> = {
   "知识文件已撤销": "Knowledge file revoked",
   "知识文件已重新提交处理": "Knowledge file submitted for reprocessing",
   "知识文件已提交到智能体绑定的店铺": "Knowledge file submitted to the agent's bound stores",
+  "处理中": "Processing",
+  "处理失败": "Processing failed",
   "商品": "Products",
   "SKU 商品库": "SKU Catalog",
   "导出": "Export",
@@ -1071,6 +1075,12 @@ const english: Record<string, string> = {
   "条码": "Barcode",
   "起订数": "MOQ",
   "起订单位": "MOQ unit",
+  "装箱数": "Units per carton",
+  "起订 / 装箱": "MOQ / carton",
+  "起订：未设置": "MOQ: not set",
+  "起订：{value}": "MOQ: {value}",
+  "装箱：未设置": "Carton: not set",
+  "装箱：{value}": "Carton: {value}",
   "毛重": "Gross weight",
   "重量单位": "Weight unit",
   "例如 多功能，便携，旅行用品": "e.g. multi-purpose, portable, travel gear",
@@ -1084,6 +1094,16 @@ const english: Record<string, string> = {
   "商品创建失败，请稍后重试。": "Could not create the product. Try again shortly.",
   "价格、起订数和重量必须是大于或等于 0 的数字。":
     "Price, MOQ, and weight must be numbers greater than or equal to zero.",
+  "价格、起订数、装箱数和重量必须是大于或等于 0 的数字。":
+    "Price, MOQ, units per carton, and weight must be numbers greater than or equal to zero.",
+  "起订数和装箱数必须是大于或等于 0 的数字。":
+    "MOQ and units per carton must be numbers greater than or equal to zero.",
+  "起订数、装箱数和价格必须是大于或等于 0 的数字。":
+    "MOQ, units per carton, and price must be numbers greater than or equal to zero.",
+  "SKU 已保存，但公开报价保存失败：{message}":
+    "The SKU was saved, but the public offer could not be saved: {message}",
+  "数据已保存，但页面刷新失败：{message}":
+    "The data was saved, but the page could not refresh: {message}",
   "商品“{name}”已创建，可以继续添加更多 SKU。":
     "Product “{name}” was created. You can now add more SKUs.",
   "使用 Product 与 SKU 双表模板批量维护商品主数据，并在每个商品下管理不同 SKU、规格、价格与供应商。":
@@ -1939,11 +1959,11 @@ const english: Record<string, string> = {
   "默认 1 个月": "1 month by default",
   "基础版": "Standard plan",
   "进阶版": "Silver plan",
-  "高级版": "Elite plan",
+  "企业版": "Enterprise plan",
   "默认 1 个月 · 500 SKU": "1 month by default · 500 SKUs",
   "基础版 · 5000 SKU": "Standard plan · 5,000 SKUs",
   "进阶版 · 5000 SKU": "Silver plan · 5,000 SKUs",
-  "高级版 · SKU 不限": "Elite plan · Unlimited SKUs",
+  "企业版 · SKU 不限": "Enterprise plan · Unlimited SKUs",
   "SKU 配额": "SKU quota",
   "SKU 配额：{used} / {limit}": "SKU quota: {used} / {limit}",
   "不限": "Unlimited",

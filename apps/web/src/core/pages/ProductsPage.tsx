@@ -38,6 +38,14 @@ const emptySkuPage: SkuListPage = { items: [], page: 1, pageSize: 50, total: 0, 
 const SKU_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 const SKU_PAGE_SIZE_STORAGE_KEY = "ai-trade-cloud:sku-page-size";
 const UNCLASSIFIED_CATEGORY_VALUE = "__unclassified__";
+const SKU_TEMPLATE_MARKER_KEY = "_sku2quotation";
+const SKU_PACKING_QUANTITY_KEY = "装箱数";
+const SKU_PACKING_QUANTITY_KEYS = new Set([
+  SKU_PACKING_QUANTITY_KEY,
+  "一箱个数",
+  "packing_quantity",
+  "units_per_carton",
+]);
 type BulkSkuAction = "pin" | "unpin" | "activate" | "deactivate" | "category";
 
 function initialSkuPageSize() {
@@ -156,6 +164,34 @@ function skuStatusColor(status: ProductSku["status"]): "jade" | "amber" | "gray"
 function skuPrice(row: SkuListItem) {
   if (row.publicPrice === undefined) return "未设置";
   return `${row.publicCurrency ?? ""} ${row.publicPrice.toLocaleString(document.documentElement.lang || "zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
+}
+
+function getSkuPackingQuantity(optionValues: ProductSku["optionValues"]) {
+  for (const key of SKU_PACKING_QUANTITY_KEYS) {
+    const value = optionValues[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return "";
+}
+
+function withSkuPackingQuantity(
+  optionValues: ProductSku["optionValues"],
+  packingQuantity: string,
+) {
+  const next = { ...optionValues };
+  SKU_PACKING_QUANTITY_KEYS.forEach((key) => delete next[key]);
+  if (packingQuantity.trim()) next[SKU_PACKING_QUANTITY_KEY] = packingQuantity.trim();
+  return next;
+}
+
+function visibleSkuOptions(optionValues: ProductSku["optionValues"]) {
+  return Object.entries(optionValues).filter(([key, value]) => (
+    key !== SKU_TEMPLATE_MARKER_KEY
+    && !SKU_PACKING_QUANTITY_KEYS.has(key)
+    && value !== ""
+    && value !== undefined
+    && value !== null
+  ));
 }
 
 function skuUpdatedDate(value: string) {
@@ -907,6 +943,7 @@ export function ProductsPage() {
                   <th className="core-sku-product-column" scope="col">{t("SKU / 商品")}</th>
                   <th className="core-sku-category-column" scope="col">{t("分类")}</th>
                   <th className="core-sku-tags-column" scope="col">{t("标签")}</th>
+                  <th className="core-sku-order-column" scope="col">{t("起订 / 装箱")}</th>
                   <th className="core-sku-price-column" scope="col">{t("公开价")}</th>
                   <th className="core-sku-status-column" scope="col">{t("状态")}</th>
                   <th className="core-sku-updated-column" scope="col">{t("更新时间")}</th>
@@ -966,6 +1003,18 @@ export function ProductsPage() {
                             {sku.tags.length > 2 ? <small>+{sku.tags.length - 2}</small> : null}
                           </span>
                         ) : <span className="core-sku-table-empty">—</span>}
+                      </td>
+                      <td className="core-sku-order-column core-tabular">
+                        <strong>
+                          {sku.defaultMoq === undefined
+                            ? t("起订：未设置")
+                            : t("起订：{value}", { value: `${sku.defaultMoq} ${sku.moqUnit ?? ""}`.trim() })}
+                        </strong>
+                        <small>
+                          {sku.packingQuantity
+                            ? t("装箱：{value}", { value: sku.packingQuantity })
+                            : t("装箱：未设置")}
+                        </small>
                       </td>
                       <td className="core-sku-price-column core-tabular">
                         <strong>{t(skuPrice(sku))}</strong>
@@ -1189,7 +1238,7 @@ export function ProductsPage() {
           </div>
 
           <div className="core-import-template-row">
-            <Text size="2" color="gray">{t("支持新版双表与历史模板")}</Text>
+            <Text size="2" color="gray">{t("支持新版双表、历史模板和单元格内嵌图片")}</Text>
             <Button asChild size="1" variant="soft" color="gray">
               <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a>
             </Button>
@@ -1450,14 +1499,16 @@ function ManualProductDialog({
     };
     const unitPrice = Number(value("unit_price") || "0");
     const defaultMoq = optionalNumber("default_moq");
+    const packingQuantity = optionalNumber("packing_quantity");
     const weight = optionalNumber("weight");
     if (
       !Number.isFinite(unitPrice)
       || unitPrice < 0
       || (defaultMoq !== undefined && (!Number.isFinite(defaultMoq) || defaultMoq < 0))
+      || (packingQuantity !== undefined && (!Number.isFinite(packingQuantity) || packingQuantity < 0))
       || (weight !== undefined && (!Number.isFinite(weight) || weight < 0))
     ) {
-      setError(t("价格、起订数和重量必须是大于或等于 0 的数字。"));
+      setError(t("价格、起订数、装箱数和重量必须是大于或等于 0 的数字。"));
       return;
     }
 
@@ -1476,6 +1527,7 @@ function ManualProductDialog({
         barcode: value("barcode") || undefined,
         defaultMoq,
         moqUnit: defaultMoq === undefined ? undefined : value("moq_unit") || undefined,
+        packingQuantity,
         weight,
         weightUnit: weight === undefined ? undefined : value("weight_unit") || undefined,
         unitPrice,
@@ -1586,6 +1638,10 @@ function ManualProductDialog({
                 <label>
                   <Text size="2" weight="medium">{t("起订单位")}</Text>
                   <TextField.Root name="moq_unit" maxLength={32} placeholder="piece" />
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("装箱数")}</Text>
+                  <TextField.Root name="packing_quantity" type="number" min="0" step="0.000001" inputMode="decimal" />
                 </label>
                 <label>
                   <Text size="2" weight="medium">{t("毛重")}</Text>
@@ -1870,9 +1926,13 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
   const canEdit = hasPermission("product.edit");
   const canViewCatalog = hasAnyPermission("catalog.view", "catalog.publish");
   const canPublish = hasAnyPermission("catalog.publish");
+  const canManageSku = canEdit || canPublish;
   const [offers, setOffers] = useState<PublicCatalogOffer[]>([]);
   const [skuCode, setSkuCode] = useState(`${product.productCode ?? "SKU"}-${product.skus.length + 1}`);
   const [skuName, setSkuName] = useState(product.name);
+  const [skuMoq, setSkuMoq] = useState("");
+  const [skuMoqUnit, setSkuMoqUnit] = useState(product.defaultUnit || "piece");
+  const [skuPackingQuantity, setSkuPackingQuantity] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [editingSkuId, setEditingSkuId] = useState<string>();
   const [expandedSkuIds, setExpandedSkuIds] = useState<Set<string>>(() => new Set(initialSkuId ? [initialSkuId] : []));
@@ -1893,13 +1953,33 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
 
   const createSingle = async () => {
     if (!skuCode.trim()) return;
+    const defaultMoq = skuMoq.trim() ? Number(skuMoq) : undefined;
+    const packingQuantity = skuPackingQuantity.trim() ? Number(skuPackingQuantity) : undefined;
+    if (
+      (defaultMoq !== undefined && (!Number.isFinite(defaultMoq) || defaultMoq < 0))
+      || (packingQuantity !== undefined && (!Number.isFinite(packingQuantity) || packingQuantity < 0))
+    ) {
+      setError(t("起订数和装箱数必须是大于或等于 0 的数字。"));
+      return;
+    }
     setCreating(true);
     setError("");
     try {
-      await createSkus(product.id, [{ skuCode: skuCode.trim(), name: skuName.trim() || undefined, optionValues: {}, status: "DRAFT" }]);
+      await createSkus(product.id, [{
+        skuCode: skuCode.trim(),
+        name: skuName.trim() || undefined,
+        optionValues: {},
+        defaultMoq,
+        moqUnit: defaultMoq === undefined ? undefined : skuMoqUnit.trim() || undefined,
+        packingQuantity,
+        status: "DRAFT",
+      }]);
       await onChanged();
       setSkuCode(`${product.productCode ?? "SKU"}-${product.skus.length + 2}`);
       setSkuName(product.name);
+      setSkuMoq("");
+      setSkuMoqUnit(product.defaultUnit || "piece");
+      setSkuPackingQuantity("");
       setCreateOpen(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("SKU 创建失败"));
@@ -1949,6 +2029,9 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
         <Card className="core-sku-create-compact">
           <label><Text size="1" color="gray">{t("SKU 编码")}</Text><TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} autoFocus /></label>
           <label><Text size="1" color="gray">{t("SKU 名称")}</Text><TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("起订数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={skuMoq} onChange={(event) => setSkuMoq(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("起订单位")}</Text><TextField.Root maxLength={32} value={skuMoqUnit} onChange={(event) => setSkuMoqUnit(event.target.value)} placeholder="piece" /></label>
+          <label><Text size="1" color="gray">{t("装箱数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={skuPackingQuantity} onChange={(event) => setSkuPackingQuantity(event.target.value)} /></label>
           <Button disabled={!skuCode.trim() || creating} onClick={() => void createSingle()}>{t(creating ? "正在添加…" : "添加")}</Button>
         </Card>
       ) : null}
@@ -1956,10 +2039,11 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
       <div className="core-sku-detail-list">
         {product.skus.map((sku) => {
           const offer = offers.find((item) => item.skuId === sku.id);
-          const skuLabel = sku.name || Object.values(sku.optionValues).join(" · ") || t("基础款");
           const editing = editingSkuId === sku.id;
           const expanded = expandedSkuIds.has(sku.id);
-          const options = Object.entries(sku.optionValues).filter(([, value]) => value !== "" && value !== undefined && value !== null);
+          const options = visibleSkuOptions(sku.optionValues);
+          const skuLabel = sku.name || options.map(([, value]) => String(value)).join(" · ") || t("基础款");
+          const packingQuantity = getSkuPackingQuantity(sku.optionValues);
           return (
             <Card className="core-sku-detail-card" data-expanded={expanded || undefined} data-editing={editing || undefined} key={sku.id}>
               <div className="core-sku-detail-row">
@@ -1985,7 +2069,7 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
                   <Button size="1" variant="ghost" color="gray" onClick={() => toggleSkuDetails(sku.id)}>
                     <CaretDown className="core-sku-detail-action-caret" data-expanded={expanded || undefined} />{t(expanded ? "收起" : "展开")}
                   </Button>
-                  {canPublish ? <Button size="1" variant="soft" color="gray" onClick={() => editSku(sku.id)}><PencilSimple />{t(editing ? "取消编辑" : "编辑")}</Button> : null}
+                  {canManageSku ? <Button size="1" variant="soft" color="gray" onClick={() => editSku(sku.id)}><PencilSimple />{t(editing ? "取消编辑" : "编辑")}</Button> : null}
                   {canEdit ? (
                     <Button
                       size="1"
@@ -2012,17 +2096,19 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
                   <div className="core-sku-expanded-field"><span>{t("SKU 名称")}</span><strong>{sku.name || product.name}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("条码")}</span><strong className="core-tabular">{sku.barcode || t("未设置")}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("起订数")}</span><strong className="core-tabular">{sku.defaultMoq === undefined ? t("未设置") : `${sku.defaultMoq} ${sku.moqUnit ?? ""}`.trim()}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("装箱数")}</span><strong className="core-tabular">{packingQuantity || t("未设置")}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("毛重")}</span><strong className="core-tabular">{sku.weight === undefined ? t("未设置") : `${sku.weight} ${sku.weightUnit ?? ""}`.trim()}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("公开价")}</span><strong className="core-tabular">{offer ? `${offer.currency} ${offer.unitPrice.toFixed(2)}` : t("未设置")}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("最后更新")}</span><strong>{skuUpdatedDate(sku.updatedAt)}</strong></div>
                 </div>
               ) : null}
-              {editing && canPublish ? (
+              {editing && canManageSku ? (
                 <SkuQuickEditor
                   sku={sku}
                   offer={offer}
                   managedTags={managedTags}
                   onCancel={() => setEditingSkuId(undefined)}
+                  onRefresh={async () => { await loadOffers(); await onChanged(); }}
                   onChanged={async () => { await loadOffers(); await onChanged(); setEditingSkuId(undefined); }}
                 />
               ) : null}
@@ -2035,16 +2121,22 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
   );
 }
 
-function SkuQuickEditor({ sku, offer, managedTags, onChanged, onCancel }: {
+function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCancel }: {
   sku: ProductSku;
   offer?: PublicCatalogOffer;
   managedTags: ProductTag[];
   onChanged: () => Promise<void>;
+  onRefresh: () => Promise<void>;
   onCancel: () => void;
 }) {
-  const { profile } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
+  const canEditSku = hasPermission("product.edit");
+  const canPublishOffer = hasPermission("catalog.publish");
   const defaultCurrency = profile?.context.defaultCurrency ?? "CNY";
+  const [defaultMoq, setDefaultMoq] = useState(sku.defaultMoq === undefined ? "" : String(sku.defaultMoq));
+  const [moqUnit, setMoqUnit] = useState(sku.moqUnit ?? "piece");
+  const [packingQuantity, setPackingQuantity] = useState(getSkuPackingQuantity(sku.optionValues));
   const [price, setPrice] = useState(offer ? String(offer.unitPrice) : "0");
   const [currency, setCurrency] = useState(offer?.currency ?? defaultCurrency);
   const [selectedTags, setSelectedTags] = useState<string[]>(offer?.tags ?? []);
@@ -2052,35 +2144,65 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onCancel }: {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    setDefaultMoq(sku.defaultMoq === undefined ? "" : String(sku.defaultMoq));
+    setMoqUnit(sku.moqUnit ?? "piece");
+    setPackingQuantity(getSkuPackingQuantity(sku.optionValues));
     setPrice(offer ? String(offer.unitPrice) : "0");
     setCurrency(offer?.currency ?? defaultCurrency);
     setSelectedTags(offer?.tags ?? []);
-    setError("");
-  }, [defaultCurrency, offer]);
+  }, [defaultCurrency, offer, sku.defaultMoq, sku.moqUnit, sku.optionValues]);
 
   const save = async () => {
+    const numericMoq = defaultMoq.trim() ? Number(defaultMoq) : null;
+    const numericPackingQuantity = packingQuantity.trim() ? Number(packingQuantity) : null;
     const numericPrice = Number(price || "0");
-    if (!Number.isFinite(numericPrice) || numericPrice < 0) {
-      setError(t("请输入正确的价格。"));
+    if (
+      (numericMoq !== null && (!Number.isFinite(numericMoq) || numericMoq < 0))
+      || (numericPackingQuantity !== null && (!Number.isFinite(numericPackingQuantity) || numericPackingQuantity < 0))
+      || (canPublishOffer && (!Number.isFinite(numericPrice) || numericPrice < 0))
+    ) {
+      setError(t("起订数、装箱数和价格必须是大于或等于 0 的数字。"));
       return;
     }
     setBusy(true);
     setError("");
+    let skuSaved = false;
     try {
       const displayTag = selectedTags[0];
-      await upsertPublicCatalogOffer(sku.id, {
-        unitPrice: numericPrice,
-        currency,
-        tags: selectedTags,
-        displayTag,
-        tagColor: offer?.displayTag === displayTag ? offer.tagColor : undefined,
-        publicationStatus: sku.status === "ACTIVE" ? "PUBLISHED" : "DRAFT",
-        validFrom: offer?.validFrom,
-        validTo: offer?.validTo,
-      });
-      await onChanged();
+      if (canEditSku) {
+        await updateSku(sku.id, {
+          expectedVersion: sku.version,
+          defaultMoq: numericMoq,
+          moqUnit: numericMoq === null ? null : moqUnit.trim() || null,
+          packingQuantity: numericPackingQuantity,
+        });
+        skuSaved = true;
+      }
+      if (canPublishOffer) {
+        await upsertPublicCatalogOffer(sku.id, {
+          unitPrice: numericPrice,
+          currency,
+          tags: selectedTags,
+          displayTag,
+          tagColor: offer?.displayTag === displayTag ? offer.tagColor : undefined,
+          publicationStatus: sku.status === "ACTIVE" ? "PUBLISHED" : "DRAFT",
+          validFrom: offer?.validFrom,
+          validTo: offer?.validTo,
+        });
+      }
+      try {
+        await onChanged();
+      } catch (reason) {
+        await onRefresh().catch(() => undefined);
+        const message = reason instanceof Error ? reason.message : t("刷新失败");
+        setError(t("数据已保存，但页面刷新失败：{message}", { message }));
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("保存失败"));
+      await onRefresh().catch(() => undefined);
+      const message = reason instanceof Error ? reason.message : t("保存失败");
+      setError(skuSaved && canPublishOffer
+        ? t("SKU 已保存，但公开报价保存失败：{message}", { message })
+        : message);
     } finally {
       setBusy(false);
     }
@@ -2089,13 +2211,20 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onCancel }: {
   return (
     <div className="core-sku-quick-editor">
       <div className="core-sku-quick-fields">
-        <label><Text size="1" color="gray">{t("公开价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
-        <label><Text size="1" color="gray">{t("币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option></select></label>
+        {canEditSku ? <>
+          <label><Text size="1" color="gray">{t("起订数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={defaultMoq} onChange={(event) => setDefaultMoq(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("起订单位")}</Text><TextField.Root maxLength={32} value={moqUnit} onChange={(event) => setMoqUnit(event.target.value)} placeholder="piece" /></label>
+          <label><Text size="1" color="gray">{t("装箱数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={packingQuantity} onChange={(event) => setPackingQuantity(event.target.value)} /></label>
+        </> : null}
+        {canPublishOffer ? <>
+          <label><Text size="1" color="gray">{t("公开价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option></select></label>
+        </> : null}
       </div>
-      <div className="core-sku-quick-tags">
+      {canPublishOffer ? <div className="core-sku-quick-tags">
         <Text size="1" color="gray">{t("选择标签")}</Text>
         <ManagedTagPicker tags={managedTags} selected={selectedTags} onChange={setSelectedTags} disabled={busy} />
-      </div>
+      </div> : null}
       {error ? <div className="core-form-error" role="alert">{error}</div> : null}
       <div className="core-sku-quick-actions">
         <Button variant="ghost" color="gray" disabled={busy} onClick={onCancel}>{t("取消")}</Button>

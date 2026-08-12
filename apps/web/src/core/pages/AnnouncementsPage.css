@@ -59,7 +59,7 @@
 .announcement-schedule { display: flex; align-items: center; gap: 6px; color: var(--core-muted); font-size: 12px; }
 .announcement-related-summary { display: flex; align-items: center; gap: 5px; color: var(--core-muted); font-size: 12px; }
 .announcement-related-summary svg { color: var(--core-accent); }
-.announcement-list-actions { display: flex; align-items: center; gap: 7px; }
+.announcement-list-actions { display: flex; align-items: center; gap: 10px; }
 .announcement-editor-dialog {
   width: min(1120px, calc(100vw - 28px));
   max-width: 1120px;
@@ -196,7 +196,7 @@
   color: var(--core-muted);
   font-weight: 400 !important;
 }
-.announcement-add-blocks { display: flex; gap: 6px; flex-wrap: wrap; }
+.announcement-add-blocks { display: flex; gap: 8px; flex-wrap: wrap; }
 .announcement-block-editor { display: grid; gap: 10px; }
 .announcement-block-row {
   display: grid;

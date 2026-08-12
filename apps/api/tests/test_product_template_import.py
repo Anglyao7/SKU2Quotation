@@ -557,6 +557,144 @@ def test_embedded_images_are_mapped_to_product_rows_and_image_columns(
     )
 
 
+def test_product_sku_template_maps_embedded_product_images_to_each_sku(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "双表内嵌图片.xlsx"
+    image_path = tmp_path / "product-cover.png"
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0"
+        b"\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00"
+        b"\x00IEND\xaeB`\x82"
+    )
+    image_path.write_bytes(image_bytes)
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS))
+    product_sheet.append([
+        "PRODUCT-WITH-IMAGE",
+        "双表内嵌图片商品",
+        "配件/测试",
+        None,
+        12,
+        "图片只在 Product 表保存一次",
+        None,
+        None,
+        *([None] * 10),
+    ])
+    image = OpenpyxlImage(image_path)
+    image.anchor = "I2"
+    product_sheet.add_image(image)
+    sku_sheet = workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS))
+    for sku_code, sku_name in (
+        ("SKU-WITH-IMAGE-A", "内嵌图片商品 A"),
+        ("SKU-WITH-IMAGE-B", "内嵌图片商品 B"),
+    ):
+        sku_sheet.append([
+            "PRODUCT-WITH-IMAGE",
+            sku_code,
+            sku_name,
+            *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 3)),
+        ])
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert [row.sku_code for row in result.rows] == [
+        "SKU-WITH-IMAGE-A",
+        "SKU-WITH-IMAGE-B",
+    ]
+    assert all(len(row.embedded_images) == 1 for row in result.rows)
+    assert {
+        row.embedded_images[0].sha256 for row in result.rows
+    } == {hashlib.sha256(image_bytes).hexdigest()}
+    assert {
+        row.embedded_images[0].archive_path for row in result.rows
+    } == {"xl/media/image1.png"}
+
+
+def test_embedded_image_storage_uploads_without_head_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "images.xlsx"
+    first_bytes = b"first-image"
+    second_bytes = b"second-image"
+    with ZipFile(source_path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("xl/media/image1.png", first_bytes)
+        archive.writestr("xl/media/image2.jpg", second_bytes)
+
+    uploaded: dict[str, bytes] = {}
+
+    class FakeStorage:
+        backend_name = "s3"
+
+        def put_file(
+            self,
+            source: Path,
+            *,
+            object_key: str,
+            content_type: str | None,
+        ) -> None:
+            del content_type
+            uploaded[object_key] = source.read_bytes()
+
+        def exists(self, object_key: str) -> bool:
+            raise AssertionError(f"unexpected HEAD request for {object_key}")
+
+    monkeypatch.setattr(
+        product_template_import_service,
+        "get_object_storage",
+        lambda: FakeStorage(),
+    )
+    monkeypatch.setenv("PRODUCT_TEMPLATE_IMAGE_UPLOAD_CONCURRENCY", "2")
+    specs = (
+        product_template_import_service.StoredTemplateImage(
+            image_column=1,
+            sequence=1,
+            object_key="images/first.png",
+            original_filename="image1.png",
+            content_type="image/png",
+            byte_size=len(first_bytes),
+            sha256=hashlib.sha256(first_bytes).hexdigest(),
+            storage_provider="S3",
+            archive_path="xl/media/image1.png",
+        ),
+        product_template_import_service.StoredTemplateImage(
+            image_column=2,
+            sequence=2,
+            object_key="images/second.jpg",
+            original_filename="image2.jpg",
+            content_type="image/jpeg",
+            byte_size=len(second_bytes),
+            sha256=hashlib.sha256(second_bytes).hexdigest(),
+            storage_provider="S3",
+            archive_path="xl/media/image2.jpg",
+        ),
+    )
+    progress: list[tuple[int, int]] = []
+
+    product_template_import_service._store_new_embedded_images(
+        source_path,
+        specs=specs,
+        existing_object_keys=set(),
+        progress_callback=lambda processed, total: progress.append(
+            (processed, total)
+        ),
+    )
+
+    assert uploaded == {
+        "images/first.png": first_bytes,
+        "images/second.jpg": second_bytes,
+    }
+    assert progress[-1] == (2, 2)
+
+
 def test_alternate_sheet_name_is_auto_detected_without_grouping_skus(
     tmp_path: Path,
 ) -> None:

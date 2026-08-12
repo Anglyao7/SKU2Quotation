@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Text, case, cast, exists, func, or_, select
+from sqlalchemy import Text, case, cast, exists, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
 from ..catalog_merchandising import POPULAR_CATEGORY_CODE
@@ -939,6 +939,55 @@ def list_quote_drafts(
             .limit(limit)
         ).all()
     )
+
+
+def list_quote_drafts_by_visitor_token_hash(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    visitor_token_hash: str,
+    now: datetime,
+    limit: int = 100,
+) -> list[PublicQuoteDraftRow]:
+    return list(
+        session.scalars(
+            select(PublicQuoteDraftRow)
+            .where(
+                PublicQuoteDraftRow.tenant_id == tenant_id,
+                PublicQuoteDraftRow.visitor_token_hash == visitor_token_hash,
+                PublicQuoteDraftRow.visitor_token_expires_at > now,
+                PublicQuoteDraftRow.deleted_at.is_(None),
+            )
+            .order_by(
+                PublicQuoteDraftRow.updated_at.desc(),
+                PublicQuoteDraftRow.created_at.desc(),
+                PublicQuoteDraftRow.id,
+            )
+            .limit(limit)
+        ).all()
+    )
+
+
+def transition_quote_draft_status(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    quote_draft_id: UUID,
+    expected_status: str,
+    target_status: str,
+    updated_at: datetime,
+) -> bool:
+    result = session.execute(
+        update(PublicQuoteDraftRow)
+        .where(
+            PublicQuoteDraftRow.tenant_id == tenant_id,
+            PublicQuoteDraftRow.id == quote_draft_id,
+            PublicQuoteDraftRow.status == expected_status,
+            PublicQuoteDraftRow.deleted_at.is_(None),
+        )
+        .values(status=target_status, updated_at=updated_at)
+    )
+    return result.rowcount == 1
 
 
 def list_quote_draft_items(

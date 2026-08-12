@@ -88,6 +88,7 @@ class SkuListItem(BaseModel):
     supplier_summary: SkuSupplierSummary
     default_moq: Decimal | None
     moq_unit: str | None
+    packing_quantity: str | None = None
     public_price: Decimal | None
     public_currency: str | None
     public_offer_status: Literal["DRAFT", "PUBLISHED", "SUSPENDED"] | None
@@ -134,6 +135,7 @@ class SkuCreateItem(BaseModel):
     barcode: str | None = Field(default=None, max_length=120)
     default_moq: Decimal | None = Field(default=None, ge=0)
     moq_unit: str | None = Field(default=None, max_length=32)
+    packing_quantity: Decimal | None = Field(default=None, ge=0)
     weight: Decimal | None = Field(default=None, ge=0)
     weight_unit: str | None = Field(default=None, max_length=32)
     status: Literal["DRAFT", "ACTIVE", "INACTIVE"] = "DRAFT"
@@ -162,6 +164,7 @@ class SkuUpdateRequest(BaseModel):
     barcode: str | None = Field(default=None, max_length=120)
     default_moq: Decimal | None = Field(default=None, ge=0)
     moq_unit: str | None = Field(default=None, max_length=32)
+    packing_quantity: Decimal | None = Field(default=None, ge=0)
     weight: Decimal | None = Field(default=None, ge=0)
     weight_unit: str | None = Field(default=None, max_length=32)
     status: Literal["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"] | None = None
@@ -263,6 +266,7 @@ class ManualProductCreateRequest(BaseModel):
     barcode: str | None = Field(default=None, max_length=120)
     default_moq: Decimal | None = Field(default=None, ge=0)
     moq_unit: str | None = Field(default=None, max_length=32)
+    packing_quantity: Decimal | None = Field(default=None, ge=0)
     weight: Decimal | None = Field(default=None, ge=0)
     weight_unit: str | None = Field(default=None, max_length=32)
     unit_price: Decimal = Field(default=Decimal("0"), ge=0)

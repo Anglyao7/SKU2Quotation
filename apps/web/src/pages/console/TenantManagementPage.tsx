@@ -31,6 +31,10 @@ import { EmptyState, ErrorState, TableSkeleton } from "../../components/States";
 import { useLocale } from "../../core/LocaleContext";
 import { api, ApiError } from "../../lib/api";
 import { dateTime } from "../../lib/format";
+import {
+  SUBSCRIPTION_TIER_PRESENTATION,
+  subscriptionTierLabel,
+} from "../../lib/subscriptionTier";
 import type {
   MerchantIdentityCode,
   MerchantIdentityProfile,
@@ -46,30 +50,12 @@ import type { ConsoleOutletContext } from "./ConsoleLayout";
 
 const LOGIN_EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-const SUBSCRIPTION_TIERS: Array<{
-  value: TenantSubscriptionTier;
-  label: string;
-  description: string;
-}> = [
-  { value: "TRIAL", label: "试用", description: "默认 1 个月 · 500 SKU" },
-  { value: "STANDARD", label: "Standard", description: "基础版 · 5000 SKU" },
-  { value: "SILVER", label: "Silver", description: "进阶版 · 5000 SKU" },
-  { value: "ELITE", label: "Elite", description: "高级版 · SKU 不限" },
-];
+const SUBSCRIPTION_TIERS = (Object.keys(SUBSCRIPTION_TIER_PRESENTATION) as TenantSubscriptionTier[])
+  .map((value) => ({ value, ...SUBSCRIPTION_TIER_PRESENTATION[value] }));
 
-const SUBSCRIPTION_TIER_COLORS: Record<
-  TenantSubscriptionTier,
-  "gray" | "blue" | "violet" | "amber"
-> = {
-  TRIAL: "gray",
-  STANDARD: "blue",
-  SILVER: "violet",
-  ELITE: "amber",
-};
-
-function subscriptionTierLabel(tier: TenantSubscriptionTier): string {
-  return SUBSCRIPTION_TIERS.find((item) => item.value === tier)?.label ?? tier;
-}
+const SUBSCRIPTION_TIER_COLORS = Object.fromEntries(
+  SUBSCRIPTION_TIERS.map((item) => [item.value, item.color]),
+) as Record<TenantSubscriptionTier, "gray" | "blue" | "violet" | "amber">;
 
 function subscriptionStatusLabel(status: TenantSubscriptionStatus): string {
   if (status === "expired") return "已过期";
@@ -293,7 +279,7 @@ export function TenantManagementPage() {
   };
 
   return (
-    <div className="console-page">
+    <div className="console-page merchant-management-page">
       <div className="page-heading-row">
         <div>
           <Text size="2" color="gray">{t("商家、登录账号与商品前台")}</Text>
@@ -324,7 +310,7 @@ export function TenantManagementPage() {
         />
       ) : (
         <>
-          <div className="desktop-table surface-panel">
+          <div className="desktop-table surface-panel merchant-management-table">
             <Table.Root variant="surface" size="2">
               <Table.Header>
                 <Table.Row>
@@ -353,6 +339,7 @@ export function TenantManagementPage() {
                       </Table.RowHeaderCell>
                       <Table.Cell>
                         <Button
+                          className="merchant-table-button"
                           size="1"
                           variant="soft"
                           color={tenant.identity_code === "ADMIN" ? "amber" : "blue"}
@@ -377,6 +364,7 @@ export function TenantManagementPage() {
                       <Table.Cell>{tenant.quote_count ?? 0}</Table.Cell>
                       <Table.Cell>
                         <Button
+                          className="merchant-table-button"
                           size="1"
                           variant="soft"
                           color={SUBSCRIPTION_TIER_COLORS[tenant.subscription_tier]}
@@ -417,6 +405,7 @@ export function TenantManagementPage() {
                       </Table.Cell>
                       <Table.Cell>
                         <Button
+                          className="merchant-table-button merchant-module-access-button"
                           size="1"
                           variant="soft"
                           color="gray"
@@ -514,6 +503,7 @@ export function TenantManagementPage() {
                         {t(subscriptionTierLabel(tenant.subscription_tier))}
                       </Badge>
                       <Button
+                        className="merchant-card-button"
                         size="1"
                         variant="soft"
                         color={tenant.identity_code === "ADMIN" ? "amber" : "blue"}
@@ -553,8 +543,9 @@ export function TenantManagementPage() {
                       : ` · ${t(subscriptionStatusLabel(tenant.subscription_status))}`}
                   </Text>
                   <div className="mobile-card-footer">
-                    <div className="page-actions">
+                    <div className="page-actions merchant-mobile-actions">
                       <Button
+                        className="merchant-card-button"
                         size="1"
                         variant="soft"
                         color={SUBSCRIPTION_TIER_COLORS[tenant.subscription_tier]}
@@ -563,6 +554,7 @@ export function TenantManagementPage() {
                         {t("等级设置")}
                       </Button>
                       <Button
+                        className="merchant-card-button"
                         size="1"
                         variant="soft"
                         color="gray"
@@ -573,11 +565,12 @@ export function TenantManagementPage() {
                           count: enabledTenantModules(tenant).length,
                         })}
                       </Button>
-                      <Button asChild size="1" variant="soft">
+                      <Button className="merchant-card-button" asChild size="1" variant="soft">
                         <Link to={`/${tenant.slug}`}>{t("查看前台")}</Link>
                       </Button>
                       {tenant.owner_account?.status === "active" ? null : (
                         <Button
+                          className="merchant-card-button"
                           size="1"
                           variant="soft"
                           color="jade"
