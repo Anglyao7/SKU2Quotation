@@ -709,12 +709,19 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     assert deploy.index("keycloak-reconcile.sh") < deploy.index(
         "rolling out API, web, and TLS edge"
     )
-    assert "rollback_on_error" in deploy
+    assert "rollback_on_failure" in deploy
+    assert "database_migration_head" in deploy
+    assert "ATC_ROLLBACK_KEEP_CURRENT_COMPOSE=true" in deploy
+    assert "trap 'rollback_on_failure 130' INT" in deploy
+    assert "trap 'rollback_on_failure 143' TERM" in deploy
+    assert "trap 'rollback_on_failure 129' HUP" in deploy
+    assert "current.env is missing while managed application workloads exist" in deploy
     assert "stopping the unrecorded first-release public workloads" in deploy
     assert "git checkout --detach" in deploy
     assert "acquire_global_operation_lock" in deploy
     assert deploy.index('"${SCRIPT_DIR}/backup.sh"') < deploy.index("db-migrate")
     assert "ATC_CONFIRMED_EXPAND_CONTRACT" in deploy
+    assert "ATC_BACKUP_LEAVE_WRITERS_STOPPED=true" in deploy
     assert "application.postgresql.dump" in backup
     assert "keycloak.postgresql.dump" in backup
     assert "backup-minio" in backup
@@ -722,6 +729,10 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     assert "SHA256SUMS" in backup
     assert "compose stop caddy web api keycloak" in backup
     assert "resume_writers" in backup
+    assert 'leave_writers_stopped="${ATC_BACKUP_LEAVE_WRITERS_STOPPED:-false}"' in backup
+    assert "leaving application writers stopped for the caller's migration window" in backup
+    assert "worker_is_running tenant-worker" in backup
+    assert "compose_with_workers stop tenant-worker product-event-consumer" in backup
     assert "last-backup-path" in backup
     assert 'restic backup "${final}"' in backup
     assert 'if [[ -n "${RESTIC_REPOSITORY:-}" ]]' not in backup

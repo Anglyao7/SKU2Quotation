@@ -40,6 +40,7 @@ from ..adapters.object_storage import get_object_storage
 from ..catalog_operation_models import CatalogImportBatchRow
 from ..file_security_models import MediaObjectRow, WorkerJobRow
 from ..db_models import ImportJobRow, SourceFileRow
+from ..identity_models import TenantRow
 from ..model_mixins import utcnow
 from ..services.file_detection import detect_file_path, detect_file_type
 from ..services.import_processing import new_id
@@ -132,6 +133,12 @@ async def create_import(
     _require_permission(permissions, "product.import")
     original_filename = Path(upload.filename or "unnamed").name
     normalized_source_type = source_type.strip().upper()[:40] or "UNKNOWN"
+    if batch_id is not None and normalized_source_type != "PRODUCT_TEMPLATE":
+        raise ApplicationError(
+            "IMPORT_BATCH_SOURCE_TYPE_INVALID",
+            "导入批次只接受商品模版文件。",
+            kind="validation_failed",
+        )
     if normalized_source_type == "PRODUCT_TEMPLATE":
         # A fixed-template import writes authoritative products and may publish
         # public offers. Requiring all three capabilities prevents a scoped
@@ -152,10 +159,10 @@ async def create_import(
                     "导入批次不存在，请重新开始批量导入。",
                     kind="not_found",
                 )
-            if batch.status == "REVOKED":
+            if batch.status != "ACTIVE":
                 raise ApplicationError(
                     "IMPORT_BATCH_REVOKED",
-                    "已撤回的批次不能继续上传文件。",
+                    "已开始撤回的批次不能继续上传文件。",
                     kind="conflict",
                 )
             uploaded_files = int(
@@ -221,6 +228,65 @@ async def create_import(
             "PRODUCT_TEMPLATE_FORMAT_INVALID",
             "文件不是有效的 XLSX 商品模版，请使用根目录约定的商品模版格式。",
         )
+
+    # The initial batch check avoids needless uploads. This second check is
+    # authoritative: serialize the final reservation with rollback and the
+    # worker's catalog write, then keep both locks through the import-job
+    # commit. A concurrent uploader therefore cannot exceed the batch quota.
+    if batch_id is not None:
+        tenant_exists = session.scalar(
+            select(TenantRow.id)
+            .where(TenantRow.id == tenant_id)
+            .with_for_update()
+        )
+        batch = session.scalar(
+            select(CatalogImportBatchRow)
+            .where(
+                CatalogImportBatchRow.tenant_id == tenant_id,
+                CatalogImportBatchRow.id == batch_id,
+                CatalogImportBatchRow.deleted_at.is_(None),
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        rejection: ApplicationError | None = None
+        if tenant_exists is None or batch is None:
+            rejection = ApplicationError(
+                "IMPORT_BATCH_NOT_FOUND",
+                "导入批次不存在，请重新开始批量导入。",
+                kind="not_found",
+            )
+        elif batch.status != "ACTIVE":
+            rejection = ApplicationError(
+                "IMPORT_BATCH_REVOKED",
+                "已开始撤回的批次不能继续上传文件。",
+                kind="conflict",
+            )
+        else:
+            uploaded_files = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(ImportJobRow)
+                    .where(
+                        ImportJobRow.tenant_id == tenant_id,
+                        ImportJobRow.batch_id == batch_id,
+                    )
+                )
+                or 0
+            )
+            if uploaded_files >= batch.expected_file_count:
+                rejection = ApplicationError(
+                    "IMPORT_BATCH_FILE_LIMIT_REACHED",
+                    "该批次文件已经全部提交，请新建批次后继续上传。",
+                    kind="conflict",
+                )
+        if rejection is not None:
+            session.rollback()
+            try:
+                storage.delete(stored.object_key)
+            except Exception:
+                pass
+            raise rejection
     now = utcnow()
     media_id = uuid4()
     worker_job_id = uuid4()

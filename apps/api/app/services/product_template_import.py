@@ -23,6 +23,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from ..adapters.object_storage import get_object_storage
+from ..catalog_operation_models import CatalogImportBatchRow
 from ..database import SessionLocal, set_request_context
 from ..db_models import ImportJobRow, SupplierRow
 from ..file_security_models import MediaObjectRow, WorkerJobRow
@@ -3750,6 +3751,23 @@ def process_product_template_import(
                 job=job,
                 message="当前租户不存在或已停用，未执行本次商品模版同步。",
             )
+        if job.batch_id is not None:
+            batch = session.scalar(
+                select(CatalogImportBatchRow)
+                .where(
+                    CatalogImportBatchRow.tenant_id == tenant_id,
+                    CatalogImportBatchRow.id == job.batch_id,
+                    CatalogImportBatchRow.deleted_at.is_(None),
+                )
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            if batch is None or batch.status != "ACTIVE":
+                return _fail_import(
+                    session,
+                    job=job,
+                    message="导入批次已被撤回或不再可用，本文件未写入商品库。",
+                )
         newer_published_job_id = session.scalar(
             select(ImportJobRow.id)
             .where(
@@ -4314,6 +4332,7 @@ def process_product_template_import(
                     product_id=product.id,
                     supplier_id=supplier.id if supplier is not None else None,
                     latest_import_job_id=job.id,
+                    rollback_owner_batch_id=job.batch_id,
                     sku_code=template_row.sku_code,
                     name=template_row.sku_name,
                     option_values=_template_option_values(template_row),
@@ -4374,6 +4393,11 @@ def process_product_template_import(
                 # out of ``changed`` so the import summary and AI index only
                 # report actual catalog-content changes.
                 sku.latest_import_job_id = job.id
+                # A later catalog import takes over a pre-existing row but
+                # never gains permission to delete it. Only the batch that
+                # originally created the SKU may retain rollback ownership.
+                if sku.rollback_owner_batch_id != job.batch_id:
+                    sku.rollback_owner_batch_id = None
             if supplier is not None:
                 touched_supplier_ids.add(supplier.id)
 

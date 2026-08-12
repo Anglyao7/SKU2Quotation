@@ -83,6 +83,7 @@ from app.storefront_analytics_models import (
 from app.announcement_models import StorefrontAnnouncementRow
 from app.image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
 from app.db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
+from app.catalog_operation_models import CatalogImportBatchRow
 from app.file_security_models import MediaObjectRow, WorkerJobRow
 from app.product_center_models import (
     AttributeDefinitionRow,
@@ -8258,7 +8259,7 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
     assert empty_listing.json()["total"] == 0
 
 
-def test_import_batch_rollback_is_latest_job_scoped_and_cleans_owned_images() -> None:
+def test_import_batch_rollback_only_deletes_owned_skus_and_preserves_images() -> None:
     suffix = uuid4().hex[:10].upper()
     created = client.post(
         "/api/v1/import-batches",
@@ -8352,6 +8353,7 @@ def test_import_batch_rollback_is_latest_job_scoped_and_cleans_owned_images() ->
                     tenant_id=DEFAULT_TENANT_ID,
                     product_id=orphan_product_id,
                     latest_import_job_id=job_id,
+                    rollback_owner_batch_id=batch_id,
                     sku_code=f"ORPHAN-SKU-{suffix}",
                     option_values={},
                     status="ACTIVE",
@@ -8361,6 +8363,7 @@ def test_import_batch_rollback_is_latest_job_scoped_and_cleans_owned_images() ->
                     tenant_id=DEFAULT_TENANT_ID,
                     product_id=shared_product_id,
                     latest_import_job_id=job_id,
+                    rollback_owner_batch_id=batch_id,
                     sku_code=f"SHARED-BATCH-SKU-{suffix}",
                     option_values={},
                     status="ACTIVE",
@@ -8369,6 +8372,9 @@ def test_import_batch_rollback_is_latest_job_scoped_and_cleans_owned_images() ->
                     id=shared_later_sku_id,
                     tenant_id=DEFAULT_TENANT_ID,
                     product_id=shared_product_id,
+                    # The same batch may update an existing row, but recent
+                    # import provenance alone must never grant deletion rights.
+                    latest_import_job_id=job_id,
                     sku_code=f"SHARED-LATER-SKU-{suffix}",
                     option_values={},
                     status="ACTIVE",
@@ -8441,11 +8447,12 @@ def test_import_batch_rollback_is_latest_job_scoped_and_cleans_owned_images() ->
     assert payload["status"] == "REVOKED"
     assert payload["deleted_sku_count"] == 2
     assert payload["archived_product_count"] == 1
-    assert payload["deleted_storage_image_count"] == 1
-    assert payload["preserved_external_image_count"] == 1
-    assert payload["retained_shared_image_count"] == 1
+    assert payload["removed_image_count"] == 0
+    assert payload["deleted_storage_image_count"] == 0
+    assert payload["preserved_external_image_count"] == 0
+    assert payload["retained_shared_image_count"] == 0
     assert payload["remaining_sku_count"] == 0
-    assert not storage.exists(r2_key)
+    assert storage.exists(r2_key)
     assert storage.exists(shared_key)
 
     with SessionLocal() as session:
@@ -8473,9 +8480,130 @@ def test_import_batch_rollback_is_latest_job_scoped_and_cleans_owned_images() ->
         assert shared_later_sku is not None and shared_later_sku.deleted_at is None
         assert orphan_product is not None and orphan_product.status == "ARCHIVED"
         assert shared_product is not None and shared_product.status == "ACTIVE"
-        assert images_by_key[r2_key].deleted_at is not None
-        assert images_by_key[external_url].deleted_at is not None
+        assert images_by_key[r2_key].deleted_at is None
+        assert images_by_key[external_url].deleted_at is None
         assert images_by_key[shared_key].deleted_at is None
+
+
+def test_import_batch_rollback_preserves_existing_and_manually_edited_skus() -> None:
+    suffix = uuid4().hex[:10].upper()
+    category = f"安全撤回分类 {suffix}"
+    existing_code = f"ROLLBACK-EXISTING-{suffix}"
+    edited_code = f"ROLLBACK-EDITED-{suffix}"
+    owned_code = f"ROLLBACK-OWNED-{suffix}"
+
+    def workbook_content(rows: list[tuple[str, str]]) -> bytes:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = PRODUCT_TEMPLATE_SHEET
+        sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+        for name, sku_code in rows:
+            sheet.append(
+                [
+                    name,
+                    category,
+                    sku_code,
+                    None,
+                    "12.50",
+                    None,
+                    None,
+                    None,
+                    *([None] * 10),
+                ]
+            )
+        output = BytesIO()
+        workbook.save(output)
+        workbook.close()
+        return output.getvalue()
+
+    baseline = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "撤回前既有商品.xlsx",
+                workbook_content([("既有商品", existing_code)]),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert baseline.status_code == 201, baseline.text
+    assert baseline.json()["status"] == "published"
+
+    created = client.post(
+        "/api/v1/import-batches",
+        json={"expected_file_count": 1},
+    )
+    assert created.status_code == 201, created.text
+    batch_id = UUID(created.json()["id"])
+    imported = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "安全撤回批次.xlsx",
+                workbook_content(
+                    [
+                        ("既有商品已更新", existing_code),
+                        ("批次新建后人工编辑", edited_code),
+                        ("批次独占商品", owned_code),
+                    ]
+                ),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={
+            "source_type": "PRODUCT_TEMPLATE",
+            "batch_id": str(batch_id),
+        },
+    )
+    assert imported.status_code == 201, imported.text
+    assert imported.json()["status"] == "published"
+
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code.in_([existing_code, edited_code, owned_code]),
+            )
+        ).all()
+        by_code = {row.sku_code: row for row in rows}
+        assert by_code[existing_code].rollback_owner_batch_id is None
+        assert by_code[edited_code].rollback_owner_batch_id == batch_id
+        assert by_code[owned_code].rollback_owner_batch_id == batch_id
+        edited_id = by_code[edited_code].id
+        edited_version = by_code[edited_code].version
+
+    edited = client.patch(
+        f"/api/v1/skus/{edited_id}",
+        json={
+            "expected_version": edited_version,
+            "option_values": {"人工备注": "保留这条 SKU"},
+        },
+    )
+    assert edited.status_code == 200, edited.text
+
+    rolled_back = client.post(
+        f"/api/v1/import-batches/{batch_id}/rollback",
+        json={"category_id": None},
+    )
+    assert rolled_back.status_code == 200, rolled_back.text
+    assert rolled_back.json()["status"] == "REVOKED"
+    assert rolled_back.json()["deleted_sku_count"] == 1
+
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code.in_([existing_code, edited_code, owned_code]),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+        by_code = {row.sku_code: row for row in rows}
+        assert by_code[existing_code].deleted_at is None
+        assert by_code[edited_code].deleted_at is None
+        assert by_code[edited_code].rollback_owner_batch_id is None
+        assert by_code[owned_code].deleted_at is not None
 
 
 def test_batch_merchandising_updates_category_pin_status_and_storefront_order() -> None:
@@ -11527,23 +11655,50 @@ def test_phase4a1c_update_requires_expected_version_and_creates_new_snapshot(
         assert missing_version.value.code == "EXPECTED_PRODUCT_VERSION_REQUIRED"
         session.rollback()
 
-        result = approve_candidate_group(
-            session,
-            tenant_id=DEFAULT_TENANT_ID,
-            task_id=workflow.task_id,
-            candidate_group_key=group_key,
-            reviewer_membership_id=DEFAULT_MEMBERSHIP_ID,
-            idempotency_key=f"approve-{uuid4()}",
-            confirmed_values=values,
-            activate=True,
-            target_product_id=product_id,
-            expected_product_version=1,
+        rollback_batch_id = uuid4()
+        protected_sku_id = uuid4()
+        session.add(
+            CatalogImportBatchRow(
+                id=rollback_batch_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                created_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+                created_by_user_id=DEFAULT_OWNER_USER_ID,
+                expected_file_count=1,
+                status="ACTIVE",
+            )
         )
         session.commit()
-        assert result.product_version == 2
+        session.add(
+            SkuRow(
+                id=protected_sku_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                rollback_owner_batch_id=rollback_batch_id,
+                sku_code=f"ADOPTION-OWNER-{uuid4().hex[:8].upper()}",
+                option_values={},
+                status="ACTIVE",
+            )
+        )
+        session.commit()
+        adopted = client.post(
+            f"/api/v1/ai/product-intelligence/tasks/{workflow.task_id}/groups/{group_key}/approve",
+            json={
+                "idempotency_key": f"approve-{uuid4()}",
+                "confirmed_values": values,
+                "activate": True,
+                "target_product_id": str(product_id),
+                "expected_product_version": 1,
+            },
+        )
+        assert adopted.status_code == 202, adopted.text
+        assert adopted.json()["product_version"] == 2
+        session.expire_all()
         product = session.get(ProductRow, product_id)
         assert product is not None and product.current_version == 2
         assert product.name == "Versioned Product Updated"
+        protected_sku = session.get(SkuRow, protected_sku_id)
+        assert protected_sku is not None
+        assert protected_sku.rollback_owner_batch_id is None
         versions = session.scalars(
             select(ProductVersionRow)
             .where(ProductVersionRow.product_id == product_id)
@@ -13165,6 +13320,7 @@ def test_product_view_ranking_can_assign_popular_category_with_pins_first() -> N
     normal_sku_id = uuid4()
     product_ids = [pinned_product_id, popular_product_id, normal_product_id]
     sku_ids = [pinned_sku_id, popular_sku_id, normal_sku_id]
+    rollback_batch_id = uuid4()
     now = datetime.now(UTC)
 
     with SessionLocal() as session:
@@ -13201,6 +13357,16 @@ def test_product_view_ranking_can_assign_popular_category_with_pins_first() -> N
                 path=category_name,
                 status="ACTIVE",
                 sort_order=50_000,
+            )
+        )
+        session.add(
+            CatalogImportBatchRow(
+                id=rollback_batch_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                created_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+                created_by_user_id=DEFAULT_OWNER_USER_ID,
+                expected_file_count=1,
+                status="ACTIVE",
             )
         )
         session.flush()
@@ -13241,6 +13407,9 @@ def test_product_view_ranking_can_assign_popular_category_with_pins_first() -> N
                     moq_unit="piece",
                     option_values={},
                     status="ACTIVE",
+                    rollback_owner_batch_id=(
+                        rollback_batch_id if sku_id == popular_sku_id else None
+                    ),
                 )
                 for index, (sku_id, product_id, name) in enumerate(
                     zip(sku_ids, product_ids, product_names, strict=True),
@@ -13321,12 +13490,15 @@ def test_product_view_ranking_can_assign_popular_category_with_pins_first() -> N
         with SessionLocal() as session:
             popular = session.get(ProductCategoryRow, popular_category_id)
             selected = session.get(ProductRow, popular_product_id)
+            selected_sku = session.get(SkuRow, popular_sku_id)
             assert popular is not None
             assert popular.code == POPULAR_CATEGORY_CODE
             assert popular.name == "热门"
             assert popular.parent_id is None
             assert popular.sort_order == 0
             assert selected is not None and selected.category_id == popular.id
+            assert selected_sku is not None
+            assert selected_sku.rollback_owner_batch_id is None
 
         categories = client.get("/api/v1/categories")
         assert categories.status_code == 200, categories.text
@@ -13361,6 +13533,11 @@ def test_product_view_ranking_can_assign_popular_category_with_pins_first() -> N
                 )
             )
             session.execute(delete(SkuRow).where(SkuRow.id.in_(sku_ids)))
+            session.execute(
+                delete(CatalogImportBatchRow).where(
+                    CatalogImportBatchRow.id == rollback_batch_id
+                )
+            )
             session.execute(
                 delete(ProductAuditEventRow).where(
                     ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
@@ -16402,6 +16579,10 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         column["name"]
         for column in inspect(upgraded_engine).get_columns("skus")
     }
+    assert "rollback_owner_batch_id" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("skus")
+    }
     assert {"specification_snapshot", "option_values_snapshot"}.issubset({
         column["name"]
         for column in inspect(upgraded_engine).get_columns("public_quote_draft_items")
@@ -16541,7 +16722,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260812_0080"
+        ).scalar() == "20260812_0081"
     upgraded_engine.dispose()
     command.check(config)
 

@@ -1249,6 +1249,65 @@ const english: Record<string, string> = {
     "Could not delete all products. Try again shortly.",
   "SKU 列表分页": "SKU pagination",
   "第 {page} / {pages} 页": "Page {page} of {pages}",
+  "商品批量操作": "Bulk catalog operations",
+  "导入与撤回": "Import and rollback",
+  "一次导入多个商品文件，或撤回指定批次与分类。":
+    "Import multiple catalog files at once, or roll back a selected batch or category.",
+  "批量导入": "Batch import",
+  "撤回导入": "Roll back imports",
+  "拖入或选择多个商品文件": "Drop or select multiple catalog files",
+  "支持 XLSX，多文件会归入同一批次":
+    "XLSX is supported. Multiple files are grouped into one batch.",
+  "检查中": "Checking",
+  "待导入": "Ready to import",
+  "上传中": "Uploading",
+  "失败": "Failed",
+  "详情": "Details",
+  "移除文件": "Remove file",
+  "重试文件": "Retry file",
+  "继续添加": "Add more",
+  "导入 {count} 个文件": "Import {count} files",
+  "只接受 .xlsx 商品文件。": "Only .xlsx catalog files are accepted.",
+  "文件签名与 XLSX 格式不一致。":
+    "The file signature does not match the XLSX format.",
+  "每个批次最多选择 100 个文件。":
+    "You can select up to 100 files per batch.",
+  "每个批次最多选择 100 个文件，超出的文件未加入。":
+    "Each batch supports up to 100 files. Extra files were not added.",
+  "这些文件已经在当前列表中。":
+    "These files are already in the current list.",
+  "导入批次加载失败": "Could not load import batches",
+  "按批次或分类撤回": "Roll back by batch or category",
+  "只撤回该批次新建且之后未被其他导入批次接管的 SKU；既有 SKU 不会被删除。":
+    "Only SKUs created by this batch and not subsequently claimed by another import batch can be rolled back. Existing SKUs are not deleted.",
+  "撤回完成": "Rollback complete",
+  "已撤回 {skus} 个由该批次新建的 SKU，并归档 {products} 个不再包含有效 SKU 的商品。":
+    "Rolled back {skus} SKUs created by this batch and archived {products} products that no longer contain active SKUs.",
+  "正在读取导入批次": "Loading import batches",
+  "等待上传文件": "Waiting for files",
+  "已撤回": "Rolled back",
+  "部分撤回": "Partially rolled back",
+  "可撤回": "Available to roll back",
+  "{files} 个文件 · {skus} 个 SKU": "{files} files · {skus} SKUs",
+  "撤回范围": "Rollback scope",
+  "选择范围": "Select scope",
+  "整个批次（当前可撤回 {count} 个 SKU）":
+    "Entire batch ({count} SKUs currently eligible)",
+  "撤回不会恢复字段历史值；只会删除可确认由该批次新建且未被后续批次接管的 SKU。":
+    "Rollback does not restore earlier field values. It only deletes SKUs confirmed as created by this batch and not claimed by a later batch.",
+  "撤回这个分类": "Roll back this category",
+  "撤回整个批次": "Roll back the entire batch",
+  "暂无可撤回的导入批次": "No import batches available to roll back",
+  "通过“批量导入”上传的文件会显示在这里。":
+    "Files uploaded through Batch import appear here.",
+  "确认撤回这个分类？": "Roll back this category?",
+  "确认撤回整个批次？": "Roll back the entire batch?",
+  "只会删除所选分类中由该批次新建且未被后续批次接管的 SKU；既有 SKU 与无法确认归属的图片不会被删除。":
+    "Only SKUs in this category that were created by this batch and not claimed by a later batch will be deleted. Existing SKUs and images whose ownership cannot be verified will not be deleted.",
+  "只会删除该批次新建且未被后续批次接管的 SKU；既有 SKU 与无法确认归属的图片不会被删除。":
+    "Only SKUs created by this batch and not claimed by a later batch will be deleted. Existing SKUs and images whose ownership cannot be verified will not be deleted.",
+  "确认撤回": "Confirm rollback",
+  "撤回失败，请稍后重试。": "Rollback failed. Please try again.",
   "商品批量导入": "Bulk product import",
   "上传 Product + SKU 双表 XLSX；也继续兼容历史单表模板。系统会先完整校验，再按 SKU 增量合并到当前商品库。":
     "Upload the Product + SKU workbook. Legacy single-sheet templates remain supported. The whole file is validated before an incremental merge by SKU.",

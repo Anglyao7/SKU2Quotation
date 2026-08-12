@@ -83,6 +83,10 @@ from ..services.external_image_migration import (
 from ..adapters.object_storage import get_object_storage
 from ..services.sku_catalog_export import build_sku_catalog_workbook
 from ..services.sku_quotas import ensure_sku_capacity
+from ..services.catalog_write_guard import (
+    lock_catalog_write as _lock_catalog_write,
+    release_rollback_ownership as _release_rollback_ownership,
+)
 
 
 FIELD_LABELS = {
@@ -881,6 +885,7 @@ def upload_product_main_image(
             f"商品图片不能超过 {MAX_PRODUCT_IMAGE_BYTES // (1024 * 1024)} MB。",
             kind="too_large",
         )
+    _lock_catalog_write(session, tenant_id=tenant_id)
     product = repository.get_product_row(
         session,
         tenant_id=tenant_id,
@@ -892,6 +897,11 @@ def upload_product_main_image(
             "Product was not found.",
             kind="not_found",
         )
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=[product.id],
+    )
 
     processed, width, height = _normalized_product_image(content)
     image_id = uuid4()
@@ -1342,6 +1352,7 @@ def create_skus(
     request: SkuBatchCreateRequest,
 ) -> list[SkuResponse]:
     _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
     product = repository.get_product_row(session, tenant_id=tenant_id, product_id=product_id)
     if product is None:
         raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
@@ -1428,6 +1439,7 @@ def update_sku(
     request: SkuUpdateRequest,
 ) -> SkuResponse:
     _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
     row = repository.get_sku(session, tenant_id=tenant_id, sku_id=sku_id)
     if row is None:
         raise ApplicationError("SKU_NOT_FOUND", "SKU was not found.", kind="not_found")
@@ -1437,6 +1449,11 @@ def update_sku(
             "SKU has been changed by another user.",
             kind="conflict",
         )
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=[row.id],
+    )
     before = _sku_response(row).model_dump(mode="json")
     changes = request.model_dump(exclude={"expected_version"}, exclude_unset=True)
     packing_quantity_supplied = "packing_quantity" in changes
@@ -1523,6 +1540,7 @@ def upsert_public_offer(
     request: PublicCatalogOfferUpsertRequest,
 ) -> PublicCatalogOfferResponse:
     _require(permissions, "catalog.publish")
+    _lock_catalog_write(session, tenant_id=tenant_id)
     sku = repository.get_sku(session, tenant_id=tenant_id, sku_id=sku_id)
     if sku is None:
         raise ApplicationError("SKU_NOT_FOUND", "SKU was not found.", kind="not_found")
@@ -1531,6 +1549,11 @@ def upsert_public_offer(
     )
     if product is None:
         raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=[sku.id],
+    )
     if request.publication_status == "PUBLISHED":
         if product.status != "ACTIVE":
             raise ApplicationError(
@@ -2535,6 +2558,7 @@ def delete_category(
     expected_version: int,
 ) -> CategoryDeleteResponse:
     _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
     category = repository.get_category(
         session,
         tenant_id=tenant_id,
@@ -2559,6 +2583,19 @@ def delete_category(
     )
     category_ids = [row.id for row in categories]
     child_ids = [row.id for row in categories[1:]]
+    affected_product_ids = list(
+        session.scalars(
+            select(ProductRow.id).where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.category_id.in_(category_ids),
+            )
+        ).all()
+    )
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=affected_product_ids,
+    )
     affected_product_count, attribute_definition_ids, attribute_value_count = (
         _category_delete_counts(
             session,
@@ -2823,11 +2860,17 @@ def create_price(
     request: SupplierPriceCreateRequest,
 ) -> SupplierPriceResponse:
     _require(permissions, "product.cost.write")
+    _lock_catalog_write(session, tenant_id=tenant_id)
     source = repository.get_supplier_product(
         session, tenant_id=tenant_id, supplier_product_id=request.supplier_product_id
     )
     if source is None:
         raise ApplicationError("SUPPLIER_PRODUCT_NOT_FOUND", "Supplier product was not found.")
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=[source.product_id],
+    )
     if request.sku_id:
         sku = repository.get_sku(session, tenant_id=tenant_id, sku_id=request.sku_id)
         if sku is None or sku.product_id != source.product_id:
@@ -2956,9 +2999,11 @@ def batch_delete_skus(
     membership_id: UUID,
     permissions: frozenset[str],
     sku_ids: list[UUID],
+    commit: bool = True,
 ) -> dict[str, Any]:
     """Soft-delete SKUs while preserving inventory and quotation history."""
     _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
 
     requested_ids = list(dict.fromkeys(sku_ids))
     rows = session.scalars(
@@ -2968,6 +3013,7 @@ def batch_delete_skus(
             SkuRow.id.in_(requested_ids),
         )
         .execution_options(include_deleted=True)
+        .with_for_update()
     ).all()
     rows_by_id = {row.id: row for row in rows}
     selected_rows: list[SkuRow] = []
@@ -3015,6 +3061,7 @@ def batch_delete_skus(
         }
         sku.status = "ARCHIVED"
         sku.deleted_at = now
+        sku.rollback_owner_batch_id = None
         sku.updated_at = now
         sku.updated_by_user_id = user_id
         sku.version += 1
@@ -3093,11 +3140,22 @@ def batch_delete_skus(
             supplier.active_skus = int(active_counts.get(supplier.id, 0))
             supplier.updated_at = now
 
-    _commit(
-        session,
-        conflict_code="BATCH_DELETE_FAILED",
-        conflict_message="批量删除失败，请刷新商品库后重试。",
-    )
+    if commit:
+        _commit(
+            session,
+            conflict_code="BATCH_DELETE_FAILED",
+            conflict_message="批量删除失败，请刷新商品库后重试。",
+        )
+    else:
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            raise ApplicationError(
+                "BATCH_DELETE_FAILED",
+                "批量删除失败，请刷新商品库后重试。",
+                kind="conflict",
+            ) from exc
 
     return {
         "success_count": len(selected_rows),
@@ -3152,6 +3210,7 @@ def delete_all_products(
     """Soft-delete one tenant's complete catalog with set-based updates."""
 
     _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
     deleted_sku_count = int(
         session.scalar(
             select(func.count())
@@ -3198,6 +3257,7 @@ def delete_all_products(
         .values(
             status="ARCHIVED",
             deleted_at=now,
+            rollback_owner_batch_id=None,
             updated_at=now,
             updated_by_user_id=user_id,
             version=SkuRow.version + 1,
@@ -3270,6 +3330,7 @@ def batch_update_sku_status(
 ) -> dict[str, Any]:
     """Batch publish or unpublish SKUs with tenant isolation and audit history."""
     _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
 
     if status not in SKU_STATUSES:
         raise ApplicationError(
@@ -3291,6 +3352,11 @@ def batch_update_sku_status(
             "failed_items": failed_items,
             "affected_product_count": 0,
         }
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=[row.id for row in selected_rows],
+    )
 
     now = utcnow()
     product_ids = list(dict.fromkeys(row.product_id for row in selected_rows))
@@ -3387,6 +3453,7 @@ def batch_update_sku_category(
     """Move the products represented by selected SKUs into one category."""
 
     _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
     category = None
     if category_id is not None:
         category = session.scalar(
@@ -3419,6 +3486,11 @@ def batch_update_sku_category(
         )
     ).all()
     products_by_id = {row.id: row for row in products}
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=list(products_by_id),
+    )
     valid_rows: list[SkuRow] = []
     for sku in selected_rows:
         if sku.product_id not in products_by_id:
@@ -3482,6 +3554,7 @@ def batch_update_sku_pinned(
     """Pin or unpin the products represented by selected SKUs."""
 
     _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
     requested_ids, selected_rows, failed_items = _load_batch_sku_selection(
         session,
         tenant_id=tenant_id,
@@ -3497,6 +3570,11 @@ def batch_update_sku_pinned(
         )
     ).all()
     products_by_id = {row.id: row for row in products}
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=list(products_by_id),
+    )
     valid_rows: list[SkuRow] = []
     for sku in selected_rows:
         if sku.product_id not in products_by_id:

@@ -23,6 +23,10 @@ from ..repositories import public_catalog_repository
 from ..repositories import storefront_analytics_repository as repository
 from ..services.catalog_translation import catalog_translation_source
 from ..services.storefront_analytics import raw_ip_retention_days
+from ..services.catalog_write_guard import (
+    lock_catalog_write,
+    release_rollback_ownership,
+)
 from ..storefront_analytics_schemas import (
     StorefrontAnalyticsCountryPoint,
     StorefrontAnalyticsCountryProductPoint,
@@ -334,6 +338,7 @@ def assign_products_to_popular_category(
 
     _require(permissions, "analytics.view")
     _require(permissions, "product.edit")
+    lock_catalog_write(session, tenant_id=tenant_id)
     products = list(
         session.scalars(
             select(ProductRow).where(
@@ -352,6 +357,11 @@ def assign_products_to_popular_category(
             "部分商品不存在或已经归档，请刷新排行榜后重试。",
             kind="not_found",
         )
+    release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=[row.id for row in products],
+    )
 
     now = utcnow()
     popular = session.scalar(

@@ -29,6 +29,10 @@ from ..services.product_intelligence.adoption import (
     reject_candidate_group,
 )
 from ..services.rbac import has_permission
+from ..services.catalog_write_guard import (
+    lock_catalog_write,
+    release_rollback_ownership,
+)
 
 
 def _membership_id(session: Session, *, tenant_id: UUID, user_id: UUID) -> UUID:
@@ -180,6 +184,13 @@ def approve_candidate(
         user_id=user_id,
         permission_code="product.edit" if request.target_product_id else "product.create",
     )
+    if request.target_product_id is not None:
+        lock_catalog_write(session, tenant_id=tenant_id)
+        release_rollback_ownership(
+            session,
+            tenant_id=tenant_id,
+            product_ids=[request.target_product_id],
+        )
     try:
         result = approve_candidate_group(
             session,

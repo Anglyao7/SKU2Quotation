@@ -33,6 +33,17 @@ mkdir -p "${partial}"
 chmod 700 "${partial}"
 
 writers_stopped=false
+leave_writers_stopped="${ATC_BACKUP_LEAVE_WRITERS_STOPPED:-false}"
+tenant_worker_was_running=false
+product_event_consumer_was_running=false
+
+worker_is_running() {
+  local service="$1"
+  local container_id=""
+  container_id="$(compose_with_workers ps --quiet "${service}" 2>/dev/null || true)"
+  [[ -n "${container_id}" ]] \
+    && [[ "$(docker inspect --format '{{.State.Running}}' "${container_id}" 2>/dev/null || true)" == "true" ]]
+}
 
 resume_writers() {
   if [[ "${writers_stopped}" != "true" ]]; then
@@ -45,8 +56,11 @@ resume_writers() {
     compose start keycloak api web caddy
   else
     compose start rabbitmq keycloak api web caddy
-    if [[ "${ATC_ENABLE_WORKERS:-false}" == "true" ]]; then
-      compose_with_workers start tenant-worker product-event-consumer
+    if [[ "${tenant_worker_was_running}" == "true" ]]; then
+      compose_with_workers start tenant-worker
+    fi
+    if [[ "${product_event_consumer_was_running}" == "true" ]]; then
+      compose_with_workers start product-event-consumer
     fi
   fi
   writers_stopped=false
@@ -71,9 +85,9 @@ info "entering a bounded backup window so DB and object snapshots cannot diverge
 writers_stopped=true
 compose stop caddy web api keycloak
 if [[ "${ATC_DEPLOYMENT_PROFILE}" == "standard" ]]; then
-  if [[ "${ATC_ENABLE_WORKERS:-false}" == "true" ]]; then
-    compose_with_workers stop tenant-worker product-event-consumer
-  fi
+  worker_is_running tenant-worker && tenant_worker_was_running=true
+  worker_is_running product-event-consumer && product_event_consumer_was_running=true
+  compose_with_workers stop tenant-worker product-event-consumer
   compose stop rabbitmq
 fi
 
@@ -123,7 +137,11 @@ fi
 )
 chmod -R go-rwx "${partial}"
 mv "${partial}" "${final}"
-resume_writers
+if [[ "${leave_writers_stopped}" == "true" ]]; then
+  info "leaving application writers stopped for the caller's migration window"
+else
+  resume_writers
+fi
 trap - ERR INT TERM
 
 # Delete only timestamped completed backups under the validated backup root.

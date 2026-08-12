@@ -7,6 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
 metadata_file="${1:-${DEPLOYMENT_STATE_DIR}/previous.env}"
+keep_current_compose="${ATC_ROLLBACK_KEEP_CURRENT_COMPOSE:-false}"
+migration_head_override="${ATC_ROLLBACK_MIGRATION_HEAD:-}"
 
 require_command git
 require_command docker
@@ -15,6 +17,21 @@ require_command curl
 acquire_global_operation_lock
 load_production_env
 load_release_metadata "${metadata_file}"
+
+case "${keep_current_compose}" in
+  true)
+    [[ "${migration_head_override}" =~ ^[0-9]{8}_[0-9]{4}$ ]] \
+      || die "ATC_ROLLBACK_MIGRATION_HEAD must be an Alembic revision when retaining the current compose contract"
+    export ATC_MIGRATION_HEAD="${migration_head_override}"
+    ;;
+  false)
+    [[ -z "${migration_head_override}" ]] \
+      || die "ATC_ROLLBACK_MIGRATION_HEAD requires ATC_ROLLBACK_KEEP_CURRENT_COMPOSE=true"
+    ;;
+  *)
+    die "ATC_ROLLBACK_KEEP_CURRENT_COMPOSE must be true or false"
+    ;;
+esac
 
 [[ "${ATC_COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]] || die "rollback metadata has an invalid commit"
 docker image inspect "atc-api:${ATC_COMMIT_SHA}" >/dev/null 2>&1 \
@@ -25,7 +42,11 @@ docker image inspect "atc-web:${ATC_COMMIT_SHA}" >/dev/null 2>&1 \
 cd "${REPOSITORY_ROOT}"
 git diff --quiet && git diff --cached --quiet \
   || die "tracked files are modified; rollback refuses to overwrite server-side edits"
-git checkout --detach "${ATC_COMMIT_SHA}"
+if [[ "${keep_current_compose}" == "true" ]]; then
+  info "retaining the current expand-compatible compose contract at database head ${ATC_MIGRATION_HEAD}"
+else
+  git checkout --detach "${ATC_COMMIT_SHA}"
+fi
 render_keycloak_realm
 render_caddy_sites
 

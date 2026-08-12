@@ -128,6 +128,19 @@ had_previous_release=false
 if [[ -f "${DEPLOYMENT_STATE_DIR}/current.env" ]]; then
   had_previous_release=true
   cp "${DEPLOYMENT_STATE_DIR}/current.env" "${DEPLOYMENT_STATE_DIR}/previous.env"
+else
+  compose_project="ai-trade-cloud"
+  if [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]]; then
+    compose_project="ai-trade-cloud-compact"
+  fi
+  for managed_service in api web caddy tenant-worker product-event-consumer; do
+    if docker ps --all --quiet \
+      --filter "label=com.docker.compose.project=${compose_project}" \
+      --filter "label=com.docker.compose.service=${managed_service}" \
+      | grep -q .; then
+      die "${DEPLOYMENT_STATE_DIR}/current.env is missing while managed application workloads exist"
+    fi
+  done
 fi
 
 if [[ "${TARGET_REF}" =~ ^[0-9a-f]{40}$ ]] \
@@ -151,7 +164,7 @@ git checkout --detach "${resolved_commit}"
 
 export ATC_COMMIT_SHA="${resolved_commit}"
 export ATC_RELEASE="production-$(date -u +%Y%m%dT%H%M%SZ)-${resolved_commit:0:12}"
-export ATC_MIGRATION_HEAD="20260812_0080"
+export ATC_MIGRATION_HEAD="20260812_0081"
 export ATC_CONFIG_VERSION="production-v1-${resolved_commit:0:12}"
 export ATC_IMAGE_DIGEST="sha256:$(printf '%064d' 0)"
 export ATC_ENABLE_WORKERS="${ATC_ENABLE_WORKERS:-false}"
@@ -164,14 +177,42 @@ render_caddy_sites
 compose_with_ops config --quiet
 prepare_web_static_store
 
-rollback_on_error() {
-  status="$?"
-  trap - ERR
+rollback_started=false
+
+database_migration_head() {
+  compose exec -T postgres \
+    psql --username=postgres --dbname=ai_trade_cloud \
+    --no-align --tuples-only \
+    --command 'SELECT version_num FROM alembic_version ORDER BY version_num' \
+    2>/dev/null \
+    | tr -d '\r' \
+    | awk 'NF { if (value != "") value = value ","; value = value $0 } END { print value }'
+}
+
+rollback_on_failure() {
+  local status="${1:-1}"
+  local current_database_head=""
+  if [[ "${rollback_started}" == "true" ]]; then
+    exit "${status}"
+  fi
+  rollback_started=true
+  trap - ERR INT TERM HUP
+  set +e
   printf '\n[atc] deployment failed with status %s\n' "${status}" >&2
   if [[ -f "${DEPLOYMENT_STATE_DIR}/previous.env" ]]; then
     printf '[atc] restoring the previously recorded application release\n' >&2
-    ATC_OPERATION_LOCK_HELD=true \
-      "${SCRIPT_DIR}/rollback.sh" "${DEPLOYMENT_STATE_DIR}/previous.env" || true
+    current_database_head="$(database_migration_head || true)"
+    if [[ "${current_database_head}" == "${ATC_MIGRATION_HEAD}" ]]; then
+      printf '[atc] retaining the current expand-compatible compose contract for database head %s\n' \
+        "${current_database_head}" >&2
+      ATC_ROLLBACK_KEEP_CURRENT_COMPOSE=true \
+        ATC_ROLLBACK_MIGRATION_HEAD="${current_database_head}" \
+        ATC_OPERATION_LOCK_HELD=true \
+        "${SCRIPT_DIR}/rollback.sh" "${DEPLOYMENT_STATE_DIR}/previous.env" || true
+    else
+      ATC_OPERATION_LOCK_HELD=true \
+        "${SCRIPT_DIR}/rollback.sh" "${DEPLOYMENT_STATE_DIR}/previous.env" || true
+    fi
   else
     printf '[atc] stopping the unrecorded first-release public workloads\n' >&2
     compose stop caddy web api keycloak >/dev/null 2>&1 || true
@@ -184,7 +225,10 @@ rollback_on_error() {
   fi
   exit "${status}"
 }
-trap rollback_on_error ERR
+trap 'rollback_on_failure $?' ERR
+trap 'rollback_on_failure 130' INT
+trap 'rollback_on_failure 143' TERM
+trap 'rollback_on_failure 129' HUP
 
 info "pulling pinned dependency images"
 if [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]]; then
@@ -214,8 +258,9 @@ ATC_IMAGE_DIGEST="$(docker image inspect "atc-api:${ATC_COMMIT_SHA}" --format '{
 if [[ "${had_previous_release}" == "true" ]]; then
   [[ "${ATC_CONFIRMED_EXPAND_CONTRACT:-false}" == "true" ]] \
     || die "set ATC_CONFIRMED_EXPAND_CONTRACT=true only after confirming this migration is backward compatible"
-  info "creating a verified stopped-writer backup before running migrations"
-  ATC_OPERATION_LOCK_HELD=true "${SCRIPT_DIR}/backup.sh"
+  info "creating a verified backup and retaining the stopped-writer migration window"
+  ATC_BACKUP_LEAVE_WRITERS_STOPPED=true \
+    ATC_OPERATION_LOCK_HELD=true "${SCRIPT_DIR}/backup.sh"
 fi
 
 info "starting or retaining durable dependencies"
@@ -257,7 +302,7 @@ fi
 
 write_release_metadata "${DEPLOYMENT_STATE_DIR}/next.env"
 mv "${DEPLOYMENT_STATE_DIR}/next.env" "${DEPLOYMENT_STATE_DIR}/current.env"
-trap - ERR
+trap - ERR INT TERM HUP
 
 info "deployment completed: ${ATC_RELEASE}"
 info "release metadata: ${DEPLOYMENT_STATE_DIR}/current.env"

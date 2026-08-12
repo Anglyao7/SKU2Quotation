@@ -58,12 +58,23 @@ class SkuRow(AuditTimestampMixin, Base):
             name="fk_skus_tenant_latest_import_job",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "rollback_owner_batch_id"],
+            ["catalog_import_batches.tenant_id", "catalog_import_batches.id"],
+            name="fk_skus_tenant_rollback_owner_batch",
+            ondelete="RESTRICT",
+        ),
         Index("ix_skus_tenant_product_status", "tenant_id", "product_id", "status"),
         Index("ix_skus_tenant_supplier", "tenant_id", "supplier_id"),
         Index(
             "ix_skus_tenant_latest_import_job",
             "tenant_id",
             "latest_import_job_id",
+        ),
+        Index(
+            "ix_skus_tenant_rollback_owner_batch",
+            "tenant_id",
+            "rollback_owner_batch_id",
         ),
         Index("ix_skus_tenant_status_updated", "tenant_id", "status", "updated_at"),
     )
@@ -77,6 +88,10 @@ class SkuRow(AuditTimestampMixin, Base):
     latest_import_job_id: Mapped[str | None] = mapped_column(
         String(40), nullable=True
     )
+    # Deletion rights are deliberately narrower than import provenance. Only
+    # SKUs created by a batch and not subsequently claimed by another catalog
+    # write retain this marker. Historical and merely-updated rows stay NULL.
+    rollback_owner_batch_id: Mapped[UUID | None] = mapped_column(nullable=True)
     sku_code: Mapped[str] = mapped_column(String(160), nullable=False)
     name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     option_values: Mapped[dict[str, Any]] = mapped_column(

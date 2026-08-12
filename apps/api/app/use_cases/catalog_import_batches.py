@@ -4,12 +4,13 @@ from collections import defaultdict
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from ..adapters.object_storage import get_object_storage
 from ..catalog_operation_models import CatalogImportBatchRow
 from ..db_models import ImportJobRow
 from ..domain.errors import ApplicationError
+from ..identity_models import TenantRow
 from ..model_mixins import utcnow
 from ..models import (
     CatalogImportBatch,
@@ -19,7 +20,6 @@ from ..models import (
 from ..product_center_models import SkuRow
 from ..product_supplier_models import (
     ProductCategoryRow,
-    ProductImageRow,
     ProductRow,
 )
 from ..services.repository import import_job_model
@@ -123,29 +123,24 @@ def list_import_batches(
     batch_ids = [row.id for row in batches]
     category_counts = session.execute(
         select(
-            ImportJobRow.batch_id,
+            SkuRow.rollback_owner_batch_id,
             ProductRow.category_id,
             func.count(SkuRow.id),
         )
-        .join(
-            SkuRow,
-            (SkuRow.tenant_id == ImportJobRow.tenant_id)
-            & (SkuRow.latest_import_job_id == ImportJobRow.id),
-        )
+        .select_from(SkuRow)
         .join(
             ProductRow,
             (ProductRow.tenant_id == SkuRow.tenant_id)
             & (ProductRow.id == SkuRow.product_id),
         )
         .where(
-            ImportJobRow.tenant_id == tenant_id,
-            ImportJobRow.batch_id.in_(batch_ids),
             SkuRow.tenant_id == tenant_id,
+            SkuRow.rollback_owner_batch_id.in_(batch_ids),
             SkuRow.deleted_at.is_(None),
             SkuRow.status != "ARCHIVED",
         )
         .group_by(
-            ImportJobRow.batch_id,
+            SkuRow.rollback_owner_batch_id,
             ProductRow.category_id,
         )
     ).all()
@@ -269,18 +264,42 @@ def rollback_import_batch(
     category_id: str | None,
 ) -> CatalogImportBatchRollbackResponse:
     _require_catalog_import_access(permissions)
+    # All operations that can grant or consume rollback ownership serialize on
+    # the tenant row. The batch lock comes second everywhere, avoiding upload,
+    # worker and duplicate-rollback races in PostgreSQL.
+    tenant_exists = session.scalar(
+        select(TenantRow.id)
+        .where(TenantRow.id == tenant_id)
+        .with_for_update()
+    )
     batch = session.scalar(
-        select(CatalogImportBatchRow).where(
+        select(CatalogImportBatchRow)
+        .where(
             CatalogImportBatchRow.tenant_id == tenant_id,
             CatalogImportBatchRow.id == batch_id,
             CatalogImportBatchRow.deleted_at.is_(None),
         )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
-    if batch is None:
+    if tenant_exists is None or batch is None:
         raise ApplicationError(
             "IMPORT_BATCH_NOT_FOUND",
             "导入批次不存在。",
             kind="not_found",
+        )
+    if batch.status == "REVOKED":
+        return CatalogImportBatchRollbackResponse(
+            batch_id=batch.id,
+            status=batch.status,
+            deleted_sku_count=0,
+            archived_product_count=0,
+            removed_image_count=0,
+            deleted_storage_image_count=0,
+            preserved_external_image_count=0,
+            retained_shared_image_count=0,
+            storage_delete_failures=0,
+            remaining_sku_count=0,
         )
     jobs = session.scalars(
         select(ImportJobRow).where(
@@ -294,8 +313,7 @@ def rollback_import_batch(
             "该批次仍在导入，请完成后再撤回。",
             kind="conflict",
         )
-    job_ids = [job.id for job in jobs]
-    if not job_ids:
+    if not jobs:
         raise ApplicationError(
             "IMPORT_BATCH_EMPTY",
             "该批次没有可撤回的导入文件。",
@@ -316,9 +334,12 @@ def rollback_import_batch(
         )
         .where(
             SkuRow.tenant_id == tenant_id,
-            SkuRow.latest_import_job_id.in_(job_ids),
+            SkuRow.rollback_owner_batch_id == batch_id,
+            SkuRow.deleted_at.is_(None),
+            SkuRow.status != "ARCHIVED",
         )
         .execution_options(include_deleted=True)
+        .with_for_update()
     )
     if category_ids == set():
         sku_query = sku_query.where(ProductRow.category_id.is_(None))
@@ -326,11 +347,7 @@ def rollback_import_batch(
         sku_query = sku_query.where(ProductRow.category_id.in_(category_ids))
     scoped_skus = session.scalars(sku_query).all()
     product_ids = list(dict.fromkeys(row.product_id for row in scoped_skus))
-    active_sku_ids = [
-        row.id
-        for row in scoped_skus
-        if row.deleted_at is None and row.status != "ARCHIVED"
-    ]
+    active_sku_ids = [row.id for row in scoped_skus]
     if category_id is not None and not product_ids:
         raise ApplicationError(
             "IMPORT_BATCH_CATEGORY_EMPTY",
@@ -347,6 +364,7 @@ def rollback_import_batch(
             membership_id=membership_id,
             permissions=permissions,
             sku_ids=active_sku_ids,
+            commit=False,
         )
         deleted_sku_count = int(result["success_count"])
 
@@ -369,95 +387,49 @@ def rollback_import_batch(
         for product_id in product_ids
         if remaining_by_product.get(product_id, 0) == 0
     ]
-    retained_product_ids = set(product_ids) - set(archived_product_ids)
-
-    all_images = (
-        session.scalars(
-            select(ProductImageRow)
-            .where(
-                ProductImageRow.tenant_id == tenant_id,
-                ProductImageRow.product_id.in_(product_ids),
-            )
-            .execution_options(include_deleted=True)
-        ).all()
-        if product_ids
-        else []
-    )
-    retained_shared_image_count = sum(
-        1
-        for image in all_images
-        if image.product_id in retained_product_ids and image.deleted_at is None
-    )
-    candidate_images = [
-        image
-        for image in all_images
-        if image.product_id in archived_product_ids
-    ]
-    storage = get_object_storage()
     now = utcnow()
-    removed_image_count = 0
-    deleted_storage_image_count = 0
-    preserved_external_image_count = 0
-    storage_delete_failures = 0
-    for image in candidate_images:
-        if image.storage_provider.upper() == "EXTERNAL":
-            preserved_external_image_count += 1
-            if image.deleted_at is None:
-                image.deleted_at = now
-                image.updated_at = now
-                removed_image_count += 1
-            continue
-        try:
-            storage.delete(image.object_key)
-        except Exception:
-            storage_delete_failures += 1
-            continue
-        deleted_storage_image_count += 1
-        if image.deleted_at is None:
-            image.deleted_at = now
-            image.updated_at = now
-            removed_image_count += 1
-
     remaining_sku_count = int(
         session.scalar(
             select(func.count())
             .select_from(SkuRow)
-            .join(
-                ImportJobRow,
-                (ImportJobRow.tenant_id == SkuRow.tenant_id)
-                & (ImportJobRow.id == SkuRow.latest_import_job_id),
-            )
             .where(
                 SkuRow.tenant_id == tenant_id,
-                ImportJobRow.batch_id == batch_id,
+                SkuRow.rollback_owner_batch_id == batch_id,
                 SkuRow.deleted_at.is_(None),
                 SkuRow.status != "ARCHIVED",
             )
         )
         or 0
     )
-    if remaining_sku_count == 0 and storage_delete_failures == 0:
+    if remaining_sku_count == 0:
         batch.status = "REVOKED"
         batch.revoked_at = now
-    elif (
-        deleted_sku_count > 0
-        or storage_delete_failures > 0
-        or batch.status == "PARTIALLY_REVOKED"
-    ):
+    elif deleted_sku_count > 0 or batch.status == "PARTIALLY_REVOKED":
         batch.status = "PARTIALLY_REVOKED"
         batch.revoked_at = None
     batch.updated_at = now
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "IMPORT_BATCH_ROLLBACK_CONFLICT",
+            "撤回过程中商品库发生变化，请刷新后重试。",
+            kind="conflict",
+        ) from exc
 
     return CatalogImportBatchRollbackResponse(
         batch_id=batch.id,
         status=batch.status,
         deleted_sku_count=deleted_sku_count,
         archived_product_count=len(archived_product_ids),
-        removed_image_count=removed_image_count,
-        deleted_storage_image_count=deleted_storage_image_count,
-        preserved_external_image_count=preserved_external_image_count,
-        retained_shared_image_count=retained_shared_image_count,
-        storage_delete_failures=storage_delete_failures,
+        # Images intentionally remain untouched. The current schema has no
+        # batch-level image provenance, so deleting by product would risk
+        # removing manual or earlier-import assets.
+        removed_image_count=0,
+        deleted_storage_image_count=0,
+        preserved_external_image_count=0,
+        retained_shared_image_count=0,
+        storage_delete_failures=0,
         remaining_sku_count=remaining_sku_count,
     )
