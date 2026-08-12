@@ -9,6 +9,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from itertools import product as cartesian_product
@@ -3548,39 +3549,70 @@ def _store_new_embedded_images(
         os.getenv("OBJECT_STORAGE_STAGING_DIR", tempfile.gettempdir())
     )
     staging_root.mkdir(parents=True, exist_ok=True)
-    with ZipFile(source_path) as archive:
-        for index, spec in enumerate(pending, start=1):
-            assert spec.archive_path is not None
-            if not storage.exists(spec.object_key):
+    try:
+        configured_concurrency = int(
+            os.getenv("PRODUCT_TEMPLATE_IMAGE_UPLOAD_CONCURRENCY", "6")
+        )
+    except ValueError:
+        configured_concurrency = 6
+    concurrency = min(16, max(1, configured_concurrency), len(pending))
+
+    # Extract once, then upload several small product images concurrently.
+    # R2 and other S3-compatible stores are latency-bound for this workload;
+    # sequential HEAD + PUT requests make image-heavy workbooks needlessly slow.
+    # Object keys contain the content hash, so an idempotent PUT is safe after a
+    # previously interrupted import and removes the extra HEAD request.
+    with tempfile.TemporaryDirectory(
+        prefix="atc-template-images-",
+        dir=staging_root,
+    ) as raw_staging_dir:
+        staging_dir = Path(raw_staging_dir)
+        prepared: list[tuple[StoredTemplateImage, Path]] = []
+        with ZipFile(source_path) as archive:
+            for index, spec in enumerate(pending, start=1):
+                assert spec.archive_path is not None
                 suffix = _safe_embedded_image_suffix(spec.original_filename)
-                descriptor, raw_path = tempfile.mkstemp(
-                    prefix="atc-template-image-",
-                    suffix=suffix,
-                    dir=staging_root,
-                )
-                path = Path(raw_path)
+                path = staging_dir / f"{index:06d}{suffix}"
                 digest = hashlib.sha256()
                 byte_size = 0
-                try:
-                    with os.fdopen(
-                        descriptor,
-                        "wb",
-                    ) as output, archive.open(spec.archive_path) as source:
-                        while chunk := source.read(1024 * 1024):
-                            digest.update(chunk)
-                            byte_size += len(chunk)
-                            output.write(chunk)
-                    if byte_size != spec.byte_size or digest.hexdigest() != spec.sha256:
-                        raise RuntimeError("embedded product image changed during import")
-                    storage.put_file(
-                        path,
-                        object_key=spec.object_key,
-                        content_type=spec.content_type,
-                    )
-                finally:
-                    path.unlink(missing_ok=True)
-            if progress_callback is not None:
-                progress_callback(index, len(pending))
+                with path.open("wb") as output, archive.open(
+                    spec.archive_path
+                ) as source:
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                        byte_size += len(chunk)
+                        output.write(chunk)
+                if byte_size != spec.byte_size or digest.hexdigest() != spec.sha256:
+                    raise RuntimeError("embedded product image changed during import")
+                prepared.append((spec, path))
+
+        def upload(prepared_image: tuple[StoredTemplateImage, Path]) -> None:
+            spec, path = prepared_image
+            storage.put_file(
+                path,
+                object_key=spec.object_key,
+                content_type=spec.content_type,
+            )
+
+        completed = 0
+        if concurrency == 1:
+            for prepared_image in prepared:
+                upload(prepared_image)
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed, len(prepared))
+            return
+
+        with ThreadPoolExecutor(
+            max_workers=concurrency,
+            thread_name_prefix="product-image-upload",
+        ) as executor:
+            futures = [executor.submit(upload, item) for item in prepared]
+            for future in as_completed(futures):
+                future.result()
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed, len(prepared))
 
 
 def _load_image_map(
@@ -4022,7 +4054,14 @@ def process_product_template_import(
         _store_new_embedded_images(
             source_path,
             specs=embedded_specs,
-            existing_object_keys=set(images),
+            # A withdrawn batch leaves soft-deleted image rows for audit. The
+            # corresponding R2 objects have already been removed, so only
+            # active rows can suppress a fresh upload on a later re-import.
+            existing_object_keys={
+                object_key
+                for object_key, image in images.items()
+                if image.deleted_at is None
+            },
             progress_callback=lambda processed, total: _record_import_progress(
                 job_id=job.id,
                 tenant_id=tenant_id,

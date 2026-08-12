@@ -24,7 +24,10 @@ from ..services.storefront_analytics import (
     request_visitor_ip,
 )
 from ..storefront_analytics_schemas import (
+    PopularCategoryAssignRequest,
+    PopularCategoryAssignResponse,
     StorefrontAnalyticsResponse,
+    StorefrontProductRankingResponse,
     StorefrontProductViewCreate,
 )
 from ..use_cases import storefront_analytics as use_cases
@@ -96,6 +99,56 @@ def storefront_analytics(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             days=days,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/storefront-analytics/product-ranking",
+    response_model=StorefrontProductRankingResponse,
+)
+def storefront_product_ranking(
+    response: Response,
+    days: int = Query(default=30, ge=7, le=60),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=200),
+    session: Session = Depends(get_authenticated_session),
+) -> StorefrontProductRankingResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.get_product_ranking(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            days=days,
+            page=page,
+            page_size=page_size,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/storefront-analytics/popular-category",
+    response_model=PopularCategoryAssignResponse,
+)
+def assign_storefront_popular_category(
+    payload: PopularCategoryAssignRequest,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PopularCategoryAssignResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.assign_products_to_popular_category(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_ids=payload.product_ids,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

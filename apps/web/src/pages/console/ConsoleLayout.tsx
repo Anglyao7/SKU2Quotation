@@ -11,6 +11,7 @@ import {
   DotsThreeOutline,
   FileText,
   FileXls,
+  Factory,
   GlobeHemisphereWest,
   Headset,
   IdentificationCard,
@@ -38,8 +39,12 @@ import { updateMerchantSettings } from "../../core/api";
 import { preloadConsoleRoute } from "../../core/routePreload";
 import { useLocale } from "../../core/LocaleContext";
 import { initials } from "../../lib/format";
+import {
+  SUBSCRIPTION_TIER_PRESENTATION,
+  subscriptionTierLabel,
+} from "../../lib/subscriptionTier";
 import type { UiLocale } from "../../core/types";
-import type { Tenant } from "../../types";
+import type { Tenant, TenantSubscriptionTier } from "../../types";
 
 export interface ConsoleOutletContext {
   activeTenantId: string;
@@ -76,6 +81,7 @@ const navigationGroups = [
     icon: Warehouse,
     items: [
       { to: "/console/inventory", label: "进销存", mobileLabel: "库存", icon: Warehouse, permissions: ["inventory.view"], platformAdminOnly: false, mobilePrimary: true },
+      { to: "/console/supply-chain", label: "供应链", mobileLabel: "供应链", icon: Factory, permissions: ["supplier.view", "supplier.manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/announcements", label: "公告管理", mobileLabel: "公告", icon: Megaphone, permissions: ["announcement.manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/support", label: "客服管理", mobileLabel: "客服", icon: Headset, end: true, permissions: ["support.view"], platformAdminOnly: false, mobilePrimary: false },
     ],
@@ -169,6 +175,8 @@ export function ConsoleLayout() {
   const displayName = profile?.user.displayName || profile?.user.email || t("当前成员");
   const defaultCurrency = (profile?.context.defaultCurrency ?? "CNY").toUpperCase();
   const businessMode = defaultCurrency === "CNY" ? "DOMESTIC" : "EXPORT";
+  const subscriptionTier: TenantSubscriptionTier = profile?.context.subscriptionTier ?? "TRIAL";
+  const subscriptionPresentation = SUBSCRIPTION_TIER_PRESENTATION[subscriptionTier];
   const canManageSettings = hasPermission("system.settings_manage");
   const visibleGroups = navigationGroups
     .map((group) => ({
@@ -192,13 +200,13 @@ export function ConsoleLayout() {
     slug: activeTenantSlug,
     active: true,
     status: "active",
-    subscription_tier: "TRIAL",
+    subscription_tier: subscriptionTier,
     subscription_started_at: "",
     subscription_expires_at: "",
     subscription_status: "active",
-    sku_limit: 500,
-    sku_remaining: 500,
-  } : undefined, [activeTenantId, activeTenantSlug, profile?.context.tenantName, t]);
+    sku_limit: subscriptionTier === "ELITE" ? null : subscriptionTier === "TRIAL" ? 500 : 5_000,
+    sku_remaining: subscriptionTier === "ELITE" ? null : subscriptionTier === "TRIAL" ? 500 : 5_000,
+  } : undefined, [activeTenantId, activeTenantSlug, profile?.context.tenantName, subscriptionTier, t]);
 
   useEffect(() => {
     if (!activeNavigationGroup) return;
@@ -386,7 +394,15 @@ export function ConsoleLayout() {
             </DropdownMenu.Content>
           </DropdownMenu.Root>
           <ThemeToggle />
-          {profile?.user.isPlatformAdmin ? <Badge className="platform-admin-badge" color="amber">{t("平台管理员")}</Badge> : null}
+          {activeTenantId ? (
+            <Badge
+              className={`subscription-level-badge is-${subscriptionTier.toLowerCase()}`}
+              color={subscriptionPresentation.color}
+              variant="soft"
+            >
+              {t(subscriptionTierLabel(subscriptionTier))}
+            </Badge>
+          ) : null}
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>
               <Button className="account-menu-trigger" variant="ghost" color="gray" aria-label={t("打开账户菜单")}>
@@ -402,7 +418,11 @@ export function ConsoleLayout() {
                     <Text size="2" weight="medium">{displayName}</Text>
                     <Text size="1" color="gray">{profile?.user.email || t("安全会话")}</Text>
                   </span>
-                  {profile?.user.isPlatformAdmin ? <Badge color="amber">{t("平台管理员")}</Badge> : null}
+                  {activeTenantId ? (
+                    <Badge color={subscriptionPresentation.color} variant="soft">
+                      {t(subscriptionTierLabel(subscriptionTier))}
+                    </Badge>
+                  ) : null}
                 </div>
               </DropdownMenu.Label>
               <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />{t("账户与安全")}</Link></DropdownMenu.Item>

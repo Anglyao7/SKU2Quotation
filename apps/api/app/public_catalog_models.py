@@ -56,6 +56,7 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     logo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    logo_object_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     contact_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
     publication_status: Mapped[str] = mapped_column(
@@ -72,6 +73,11 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
     hot_products_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
+        nullable=False,
+    )
+    category_showcase_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
         nullable=False,
     )
     support_widget_config: Mapped[dict[str, Any]] = mapped_column(
@@ -141,6 +147,10 @@ class CatalogShareRow(AuditTimestampMixin, Base):
             "target_type IN ('PRODUCTS', 'CATEGORY')",
             name="target_type_allowed",
         ),
+        CheckConstraint(
+            "logo_position IN ('NONE', 'TOP_LEFT', 'TOP_RIGHT')",
+            name="logo_position_allowed",
+        ),
         CheckConstraint("item_count > 0", name="item_count_positive"),
         CheckConstraint("length(fingerprint) = 64", name="fingerprint_sha256_length"),
         CheckConstraint(
@@ -175,6 +185,9 @@ class CatalogShareRow(AuditTimestampMixin, Base):
     category_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     item_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    logo_position: Mapped[str] = mapped_column(
+        String(20), default="NONE", nullable=False
+    )
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -187,7 +200,7 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
     __tablename__ = "public_quote_drafts"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('PENDING_CONFIRMATION', 'CONFIRMED', 'CANCELLED', 'EXPIRED')",
+            "status IN ('PENDING_CONFIRMATION', 'CONFIRMED', 'COMPLETED', 'CANCELLED', 'EXPIRED')",
             name="status_allowed",
         ),
         CheckConstraint("subtotal_amount >= 0", name="subtotal_nonnegative"),
@@ -219,6 +232,12 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
             "submitted_by_membership_id",
             "created_at",
         ),
+        Index(
+            "ix_public_quote_drafts_tenant_visitor_updated",
+            "tenant_id",
+            "visitor_token_hash",
+            "updated_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -230,6 +249,11 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
         String(30), default="PENDING_CONFIRMATION", nullable=False
     )
     submitted_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    visitor_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    visitor_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     customer_name: Mapped[str] = mapped_column(String(160), nullable=False)
     customer_company: Mapped[str | None] = mapped_column(String(200), nullable=True)
     customer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)

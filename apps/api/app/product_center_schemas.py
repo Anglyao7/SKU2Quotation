@@ -88,6 +88,7 @@ class SkuListItem(BaseModel):
     supplier_summary: SkuSupplierSummary
     default_moq: Decimal | None
     moq_unit: str | None
+    packing_quantity: str | None = None
     public_price: Decimal | None
     public_currency: str | None
     public_offer_status: Literal["DRAFT", "PUBLISHED", "SUSPENDED"] | None
@@ -134,6 +135,7 @@ class SkuCreateItem(BaseModel):
     barcode: str | None = Field(default=None, max_length=120)
     default_moq: Decimal | None = Field(default=None, ge=0)
     moq_unit: str | None = Field(default=None, max_length=32)
+    packing_quantity: Decimal | None = Field(default=None, ge=0)
     weight: Decimal | None = Field(default=None, ge=0)
     weight_unit: str | None = Field(default=None, max_length=32)
     status: Literal["DRAFT", "ACTIVE", "INACTIVE"] = "DRAFT"
@@ -162,6 +164,7 @@ class SkuUpdateRequest(BaseModel):
     barcode: str | None = Field(default=None, max_length=120)
     default_moq: Decimal | None = Field(default=None, ge=0)
     moq_unit: str | None = Field(default=None, max_length=32)
+    packing_quantity: Decimal | None = Field(default=None, ge=0)
     weight: Decimal | None = Field(default=None, ge=0)
     weight_unit: str | None = Field(default=None, max_length=32)
     status: Literal["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"] | None = None
@@ -263,6 +266,7 @@ class ManualProductCreateRequest(BaseModel):
     barcode: str | None = Field(default=None, max_length=120)
     default_moq: Decimal | None = Field(default=None, ge=0)
     moq_unit: str | None = Field(default=None, max_length=32)
+    packing_quantity: Decimal | None = Field(default=None, ge=0)
     weight: Decimal | None = Field(default=None, ge=0)
     weight_unit: str | None = Field(default=None, max_length=32)
     unit_price: Decimal = Field(default=Decimal("0"), ge=0)
@@ -417,6 +421,12 @@ class CategoryResponse(CategoryCreateRequest):
     path: str | None
     status: str
     version: int
+    cover_source: Literal["NONE", "UPLOAD", "PRODUCT"] = "NONE"
+    cover_product_id: UUID | None = None
+    cover_product_name: str | None = None
+    cover_image_url: str | None = None
+    uploaded_cover_image_url: str | None = None
+    cover_product_image_url: str | None = None
 
 
 class CategoryUpdateRequest(BaseModel):
@@ -426,6 +436,8 @@ class CategoryUpdateRequest(BaseModel):
     sort_order: int = Field(default=0, ge=0)
     status: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
     display_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    cover_source: Literal["NONE", "UPLOAD", "PRODUCT"] | None = None
+    cover_product_id: UUID | None = None
 
     @field_validator("name")
     @classmethod
@@ -442,6 +454,14 @@ class CategoryUpdateRequest(BaseModel):
             return None
         normalized = str(value).strip()
         return normalized.upper() if normalized else None
+
+    @model_validator(mode="after")
+    def validate_cover(self) -> "CategoryUpdateRequest":
+        if self.cover_source == "PRODUCT" and self.cover_product_id is None:
+            raise ValueError("cover_product_id is required for a product cover")
+        if self.cover_source != "PRODUCT" and self.cover_product_id is not None:
+            raise ValueError("cover_product_id is only allowed for a product cover")
+        return self
 
 
 class CategoryReorderItem(BaseModel):
@@ -463,10 +483,12 @@ class CategoryReorderRequest(BaseModel):
 class CategoryLayoutResponse(BaseModel):
     all_products_position: int = Field(ge=0)
     root_category_count: int = Field(ge=0)
+    category_showcase_enabled: bool = True
 
 
 class CategoryLayoutUpdateRequest(BaseModel):
     all_products_position: int = Field(ge=0, le=500)
+    category_showcase_enabled: bool = True
 
 
 class CategoryImportResponse(BaseModel):

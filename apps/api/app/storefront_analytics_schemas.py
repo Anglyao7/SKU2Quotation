@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class StorefrontProductViewCreate(BaseModel):
@@ -65,3 +65,43 @@ class StorefrontAnalyticsResponse(BaseModel):
     countries: list[StorefrontAnalyticsCountryPoint]
     products: list[StorefrontAnalyticsProductPoint]
     country_products: list[StorefrontAnalyticsCountryProductPoint]
+
+
+class StorefrontProductRankingItem(BaseModel):
+    rank: int = Field(ge=1)
+    product_id: UUID
+    product_code: str | None = None
+    name: str
+    category_id: UUID | None = None
+    category_name: str | None = None
+    views: int = Field(ge=0)
+    is_pinned: bool = False
+    is_popular: bool = False
+
+
+class StorefrontProductRankingResponse(BaseModel):
+    start_date: date
+    end_date: date
+    days: int = Field(ge=1)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total: int = Field(ge=0)
+    items: list[StorefrontProductRankingItem]
+
+
+class PopularCategoryAssignRequest(BaseModel):
+    product_ids: list[UUID] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_product_ids(self) -> "PopularCategoryAssignRequest":
+        if len(self.product_ids) != len(set(self.product_ids)):
+            raise ValueError("product ids must be unique")
+        return self
+
+
+class PopularCategoryAssignResponse(BaseModel):
+    category_id: UUID
+    category_name: str
+    selected_count: int = Field(ge=1)
+    moved_count: int = Field(ge=0)
+    popular_product_count: int = Field(ge=0)

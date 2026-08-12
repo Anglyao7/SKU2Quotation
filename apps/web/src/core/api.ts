@@ -18,6 +18,8 @@ import type {
   FileDetection,
   HybridSearchResponse,
   ImportJob,
+  CatalogImportBatch,
+  CatalogImportRollbackResult,
   InquiryMatch,
   InquiryRecord,
   InventoryDocument,
@@ -53,7 +55,13 @@ import type {
   SkuListItem,
   SkuListPage,
   StorefrontAnalyticsSnapshot,
+  StorefrontProductRankingPage,
+  PopularCategoryAssignResult,
   StorefrontAnnouncement,
+  SupplyChainPage,
+  SupplyChainPartner,
+  SupplyChainPartnerInput,
+  SupplyChainStatus,
   SupportActionSettings,
   SupportAIAgent,
   SupportAIAgentKnowledgeSource,
@@ -79,6 +87,7 @@ import type {
   TranslationReasoningEffort,
   CatalogLanguagePackInfo,
   CatalogShare,
+  CatalogShareLogoPosition,
   CatalogShareTargetType,
   CatalogTranslationJob,
   CatalogTranslationStatus,
@@ -242,6 +251,7 @@ interface ApiAuthTokenData {
     default_currency?: string | null;
     default_workspace?: string | null;
     account_scope?: "STAFF" | "CUSTOMER_SUBACCOUNT" | null;
+    subscription_tier?: "TRIAL" | "STANDARD" | "SILVER" | "ELITE" | null;
   };
   memberships?: ApiMembershipSummary[];
   permission_version?: number | null;
@@ -279,6 +289,7 @@ function mapAuthData(row: ApiAuthTokenData): AuthTokenData {
       defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
       accountScope: defined(row.context.account_scope),
+      subscriptionTier: defined(row.context.subscription_tier),
     },
     memberships: Array.isArray(row.memberships)
       ? row.memberships.map(mapMembership)
@@ -445,6 +456,7 @@ async function downloadCoreRequest(
   filename: string,
   init: RequestInit = {},
   retrySession = true,
+  preferResponseFilename = false,
 ): Promise<void> {
   await prepareCoreRequestAuth(path);
   const headers = new Headers(init.headers);
@@ -460,7 +472,7 @@ async function downloadCoreRequest(
   });
   if (response.status === 401 && retrySession) {
     const restored = await refreshAuthSession();
-    if (restored) return downloadCoreRequest(path, filename, init, false);
+    if (restored) return downloadCoreRequest(path, filename, init, false, preferResponseFilename);
     window.dispatchEvent(new CustomEvent("atc:auth-expired"));
   }
   if (!response.ok) {
@@ -478,7 +490,17 @@ async function downloadCoreRequest(
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = filename;
+  const disposition = response.headers.get("content-disposition") || "";
+  const encodedFilename = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+  let responseFilename: string | undefined;
+  if (preferResponseFilename && encodedFilename) {
+    try {
+      responseFilename = decodeURIComponent(encodedFilename);
+    } catch {
+      responseFilename = undefined;
+    }
+  }
+  anchor.download = responseFilename || filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -489,8 +511,9 @@ async function downloadCoreFile(
   path: string,
   filename: string,
   retrySession = true,
+  preferResponseFilename = false,
 ): Promise<void> {
-  return downloadCoreRequest(path, filename, {}, retrySession);
+  return downloadCoreRequest(path, filename, {}, retrySession, preferResponseFilename);
 }
 
 export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
@@ -571,6 +594,7 @@ function mapCurrentUser(row: ApiCurrentUserResponse): CurrentUser {
       defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
       accountScope: defined(row.context.account_scope),
+      subscriptionTier: defined(row.context.subscription_tier),
     },
     memberships: row.memberships.map(mapMembership),
   };
@@ -599,6 +623,8 @@ interface ApiMerchantSettings {
   name: string;
   slug: string;
   storefront_path: string;
+  logo_url?: string | null;
+  share_card_subtitle?: string | null;
   business_mode: "DOMESTIC" | "EXPORT";
   default_currency: string;
   storefront_locales: MerchantSettings["storefrontLocales"];
@@ -610,6 +636,8 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
     name: row.name,
     slug: row.slug,
     storefrontPath: row.storefront_path,
+    logoUrl: defined(row.logo_url),
+    shareCardSubtitle: defined(row.share_card_subtitle),
     businessMode: row.business_mode,
     defaultCurrency: row.default_currency,
     storefrontLocales: row.storefront_locales,
@@ -623,6 +651,7 @@ export async function getMerchantSettings(): Promise<MerchantSettings> {
 
 export async function updateMerchantSettings(input: {
   name?: string;
+  shareCardSubtitle?: string;
   businessMode?: "DOMESTIC" | "EXPORT";
   defaultCurrency?: string;
   storefrontLocales?: MerchantSettings["storefrontLocales"];
@@ -634,6 +663,7 @@ export async function updateMerchantSettings(input: {
       method: "PATCH",
       body: JSON.stringify({
         name: input.name,
+        share_card_subtitle: input.shareCardSubtitle,
         business_mode: input.businessMode,
         default_currency: input.defaultCurrency,
         storefront_locales: input.storefrontLocales,
@@ -641,6 +671,17 @@ export async function updateMerchantSettings(input: {
       }),
     },
   );
+  bumpPublicCatalogRevision();
+  return mapMerchantSettings(row);
+}
+
+export async function uploadMerchantLogo(logo: File): Promise<MerchantSettings> {
+  const body = new FormData();
+  body.append("logo", logo);
+  const row = await request<ApiMerchantSettings>("/me/merchant/logo", {
+    method: "POST",
+    body,
+  });
   bumpPublicCatalogRevision();
   return mapMerchantSettings(row);
 }
@@ -1030,6 +1071,7 @@ async function uploadProductTemplate(
         ));
         return;
       }
+      getResponseCache.clear();
       onUploadProgress?.(100);
       resolve(payload as ApiImportJob);
     };
@@ -1040,12 +1082,87 @@ async function uploadProductTemplate(
 export async function createProductTemplateImport(
   file: File,
   onUploadProgress?: (percent: number) => void,
+  batchId?: string,
 ) {
   const body = new FormData();
   body.append("file", file);
   body.append("source_type", "PRODUCT_TEMPLATE");
   body.append("defer_processing", "true");
+  if (batchId) body.append("batch_id", batchId);
   return mapImport(await uploadProductTemplate(body, onUploadProgress, true));
+}
+
+interface ApiCatalogImportBatch {
+  id: string;
+  status: CatalogImportBatch["status"];
+  expected_file_count: number;
+  file_count: number;
+  remaining_sku_count: number;
+  created_at: string;
+  jobs: ApiImportJob[];
+  categories: Array<{ id: string; name: string; sku_count: number }>;
+}
+
+function mapCatalogImportBatch(row: ApiCatalogImportBatch): CatalogImportBatch {
+  return {
+    id: row.id,
+    status: row.status,
+    expectedFileCount: row.expected_file_count,
+    fileCount: row.file_count,
+    remainingSkuCount: row.remaining_sku_count,
+    createdAt: row.created_at,
+    jobs: row.jobs.map(mapImport),
+    categories: row.categories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      skuCount: category.sku_count,
+    })),
+  };
+}
+
+export async function createCatalogImportBatch(expectedFileCount: number) {
+  const row = await request<ApiCatalogImportBatch>("/import-batches", {
+    method: "POST",
+    body: JSON.stringify({ expected_file_count: expectedFileCount }),
+  });
+  return mapCatalogImportBatch(row);
+}
+
+export async function listCatalogImportBatches(limit = 30) {
+  const rows = await request<ApiCatalogImportBatch[]>(`/import-batches?limit=${limit}`, {
+    cache: "no-store",
+  });
+  return rows.map(mapCatalogImportBatch);
+}
+
+export async function rollbackCatalogImportBatch(batchId: string, categoryId?: string) {
+  const row = await request<{
+    batch_id: string;
+    status: CatalogImportBatch["status"];
+    deleted_sku_count: number;
+    archived_product_count: number;
+    removed_image_count: number;
+    deleted_storage_image_count: number;
+    preserved_external_image_count: number;
+    retained_shared_image_count: number;
+    storage_delete_failures: number;
+    remaining_sku_count: number;
+  }>(`/import-batches/${encodeURIComponent(batchId)}/rollback`, {
+    method: "POST",
+    body: JSON.stringify({ category_id: categoryId || null }),
+  });
+  return {
+    batchId: row.batch_id,
+    status: row.status,
+    deletedSkuCount: row.deleted_sku_count,
+    archivedProductCount: row.archived_product_count,
+    removedImageCount: row.removed_image_count,
+    deletedStorageImageCount: row.deleted_storage_image_count,
+    preservedExternalImageCount: row.preserved_external_image_count,
+    retainedSharedImageCount: row.retained_shared_image_count,
+    storageDeleteFailures: row.storage_delete_failures,
+    remainingSkuCount: row.remaining_sku_count,
+  } satisfies CatalogImportRollbackResult;
 }
 
 interface ApiOffer {
@@ -1112,6 +1229,9 @@ interface ApiSkuListItem {
     primary_supplier_name?: string | null;
     names: string[];
   };
+  default_moq?: number | string | null;
+  moq_unit?: string | null;
+  packing_quantity?: string | null;
   public_price?: number | string | null;
   public_currency?: string | null;
   public_offer_status?: SkuListItem["publicOfferStatus"] | null;
@@ -1215,6 +1335,9 @@ function mapSkuListItem(row: ApiSkuListItem): SkuListItem {
       primarySupplierName: defined(row.supplier_summary.primary_supplier_name),
       names: row.supplier_summary.names ?? [],
     },
+    defaultMoq: row.default_moq == null ? undefined : Number(row.default_moq),
+    moqUnit: defined(row.moq_unit),
+    packingQuantity: defined(row.packing_quantity),
     publicPrice: row.public_price == null ? undefined : Number(row.public_price),
     publicCurrency: defined(row.public_currency),
     publicOfferStatus: defined(row.public_offer_status),
@@ -1337,6 +1460,18 @@ export async function uploadProductMainImage(
     width: defined(row.width),
     height: defined(row.height),
   };
+}
+
+export async function downloadProductMainImage(
+  productId: string,
+  filename: string,
+): Promise<void> {
+  await downloadCoreFile(
+    `/products/${encodeURIComponent(productId)}/images/main/download`,
+    filename,
+    true,
+    true,
+  );
 }
 
 export interface SkuBatchOperationResult {
@@ -2035,6 +2170,7 @@ export async function createManualProduct(
       barcode: input.barcode,
       default_moq: input.defaultMoq,
       moq_unit: input.moqUnit,
+      packing_quantity: input.packingQuantity,
       weight: input.weight,
       weight_unit: input.weightUnit,
       unit_price: input.unitPrice,
@@ -2047,18 +2183,56 @@ export async function createManualProduct(
   return mapProductDetail(row);
 }
 
-export async function createSkus(productId: string, items: Array<{ skuCode: string; name?: string; optionValues: Record<string, string>; status?: ProductSku["status"] }>) {
+export async function createSkus(productId: string, items: Array<{
+  skuCode: string;
+  name?: string;
+  optionValues: Record<string, string>;
+  defaultMoq?: number;
+  moqUnit?: string;
+  packingQuantity?: number;
+  status?: ProductSku["status"];
+}>) {
   const rows = await request<ApiSku[]>(`/products/${encodeURIComponent(productId)}/skus`, {
     method: "POST",
-    body: JSON.stringify({ items: items.map((item) => ({ sku_code: item.skuCode, name: item.name, option_values: item.optionValues, status: item.status ?? "DRAFT" })) }),
+    body: JSON.stringify({ items: items.map((item) => ({
+      sku_code: item.skuCode,
+      name: item.name,
+      option_values: item.optionValues,
+      default_moq: item.defaultMoq,
+      moq_unit: item.moqUnit,
+      packing_quantity: item.packingQuantity,
+      status: item.status ?? "DRAFT",
+    })) }),
   });
   return rows.map(mapSku);
 }
 
-export async function updateSku(skuId: string, input: Partial<Omit<ProductSku, "id" | "productId" | "skuCode" | "version" | "updatedAt">> & { expectedVersion: number }) {
+export async function updateSku(skuId: string, input: {
+  expectedVersion: number;
+  name?: string | null;
+  optionValues?: Record<string, string | number | boolean>;
+  barcode?: string | null;
+  defaultMoq?: number | null;
+  moqUnit?: string | null;
+  packingQuantity?: number | null;
+  weight?: number | null;
+  weightUnit?: string | null;
+  status?: ProductSku["status"];
+}) {
   return mapSku(await request<ApiSku>(`/skus/${encodeURIComponent(skuId)}`, {
     method: "PATCH",
-    body: JSON.stringify({ expected_version: input.expectedVersion, name: input.name, option_values: input.optionValues, barcode: input.barcode, weight: input.weight, weight_unit: input.weightUnit, status: input.status }),
+    body: JSON.stringify({
+      expected_version: input.expectedVersion,
+      name: input.name,
+      option_values: input.optionValues,
+      barcode: input.barcode,
+      default_moq: input.defaultMoq,
+      moq_unit: input.moqUnit,
+      packing_quantity: input.packingQuantity,
+      weight: input.weight,
+      weight_unit: input.weightUnit,
+      status: input.status,
+    }),
   }));
 }
 
@@ -2128,7 +2302,7 @@ export async function upsertPublicCatalogOffer(
   }));
 }
 
-interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; display_color?: string | null; status: string; sort_order: number; version: number }
+interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; display_color?: string | null; status: string; sort_order: number; version: number; cover_source?: ProductCategory["coverSource"]; cover_product_id?: string | null; cover_product_name?: string | null; cover_image_url?: string | null; uploaded_cover_image_url?: string | null; cover_product_image_url?: string | null }
 interface ApiAttributeDefinition { id: string; category_id?: string | null; attribute_key: string; display_name: string; data_type: AttributeDefinition["dataType"]; unit_code?: string | null; enum_values?: string[] | null; is_required: boolean; is_variant: boolean; is_filterable: boolean; is_matchable: boolean; status: string; version: number }
 
 interface ApiCategoryImportResult {
@@ -2202,7 +2376,9 @@ interface ApiCatalogShare {
   category_path?: string | null;
   share_path: string;
   store_name: string;
+  store_subtitle?: string | null;
   store_logo_url?: string | null;
+  logo_position: CatalogShareLogoPosition;
   created_at: string;
 }
 
@@ -2218,7 +2394,9 @@ function mapCatalogShare(row: ApiCatalogShare): CatalogShare {
     categoryPath: defined(row.category_path),
     sharePath: row.share_path,
     storeName: row.store_name,
+    storeSubtitle: defined(row.store_subtitle),
     storeLogoUrl: defined(row.store_logo_url),
+    logoPosition: row.logo_position,
     createdAt: row.created_at,
   };
 }
@@ -2227,6 +2405,7 @@ export async function createCatalogShare(input: {
   targetType: CatalogShareTargetType;
   skuIds?: string[];
   categoryId?: string;
+  logoPosition?: CatalogShareLogoPosition;
 }): Promise<CatalogShare> {
   return mapCatalogShare(await request<ApiCatalogShare>("/catalog-shares", {
     method: "POST",
@@ -2234,6 +2413,7 @@ export async function createCatalogShare(input: {
       target_type: input.targetType,
       sku_ids: input.skuIds ?? [],
       category_id: input.categoryId ?? null,
+      logo_position: input.logoPosition ?? "NONE",
     }),
   }));
 }
@@ -2294,12 +2474,14 @@ export async function deleteCategory(
 interface ApiCategoryLayout {
   all_products_position: number;
   root_category_count: number;
+  category_showcase_enabled: boolean;
 }
 
 function mapCategoryLayout(row: ApiCategoryLayout): CategoryLayout {
   return {
     allProductsPosition: row.all_products_position,
     rootCategoryCount: row.root_category_count,
+    categoryShowcaseEnabled: row.category_showcase_enabled !== false,
   };
 }
 
@@ -2308,18 +2490,23 @@ export async function getCategoryLayout(): Promise<CategoryLayout> {
 }
 
 export async function updateCategoryLayout(
-  allProductsPosition: number,
+  input: number | { allProductsPosition: number; categoryShowcaseEnabled: boolean },
 ): Promise<CategoryLayout> {
+  const allProductsPosition = typeof input === "number" ? input : input.allProductsPosition;
+  const categoryShowcaseEnabled = typeof input === "number" ? true : input.categoryShowcaseEnabled;
   const saved = mapCategoryLayout(await request<ApiCategoryLayout>("/categories/layout", {
     method: "PATCH",
-    body: JSON.stringify({ all_products_position: allProductsPosition }),
+    body: JSON.stringify({
+      all_products_position: allProductsPosition,
+      category_showcase_enabled: categoryShowcaseEnabled,
+    }),
   }));
   bumpPublicCatalogRevision();
   return saved;
 }
 
 function mapCategory(row: ApiCategory): ProductCategory {
-  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), displayColor: defined(row.display_color), status: row.status, sortOrder: row.sort_order, version: row.version };
+  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), displayColor: defined(row.display_color), coverSource: row.cover_source ?? "NONE", coverProductId: defined(row.cover_product_id), coverProductName: defined(row.cover_product_name), coverImageUrl: defined(row.cover_image_url), uploadedCoverImageUrl: defined(row.uploaded_cover_image_url), coverProductImageUrl: defined(row.cover_product_image_url), status: row.status, sortOrder: row.sort_order, version: row.version };
 }
 
 export async function createCategory(input: { name: string; parentId?: string; sortOrder?: number; displayColor?: string }): Promise<ProductCategory> {
@@ -2338,7 +2525,7 @@ export async function createCategory(input: { name: string; parentId?: string; s
   return created;
 }
 
-export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE"; displayColor?: string | null }): Promise<ProductCategory> {
+export async function updateCategory(input: { id: string; expectedVersion: number; name: string; parentId?: string; sortOrder: number; status: "ACTIVE" | "INACTIVE"; displayColor?: string | null; coverSource?: ProductCategory["coverSource"]; coverProductId?: string }): Promise<ProductCategory> {
   const updated = mapCategory(await request<ApiCategory>(`/categories/${encodeURIComponent(input.id)}`, {
     method: "PATCH",
     body: JSON.stringify({
@@ -2348,8 +2535,24 @@ export async function updateCategory(input: { id: string; expectedVersion: numbe
       sort_order: input.sortOrder,
       status: input.status,
       display_color: input.displayColor,
+      cover_source: input.coverSource,
+      cover_product_id: input.coverSource === "PRODUCT" ? input.coverProductId : null,
     }),
   }));
+  bumpPublicCatalogRevision();
+  return updated;
+}
+
+export async function uploadCategoryCover(
+  categoryId: string,
+  image: File,
+): Promise<ProductCategory> {
+  const body = new FormData();
+  body.append("image", image);
+  const updated = mapCategory(await request<ApiCategory>(
+    `/categories/${encodeURIComponent(categoryId)}/cover`,
+    { method: "POST", body },
+  ));
   bumpPublicCatalogRevision();
   return updated;
 }
@@ -2496,6 +2699,77 @@ export async function getStorefrontAnalytics(
       skuId: item.sku_id,
       views: Number(item.views || 0),
     })),
+  };
+}
+
+export async function getStorefrontProductRanking(
+  days: 7 | 30 | 60,
+  page = 1,
+  pageSize = 100,
+): Promise<StorefrontProductRankingPage> {
+  const row = await request<{
+    start_date: string;
+    end_date: string;
+    days: number;
+    page: number;
+    page_size: number;
+    total: number;
+    items: Array<{
+      rank: number;
+      product_id: string;
+      product_code?: string | null;
+      name: string;
+      category_id?: string | null;
+      category_name?: string | null;
+      views: number;
+      is_pinned: boolean;
+      is_popular: boolean;
+    }>;
+  }>(
+    `/storefront-analytics/product-ranking?days=${days}&page=${page}&page_size=${pageSize}`,
+    { cache: "no-store" },
+  );
+  return {
+    startDate: row.start_date,
+    endDate: row.end_date,
+    days: row.days,
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    items: row.items.map((item) => ({
+      rank: item.rank,
+      productId: item.product_id,
+      productCode: defined(item.product_code),
+      name: item.name,
+      categoryId: defined(item.category_id),
+      categoryName: defined(item.category_name),
+      views: Number(item.views || 0),
+      isPinned: Boolean(item.is_pinned),
+      isPopular: Boolean(item.is_popular),
+    })),
+  };
+}
+
+export async function assignProductsToPopularCategory(
+  productIds: string[],
+): Promise<PopularCategoryAssignResult> {
+  const row = await request<{
+    category_id: string;
+    category_name: string;
+    selected_count: number;
+    moved_count: number;
+    popular_product_count: number;
+  }>("/storefront-analytics/popular-category", {
+    method: "POST",
+    body: JSON.stringify({ product_ids: productIds }),
+  });
+  bumpPublicCatalogRevision();
+  return {
+    categoryId: row.category_id,
+    categoryName: row.category_name,
+    selectedCount: Number(row.selected_count || 0),
+    movedCount: Number(row.moved_count || 0),
+    popularProductCount: Number(row.popular_product_count || 0),
   };
 }
 
@@ -3768,6 +4042,131 @@ export async function getDashboard(): Promise<DashboardSnapshot> {
   return { generatedAt: row.generated_at, dataScope: row.data_scope, metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, sourceType: item.source_type, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })), dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined };
 }
 
+interface ApiSupplyChainPartner {
+  id: string;
+  supplier_code: string;
+  name: string;
+  contact_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  whatsapp?: string | null;
+  wechat?: string | null;
+  country_region?: string | null;
+  address?: string | null;
+  website?: string | null;
+  business_scope?: string | null;
+  notes?: string | null;
+  status: SupplyChainStatus;
+  version: number;
+  active_products: number;
+  active_skus: number;
+  updated_at: string;
+}
+
+interface ApiSupplyChainPage {
+  items: ApiSupplyChainPartner[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+function mapSupplyChainPartner(row: ApiSupplyChainPartner): SupplyChainPartner {
+  return {
+    id: row.id,
+    code: row.supplier_code,
+    name: row.name,
+    contactName: defined(row.contact_name),
+    phone: defined(row.phone),
+    email: defined(row.email),
+    whatsapp: defined(row.whatsapp),
+    wechat: defined(row.wechat),
+    countryRegion: defined(row.country_region),
+    address: defined(row.address),
+    website: defined(row.website),
+    businessScope: defined(row.business_scope),
+    notes: defined(row.notes),
+    status: row.status,
+    version: row.version,
+    activeProducts: row.active_products,
+    activeSkus: row.active_skus,
+    updatedAt: row.updated_at,
+  };
+}
+
+function supplyChainPayload(input: SupplyChainPartnerInput) {
+  return {
+    name: input.name,
+    contact_name: input.contactName || null,
+    phone: input.phone || null,
+    email: input.email || null,
+    whatsapp: input.whatsapp || null,
+    wechat: input.wechat || null,
+    country_region: input.countryRegion || null,
+    address: input.address || null,
+    website: input.website || null,
+    business_scope: input.businessScope || null,
+    notes: input.notes || null,
+  };
+}
+
+export async function listSupplyChainPartners(input: {
+  query?: string;
+  status?: Exclude<SupplyChainStatus, "ARCHIVED">;
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<SupplyChainPage> {
+  const query = new URLSearchParams();
+  if (input.query?.trim()) query.set("query", input.query.trim());
+  if (input.status) query.set("status", input.status);
+  query.set("page", String(input.page ?? 1));
+  query.set("page_size", String(input.pageSize ?? 30));
+  const row = await request<ApiSupplyChainPage>(`/supply-chain?${query}`);
+  return {
+    items: row.items.map(mapSupplyChainPartner),
+    total: row.total,
+    page: row.page,
+    pageSize: row.page_size,
+    pages: row.pages,
+  };
+}
+
+export async function createSupplyChainPartner(
+  input: SupplyChainPartnerInput,
+): Promise<SupplyChainPartner> {
+  return mapSupplyChainPartner(
+    await request<ApiSupplyChainPartner>("/supply-chain", {
+      method: "POST",
+      body: JSON.stringify(supplyChainPayload(input)),
+    }),
+  );
+}
+
+export async function updateSupplyChainPartner(
+  partner: SupplyChainPartner,
+  input: SupplyChainPartnerInput & { status: "ACTIVE" | "INACTIVE" },
+): Promise<SupplyChainPartner> {
+  return mapSupplyChainPartner(
+    await request<ApiSupplyChainPartner>(
+      `/supply-chain/${encodeURIComponent(partner.id)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          expected_version: partner.version,
+          ...supplyChainPayload(input),
+          status: input.status,
+        }),
+      },
+    ),
+  );
+}
+
+export async function deleteSupplyChainPartner(partnerId: string): Promise<void> {
+  await request<void>(`/supply-chain/${encodeURIComponent(partnerId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function searchImage(file: File) {
   const body = new FormData();
   body.append("file", file);
@@ -3844,8 +4243,8 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
 }
 
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
-interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
+interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
 
 function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
   return {
@@ -3864,6 +4263,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     total: Number(row.total),
     validUntil: row.valid_until,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
     contentHash: row.content_hash,
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
@@ -3873,11 +4273,21 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
 
 export async function listPublicQuoteDrafts(): Promise<PublicQuoteDraftSummary[]> {
   const rows = await request<ApiPublicQuoteDraftSummary[]>("/public-quote-drafts");
-  return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), locale: row.locale, currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at }));
+  return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), locale: row.locale, currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at, updatedAt: row.updated_at }));
 }
 
 export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(`/public-quote-drafts/${encodeURIComponent(draftId)}`));
+}
+
+export async function updatePublicQuoteDraftStatus(
+  draftId: string,
+  status: "CONFIRMED" | "COMPLETED" | "CANCELLED",
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/status`,
+    { method: "PATCH", body: JSON.stringify({ status }) },
+  ));
 }
 
 export async function downloadPublicQuoteDraftDocument(

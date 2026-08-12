@@ -11,8 +11,6 @@ import {
 import {
   ArrowClockwise,
   FloppyDisk,
-  Key,
-  ShieldCheck,
   Translate,
 } from "@phosphor-icons/react";
 import {
@@ -215,12 +213,6 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     }
   };
 
-  const sourceLabel = settings?.source === "database"
-    ? t("后台配置")
-    : settings?.source === "environment"
-      ? t("环境变量")
-      : t("未配置");
-
   const changeProvider = (next: TranslationProviderKind) => {
     clearResult();
     setProvider(next);
@@ -248,9 +240,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
         <CorePageHeading
           eyebrow={t("平台设置")}
           title={t("翻译 API")}
-          description={t(
-            "统一管理商品、分类与客服翻译使用的模型接口；配置对所有商家立即生效。",
-          )}
+          description={t("管理翻译服务配置。")}
           actions={(
             <Button
               variant="soft"
@@ -285,17 +275,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 </Text>
                 <Heading size="5">{t("全局翻译服务")}</Heading>
                 <Text size="2" color="gray">
-                  {t(isAliyun
-                    ? "使用机器翻译通用版与批量接口，优先降低商品翻译等待时间。"
-                    : "调用 /v1/chat/completions，支持自定义 Base URL 与模型。")}
+                  {t("选择翻译方式并调整运行参数。")}
                 </Text>
               </div>
               <div className="core-translation-api-status">
                 <Badge color={settings.enabled ? "jade" : "gray"}>
                   {t(settings.enabled ? "已启用" : "服务已停用")}
-                </Badge>
-                <Badge color={settings.source === "database" ? "blue" : "gray"}>
-                  {sourceLabel}
                 </Badge>
               </div>
             </div>
@@ -321,8 +306,8 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 </Select.Root>
                 <Text size="1" color="gray">
                   {t(isAliyun
-                    ? "商品字段会优先通过批量翻译接口提交；单次最多 50 段文本。"
-                    : "保留现有大模型翻译能力，适合需要更强上下文理解的内容。")}
+                    ? "适合大批量商品内容翻译。"
+                    : "适合需要上下文理解的翻译内容。")}
                 </Text>
               </label>
 
@@ -330,7 +315,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 <span>
                   <Text size="2" weight="bold" as="div">{t("启用翻译服务")}</Text>
                   <Text size="1" color="gray">
-                    {t("关闭后，前台商品翻译、后台翻译任务与客服翻译都会停止调用。")}
+                    {t("关闭后，所有翻译任务将暂停。")}
                   </Text>
                 </span>
                 <Switch
@@ -633,11 +618,6 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                   <FloppyDisk />
                   {t(saving ? "保存中…" : "保存并生效")}
                 </Button>
-                <Text size="1" color="gray">
-                  {t(isAliyun
-                    ? "AccessKey ID 与 Secret 都会加密保存，接口不会返回明文。"
-                    : "新密钥会加密保存，后台与接口都不会再显示明文。")}
-                </Text>
               </div>
             </form>
 
@@ -645,24 +625,6 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
             {error && settings ? <Text size="2" color="red">{error}</Text> : null}
           </Card>
 
-          {!embedded ? <div className="core-translation-api-notes">
-            <section>
-              <ShieldCheck weight="duotone" />
-              <div>
-                <Text size="1" color="gray">{t("权限与密钥")}</Text>
-                <Heading size="3">{t("仅平台管理员可见")}</Heading>
-                <p>{t("商家成员无法读取或修改翻译配置，所有访问凭据只以密文写入数据库。")}</p>
-              </div>
-            </section>
-            <section>
-              <Key weight="duotone" />
-              <div>
-                <Text size="1" color="gray">{t("生效范围")}</Text>
-                <Heading size="3">{t("一处配置，全站共用")}</Heading>
-                <p>{t("商品名称、描述、分类、标签与客服消息均使用这套配置；已有翻译缓存不受影响。")}</p>
-              </div>
-            </section>
-          </div> : null}
         </>
       ) : null}
     </div>

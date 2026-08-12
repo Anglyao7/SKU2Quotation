@@ -29,7 +29,8 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { money, quoteNumber } from "../lib/format";
-import { storefrontText } from "../lib/storefrontLocale";
+import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
+import { notifyStorefrontQuotesChanged } from "../lib/storefrontVisitor";
 import type { CreateQuoteInput, Quote, Sku, StorefrontLocale } from "../types";
 
 export interface CartLine {
@@ -81,6 +82,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
   );
   const currency = lines[0]?.sku.currency || "CNY";
   const isChinese = locale === "zh-CN";
+  const visitorCenterHref = `/${encodeURIComponent(slug)}/me${storefrontLocaleQuery(locale)}`;
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
@@ -106,7 +108,10 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
       items: lines.map((line) => ({ sku_id: line.sku.id, quantity: line.quantity })),
     };
     try {
-      setQuote(await api.createStoreQuote(slug, payload));
+      const createdQuote = await api.createStoreQuote(slug, payload);
+      setQuote(createdQuote);
+      onClear();
+      notifyStorefrontQuotesChanged(slug);
       setReviewReminderOpen(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("报价单生成失败，请稍后重试。"));
@@ -142,7 +147,7 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
       <Dialog.Trigger>
         <Button className="cart-trigger" size="3">
           <ShoppingCartSimple size={19} weight="bold" />
-          {t("报价清单")}
+          <span className="cart-trigger-label">{t("报价清单")}</span>
           {itemCount > 0 && <span className="header-count">{itemCount}</span>}
         </Button>
       </Dialog.Trigger>
@@ -191,7 +196,10 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
                 <FileXls size={19} />{t("下载 Excel")}
               </Button>
             </div>
-            <Button variant="ghost" color="gray" onClick={() => { setQuote(null); onClear(); }}>{t("继续选品")}</Button>
+            <Button asChild size="3" variant="soft">
+              <Link to={visitorCenterHref}>{t("前往个人中心")}</Link>
+            </Button>
+            <Button variant="ghost" color="gray" onClick={() => setOpen(false)}>{t("继续选品")}</Button>
           </div>
         ) : lines.length === 0 ? (
           <div className="drawer-empty">

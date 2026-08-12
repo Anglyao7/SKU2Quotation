@@ -34,6 +34,7 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftCreate,
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftResponse,
+    PublicQuoteDraftStatusUpdate,
     PublicQuoteDraftSummary,
     PublicCategoryOption,
     PublicProductDetail,
@@ -64,6 +65,7 @@ from ..services.hybrid_search import (
     hybrid_product_search,
 )
 from ..services.rbac import list_permissions
+from ..services.storefront_branding import storefront_logo_url
 from ..services.translation import (
     TranslationProvider,
     TranslationProviderError,
@@ -364,27 +366,18 @@ def _available_storefront_locales(
     tenant: object,
     profile: object,
 ) -> list[str]:
+    del session
     source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
-    configured = effective_storefront_locales(
+    # Visibility is a merchant setting, not a translation-runtime capability.
+    # A selected language must remain available even before its package is
+    # published or when live translation is temporarily unavailable; catalog
+    # responses already mark untranslated content as FALLBACK and return the
+    # source text. Hiding it here made the frontend remove the language switch
+    # despite the merchant having explicitly enabled multiple languages.
+    return effective_storefront_locales(
         getattr(profile, "storefront_locales", None),
         source_locale=source_locale,
     )
-    if translation_provider_is_configured(
-        session,
-        environment_check=catalog_translation_is_configured,
-    ):
-        return configured
-    published = set(
-        catalog_translation_repository.available_language_pack_locales(
-            session,
-            tenant_id=tenant.id,
-        )
-    )
-    return [
-        locale
-        for locale in configured
-        if locale == source_locale or locale in published
-    ]
 
 
 def _requested_storefront_locale(
@@ -437,6 +430,101 @@ def _ordered_category_paths(
             for category in sorted(visible_by_id.values(), key=sort_key)
         )
     )
+
+
+def _ordered_visible_category_rows(
+    visible_category_ids: set[UUID], *, all_categories: list[object]
+) -> list[object]:
+    categories_by_id = {
+        getattr(category, "id"): category
+        for category in all_categories
+        if getattr(category, "id", None) is not None
+    }
+    included_ids: set[UUID] = set()
+    for category_id in visible_category_ids:
+        category = categories_by_id.get(category_id)
+        if category is None or not _category_path(category):
+            continue
+        included_ids.add(category_id)
+        parent_id = getattr(category, "parent_id", None)
+        if parent_id in categories_by_id:
+            included_ids.add(parent_id)
+
+    def sort_key(category: object):
+        parent = categories_by_id.get(getattr(category, "parent_id", None))
+        root = parent or category
+        return (
+            int(getattr(root, "sort_order", 0) or 0),
+            str(getattr(root, "name", "") or "").casefold(),
+            1 if parent is not None else 0,
+            int(getattr(category, "sort_order", 0) or 0),
+            str(getattr(category, "name", "") or "").casefold(),
+        )
+
+    return sorted(
+        (categories_by_id[category_id] for category_id in included_ids),
+        key=sort_key,
+    )
+
+
+def _public_category_options(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    slug: str,
+    visible_category_ids: set[UUID],
+    all_categories: list[object],
+    labels: dict[str, str],
+) -> list[PublicCategoryOption]:
+    rows = _ordered_visible_category_rows(
+        visible_category_ids,
+        all_categories=all_categories,
+    )
+    cover_product_ids = {
+        getattr(row, "cover_product_id", None)
+        for row in rows
+        if str(getattr(row, "cover_source", "NONE") or "NONE").upper()
+        == "PRODUCT"
+        and getattr(row, "cover_product_id", None) is not None
+    }
+    cover_images = repository.approved_image_map(
+        session,
+        tenant_id=tenant_id,
+        product_ids=cover_product_ids,
+    )
+    result: list[PublicCategoryOption] = []
+    for row in rows:
+        path = _category_path(row)
+        cover_source = str(getattr(row, "cover_source", "NONE") or "NONE").upper()
+        cover_url = None
+        if cover_source == "UPLOAD" and str(
+            getattr(row, "cover_object_key", "") or ""
+        ).strip():
+            object_key = str(getattr(row, "cover_object_key", "") or "").strip()
+            media_base_url = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
+            cover_url = (
+                f"{media_base_url}/{quote(object_key.lstrip('/'), safe='/')}"
+                if media_base_url
+                else (
+                    f"/api/store/{quote(slug, safe='')}/categories/{row.id}/cover"
+                    f"?v={getattr(row, 'version', 1)}"
+                )
+            )
+        elif cover_source == "PRODUCT":
+            cover_url = _public_image_url(
+                cover_images.get(getattr(row, "cover_product_id", None)),
+                slug=slug,
+            )
+        result.append(
+            PublicCategoryOption(
+                id=row.id,
+                parent_id=getattr(row, "parent_id", None),
+                value=path,
+                label=labels.get(path, path),
+                cover_image_url=cover_url,
+            )
+        )
+    return result
 
 
 def _effective_all_products_position(
@@ -507,6 +595,52 @@ def get_public_media(
         ) from exc
 
 
+def get_public_store_logo(session: Session, *, slug: str) -> tuple[bytes, str]:
+    _tenant, profile = _resolve_store(session, slug=slug)
+    object_key = str(profile.logo_object_key or "").strip()
+    if not object_key:
+        raise ApplicationError(
+            "PUBLIC_LOGO_NOT_FOUND", "Store logo was not found.", kind="not_found"
+        )
+    try:
+        with get_object_storage().materialize(object_key) as path:
+            return path.read_bytes(), "image/webp"
+    except Exception as exc:
+        raise ApplicationError(
+            "PUBLIC_LOGO_NOT_FOUND", "Store logo was not found.", kind="not_found"
+        ) from exc
+
+
+def get_public_category_cover(
+    session: Session,
+    *,
+    slug: str,
+    category_id: UUID,
+) -> tuple[bytes, str]:
+    tenant, _profile = _resolve_store(session, slug=slug)
+    category = repository.get_catalog_category(
+        session,
+        tenant_id=tenant.id,
+        category_id=category_id,
+    )
+    object_key = str(getattr(category, "cover_object_key", "") or "").strip()
+    if category is None or category.status != "ACTIVE" or not object_key:
+        raise ApplicationError(
+            "PUBLIC_CATEGORY_COVER_NOT_FOUND",
+            "Category cover was not found.",
+            kind="not_found",
+        )
+    try:
+        with get_object_storage().materialize(object_key) as path:
+            return path.read_bytes(), "image/webp"
+    except Exception as exc:
+        raise ApplicationError(
+            "PUBLIC_CATEGORY_COVER_NOT_FOUND",
+            "Category cover was not found.",
+            kind="not_found",
+        ) from exc
+
+
 def _resolve_store(session: Session, *, slug: str):
     normalized = slug.casefold().strip()
     profile = repository.find_published_profile_by_slug(session, slug=normalized)
@@ -541,7 +675,7 @@ def get_store(
         slug=tenant.slug,
         name=tenant.name,
         description=profile.description,
-        logo_url=profile.logo_url,
+        logo_url=storefront_logo_url(profile),
         contact_email=profile.contact_email,
         contact_phone=profile.contact_phone,
         default_currency=tenant.default_currency,
@@ -550,6 +684,7 @@ def get_store(
         available_locales=available_locales,
         all_products_position=max(0, int(profile.all_products_position or 0)),
         hot_products_enabled=bool(profile.hot_products_enabled),
+        category_showcase_enabled=bool(profile.category_showcase_enabled),
         announcements=announcement_use_cases.public_announcements(
             session,
             tenant_id=tenant.id,
@@ -1830,6 +1965,13 @@ def list_public_products(
         visible_category_ids,
         all_categories=all_categories,
     )
+    category_option_paths = [
+        _category_path(row)
+        for row in _ordered_visible_category_rows(
+            visible_category_ids,
+            all_categories=all_categories,
+        )
+    ]
     category_rows_by_id = {row.id: row for row in all_categories}
     category_colors_by_id = {
         row.id: (
@@ -1860,7 +2002,7 @@ def list_public_products(
     )
     category_labels = (
         _live_category_labels(
-            categories,
+            category_option_paths,
             tenant_id=tenant.id,
             translator=translator,
             source_locale=source_locale,
@@ -1892,13 +2034,14 @@ def list_public_products(
         page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
         categories=categories,
-        category_options=[
-            PublicCategoryOption(
-                value=category_path,
-                label=category_labels.get(category_path, category_path),
-            )
-            for category_path in categories
-        ],
+        category_options=_public_category_options(
+            session,
+            tenant_id=tenant.id,
+            slug=tenant.slug,
+            visible_category_ids=visible_category_ids,
+            all_categories=all_categories,
+            labels=category_labels,
+        ),
         # Product tags remain part of each product and semantic-search input.
         # The storefront no longer renders a global tag facet, so avoid a
         # full-catalog scan solely to populate unused chips.
@@ -1915,6 +2058,7 @@ def list_public_products(
             else 0
         ),
         hot_products_enabled=bool(profile.hot_products_enabled),
+        category_showcase_enabled=bool(profile.category_showcase_enabled),
         hot_sort_applied=hot_sort_applied,
     )
 
@@ -1925,8 +2069,27 @@ def get_public_product(
     slug: str,
     product_id: UUID,
     locale: str | None = None,
+    share_token: str | None = None,
 ) -> PublicProductDetail:
     tenant, profile = _resolve_store(session, slug=slug)
+    shared_category: str | None = None
+    if share_token:
+        from .catalog_shares import resolve_share_constraint
+
+        share_constraint = resolve_share_constraint(
+            session, tenant_id=tenant.id, token=share_token
+        )
+        if (
+            share_constraint.target_type == "PRODUCTS"
+            and product_id not in set(share_constraint.product_ids)
+        ):
+            raise ApplicationError(
+                "PUBLIC_PRODUCT_NOT_FOUND",
+                "Public product was not found.",
+                kind="not_found",
+            )
+        if share_constraint.target_type == "CATEGORY":
+            shared_category = share_constraint.category_path
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
             session,
@@ -1940,7 +2103,7 @@ def get_public_product(
         tenant_id=tenant.id,
         product_ids=[product_id],
         now=utcnow(),
-        category=None,
+        category=shared_category,
     )
     if not rows:
         raise ApplicationError(
@@ -2190,6 +2353,13 @@ def list_public_skus(
         visible_category_ids,
         all_categories=all_categories,
     )
+    category_option_paths = [
+        _category_path(row)
+        for row in _ordered_visible_category_rows(
+            visible_category_ids,
+            all_categories=all_categories,
+        )
+    ]
     category_rows_by_id = {row.id: row for row in all_categories}
     category_colors_by_id = {
         row.id: (
@@ -2228,7 +2398,7 @@ def list_public_skus(
     )
     category_labels = (
         _live_category_labels(
-            categories,
+            category_option_paths,
             tenant_id=tenant.id,
             translator=translator,
             source_locale=source_locale,
@@ -2260,13 +2430,14 @@ def list_public_skus(
         page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
         categories=categories,
-        category_options=[
-            PublicCategoryOption(
-                value=category_path,
-                label=category_labels.get(category_path, category_path),
-            )
-            for category_path in categories
-        ],
+        category_options=_public_category_options(
+            session,
+            tenant_id=tenant.id,
+            slug=tenant.slug,
+            visible_category_ids=visible_category_ids,
+            all_categories=all_categories,
+            labels=category_labels,
+        ),
         # Storefront tag chips were removed. Individual SKU tags remain in
         # each card and in semantic search, but the first page no longer scans
         # every public offer just to build an unused global facet.
@@ -2282,6 +2453,7 @@ def list_public_skus(
             if include_facets
             else 0
         ),
+        category_showcase_enabled=bool(profile.category_showcase_enabled),
     )
 
 
@@ -2291,6 +2463,7 @@ def get_public_sku(
     slug: str,
     sku_id: UUID,
     locale: str | None = None,
+    share_token: str | None = None,
 ) -> PublicSkuResponse:
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
@@ -2314,6 +2487,28 @@ def get_public_sku(
             kind="not_found",
         )
     row = rows[0]
+    if share_token:
+        from .catalog_shares import resolve_share_constraint
+
+        share_constraint = resolve_share_constraint(
+            session, tenant_id=tenant.id, token=share_token
+        )
+        allowed = row[2].id in set(share_constraint.product_ids)
+        if share_constraint.target_type == "CATEGORY":
+            allowed_rows = repository.list_public_catalog_rows_by_product_ids(
+                session,
+                tenant_id=tenant.id,
+                product_ids=[row[2].id],
+                now=utcnow(),
+                category=share_constraint.category_path,
+            )
+            allowed = any(candidate[1].id == sku_id for candidate in allowed_rows)
+        if not allowed:
+            raise ApplicationError(
+                "PUBLIC_SKU_NOT_FOUND",
+                "Public SKU was not found.",
+                kind="not_found",
+            )
     categories = repository.list_catalog_categories(
         session, tenant_id=tenant.id
     )
@@ -2654,6 +2849,7 @@ def _draft_response(
         total_amount=draft.estimated_total,
         valid_until=draft.expires_at,
         created_at=draft.created_at,
+        updated_at=draft.updated_at,
         content_hash=draft.content_hash,
         disclaimer=PUBLIC_DRAFT_DISCLAIMER,
         disclaimer_version=draft.disclaimer_version,
@@ -2673,6 +2869,7 @@ def create_public_quote_draft(
     submitted_by_membership_id: UUID | None = None,
     submitted_by_tenant_id: UUID | None = None,
     submitted_by_user_id: UUID | None = None,
+    visitor_token: str | None = None,
 ) -> PublicQuoteDraftResponse:
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
@@ -2900,12 +3097,23 @@ def create_public_quote_draft(
             "utf-8"
         )
     ).hexdigest()
+    visitor_token_hash = (
+        _storefront_visitor_token_hash(visitor_token)
+        if visitor_token is not None
+        else None
+    )
     draft = PublicQuoteDraftRow(
         id=draft_id,
         tenant_id=tenant.id,
         request_number=request_number,
         status="PENDING_CONFIRMATION",
         submitted_by_membership_id=submitted_by_membership_id,
+        visitor_token_hash=visitor_token_hash,
+        visitor_token_expires_at=(
+            utcnow() + timedelta(days=180)
+            if visitor_token_hash is not None
+            else None
+        ),
         customer_name=request.customer_name,
         customer_company=request.customer_company,
         customer_email=request.customer_email,
@@ -3007,7 +3215,11 @@ def get_quote_document(
     draft = repository.get_quote_draft(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
     )
-    if draft is None or draft.status != "PENDING_CONFIRMATION":
+    if draft is None or draft.status not in {
+        "PENDING_CONFIRMATION",
+        "CONFIRMED",
+        "COMPLETED",
+    }:
         raise ApplicationError(
             "DOWNLOAD_NOT_FOUND", "Download was not found.", kind="not_found"
         )
@@ -3056,11 +3268,131 @@ def list_tenant_quote_drafts(
             total_amount=row.estimated_total,
             valid_until=row.expires_at,
             created_at=row.created_at,
+            updated_at=row.updated_at,
         )
         for row in repository.list_quote_drafts(
             session, tenant_id=tenant_id, limit=limit
         )
     ]
+
+
+def _storefront_visitor_token_hash(raw_token: str) -> str:
+    token = raw_token.strip()
+    if len(token) < 32 or len(token) > 500:
+        raise ApplicationError(
+            "STOREFRONT_VISITOR_SESSION_INVALID",
+            "访客会话已失效，请刷新页面后重试。",
+            kind="unauthorized",
+        )
+    return hash_secret(token)
+
+
+def list_storefront_visitor_quote_drafts(
+    session: Session,
+    *,
+    slug: str,
+    visitor_token: str,
+    limit: int = 100,
+) -> list[PublicQuoteDraftSummary]:
+    tenant, _profile = _resolve_store(session, slug=slug)
+    rows = repository.list_quote_drafts_by_visitor_token_hash(
+        session,
+        tenant_id=tenant.id,
+        visitor_token_hash=_storefront_visitor_token_hash(visitor_token),
+        now=utcnow(),
+        limit=limit,
+    )
+    return [
+        PublicQuoteDraftSummary(
+            id=row.id,
+            quote_number=row.request_number,
+            status=row.status,
+            customer_name=row.customer_name,
+            customer_company=row.customer_company,
+            locale=_normalized_locale(
+                getattr(row, "document_locale", None),
+                default="zh-CN",
+            ),
+            currency=row.currency,
+            total_amount=row.estimated_total,
+            valid_until=row.expires_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+
+def update_tenant_quote_draft_status(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    request: PublicQuoteDraftStatusUpdate,
+) -> PublicQuoteDraftResponse:
+    _require(permissions, "quotation.create")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    transitions = {
+        "PENDING_CONFIRMATION": {"CONFIRMED", "CANCELLED"},
+        "CONFIRMED": {"COMPLETED", "CANCELLED"},
+        "COMPLETED": set(),
+        "CANCELLED": set(),
+        "EXPIRED": set(),
+    }
+    if request.status != draft.status and request.status not in transitions.get(
+        draft.status,
+        set(),
+    ):
+        raise ApplicationError(
+            "PUBLIC_QUOTE_STATUS_TRANSITION_INVALID",
+            "当前询价单状态不能执行此操作。",
+            kind="conflict",
+        )
+    if request.status != draft.status:
+        transitioned = repository.transition_quote_draft_status(
+            session,
+            tenant_id=tenant_id,
+            quote_draft_id=quote_draft_id,
+            expected_status=draft.status,
+            target_status=request.status,
+            updated_at=utcnow(),
+        )
+        if not transitioned:
+            session.rollback()
+            raise ApplicationError(
+                "PUBLIC_QUOTE_STATUS_TRANSITION_CONFLICT",
+                "询价单状态已由其他操作更新，请刷新后重试。",
+                kind="conflict",
+            )
+        session.commit()
+        draft = repository.get_quote_draft(
+            session,
+            tenant_id=tenant_id,
+            quote_draft_id=quote_draft_id,
+        )
+        if draft is None:
+            raise ApplicationError(
+                "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+                "Public quote draft was not found.",
+                kind="not_found",
+            )
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    return _draft_response(draft, items)
 
 
 def get_tenant_quote_draft(

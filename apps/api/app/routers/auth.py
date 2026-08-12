@@ -2,9 +2,20 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..auth_schemas import (
     AuthContext,
@@ -47,7 +58,10 @@ from ..services.rbac import list_permissions
 from ..tenant_modules import merchant_identity_is_platform_admin
 from ..domain.errors import ApplicationError
 from ..localization import normalize_ui_locale
-from ..use_cases.authentication import get_current_user
+from ..use_cases.authentication import (
+    get_current_user,
+    get_tenant_subscription_tier,
+)
 from ..use_cases import tenant_settings, user_preferences
 from .errors import application_http_error
 
@@ -91,6 +105,7 @@ def _token_response(
     business_session: Session,
 ) -> AuthTokenResponse:
     permissions: list[str] = []
+    subscription_tier = None
     if result.membership is not None and result.tenant is not None:
         set_request_context(
             business_session,
@@ -104,6 +119,10 @@ def _token_response(
                 tenant_id=result.tenant.id,
                 user_id=result.user.id,
             )
+        )
+        subscription_tier = get_tenant_subscription_tier(
+            business_session,
+            tenant_id=result.tenant.id,
         )
     return AuthTokenResponse(
         data=AuthTokenData(
@@ -155,6 +174,7 @@ def _token_response(
                 account_scope=(
                     result.membership.account_scope if result.membership else None
                 ),
+                subscription_tier=subscription_tier,
             ),
             memberships=[
                 MembershipSummary(
@@ -508,6 +528,26 @@ def update_merchant_settings_endpoint(
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+
+
+@router.post("/me/merchant/logo", response_model=MerchantSettingsResponse)
+async def upload_merchant_logo_endpoint(
+    logo: UploadFile = File(...),
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> MerchantSettingsResponse:
+    content = await logo.read(tenant_settings.MAX_MERCHANT_LOGO_BYTES + 1)
+    try:
+        return await run_in_threadpool(
+            tenant_settings.upload_merchant_logo,
+            session,
+            context=context,
+            content=content,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    finally:
+        await logo.close()
 
 
 @router.patch("/me/preferences", response_model=UserPreferencesResponse)

@@ -20,6 +20,7 @@ import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
+import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
@@ -63,9 +64,12 @@ export function SkuDetailPage() {
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
-  const localeQuery = storefrontLocaleQuery(locale);
-  const storefrontHome = `/${encodeURIComponent(store.slug)}${localeQuery}`;
   const location = useLocation();
+  const shareToken = new URLSearchParams(location.search).get("share")?.trim() || "";
+  const localeQuery = storefrontLocaleQuery(locale);
+  const storefrontHome = shareToken
+    ? `/${encodeURIComponent(store.slug)}/share/${encodeURIComponent(shareToken)}${localeQuery}`
+    : `/${encodeURIComponent(store.slug)}${localeQuery}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(store.slug),
@@ -190,6 +194,7 @@ export function SkuDetailPage() {
                   toLight: t("切换浅色模式"),
                 }}
               />
+              <StorefrontVisitorEntry tenantSlug={store.slug} locale={locale} />
               <CartDrawer
                 slug={store.slug}
                 storeName={store.name}

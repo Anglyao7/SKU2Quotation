@@ -17,6 +17,7 @@ from ..public_catalog_schemas import (
     PublicProductPage,
     PublicQuoteDraftCreate,
     PublicQuoteDraftResponse,
+    PublicQuoteDraftStatusUpdate,
     PublicQuoteDraftSummary,
     PublicSkuPage,
     PublicSkuResponse,
@@ -248,6 +249,7 @@ def get_public_product(
     request: Request,
     response: Response,
     locale: str | None = Query(default=None, max_length=20),
+    share: str | None = Query(default=None, min_length=8, max_length=64),
     session: Session = Depends(get_session),
 ) -> PublicProductDetail:
     response.headers.update(PUBLIC_DETAIL_CACHE_HEADERS)
@@ -271,6 +273,7 @@ def get_public_product(
             slug=tenant_slug,
             product_id=product_id,
             locale=locale,
+            share_token=share,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -286,6 +289,7 @@ def get_public_sku(
     request: Request,
     response: Response,
     locale: str | None = Query(default=None, max_length=20),
+    share: str | None = Query(default=None, min_length=8, max_length=64),
     session: Session = Depends(get_session),
 ) -> PublicSkuResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -306,6 +310,7 @@ def get_public_sku(
             slug=tenant_slug,
             sku_id=sku_id,
             locale=locale,
+            share_token=share,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -333,6 +338,51 @@ def get_public_media(
     )
 
 
+@router.get("/api/store/{tenant_slug}/logo")
+def get_public_store_logo(
+    tenant_slug: str,
+    session: Session = Depends(get_session),
+) -> Response:
+    try:
+        content, content_type = use_cases.get_public_store_logo(
+            session, slug=tenant_slug
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/api/store/{tenant_slug}/categories/{category_id}/cover")
+def get_public_category_cover(
+    tenant_slug: str,
+    category_id: UUID,
+    session: Session = Depends(get_session),
+) -> Response:
+    try:
+        content, content_type = use_cases.get_public_category_cover(
+            session,
+            slug=tenant_slug,
+            category_id=category_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.post(
     "/api/store/{tenant_slug}/quotes",
     response_model=PublicQuoteDraftResponse,
@@ -346,6 +396,7 @@ def submit_public_quote_draft(
     session: Session = Depends(get_session),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
+    x_storefront_visitor_token: str | None = Header(default=None, max_length=500),
 ) -> PublicQuoteDraftResponse:
     response.headers.update(NO_STORE_HEADERS)
     enforce_rate_limit(
@@ -372,6 +423,38 @@ def submit_public_quote_draft(
             submitted_by_membership_id=(submitter.membership_id if submitter else None),
             submitted_by_tenant_id=(submitter.tenant_id if submitter else None),
             submitted_by_user_id=(submitter.user_id if submitter else None),
+            visitor_token=x_storefront_visitor_token,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/store/{tenant_slug}/visitor/quotes",
+    response_model=list[PublicQuoteDraftSummary],
+)
+def list_storefront_visitor_quote_drafts(
+    tenant_slug: str,
+    request: Request,
+    response: Response,
+    x_storefront_visitor_token: str = Header(..., max_length=500),
+    limit: int = Query(default=100, ge=1, le=200),
+    session: Session = Depends(get_session),
+) -> list[PublicQuoteDraftSummary]:
+    response.headers.update(NO_STORE_HEADERS)
+    enforce_rate_limit(
+        request,
+        scope="storefront-visitor-quotes",
+        limit=configured_limit("RATE_LIMIT_STOREFRONT_VISITOR_QUOTES", 120),
+        window_seconds=60,
+        token=x_storefront_visitor_token,
+    )
+    try:
+        return use_cases.list_storefront_visitor_quote_drafts(
+            session,
+            slug=tenant_slug,
+            visitor_token=x_storefront_visitor_token,
+            limit=limit,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -415,6 +498,30 @@ def get_tenant_public_quote_draft(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/status",
+    response_model=PublicQuoteDraftResponse,
+)
+def update_tenant_public_quote_draft_status(
+    quote_draft_id: UUID,
+    payload: PublicQuoteDraftStatusUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_tenant_quote_draft_status(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

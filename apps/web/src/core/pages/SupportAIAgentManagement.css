@@ -75,7 +75,7 @@
 .support-agent-source-list > article > div:nth-child(2) > div { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .support-agent-source-list small { color: var(--text-soft); overflow-wrap: anywhere; }
 .support-agent-source-list small.is-error { color: #a43d35; }
-.support-agent-source-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.support-agent-source-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
 
 @media (max-width: 1120px) {
   .support-agent-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -39,6 +39,7 @@ os.environ["AUTH_PROFILE"] = "local_fake"
 os.environ["AUTH_TEST_BYPASS"] = "true"
 
 from app.main import app
+from app.catalog_merchandising import POPULAR_CATEGORY_CODE
 from app.domain.errors import ApplicationError
 from app.routers.auth import _set_refresh_cookie
 from app.database import API_ROOT, SessionLocal, engine
@@ -789,7 +790,12 @@ def test_merchant_controls_languages_visible_on_the_storefront(
     monkeypatch.setattr(
         public_catalog_use_cases,
         "catalog_translation_is_configured",
-        lambda: True,
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "translation_provider_is_configured",
+        lambda *args, **kwargs: False,
     )
     with SessionLocal() as session:
         profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
@@ -874,6 +880,98 @@ def test_merchant_controls_hot_product_merchandising() -> None:
             profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
             assert profile is not None
             profile.hot_products_enabled = original
+            session.commit()
+
+
+def test_merchant_controls_optional_share_card_subtitle() -> None:
+    subtitle = f"专注精选商品 {uuid4().hex[:6]}"
+    share_id: UUID | None = None
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original = profile.description
+
+    try:
+        updated = client.patch(
+            "/api/v1/me/merchant",
+            json={"share_card_subtitle": subtitle},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["share_card_subtitle"] == subtitle
+
+        listing = client.get(
+            "/api/store/demo/skus",
+            params={"page": 1, "page_size": 1, "include_facets": "false"},
+        )
+        assert listing.status_code == 200, listing.text
+        created = client.post(
+            "/api/v1/catalog-shares",
+            json={
+                "target_type": "PRODUCTS",
+                "sku_ids": [listing.json()["items"][0]["id"]],
+            },
+        )
+        assert created.status_code == 201, created.text
+        share_id = UUID(created.json()["id"])
+        assert created.json()["store_subtitle"] == subtitle
+
+        cleared = client.patch(
+            "/api/v1/me/merchant",
+            json={"share_card_subtitle": ""},
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["share_card_subtitle"] is None
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.description = original
+            if share_id is not None:
+                session.execute(
+                    delete(CatalogShareRow).where(CatalogShareRow.id == share_id)
+                )
+            session.commit()
+
+
+def test_merchant_logo_upload_is_normalized_and_served_from_object_storage() -> None:
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_logo_url = profile.logo_url
+        original_object_key = profile.logo_object_key
+
+    image_bytes = BytesIO()
+    Image.new("RGBA", (360, 180), (45, 27, 105, 255)).save(image_bytes, "PNG")
+    uploaded_object_key: str | None = None
+    try:
+        response = client.post(
+            "/api/v1/me/merchant/logo",
+            files={"logo": ("brand.png", image_bytes.getvalue(), "image/png")},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["logo_url"].startswith("/api/store/demo/logo?v=")
+
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None and profile.logo_object_key
+            uploaded_object_key = profile.logo_object_key
+            assert profile.logo_url is None
+            assert get_object_storage().exists(uploaded_object_key)
+
+        public_logo = client.get(response.json()["logo_url"])
+        assert public_logo.status_code == 200, public_logo.text
+        assert public_logo.headers["content-type"].startswith("image/webp")
+        with Image.open(BytesIO(public_logo.content)) as normalized:
+            assert normalized.format == "WEBP"
+            assert normalized.size == (360, 180)
+    finally:
+        if uploaded_object_key:
+            get_object_storage().delete(uploaded_object_key)
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.logo_url = original_logo_url
+            profile.logo_object_key = original_object_key
             session.commit()
 
 
@@ -2183,6 +2281,7 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     )
     assert login_response.status_code == 200, login_response.text
     token_data = login_response.json()["data"]
+    assert token_data["context"]["subscription_tier"] == "TRIAL"
     assert token_data["memberships"] == [
         {
             "id": str(DEFAULT_MEMBERSHIP_ID),
@@ -2230,6 +2329,7 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     assert me_response.status_code == 200, me_response.text
     assert me_response.json()["context"]["tenant_id"] == str(DEFAULT_TENANT_ID)
     assert me_response.json()["context"]["tenant_slug"] == "demo"
+    assert me_response.json()["context"]["subscription_tier"] == "TRIAL"
     assert me_response.json()["user"]["is_platform_admin"] is True
     permissions_response = client.get(
         "/api/v1/me/permissions", headers=bearer_headers
@@ -8158,6 +8258,226 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
     assert empty_listing.json()["total"] == 0
 
 
+def test_import_batch_rollback_is_latest_job_scoped_and_cleans_owned_images() -> None:
+    suffix = uuid4().hex[:10].upper()
+    created = client.post(
+        "/api/v1/import-batches",
+        json={"expected_file_count": 1},
+    )
+    assert created.status_code == 201, created.text
+    batch_id = UUID(created.json()["id"])
+    job_id = f"JOB-BATCH-{suffix}"
+    source_id = f"SRC-BATCH-{suffix}"
+    category_id = uuid4()
+    orphan_product_id = uuid4()
+    shared_product_id = uuid4()
+    orphan_sku_id = uuid4()
+    shared_batch_sku_id = uuid4()
+    shared_later_sku_id = uuid4()
+    r2_key = f"tenants/{DEFAULT_TENANT_ID}/approved-media/product-template/{suffix}/main.png"
+    shared_key = f"tenants/{DEFAULT_TENANT_ID}/approved-media/product-template/{suffix}/shared.png"
+    external_url = f"https://images.example.test/{suffix}.png"
+    storage = get_object_storage()
+    image_source = TEST_RUNTIME / f"{suffix}.png"
+    image_source.write_bytes(b"batch-owned-image")
+    storage.put_file(image_source, object_key=r2_key, content_type="image/png")
+    storage.put_file(image_source, object_key=shared_key, content_type="image/png")
+
+    with SessionLocal() as session:
+        session.add(
+            SourceFileRow(
+                id=source_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                media_object_id=None,
+                security_status="LEGACY_ACCEPTED",
+                original_filename=f"batch-{suffix}.xlsx",
+                stored_filename=f"batch-{suffix}.xlsx",
+                local_path="",
+                sha256="a" * 64,
+                byte_size=100,
+                extension=".xlsx",
+                detected_type="OOXML / XLSX",
+                extension_matches=True,
+                parser="openpyxl",
+            )
+        )
+        session.add(
+            ImportJobRow(
+                id=job_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                source_file_id=source_id,
+                batch_id=batch_id,
+                supplier_name="商品模版",
+                source_type="PRODUCT_TEMPLATE",
+                status="published",
+                progress=100,
+                products_count=2,
+            )
+        )
+        session.add(
+            ProductCategoryRow(
+                id=category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                code=f"BATCH-ROLLBACK-{suffix}",
+                name=f"Batch Rollback {suffix}",
+                path=f"Batch Rollback {suffix}",
+                status="ACTIVE",
+            )
+        )
+        session.add_all(
+            [
+                ProductRow(
+                    id=orphan_product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"ORPHAN-{suffix}",
+                    name=f"Orphan {suffix}",
+                    category_id=category_id,
+                    status="ACTIVE",
+                ),
+                ProductRow(
+                    id=shared_product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"SHARED-{suffix}",
+                    name=f"Shared {suffix}",
+                    category_id=category_id,
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=orphan_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=orphan_product_id,
+                    latest_import_job_id=job_id,
+                    sku_code=f"ORPHAN-SKU-{suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=shared_batch_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=shared_product_id,
+                    latest_import_job_id=job_id,
+                    sku_code=f"SHARED-BATCH-SKU-{suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=shared_later_sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=shared_product_id,
+                    sku_code=f"SHARED-LATER-SKU-{suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                ProductImageRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=orphan_product_id,
+                    storage_provider="S3",
+                    bucket="product-template",
+                    object_key=r2_key,
+                    content_type="image/png",
+                    byte_size=17,
+                    sha256="b" * 64,
+                    image_role="MAIN",
+                    approval_status="APPROVED",
+                ),
+                ProductImageRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=orphan_product_id,
+                    storage_provider="EXTERNAL",
+                    bucket="product-template",
+                    object_key=external_url,
+                    content_type="image/png",
+                    byte_size=0,
+                    sha256="c" * 64,
+                    image_role="GALLERY",
+                    sort_order=1,
+                    approval_status="APPROVED",
+                ),
+                ProductImageRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=shared_product_id,
+                    storage_provider="S3",
+                    bucket="product-template",
+                    object_key=shared_key,
+                    content_type="image/png",
+                    byte_size=17,
+                    sha256="d" * 64,
+                    image_role="MAIN",
+                    approval_status="APPROVED",
+                ),
+            ]
+        )
+        session.commit()
+
+    listed = client.get("/api/v1/import-batches")
+    assert listed.status_code == 200, listed.text
+    listed_batch = next(row for row in listed.json() if row["id"] == str(batch_id))
+    assert listed_batch["file_count"] == 1
+    assert listed_batch["remaining_sku_count"] == 2
+    assert listed_batch["jobs"][0]["filename"] == f"batch-{suffix}.xlsx"
+    assert listed_batch["categories"] == [
+        {
+            "id": str(category_id),
+            "name": f"Batch Rollback {suffix}",
+            "sku_count": 2,
+        }
+    ]
+
+    rolled_back = client.post(
+        f"/api/v1/import-batches/{batch_id}/rollback",
+        json={"category_id": None},
+    )
+    assert rolled_back.status_code == 200, rolled_back.text
+    payload = rolled_back.json()
+    assert payload["status"] == "REVOKED"
+    assert payload["deleted_sku_count"] == 2
+    assert payload["archived_product_count"] == 1
+    assert payload["deleted_storage_image_count"] == 1
+    assert payload["preserved_external_image_count"] == 1
+    assert payload["retained_shared_image_count"] == 1
+    assert payload["remaining_sku_count"] == 0
+    assert not storage.exists(r2_key)
+    assert storage.exists(shared_key)
+
+    with SessionLocal() as session:
+        orphan_sku = session.scalar(
+            select(SkuRow)
+            .where(SkuRow.id == orphan_sku_id)
+            .execution_options(include_deleted=True)
+        )
+        shared_batch_sku = session.scalar(
+            select(SkuRow)
+            .where(SkuRow.id == shared_batch_sku_id)
+            .execution_options(include_deleted=True)
+        )
+        shared_later_sku = session.get(SkuRow, shared_later_sku_id)
+        orphan_product = session.get(ProductRow, orphan_product_id)
+        shared_product = session.get(ProductRow, shared_product_id)
+        images = session.scalars(
+            select(ProductImageRow)
+            .where(ProductImageRow.object_key.in_([r2_key, external_url, shared_key]))
+            .execution_options(include_deleted=True)
+        ).all()
+        images_by_key = {image.object_key: image for image in images}
+        assert orphan_sku is not None and orphan_sku.deleted_at is not None
+        assert shared_batch_sku is not None and shared_batch_sku.deleted_at is not None
+        assert shared_later_sku is not None and shared_later_sku.deleted_at is None
+        assert orphan_product is not None and orphan_product.status == "ARCHIVED"
+        assert shared_product is not None and shared_product.status == "ACTIVE"
+        assert images_by_key[r2_key].deleted_at is not None
+        assert images_by_key[external_url].deleted_at is not None
+        assert images_by_key[shared_key].deleted_at is None
+
+
 def test_batch_merchandising_updates_category_pin_status_and_storefront_order() -> None:
     suffix = uuid4().hex[:8].upper()
     source_category_id = uuid4()
@@ -11628,6 +11948,7 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
         "barcode": f"BC-{prefix}",
         "default_moq": "12",
         "moq_unit": "piece",
+        "packing_quantity": "24",
         "weight": "0.75",
         "weight_unit": "kg",
         "unit_price": "19.90",
@@ -11651,6 +11972,7 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
     assert detail["skus"][0]["sku_code"] == payload["sku_code"]
     assert detail["skus"][0]["status"] == "ACTIVE"
     assert Decimal(detail["skus"][0]["default_moq"]) == Decimal("12")
+    assert detail["skus"][0]["option_values"]["装箱数"] == "24"
 
     offers = client.get(f"/api/v1/products/{detail['id']}/public-offers")
     assert offers.status_code == 200, offers.text
@@ -11666,6 +11988,9 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
     assert listed.status_code == 200, listed.text
     assert listed.json()["total"] == 1
     assert listed.json()["items"][0]["source_type"] == "MANUAL"
+    assert Decimal(listed.json()["items"][0]["default_moq"]) == Decimal("12")
+    assert listed.json()["items"][0]["moq_unit"] == "piece"
+    assert listed.json()["items"][0]["packing_quantity"] == "24"
     assert Decimal(listed.json()["items"][0]["public_price"]) == Decimal("19.90")
     assert listed.json()["items"][0]["public_currency"] == "USD"
     assert {
@@ -11811,6 +12136,62 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
         ) == image_row.id
         assert get_object_storage().exists(image_row.object_key)
 
+    downloaded = client.get(
+        f"/api/v1/products/{product_id}/images/main/download"
+    )
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"].startswith("image/webp")
+    assert "attachment" in downloaded.headers["content-disposition"]
+    assert "catalog-main.webp" in downloaded.headers["content-disposition"]
+    with Image.open(BytesIO(downloaded.content)) as downloaded_image:
+        assert downloaded_image.size == (320, 240)
+
+    first_image_id = UUID(uploaded_payload["id"])
+    replacement_buffer = BytesIO()
+    Image.new("RGB", (180, 180), color=(212, 175, 55)).save(
+        replacement_buffer,
+        format="JPEG",
+    )
+    replaced = client.post(
+        f"/api/v1/products/{product_id}/images/main",
+        files={
+            "image": (
+                "catalog-replacement.jpg",
+                replacement_buffer.getvalue(),
+                "image/jpeg",
+            )
+        },
+    )
+    assert replaced.status_code == 201, replaced.text
+    uploaded_payload = replaced.json()
+    assert UUID(uploaded_payload["id"]) != first_image_id
+    assert uploaded_payload["width"] == 180
+    assert uploaded_payload["height"] == 180
+
+    with SessionLocal() as session:
+        all_images = list(
+            session.scalars(
+                select(ProductImageRow)
+                .where(
+                    ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductImageRow.product_id == product_id,
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+        )
+        assert len([row for row in all_images if row.deleted_at is None]) == 1
+        assert next(row for row in all_images if row.id == first_image_id).deleted_at is not None
+
+    replacement_download = client.get(
+        f"/api/v1/products/{product_id}/images/main/download"
+    )
+    assert replacement_download.status_code == 200, replacement_download.text
+    assert "catalog-replacement.webp" in replacement_download.headers[
+        "content-disposition"
+    ]
+    with Image.open(BytesIO(replacement_download.content)) as downloaded_image:
+        assert downloaded_image.size == (180, 180)
+
     listed = client.get(
         "/api/v1/product-center/skus",
         params={"q": f"IMG-SKU-{suffix}", "page": 1, "page_size": 20},
@@ -11887,17 +12268,23 @@ def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
             "option_values": {"color": color, "size": size},
             "default_moq": "10",
             "moq_unit": "piece",
+            "packing_quantity": "24",
             "status": "ACTIVE",
         }
         for color in ("BLACK", "WHITE")
         for size in ("S", "M", "L")
     ]
+    sku_items[-1]["option_values"]["packing_quantity"] = "36"
+    del sku_items[-1]["packing_quantity"]
     sku_response = client.post(
         f"/api/v1/products/{product_id}/skus", json={"items": sku_items}
     )
     assert sku_response.status_code == 201, sku_response.text
     created_skus = sku_response.json()
     assert len(created_skus) == 6
+    assert created_skus[0]["option_values"]["装箱数"] == "24"
+    assert created_skus[-1]["option_values"]["装箱数"] == "36"
+    assert "packing_quantity" not in created_skus[-1]["option_values"]
 
     duplicate = client.post(
         f"/api/v1/products/{product_id}/skus", json={"items": [sku_items[0]]}
@@ -11908,10 +12295,22 @@ def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
     first_sku = created_skus[0]
     updated = client.patch(
         f"/api/v1/skus/{first_sku['id']}",
-        json={"expected_version": 1, "barcode": f"BC-{prefix}"},
+        json={
+            "expected_version": 1,
+            "barcode": f"BC-{prefix}",
+            "default_moq": "20",
+            "moq_unit": "box",
+            "option_values": {
+                **first_sku["option_values"],
+                "装箱数": "48",
+            },
+        },
     )
     assert updated.status_code == 200
     assert updated.json()["version"] == 2
+    assert Decimal(updated.json()["default_moq"]) == Decimal("20")
+    assert updated.json()["moq_unit"] == "box"
+    assert updated.json()["option_values"]["装箱数"] == "48"
     stale = client.patch(
         f"/api/v1/skus/{first_sku['id']}",
         json={"expected_version": 1, "barcode": "STALE"},
@@ -12425,7 +12824,12 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
     category_id = uuid4()
     product_ids = [uuid4(), uuid4()]
     sku_ids = [uuid4(), uuid4(), uuid4()]
+    original_logo_url: str | None = None
     with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_logo_url = profile.logo_url
+        profile.logo_url = "/static/test-merchant-logo.svg"
         session.add(
             ProductCategoryRow(
                 id=category_id,
@@ -12511,7 +12915,9 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
         share = created.json()
         assert share["target_type"] == "PRODUCTS"
         assert share["item_count"] == 2
-        assert share["share_path"] == f"/demo?share={share['token']}"
+        assert share["logo_position"] == "NONE"
+        share_identifier = share["id"].replace("-", "")
+        assert share["share_path"] == f"/demo/share/{share_identifier}"
 
         repeated = client.post(
             "/api/v1/catalog-shares",
@@ -12523,19 +12929,60 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
         assert repeated.status_code == 201, repeated.text
         assert repeated.json()["id"] == share["id"]
 
-        metadata = client.get(f"/api/store/demo/shares/{share['token']}")
+        branded = client.post(
+            "/api/v1/catalog-shares",
+            json={
+                "target_type": "PRODUCTS",
+                "sku_ids": [str(sku_id) for sku_id in sku_ids],
+                "logo_position": "TOP_LEFT",
+            },
+        )
+        assert branded.status_code == 201, branded.text
+        assert branded.json()["id"] != share["id"]
+        assert branded.json()["logo_position"] == "TOP_LEFT"
+        assert branded.json()["store_logo_url"] == "/static/test-merchant-logo.svg"
+        branded_metadata = client.get(
+            f"/api/store/demo/shares/{branded.json()['id'].replace('-', '')}"
+        )
+        assert branded_metadata.status_code == 200, branded_metadata.text
+        assert branded_metadata.json()["logo_position"] == "TOP_LEFT"
+
+        metadata = client.get(f"/api/store/demo/shares/{share_identifier}")
         assert metadata.status_code == 200, metadata.text
         assert metadata.json()["store_name"] == "Local Demo Company"
+        legacy_metadata = client.get(f"/api/store/demo/shares/{share['token']}")
+        assert legacy_metadata.status_code == 200, legacy_metadata.text
 
         scoped = client.get(
             "/api/store/demo/products",
-            params={"share": share["token"], "include_facets": "false"},
+            params={"share": share_identifier, "include_facets": "false"},
         )
         assert scoped.status_code == 200, scoped.text
         assert scoped.json()["total"] == 2
         assert {item["id"] for item in scoped.json()["items"]} == {
             str(product_id) for product_id in product_ids
         }
+
+        shared_detail = client.get(
+            f"/api/store/demo/products/{product_ids[0]}",
+            params={"share": share_identifier},
+        )
+        assert shared_detail.status_code == 200, shared_detail.text
+        unshared_catalog = client.get(
+            "/api/store/demo/products",
+            params={"page_size": 100, "include_facets": "false"},
+        )
+        assert unshared_catalog.status_code == 200, unshared_catalog.text
+        unrelated_product = next(
+            item
+            for item in unshared_catalog.json()["items"]
+            if item["id"] not in {str(value) for value in product_ids}
+        )
+        blocked_detail = client.get(
+            f"/api/store/demo/products/{unrelated_product['id']}",
+            params={"share": share_identifier},
+        )
+        assert blocked_detail.status_code == 404
 
         category_created = client.post(
             "/api/v1/catalog-shares",
@@ -12547,7 +12994,7 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
         category_scoped = client.get(
             "/api/store/demo/products",
             params={
-                "share": category_share["token"],
+                "share": category_share["id"].replace("-", ""),
                 "category": "不存在的分类",
                 "include_facets": "false",
             },
@@ -12567,6 +13014,13 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
                             hashlib.sha256(
                                 ("PRODUCTS:" + ",".join(sorted(str(value) for value in product_ids))).encode("utf-8")
                             ).hexdigest(),
+                            hashlib.sha256(
+                                (
+                                    "PRODUCTS:"
+                                    + ",".join(sorted(str(value) for value in product_ids))
+                                    + ":LOGO:TOP_LEFT"
+                                ).encode("utf-8")
+                            ).hexdigest(),
                             hashlib.sha256(f"CATEGORY:{category_id}".encode("utf-8")).hexdigest(),
                         ]
                     ),
@@ -12582,6 +13036,9 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
             session.execute(
                 delete(ProductCategoryRow).where(ProductCategoryRow.id == category_id)
             )
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.logo_url = original_logo_url
             session.commit()
 
 
@@ -12663,6 +13120,19 @@ def test_storefront_detail_views_are_idempotent_and_tenant_analytics_are_aggrega
     assert any(item["country_code"] == "ZZ" for item in payload["countries"])
     assert "ip_address" not in dashboard.text
 
+    ranking = client.get(
+        "/api/v1/storefront-analytics/product-ranking",
+        params={"days": 30, "page": 1, "page_size": 50},
+    )
+    assert ranking.status_code == 200, ranking.text
+    ranked_product = next(
+        item
+        for item in ranking.json()["items"]
+        if item["product_id"] == sku["product_id"]
+    )
+    assert ranked_product["views"] >= 1
+    assert ranked_product["rank"] >= 1
+
     with SessionLocal() as session:
         with pytest.raises(ApplicationError) as denied:
             storefront_analytics_use_cases.get_storefront_analytics(
@@ -12672,6 +13142,252 @@ def test_storefront_detail_views_are_idempotent_and_tenant_analytics_are_aggrega
                 days=30,
             )
         assert denied.value.code == "PERMISSION_REQUIRED"
+        with pytest.raises(ApplicationError) as ranking_denied:
+            storefront_analytics_use_cases.get_product_ranking(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                permissions=frozenset(),
+                days=30,
+                page=1,
+                page_size=50,
+            )
+        assert ranking_denied.value.code == "PERMISSION_REQUIRED"
+
+
+def test_product_view_ranking_can_assign_popular_category_with_pins_first() -> None:
+    suffix = uuid4().hex[:8].upper()
+    category_id = uuid4()
+    pinned_product_id = uuid4()
+    popular_product_id = uuid4()
+    normal_product_id = uuid4()
+    pinned_sku_id = uuid4()
+    popular_sku_id = uuid4()
+    normal_sku_id = uuid4()
+    product_ids = [pinned_product_id, popular_product_id, normal_product_id]
+    sku_ids = [pinned_sku_id, popular_sku_id, normal_sku_id]
+    now = datetime.now(UTC)
+
+    with SessionLocal() as session:
+        original_categories = {
+            row.id: {
+                "parent_id": row.parent_id,
+                "code": row.code,
+                "name": row.name,
+                "path": row.path,
+                "display_color": row.display_color,
+                "status": row.status,
+                "sort_order": row.sort_order,
+                "version": row.version,
+                "deleted_at": row.deleted_at,
+                "updated_at": row.updated_at,
+            }
+            for row in session.scalars(
+                select(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            ).all()
+        }
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_hot_products_enabled = bool(profile.hot_products_enabled)
+        profile.hot_products_enabled = True
+        category_name = f"Popular action {suffix}"
+        session.add(
+            ProductCategoryRow(
+                id=category_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                code=f"POPULAR-ACTION-{suffix}",
+                name=category_name,
+                path=category_name,
+                status="ACTIVE",
+                sort_order=50_000,
+            )
+        )
+        session.flush()
+        product_names = [
+            f"Pinned product {suffix}",
+            f"Popular product {suffix}",
+            f"High score normal product {suffix}",
+        ]
+        session.add_all(
+            [
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"POPULAR-{suffix}-{index}",
+                    name=name,
+                    category_id=category_id,
+                    status="ACTIVE",
+                    storefront_pinned_at=(
+                        now + timedelta(seconds=1) if index == 1 else None
+                    ),
+                )
+                for index, (product_id, name) in enumerate(
+                    zip(product_ids, product_names, strict=True),
+                    start=1,
+                )
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                SkuRow(
+                    id=sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"POPULAR-{suffix}-{index}",
+                    name=name,
+                    default_moq=Decimal("1"),
+                    moq_unit="piece",
+                    option_values={},
+                    status="ACTIVE",
+                )
+                for index, (sku_id, product_id, name) in enumerate(
+                    zip(sku_ids, product_ids, product_names, strict=True),
+                    start=1,
+                )
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                PublicCatalogOfferRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    sku_id=sku_id,
+                    unit_price=Decimal("10"),
+                    currency="CNY",
+                    tags=[],
+                    publication_status="PUBLISHED",
+                    published_at=now,
+                )
+                for sku_id in sku_ids
+            ]
+        )
+        session.add_all(
+            [
+                StorefrontProductViewDailyRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    viewed_on=now.date(),
+                    product_id=popular_product_id,
+                    sku_id=popular_sku_id,
+                    sku_code_snapshot=f"POPULAR-{suffix}-2",
+                    product_name_snapshot=product_names[1],
+                    country_code="ZZ",
+                    view_count=3,
+                ),
+                StorefrontProductViewDailyRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    viewed_on=now.date(),
+                    product_id=normal_product_id,
+                    sku_id=normal_sku_id,
+                    sku_code_snapshot=f"POPULAR-{suffix}-3",
+                    product_name_snapshot=product_names[2],
+                    country_code="ZZ",
+                    view_count=100,
+                ),
+            ]
+        )
+        session.commit()
+
+    popular_category_id: UUID | None = None
+    try:
+        ranking = client.get(
+            "/api/v1/storefront-analytics/product-ranking",
+            params={"days": 30, "page": 1, "page_size": 200},
+        )
+        assert ranking.status_code == 200, ranking.text
+        ranked_ids = [row["product_id"] for row in ranking.json()["items"]]
+        assert ranked_ids.index(str(normal_product_id)) < ranked_ids.index(
+            str(popular_product_id)
+        )
+
+        assigned = client.post(
+            "/api/v1/storefront-analytics/popular-category",
+            json={"product_ids": [str(popular_product_id)]},
+        )
+        assert assigned.status_code == 200, assigned.text
+        assigned_payload = assigned.json()
+        assert assigned_payload["moved_count"] == 1
+        assert assigned_payload["category_name"] == "热门"
+        popular_category_id = UUID(assigned_payload["category_id"])
+
+        repeated = client.post(
+            "/api/v1/storefront-analytics/popular-category",
+            json={"product_ids": [str(popular_product_id)]},
+        )
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["moved_count"] == 0
+
+        with SessionLocal() as session:
+            popular = session.get(ProductCategoryRow, popular_category_id)
+            selected = session.get(ProductRow, popular_product_id)
+            assert popular is not None
+            assert popular.code == POPULAR_CATEGORY_CODE
+            assert popular.name == "热门"
+            assert popular.parent_id is None
+            assert popular.sort_order == 0
+            assert selected is not None and selected.category_id == popular.id
+
+        categories = client.get("/api/v1/categories")
+        assert categories.status_code == 200, categories.text
+        root_categories = [row for row in categories.json() if row["parent_id"] is None]
+        assert root_categories[0]["code"] == POPULAR_CATEGORY_CODE
+
+        storefront = client.get(
+            "/api/store/demo/products",
+            params={"page_size": 100, "include_facets": "false"},
+        )
+        assert storefront.status_code == 200, storefront.text
+        ordered_ids = [UUID(row["id"]) for row in storefront.json()["items"]]
+        assert ordered_ids.index(pinned_product_id) < ordered_ids.index(
+            popular_product_id
+        )
+        assert ordered_ids.index(popular_product_id) < ordered_ids.index(
+            normal_product_id
+        )
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.hot_products_enabled = original_hot_products_enabled
+            session.execute(
+                delete(StorefrontProductViewDailyRow).where(
+                    StorefrontProductViewDailyRow.product_id.in_(product_ids)
+                )
+            )
+            session.execute(
+                delete(PublicCatalogOfferRow).where(
+                    PublicCatalogOfferRow.sku_id.in_(sku_ids)
+                )
+            )
+            session.execute(delete(SkuRow).where(SkuRow.id.in_(sku_ids)))
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductAuditEventRow.entity_id.in_(
+                        [str(value) for value in [*product_ids, popular_category_id] if value]
+                    ),
+                )
+            )
+            session.execute(delete(ProductRow).where(ProductRow.id.in_(product_ids)))
+            for category_record_id, snapshot in original_categories.items():
+                category = session.get(ProductCategoryRow, category_record_id)
+                if category is None:
+                    continue
+                for field, value in snapshot.items():
+                    setattr(category, field, value)
+            session.flush()
+            new_category_ids = [category_id]
+            if popular_category_id not in original_categories:
+                new_category_ids.append(popular_category_id)
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.id.in_(
+                        [value for value in new_category_ids if value is not None]
+                    )
+                )
+            )
+            session.commit()
 
 
 def test_storefront_visitor_headers_require_a_matching_trusted_client_ip(
@@ -13810,12 +14526,16 @@ def test_all_products_position_is_merchant_controlled_and_publicly_projected() -
     try:
         updated_response = client.patch(
             "/api/v1/categories/layout",
-            json={"all_products_position": target_position},
+            json={
+                "all_products_position": target_position,
+                "category_showcase_enabled": False,
+            },
         )
         assert updated_response.status_code == 200, updated_response.text
         assert updated_response.json() == {
             "all_products_position": target_position,
             "root_category_count": root_count,
+            "category_showcase_enabled": False,
         }
 
         persisted_response = client.get("/api/v1/categories/layout")
@@ -13824,6 +14544,7 @@ def test_all_products_position_is_merchant_controlled_and_publicly_projected() -
             persisted_response.json()["all_products_position"]
             == target_position
         )
+        assert persisted_response.json()["category_showcase_enabled"] is False
 
         public_response = client.get("/api/store/demo/skus")
         assert public_response.status_code == 200, public_response.text
@@ -13870,7 +14591,10 @@ def test_all_products_position_is_merchant_controlled_and_publicly_projected() -
                 "all_products_position": min(
                     initial_layout["all_products_position"],
                     root_count,
-                )
+                ),
+                "category_showcase_enabled": initial_layout[
+                    "category_showcase_enabled"
+                ],
             },
         )
         assert restored.status_code == 200, restored.text
@@ -14587,6 +15311,85 @@ def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
                 session.commit()
 
 
+def test_secondary_category_cover_upload_is_publicly_served() -> None:
+    suffix = uuid4().hex[:10].upper()
+    category_ids: list[UUID] = []
+    object_key: str | None = None
+    try:
+        root_response = client.post(
+            "/api/v1/categories",
+            json={
+                "code": f"COVER-ROOT-{suffix}",
+                "name": f"门面测试-{suffix}",
+                "sort_order": 0,
+            },
+        )
+        assert root_response.status_code == 201, root_response.text
+        root = root_response.json()
+        category_ids.append(UUID(root["id"]))
+
+        image_buffer = io.BytesIO()
+        Image.new("RGB", (96, 96), (45, 27, 105)).save(image_buffer, "PNG")
+        root_cover = client.post(
+            f"/api/v1/categories/{root['id']}/cover",
+            files={"image": ("root.png", image_buffer.getvalue(), "image/png")},
+        )
+        assert root_cover.status_code == 409
+        assert root_cover.json()["detail"]["code"] == "CATEGORY_COVER_LEVEL_INVALID"
+
+        child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"COVER-CHILD-{suffix}",
+                "name": "二级门面",
+                "sort_order": 0,
+            },
+        )
+        assert child_response.status_code == 201, child_response.text
+        child = child_response.json()
+        child_id = UUID(child["id"])
+        category_ids.append(child_id)
+
+        uploaded = client.post(
+            f"/api/v1/categories/{child['id']}/cover",
+            files={"image": ("cover.png", image_buffer.getvalue(), "image/png")},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        payload = uploaded.json()
+        assert payload["cover_source"] == "UPLOAD"
+        assert payload["cover_image_url"].startswith(
+            f"/api/store/demo/categories/{child['id']}/cover"
+        )
+
+        public_cover = client.get(payload["cover_image_url"])
+        assert public_cover.status_code == 200, public_cover.text
+        assert public_cover.headers["content-type"].startswith("image/webp")
+        with SessionLocal() as session:
+            category = session.get(ProductCategoryRow, child_id)
+            assert category is not None
+            object_key = category.cover_object_key
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.entity_type == "CATEGORY",
+                    ProductAuditEventRow.entity_id.in_(
+                        [str(category_id) for category_id in category_ids]
+                    ),
+                )
+            )
+            for category_id in reversed(category_ids):
+                session.execute(
+                    delete(ProductCategoryRow).where(
+                        ProductCategoryRow.id == category_id
+                    )
+                )
+            session.commit()
+        if object_key:
+            get_object_storage().delete(object_key)
+
+
 def test_public_media_uses_tenant_scoped_relative_proxy_when_no_cdn_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14926,6 +15729,85 @@ def test_supplier_manage_creates_unique_tenant_supplier_before_import() -> None:
         row for row in current_directory.json() if row["supplier_code"] == supplier_code
     ]
     assert [row["id"] for row in matching] == [payload["id"]]
+
+
+def test_supply_chain_partner_contact_crud_and_pagination() -> None:
+    suffix = uuid4().hex[:10].upper()
+    created = client.post(
+        "/api/v1/supply-chain",
+        json={
+            "name": f"Supply Chain Factory {suffix}",
+            "contact_name": "Lin Chen",
+            "phone": "+86 138 0000 0000",
+            "email": f"factory-{suffix.casefold()}@example.test",
+            "whatsapp": "+86 138 0000 0000",
+            "wechat": f"factory_{suffix.casefold()}",
+            "country_region": "China · Guangdong",
+            "address": "No. 18 Factory Road",
+            "website": "https://factory.example.test",
+            "business_scope": "Packaging and assembly",
+            "notes": "Primary packaging partner",
+        },
+    )
+    assert created.status_code == 201, created.text
+    partner = created.json()
+    assert partner["supplier_code"].startswith("SC-")
+    assert partner["contact_name"] == "Lin Chen"
+    assert partner["active_products"] == 0
+    assert partner["active_skus"] == 0
+
+    listing = client.get(
+        "/api/v1/supply-chain",
+        params={"query": suffix, "page": 1, "page_size": 10},
+    )
+    assert listing.status_code == 200, listing.text
+    page = listing.json()
+    assert page["total"] == 1
+    assert page["pages"] == 1
+    assert [row["id"] for row in page["items"]] == [partner["id"]]
+
+    updated = client.patch(
+        f"/api/v1/supply-chain/{partner['id']}",
+        json={
+            "expected_version": partner["version"],
+            "name": f"Updated Supply Chain Factory {suffix}",
+            "contact_name": "Amy Lin",
+            "phone": "+86 139 0000 0000",
+            "email": None,
+            "whatsapp": None,
+            "wechat": "amy_factory",
+            "country_region": "China · Zhejiang",
+            "address": None,
+            "website": None,
+            "business_scope": "Packaging",
+            "notes": None,
+            "status": "INACTIVE",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    updated_partner = updated.json()
+    assert updated_partner["name"].startswith("Updated")
+    assert updated_partner["contact_name"] == "Amy Lin"
+    assert updated_partner["email"] is None
+    assert updated_partner["status"] == "INACTIVE"
+    assert updated_partner["version"] == partner["version"] + 1
+
+    stale = client.patch(
+        f"/api/v1/supply-chain/{partner['id']}",
+        json={"expected_version": partner["version"], "phone": "stale"},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "SUPPLY_CHAIN_VERSION_CONFLICT"
+
+    deleted = client.delete(f"/api/v1/supply-chain/{partner['id']}")
+    assert deleted.status_code == 204, deleted.text
+
+    after_delete = client.get(
+        "/api/v1/supply-chain",
+        params={"query": suffix, "page": 1, "page_size": 10},
+    )
+    assert after_delete.status_code == 200
+    assert after_delete.json()["total"] == 0
 
 
 def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safety() -> None:
@@ -15276,6 +16158,86 @@ def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
         assert deleted.status_code == 204, deleted.text
 
 
+def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> None:
+    listing = client.get("/api/store/demo/skus", params={"q": "PF-8G01"})
+    assert listing.status_code == 200, listing.text
+    sku_id = listing.json()["items"][0]["id"]
+    visitor_token = "visitor-" + "a" * 56
+    other_visitor_token = "visitor-" + "b" * 56
+
+    created = client.post(
+        "/api/store/demo/quotes",
+        headers={"X-Storefront-Visitor-Token": visitor_token},
+        json={
+            "customer_name": "Temporary storefront visitor",
+            "privacy_acknowledged": True,
+            "items": [{"sku_id": sku_id, "quantity": 1}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    quote_id = created.json()["id"]
+
+    visitor_rows = client.get(
+        "/api/store/demo/visitor/quotes",
+        headers={"X-Storefront-Visitor-Token": visitor_token},
+    )
+    assert visitor_rows.status_code == 200, visitor_rows.text
+    assert quote_id in {row["id"] for row in visitor_rows.json()}
+    assert next(row for row in visitor_rows.json() if row["id"] == quote_id)["status"] == "PENDING_CONFIRMATION"
+
+    isolated_rows = client.get(
+        "/api/store/demo/visitor/quotes",
+        headers={"X-Storefront-Visitor-Token": other_visitor_token},
+    )
+    assert isolated_rows.status_code == 200, isolated_rows.text
+    assert quote_id not in {row["id"] for row in isolated_rows.json()}
+
+    confirmed = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == "CONFIRMED"
+
+    refreshed = client.get(
+        "/api/store/demo/visitor/quotes",
+        headers={"X-Storefront-Visitor-Token": visitor_token},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    visitor_quote = next(row for row in refreshed.json() if row["id"] == quote_id)
+    assert visitor_quote["status"] == "CONFIRMED"
+    assert visitor_quote["updated_at"] >= visitor_quote["created_at"]
+
+    completed = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/status",
+        json={"status": "COMPLETED"},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "COMPLETED"
+
+    invalid_transition = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+    assert invalid_transition.status_code == 409
+
+    with SessionLocal() as session:
+        stored = session.get(PublicQuoteDraftRow, UUID(quote_id))
+        assert stored is not None
+        assert stored.visitor_token_hash == hash_secret(visitor_token)
+        assert stored.visitor_token_hash != visitor_token
+        assert stored.visitor_token_expires_at is not None
+        stored.visitor_token_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+
+    expired_rows = client.get(
+        "/api/store/demo/visitor/quotes",
+        headers={"X-Storefront-Visitor-Token": visitor_token},
+    )
+    assert expired_rows.status_code == 200, expired_rows.text
+    assert quote_id not in {row["id"] for row in expired_rows.json()}
+
+
 def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_reads() -> None:
     organization_id = uuid4()
     tenant_b = uuid4()
@@ -15411,6 +16373,14 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         column["name"]
         for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
     }
+    assert "visitor_token_hash" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
+    }
+    assert "visitor_token_expires_at" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
+    }
     subscription_columns = {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("tenant_subscriptions")
@@ -15456,6 +16426,18 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert profile_columns["hot_products_enabled"]["nullable"] is False
     assert "support_widget_config" in profile_columns
     assert profile_columns["support_widget_config"]["nullable"] is False
+    assert "logo_object_key" in profile_columns
+    assert "category_showcase_enabled" in profile_columns
+    assert profile_columns["category_showcase_enabled"]["nullable"] is False
+    category_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("product_categories")
+    }
+    assert {
+        "cover_source",
+        "cover_object_key",
+        "cover_product_id",
+    }.issubset(category_columns)
     share_columns = {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("catalog_shares")
@@ -15469,6 +16451,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "title",
         "item_count",
         "fingerprint",
+        "logo_position",
     }.issubset(share_columns)
     product_columns = {
         column["name"]: column
@@ -15558,7 +16541,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260810_0075"
+        ).scalar() == "20260812_0080"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -15570,6 +16553,79 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)
+
+
+def test_category_showcase_migration_rebuilds_referenced_sqlite_parent(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "category-showcase-parent-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    seed_engine = create_engine(migration_url)
+    with seed_engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        connection.exec_driver_sql(
+            "CREATE TABLE product_categories (id TEXT PRIMARY KEY)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE products ("
+            "id TEXT PRIMARY KEY, "
+            "category_id TEXT NOT NULL REFERENCES product_categories(id)"
+            ")"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE tenant_public_profiles (tenant_id TEXT PRIMARY KEY)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO product_categories (id) VALUES ('category-1')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO products (id, category_id) "
+            "VALUES ('product-1', 'category-1')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO tenant_public_profiles (tenant_id) VALUES ('tenant-1')"
+        )
+    seed_engine.dispose()
+
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+    command.stamp(config, "20260811_0077")
+    command.upgrade(config, "20260811_0078")
+
+    upgraded_engine = create_engine(migration_url)
+    with upgraded_engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        assert connection.exec_driver_sql(
+            "SELECT category_id FROM products WHERE id = 'product-1'"
+        ).scalar_one() == "category-1"
+        assert connection.exec_driver_sql(
+            "PRAGMA foreign_key_check"
+        ).fetchall() == []
+    assert {
+        "cover_source",
+        "cover_object_key",
+        "cover_product_id",
+    }.issubset(
+        {
+            column["name"]
+            for column in inspect(upgraded_engine).get_columns(
+                "product_categories"
+            )
+        }
+    )
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260811_0077")
+    downgraded_engine = create_engine(migration_url)
+    with downgraded_engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        assert connection.exec_driver_sql(
+            "SELECT category_id FROM products WHERE id = 'product-1'"
+        ).scalar_one() == "category-1"
+        assert connection.exec_driver_sql(
+            "PRAGMA foreign_key_check"
+        ).fetchall() == []
+    downgraded_engine.dispose()
 
 
 def test_support_ai_agent_migration_preserves_existing_store_configuration(

@@ -1,25 +1,29 @@
 import { Button, Card, Text } from "@radix-ui/themes";
-import { ArrowRight, Image as ImageIcon } from "@phosphor-icons/react";
+import { ArrowRight, Heart, Image as ImageIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { money } from "../lib/format";
 import { storefrontText } from "../lib/storefrontLocale";
+import { isStorefrontFavorite, toggleStorefrontFavorite } from "../lib/storefrontVisitor";
 import type { StoreProduct, StorefrontLocale } from "../types";
 
 export function ProductCard({
   product,
+  tenantSlug,
   detailsHref,
   onOpenDetails,
   onPrefetchDetails,
   locale,
 }: {
   product: StoreProduct;
+  tenantSlug: string;
   detailsHref: string;
   onOpenDetails: () => void;
   onPrefetchDetails: () => void;
   locale: StorefrontLocale;
 }) {
   const [imageFailed, setImageFailed] = useState(!product.image_url);
+  const [favorite, setFavorite] = useState(() => isStorefrontFavorite(tenantSlug, product.id));
   const prefetchedDetails = useRef(false);
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
@@ -33,10 +37,16 @@ export function ProductCard({
   )
     ? `${money(product.price_from, product.currency)} – ${money(product.price_to, product.currency)}`
     : money(product.price_from, product.currency);
+  const priceDensity = priceLabel.length > 20
+    ? " is-compact"
+    : priceLabel.length > 12
+      ? " is-condensed"
+      : "";
 
   useEffect(() => {
     setImageFailed(!product.image_url);
-  }, [product.image_url]);
+    setFavorite(isStorefrontFavorite(tenantSlug, product.id));
+  }, [product.id, product.image_url, tenantSlug]);
 
   const prefetchDetails = () => {
     if (prefetchedDetails.current) return;
@@ -52,6 +62,15 @@ export function ProductCard({
       onPointerDown={prefetchDetails}
       onFocus={prefetchDetails}
     >
+      <button
+        type="button"
+        className={`product-favorite-button${favorite ? " is-active" : ""}`}
+        aria-label={favorite ? t("取消收藏") : t("收藏商品")}
+        aria-pressed={favorite}
+        onClick={() => setFavorite(toggleStorefrontFavorite(tenantSlug, product))}
+      >
+        <Heart size={18} weight={favorite ? "fill" : "bold"} />
+      </button>
       <Link
         to={detailsHref}
         state={{ fromStorefrontCatalog: true }}
@@ -83,7 +102,13 @@ export function ProductCard({
         </Text>
         <div className="sku-card-footer">
           <div className="sku-price-block">
-            <Text as="div" size="4" weight="bold" className="price-text">
+            <Text
+              as="div"
+              size="4"
+              weight="bold"
+              className={`price-text${priceDensity}`}
+              title={priceLabel}
+            >
               {priceLabel}
             </Text>
           </div>

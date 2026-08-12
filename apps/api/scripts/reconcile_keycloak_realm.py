@@ -59,6 +59,13 @@ CLIENT_MANAGED_FIELDS = (
     "webOrigins",
     "defaultClientScopes",
 )
+CLIENT_UNORDERED_LIST_FIELDS = frozenset(
+    {
+        "redirectUris",
+        "webOrigins",
+        "defaultClientScopes",
+    }
+)
 CLIENT_MANAGED_ATTRIBUTES = (
     "pkce.code.challenge.method",
     "post.logout.redirect.uris",
@@ -520,17 +527,16 @@ def reconcile(
         headers=headers,
     ).json()
     for field in CLIENT_MANAGED_FIELDS:
-        if field == "defaultClientScopes":
-            verified_scopes = verified_client.get(field)
-            desired_scopes = desired_client[field]
+        if field in CLIENT_UNORDERED_LIST_FIELDS:
+            verified_values = verified_client.get(field)
+            desired_values = desired_client[field]
             if (
-                not isinstance(verified_scopes, list)
-                or any(not isinstance(scope, str) for scope in verified_scopes)
-                or sorted(verified_scopes) != sorted(desired_scopes)
+                not isinstance(verified_values, list)
+                or any(not isinstance(value, str) for value in verified_values)
+                or sorted(verified_values) != sorted(desired_values)
             ):
                 raise SystemExit(
-                    "Keycloak client verification failed for "
-                    "defaultClientScopes."
+                    f"Keycloak client verification failed for {field}."
                 )
             continue
         if verified_client.get(field) != desired_client[field]:

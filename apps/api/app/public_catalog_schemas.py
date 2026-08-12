@@ -34,6 +34,7 @@ class PublicStoreResponse(BaseModel):
     available_locales: list[str] = Field(default_factory=lambda: ["zh-CN"])
     all_products_position: int = Field(default=0, ge=0)
     hot_products_enabled: bool = False
+    category_showcase_enabled: bool = True
     announcements: list[PublicAnnouncementResponse] = Field(default_factory=list)
     support_widget: PublicSupportWidgetResponse
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
@@ -42,6 +43,9 @@ class PublicStoreResponse(BaseModel):
 class PublicCategoryOption(BaseModel):
     value: str
     label: str
+    id: UUID | None = None
+    parent_id: UUID | None = None
+    cover_image_url: str | None = None
 
 
 class PublicSkuResponse(BaseModel):
@@ -83,6 +87,7 @@ class PublicSkuPage(BaseModel):
     source_locale: str = "zh-CN"
     locale: str = "zh-CN"
     all_products_position: int = Field(default=0, ge=0)
+    category_showcase_enabled: bool = True
 
 
 class PublicProductSummary(BaseModel):
@@ -127,6 +132,7 @@ class PublicProductPage(BaseModel):
     locale: str = "zh-CN"
     all_products_position: int = Field(default=0, ge=0)
     hot_products_enabled: bool = False
+    category_showcase_enabled: bool = True
     hot_sort_applied: bool = False
 
 
@@ -202,6 +208,7 @@ class PublicQuoteDraftResponse(BaseModel):
     total_amount: Decimal
     valid_until: datetime
     created_at: datetime
+    updated_at: datetime
     content_hash: str
     disclaimer: str = PUBLIC_DRAFT_DISCLAIMER
     disclaimer_version: str = PUBLIC_DRAFT_DISCLAIMER_VERSION
@@ -223,6 +230,11 @@ class PublicQuoteDraftSummary(BaseModel):
     total_amount: Decimal
     valid_until: datetime
     created_at: datetime
+    updated_at: datetime
+
+
+class PublicQuoteDraftStatusUpdate(BaseModel):
+    status: Literal["CONFIRMED", "COMPLETED", "CANCELLED"]
 
 
 class PublicQuoteDocument(BaseModel):

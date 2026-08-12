@@ -13,6 +13,11 @@ Let's Encrypt 证书，React SPA 与 `/api` 使用同一主域，Keycloak 在
 - `ATC_DEPLOYMENT_PROFILE=standard`：保留原有 RabbitMQ、MinIO、ClamAV
   与可选 Worker 的完整拓扑，适合 4 vCPU / 8 GiB 以上主机。
 
+若云厂商交付的是已经由 Nginx 占用 80 端口、PID 1 不是 systemd 的托管
+容器，使用 compact 的 `ATC_EDGE_PROXY=nginx` 拓扑。外层 Nginx 保持为
+Cloudflare 回源入口，Compose 内的 Caddy 只绑定宿主回环地址；不要停止外层
+Nginx，否则托管容器本身也可能退出。
+
 ## 1. 上线前提
 
 Compact 最低要求是 2 vCPU、3 GiB RAM 和 8 GiB 构建前可用磁盘，推荐
@@ -26,6 +31,14 @@ Compact 最低要求是 2 vCPU、3 GiB RAM 和 8 GiB 构建前可用磁盘，推
 - Docker Engine 与 Docker Compose v2
 - Git、curl、openssl、ca-certificates、Python 3（安全渲染 Keycloak realm）
 - 可选的 restic（用于加密离机备份）
+
+上述托管容器可先执行幂等准备脚本。它安装 Docker/Compose 及部署依赖，
+实际运行一次临时容器，并在无 systemd 时让 cron 随提供商的 `/start.sh`
+启动；它不会启动本站的数据库或业务容器：
+
+```bash
+sudo ./infra/production/prepare-managed-container-host.sh
+```
 
 阿里云安全组和主机防火墙只允许：
 
@@ -90,6 +103,22 @@ install -m 0600 .env.production.example .env.production
 ```bash
 openssl rand -hex 32
 ```
+
+普通 VM 保持 `ATC_EDGE_PROXY=caddy`。若使用前述托管容器，改为：
+
+```text
+ATC_DEPLOYMENT_PROFILE=compact
+ATC_EDGE_PROXY=nginx
+ATC_NGINX_EDGE_PORT=18080
+```
+
+该端口只绑定 `127.0.0.1`，不得在安全组或容器端口映射中公开。
+
+若服务商交付的嵌套 Docker 因 cgroup v2 处于 `domain threaded` 而无法
+应用资源限制，可在运营者明确接受共享宿主资源竞争风险后临时设置
+`ATC_NESTED_DOCKER_DISABLE_RESOURCE_LIMITS=true`。该开关仅移除内层 Compose
+的 cgroup 限制并为 Keycloak 设置固定堆上限；它不能替代外层容器的真实
+CPU、内存、进程和磁盘配额。服务商修复委派后必须恢复为 `false`。
 
 `KEYCLOAK_INITIAL_USER_PASSWORD` 不能使用纯 hex：它必须至少 16 位并同时
 包含大写字母、小写字母、数字和特殊字符。可用下列命令生成后，以单引号
@@ -159,6 +188,13 @@ git ls-remote https://github.com/Anglyao7/SKU2Quotation.git refs/heads/main
 ```bash
 cd /opt/ai-trade-cloud/app
 sudo ./infra/production/deploy.sh <40_CHARACTER_COMMIT_SHA>
+```
+
+托管容器改用包装脚本；它先以可回滚方式渲染并校验外层 Nginx，再调用同一
+套不可变部署、迁移、备份和健康检查流程：
+
+```bash
+sudo ./infra/production/deploy-managed-container.sh <40_CHARACTER_COMMIT_SHA>
 ```
 
 除第一次空库部署外，每次升级前必须审核 Alembic 变更符合
@@ -297,7 +333,7 @@ Caddy、API、Worker 和 Keycloak 的写入，完成本地 dump/对象复制后�
 低峰；随着对象规模增长，应迁移到云盘/数据库 PITR 与对象存储原生快照，
 避免全量复制扩大维护窗口。
 
-安装每天 03:20 执行的 systemd timer：
+安装每天 03:20 执行的备份任务：
 
 ```bash
 sudo ./infra/production/install-backup-timer.sh
@@ -306,9 +342,12 @@ sudo journalctl -u atc-backup.service -n 200 --no-pager
 sudo systemctl list-timers atc-backup.timer --no-pager
 ```
 
+常规 VM 使用 systemd timer；PID 1 不是 systemd 的托管容器会自动写入
+`/etc/cron.d/atc-backup`，准备脚本负责保证 cron 当前运行并可随容器重启。
+
 本地保留天数由 `ATC_BACKUP_RETENTION_DAYS` 控制，默认示例为 14 天。
-首次部署会在发布完成前强制生成一份本地基线备份并自动启用 systemd
-定时器。`ATC_ENABLE_REMOTE_BACKUP=true` 时，环境校验会实际读取远端
+首次部署会在发布完成前强制生成一份本地基线备份并自动启用对应平台的
+定时任务。`ATC_ENABLE_REMOTE_BACKUP=true` 时，环境校验会实际读取远端
 restic 仓库，备份脚本执行加密离机复制和保留策略，失败即整次备份失败。
 远端仓库凭据只能放在权限为 600 的环境文件或云密钥服务中。
 

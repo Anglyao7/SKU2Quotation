@@ -1,25 +1,29 @@
-import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowDown, ArrowUp, ArrowsClockwise, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, ShareNetwork, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
+import { ArrowDown, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, ShareNetwork, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   batchDeleteSkus,
   batchUpdateSkuCategory,
   batchUpdateSkuPinned,
   batchUpdateSkuStatus,
+  createCatalogImportBatch,
   createManualProduct,
   createProductTemplateImport,
   createSkus,
   deleteAllProducts,
   detectFile,
+  downloadProductMainImage,
   exportSkuCatalog,
   getDeleteAllProductsJob,
   getImport,
   getProduct,
+  listCatalogImportBatches,
   listCategories,
   listPublicCatalogOffers,
   listSkus,
   PRODUCT_TEMPLATE_DOWNLOAD_URL,
+  rollbackCatalogImportBatch,
   updateSku,
   uploadProductMainImage,
   upsertPublicCatalogOffer,
@@ -31,13 +35,32 @@ import { CatalogShareDialog, type CatalogShareTarget } from "../components/Catal
 import { primaryCategoryLabel } from "../../lib/format";
 import { api } from "../../lib/api";
 import type { ProductTag } from "../../types";
-import type { FileDetection, ImportJob, ProductCategory, ProductDetail, ProductSku, PublicCatalogOffer, SkuListItem, SkuListPage } from "../types";
+import type { CatalogImportBatch, CatalogImportRollbackResult, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductSku, PublicCatalogOffer, SkuListItem, SkuListPage } from "../types";
 
 const emptySkuPage: SkuListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
 const SKU_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 const SKU_PAGE_SIZE_STORAGE_KEY = "ai-trade-cloud:sku-page-size";
 const UNCLASSIFIED_CATEGORY_VALUE = "__unclassified__";
+const SKU_TEMPLATE_MARKER_KEY = "_sku2quotation";
+const SKU_PACKING_QUANTITY_KEY = "装箱数";
+const SKU_PACKING_QUANTITY_KEYS = new Set([
+  SKU_PACKING_QUANTITY_KEY,
+  "一箱个数",
+  "packing_quantity",
+  "units_per_carton",
+]);
 type BulkSkuAction = "pin" | "unpin" | "activate" | "deactivate" | "category";
+type ImportQueueStatus = "checking" | "ready" | "uploading" | "processing" | "published" | "failed";
+
+interface ImportQueueItem {
+  id: string;
+  file: File;
+  detection?: FileDetection;
+  status: ImportQueueStatus;
+  progress: number;
+  job?: ImportJob;
+  error?: string;
+}
 
 function initialSkuPageSize() {
   if (typeof window === "undefined") return 50;
@@ -157,6 +180,34 @@ function skuPrice(row: SkuListItem) {
   return `${row.publicCurrency ?? ""} ${row.publicPrice.toLocaleString(document.documentElement.lang || "zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
 }
 
+function getSkuPackingQuantity(optionValues: ProductSku["optionValues"]) {
+  for (const key of SKU_PACKING_QUANTITY_KEYS) {
+    const value = optionValues[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return "";
+}
+
+function withSkuPackingQuantity(
+  optionValues: ProductSku["optionValues"],
+  packingQuantity: string,
+) {
+  const next = { ...optionValues };
+  SKU_PACKING_QUANTITY_KEYS.forEach((key) => delete next[key]);
+  if (packingQuantity.trim()) next[SKU_PACKING_QUANTITY_KEY] = packingQuantity.trim();
+  return next;
+}
+
+function visibleSkuOptions(optionValues: ProductSku["optionValues"]) {
+  return Object.entries(optionValues).filter(([key, value]) => (
+    key !== SKU_TEMPLATE_MARKER_KEY
+    && !SKU_PACKING_QUANTITY_KEYS.has(key)
+    && value !== ""
+    && value !== undefined
+    && value !== null
+  ));
+}
+
 function skuUpdatedDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
@@ -210,8 +261,17 @@ export function ProductsPage() {
   const [error, setError] = useState("");
   const [importOpen, setImportOpen] = useState(canImport && params.get("import") === "1");
   const [createOpen, setCreateOpen] = useState(false);
-  const [pendingFile, setPendingFile] = useState<File>();
-  const [detection, setDetection] = useState<FileDetection>();
+  const [importTab, setImportTab] = useState("upload");
+  const [importFiles, setImportFiles] = useState<ImportQueueItem[]>([]);
+  const [importBatches, setImportBatches] = useState<CatalogImportBatch[]>([]);
+  const [importBatchesLoading, setImportBatchesLoading] = useState(false);
+  const [rollbackBatchId, setRollbackBatchId] = useState("");
+  const [rollbackCategoryId, setRollbackCategoryId] = useState("");
+  const [rollbackTarget, setRollbackTarget] = useState<CatalogImportBatch>();
+  const [rollbackBusy, setRollbackBusy] = useState(false);
+  const [rollbackError, setRollbackError] = useState("");
+  const [rollbackResult, setRollbackResult] = useState<CatalogImportRollbackResult>();
+  const [importDragActive, setImportDragActive] = useState(false);
   const [lastImport, setLastImport] = useState<ImportJob>();
   const [loadedWarningJobId, setLoadedWarningJobId] = useState<string>();
   const [importBusy, setImportBusy] = useState(false);
@@ -265,6 +325,23 @@ export function ProductsPage() {
   const loadCategories = useCallback(async () => {
     setCategories(await listCategories());
   }, []);
+  const loadImportBatches = useCallback(async () => {
+    setImportBatchesLoading(true);
+    try {
+      const batches = await listCatalogImportBatches();
+      setImportBatches(batches);
+      setRollbackError("");
+      setRollbackBatchId((current) => (
+        current && batches.some((batch) => batch.id === current)
+          ? current
+          : batches.find((batch) => batch.status !== "REVOKED")?.id ?? ""
+      ));
+    } catch (reason) {
+      setRollbackError(reason instanceof Error ? reason.message : t("导入批次加载失败"));
+    } finally {
+      setImportBatchesLoading(false);
+    }
+  }, [t]);
   useEffect(() => { void loadCategories().catch(() => setCategories([])); }, [loadCategories]);
   useEffect(() => {
     void api.getProductTags("", 200)
@@ -287,23 +364,64 @@ export function ProductsPage() {
     if (!lastImport?.id) return undefined;
     const next = await getImport(lastImport.id);
     setLastImport(next);
+    setImportFiles((current) => current.map((item) => (
+      item.job?.id === next.id
+        ? {
+            ...item,
+            job: next,
+            progress: next.progress,
+            status: next.status === "published" ? "published" : next.status === "failed" ? "failed" : "processing",
+          }
+        : item
+    )));
     setImportPollingError("");
     if (next.status === "published") {
       await load();
       await loadCategories().catch(() => undefined);
+      await loadImportBatches().catch(() => undefined);
     }
     return next;
-  }, [lastImport?.id, load, loadCategories]);
+  }, [lastImport?.id, load, loadCategories, loadImportBatches]);
 
+  const activeImportJobIds = useMemo(
+    () => importFiles
+      .filter((item) => item.job && ["scanning", "parsing"].includes(item.job.status))
+      .map((item) => item.job!.id)
+      .join(","),
+    [importFiles],
+  );
   useEffect(() => {
-    if (!importOpen || !lastImport || !["scanning", "parsing"].includes(lastImport.status)) return;
+    if (!importOpen || !activeImportJobIds) return;
     let cancelled = false;
     let timer = 0;
     const poll = () => {
       timer = window.setTimeout(() => {
-        void refreshCurrentImport()
-          .then((next) => {
-            if (!cancelled && next && ["scanning", "parsing"].includes(next.status)) poll();
+        const jobIds = activeImportJobIds.split(",").filter(Boolean);
+        void Promise.all(jobIds.map((jobId) => getImport(jobId)))
+          .then(async (jobs) => {
+            if (cancelled) return;
+            const jobsById = new Map(jobs.map((job) => [job.id, job]));
+            setImportFiles((current) => current.map((item) => {
+              const job = item.job ? jobsById.get(item.job.id) : undefined;
+              if (!job) return item;
+              return {
+                ...item,
+                job,
+                progress: job.progress,
+                status: job.status === "published" ? "published" : job.status === "failed" ? "failed" : "processing",
+                error: job.errorMessage,
+              };
+            }));
+            setLastImport((current) => current ? jobsById.get(current.id) ?? current : current);
+            setImportPollingError("");
+            if (jobs.some((job) => job.status === "published")) {
+              await Promise.all([
+                load(),
+                loadCategories().catch(() => undefined),
+                loadImportBatches().catch(() => undefined),
+              ]);
+            }
+            if (!cancelled && jobs.some((job) => ["scanning", "parsing"].includes(job.status))) poll();
           })
           .catch((reason) => {
             setImportPollingError(reason instanceof Error ? t("状态刷新失败，系统将继续重试：{message}", { message: reason.message }) : t("状态刷新失败，系统将继续重试。"));
@@ -316,7 +434,7 @@ export function ProductsPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [importOpen, lastImport?.id, lastImport?.status, refreshCurrentImport, t]);
+  }, [activeImportJobIds, importOpen, load, loadCategories, loadImportBatches, t]);
 
   useEffect(() => {
     const requested = params.get("import") === "1";
@@ -344,15 +462,17 @@ export function ProductsPage() {
       .then(setLastImport)
       .catch(() => setLoadedWarningJobId(undefined));
   }, [lastImport, loadedWarningJobId]);
+  useEffect(() => {
+    if (importOpen) void loadImportBatches();
+  }, [importOpen, loadImportBatches]);
 
   const setImportDialogOpen = (open: boolean) => {
     if (open && !canImport) return;
     setImportOpen(open);
     if (!open) {
-      setPendingFile(undefined);
-      setDetection(undefined);
       setImportError("");
       setImportPollingError("");
+      setRollbackError("");
       setImportSubmitStage("idle");
       setUploadProgress(0);
     }
@@ -364,32 +484,61 @@ export function ProductsPage() {
     }, { replace: true });
   };
 
-  const inspectTemplate = async (file?: File) => {
-    if (!canImport || !file) return;
+  const inspectTemplates = async (selectedFiles?: FileList | File[]) => {
+    if (!canImport || !selectedFiles) return;
+    const files = Array.from(selectedFiles);
+    if (!files.length) return;
     setImportError("");
-    setLastImport(undefined);
     setLoadedWarningJobId(undefined);
-    setPendingFile(file);
-    if (!file.name.toLowerCase().endsWith(".xlsx")) {
-      setDetection(undefined);
-      setImportError(t("这里只接受 .xlsx 商品文件。"));
+    const currentKeys = new Set(importFiles.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`));
+    const uniqueFiles = files.filter((file) => {
+      const key = `${file.name}:${file.size}:${file.lastModified}`;
+      if (currentKeys.has(key)) return false;
+      currentKeys.add(key);
+      return true;
+    });
+    const room = Math.max(0, 100 - importFiles.length);
+    const acceptedFiles = uniqueFiles.slice(0, room);
+    if (!acceptedFiles.length) {
+      setImportError(t(room === 0 ? "每个批次最多选择 100 个文件。" : "这些文件已经在当前列表中。"));
       if (importInputRef.current) importInputRef.current.value = "";
       return;
     }
+    if (uniqueFiles.length > room) setImportError(t("每个批次最多选择 100 个文件，超出的文件未加入。"));
+    const queued: ImportQueueItem[] = acceptedFiles.map((file) => ({
+      id: crypto.randomUUID(),
+      file,
+      status: file.name.toLowerCase().endsWith(".xlsx") ? "checking" : "failed",
+      progress: 0,
+      error: file.name.toLowerCase().endsWith(".xlsx") ? undefined : t("只接受 .xlsx 商品文件。"),
+    }));
+    setImportFiles((current) => [...current, ...queued]);
     setImportBusy(true);
     setImportSubmitStage("checking");
     try {
-      const nextDetection = await detectFile(file);
-      setDetection(nextDetection);
-      if (
-        nextDetection.detected_type !== "OOXML / XLSX"
-        || !nextDetection.extension_matches
-      ) {
-        setImportError(t("文件签名与 XLSX 格式不一致，请重新选择。"));
-      }
-    } catch (reason) {
-      setDetection(undefined);
-      setImportError(reason instanceof Error ? reason.message : t("文件检测失败"));
+      await Promise.all(queued.map(async (item) => {
+        if (item.status === "failed") return;
+        try {
+          const detection = await detectFile(item.file);
+          const valid = detection.detected_type === "OOXML / XLSX" && detection.extension_matches;
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id
+              ? {
+                  ...currentItem,
+                  detection,
+                  status: valid ? "ready" : "failed",
+                  error: valid ? undefined : t("文件签名与 XLSX 格式不一致。"),
+                }
+              : currentItem
+          )));
+        } catch (reason) {
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id
+              ? { ...currentItem, status: "failed", error: reason instanceof Error ? reason.message : t("文件检测失败") }
+              : currentItem
+          )));
+        }
+      }));
     } finally {
       setImportBusy(false);
       setImportSubmitStage("idle");
@@ -397,34 +546,90 @@ export function ProductsPage() {
     }
   };
 
-  const importTemplate = async () => {
+  const importTemplates = async () => {
     if (!canImport) {
       setImportError(t("当前账号没有导入商品的权限。"));
       return;
     }
-    if (!pendingFile || !detection || importError) return;
+    const readyItems = importFiles.filter((item) => item.status === "ready" && item.detection);
+    if (!readyItems.length) return;
     setImportBusy(true);
     setImportSubmitStage("uploading");
     setUploadProgress(0);
     setImportError("");
     try {
-      const job = await createProductTemplateImport(pendingFile, (progress) => {
-        setUploadProgress(progress);
-        if (progress >= 100) setImportSubmitStage("processing");
-      });
-      setLastImport(job);
-      setLoadedWarningJobId(undefined);
-      setPendingFile(undefined);
-      setDetection(undefined);
-      if (job.status === "published") {
-        await load();
-        setCategories(await listCategories());
+      const batch = await createCatalogImportBatch(readyItems.length);
+      for (let index = 0; index < readyItems.length; index += 1) {
+        const item = readyItems[index];
+        setImportFiles((current) => current.map((currentItem) => (
+          currentItem.id === item.id ? { ...currentItem, status: "uploading", progress: 0, error: undefined } : currentItem
+        )));
+        try {
+          const job = await createProductTemplateImport(item.file, (progress) => {
+            setUploadProgress(Math.round(((index + progress / 100) / readyItems.length) * 100));
+            setImportFiles((current) => current.map((currentItem) => (
+              currentItem.id === item.id ? { ...currentItem, progress } : currentItem
+            )));
+          }, batch.id);
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id
+              ? {
+                  ...currentItem,
+                  job,
+                  progress: job.progress,
+                  status: job.status === "published" ? "published" : job.status === "failed" ? "failed" : "processing",
+                  error: job.errorMessage,
+                }
+              : currentItem
+          )));
+          setLastImport(job);
+          setLoadedWarningJobId(undefined);
+          if (job.status === "published") {
+            await Promise.all([load(), loadCategories().catch(() => undefined)]);
+          }
+        } catch (reason) {
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id
+              ? { ...currentItem, status: "failed", error: reason instanceof Error ? reason.message : t("商品导入失败") }
+              : currentItem
+          )));
+        }
       }
+      setImportSubmitStage("processing");
+      setUploadProgress(100);
+      await loadImportBatches();
     } catch (reason) {
       setImportError(reason instanceof Error ? reason.message : t("商品导入失败"));
     } finally {
       setImportBusy(false);
       setImportSubmitStage("idle");
+    }
+  };
+
+  const selectedRollbackBatch = importBatches.find((batch) => batch.id === rollbackBatchId);
+  const requestRollback = () => {
+    if (!selectedRollbackBatch) return;
+    setRollbackError("");
+    setRollbackResult(undefined);
+    setRollbackTarget(selectedRollbackBatch);
+  };
+  const executeRollback = async () => {
+    if (!rollbackTarget) return;
+    setRollbackBusy(true);
+    setRollbackError("");
+    try {
+      const result = await rollbackCatalogImportBatch(
+        rollbackTarget.id,
+        rollbackCategoryId || undefined,
+      );
+      setRollbackResult(result);
+      setRollbackTarget(undefined);
+      setRollbackCategoryId("");
+      await Promise.all([load(), loadCategories(), loadImportBatches()]);
+    } catch (reason) {
+      setRollbackError(reason instanceof Error ? reason.message : t("撤回失败，请稍后重试。"));
+    } finally {
+      setRollbackBusy(false);
     }
   };
 
@@ -783,7 +988,7 @@ export function ProductsPage() {
         actions={<>
           <Button variant="soft" disabled={!result.total || exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t(selectedSkuIds.size ? "导出所选" : "导出")}</Button>
           {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}
-          {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}
+          {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入与撤回")}</Button> : null}
           {canImport || canDelete ? (
             <DropdownMenu.Root>
               <DropdownMenu.Trigger>
@@ -867,7 +1072,7 @@ export function ProductsPage() {
           : <CoreEmpty
               title={t("商品库还是空的")}
               description={t("可以新建商品或从 Excel 导入。")}
-              action={canCreate || canImport ? <div className="core-empty-actions">{canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}{canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}{canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}</div> : undefined}
+              action={canCreate || canImport ? <div className="core-empty-actions">{canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}{canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}{canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入与撤回")}</Button> : null}</div> : undefined}
             />
       ) : null}
       {result.items.length ? (
@@ -906,6 +1111,7 @@ export function ProductsPage() {
                   <th className="core-sku-product-column" scope="col">{t("SKU / 商品")}</th>
                   <th className="core-sku-category-column" scope="col">{t("分类")}</th>
                   <th className="core-sku-tags-column" scope="col">{t("标签")}</th>
+                  <th className="core-sku-order-column" scope="col">{t("起订 / 装箱")}</th>
                   <th className="core-sku-price-column" scope="col">{t("公开价")}</th>
                   <th className="core-sku-status-column" scope="col">{t("状态")}</th>
                   <th className="core-sku-updated-column" scope="col">{t("更新时间")}</th>
@@ -965,6 +1171,18 @@ export function ProductsPage() {
                             {sku.tags.length > 2 ? <small>+{sku.tags.length - 2}</small> : null}
                           </span>
                         ) : <span className="core-sku-table-empty">—</span>}
+                      </td>
+                      <td className="core-sku-order-column core-tabular">
+                        <strong>
+                          {sku.defaultMoq === undefined
+                            ? t("起订：未设置")
+                            : t("起订：{value}", { value: `${sku.defaultMoq} ${sku.moqUnit ?? ""}`.trim() })}
+                        </strong>
+                        <small>
+                          {sku.packingQuantity
+                            ? t("装箱：{value}", { value: sku.packingQuantity })
+                            : t("装箱：未设置")}
+                        </small>
                       </td>
                       <td className="core-sku-price-column core-tabular">
                         <strong>{t(skuPrice(sku))}</strong>
@@ -1180,15 +1398,22 @@ export function ProductsPage() {
         <Dialog.Content className="core-template-dialog">
           <div className="core-dialog-heading">
             <div>
-              <Text size="1" color="gray">{t("商品批量导入")}</Text>
-              <Dialog.Title>{t("导入商品")}</Dialog.Title>
-              <Dialog.Description>{t("上传 XLSX，系统会合并到现有商品库。")}</Dialog.Description>
+              <Text size="1" color="gray">{t("商品批量操作")}</Text>
+              <Dialog.Title>{t("导入与撤回")}</Dialog.Title>
+              <Dialog.Description>{t("一次导入多个商品文件，或撤回指定批次与分类。")}</Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" onClick={() => setImportDialogOpen(false)} aria-label={t("关闭")}><X /></Button>
           </div>
 
+          <Tabs.Root value={importTab} onValueChange={setImportTab}>
+            <Tabs.List className="core-import-tabs">
+              <Tabs.Trigger value="upload"><FileArrowUp />{t("批量导入")}</Tabs.Trigger>
+              <Tabs.Trigger value="rollback"><ArrowsClockwise />{t("撤回导入")}</Tabs.Trigger>
+            </Tabs.List>
+            <Tabs.Content value="upload" className="core-import-tab-content">
+
           <div className="core-import-template-row">
-            <Text size="2" color="gray">{t("支持新版双表与历史模板")}</Text>
+            <Text size="2" color="gray">{t("支持新版双表、历史模板和单元格内嵌图片")}</Text>
             <Button asChild size="1" variant="soft" color="gray">
               <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a>
             </Button>
@@ -1198,26 +1423,77 @@ export function ProductsPage() {
             ref={importInputRef}
             hidden
             type="file"
+            multiple
             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            onChange={(event) => void inspectTemplate(event.target.files?.[0])}
+            onChange={(event) => void inspectTemplates(event.target.files ?? undefined)}
           />
 
-          {detection && pendingFile ? (
-            <Card className="core-detection">
-              <FileXls size={30} />
-              <div>
-                <Text weight="bold" as="div">{pendingFile.name}</Text>
-                <Text size="2" color="gray">{(pendingFile.size / 1024 / 1024).toFixed(2)} MB · {detection.detected_type} · {detection.parser}</Text>
-              </div>
-              <Badge color={detection.extension_matches ? "jade" : "amber"}>{t(detection.extension_matches ? "格式已确认" : "格式不一致")}</Badge>
-            </Card>
-          ) : (
-            <button className="core-template-dropzone" type="button" disabled={importBusy} onClick={() => importInputRef.current?.click()}>
-              <FileArrowUp size={30} />
-              <strong>{t("选择商品文件")}</strong>
-              <span>{t("XLSX · 最大 250 MB")}</span>
-            </button>
-          )}
+          <button
+            className={`core-template-dropzone ${importDragActive ? "is-dragging" : ""}`}
+            type="button"
+            disabled={importBusy}
+            onClick={() => importInputRef.current?.click()}
+            onDragEnter={(event) => { event.preventDefault(); setImportDragActive(true); }}
+            onDragOver={(event) => { event.preventDefault(); setImportDragActive(true); }}
+            onDragLeave={(event) => {
+              event.preventDefault();
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setImportDragActive(false);
+            }}
+            onDrop={(event: DragEvent<HTMLButtonElement>) => {
+              event.preventDefault();
+              setImportDragActive(false);
+              void inspectTemplates(event.dataTransfer.files);
+            }}
+          >
+            <FileArrowUp size={30} />
+            <strong>{t("拖入或选择多个商品文件")}</strong>
+            <span>{t("支持 XLSX，多文件会归入同一批次")}</span>
+          </button>
+
+          {importFiles.length ? (
+            <div className="core-import-file-list">
+              {importFiles.map((item) => {
+                const statusLabel = item.status === "checking"
+                  ? t("检查中")
+                  : item.status === "ready"
+                  ? t("待导入")
+                  : item.status === "uploading"
+                  ? t("上传中")
+                  : item.status === "processing"
+                  ? t("导入中")
+                  : item.status === "published"
+                  ? t("已完成")
+                  : t("失败");
+                return (
+                  <Card key={item.id} className={`core-import-file ${item.status}`}>
+                    <FileXls size={25} />
+                    <div>
+                      <Text weight="bold" size="2" as="div" title={item.file.name}>{item.file.name}</Text>
+                      <Text size="1" color="gray">
+                        {(item.file.size / 1024 / 1024).toFixed(2)} MB
+                        {item.detection ? ` · ${item.detection.detected_type}` : ""}
+                      </Text>
+                      {item.error ? <Text size="1" color="red">{item.error}</Text> : null}
+                      {["uploading", "processing"].includes(item.status) ? <Progress value={item.progress} /> : null}
+                    </div>
+                    <Badge color={item.status === "published" || item.status === "ready" ? "jade" : item.status === "failed" ? "red" : "blue"}>{statusLabel}</Badge>
+                    {item.job ? (
+                      <Button size="1" variant="ghost" color="gray" onClick={() => setLastImport(item.job)}>{t("详情")}</Button>
+                    ) : (
+                      <Button
+                        size="1"
+                        variant="ghost"
+                        color="gray"
+                        disabled={importBusy}
+                        onClick={() => setImportFiles((current) => current.filter((currentItem) => currentItem.id !== item.id))}
+                        aria-label={t("移除文件")}
+                      ><X /></Button>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          ) : null}
 
           {importBusy && importSubmitStage !== "idle" ? (
             <Card className="core-import-progress" aria-live="polite">
@@ -1379,16 +1655,130 @@ export function ProductsPage() {
           ) : null}
 
           <div className="core-dialog-actions">
-            {detection ? <Button variant="soft" color="gray" disabled={importBusy} onClick={() => importInputRef.current?.click()}>{t("重新选择")}</Button> : null}
+            {importFiles.length ? <Button variant="soft" color="gray" disabled={importBusy} onClick={() => importInputRef.current?.click()}><Plus />{t("继续添加")}</Button> : null}
             <Button
-              disabled={!pendingFile || !detection || Boolean(importError) || importBusy}
-              onClick={() => void importTemplate()}
+              disabled={!importFiles.some((item) => item.status === "ready") || importBusy}
+              onClick={() => void importTemplates()}
             >
-              <FileArrowUp />{t(importBusy ? "正在处理…" : "开始导入")}
+              <FileArrowUp />{importBusy
+                ? t("正在处理…")
+                : t("导入 {count} 个文件", { count: importFiles.filter((item) => item.status === "ready").length })}
             </Button>
           </div>
+            </Tabs.Content>
+
+            <Tabs.Content value="rollback" className="core-import-tab-content">
+              <div className="core-import-rollback-toolbar">
+                <div>
+                  <Text weight="bold" as="div">{t("按批次或分类撤回")}</Text>
+                  <Text size="1" color="gray">{t("只撤回仍属于该批次的 SKU；外部图片链接不会被删除。")}</Text>
+                </div>
+                <Button size="1" variant="soft" color="gray" disabled={importBatchesLoading} onClick={() => void loadImportBatches()}>
+                  <ArrowsClockwise />{t("刷新")}
+                </Button>
+              </div>
+
+              {rollbackError ? <CoreError message={rollbackError} onRetry={() => void loadImportBatches()} /> : null}
+              {rollbackResult ? (
+                <Card className="core-import-rollback-result" role="status">
+                  <CheckCircle weight="fill" />
+                  <div>
+                    <Text weight="bold" as="div">{t("撤回完成")}</Text>
+                    <Text size="1" color="gray">
+                      {t("已撤回 {skus} 个 SKU、{products} 个商品，清理 {images} 张 R2 图片。", {
+                        skus: rollbackResult.deletedSkuCount,
+                        products: rollbackResult.archivedProductCount,
+                        images: rollbackResult.deletedStorageImageCount,
+                      })}
+                      {rollbackResult.storageDeleteFailures
+                        ? t(" 另有 {count} 张图片清理失败，可再次执行撤回重试。", { count: rollbackResult.storageDeleteFailures })
+                        : ""}
+                    </Text>
+                  </div>
+                </Card>
+              ) : null}
+
+              {importBatchesLoading && !importBatches.length ? <CoreLoading label={t("正在读取导入批次")} /> : importBatches.length ? (
+                <div className="core-import-batch-layout">
+                  <div className="core-import-batch-list" role="list">
+                    {importBatches.map((batch) => {
+                      const running = batch.jobs.some((job) => ["scanning", "parsing"].includes(job.status));
+                      return (
+                        <button
+                          key={batch.id}
+                          type="button"
+                          className={rollbackBatchId === batch.id ? "is-selected" : ""}
+                          onClick={() => { setRollbackBatchId(batch.id); setRollbackCategoryId(""); setRollbackResult(undefined); }}
+                        >
+                          <span>
+                            <strong>{new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(batch.createdAt))}</strong>
+                            <small>{batch.jobs.map((job) => job.filename).join("、") || t("等待上传文件")}</small>
+                          </span>
+                          <span>
+                            <Badge color={batch.status === "REVOKED" ? "gray" : running ? "blue" : batch.status === "PARTIALLY_REVOKED" ? "amber" : "jade"}>
+                              {batch.status === "REVOKED" ? t("已撤回") : running ? t("导入中") : batch.status === "PARTIALLY_REVOKED" ? t("部分撤回") : t("可撤回")}
+                            </Badge>
+                            <small>{t("{files} 个文件 · {skus} 个 SKU", { files: batch.fileCount, skus: batch.remainingSkuCount })}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {selectedRollbackBatch ? (
+                    <Card className="core-import-rollback-panel">
+                      <div>
+                        <Text weight="bold" as="div">{t("撤回范围")}</Text>
+                        <Text size="1" color="gray">{selectedRollbackBatch.jobs.map((job) => job.filename).join("、")}</Text>
+                      </div>
+                      <label>
+                        <Text size="2" weight="medium">{t("选择范围")}</Text>
+                        <select value={rollbackCategoryId} onChange={(event) => setRollbackCategoryId(event.target.value)}>
+                          <option value="">{t("整个批次（{count} 个 SKU）", { count: selectedRollbackBatch.remainingSkuCount })}</option>
+                          {selectedRollbackBatch.categories.map((category) => (
+                            <option key={category.id} value={category.id}>{category.name}（{category.skuCount}）</option>
+                          ))}
+                        </select>
+                      </label>
+                      <Text size="1" color="gray">
+                        {t("撤回会归档对应 SKU，并清理不再被商品使用的 R2 图片。")}
+                      </Text>
+                      <Button
+                        color="red"
+                        disabled={
+                          selectedRollbackBatch.status === "REVOKED"
+                          || (selectedRollbackBatch.remainingSkuCount === 0 && selectedRollbackBatch.status !== "PARTIALLY_REVOKED")
+                          || selectedRollbackBatch.jobs.some((job) => ["scanning", "parsing"].includes(job.status))
+                        }
+                        onClick={requestRollback}
+                      >
+                        <Trash />{t(rollbackCategoryId ? "撤回这个分类" : "撤回整个批次")}
+                      </Button>
+                    </Card>
+                  ) : null}
+                </div>
+              ) : (
+                <CoreEmpty title={t("暂无可撤回的导入批次")} description={t("通过“批量导入”上传的文件会显示在这里。")}/>
+              )}
+            </Tabs.Content>
+          </Tabs.Root>
         </Dialog.Content>
       </Dialog.Root> : null}
+
+      <Dialog.Root open={Boolean(rollbackTarget)} onOpenChange={(open) => { if (!open && !rollbackBusy) setRollbackTarget(undefined); }}>
+        <Dialog.Content className="core-confirm-dialog">
+          <Dialog.Title>{t(rollbackCategoryId ? "确认撤回这个分类？" : "确认撤回整个批次？")}</Dialog.Title>
+          <Dialog.Description>
+            {rollbackCategoryId
+              ? t("所选分类中仍属于该批次的 SKU 将被删除，独占的 R2 图片也会被清理。")
+              : t("该批次目前仍生效的 SKU 将全部删除，独占的 R2 图片也会被清理。")}
+          </Dialog.Description>
+          <div className="core-dialog-actions">
+            <Button variant="soft" color="gray" disabled={rollbackBusy} onClick={() => setRollbackTarget(undefined)}>{t("取消")}</Button>
+            <Button color="red" loading={rollbackBusy} disabled={rollbackBusy} onClick={() => void executeRollback()}><Trash />{t("确认撤回")}</Button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Root>
 
       <Dialog.Root open={Boolean(selected || detailLoading)} onOpenChange={(open) => { if (!open) close(); }}>
         <Dialog.Content className="core-detail-dialog">
@@ -1449,14 +1839,16 @@ function ManualProductDialog({
     };
     const unitPrice = Number(value("unit_price") || "0");
     const defaultMoq = optionalNumber("default_moq");
+    const packingQuantity = optionalNumber("packing_quantity");
     const weight = optionalNumber("weight");
     if (
       !Number.isFinite(unitPrice)
       || unitPrice < 0
       || (defaultMoq !== undefined && (!Number.isFinite(defaultMoq) || defaultMoq < 0))
+      || (packingQuantity !== undefined && (!Number.isFinite(packingQuantity) || packingQuantity < 0))
       || (weight !== undefined && (!Number.isFinite(weight) || weight < 0))
     ) {
-      setError(t("价格、起订数和重量必须是大于或等于 0 的数字。"));
+      setError(t("价格、起订数、装箱数和重量必须是大于或等于 0 的数字。"));
       return;
     }
 
@@ -1475,6 +1867,7 @@ function ManualProductDialog({
         barcode: value("barcode") || undefined,
         defaultMoq,
         moqUnit: defaultMoq === undefined ? undefined : value("moq_unit") || undefined,
+        packingQuantity,
         weight,
         weightUnit: weight === undefined ? undefined : value("weight_unit") || undefined,
         unitPrice,
@@ -1587,6 +1980,10 @@ function ManualProductDialog({
                   <TextField.Root name="moq_unit" maxLength={32} placeholder="piece" />
                 </label>
                 <label>
+                  <Text size="2" weight="medium">{t("装箱数")}</Text>
+                  <TextField.Root name="packing_quantity" type="number" min="0" step="0.000001" inputMode="decimal" />
+                </label>
+                <label>
                   <Text size="2" weight="medium">{t("毛重")}</Text>
                   <TextField.Root name="weight" type="number" min="0" step="0.000001" inputMode="decimal" />
                 </label>
@@ -1672,16 +2069,31 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
   const { hasPermission } = useCoreAuth();
   const { t } = useLocale();
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const imageDragDepthRef = useRef(0);
   const [imageUploading, setImageUploading] = useState(false);
+  const [imageDownloading, setImageDownloading] = useState(false);
+  const [imageDragging, setImageDragging] = useState(false);
   const [imageError, setImageError] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
+  const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
   const canEdit = hasPermission("product.edit");
 
   useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
+  useEffect(() => {
+    setActiveTab(selectedSkuId ? "skus" : "product");
+    imageDragDepthRef.current = 0;
+    setImageDragging(false);
+    setImageError("");
+  }, [product.id, selectedSkuId]);
 
   const uploadImage = async (file?: File) => {
     if (!file || imageUploading || !canEdit) return;
     setImageError("");
+    const supportedExtension = /\.(png|jpe?g|webp)$/i.test(file.name);
+    if ((file.type && !file.type.startsWith("image/")) || (!file.type && !supportedExtension)) {
+      setImageError(t("请选择 PNG、JPG 或 WebP 图片。"));
+      return;
+    }
     if (file.size > 20 * 1024 * 1024) {
       setImageError(t("商品图片不能超过 20 MB。"));
       return;
@@ -1697,6 +2109,52 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
       if (imageInputRef.current) imageInputRef.current.value = "";
     }
   };
+
+  const downloadImage = async () => {
+    if (imageDownloading || product.imageStatus === "NONE") return;
+    const safeName = (product.productCode || product.name || "product-image")
+      .replace(/[\\/:*?"<>|]/g, "-")
+      .slice(0, 100);
+    setImageDownloading(true);
+    setImageError("");
+    try {
+      await downloadProductMainImage(product.id, `${safeName || "product-image"}-主图.webp`);
+    } catch (reason) {
+      setImageError(reason instanceof Error ? reason.message : t("商品图片下载失败"));
+    } finally {
+      setImageDownloading(false);
+    }
+  };
+
+  const dragContainsFiles = (event: DragEvent<HTMLElement>) => (
+    Array.from(event.dataTransfer.types).includes("Files")
+  );
+  const beginImageDrag = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit || imageUploading || !dragContainsFiles(event)) return;
+    event.preventDefault();
+    imageDragDepthRef.current += 1;
+    setImageDragging(true);
+  };
+  const continueImageDrag = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit || imageUploading || !dragContainsFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setImageDragging(true);
+  };
+  const endImageDrag = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit) return;
+    event.preventDefault();
+    imageDragDepthRef.current = Math.max(0, imageDragDepthRef.current - 1);
+    if (imageDragDepthRef.current === 0) setImageDragging(false);
+  };
+  const dropImage = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit) return;
+    event.preventDefault();
+    imageDragDepthRef.current = 0;
+    setImageDragging(false);
+    if (imageUploading || !dragContainsFiles(event)) return;
+    void uploadImage(event.dataTransfer.files[0]);
+  };
   return (
     <>
       <div className="core-dialog-heading core-product-detail-heading">
@@ -1710,35 +2168,89 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
         <Badge color={product.status === "ACTIVE" ? "jade" : "gray"}>{t(skuStatusLabel[product.status as ProductSku["status"]] ?? product.status)}</Badge>
         <Text size="2" color="gray">{t("{count} 个 SKU", { count: product.skus.length })}</Text>
       </div>
-      <section className="core-product-image-editor">
-        <div className="core-product-image-preview">
-          {product.primaryImageUrl && !imageFailed ? (
-            <img src={product.primaryImageUrl} alt={product.name} onError={() => setImageFailed(true)} />
-          ) : <ImageSquare aria-hidden="true" />}
-        </div>
-        <div>
-          <Text size="2" weight="bold">{t("商品主图")}</Text>
-          <Text size="1" color="gray">{t("PNG、JPG 或 WebP，最大 20 MB")}</Text>
-          {canEdit ? (
-            <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
-              <FileArrowUp />{t(product.primaryImageUrl ? "替换图片" : "上传图片")}
-            </Button>
-          ) : null}
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            hidden
-            onChange={(event) => void uploadImage(event.target.files?.[0])}
-          />
-        </div>
-        {imageError ? <div className="core-form-error" role="alert">{imageError}</div> : null}
-      </section>
-      <section className="core-product-description">
-        <Text size="1" color="gray">{t("商品描述")}</Text>
-        <p>{product.description || t("暂无描述")}</p>
-      </section>
-      <SkuPanel product={product} initialSkuId={selectedSkuId} managedTags={managedTags} onChanged={onChanged} />
+      <Tabs.Root
+        className="core-product-detail-tabs-root"
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as "product" | "skus")}
+      >
+        <Tabs.List className="core-product-detail-tabs" aria-label={t("选择详情类型")}>
+          <Tabs.Trigger value="product"><ImageSquare />{t("商品详情")}</Tabs.Trigger>
+          <Tabs.Trigger value="skus"><Tag />{t("SKU 详情")}<span className="core-product-detail-tab-count">{product.skus.length}</span></Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="product" className="core-product-detail-tab-panel">
+          <div className="core-product-overview">
+            <section
+              className="core-product-image-editor"
+              data-dragging={imageDragging || undefined}
+              data-uploading={imageUploading || undefined}
+              onDragEnter={beginImageDrag}
+              onDragOver={continueImageDrag}
+              onDragLeave={endImageDrag}
+              onDrop={dropImage}
+            >
+              <div className="core-product-image-preview">
+                {product.primaryImageUrl && !imageFailed ? (
+                  <img src={product.primaryImageUrl} alt={product.name} onError={() => setImageFailed(true)} />
+                ) : <ImageSquare aria-hidden="true" />}
+                {imageDragging ? (
+                  <span className="core-product-image-drop-state" aria-hidden="true">
+                    <FileArrowUp weight="duotone" />
+                    <strong>{t("松开即可替换商品主图")}</strong>
+                  </span>
+                ) : imageUploading ? (
+                  <span className="core-product-image-drop-state is-uploading" aria-live="polite">
+                    <FileArrowUp weight="duotone" />
+                    <strong>{t("正在上传新图片…")}</strong>
+                  </span>
+                ) : null}
+              </div>
+              <div className="core-product-image-controls">
+                <span className="core-product-image-copy">
+                  <Text size="2" weight="bold">{t("商品主图")}</Text>
+                  <Text size="1" color="gray">
+                    {t(canEdit ? "拖入新图片即可替换" : "PNG、JPG 或 WebP，最大 20 MB")}
+                  </Text>
+                </span>
+                <span className="core-product-image-actions">
+                  {product.imageStatus !== "NONE" ? (
+                    <Button size="2" variant="ghost" color="gray" disabled={imageDownloading || imageUploading} loading={imageDownloading} onClick={() => void downloadImage()}>
+                      <DownloadSimple />{t("下载图片")}
+                    </Button>
+                  ) : null}
+                  {canEdit ? (
+                    <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
+                      <FileArrowUp />{t(product.imageStatus !== "NONE" ? "替换图片" : "上传图片")}
+                    </Button>
+                  ) : null}
+                </span>
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  hidden
+                  onChange={(event) => void uploadImage(event.target.files?.[0])}
+                />
+              </div>
+              {imageError ? <div className="core-form-error" role="alert">{imageError}</div> : null}
+            </section>
+            <div className="core-product-overview-content">
+              <dl className="core-product-facts">
+                <div><dt>{t("商品编码")}</dt><dd className="core-tabular">{product.productCode || t("未设置")}</dd></div>
+                <div><dt>{t("分类")}</dt><dd>{primaryCategoryLabel(product.category) || t("未分类")}</dd></div>
+                <div><dt>{t("计量单位")}</dt><dd>{product.defaultUnit || t("未设置")}</dd></div>
+                <div><dt>{t("供应商")}</dt><dd>{product.supplier || t("未设置")}</dd></div>
+              </dl>
+              <section className="core-product-description">
+                <Text size="1" color="gray">{t("商品描述")}</Text>
+                <p>{product.description || t("暂无描述")}</p>
+              </section>
+            </div>
+          </div>
+        </Tabs.Content>
+        <Tabs.Content value="skus" className="core-product-detail-tab-panel">
+          <SkuPanel product={product} initialSkuId={selectedSkuId} managedTags={managedTags} onChanged={onChanged} />
+        </Tabs.Content>
+      </Tabs.Root>
     </>
   );
 }
@@ -1754,16 +2266,24 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
   const canEdit = hasPermission("product.edit");
   const canViewCatalog = hasAnyPermission("catalog.view", "catalog.publish");
   const canPublish = hasAnyPermission("catalog.publish");
+  const canManageSku = canEdit || canPublish;
   const [offers, setOffers] = useState<PublicCatalogOffer[]>([]);
   const [skuCode, setSkuCode] = useState(`${product.productCode ?? "SKU"}-${product.skus.length + 1}`);
   const [skuName, setSkuName] = useState(product.name);
+  const [skuMoq, setSkuMoq] = useState("");
+  const [skuMoqUnit, setSkuMoqUnit] = useState(product.defaultUnit || "piece");
+  const [skuPackingQuantity, setSkuPackingQuantity] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [editingSkuId, setEditingSkuId] = useState<string | undefined>(initialSkuId);
+  const [editingSkuId, setEditingSkuId] = useState<string>();
+  const [expandedSkuIds, setExpandedSkuIds] = useState<Set<string>>(() => new Set(initialSkuId ? [initialSkuId] : []));
   const [busySkuId, setBusySkuId] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => setEditingSkuId(initialSkuId), [initialSkuId]);
+  useEffect(() => {
+    setEditingSkuId(undefined);
+    setExpandedSkuIds(new Set(initialSkuId ? [initialSkuId] : []));
+  }, [initialSkuId, product.id]);
   const loadOffers = useCallback(async () => {
     if (!canViewCatalog) { setOffers([]); return; }
     try { setOffers(await listPublicCatalogOffers(product.id)); }
@@ -1773,13 +2293,33 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
 
   const createSingle = async () => {
     if (!skuCode.trim()) return;
+    const defaultMoq = skuMoq.trim() ? Number(skuMoq) : undefined;
+    const packingQuantity = skuPackingQuantity.trim() ? Number(skuPackingQuantity) : undefined;
+    if (
+      (defaultMoq !== undefined && (!Number.isFinite(defaultMoq) || defaultMoq < 0))
+      || (packingQuantity !== undefined && (!Number.isFinite(packingQuantity) || packingQuantity < 0))
+    ) {
+      setError(t("起订数和装箱数必须是大于或等于 0 的数字。"));
+      return;
+    }
     setCreating(true);
     setError("");
     try {
-      await createSkus(product.id, [{ skuCode: skuCode.trim(), name: skuName.trim() || undefined, optionValues: {}, status: "DRAFT" }]);
+      await createSkus(product.id, [{
+        skuCode: skuCode.trim(),
+        name: skuName.trim() || undefined,
+        optionValues: {},
+        defaultMoq,
+        moqUnit: defaultMoq === undefined ? undefined : skuMoqUnit.trim() || undefined,
+        packingQuantity,
+        status: "DRAFT",
+      }]);
       await onChanged();
       setSkuCode(`${product.productCode ?? "SKU"}-${product.skus.length + 2}`);
       setSkuName(product.name);
+      setSkuMoq("");
+      setSkuMoqUnit(product.defaultUnit || "piece");
+      setSkuPackingQuantity("");
       setCreateOpen(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("SKU 创建失败"));
@@ -1802,16 +2342,36 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
     }
   };
 
+  const toggleSkuDetails = (skuId: string) => {
+    setExpandedSkuIds((current) => {
+      const next = new Set(current);
+      if (next.has(skuId)) next.delete(skuId);
+      else next.add(skuId);
+      return next;
+    });
+  };
+
+  const editSku = (skuId: string) => {
+    setExpandedSkuIds((current) => new Set(current).add(skuId));
+    setEditingSkuId((current) => current === skuId ? undefined : skuId);
+  };
+
   return (
     <section className="core-sku-detail-section">
       <div className="core-sku-detail-heading">
-        <Heading size="4">SKU</Heading>
+        <div>
+          <Heading size="4">{t("SKU 详情")}</Heading>
+          <Text size="1" color="gray">{t("共 {count} 个 SKU，可逐条展开查看", { count: product.skus.length })}</Text>
+        </div>
         {canEdit ? <Button size="2" variant={createOpen ? "soft" : "solid"} color={createOpen ? "gray" : undefined} onClick={() => setCreateOpen((open) => !open)}><Plus />{t(createOpen ? "取消" : "添加 SKU")}</Button> : null}
       </div>
       {createOpen ? (
         <Card className="core-sku-create-compact">
           <label><Text size="1" color="gray">{t("SKU 编码")}</Text><TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} autoFocus /></label>
           <label><Text size="1" color="gray">{t("SKU 名称")}</Text><TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("起订数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={skuMoq} onChange={(event) => setSkuMoq(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("起订单位")}</Text><TextField.Root maxLength={32} value={skuMoqUnit} onChange={(event) => setSkuMoqUnit(event.target.value)} placeholder="piece" /></label>
+          <label><Text size="1" color="gray">{t("装箱数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={skuPackingQuantity} onChange={(event) => setSkuPackingQuantity(event.target.value)} /></label>
           <Button disabled={!skuCode.trim() || creating} onClick={() => void createSingle()}>{t(creating ? "正在添加…" : "添加")}</Button>
         </Card>
       ) : null}
@@ -1819,15 +2379,25 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
       <div className="core-sku-detail-list">
         {product.skus.map((sku) => {
           const offer = offers.find((item) => item.skuId === sku.id);
-          const skuLabel = sku.name || Object.values(sku.optionValues).join(" · ") || t("基础款");
           const editing = editingSkuId === sku.id;
+          const expanded = expandedSkuIds.has(sku.id);
+          const options = visibleSkuOptions(sku.optionValues);
+          const skuLabel = sku.name || options.map(([, value]) => String(value)).join(" · ") || t("基础款");
+          const packingQuantity = getSkuPackingQuantity(sku.optionValues);
           return (
-            <Card className="core-sku-detail-card" data-editing={editing || undefined} key={sku.id}>
+            <Card className="core-sku-detail-card" data-expanded={expanded || undefined} data-editing={editing || undefined} key={sku.id}>
               <div className="core-sku-detail-row">
-                <div className="core-sku-detail-main">
+                <button
+                  type="button"
+                  className="core-sku-detail-main"
+                  aria-expanded={expanded}
+                  aria-controls={`sku-details-${sku.id}`}
+                  onClick={() => toggleSkuDetails(sku.id)}
+                >
                   <Tag />
                   <span><strong>{sku.skuCode}</strong><small>{skuLabel}</small></span>
-                </div>
+                  <CaretDown className="core-sku-detail-caret" aria-hidden="true" />
+                </button>
                 <div className="core-sku-detail-tags">
                   {offer?.tags.slice(0, 3).map((tag) => <Badge color="gray" key={tag}>{tag}</Badge>)}
                   {offer && offer.tags.length > 3 ? <small>+{offer.tags.length - 3}</small> : null}
@@ -1836,7 +2406,10 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
                 <strong className="core-sku-detail-price core-tabular">{offer ? `${offer.currency} ${offer.unitPrice.toFixed(2)}` : "—"}</strong>
                 <Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge>
                 <div className="core-sku-detail-actions">
-                  {canPublish ? <Button size="1" variant="soft" color="gray" onClick={() => setEditingSkuId(editing ? undefined : sku.id)}><PencilSimple />{t(editing ? "收起" : "编辑")}</Button> : null}
+                  <Button size="1" variant="ghost" color="gray" onClick={() => toggleSkuDetails(sku.id)}>
+                    <CaretDown className="core-sku-detail-action-caret" data-expanded={expanded || undefined} />{t(expanded ? "收起" : "展开")}
+                  </Button>
+                  {canManageSku ? <Button size="1" variant="soft" color="gray" onClick={() => editSku(sku.id)}><PencilSimple />{t(editing ? "取消编辑" : "编辑")}</Button> : null}
                   {canEdit ? (
                     <Button
                       size="1"
@@ -1850,12 +2423,32 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
                   ) : null}
                 </div>
               </div>
-              {editing && canPublish ? (
+              {expanded ? (
+                <div className="core-sku-expanded-details" id={`sku-details-${sku.id}`}>
+                  <div className="core-sku-expanded-field is-wide">
+                    <span>{t("规格")}</span>
+                    {options.length ? (
+                      <div className="core-sku-option-list">
+                        {options.map(([name, value]) => <Badge key={name} color="gray">{name} · {String(value)}</Badge>)}
+                      </div>
+                    ) : <strong>{t("暂无规格")}</strong>}
+                  </div>
+                  <div className="core-sku-expanded-field"><span>{t("SKU 名称")}</span><strong>{sku.name || product.name}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("条码")}</span><strong className="core-tabular">{sku.barcode || t("未设置")}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("起订数")}</span><strong className="core-tabular">{sku.defaultMoq === undefined ? t("未设置") : `${sku.defaultMoq} ${sku.moqUnit ?? ""}`.trim()}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("装箱数")}</span><strong className="core-tabular">{packingQuantity || t("未设置")}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("毛重")}</span><strong className="core-tabular">{sku.weight === undefined ? t("未设置") : `${sku.weight} ${sku.weightUnit ?? ""}`.trim()}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("公开价")}</span><strong className="core-tabular">{offer ? `${offer.currency} ${offer.unitPrice.toFixed(2)}` : t("未设置")}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("最后更新")}</span><strong>{skuUpdatedDate(sku.updatedAt)}</strong></div>
+                </div>
+              ) : null}
+              {editing && canManageSku ? (
                 <SkuQuickEditor
                   sku={sku}
                   offer={offer}
                   managedTags={managedTags}
                   onCancel={() => setEditingSkuId(undefined)}
+                  onRefresh={async () => { await loadOffers(); await onChanged(); }}
                   onChanged={async () => { await loadOffers(); await onChanged(); setEditingSkuId(undefined); }}
                 />
               ) : null}
@@ -1868,16 +2461,22 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
   );
 }
 
-function SkuQuickEditor({ sku, offer, managedTags, onChanged, onCancel }: {
+function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCancel }: {
   sku: ProductSku;
   offer?: PublicCatalogOffer;
   managedTags: ProductTag[];
   onChanged: () => Promise<void>;
+  onRefresh: () => Promise<void>;
   onCancel: () => void;
 }) {
-  const { profile } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
+  const canEditSku = hasPermission("product.edit");
+  const canPublishOffer = hasPermission("catalog.publish");
   const defaultCurrency = profile?.context.defaultCurrency ?? "CNY";
+  const [defaultMoq, setDefaultMoq] = useState(sku.defaultMoq === undefined ? "" : String(sku.defaultMoq));
+  const [moqUnit, setMoqUnit] = useState(sku.moqUnit ?? "piece");
+  const [packingQuantity, setPackingQuantity] = useState(getSkuPackingQuantity(sku.optionValues));
   const [price, setPrice] = useState(offer ? String(offer.unitPrice) : "0");
   const [currency, setCurrency] = useState(offer?.currency ?? defaultCurrency);
   const [selectedTags, setSelectedTags] = useState<string[]>(offer?.tags ?? []);
@@ -1885,35 +2484,65 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onCancel }: {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    setDefaultMoq(sku.defaultMoq === undefined ? "" : String(sku.defaultMoq));
+    setMoqUnit(sku.moqUnit ?? "piece");
+    setPackingQuantity(getSkuPackingQuantity(sku.optionValues));
     setPrice(offer ? String(offer.unitPrice) : "0");
     setCurrency(offer?.currency ?? defaultCurrency);
     setSelectedTags(offer?.tags ?? []);
-    setError("");
-  }, [defaultCurrency, offer]);
+  }, [defaultCurrency, offer, sku.defaultMoq, sku.moqUnit, sku.optionValues]);
 
   const save = async () => {
+    const numericMoq = defaultMoq.trim() ? Number(defaultMoq) : null;
+    const numericPackingQuantity = packingQuantity.trim() ? Number(packingQuantity) : null;
     const numericPrice = Number(price || "0");
-    if (!Number.isFinite(numericPrice) || numericPrice < 0) {
-      setError(t("请输入正确的价格。"));
+    if (
+      (numericMoq !== null && (!Number.isFinite(numericMoq) || numericMoq < 0))
+      || (numericPackingQuantity !== null && (!Number.isFinite(numericPackingQuantity) || numericPackingQuantity < 0))
+      || (canPublishOffer && (!Number.isFinite(numericPrice) || numericPrice < 0))
+    ) {
+      setError(t("起订数、装箱数和价格必须是大于或等于 0 的数字。"));
       return;
     }
     setBusy(true);
     setError("");
+    let skuSaved = false;
     try {
       const displayTag = selectedTags[0];
-      await upsertPublicCatalogOffer(sku.id, {
-        unitPrice: numericPrice,
-        currency,
-        tags: selectedTags,
-        displayTag,
-        tagColor: offer?.displayTag === displayTag ? offer.tagColor : undefined,
-        publicationStatus: sku.status === "ACTIVE" ? "PUBLISHED" : "DRAFT",
-        validFrom: offer?.validFrom,
-        validTo: offer?.validTo,
-      });
-      await onChanged();
+      if (canEditSku) {
+        await updateSku(sku.id, {
+          expectedVersion: sku.version,
+          defaultMoq: numericMoq,
+          moqUnit: numericMoq === null ? null : moqUnit.trim() || null,
+          packingQuantity: numericPackingQuantity,
+        });
+        skuSaved = true;
+      }
+      if (canPublishOffer) {
+        await upsertPublicCatalogOffer(sku.id, {
+          unitPrice: numericPrice,
+          currency,
+          tags: selectedTags,
+          displayTag,
+          tagColor: offer?.displayTag === displayTag ? offer.tagColor : undefined,
+          publicationStatus: sku.status === "ACTIVE" ? "PUBLISHED" : "DRAFT",
+          validFrom: offer?.validFrom,
+          validTo: offer?.validTo,
+        });
+      }
+      try {
+        await onChanged();
+      } catch (reason) {
+        await onRefresh().catch(() => undefined);
+        const message = reason instanceof Error ? reason.message : t("刷新失败");
+        setError(t("数据已保存，但页面刷新失败：{message}", { message }));
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("保存失败"));
+      await onRefresh().catch(() => undefined);
+      const message = reason instanceof Error ? reason.message : t("保存失败");
+      setError(skuSaved && canPublishOffer
+        ? t("SKU 已保存，但公开报价保存失败：{message}", { message })
+        : message);
     } finally {
       setBusy(false);
     }
@@ -1922,13 +2551,20 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onCancel }: {
   return (
     <div className="core-sku-quick-editor">
       <div className="core-sku-quick-fields">
-        <label><Text size="1" color="gray">{t("公开价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
-        <label><Text size="1" color="gray">{t("币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option></select></label>
+        {canEditSku ? <>
+          <label><Text size="1" color="gray">{t("起订数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={defaultMoq} onChange={(event) => setDefaultMoq(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("起订单位")}</Text><TextField.Root maxLength={32} value={moqUnit} onChange={(event) => setMoqUnit(event.target.value)} placeholder="piece" /></label>
+          <label><Text size="1" color="gray">{t("装箱数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={packingQuantity} onChange={(event) => setPackingQuantity(event.target.value)} /></label>
+        </> : null}
+        {canPublishOffer ? <>
+          <label><Text size="1" color="gray">{t("公开价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option></select></label>
+        </> : null}
       </div>
-      <div className="core-sku-quick-tags">
+      {canPublishOffer ? <div className="core-sku-quick-tags">
         <Text size="1" color="gray">{t("选择标签")}</Text>
         <ManagedTagPicker tags={managedTags} selected={selectedTags} onChange={setSelectedTags} disabled={busy} />
-      </div>
+      </div> : null}
       {error ? <div className="core-form-error" role="alert">{error}</div> : null}
       <div className="core-sku-quick-actions">
         <Button variant="ghost" color="gray" disabled={busy} onClick={onCancel}>{t("取消")}</Button>

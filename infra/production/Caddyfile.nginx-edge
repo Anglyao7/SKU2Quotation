@@ -1,0 +1,59 @@
+{
+	admin off
+	auto_https off
+	servers {
+		protocols h1 h2
+		# The published port is bound to host loopback, so only the managed
+		# outer Nginx can reach it. Trust that hop for the sanitized client IP.
+		trusted_proxies static 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+		trusted_proxies_strict
+		client_ip_headers X-Forwarded-For
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		-Server
+	}
+}
+
+http://{$ATC_DOMAIN} {
+	import security_headers
+	header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; upgrade-insecure-requests"
+	@oidc_callback path /login/callback
+	header @oidc_callback Referrer-Policy "no-referrer"
+	encode zstd gzip
+
+	reverse_proxy atc-frontend:8080 {
+		header_up X-Forwarded-Proto https
+	}
+}
+
+http://auth.{$ATC_DOMAIN} {
+	import security_headers
+	encode zstd gzip
+
+	@management path /admin /admin/* /realms/master /realms/master/* /health /health/* /metrics /metrics/*
+	respond @management 404
+
+	@public_keycloak path /realms/atc /realms/atc/* /resources /resources/*
+	handle @public_keycloak {
+		reverse_proxy keycloak:8080 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}
+
+http://www.{$ATC_DOMAIN} {
+	import security_headers
+	redir https://{$ATC_DOMAIN}{uri} permanent
+}

@@ -12,6 +12,7 @@ from pydantic import (
 
 from .localization import UiLocale
 from .storefront_locales import StorefrontLocale
+from .tenant_subscriptions import TenantSubscriptionTier
 
 
 class LoginRequest(BaseModel):
@@ -103,6 +104,7 @@ class AuthContext(BaseModel):
     default_currency: str | None
     default_workspace: str | None
     account_scope: Literal["STAFF", "CUSTOMER_SUBACCOUNT"] | None = None
+    subscription_tier: TenantSubscriptionTier | None = None
 
 
 class MembershipSummary(BaseModel):
@@ -139,6 +141,7 @@ class MeResponse(BaseModel):
 
 class MerchantSettingsUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    share_card_subtitle: str | None = Field(default=None, max_length=120)
     business_mode: Literal["DOMESTIC", "EXPORT"] | None = None
     default_currency: str | None = Field(default=None, min_length=3, max_length=3)
     hot_products_enabled: bool | None = None
@@ -151,6 +154,11 @@ class MerchantSettingsUpdate(BaseModel):
     @field_validator("name", mode="before")
     @classmethod
     def normalize_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("share_card_subtitle", mode="before")
+    @classmethod
+    def normalize_share_card_subtitle(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
     @field_validator("default_currency", mode="before")
@@ -177,6 +185,7 @@ class MerchantSettingsUpdate(BaseModel):
     def require_change(self) -> "MerchantSettingsUpdate":
         if (
             self.name is None
+            and self.share_card_subtitle is None
             and self.business_mode is None
             and self.default_currency is None
             and self.hot_products_enabled is None
@@ -190,6 +199,8 @@ class MerchantSettingsResponse(BaseModel):
     name: str
     slug: str
     storefront_path: str
+    logo_url: str | None = None
+    share_card_subtitle: str | None = None
     business_mode: Literal["DOMESTIC", "EXPORT"]
     default_currency: str
     storefront_locales: list[StorefrontLocale]

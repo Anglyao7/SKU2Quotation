@@ -10,6 +10,7 @@ import {
 import {
   ArrowLeft,
   Check,
+  Heart,
   Image as ImageIcon,
   Minus,
   Package,
@@ -24,6 +25,7 @@ import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
+import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
@@ -35,6 +37,11 @@ import {
 } from "../lib/productVariantOptions";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import {
+  isStorefrontFavorite,
+  rememberStorefrontProduct,
+  toggleStorefrontFavorite,
+} from "../lib/storefrontVisitor";
 import {
   normalizeStorefrontLocale,
   storefrontDirection,
@@ -80,9 +87,10 @@ export function ProductDetailPage() {
   const shareToken = new URLSearchParams(location.search).get("share")?.trim() || "";
   const storefrontQuery = new URLSearchParams();
   if (locale !== "zh-CN") storefrontQuery.set("lang", locale);
-  if (shareToken) storefrontQuery.set("share", shareToken);
   const storefrontSearch = storefrontQuery.toString();
-  const storefrontHome = `/${encodeURIComponent(store.slug)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
+  const storefrontHome = shareToken
+    ? `/${encodeURIComponent(store.slug)}/share/${encodeURIComponent(shareToken)}${storefrontSearch ? `?${storefrontSearch}` : ""}`
+    : `/${encodeURIComponent(store.slug)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(store.slug),
@@ -110,6 +118,7 @@ export function ProductDetailPage() {
   const selectedImageUrl = selectedSku?.image_url || product.image_url;
   const [imageFailed, setImageFailed] = useState(!selectedImageUrl);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const [favorite, setFavorite] = useState(() => isStorefrontFavorite(store.slug, product.id));
   const [announcements, setAnnouncements] = useState(store.announcements || []);
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const description = product.description?.trim();
@@ -128,7 +137,9 @@ export function ProductDetailPage() {
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-  }, [product.id]);
+    rememberStorefrontProduct(store.slug, product);
+    setFavorite(isStorefrontFavorite(store.slug, product.id));
+  }, [product, store.slug]);
 
   useEffect(() => {
     setSelectedSkuId(product.skus[0]?.id || "");
@@ -251,6 +262,7 @@ export function ProductDetailPage() {
                   toLight: t("切换浅色模式"),
                 }}
               />
+              <StorefrontVisitorEntry tenantSlug={store.slug} locale={locale} />
               <CartDrawer
                 slug={store.slug}
                 storeName={store.name}
@@ -317,9 +329,22 @@ export function ProductDetailPage() {
                   {t("{count} 个 SKU", { count: product.sku_count })}
                 </span>
               </div>
-              <Heading id="product-detail-title" as="h1" size="7">
-                {product.name}
-              </Heading>
+              <div className="sku-detail-title-row">
+                <Heading id="product-detail-title" as="h1" size="7">
+                  {product.name}
+                </Heading>
+                <Button
+                  type="button"
+                  size="2"
+                  variant={favorite ? "soft" : "outline"}
+                  color={favorite ? "red" : "gray"}
+                  aria-pressed={favorite}
+                  onClick={() => setFavorite(toggleStorefrontFavorite(store.slug, product))}
+                >
+                  <Heart weight={favorite ? "fill" : "bold"} />
+                  {favorite ? t("已收藏") : t("收藏")}
+                </Button>
+              </div>
 
               <section className="sku-detail-description" aria-labelledby="product-description-title">
                 <Text id="product-description-title" as="div" size="1" color="gray" weight="medium">

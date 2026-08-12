@@ -216,7 +216,7 @@ export function AiSearchManagementPage() {
         eyebrow={t("AI 搜索")}
         title={t("AI 搜索管理")}
         description={t(
-          "控制当前商家商品知识的向量索引。商品导入和编辑不会自动产生模型费用，由你决定何时更新。",
+          "管理当前工作区的商品搜索数据。商品导入或编辑后，可在这里更新。",
         )}
         actions={(
           <>
@@ -303,7 +303,7 @@ export function AiSearchManagementPage() {
                     })}
                   </Text>
                   <Text size="1" color="gray">
-                    {t("已生成 {count} 条向量", {
+                    {t("已更新 {count} 条搜索数据", {
                       count: job.embeddings.toLocaleString(locale),
                     })}
                   </Text>
@@ -428,7 +428,7 @@ export function AiSearchManagementPage() {
             ) : null}
           </Card>
 
-          <div className="core-ai-index-details">
+          <div className="core-ai-index-details is-single">
             <section>
               <Text size="1" color="gray">
                 {t("建议操作")}
@@ -437,17 +437,6 @@ export function AiSearchManagementPage() {
               <p>
                 {t(
                   "导入新商品，或修改商品名称、描述、分类与标签后，使用“更新智能索引”即可。系统只处理发生变化的商品。",
-                )}
-              </p>
-            </section>
-            <section>
-              <Text size="1" color="gray">
-                {t("配置边界")}
-              </Text>
-              <Heading size="4">{t("平台统一托管")}</Heading>
-              <p>
-                {t(
-                  "模型、接口地址与密钥由平台管理员统一维护；商家账号仅管理当前工作区的索引任务。",
                 )}
               </p>
             </section>
@@ -462,7 +451,7 @@ export function AiSearchManagementPage() {
           </AlertDialog.Title>
           <AlertDialog.Description size="2">
             {t(
-              "系统会重新处理当前商家的全部 {count} 个商品。通常仅在平台升级检索能力或索引异常时使用。",
+              "系统会重新处理当前工作区的全部 {count} 个商品。适合搜索结果异常或需要完整同步时使用。",
               {
                 count: status
                   ? status.totalProducts.toLocaleString(locale)

@@ -1,10 +1,11 @@
-import { Button, Card, Dialog, Text } from "@radix-ui/themes";
+import { Button, Card, Dialog, Switch, Text } from "@radix-ui/themes";
 import {
   ArrowsClockwise,
   CheckCircle,
   DownloadSimple,
   FileArrowUp,
   FileXls,
+  Images,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -50,7 +51,10 @@ export function CategoriesPage() {
   const [layout, setLayout] = useState<CategoryLayout>({
     allProductsPosition: 0,
     rootCategoryCount: 0,
+    categoryShowcaseEnabled: true,
   });
+  const [layoutSaving, setLayoutSaving] = useState(false);
+  const [layoutError, setLayoutError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -82,9 +86,29 @@ export function CategoriesPage() {
   useEffect(() => { void load(); }, [load]);
 
   const saveAllProductsPosition = useCallback(async (position: number) => {
-    const saved = await updateCategoryLayout(position);
+    const saved = await updateCategoryLayout({
+      allProductsPosition: position,
+      categoryShowcaseEnabled: layout.categoryShowcaseEnabled,
+    });
     setLayout(saved);
-  }, []);
+  }, [layout.categoryShowcaseEnabled]);
+
+  const saveCategoryShowcaseMode = async (enabled: boolean) => {
+    if (layoutSaving || enabled === layout.categoryShowcaseEnabled) return;
+    setLayoutSaving(true);
+    setLayoutError("");
+    try {
+      const saved = await updateCategoryLayout({
+        allProductsPosition: layout.allProductsPosition,
+        categoryShowcaseEnabled: enabled,
+      });
+      setLayout(saved);
+    } catch (reason) {
+      setLayoutError(reason instanceof Error ? reason.message : t("展示方式保存失败。"));
+    } finally {
+      setLayoutSaving(false);
+    }
+  };
 
   const openImport = () => {
     setImportFile(undefined);
@@ -146,6 +170,24 @@ export function CategoriesPage() {
           </>
         )}
       />
+      <Card className="core-category-showcase-setting">
+        <span><Images weight="duotone" /></span>
+        <div>
+          <Text weight="bold" as="div">{t("二级分类门面")}</Text>
+          <Text size="2" color="gray">
+            {t("开启后，访客选择一级分类时先看到二级分类图片，再进入商品列表。")}
+          </Text>
+          {layoutError ? <Text size="1" color="red">{layoutError}</Text> : null}
+        </div>
+        <label className="core-category-showcase-switch">
+          <span>{t(layout.categoryShowcaseEnabled ? "已开启" : "已关闭")}</span>
+          <Switch
+            checked={layout.categoryShowcaseEnabled}
+            disabled={!canImport || layoutSaving}
+            onCheckedChange={(checked) => void saveCategoryShowcaseMode(checked)}
+          />
+        </label>
+      </Card>
       {importResult ? (
         <Card className="core-category-import-result" role="status">
           <CheckCircle weight="fill" />

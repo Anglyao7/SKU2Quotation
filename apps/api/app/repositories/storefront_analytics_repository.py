@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from uuid import UUID, uuid4
 
@@ -12,6 +13,19 @@ from ..storefront_analytics_models import (
     StorefrontProductViewDailyRow,
     StorefrontProductViewEventRow,
 )
+from ..product_supplier_models import ProductCategoryRow, ProductRow
+
+
+@dataclass(frozen=True, slots=True)
+class ProductRankingRow:
+    product_id: UUID
+    product_code: str | None
+    name: str
+    category_id: UUID | None
+    category_name: str | None
+    category_code: str | None
+    views: int
+    is_pinned: bool
 
 
 def event_exists(
@@ -285,6 +299,84 @@ def top_products(
             .order_by(func.sum(StorefrontProductViewDailyRow.view_count).desc())
             .limit(limit)
         ).all()
+    ]
+
+
+def product_ranking(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    start_date: date,
+    end_date: date,
+    page: int,
+    page_size: int,
+) -> tuple[int, list[ProductRankingRow]]:
+    view_totals = (
+        select(
+            StorefrontProductViewDailyRow.product_id.label("product_id"),
+            func.sum(StorefrontProductViewDailyRow.view_count).label("views"),
+        )
+        .where(
+            StorefrontProductViewDailyRow.tenant_id == tenant_id,
+            StorefrontProductViewDailyRow.viewed_on >= start_date,
+            StorefrontProductViewDailyRow.viewed_on <= end_date,
+        )
+        .group_by(StorefrontProductViewDailyRow.product_id)
+        .subquery("storefront_product_view_totals")
+    )
+    base_filters = (
+        ProductRow.tenant_id == tenant_id,
+        ProductRow.deleted_at.is_(None),
+        ProductRow.status != "ARCHIVED",
+    )
+    total = int(
+        session.scalar(
+            select(func.count())
+            .select_from(view_totals)
+            .join(ProductRow, ProductRow.id == view_totals.c.product_id)
+            .where(*base_filters)
+        )
+        or 0
+    )
+    rows = session.execute(
+        select(
+            ProductRow.id,
+            ProductRow.product_code,
+            ProductRow.name,
+            ProductCategoryRow.id,
+            ProductCategoryRow.name,
+            ProductCategoryRow.code,
+            view_totals.c.views,
+            ProductRow.storefront_pinned_at.is_not(None),
+        )
+        .join(view_totals, view_totals.c.product_id == ProductRow.id)
+        .outerjoin(
+            ProductCategoryRow,
+            (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+            & (ProductCategoryRow.id == ProductRow.category_id)
+            & (ProductCategoryRow.deleted_at.is_(None)),
+        )
+        .where(*base_filters)
+        .order_by(
+            view_totals.c.views.desc(),
+            func.lower(ProductRow.name),
+            ProductRow.id,
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return total, [
+        ProductRankingRow(
+            product_id=row[0],
+            product_code=row[1],
+            name=str(row[2]),
+            category_id=row[3],
+            category_name=str(row[4]) if row[4] is not None else None,
+            category_code=str(row[5]) if row[5] is not None else None,
+            views=int(row[6] or 0),
+            is_pinned=bool(row[7]),
+        )
+        for row in rows
     ]
 
 

@@ -60,6 +60,7 @@ differentFormat/
 YOYO图册.xlsx
 商品图册模板*.xlsx
 商品导入模板.xlsx
+*_商品导入模板.xlsx
 
 # Office temporary lock files
 ~$*.xlsx

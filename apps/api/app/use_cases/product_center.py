@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
+import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -74,6 +75,11 @@ from ..services.category_template_import import (
     CategoryTemplateParseResult,
     category_name_key,
 )
+from ..services.external_image_migration import (
+    ImageMigrationError,
+    SourcePolicy,
+    download_image,
+)
 from ..adapters.object_storage import get_object_storage
 from ..services.sku_catalog_export import build_sku_catalog_workbook
 from ..services.sku_quotas import ensure_sku_capacity
@@ -91,6 +97,43 @@ FIELD_LABELS = {
     "description": "产品描述",
 }
 
+SKU_PACKING_QUANTITY_KEYS = (
+    "装箱数",
+    "一箱个数",
+    "packing_quantity",
+    "units_per_carton",
+)
+
+
+def _packing_quantity(option_values: dict[str, Any] | None) -> str | None:
+    for key in SKU_PACKING_QUANTITY_KEYS:
+        value = (option_values or {}).get(key)
+        if value not in (None, ""):
+            return str(value).strip() or None
+    return None
+
+
+def _with_packing_quantity(
+    option_values: dict[str, Any],
+    packing_quantity: Decimal | None,
+    *,
+    preserve_existing_when_unset: bool = False,
+) -> dict[str, Any]:
+    values = dict(option_values)
+    if packing_quantity is None and preserve_existing_when_unset:
+        existing = _packing_quantity(values)
+        if existing is None:
+            return values
+        for key in SKU_PACKING_QUANTITY_KEYS:
+            values.pop(key, None)
+        values["装箱数"] = existing
+        return values
+    for key in SKU_PACKING_QUANTITY_KEYS:
+        values.pop(key, None)
+    if packing_quantity is not None:
+        values["装箱数"] = format(packing_quantity, "f")
+    return values
+
 MAX_PRODUCT_IMAGE_BYTES = max(
     1,
     int(os.getenv("PRODUCT_IMAGE_MAX_BYTES", str(20 * 1024 * 1024))),
@@ -98,6 +141,10 @@ MAX_PRODUCT_IMAGE_BYTES = max(
 MAX_PRODUCT_IMAGE_EDGE = max(
     320,
     int(os.getenv("PRODUCT_IMAGE_MAX_EDGE", "2400")),
+)
+MAX_CATEGORY_COVER_BYTES = max(
+    1,
+    int(os.getenv("CATEGORY_COVER_MAX_BYTES", str(20 * 1024 * 1024))),
 )
 MAX_SKU_EXPORT_ROWS = max(
     1,
@@ -631,6 +678,7 @@ def list_skus(
                 ),
                 default_moq=row.sku.default_moq,
                 moq_unit=row.sku.moq_unit,
+                packing_quantity=_packing_quantity(row.sku.option_values),
                 public_price=offer.unit_price if offer else None,
                 public_currency=offer.currency if offer else None,
                 public_offer_status=offer.publication_status if offer else None,
@@ -940,6 +988,136 @@ def upload_product_main_image(
     )
 
 
+_PRODUCT_IMAGE_DOWNLOAD_EXTENSIONS = {
+    "image/avif": "avif",
+    "image/bmp": "bmp",
+    "image/gif": "gif",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+
+
+def _product_image_download_filename(
+    *,
+    product: ProductRow,
+    image: ProductImageRow,
+    content_type: str,
+) -> str:
+    source_name = Path(image.original_filename or product.name or "product-image").stem
+    safe_stem = "".join(
+        character
+        for character in source_name
+        if character not in {"/", "\\", "\r", "\n", "\t"}
+        and ord(character) >= 32
+    ).strip(" .")[:120]
+    extension = _PRODUCT_IMAGE_DOWNLOAD_EXTENSIONS.get(content_type, "bin")
+    return f"{safe_stem or 'product-image'}.{extension}"
+
+
+def download_product_main_image(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+) -> tuple[bytes, str, str]:
+    _require(permissions, "product.view")
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if product is None:
+        raise ApplicationError(
+            "PRODUCT_NOT_FOUND",
+            "Product was not found.",
+            kind="not_found",
+        )
+    images = repository.list_images(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    image = next(
+        (candidate for candidate in images if candidate.image_role == "MAIN"),
+        images[0] if images else None,
+    )
+    if image is None or not str(image.object_key or "").strip():
+        raise ApplicationError(
+            "PRODUCT_IMAGE_NOT_FOUND",
+            "该商品还没有可下载的图片。",
+            kind="not_found",
+        )
+
+    object_key = str(image.object_key).strip()
+    if object_key.startswith(("https://", "http://")):
+        try:
+            with tempfile.TemporaryDirectory(prefix="atc-image-download-") as directory:
+                target = Path(directory) / "source-image"
+                with httpx.Client(
+                    timeout=httpx.Timeout(20.0, connect=5.0),
+                    follow_redirects=False,
+                ) as client:
+                    metadata = download_image(
+                        client,
+                        source_url=object_key,
+                        destination=target,
+                        policy=SourcePolicy((), allow_all_public_hosts=True),
+                        max_bytes=MAX_PRODUCT_IMAGE_BYTES,
+                        max_pixels=100_000_000,
+                        max_redirects=4,
+                    )
+                content = target.read_bytes()
+        except (ImageMigrationError, OSError) as exc:
+            raise ApplicationError(
+                "PRODUCT_IMAGE_DOWNLOAD_UNAVAILABLE",
+                "原图片暂时无法下载，请稍后重试。",
+                kind="unavailable",
+            ) from exc
+        content_type = metadata.content_type
+    else:
+        try:
+            with get_object_storage().materialize(object_key) as path:
+                byte_size = path.stat().st_size
+                if byte_size > MAX_PRODUCT_IMAGE_BYTES:
+                    raise ApplicationError(
+                        "PRODUCT_IMAGE_TOO_LARGE",
+                        f"商品图片不能超过 {MAX_PRODUCT_IMAGE_BYTES // (1024 * 1024)} MB。",
+                        kind="too_large",
+                    )
+                content = path.read_bytes()
+        except ApplicationError:
+            raise
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ApplicationError(
+                "PRODUCT_IMAGE_DOWNLOAD_UNAVAILABLE",
+                "图片文件暂时不可用，请稍后重试。",
+                kind="unavailable",
+            ) from exc
+        content_type = (
+            image.content_type
+            if str(image.content_type or "").startswith("image/")
+            else "application/octet-stream"
+        )
+
+    if not content:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_DOWNLOAD_UNAVAILABLE",
+            "图片文件暂时不可用，请稍后重试。",
+            kind="unavailable",
+        )
+    return (
+        content,
+        content_type,
+        _product_image_download_filename(
+            product=product,
+            image=image,
+            content_type=content_type,
+        ),
+    )
+
+
 def create_manual_product(
     session: Session,
     *,
@@ -1029,7 +1207,7 @@ def create_manual_product(
         product_id=product.id,
         sku_code=sku_code,
         name=request.sku_name or request.name,
-        option_values={},
+        option_values=_with_packing_quantity({}, request.packing_quantity),
         barcode=request.barcode,
         default_moq=request.default_moq,
         moq_unit=request.moq_unit,
@@ -1112,6 +1290,7 @@ def create_manual_product(
                     "barcode": sku.barcode,
                     "default_moq": request_snapshot["default_moq"],
                     "moq_unit": sku.moq_unit,
+                    "packing_quantity": request_snapshot["packing_quantity"],
                     "weight": request_snapshot["weight"],
                     "weight_unit": sku.weight_unit,
                     "status": sku.status,
@@ -1177,7 +1356,14 @@ def create_skus(
                 f"SKU code already exists: {item.sku_code}",
                 kind="conflict",
             )
-        invalid_keys = set(item.option_values) - variant_keys
+        # Older clients stored carton quantity alongside variant attributes.
+        # It is operational SKU metadata rather than a category-owned variant,
+        # so accept the known aliases here and canonicalize them below.
+        invalid_keys = (
+            set(item.option_values)
+            - variant_keys
+            - set(SKU_PACKING_QUANTITY_KEYS)
+        )
         if invalid_keys:
             raise ApplicationError(
                 "SKU_VARIANT_ATTRIBUTE_INVALID",
@@ -1196,7 +1382,11 @@ def create_skus(
             product_id=product_id,
             sku_code=item.sku_code,
             name=item.name,
-            option_values=item.option_values,
+            option_values=_with_packing_quantity(
+                item.option_values,
+                item.packing_quantity,
+                preserve_existing_when_unset=True,
+            ),
             barcode=item.barcode,
             default_moq=item.default_moq,
             moq_unit=item.moq_unit,
@@ -1248,7 +1438,11 @@ def update_sku(
             kind="conflict",
         )
     before = _sku_response(row).model_dump(mode="json")
-    for field, value in request.model_dump(exclude={"expected_version"}, exclude_unset=True).items():
+    changes = request.model_dump(exclude={"expected_version"}, exclude_unset=True)
+    packing_quantity_supplied = "packing_quantity" in changes
+    packing_quantity = changes.pop("packing_quantity", None)
+    option_values_supplied = "option_values" in changes
+    for field, value in changes.items():
         if field == "option_values" and value is not None:
             # Template ownership is server-managed metadata. Users may edit
             # visible variant values, but cannot remove or forge the marker
@@ -1264,6 +1458,17 @@ def update_sku(
                     editable_values.pop("备注", None)
             value = editable_values
         setattr(row, field, value)
+    if packing_quantity_supplied:
+        row.option_values = _with_packing_quantity(
+            row.option_values,
+            packing_quantity,
+        )
+    elif option_values_supplied:
+        row.option_values = _with_packing_quantity(
+            row.option_values,
+            None,
+            preserve_existing_when_unset=True,
+        )
     row.version += 1
     row.updated_by_user_id = user_id
     product = repository.get_product_row(
@@ -1391,20 +1596,11 @@ def list_categories(
             return [CategoryResponse.model_validate(row) for row in cache_slot.value]
         except (TypeError, ValueError):
             pass
-    response = [
-        CategoryResponse(
-            id=row.id,
-            parent_id=row.parent_id,
-            code=row.code,
-            name=row.name,
-            sort_order=row.sort_order,
-            display_color=row.display_color,
-            path=row.path,
-            status=row.status,
-            version=row.version,
-        )
-        for row in repository.list_categories(session, tenant_id=tenant_id)
-    ]
+    response = _category_responses(
+        session,
+        tenant_id=tenant_id,
+        rows=repository.list_categories(session, tenant_id=tenant_id),
+    )
     query_cache.store(
         cache_slot,
         [row.model_dump(mode="json") for row in response],
@@ -1451,6 +1647,9 @@ def get_category_layout(
     response = CategoryLayoutResponse(
         all_products_position=position,
         root_category_count=root_count,
+        category_showcase_enabled=(
+            bool(profile.category_showcase_enabled) if profile else True
+        ),
     )
     query_cache.store(
         cache_slot,
@@ -1507,7 +1706,9 @@ def update_category_layout(
         session.add(profile)
         session.flush()
     previous = max(0, int(profile.all_products_position or 0))
+    previous_showcase_enabled = bool(profile.category_showcase_enabled)
     profile.all_products_position = request.all_products_position
+    profile.category_showcase_enabled = request.category_showcase_enabled
     session.add(
         ProductAuditEventRow(
             tenant_id=tenant_id,
@@ -1515,8 +1716,14 @@ def update_category_layout(
             entity_type="CATEGORY",
             entity_id=str(tenant_id),
             action="category_layout.updated",
-            before={"all_products_position": previous},
-            after={"all_products_position": request.all_products_position},
+            before={
+                "all_products_position": previous,
+                "category_showcase_enabled": previous_showcase_enabled,
+            },
+            after={
+                "all_products_position": request.all_products_position,
+                "category_showcase_enabled": request.category_showcase_enabled,
+            },
             actor_membership_id=membership_id,
         )
     )
@@ -1528,10 +1735,25 @@ def update_category_layout(
     return CategoryLayoutResponse(
         all_products_position=request.all_products_position,
         root_category_count=root_count,
+        category_showcase_enabled=request.category_showcase_enabled,
     )
 
 
-def _category_response(row: ProductCategoryRow) -> CategoryResponse:
+def _category_response(
+    row: ProductCategoryRow,
+    *,
+    uploaded_cover_image_url: str | None = None,
+    cover_product_name: str | None = None,
+    cover_product_image_url: str | None = None,
+) -> CategoryResponse:
+    cover_source = str(row.cover_source or "NONE").upper()
+    cover_image_url = (
+        uploaded_cover_image_url
+        if cover_source == "UPLOAD"
+        else cover_product_image_url
+        if cover_source == "PRODUCT"
+        else None
+    )
     return CategoryResponse(
         id=row.id,
         parent_id=row.parent_id,
@@ -1542,7 +1764,74 @@ def _category_response(row: ProductCategoryRow) -> CategoryResponse:
         path=row.path,
         status=row.status,
         version=row.version,
+        cover_source=cover_source,
+        cover_product_id=row.cover_product_id,
+        cover_product_name=cover_product_name,
+        cover_image_url=cover_image_url,
+        uploaded_cover_image_url=uploaded_cover_image_url,
+        cover_product_image_url=cover_product_image_url,
     )
+
+
+def _category_responses(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    rows: list[ProductCategoryRow],
+) -> list[CategoryResponse]:
+    if not rows:
+        return []
+    storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
+    product_ids = {
+        row.cover_product_id for row in rows if row.cover_product_id is not None
+    }
+    products_by_id = {
+        product.id: product
+        for product in session.scalars(
+            select(ProductRow).where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.id.in_(product_ids),
+                ProductRow.deleted_at.is_(None),
+            )
+        ).all()
+    } if product_ids else {}
+    images_by_product_id: dict[UUID, ProductImageRow] = {}
+    for image in repository.list_images_for_products(
+        session,
+        tenant_id=tenant_id,
+        product_ids=product_ids,
+    ):
+        if image.approval_status == "APPROVED":
+            images_by_product_id.setdefault(image.product_id, image)
+
+    responses: list[CategoryResponse] = []
+    for row in rows:
+        uploaded_cover_image_url = None
+        if row.cover_object_key and storefront_slug:
+            media_base_url = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
+            uploaded_cover_image_url = (
+                f"{media_base_url}/{quote(row.cover_object_key.lstrip('/'), safe='/')}"
+                if media_base_url
+                else (
+                    f"/api/store/{quote(storefront_slug, safe='')}/categories/"
+                    f"{row.id}/cover?v={row.version}"
+                )
+            )
+        product = products_by_id.get(row.cover_product_id)
+        product_image = images_by_product_id.get(row.cover_product_id)
+        responses.append(
+            _category_response(
+                row,
+                uploaded_cover_image_url=uploaded_cover_image_url,
+                cover_product_name=product.name if product is not None else None,
+                cover_product_image_url=(
+                    _sku_thumbnail_url(product_image, storefront_slug=storefront_slug)
+                    if product_image is not None
+                    else None
+                ),
+            )
+        )
+    return responses
 
 
 def create_category(
@@ -1942,6 +2231,47 @@ def update_category(
         )
 
     before = _category_response(row).model_dump(mode="json")
+    if request.cover_source in {"UPLOAD", "PRODUCT"} and request.parent_id is None:
+        raise ApplicationError(
+            "CATEGORY_COVER_LEVEL_INVALID",
+            "分类门面仅用于二级分类。",
+            kind="conflict",
+        )
+    if request.cover_source == "UPLOAD" and not row.cover_object_key:
+        raise ApplicationError(
+            "CATEGORY_COVER_UPLOAD_REQUIRED",
+            "请先上传分类图片。",
+            kind="conflict",
+        )
+    if request.cover_source == "PRODUCT":
+        cover_product = repository.get_product_row(
+            session,
+            tenant_id=tenant_id,
+            product_id=request.cover_product_id,
+        )
+        if (
+            cover_product is None
+            or cover_product.category_id != row.id
+            or cover_product.status == "ARCHIVED"
+        ):
+            raise ApplicationError(
+                "CATEGORY_COVER_PRODUCT_INVALID",
+                "只能选择当前二级分类内的商品作为门面。",
+                kind="conflict",
+            )
+        if not any(
+            image.approval_status == "APPROVED"
+            for image in repository.list_images(
+                session,
+                tenant_id=tenant_id,
+                product_id=cover_product.id,
+            )
+        ):
+            raise ApplicationError(
+                "CATEGORY_COVER_PRODUCT_IMAGE_REQUIRED",
+                "该商品还没有可公开展示的图片，请先上传商品图片。",
+                kind="conflict",
+            )
     row.parent_id = request.parent_id
     row.name = request.name
     row.path = f"{parent.name}/{request.name}" if parent else request.name
@@ -1951,6 +2281,14 @@ def update_category(
         row.display_color = None
     elif "display_color" in request.model_fields_set:
         row.display_color = request.display_color
+    if request.parent_id is None:
+        row.cover_source = "NONE"
+        row.cover_product_id = None
+    elif request.cover_source is not None:
+        row.cover_source = request.cover_source
+        row.cover_product_id = (
+            request.cover_product_id if request.cover_source == "PRODUCT" else None
+        )
     row.version += 1
     if children:
         for child in children:
@@ -1985,7 +2323,106 @@ def update_category(
         conflict_code="CATEGORY_UPDATE_CONFLICT",
         conflict_message="分类保存失败，请刷新后重试。",
     )
-    return _category_response(row)
+    return _category_responses(session, tenant_id=tenant_id, rows=[row])[0]
+
+
+def upload_category_cover(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    category_id: UUID,
+    content: bytes,
+) -> CategoryResponse:
+    _require(permissions, "product.edit")
+    if not content:
+        raise ApplicationError("CATEGORY_COVER_EMPTY", "请选择一张分类图片。")
+    if len(content) > MAX_CATEGORY_COVER_BYTES:
+        raise ApplicationError(
+            "CATEGORY_COVER_TOO_LARGE",
+            f"分类图片不能超过 {MAX_CATEGORY_COVER_BYTES // (1024 * 1024)} MB。",
+            kind="too_large",
+        )
+    category = repository.get_category(
+        session,
+        tenant_id=tenant_id,
+        category_id=category_id,
+    )
+    if category is None:
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND", "分类不存在。", kind="not_found"
+        )
+    if category.parent_id is None:
+        raise ApplicationError(
+            "CATEGORY_COVER_LEVEL_INVALID",
+            "分类门面仅用于二级分类。",
+            kind="conflict",
+        )
+
+    processed, _width, _height = _normalized_product_image(content)
+    object_key = (
+        f"tenants/{tenant_id}/categories/{category_id}/cover/"
+        f"{uuid4().hex}.webp"
+    )
+    storage = get_object_storage()
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".webp") as temporary:
+            temporary.write(processed)
+            temporary.flush()
+            storage.put_file(
+                Path(temporary.name),
+                object_key=object_key,
+                content_type="image/webp",
+            )
+    except Exception as exc:
+        raise ApplicationError(
+            "CATEGORY_COVER_STORAGE_UNAVAILABLE",
+            "分类图片上传到对象存储失败，请稍后重试。",
+            kind="unavailable",
+        ) from exc
+
+    previous_object_key = str(category.cover_object_key or "").strip() or None
+    before = _category_response(category).model_dump(mode="json")
+    category.cover_object_key = object_key
+    category.cover_source = "UPLOAD"
+    category.cover_product_id = None
+    category.version += 1
+    after = _category_response(category).model_dump(mode="json")
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=None,
+            entity_type="CATEGORY",
+            entity_id=str(category.id),
+            action="category.cover_uploaded",
+            before=before,
+            after=after,
+            actor_membership_id=membership_id,
+        )
+    )
+    try:
+        _commit(
+            session,
+            conflict_code="CATEGORY_COVER_CONFLICT",
+            conflict_message="分类图片保存失败，请刷新后重试。",
+        )
+    except Exception:
+        try:
+            storage.delete(object_key)
+        except Exception:
+            pass
+        raise
+    if previous_object_key and previous_object_key != object_key:
+        try:
+            storage.delete(previous_object_key)
+        except Exception:
+            pass
+    return _category_responses(
+        session,
+        tenant_id=tenant_id,
+        rows=[category],
+    )[0]
 
 
 def _category_delete_scope(
