@@ -7,6 +7,7 @@ import {
   batchUpdateSkuCategory,
   batchUpdateSkuPinned,
   batchUpdateSkuStatus,
+  createCatalogImportBatch,
   createManualProduct,
   createProductTemplateImport,
   createSkus,
@@ -17,10 +18,12 @@ import {
   getDeleteAllProductsJob,
   getImport,
   getProduct,
+  listCatalogImportBatches,
   listCategories,
   listPublicCatalogOffers,
   listSkus,
   PRODUCT_TEMPLATE_DOWNLOAD_URL,
+  rollbackCatalogImportBatch,
   updateSku,
   uploadProductMainImage,
   upsertPublicCatalogOffer,
@@ -32,7 +35,7 @@ import { CatalogShareDialog, type CatalogShareTarget } from "../components/Catal
 import { primaryCategoryLabel } from "../../lib/format";
 import { api } from "../../lib/api";
 import type { ProductTag } from "../../types";
-import type { FileDetection, ImportJob, ProductCategory, ProductDetail, ProductSku, PublicCatalogOffer, SkuListItem, SkuListPage } from "../types";
+import type { CatalogImportBatch, CatalogImportRollbackResult, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductSku, PublicCatalogOffer, SkuListItem, SkuListPage } from "../types";
 
 const emptySkuPage: SkuListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
 const SKU_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
@@ -47,6 +50,17 @@ const SKU_PACKING_QUANTITY_KEYS = new Set([
   "units_per_carton",
 ]);
 type BulkSkuAction = "pin" | "unpin" | "activate" | "deactivate" | "category";
+type ImportQueueStatus = "checking" | "ready" | "uploading" | "processing" | "published" | "failed";
+
+interface ImportQueueItem {
+  id: string;
+  file: File;
+  detection?: FileDetection;
+  status: ImportQueueStatus;
+  progress: number;
+  job?: ImportJob;
+  error?: string;
+}
 
 function initialSkuPageSize() {
   if (typeof window === "undefined") return 50;
@@ -247,8 +261,17 @@ export function ProductsPage() {
   const [error, setError] = useState("");
   const [importOpen, setImportOpen] = useState(canImport && params.get("import") === "1");
   const [createOpen, setCreateOpen] = useState(false);
-  const [pendingFile, setPendingFile] = useState<File>();
-  const [detection, setDetection] = useState<FileDetection>();
+  const [importTab, setImportTab] = useState("upload");
+  const [importFiles, setImportFiles] = useState<ImportQueueItem[]>([]);
+  const [importBatches, setImportBatches] = useState<CatalogImportBatch[]>([]);
+  const [importBatchesLoading, setImportBatchesLoading] = useState(false);
+  const [rollbackBatchId, setRollbackBatchId] = useState("");
+  const [rollbackCategoryId, setRollbackCategoryId] = useState("");
+  const [rollbackTarget, setRollbackTarget] = useState<CatalogImportBatch>();
+  const [rollbackBusy, setRollbackBusy] = useState(false);
+  const [rollbackError, setRollbackError] = useState("");
+  const [rollbackResult, setRollbackResult] = useState<CatalogImportRollbackResult>();
+  const [importDragActive, setImportDragActive] = useState(false);
   const [lastImport, setLastImport] = useState<ImportJob>();
   const [loadedWarningJobId, setLoadedWarningJobId] = useState<string>();
   const [importBusy, setImportBusy] = useState(false);
@@ -302,6 +325,23 @@ export function ProductsPage() {
   const loadCategories = useCallback(async () => {
     setCategories(await listCategories());
   }, []);
+  const loadImportBatches = useCallback(async () => {
+    setImportBatchesLoading(true);
+    try {
+      const batches = await listCatalogImportBatches();
+      setImportBatches(batches);
+      setRollbackError("");
+      setRollbackBatchId((current) => (
+        current && batches.some((batch) => batch.id === current)
+          ? current
+          : batches.find((batch) => batch.status !== "REVOKED")?.id ?? ""
+      ));
+    } catch (reason) {
+      setRollbackError(reason instanceof Error ? reason.message : t("导入批次加载失败"));
+    } finally {
+      setImportBatchesLoading(false);
+    }
+  }, [t]);
   useEffect(() => { void loadCategories().catch(() => setCategories([])); }, [loadCategories]);
   useEffect(() => {
     void api.getProductTags("", 200)
@@ -324,23 +364,64 @@ export function ProductsPage() {
     if (!lastImport?.id) return undefined;
     const next = await getImport(lastImport.id);
     setLastImport(next);
+    setImportFiles((current) => current.map((item) => (
+      item.job?.id === next.id
+        ? {
+            ...item,
+            job: next,
+            progress: next.progress,
+            status: next.status === "published" ? "published" : next.status === "failed" ? "failed" : "processing",
+          }
+        : item
+    )));
     setImportPollingError("");
     if (next.status === "published") {
       await load();
       await loadCategories().catch(() => undefined);
+      await loadImportBatches().catch(() => undefined);
     }
     return next;
-  }, [lastImport?.id, load, loadCategories]);
+  }, [lastImport?.id, load, loadCategories, loadImportBatches]);
 
+  const activeImportJobIds = useMemo(
+    () => importFiles
+      .filter((item) => item.job && ["scanning", "parsing"].includes(item.job.status))
+      .map((item) => item.job!.id)
+      .join(","),
+    [importFiles],
+  );
   useEffect(() => {
-    if (!importOpen || !lastImport || !["scanning", "parsing"].includes(lastImport.status)) return;
+    if (!importOpen || !activeImportJobIds) return;
     let cancelled = false;
     let timer = 0;
     const poll = () => {
       timer = window.setTimeout(() => {
-        void refreshCurrentImport()
-          .then((next) => {
-            if (!cancelled && next && ["scanning", "parsing"].includes(next.status)) poll();
+        const jobIds = activeImportJobIds.split(",").filter(Boolean);
+        void Promise.all(jobIds.map((jobId) => getImport(jobId)))
+          .then(async (jobs) => {
+            if (cancelled) return;
+            const jobsById = new Map(jobs.map((job) => [job.id, job]));
+            setImportFiles((current) => current.map((item) => {
+              const job = item.job ? jobsById.get(item.job.id) : undefined;
+              if (!job) return item;
+              return {
+                ...item,
+                job,
+                progress: job.progress,
+                status: job.status === "published" ? "published" : job.status === "failed" ? "failed" : "processing",
+                error: job.errorMessage,
+              };
+            }));
+            setLastImport((current) => current ? jobsById.get(current.id) ?? current : current);
+            setImportPollingError("");
+            if (jobs.some((job) => job.status === "published")) {
+              await Promise.all([
+                load(),
+                loadCategories().catch(() => undefined),
+                loadImportBatches().catch(() => undefined),
+              ]);
+            }
+            if (!cancelled && jobs.some((job) => ["scanning", "parsing"].includes(job.status))) poll();
           })
           .catch((reason) => {
             setImportPollingError(reason instanceof Error ? t("状态刷新失败，系统将继续重试：{message}", { message: reason.message }) : t("状态刷新失败，系统将继续重试。"));
@@ -353,7 +434,7 @@ export function ProductsPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [importOpen, lastImport?.id, lastImport?.status, refreshCurrentImport, t]);
+  }, [activeImportJobIds, importOpen, load, loadCategories, loadImportBatches, t]);
 
   useEffect(() => {
     const requested = params.get("import") === "1";
@@ -381,15 +462,17 @@ export function ProductsPage() {
       .then(setLastImport)
       .catch(() => setLoadedWarningJobId(undefined));
   }, [lastImport, loadedWarningJobId]);
+  useEffect(() => {
+    if (importOpen) void loadImportBatches();
+  }, [importOpen, loadImportBatches]);
 
   const setImportDialogOpen = (open: boolean) => {
     if (open && !canImport) return;
     setImportOpen(open);
     if (!open) {
-      setPendingFile(undefined);
-      setDetection(undefined);
       setImportError("");
       setImportPollingError("");
+      setRollbackError("");
       setImportSubmitStage("idle");
       setUploadProgress(0);
     }
@@ -401,32 +484,61 @@ export function ProductsPage() {
     }, { replace: true });
   };
 
-  const inspectTemplate = async (file?: File) => {
-    if (!canImport || !file) return;
+  const inspectTemplates = async (selectedFiles?: FileList | File[]) => {
+    if (!canImport || !selectedFiles) return;
+    const files = Array.from(selectedFiles);
+    if (!files.length) return;
     setImportError("");
-    setLastImport(undefined);
     setLoadedWarningJobId(undefined);
-    setPendingFile(file);
-    if (!file.name.toLowerCase().endsWith(".xlsx")) {
-      setDetection(undefined);
-      setImportError(t("这里只接受 .xlsx 商品文件。"));
+    const currentKeys = new Set(importFiles.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`));
+    const uniqueFiles = files.filter((file) => {
+      const key = `${file.name}:${file.size}:${file.lastModified}`;
+      if (currentKeys.has(key)) return false;
+      currentKeys.add(key);
+      return true;
+    });
+    const room = Math.max(0, 100 - importFiles.length);
+    const acceptedFiles = uniqueFiles.slice(0, room);
+    if (!acceptedFiles.length) {
+      setImportError(t(room === 0 ? "每个批次最多选择 100 个文件。" : "这些文件已经在当前列表中。"));
       if (importInputRef.current) importInputRef.current.value = "";
       return;
     }
+    if (uniqueFiles.length > room) setImportError(t("每个批次最多选择 100 个文件，超出的文件未加入。"));
+    const queued: ImportQueueItem[] = acceptedFiles.map((file) => ({
+      id: crypto.randomUUID(),
+      file,
+      status: file.name.toLowerCase().endsWith(".xlsx") ? "checking" : "failed",
+      progress: 0,
+      error: file.name.toLowerCase().endsWith(".xlsx") ? undefined : t("只接受 .xlsx 商品文件。"),
+    }));
+    setImportFiles((current) => [...current, ...queued]);
     setImportBusy(true);
     setImportSubmitStage("checking");
     try {
-      const nextDetection = await detectFile(file);
-      setDetection(nextDetection);
-      if (
-        nextDetection.detected_type !== "OOXML / XLSX"
-        || !nextDetection.extension_matches
-      ) {
-        setImportError(t("文件签名与 XLSX 格式不一致，请重新选择。"));
-      }
-    } catch (reason) {
-      setDetection(undefined);
-      setImportError(reason instanceof Error ? reason.message : t("文件检测失败"));
+      await Promise.all(queued.map(async (item) => {
+        if (item.status === "failed") return;
+        try {
+          const detection = await detectFile(item.file);
+          const valid = detection.detected_type === "OOXML / XLSX" && detection.extension_matches;
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id
+              ? {
+                  ...currentItem,
+                  detection,
+                  status: valid ? "ready" : "failed",
+                  error: valid ? undefined : t("文件签名与 XLSX 格式不一致。"),
+                }
+              : currentItem
+          )));
+        } catch (reason) {
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id
+              ? { ...currentItem, status: "failed", error: reason instanceof Error ? reason.message : t("文件检测失败") }
+              : currentItem
+          )));
+        }
+      }));
     } finally {
       setImportBusy(false);
       setImportSubmitStage("idle");
@@ -434,34 +546,90 @@ export function ProductsPage() {
     }
   };
 
-  const importTemplate = async () => {
+  const importTemplates = async () => {
     if (!canImport) {
       setImportError(t("当前账号没有导入商品的权限。"));
       return;
     }
-    if (!pendingFile || !detection || importError) return;
+    const readyItems = importFiles.filter((item) => item.status === "ready" && item.detection);
+    if (!readyItems.length) return;
     setImportBusy(true);
     setImportSubmitStage("uploading");
     setUploadProgress(0);
     setImportError("");
     try {
-      const job = await createProductTemplateImport(pendingFile, (progress) => {
-        setUploadProgress(progress);
-        if (progress >= 100) setImportSubmitStage("processing");
-      });
-      setLastImport(job);
-      setLoadedWarningJobId(undefined);
-      setPendingFile(undefined);
-      setDetection(undefined);
-      if (job.status === "published") {
-        await load();
-        setCategories(await listCategories());
+      const batch = await createCatalogImportBatch(readyItems.length);
+      for (let index = 0; index < readyItems.length; index += 1) {
+        const item = readyItems[index];
+        setImportFiles((current) => current.map((currentItem) => (
+          currentItem.id === item.id ? { ...currentItem, status: "uploading", progress: 0, error: undefined } : currentItem
+        )));
+        try {
+          const job = await createProductTemplateImport(item.file, (progress) => {
+            setUploadProgress(Math.round(((index + progress / 100) / readyItems.length) * 100));
+            setImportFiles((current) => current.map((currentItem) => (
+              currentItem.id === item.id ? { ...currentItem, progress } : currentItem
+            )));
+          }, batch.id);
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id
+              ? {
+                  ...currentItem,
+                  job,
+                  progress: job.progress,
+                  status: job.status === "published" ? "published" : job.status === "failed" ? "failed" : "processing",
+                  error: job.errorMessage,
+                }
+              : currentItem
+          )));
+          setLastImport(job);
+          setLoadedWarningJobId(undefined);
+          if (job.status === "published") {
+            await Promise.all([load(), loadCategories().catch(() => undefined)]);
+          }
+        } catch (reason) {
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id
+              ? { ...currentItem, status: "failed", error: reason instanceof Error ? reason.message : t("商品导入失败") }
+              : currentItem
+          )));
+        }
       }
+      setImportSubmitStage("processing");
+      setUploadProgress(100);
+      await loadImportBatches();
     } catch (reason) {
       setImportError(reason instanceof Error ? reason.message : t("商品导入失败"));
     } finally {
       setImportBusy(false);
       setImportSubmitStage("idle");
+    }
+  };
+
+  const selectedRollbackBatch = importBatches.find((batch) => batch.id === rollbackBatchId);
+  const requestRollback = () => {
+    if (!selectedRollbackBatch) return;
+    setRollbackError("");
+    setRollbackResult(undefined);
+    setRollbackTarget(selectedRollbackBatch);
+  };
+  const executeRollback = async () => {
+    if (!rollbackTarget) return;
+    setRollbackBusy(true);
+    setRollbackError("");
+    try {
+      const result = await rollbackCatalogImportBatch(
+        rollbackTarget.id,
+        rollbackCategoryId || undefined,
+      );
+      setRollbackResult(result);
+      setRollbackTarget(undefined);
+      setRollbackCategoryId("");
+      await Promise.all([load(), loadCategories(), loadImportBatches()]);
+    } catch (reason) {
+      setRollbackError(reason instanceof Error ? reason.message : t("撤回失败，请稍后重试。"));
+    } finally {
+      setRollbackBusy(false);
     }
   };
 
@@ -820,7 +988,7 @@ export function ProductsPage() {
         actions={<>
           <Button variant="soft" disabled={!result.total || exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t(selectedSkuIds.size ? "导出所选" : "导出")}</Button>
           {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}
-          {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}
+          {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入与撤回")}</Button> : null}
           {canImport || canDelete ? (
             <DropdownMenu.Root>
               <DropdownMenu.Trigger>
@@ -904,7 +1072,7 @@ export function ProductsPage() {
           : <CoreEmpty
               title={t("商品库还是空的")}
               description={t("可以新建商品或从 Excel 导入。")}
-              action={canCreate || canImport ? <div className="core-empty-actions">{canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}{canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}{canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入商品")}</Button> : null}</div> : undefined}
+              action={canCreate || canImport ? <div className="core-empty-actions">{canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}{canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}{canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入与撤回")}</Button> : null}</div> : undefined}
             />
       ) : null}
       {result.items.length ? (
@@ -1230,12 +1398,19 @@ export function ProductsPage() {
         <Dialog.Content className="core-template-dialog">
           <div className="core-dialog-heading">
             <div>
-              <Text size="1" color="gray">{t("商品批量导入")}</Text>
-              <Dialog.Title>{t("导入商品")}</Dialog.Title>
-              <Dialog.Description>{t("上传 XLSX，系统会合并到现有商品库。")}</Dialog.Description>
+              <Text size="1" color="gray">{t("商品批量操作")}</Text>
+              <Dialog.Title>{t("导入与撤回")}</Dialog.Title>
+              <Dialog.Description>{t("一次导入多个商品文件，或撤回指定批次与分类。")}</Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" onClick={() => setImportDialogOpen(false)} aria-label={t("关闭")}><X /></Button>
           </div>
+
+          <Tabs.Root value={importTab} onValueChange={setImportTab}>
+            <Tabs.List className="core-import-tabs">
+              <Tabs.Trigger value="upload"><FileArrowUp />{t("批量导入")}</Tabs.Trigger>
+              <Tabs.Trigger value="rollback"><ArrowsClockwise />{t("撤回导入")}</Tabs.Trigger>
+            </Tabs.List>
+            <Tabs.Content value="upload" className="core-import-tab-content">
 
           <div className="core-import-template-row">
             <Text size="2" color="gray">{t("支持新版双表、历史模板和单元格内嵌图片")}</Text>
@@ -1248,26 +1423,77 @@ export function ProductsPage() {
             ref={importInputRef}
             hidden
             type="file"
+            multiple
             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            onChange={(event) => void inspectTemplate(event.target.files?.[0])}
+            onChange={(event) => void inspectTemplates(event.target.files ?? undefined)}
           />
 
-          {detection && pendingFile ? (
-            <Card className="core-detection">
-              <FileXls size={30} />
-              <div>
-                <Text weight="bold" as="div">{pendingFile.name}</Text>
-                <Text size="2" color="gray">{(pendingFile.size / 1024 / 1024).toFixed(2)} MB · {detection.detected_type} · {detection.parser}</Text>
-              </div>
-              <Badge color={detection.extension_matches ? "jade" : "amber"}>{t(detection.extension_matches ? "格式已确认" : "格式不一致")}</Badge>
-            </Card>
-          ) : (
-            <button className="core-template-dropzone" type="button" disabled={importBusy} onClick={() => importInputRef.current?.click()}>
-              <FileArrowUp size={30} />
-              <strong>{t("选择商品文件")}</strong>
-              <span>{t("XLSX · 最大 250 MB")}</span>
-            </button>
-          )}
+          <button
+            className={`core-template-dropzone ${importDragActive ? "is-dragging" : ""}`}
+            type="button"
+            disabled={importBusy}
+            onClick={() => importInputRef.current?.click()}
+            onDragEnter={(event) => { event.preventDefault(); setImportDragActive(true); }}
+            onDragOver={(event) => { event.preventDefault(); setImportDragActive(true); }}
+            onDragLeave={(event) => {
+              event.preventDefault();
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setImportDragActive(false);
+            }}
+            onDrop={(event: DragEvent<HTMLButtonElement>) => {
+              event.preventDefault();
+              setImportDragActive(false);
+              void inspectTemplates(event.dataTransfer.files);
+            }}
+          >
+            <FileArrowUp size={30} />
+            <strong>{t("拖入或选择多个商品文件")}</strong>
+            <span>{t("支持 XLSX，多文件会归入同一批次")}</span>
+          </button>
+
+          {importFiles.length ? (
+            <div className="core-import-file-list">
+              {importFiles.map((item) => {
+                const statusLabel = item.status === "checking"
+                  ? t("检查中")
+                  : item.status === "ready"
+                  ? t("待导入")
+                  : item.status === "uploading"
+                  ? t("上传中")
+                  : item.status === "processing"
+                  ? t("导入中")
+                  : item.status === "published"
+                  ? t("已完成")
+                  : t("失败");
+                return (
+                  <Card key={item.id} className={`core-import-file ${item.status}`}>
+                    <FileXls size={25} />
+                    <div>
+                      <Text weight="bold" size="2" as="div" title={item.file.name}>{item.file.name}</Text>
+                      <Text size="1" color="gray">
+                        {(item.file.size / 1024 / 1024).toFixed(2)} MB
+                        {item.detection ? ` · ${item.detection.detected_type}` : ""}
+                      </Text>
+                      {item.error ? <Text size="1" color="red">{item.error}</Text> : null}
+                      {["uploading", "processing"].includes(item.status) ? <Progress value={item.progress} /> : null}
+                    </div>
+                    <Badge color={item.status === "published" || item.status === "ready" ? "jade" : item.status === "failed" ? "red" : "blue"}>{statusLabel}</Badge>
+                    {item.job ? (
+                      <Button size="1" variant="ghost" color="gray" onClick={() => setLastImport(item.job)}>{t("详情")}</Button>
+                    ) : (
+                      <Button
+                        size="1"
+                        variant="ghost"
+                        color="gray"
+                        disabled={importBusy}
+                        onClick={() => setImportFiles((current) => current.filter((currentItem) => currentItem.id !== item.id))}
+                        aria-label={t("移除文件")}
+                      ><X /></Button>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          ) : null}
 
           {importBusy && importSubmitStage !== "idle" ? (
             <Card className="core-import-progress" aria-live="polite">
@@ -1429,16 +1655,130 @@ export function ProductsPage() {
           ) : null}
 
           <div className="core-dialog-actions">
-            {detection ? <Button variant="soft" color="gray" disabled={importBusy} onClick={() => importInputRef.current?.click()}>{t("重新选择")}</Button> : null}
+            {importFiles.length ? <Button variant="soft" color="gray" disabled={importBusy} onClick={() => importInputRef.current?.click()}><Plus />{t("继续添加")}</Button> : null}
             <Button
-              disabled={!pendingFile || !detection || Boolean(importError) || importBusy}
-              onClick={() => void importTemplate()}
+              disabled={!importFiles.some((item) => item.status === "ready") || importBusy}
+              onClick={() => void importTemplates()}
             >
-              <FileArrowUp />{t(importBusy ? "正在处理…" : "开始导入")}
+              <FileArrowUp />{importBusy
+                ? t("正在处理…")
+                : t("导入 {count} 个文件", { count: importFiles.filter((item) => item.status === "ready").length })}
             </Button>
           </div>
+            </Tabs.Content>
+
+            <Tabs.Content value="rollback" className="core-import-tab-content">
+              <div className="core-import-rollback-toolbar">
+                <div>
+                  <Text weight="bold" as="div">{t("按批次或分类撤回")}</Text>
+                  <Text size="1" color="gray">{t("只撤回仍属于该批次的 SKU；外部图片链接不会被删除。")}</Text>
+                </div>
+                <Button size="1" variant="soft" color="gray" disabled={importBatchesLoading} onClick={() => void loadImportBatches()}>
+                  <ArrowsClockwise />{t("刷新")}
+                </Button>
+              </div>
+
+              {rollbackError ? <CoreError message={rollbackError} onRetry={() => void loadImportBatches()} /> : null}
+              {rollbackResult ? (
+                <Card className="core-import-rollback-result" role="status">
+                  <CheckCircle weight="fill" />
+                  <div>
+                    <Text weight="bold" as="div">{t("撤回完成")}</Text>
+                    <Text size="1" color="gray">
+                      {t("已撤回 {skus} 个 SKU、{products} 个商品，清理 {images} 张 R2 图片。", {
+                        skus: rollbackResult.deletedSkuCount,
+                        products: rollbackResult.archivedProductCount,
+                        images: rollbackResult.deletedStorageImageCount,
+                      })}
+                      {rollbackResult.storageDeleteFailures
+                        ? t(" 另有 {count} 张图片清理失败，可再次执行撤回重试。", { count: rollbackResult.storageDeleteFailures })
+                        : ""}
+                    </Text>
+                  </div>
+                </Card>
+              ) : null}
+
+              {importBatchesLoading && !importBatches.length ? <CoreLoading label={t("正在读取导入批次")} /> : importBatches.length ? (
+                <div className="core-import-batch-layout">
+                  <div className="core-import-batch-list" role="list">
+                    {importBatches.map((batch) => {
+                      const running = batch.jobs.some((job) => ["scanning", "parsing"].includes(job.status));
+                      return (
+                        <button
+                          key={batch.id}
+                          type="button"
+                          className={rollbackBatchId === batch.id ? "is-selected" : ""}
+                          onClick={() => { setRollbackBatchId(batch.id); setRollbackCategoryId(""); setRollbackResult(undefined); }}
+                        >
+                          <span>
+                            <strong>{new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(batch.createdAt))}</strong>
+                            <small>{batch.jobs.map((job) => job.filename).join("、") || t("等待上传文件")}</small>
+                          </span>
+                          <span>
+                            <Badge color={batch.status === "REVOKED" ? "gray" : running ? "blue" : batch.status === "PARTIALLY_REVOKED" ? "amber" : "jade"}>
+                              {batch.status === "REVOKED" ? t("已撤回") : running ? t("导入中") : batch.status === "PARTIALLY_REVOKED" ? t("部分撤回") : t("可撤回")}
+                            </Badge>
+                            <small>{t("{files} 个文件 · {skus} 个 SKU", { files: batch.fileCount, skus: batch.remainingSkuCount })}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {selectedRollbackBatch ? (
+                    <Card className="core-import-rollback-panel">
+                      <div>
+                        <Text weight="bold" as="div">{t("撤回范围")}</Text>
+                        <Text size="1" color="gray">{selectedRollbackBatch.jobs.map((job) => job.filename).join("、")}</Text>
+                      </div>
+                      <label>
+                        <Text size="2" weight="medium">{t("选择范围")}</Text>
+                        <select value={rollbackCategoryId} onChange={(event) => setRollbackCategoryId(event.target.value)}>
+                          <option value="">{t("整个批次（{count} 个 SKU）", { count: selectedRollbackBatch.remainingSkuCount })}</option>
+                          {selectedRollbackBatch.categories.map((category) => (
+                            <option key={category.id} value={category.id}>{category.name}（{category.skuCount}）</option>
+                          ))}
+                        </select>
+                      </label>
+                      <Text size="1" color="gray">
+                        {t("撤回会归档对应 SKU，并清理不再被商品使用的 R2 图片。")}
+                      </Text>
+                      <Button
+                        color="red"
+                        disabled={
+                          selectedRollbackBatch.status === "REVOKED"
+                          || (selectedRollbackBatch.remainingSkuCount === 0 && selectedRollbackBatch.status !== "PARTIALLY_REVOKED")
+                          || selectedRollbackBatch.jobs.some((job) => ["scanning", "parsing"].includes(job.status))
+                        }
+                        onClick={requestRollback}
+                      >
+                        <Trash />{t(rollbackCategoryId ? "撤回这个分类" : "撤回整个批次")}
+                      </Button>
+                    </Card>
+                  ) : null}
+                </div>
+              ) : (
+                <CoreEmpty title={t("暂无可撤回的导入批次")} description={t("通过“批量导入”上传的文件会显示在这里。")}/>
+              )}
+            </Tabs.Content>
+          </Tabs.Root>
         </Dialog.Content>
       </Dialog.Root> : null}
+
+      <Dialog.Root open={Boolean(rollbackTarget)} onOpenChange={(open) => { if (!open && !rollbackBusy) setRollbackTarget(undefined); }}>
+        <Dialog.Content className="core-confirm-dialog">
+          <Dialog.Title>{t(rollbackCategoryId ? "确认撤回这个分类？" : "确认撤回整个批次？")}</Dialog.Title>
+          <Dialog.Description>
+            {rollbackCategoryId
+              ? t("所选分类中仍属于该批次的 SKU 将被删除，独占的 R2 图片也会被清理。")
+              : t("该批次目前仍生效的 SKU 将全部删除，独占的 R2 图片也会被清理。")}
+          </Dialog.Description>
+          <div className="core-dialog-actions">
+            <Button variant="soft" color="gray" disabled={rollbackBusy} onClick={() => setRollbackTarget(undefined)}>{t("取消")}</Button>
+            <Button color="red" loading={rollbackBusy} disabled={rollbackBusy} onClick={() => void executeRollback()}><Trash />{t("确认撤回")}</Button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Root>
 
       <Dialog.Root open={Boolean(selected || detailLoading)} onOpenChange={(open) => { if (!open) close(); }}>
         <Dialog.Content className="core-detail-dialog">

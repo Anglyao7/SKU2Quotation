@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from urllib.parse import quote
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -18,6 +19,10 @@ from sqlalchemy.orm import Session
 from ..domain.errors import ApplicationError
 from ..models import (
     FileDetectionResponse,
+    CatalogImportBatch,
+    CatalogImportBatchCreateRequest,
+    CatalogImportBatchRollbackRequest,
+    CatalogImportBatchRollbackResponse,
     ImportJob,
     PriceCalculationRequest,
     PriceCalculationResponse,
@@ -35,6 +40,7 @@ from ..services.auth.dependencies import (
     require_request_context,
 )
 from ..use_cases import legacy_operations as use_cases
+from ..use_cases import catalog_import_batches
 from .errors import application_http_error
 
 
@@ -89,6 +95,78 @@ def list_imports(
         raise application_http_error(exc) from exc
 
 
+@router.post(
+    "/import-batches",
+    response_model=CatalogImportBatch,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_import_batch(
+    request: CatalogImportBatchCreateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogImportBatch:
+    context = current_context(session)
+    try:
+        batch = catalog_import_batches.create_import_batch(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            expected_file_count=request.expected_file_count,
+        )
+        return CatalogImportBatch(
+            id=batch.id,
+            status=batch.status,
+            expected_file_count=batch.expected_file_count,
+            file_count=0,
+            remaining_sku_count=0,
+            created_at=batch.created_at.isoformat(),
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get("/import-batches", response_model=list[CatalogImportBatch])
+def list_import_batches(
+    limit: int = Query(default=30, ge=1, le=100),
+    session: Session = Depends(get_authenticated_session),
+) -> list[CatalogImportBatch]:
+    context = current_context(session)
+    try:
+        return catalog_import_batches.list_import_batches(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            limit=limit,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/import-batches/{batch_id}/rollback",
+    response_model=CatalogImportBatchRollbackResponse,
+)
+def rollback_import_batch(
+    batch_id: UUID,
+    request: CatalogImportBatchRollbackRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogImportBatchRollbackResponse:
+    context = current_context(session)
+    try:
+        return catalog_import_batches.rollback_import_batch(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            batch_id=batch_id,
+            category_id=request.category_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.get("/imports/{job_id}", response_model=ImportJob)
 def get_import(
     job_id: str,
@@ -135,6 +213,7 @@ async def create_import(
     supplier_id: str | None = Form(default=None),
     source_type: str = Form(default="UNKNOWN"),
     defer_processing: bool = Form(default=False),
+    batch_id: UUID | None = Form(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupplierFileImportResponse:
     context = current_context(session)
@@ -152,6 +231,7 @@ async def create_import(
             user_id=context.user_id,
             permissions=context.permissions,
             defer_inline_worker=defer_inline_worker,
+            batch_id=batch_id,
         )
         if defer_inline_worker:
             background_tasks.add_task(

@@ -49,6 +49,44 @@ class SupplierFileImportResponse(ImportJob):
     candidate_idempotent: bool = False
 
 
+class CatalogImportBatchCreateRequest(BaseModel):
+    expected_file_count: int = Field(ge=1, le=100)
+
+
+class CatalogImportBatchCategory(BaseModel):
+    id: str
+    name: str
+    sku_count: int = Field(ge=0)
+
+
+class CatalogImportBatch(BaseModel):
+    id: UUID
+    status: str
+    expected_file_count: int
+    file_count: int
+    remaining_sku_count: int
+    created_at: str
+    jobs: list[ImportJob] = Field(default_factory=list)
+    categories: list[CatalogImportBatchCategory] = Field(default_factory=list)
+
+
+class CatalogImportBatchRollbackRequest(BaseModel):
+    category_id: str | None = None
+
+
+class CatalogImportBatchRollbackResponse(BaseModel):
+    batch_id: UUID
+    status: str
+    deleted_sku_count: int = Field(ge=0)
+    archived_product_count: int = Field(ge=0)
+    removed_image_count: int = Field(ge=0)
+    deleted_storage_image_count: int = Field(ge=0)
+    preserved_external_image_count: int = Field(ge=0)
+    retained_shared_image_count: int = Field(ge=0)
+    storage_delete_failures: int = Field(ge=0)
+    remaining_sku_count: int = Field(ge=0)
+
+
 class ProductCandidateEvidence(BaseModel):
     source_file_id: str | None
     location: dict[str, object]
