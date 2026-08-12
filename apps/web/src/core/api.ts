@@ -78,6 +78,7 @@ import type {
   SupportConversationDetail,
   SupportConversationPage,
   SupportConversationStatus,
+  SupportHumanRequestSummary,
   SupportSettings,
   SupportTranslationPreview,
   SystemMonitoringSnapshot,
@@ -3764,6 +3765,21 @@ interface ApiSupportConversationSummary {
   unread: boolean;
   automation_state: SupportAutomationState;
   ai_processing: boolean;
+  human_assistance_state: "NONE" | "OFFERED" | "REQUESTED" | "RESOLVED";
+  human_assistance_requested_at?: string | null;
+}
+
+interface ApiSupportHumanRequestSummary {
+  pending_count: number;
+  items: Array<{
+    conversation_id: string;
+    reference_number: string;
+    visitor_name?: string | null;
+    visitor_email?: string | null;
+    locale: string;
+    message_preview: string;
+    requested_at: string;
+  }>;
 }
 
 interface ApiSupportCitation {
@@ -3847,6 +3863,8 @@ function mapSupportSummary(
     unread: row.unread,
     automationState: row.automation_state,
     aiProcessing: row.ai_processing,
+    humanAssistanceState: row.human_assistance_state || "NONE",
+    humanAssistanceRequestedAt: defined(row.human_assistance_requested_at),
   };
   if ("messages" in row) {
     const detail = row as ApiSupportConversationDetail;
@@ -3937,6 +3955,27 @@ export async function listSupportConversations(input: {
     page: row.page,
     pageSize: row.page_size,
     pages: row.pages,
+  };
+}
+
+export async function getSupportHumanRequests(
+  limit = 8,
+): Promise<SupportHumanRequestSummary> {
+  const row = await request<ApiSupportHumanRequestSummary>(
+    `/support/human-requests?limit=${encodeURIComponent(String(limit))}`,
+    { cache: "no-store" },
+  );
+  return {
+    pendingCount: row.pending_count,
+    items: row.items.map((item) => ({
+      conversationId: item.conversation_id,
+      referenceNumber: item.reference_number,
+      visitorName: defined(item.visitor_name),
+      visitorEmail: defined(item.visitor_email),
+      locale: item.locale,
+      messagePreview: item.message_preview,
+      requestedAt: item.requested_at,
+    })),
   };
 }
 

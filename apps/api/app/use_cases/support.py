@@ -53,6 +53,8 @@ from ..support_schemas import (
     SupportConversationStatusUpdate,
     SupportConversationSummaryResponse,
     SupportCustomActionResponse,
+    SupportHumanRequestResponse,
+    SupportHumanRequestSummaryResponse,
     SupportMerchantMessageWrite,
     SupportSettingsResponse,
     SupportSettingsUpdate,
@@ -65,6 +67,21 @@ DEFAULT_WELCOME_MESSAGE = "您好，请告诉我们您正在寻找什么商品�
 MAX_ACTION_IMAGE_BYTES = 5 * 1024 * 1024
 TRANSLATION_RETRY_DELAY = timedelta(minutes=2)
 
+HUMAN_REQUEST_CONFIRMATIONS = {
+    "zh": "已通知人工客服，请稍候。",
+    "en": "A human support agent has been notified. Please wait a moment.",
+    "es": "Se ha avisado a un agente de atención al cliente. Espera un momento.",
+    "pt": "Um agente de apoio ao cliente foi notificado. Aguarde um momento.",
+    "tr": "Bir müşteri temsilcisine bildirim gönderildi. Lütfen biraz bekleyin.",
+    "ar": "تم إشعار موظف خدمة العملاء. يرجى الانتظار قليلاً.",
+    "ja": "担当者に通知しました。しばらくお待ちください。",
+    "ko": "상담원에게 알림을 보냈습니다. 잠시만 기다려 주세요.",
+    "fr": "Un conseiller a été prévenu. Merci de patienter un instant.",
+    "de": "Ein Mitarbeiter wurde benachrichtigt. Bitte warten Sie einen Moment.",
+    "it": "Un operatore è stato avvisato. Attendi un momento.",
+    "ru": "Оператор поддержки уведомлён. Пожалуйста, немного подождите.",
+}
+
 
 def _require(permissions: frozenset[str], permission: str) -> None:
     if permission not in permissions:
@@ -73,6 +90,33 @@ def _require(permissions: frozenset[str], permission: str) -> None:
             f"Permission is required: {permission}",
             kind="forbidden",
         )
+
+
+def _human_assistance_state(row: StorefrontChatConversationRow) -> str:
+    if row.human_handoff_offered_at is None:
+        return "NONE"
+    if row.human_resolved_at is not None:
+        return "RESOLVED"
+    if row.human_requested_at is not None:
+        return "REQUESTED"
+    return "OFFERED"
+
+
+def _resolve_human_assistance(
+    row: StorefrontChatConversationRow,
+    *,
+    resolved_at: datetime,
+) -> None:
+    if (
+        row.human_handoff_offered_at is not None
+        and row.human_resolved_at is None
+    ):
+        row.human_resolved_at = resolved_at
+
+
+def _human_request_confirmation(language: str) -> str:
+    base = language.strip().replace("_", "-").split("-", 1)[0].casefold()
+    return HUMAN_REQUEST_CONFIRMATIONS.get(base) or HUMAN_REQUEST_CONFIRMATIONS["en"]
 
 
 def _profile(session: Session, *, tenant_id: UUID) -> TenantPublicProfileRow:
@@ -620,6 +664,8 @@ def _public_conversation_response(
             tenant_id=row.tenant_id,
             conversation_id=row.id,
         ),
+        human_assistance_state=_human_assistance_state(row),
+        human_assistance_requested_at=row.human_requested_at,
     )
 
 
@@ -757,6 +803,71 @@ def send_public_message(
     return _public_conversation_response(session, row)
 
 
+def request_public_human_assistance(
+    session: Session,
+    *,
+    slug: str,
+    token: str,
+) -> PublicChatConversationResponse:
+    authenticated = _public_conversation(session, slug=slug, token=token)
+    row = repository.get_conversation_for_update(
+        session,
+        tenant_id=authenticated.tenant_id,
+        conversation_id=authenticated.id,
+    )
+    assert row is not None
+    if row.status != "OPEN":
+        raise ApplicationError(
+            "SUPPORT_CONVERSATION_CLOSED",
+            "本次会话已经结束，请发起新的咨询。",
+            kind="conflict",
+        )
+    state = _human_assistance_state(row)
+    if state == "REQUESTED":
+        return _public_conversation_response(session, row)
+    if state != "OFFERED" or row.automation_state != "HUMAN_TAKEOVER":
+        raise ApplicationError(
+            "SUPPORT_HUMAN_ASSISTANCE_NOT_AVAILABLE",
+            "当前会话暂未进入人工协助流程。",
+            kind="conflict",
+        )
+    messages = repository.list_messages(
+        session,
+        tenant_id=row.tenant_id,
+        conversation_id=row.id,
+    )
+    language = next(
+        (
+            message.translation_source_locale
+            for message in reversed(messages)
+            if message.sender_type == "SYSTEM"
+            and message.translation_source_locale
+        ),
+        row.locale,
+    )
+    now = utcnow()
+    row.human_requested_at = now
+    row.human_resolved_at = None
+    row.human_request_reason = "VISITOR_CONFIRMED_AI_HANDOFF"
+    row.automation_state = "HUMAN_TAKEOVER"
+    row.automation_state_changed_at = now
+    row.last_message_at = now
+    session.add(
+        StorefrontChatMessageRow(
+            tenant_id=row.tenant_id,
+            conversation_id=row.id,
+            sender_type="SYSTEM",
+            body=_human_request_confirmation(str(language or row.locale)),
+            translation_source_locale=language or row.locale,
+            translation_target_locale=language or row.locale,
+            translation_status="NOT_REQUIRED",
+        )
+    )
+    session.commit()
+    session.refresh(row)
+    return _public_conversation_response(session, row)
+
+
 def _summary(
     row: StorefrontChatConversationRow,
     preview: str,
@@ -773,6 +884,39 @@ def _summary(
         unread=repository.has_unread_visitor_message(row),
         automation_state=row.automation_state,
         ai_processing=False,
+        human_assistance_state=_human_assistance_state(row),
+        human_assistance_requested_at=row.human_requested_at,
+    )
+
+
+def list_human_requests(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    limit: int,
+) -> SupportHumanRequestSummaryResponse:
+    _require(permissions, "support.view")
+    rows, total = repository.list_pending_human_requests(
+        session,
+        tenant_id=tenant_id,
+        limit=limit,
+    )
+    return SupportHumanRequestSummaryResponse(
+        pending_count=total,
+        items=[
+            SupportHumanRequestResponse(
+                conversation_id=row.id,
+                reference_number=row.reference_number,
+                visitor_name=row.visitor_name,
+                visitor_email=row.visitor_email,
+                locale=row.locale,
+                message_preview=preview[:240],
+                requested_at=row.human_requested_at,
+            )
+            for row, preview in rows
+            if row.human_requested_at is not None
+        ],
     )
 
 
@@ -902,6 +1046,7 @@ def send_merchant_message(
     now = utcnow()
     row.automation_state = "HUMAN_TAKEOVER"
     row.automation_state_changed_at = now
+    _resolve_human_assistance(row, resolved_at=now)
     from ..services.support_ai_orchestrator import cancel_queued_runs_for_conversation
 
     cancel_queued_runs_for_conversation(
@@ -1041,6 +1186,8 @@ def update_conversation_status(
             kind="not_found",
         )
     row.status = request.status
+    if request.status == "CLOSED":
+        _resolve_human_assistance(row, resolved_at=utcnow())
     session.commit()
     return get_conversation(
         session,
@@ -1085,7 +1232,9 @@ def update_conversation_automation(
         )
     if row.automation_state != "AI_ACTIVE":
         row.automation_state = "AI_ACTIVE"
-        row.automation_state_changed_at = utcnow()
+        now = utcnow()
+        row.automation_state_changed_at = now
+        _resolve_human_assistance(row, resolved_at=now)
     session.commit()
     return get_conversation(
         session,

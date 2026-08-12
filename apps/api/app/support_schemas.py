@@ -13,6 +13,7 @@ from .storefront_locales import StorefrontLocale, normalize_storefront_locale
 SupportConversationStatus = Literal["OPEN", "CLOSED"]
 SupportSenderType = Literal["VISITOR", "MERCHANT", "SYSTEM", "AI"]
 SupportAutomationState = Literal["AI_ACTIVE", "HUMAN_TAKEOVER"]
+SupportHumanAssistanceState = Literal["NONE", "OFFERED", "REQUESTED", "RESOLVED"]
 
 
 def _safe_image_url(value: str | None) -> str | None:
@@ -174,6 +175,8 @@ class PublicChatConversationResponse(BaseModel):
     access_token: str | None = None
     automation_state: SupportAutomationState = "AI_ACTIVE"
     ai_processing: bool = False
+    human_assistance_state: SupportHumanAssistanceState = "NONE"
+    human_assistance_requested_at: datetime | None = None
 
 
 class SupportConversationSummaryResponse(BaseModel):
@@ -188,6 +191,8 @@ class SupportConversationSummaryResponse(BaseModel):
     unread: bool
     automation_state: SupportAutomationState = "AI_ACTIVE"
     ai_processing: bool = False
+    human_assistance_state: SupportHumanAssistanceState = "NONE"
+    human_assistance_requested_at: datetime | None = None
 
 
 class SupportConversationDetailResponse(SupportConversationSummaryResponse):
@@ -200,6 +205,21 @@ class SupportConversationPageResponse(BaseModel):
     page: int
     page_size: int
     pages: int
+
+
+class SupportHumanRequestResponse(BaseModel):
+    conversation_id: UUID
+    reference_number: str
+    visitor_name: str | None
+    visitor_email: str | None
+    locale: str
+    message_preview: str
+    requested_at: datetime
+
+
+class SupportHumanRequestSummaryResponse(BaseModel):
+    pending_count: int = Field(ge=0)
+    items: list[SupportHumanRequestResponse]
 
 
 class SupportMerchantMessageWrite(BaseModel):

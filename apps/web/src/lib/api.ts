@@ -734,6 +734,15 @@ export const api = {
       headers: { "X-Support-Token": token },
     },
   ),
+  requestHumanSupport: (slug: string, token: string) =>
+    request<PublicSupportConversation>(
+      `/api/store/${encodeURIComponent(slug)}/support/conversations/current/human-assistance`,
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: { "X-Support-Token": token },
+      },
+    ),
   streamSupportConversation: async (
     slug: string,
     token: string,

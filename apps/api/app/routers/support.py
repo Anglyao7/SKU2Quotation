@@ -35,6 +35,7 @@ from ..support_schemas import (
     SupportConversationAutomationUpdate,
     SupportConversationPageResponse,
     SupportConversationStatusUpdate,
+    SupportHumanRequestSummaryResponse,
     SupportMerchantMessageWrite,
     SupportSettingsResponse,
     SupportSettingsUpdate,
@@ -263,6 +264,28 @@ def list_support_conversations(
             page_size=page_size,
             status=conversation_status,
             query=q,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/support/human-requests",
+    response_model=SupportHumanRequestSummaryResponse,
+)
+def list_support_human_requests(
+    response: Response,
+    limit: int = Query(default=8, ge=1, le=30),
+    session: Session = Depends(get_authenticated_session),
+) -> SupportHumanRequestSummaryResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.list_human_requests(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            limit=limit,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -542,5 +565,34 @@ def send_public_support_message(
                 conversation_id=result.id,
             )
         return result
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/store/{tenant_slug}/support/conversations/current/human-assistance",
+    response_model=PublicChatConversationResponse,
+)
+def request_public_human_assistance(
+    tenant_slug: str,
+    request: Request,
+    response: Response,
+    x_support_token: str = Header(..., max_length=500),
+    session: Session = Depends(get_session),
+) -> PublicChatConversationResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    enforce_rate_limit(
+        request,
+        scope="public-support-human-assistance",
+        limit=configured_limit("RATE_LIMIT_PUBLIC_SUPPORT_HUMAN_REQUESTS", 10),
+        window_seconds=60,
+        token=x_support_token,
+    )
+    try:
+        return use_cases.request_public_human_assistance(
+            session,
+            slug=tenant_slug,
+            token=x_support_token,
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
