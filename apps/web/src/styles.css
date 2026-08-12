@@ -1688,6 +1688,22 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
+.support-notification-error-dot {
+  width: 17px;
+  height: 17px;
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--page);
+  border-radius: 999px;
+  color: white;
+  background: #e5484d;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+}
 .support-notification-menu {
   width: min(380px, calc(100vw - 24px));
   max-height: min(520px, calc(100dvh - 90px));
@@ -1702,6 +1718,22 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 }
 .support-notification-menu-heading > span:first-child { display: inline-flex; align-items: center; gap: 8px; }
 .support-notification-menu-heading svg { width: 19px; height: 19px; color: var(--amber-10); }
+.support-notification-error {
+  margin: 7px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid color-mix(in srgb, #e5484d 30%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, #e5484d 8%, var(--surface));
+}
+.support-notification-error > svg { width: 21px; height: 21px; color: #c33b40; }
+.support-notification-error > span { min-width: 0; display: grid; gap: 2px; }
+.support-notification-error strong { font-size: 11px; }
+.support-notification-error small { color: var(--text-soft); font-size: 9px; line-height: 1.35; }
+.support-notification-error button { border: 0; color: var(--accent); background: transparent; font-size: 10px; font-weight: 800; cursor: pointer; }
 .support-notification-item {
   width: 100%;
   min-width: 0;

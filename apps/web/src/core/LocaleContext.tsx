@@ -2422,6 +2422,17 @@ const english: Record<string, string> = {
   "网站访客": "Website visitor",
   "待人工处理": "Needs human reply",
   "客户已请求人工": "Customer requested human support",
+  "人工接管": "Human takeover",
+  "AI 回答中": "AI is replying",
+  "AI 可接待": "AI available",
+  "恢复 AI": "Resume AI",
+  "恢复 AI 接待失败": "Could not resume AI support",
+  "AI 客服": "AI support",
+  "企业文件": "Company file",
+  "查看 {count} 条引用来源": "View {count} cited sources",
+  "人工客服提醒加载失败": "Could not load human support requests",
+  "无法获取最新人工请求，点击重试。":
+    "Could not retrieve the latest human requests. Select retry to try again.",
   "暂无消息": "No messages",
   "选择一条会话": "Select a conversation",
   "在左侧选择客户后即可查看消息并回复。 ":

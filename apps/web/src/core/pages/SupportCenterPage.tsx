@@ -67,10 +67,25 @@ export function SupportCenterPage() {
   const [translatedReply, setTranslatedReply] = useState("");
   const [replyTargetLocale, setReplyTargetLocale] = useState<StorefrontLocale>("en-US");
   const messagesRef = useRef<HTMLDivElement>(null);
+  const selectedIdRef = useRef("");
+  const detailRequestSequenceRef = useRef(0);
   const operatorLocale: StorefrontLocale = profile?.context.businessMode === "EXPORT"
     ? "en-US"
     : "zh-CN";
   const requestedConversationId = searchParams.get("conversation") || "";
+
+  const selectConversation = useCallback((conversationId: string) => {
+    if (selectedIdRef.current === conversationId) return;
+    selectedIdRef.current = conversationId;
+    detailRequestSequenceRef.current += 1;
+    setSelectedId(conversationId);
+    setDetail(undefined);
+    setDetailLoading(Boolean(conversationId));
+    setError("");
+    setReply("");
+    setTranslatedReply("");
+    setTranslationError("");
+  }, []);
 
   const loadList = useCallback(async (quiet = false) => {
     if (!quiet) setListLoading(true);
@@ -82,39 +97,44 @@ export function SupportCenterPage() {
       });
       setItems(page.items);
       setError("");
-      setSelectedId((current) => {
-        if (current && page.items.some((item) => item.id === current)) return current;
-        if (
-          requestedConversationId
+      const current = selectedIdRef.current;
+      const nextSelectedId = current && page.items.some((item) => item.id === current)
+        ? current
+        : requestedConversationId
           && page.items.some((item) => item.id === requestedConversationId)
-        ) return requestedConversationId;
-        return page.items[0]?.id || "";
-      });
+          ? requestedConversationId
+          : page.items[0]?.id || "";
+      selectConversation(nextSelectedId);
     } catch (caught) {
       if (!quiet) setError(caught instanceof Error ? caught.message : t("会话加载失败"));
     } finally {
       if (!quiet) setListLoading(false);
     }
-  }, [query, requestedConversationId, statusFilter, t]);
+  }, [query, requestedConversationId, selectConversation, statusFilter, t]);
 
   useEffect(() => {
     if (!requestedConversationId) return;
-    setSelectedId(requestedConversationId);
+    selectConversation(requestedConversationId);
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
       next.delete("conversation");
       return next;
     }, { replace: true });
-  }, [requestedConversationId, setSearchParams]);
+  }, [requestedConversationId, selectConversation, setSearchParams]);
 
   const loadDetail = useCallback(async (conversationId: string, quiet = false) => {
     if (!conversationId) {
       setDetail(undefined);
       return;
     }
+    const requestSequence = ++detailRequestSequenceRef.current;
     if (!quiet) setDetailLoading(true);
     try {
       const next = await getSupportConversation(conversationId);
+      if (
+        selectedIdRef.current !== conversationId
+        || detailRequestSequenceRef.current !== requestSequence
+      ) return;
       setDetail(next);
       setItems((current) => current.map((item) => (
         item.id === conversationId ? {
@@ -127,9 +147,16 @@ export function SupportCenterPage() {
       )));
       setError("");
     } catch (caught) {
-      if (!quiet) setError(caught instanceof Error ? caught.message : t("会话详情加载失败"));
+      if (
+        !quiet
+        && selectedIdRef.current === conversationId
+        && detailRequestSequenceRef.current === requestSequence
+      ) setError(caught instanceof Error ? caught.message : t("会话详情加载失败"));
     } finally {
-      if (!quiet) setDetailLoading(false);
+      if (
+        selectedIdRef.current === conversationId
+        && detailRequestSequenceRef.current === requestSequence
+      ) setDetailLoading(false);
     }
   }, [t]);
 
@@ -139,7 +166,11 @@ export function SupportCenterPage() {
   }, [loadList]);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) {
+      setDetail(undefined);
+      setDetailLoading(false);
+      return;
+    }
     void loadDetail(selectedId);
   }, [loadDetail, selectedId]);
 
@@ -173,23 +204,34 @@ export function SupportCenterPage() {
     const originalMessage = reply.trim();
     const translatedMessage = translatedReply.trim();
     const message = translatedMessage || originalMessage;
-    if (!detail || !message || replyBusy) return;
+    if (
+      !detail
+      || detail.id !== selectedIdRef.current
+      || detailLoading
+      || !message
+      || replyBusy
+    ) return;
+    const conversationId = detail.id;
     setReplyBusy(true);
     setError("");
     try {
-      setDetail(await replySupportConversation(detail.id, {
+      const next = await replySupportConversation(conversationId, {
         message,
         draftMessage: translatedMessage ? originalMessage : undefined,
         sourceLocale: translatedMessage ? operatorLocale : undefined,
         targetLocale: translatedMessage ? replyTargetLocale : undefined,
-      }));
+      });
+      if (selectedIdRef.current !== conversationId) return;
+      setDetail(next);
       setReply("");
       setTranslatedReply("");
       setTranslationError("");
       await loadList(true);
       window.dispatchEvent(new Event("atc:support-human-requests-changed"));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("回复发送失败"));
+      if (selectedIdRef.current === conversationId) {
+        setError(caught instanceof Error ? caught.message : t("回复发送失败"));
+      }
     } finally {
       setReplyBusy(false);
     }
@@ -197,19 +239,30 @@ export function SupportCenterPage() {
 
   const translateReply = async () => {
     const message = reply.trim();
-    if (!detail || !message || translationBusy) return;
+    if (
+      !detail
+      || detail.id !== selectedIdRef.current
+      || detailLoading
+      || !message
+      || translationBusy
+    ) return;
+    const conversationId = detail.id;
     setTranslationBusy(true);
     setTranslationError("");
     try {
       const preview = await previewSupportReplyTranslation(
-        detail.id,
+        conversationId,
         message,
         replyTargetLocale,
       );
-      setTranslatedReply(preview.translatedMessage);
+      if (selectedIdRef.current === conversationId) {
+        setTranslatedReply(preview.translatedMessage);
+      }
     } catch (caught) {
-      setTranslatedReply("");
-      setTranslationError(caught instanceof Error ? caught.message : t("回复翻译失败"));
+      if (selectedIdRef.current === conversationId) {
+        setTranslatedReply("");
+        setTranslationError(caught instanceof Error ? caught.message : t("回复翻译失败"));
+      }
     } finally {
       setTranslationBusy(false);
     }
@@ -222,14 +275,24 @@ export function SupportCenterPage() {
   };
 
   const changeStatus = async (status: SupportConversationStatus) => {
-    if (!detail || replyBusy) return;
+    if (
+      !detail
+      || detail.id !== selectedIdRef.current
+      || detailLoading
+      || replyBusy
+    ) return;
+    const conversationId = detail.id;
     setReplyBusy(true);
     try {
-      setDetail(await updateSupportConversationStatus(detail.id, status));
+      const next = await updateSupportConversationStatus(conversationId, status);
+      if (selectedIdRef.current !== conversationId) return;
+      setDetail(next);
       await loadList(true);
       window.dispatchEvent(new Event("atc:support-human-requests-changed"));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("会话状态更新失败"));
+      if (selectedIdRef.current === conversationId) {
+        setError(caught instanceof Error ? caught.message : t("会话状态更新失败"));
+      }
     } finally {
       setReplyBusy(false);
     }
@@ -238,14 +301,18 @@ export function SupportCenterPage() {
   const resumeAutomation = async () => {
     if (
       !detail
+      || detail.id !== selectedIdRef.current
+      || detailLoading
       || automationBusy
       || detail.automationState !== "HUMAN_TAKEOVER"
       || !isPlatformAdmin
     ) return;
+    const conversationId = detail.id;
     setAutomationBusy(true);
     setError("");
     try {
-      const next = await resumeSupportConversationAI(detail.id);
+      const next = await resumeSupportConversationAI(conversationId);
+      if (selectedIdRef.current !== conversationId) return;
       setDetail(next);
       setItems((current) => current.map((item) => item.id === next.id ? {
         ...item,
@@ -254,7 +321,9 @@ export function SupportCenterPage() {
       } : item));
       window.dispatchEvent(new Event("atc:support-human-requests-changed"));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("恢复 AI 接待失败"));
+      if (selectedIdRef.current === conversationId) {
+        setError(caught instanceof Error ? caught.message : t("恢复 AI 接待失败"));
+      }
     } finally {
       setAutomationBusy(false);
     }
@@ -294,7 +363,7 @@ export function SupportCenterPage() {
               {listLoading ? <CoreLoading label={t("正在加载会话")} /> : null}
               {!listLoading && !items.length ? <CoreEmpty title={t("还没有客户咨询")} description={t("客户从商品前台发送消息后，会话会出现在这里。 ")} /> : null}
               {!listLoading && items.map((item) => (
-                <button type="button" className={`${item.id === selectedId ? "is-selected" : ""}${item.unread ? " is-unread" : ""}`} onClick={() => setSelectedId(item.id)} key={item.id}>
+                <button type="button" className={`${item.id === selectedId ? "is-selected" : ""}${item.unread ? " is-unread" : ""}`} onClick={() => selectConversation(item.id)} key={item.id}>
                   <span className="support-contact-avatar"><UserCircle weight="duotone" /></span>
                   <span className="support-inbox-copy">
                     <strong>{item.visitorName || t("网站访客")}</strong>
@@ -319,7 +388,7 @@ export function SupportCenterPage() {
             {error ? <CoreError message={error} onRetry={() => selectedId ? void loadDetail(selectedId) : void loadList()} /> : null}
             {!error && !selectedId ? <CoreEmpty title={t("选择一条会话")} description={t("在左侧选择客户后即可查看消息并回复。 ")} /> : null}
             {!error && detailLoading && !detail ? <CoreLoading label={t("正在加载消息")} /> : null}
-            {!error && detail ? (
+            {!error && detail && detail.id === selectedId ? (
               <>
                 <header className="support-thread-header">
                   <div>
@@ -334,14 +403,14 @@ export function SupportCenterPage() {
                       <Badge color="red">{t("客户已请求人工")}</Badge>
                     ) : null}
                     {detail.automationState === "HUMAN_TAKEOVER" && isPlatformAdmin ? (
-                      <Button size="1" variant="soft" color="blue" onClick={() => void resumeAutomation()} disabled={automationBusy}>
+                      <Button size="1" variant="soft" color="blue" onClick={() => void resumeAutomation()} disabled={automationBusy || detailLoading}>
                         <Robot />
                         {t("恢复 AI")}
                       </Button>
                     ) : null}
                     <Badge color={detail.status === "OPEN" ? "green" : "gray"}>{detail.status === "OPEN" ? t("进行中") : t("已结束")}</Badge>
                     {canReply ? (
-                      <Button size="1" variant="soft" color={detail.status === "OPEN" ? "gray" : "green"} onClick={() => void changeStatus(detail.status === "OPEN" ? "CLOSED" : "OPEN")} disabled={replyBusy}>
+                      <Button size="1" variant="soft" color={detail.status === "OPEN" ? "gray" : "green"} onClick={() => void changeStatus(detail.status === "OPEN" ? "CLOSED" : "OPEN")} disabled={replyBusy || detailLoading}>
                         {detail.status === "OPEN" ? <XCircle /> : <CheckCircle />}
                         {detail.status === "OPEN" ? t("结束会话") : t("重新打开")}
                       </Button>
@@ -407,7 +476,7 @@ export function SupportCenterPage() {
                   <div className="support-composer-fields">
                     <label>
                       <span>{t("回复原文")} · {storefrontLanguage(operatorLocale).flag} {storefrontLanguage(operatorLocale).label}</span>
-                      <TextArea value={reply} onChange={(event) => updateReply(event.target.value)} maxLength={4_000} disabled={!canReply || detail.status === "CLOSED"} placeholder={detail.status === "CLOSED" ? t("重新打开会话后才能回复") : t("输入回复内容，可直接发送或先翻译")} onKeyDown={(event) => {
+                      <TextArea value={reply} onChange={(event) => updateReply(event.target.value)} maxLength={4_000} disabled={!canReply || detail.status === "CLOSED" || detailLoading} placeholder={detail.status === "CLOSED" ? t("重新打开会话后才能回复") : t("输入回复内容，可直接发送或先翻译")} onKeyDown={(event) => {
                         if (event.key === "Enter" && !event.shiftKey && (translatedReply || replyTargetLocale === operatorLocale)) {
                           event.preventDefault();
                           void sendReply();
@@ -422,7 +491,7 @@ export function SupportCenterPage() {
                         <select
                           value={replyTargetLocale}
                           aria-label={t("目标语言")}
-                          disabled={!canReply || detail.status === "CLOSED" || translationBusy}
+                          disabled={!canReply || detail.status === "CLOSED" || detailLoading || translationBusy}
                           onChange={(event) => {
                             setReplyTargetLocale(event.target.value as StorefrontLocale);
                             setTranslatedReply("");
@@ -434,7 +503,7 @@ export function SupportCenterPage() {
                           ))}
                         </select>
                       </label>
-                      <Button type="button" variant="soft" color="gray" onClick={() => void translateReply()} disabled={!canReply || !reply.trim() || detail.status === "CLOSED" || translationBusy}>
+                      <Button type="button" variant="soft" color="gray" onClick={() => void translateReply()} disabled={!canReply || !reply.trim() || detail.status === "CLOSED" || detailLoading || translationBusy}>
                         <Translate />{translationBusy ? t("翻译中") : t("翻译回复")}
                       </Button>
                     </div>
@@ -443,7 +512,7 @@ export function SupportCenterPage() {
                     {translatedReply ? (
                       <label className="support-translated-preview">
                         <span>{t("发送前译文，可继续编辑")} · {storefrontLanguage(replyTargetLocale).flag} {storefrontLanguage(replyTargetLocale).label}</span>
-                        <TextArea value={translatedReply} onChange={(event) => setTranslatedReply(event.target.value)} maxLength={4_000} disabled={!canReply || detail.status === "CLOSED"} dir={storefrontLanguage(replyTargetLocale).direction} />
+                        <TextArea value={translatedReply} onChange={(event) => setTranslatedReply(event.target.value)} maxLength={4_000} disabled={!canReply || detail.status === "CLOSED" || detailLoading} dir={storefrontLanguage(replyTargetLocale).direction} />
                       </label>
                     ) : (
                       <small className="support-translation-hint">
@@ -457,7 +526,7 @@ export function SupportCenterPage() {
                     {translatedReply ? (
                       <button type="button" onClick={() => setTranslatedReply("")}>{t("取消译文")}</button>
                     ) : null}
-                    <Button onClick={() => void sendReply()} disabled={!canReply || !(translatedReply.trim() || reply.trim()) || replyBusy || detail.status === "CLOSED"}>
+                    <Button onClick={() => void sendReply()} disabled={!canReply || !(translatedReply.trim() || reply.trim()) || replyBusy || detailLoading || detail.status === "CLOSED"}>
                       <PaperPlaneTilt weight="fill" />{replyBusy ? t("发送中") : translatedReply ? t("发送译文") : t("发送回复")}
                     </Button>
                   </div>

@@ -4,6 +4,7 @@ import {
   Bell,
   CheckCircle,
   Headset,
+  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,15 +15,16 @@ import type {
   SupportHumanRequest,
   SupportHumanRequestSummary,
 } from "../types";
+import {
+  humanRequestKey,
+  mergeHumanRequestSnapshot,
+  type HumanRequestTracker,
+} from "../supportNotificationState";
 
 const EMPTY_SUMMARY: SupportHumanRequestSummary = {
   pendingCount: 0,
   items: [],
 };
-
-function requestKey(request: SupportHumanRequest) {
-  return `${request.conversationId}:${request.requestedAt}`;
-}
 
 export function SupportNotificationBell({
   tenantId,
@@ -35,34 +37,53 @@ export function SupportNotificationBell({
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
   const [toastRequest, setToastRequest] = useState<SupportHumanRequest>();
   const [toastAdditionalCount, setToastAdditionalCount] = useState(0);
-  const knownRequestsRef = useRef<Set<string> | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const requestTrackerRef = useRef<HumanRequestTracker | null>(null);
+  const refreshSequenceRef = useRef(0);
+  const appliedSequenceRef = useRef(0);
   const activeTenantRef = useRef(tenantId);
 
   const refresh = useCallback(async (notify = true) => {
     if (!enabled || !tenantId) return;
+    const sequence = ++refreshSequenceRef.current;
     try {
-      const next = await getSupportHumanRequests(10);
-      if (activeTenantRef.current !== tenantId) return;
-      const nextKeys = new Set(next.items.map(requestKey));
-      const known = knownRequestsRef.current;
-      if (notify && known !== null) {
-        const arrivals = next.items.filter((item) => !known.has(requestKey(item)));
-        if (arrivals.length) {
-          setToastRequest(arrivals[0]);
-          setToastAdditionalCount(Math.max(0, arrivals.length - 1));
-        }
+      const next = await getSupportHumanRequests(30);
+      if (
+        activeTenantRef.current !== tenantId
+        || sequence < appliedSequenceRef.current
+      ) return;
+      appliedSequenceRef.current = sequence;
+      const merged = mergeHumanRequestSnapshot(
+        requestTrackerRef.current,
+        next.items,
+        notify,
+      );
+      requestTrackerRef.current = merged.tracker;
+      if (merged.arrivals.length) {
+        setToastRequest(merged.arrivals[0]);
+        setToastAdditionalCount(Math.max(0, merged.arrivals.length - 1));
       }
-      knownRequestsRef.current = nextKeys;
-      setSummary(next);
-    } catch {
-      // The bell must never interrupt other console work. The next poll retries.
+      setSummary({ ...next, items: next.items.slice(0, 10) });
+      setLoadError("");
+    } catch (caught) {
+      if (
+        activeTenantRef.current !== tenantId
+        || sequence < appliedSequenceRef.current
+      ) return;
+      appliedSequenceRef.current = sequence;
+      setLoadError(
+        caught instanceof Error ? caught.message : t("人工客服提醒加载失败"),
+      );
     }
-  }, [enabled, tenantId]);
+  }, [enabled, t, tenantId]);
 
   useEffect(() => {
     activeTenantRef.current = tenantId;
-    knownRequestsRef.current = null;
+    refreshSequenceRef.current += 1;
+    appliedSequenceRef.current = refreshSequenceRef.current;
+    requestTrackerRef.current = null;
     setSummary(EMPTY_SUMMARY);
+    setLoadError("");
     setToastRequest(undefined);
     setToastAdditionalCount(0);
     if (!enabled || !tenantId) return;
@@ -70,7 +91,7 @@ export function SupportNotificationBell({
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") void refresh(true);
     }, 4_000);
-    const refreshQuietly = () => void refresh(false);
+    const refreshAfterChange = () => void refresh(true);
     const refreshOnVisible = () => {
       if (document.visibilityState === "visible") void refresh(true);
     };
@@ -78,7 +99,7 @@ export function SupportNotificationBell({
     document.addEventListener("visibilitychange", refreshOnVisible);
     window.addEventListener(
       "atc:support-human-requests-changed",
-      refreshQuietly,
+      refreshAfterChange,
     );
     return () => {
       window.clearInterval(interval);
@@ -86,7 +107,7 @@ export function SupportNotificationBell({
       document.removeEventListener("visibilitychange", refreshOnVisible);
       window.removeEventListener(
         "atc:support-human-requests-changed",
-        refreshQuietly,
+        refreshAfterChange,
       );
     };
   }, [enabled, refresh, tenantId]);
@@ -111,14 +132,19 @@ export function SupportNotificationBell({
             className="support-notification-trigger"
             variant="ghost"
             color="gray"
-            aria-label={t("人工客服提醒，{count} 条待处理", {
-              count: summary.pendingCount,
-            })}
-            title={t("人工客服提醒")}
+            aria-label={loadError
+              ? t("人工客服提醒加载失败")
+              : t("人工客服提醒，{count} 条待处理", {
+                  count: summary.pendingCount,
+                })}
+            title={loadError ? t("人工客服提醒加载失败") : t("人工客服提醒")}
           >
             <Bell size={19} weight={summary.pendingCount ? "fill" : "regular"} />
             {summary.pendingCount ? (
               <span className="support-notification-count">{badge}</span>
+            ) : null}
+            {loadError && !summary.pendingCount ? (
+              <span className="support-notification-error-dot">!</span>
             ) : null}
           </Button>
         </DropdownMenu.Trigger>
@@ -139,8 +165,20 @@ export function SupportNotificationBell({
             </span>
           </DropdownMenu.Label>
           <DropdownMenu.Separator />
+          {loadError ? (
+            <div className="support-notification-error" role="alert">
+              <WarningCircle weight="duotone" />
+              <span>
+                <strong>{t("人工客服提醒加载失败")}</strong>
+                <small>{t("无法获取最新人工请求，点击重试。")}</small>
+              </span>
+              <button type="button" onClick={() => void refresh(true)}>
+                {t("重试")}
+              </button>
+            </div>
+          ) : null}
           {summary.items.length ? summary.items.map((item) => (
-            <DropdownMenu.Item asChild key={requestKey(item)}>
+            <DropdownMenu.Item asChild key={humanRequestKey(item)}>
               <Link
                 className="support-notification-item"
                 to={`/console/support?conversation=${encodeURIComponent(item.conversationId)}`}
@@ -159,13 +197,13 @@ export function SupportNotificationBell({
                 <ArrowRight aria-hidden="true" />
               </Link>
             </DropdownMenu.Item>
-          )) : (
+          )) : !loadError ? (
             <div className="support-notification-empty">
               <CheckCircle weight="duotone" />
               <strong>{t("暂无待处理的人工请求")}</strong>
               <small>{t("新的人工请求会显示在这里")}</small>
             </div>
-          )}
+          ) : null}
           <DropdownMenu.Separator />
           <DropdownMenu.Item asChild>
             <Link className="support-notification-all" to="/console/support">

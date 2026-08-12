@@ -8,6 +8,7 @@
     "test:auth": "node scripts/test-auth-password.mjs",
     "test:account": "node scripts/test-account-password.mjs",
     "test:import": "node scripts/test-import-queue.mjs",
+    "test:support": "node scripts/test-support-ui.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
