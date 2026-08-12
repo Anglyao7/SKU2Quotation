@@ -134,6 +134,21 @@ DEFAULT_HANDOFF_MESSAGES = {
     "ru": "Этот вопрос требует уточнения. Я передал его сотруднику поддержки.",
 }
 
+DEFAULT_HANDOFF_OFFER_MESSAGES = {
+    "zh-CN": "这个问题需要客服同事进一步确认。如需人工协助，请点击下方“联系人工客服”。",
+    "en-US": "This question needs confirmation from our team. If you would like human assistance, select “Contact human support” below.",
+    "es": "Esta consulta necesita confirmación de nuestro equipo. Si deseas ayuda humana, selecciona «Contactar con atención al cliente» abajo.",
+    "pt": "Esta questão precisa de confirmação da nossa equipa. Se pretender apoio humano, selecione “Contactar apoio humano” abaixo.",
+    "tr": "Bu soru ekibimizin onayını gerektiriyor. İnsan desteği istiyorsanız aşağıdaki “Müşteri temsilcisine bağlan” seçeneğini kullanın.",
+    "ar": "يحتاج هذا السؤال إلى تأكيد من فريقنا. إذا رغبت في مساعدة بشرية، فاختر «التواصل مع خدمة العملاء» أدناه.",
+    "ja": "このご質問は担当者の確認が必要です。有人対応をご希望の場合は、下の「担当者に連絡」を選択してください。",
+    "ko": "이 문의는 담당자의 확인이 필요합니다. 상담원 도움이 필요하면 아래의 ‘상담원 연결’을 선택해 주세요.",
+    "fr": "Cette question nécessite une vérification de notre équipe. Pour obtenir une aide humaine, sélectionnez « Contacter un conseiller » ci-dessous.",
+    "de": "Diese Frage muss von unserem Team geprüft werden. Wenn Sie menschliche Hilfe wünschen, wählen Sie unten „Mitarbeiter kontaktieren“.",
+    "it": "Questa domanda richiede una verifica del nostro team. Se desideri assistenza umana, seleziona “Contatta un operatore” qui sotto.",
+    "ru": "Этот вопрос требует уточнения нашей команды. Если нужна помощь оператора, выберите ниже «Связаться с поддержкой».",
+}
+
 RESPONSE_ACTIONS = {"ANSWER", "CLARIFY", "NO_MATCH", "HANDOFF"}
 GROUNDING_MODES = {"EVIDENCE", "GENERAL_GUIDANCE"}
 INTERACTION_GOALS = {"QUESTION_ANSWERING", "PRODUCT_RECOMMENDATION"}
@@ -1526,17 +1541,28 @@ def _recommendation_output_can_be_repaired(
     )
 
 
-def _handoff_message(settings: SupportAISettingsRow, language: str) -> str:
+def _localized_message(messages: dict[str, str], language: str) -> str:
+    if messages.get(language):
+        return messages[language]
+    base = language.split("-", 1)[0]
+    for key, value in messages.items():
+        if key.split("-", 1)[0] == base:
+            return value
+    return messages["en-US"]
+
+
+def _handoff_message(
+    settings: SupportAISettingsRow,
+    language: str,
+    *,
+    request_immediately: bool,
+) -> str:
+    if not request_immediately:
+        return _localized_message(DEFAULT_HANDOFF_OFFER_MESSAGES, language)
     configured = settings.handoff_messages or {}
     if configured.get(language):
         return str(configured[language])[:1000]
-    if DEFAULT_HANDOFF_MESSAGES.get(language):
-        return DEFAULT_HANDOFF_MESSAGES[language]
-    base = language.split("-", 1)[0]
-    for key, value in DEFAULT_HANDOFF_MESSAGES.items():
-        if key.split("-", 1)[0] == base:
-            return value
-    return DEFAULT_HANDOFF_MESSAGES["en-US"]
+    return _localized_message(DEFAULT_HANDOFF_MESSAGES, language)
 
 
 def _conversation_is_still_ai_owned(
@@ -1608,6 +1634,8 @@ def _publish_handoff(
     run: SupportAIRunRow,
     settings: SupportAISettingsRow,
     language: str,
+    request_immediately: bool = False,
+    request_reason: str | None = None,
 ) -> None:
     if run.conversation_id is None or not _conversation_is_still_ai_owned(session, run=run):
         return
@@ -1623,7 +1651,11 @@ def _publish_handoff(
         tenant_id=run.tenant_id,
         conversation_id=conversation.id,
         sender_type="SYSTEM",
-        body=_handoff_message(settings, language),
+        body=_handoff_message(
+            settings,
+            language,
+            request_immediately=request_immediately,
+        ),
         translation_source_locale=language,
         translation_target_locale=language,
         translation_status="NOT_REQUIRED",
@@ -1633,6 +1665,12 @@ def _publish_handoff(
     run.output_message_id = message.id
     conversation.automation_state = "HUMAN_TAKEOVER"
     conversation.automation_state_changed_at = now
+    conversation.human_handoff_offered_at = now
+    conversation.human_requested_at = now if request_immediately else None
+    conversation.human_resolved_at = None
+    conversation.human_request_reason = (
+        request_reason if request_immediately else "AI_HANDOFF_OFFERED"
+    )
     conversation.last_message_at = now
 
 
@@ -2431,6 +2469,8 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
                 run=run,
                 settings=settings,
                 language=detected,
+                request_immediately=True,
+                request_reason="CUSTOMER_REQUESTED_HUMAN",
             )
         if task is not None:
             task.status = "NEEDS_REVIEW"
@@ -2660,6 +2700,10 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
                 run=run,
                 settings=settings,
                 language=model_language,
+                request_immediately=(
+                    handoff_reason == "CUSTOMER_REQUESTED_HUMAN"
+                ),
+                request_reason=handoff_reason,
             )
         run.completed_at = utcnow()
         if task is not None:

@@ -2392,6 +2392,15 @@ const english: Record<string, string> = {
     "Could not change the password. Please try again.",
   "客户沟通": "Customer communication",
   "客服管理": "Customer support",
+  "人工客服提醒": "Human support requests",
+  "人工客服提醒，{count} 条待处理": "Human support requests, {count} pending",
+  "暂无待处理的人工请求": "No pending human requests",
+  "新的人工请求会显示在这里": "New human requests will appear here",
+  "客户请求人工客服介入": "The customer requested human support",
+  "进入客服管理": "Open customer support",
+  "新的人工客服请求": "New human support request",
+  "另有 {count} 条新请求": "{count} more new requests",
+  "关闭提醒": "Dismiss notification",
   "查看商品前台的客户咨询，并在一个工作区内处理回复与会话状态。":
     "Review storefront inquiries and handle replies and conversation status in one workspace.",
   "个人中心": "Personal center",
@@ -2411,6 +2420,8 @@ const english: Record<string, string> = {
   "客户从商品前台发送消息后，会话会出现在这里。 ":
     "Conversations appear here after visitors send a storefront message.",
   "网站访客": "Website visitor",
+  "待人工处理": "Needs human reply",
+  "客户已请求人工": "Customer requested human support",
   "暂无消息": "No messages",
   "选择一条会话": "Select a conversation",
   "在左侧选择客户后即可查看消息并回复。 ":

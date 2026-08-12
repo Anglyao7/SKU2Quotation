@@ -11,6 +11,7 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useCoreAuth } from "../AuthContext";
 import {
   getSupportConversation,
@@ -47,6 +48,7 @@ function dateTime(value: string, locale: string) {
 export function SupportCenterPage() {
   const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
+  const [searchParams, setSearchParams] = useSearchParams();
   const canReply = hasPermission("support.reply");
   const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const [items, setItems] = useState<SupportConversationSummary[]>([]);
@@ -68,6 +70,7 @@ export function SupportCenterPage() {
   const operatorLocale: StorefrontLocale = profile?.context.businessMode === "EXPORT"
     ? "en-US"
     : "zh-CN";
+  const requestedConversationId = searchParams.get("conversation") || "";
 
   const loadList = useCallback(async (quiet = false) => {
     if (!quiet) setListLoading(true);
@@ -81,6 +84,10 @@ export function SupportCenterPage() {
       setError("");
       setSelectedId((current) => {
         if (current && page.items.some((item) => item.id === current)) return current;
+        if (
+          requestedConversationId
+          && page.items.some((item) => item.id === requestedConversationId)
+        ) return requestedConversationId;
         return page.items[0]?.id || "";
       });
     } catch (caught) {
@@ -88,7 +95,17 @@ export function SupportCenterPage() {
     } finally {
       if (!quiet) setListLoading(false);
     }
-  }, [query, statusFilter, t]);
+  }, [query, requestedConversationId, statusFilter, t]);
+
+  useEffect(() => {
+    if (!requestedConversationId) return;
+    setSelectedId(requestedConversationId);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("conversation");
+      return next;
+    }, { replace: true });
+  }, [requestedConversationId, setSearchParams]);
 
   const loadDetail = useCallback(async (conversationId: string, quiet = false) => {
     if (!conversationId) {
@@ -170,6 +187,7 @@ export function SupportCenterPage() {
       setTranslatedReply("");
       setTranslationError("");
       await loadList(true);
+      window.dispatchEvent(new Event("atc:support-human-requests-changed"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("回复发送失败"));
     } finally {
@@ -209,6 +227,7 @@ export function SupportCenterPage() {
     try {
       setDetail(await updateSupportConversationStatus(detail.id, status));
       await loadList(true);
+      window.dispatchEvent(new Event("atc:support-human-requests-changed"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("会话状态更新失败"));
     } finally {
@@ -233,6 +252,7 @@ export function SupportCenterPage() {
         automationState: next.automationState,
         aiProcessing: next.aiProcessing,
       } : item));
+      window.dispatchEvent(new Event("atc:support-human-requests-changed"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("恢复 AI 接待失败"));
     } finally {
@@ -285,6 +305,9 @@ export function SupportCenterPage() {
                     <time>{dateTime(item.lastMessageAt, locale)}</time>
                     {item.unread ? <i /> : null}
                     {item.aiProcessing ? <Badge color="blue">AI</Badge> : null}
+                    {item.humanAssistanceState === "REQUESTED" ? (
+                      <Badge color="amber">{t("待人工处理")}</Badge>
+                    ) : null}
                     {item.status === "CLOSED" ? <Badge color="gray">{t("已结束")}</Badge> : null}
                   </span>
                 </button>
@@ -307,6 +330,9 @@ export function SupportCenterPage() {
                     <Badge color={detail.automationState === "AI_ACTIVE" ? "blue" : "amber"}>
                       {detail.aiProcessing ? t("AI 回答中") : detail.automationState === "AI_ACTIVE" ? t("AI 可接待") : t("人工接管")}
                     </Badge>
+                    {detail.humanAssistanceState === "REQUESTED" ? (
+                      <Badge color="red">{t("客户已请求人工")}</Badge>
+                    ) : null}
                     {detail.automationState === "HUMAN_TAKEOVER" && isPlatformAdmin ? (
                       <Button size="1" variant="soft" color="blue" onClick={() => void resumeAutomation()} disabled={automationBusy}>
                         <Robot />

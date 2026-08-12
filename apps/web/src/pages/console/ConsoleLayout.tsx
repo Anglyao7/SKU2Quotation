@@ -34,6 +34,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Brand } from "../../components/Brand";
 import { ThemeToggle } from "../../components/ThemeToggle";
+import { SupportNotificationBell } from "../../core/components/SupportNotificationBell";
 import { useCoreAuth } from "../../core/AuthContext";
 import { updateMerchantSettings } from "../../core/api";
 import { preloadConsoleRoute } from "../../core/routePreload";
@@ -361,6 +362,10 @@ export function ConsoleLayout() {
         <div className="mobile-brand"><Brand compact /></div>
         <div className="tenant-context"><div><Text size="1" color="gray" as="div">{t("当前工作区")}</Text>{memberships.length > 1 ? <Select.Root value={activeMembershipId} disabled={status === "restoring"} onValueChange={(value) => void selectTenant(value)}><Select.Trigger className="tenant-select" placeholder={t("选择租户")} /><Select.Content>{memberships.filter((membership) => membership.status.toUpperCase() === "ACTIVE").map((membership) => <Select.Item value={membership.id} key={membership.id}>{membership.tenantName}</Select.Item>)}</Select.Content></Select.Root> : <Text size="2" weight="medium">{profile?.context.tenantName ?? t("当前租户")}</Text>}{tenantError ? <Text size="1" color="red">{tenantError}</Text> : null}</div></div>
         <div className="topbar-user">
+          <SupportNotificationBell
+            tenantId={activeTenantId}
+            enabled={hasPermission("support.view")}
+          />
           <Button
             className={`business-mode-trigger ${businessMode === "EXPORT" ? "export" : ""}`}
             variant="soft"

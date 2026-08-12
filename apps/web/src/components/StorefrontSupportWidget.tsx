@@ -1,6 +1,8 @@
 import {
   ArrowRight,
   ChatCenteredDots,
+  CheckCircle,
+  Headset,
   ImageSquare,
   PaperPlaneTilt,
   Robot,
@@ -146,6 +148,7 @@ export function StorefrontSupportWidget({
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [humanRequestBusy, setHumanRequestBusy] = useState(false);
   const [error, setError] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -359,6 +362,25 @@ export function StorefrontSupportWidget({
     }
   };
 
+  const requestHumanAssistance = async () => {
+    if (
+      !token
+      || humanRequestBusy
+      || conversation?.human_assistance_state !== "OFFERED"
+    ) return;
+    setHumanRequestBusy(true);
+    setError("");
+    try {
+      setConversation(await api.requestHumanSupport(tenantSlug, token));
+    } catch (caught) {
+      setError(caught instanceof Error
+        ? caught.message
+        : t("暂时无法联系人工客服，请稍后重试。"));
+    } finally {
+      setHumanRequestBusy(false);
+    }
+  };
+
   const startNewConversation = () => {
     saveToken(tenantSlug, "");
     setToken("");
@@ -390,8 +412,12 @@ export function StorefrontSupportWidget({
             <strong id="storefront-support-title">{widget.title && widget.title !== "AI 智能客服" ? widget.title : t("AI 智能客服")}</strong>
             <small>
               {widget.ai_enabled
-                ? conversation?.automation_state === "HUMAN_TAKEOVER"
-                  ? t("人工客服已接管本次会话")
+                ? conversation?.human_assistance_state === "REQUESTED"
+                  ? t("已通知人工客服，请稍候")
+                  : conversation?.human_assistance_state === "OFFERED"
+                    ? t("需要人工协助")
+                    : conversation?.automation_state === "HUMAN_TAKEOVER"
+                      ? t("人工客服已接管本次会话")
                   : t("AI 基于已批准资料回答 · 必要时转人工")
                 : t("当前由商家人工回复")}
             </small>
@@ -523,6 +549,45 @@ export function StorefrontSupportWidget({
               <div className="support-message-loading"><i /><i /><i /></div>
               <small>{t("正在查找可信资料并生成回答…")}</small>
             </div>
+          ) : null}
+          {conversation?.status === "OPEN"
+          && ["OFFERED", "REQUESTED"].includes(
+            conversation.human_assistance_state || "NONE",
+          ) ? (
+            <section
+              className={`support-human-assistance is-${(
+                conversation.human_assistance_state || "NONE"
+              ).toLowerCase()}`}
+              aria-live="polite"
+            >
+              <span>
+                {conversation.human_assistance_state === "REQUESTED"
+                  ? <CheckCircle weight="fill" />
+                  : <Headset weight="duotone" />}
+              </span>
+              <div>
+                <strong>
+                  {conversation.human_assistance_state === "REQUESTED"
+                    ? t("已通知人工客服")
+                    : t("需要人工客服继续处理？")}
+                </strong>
+                <small>
+                  {conversation.human_assistance_state === "REQUESTED"
+                    ? t("客服人员会在后台看到提醒，请在当前会话中等待回复。")
+                    : t("点击后会立即通知商家客服，并将本次会话加入待处理列表。")}
+                </small>
+              </div>
+              {conversation.human_assistance_state === "OFFERED" ? (
+                <button
+                  type="button"
+                  disabled={humanRequestBusy}
+                  onClick={() => void requestHumanAssistance()}
+                >
+                  <Headset weight="bold" />
+                  {humanRequestBusy ? t("正在通知…") : t("联系人工客服")}
+                </button>
+              ) : null}
+            </section>
           ) : null}
           {conversation?.status === "CLOSED" ? (
             <div className="support-conversation-closed">

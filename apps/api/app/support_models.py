@@ -50,6 +50,13 @@ class StorefrontChatConversationRow(AuditTimestampMixin, Base):
             "status",
             "last_message_at",
         ),
+        Index(
+            "ix_storefront_chat_conversations_tenant_human_request",
+            "tenant_id",
+            "human_requested_at",
+            "human_resolved_at",
+            "status",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -84,6 +91,18 @@ class StorefrontChatConversationRow(AuditTimestampMixin, Base):
     )
     automation_state_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    human_handoff_offered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    human_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    human_resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    human_request_reason: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
     )
 
 

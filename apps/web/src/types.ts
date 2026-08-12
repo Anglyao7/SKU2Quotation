@@ -145,6 +145,8 @@ export interface PublicSupportConversation {
   access_token?: string | null;
   automation_state?: "AI_ACTIVE" | "HUMAN_TAKEOVER";
   ai_processing?: boolean;
+  human_assistance_state?: "NONE" | "OFFERED" | "REQUESTED" | "RESOLVED";
+  human_assistance_requested_at?: string | null;
 }
 
 export type PublicSupportStreamEvent =

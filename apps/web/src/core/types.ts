@@ -665,6 +665,7 @@ export type SupportConversationStatus = "OPEN" | "CLOSED";
 export type SupportMessageSender = "VISITOR" | "MERCHANT" | "SYSTEM" | "AI";
 export type SupportTranslationStatus = "PENDING" | "READY" | "FAILED" | "UNAVAILABLE" | "NOT_REQUIRED";
 export type SupportAutomationState = "AI_ACTIVE" | "HUMAN_TAKEOVER";
+export type SupportHumanAssistanceState = "NONE" | "OFFERED" | "REQUESTED" | "RESOLVED";
 
 export interface SupportCitation {
   citationNumber: number;
@@ -710,6 +711,8 @@ export interface SupportConversationSummary {
   unread: boolean;
   automationState: SupportAutomationState;
   aiProcessing: boolean;
+  humanAssistanceState: SupportHumanAssistanceState;
+  humanAssistanceRequestedAt?: string;
 }
 
 export interface SupportConversationDetail extends SupportConversationSummary {
@@ -722,6 +725,21 @@ export interface SupportConversationPage {
   page: number;
   pageSize: number;
   pages: number;
+}
+
+export interface SupportHumanRequest {
+  conversationId: string;
+  referenceNumber: string;
+  visitorName?: string;
+  visitorEmail?: string;
+  locale: string;
+  messagePreview: string;
+  requestedAt: string;
+}
+
+export interface SupportHumanRequestSummary {
+  pendingCount: number;
+  items: SupportHumanRequest[];
 }
 
 export interface AttributeDefinition {

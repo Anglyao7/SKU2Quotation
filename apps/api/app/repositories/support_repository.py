@@ -164,6 +164,49 @@ def list_conversations(
     return [(row, str(preview or "")) for row, preview in rows], total
 
 
+def list_pending_human_requests(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    limit: int,
+) -> tuple[list[tuple[StorefrontChatConversationRow, str]], int]:
+    predicate = (
+        StorefrontChatConversationRow.tenant_id == tenant_id,
+        StorefrontChatConversationRow.status == "OPEN",
+        StorefrontChatConversationRow.human_requested_at.is_not(None),
+        StorefrontChatConversationRow.human_resolved_at.is_(None),
+    )
+    total = int(
+        session.scalar(
+            select(func.count(StorefrontChatConversationRow.id)).where(*predicate)
+        )
+        or 0
+    )
+    latest_visitor_body = (
+        select(StorefrontChatMessageRow.body)
+        .where(
+            StorefrontChatMessageRow.tenant_id
+            == StorefrontChatConversationRow.tenant_id,
+            StorefrontChatMessageRow.conversation_id
+            == StorefrontChatConversationRow.id,
+            StorefrontChatMessageRow.sender_type == "VISITOR",
+        )
+        .order_by(
+            StorefrontChatMessageRow.created_at.desc(),
+            StorefrontChatMessageRow.id.desc(),
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(StorefrontChatConversationRow, latest_visitor_body)
+        .where(*predicate)
+        .order_by(StorefrontChatConversationRow.human_requested_at.desc())
+        .limit(limit)
+    ).all()
+    return [(row, str(preview or "")) for row, preview in rows], total
+
+
 def has_unread_visitor_message(
     conversation: StorefrontChatConversationRow,
 ) -> bool:

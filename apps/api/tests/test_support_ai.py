@@ -29,6 +29,7 @@ from app.services.support_ai_language import (
 from app.services.support_ai_orchestrator import (
     RetrievalEvidence,
     _contextual_retrieval_question,
+    _handoff_message,
     _normalized_retrieval_query,
     _prompt_messages,
     _recommendation_fallback_answer,
@@ -559,6 +560,22 @@ def test_merchant_only_action_can_authorize_model_handoff() -> None:
     assert requires_safe_fallback is False
     assert reason == "PAYMENT_OR_REFUND_ACTION_REQUIRED"
     assert trace["handoff_authorized"] is True
+
+
+def test_ai_handoff_offers_a_human_action_before_confirming_notification() -> None:
+    settings = default_support_ai_settings(tenant_id=uuid4())
+    offered = _handoff_message(
+        settings,
+        "zh-CN",
+        request_immediately=False,
+    )
+    confirmed = _handoff_message(
+        settings,
+        "zh-CN",
+        request_immediately=True,
+    )
+    assert "点击下方“联系人工客服”" in offered
+    assert "已为您转接人工客服" in confirmed
 
 
 def test_structured_answer_requires_fallback_for_invalid_citation_or_number() -> None:

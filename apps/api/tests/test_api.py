@@ -1267,6 +1267,55 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     assert still_ai_owned.status_code == 200, still_ai_owned.text
     assert still_ai_owned.json()["automation_state"] == "AI_ACTIVE"
 
+    from app.support_models import StorefrontChatConversationRow
+
+    with SessionLocal() as session:
+        offered_conversation = session.get(
+            StorefrontChatConversationRow,
+            UUID(conversation_id),
+        )
+        assert offered_conversation is not None
+        offered_at = datetime.now(UTC)
+        offered_conversation.automation_state = "HUMAN_TAKEOVER"
+        offered_conversation.automation_state_changed_at = offered_at
+        offered_conversation.human_handoff_offered_at = offered_at
+        session.commit()
+
+    offered = client.get(
+        "/api/store/demo/support/conversations/current",
+        headers={"X-Support-Token": support_token},
+    )
+    assert offered.status_code == 200, offered.text
+    assert offered.json()["human_assistance_state"] == "OFFERED"
+
+    pending_before = client.get("/api/v1/support/human-requests")
+    assert pending_before.status_code == 200, pending_before.text
+    pending_before_count = pending_before.json()["pending_count"]
+
+    requested = client.post(
+        "/api/store/demo/support/conversations/current/human-assistance",
+        headers={"X-Support-Token": support_token},
+    )
+    assert requested.status_code == 200, requested.text
+    assert requested.json()["human_assistance_state"] == "REQUESTED"
+    assert requested.json()["messages"][-1]["sender_type"] == "SYSTEM"
+
+    pending = client.get("/api/v1/support/human-requests")
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["pending_count"] == pending_before_count + 1
+    assert conversation_id in {
+        row["conversation_id"] for row in pending.json()["items"]
+    }
+
+    opened_without_resolving = client.get(
+        f"/api/v1/support/conversations/{conversation_id}"
+    )
+    assert opened_without_resolving.status_code == 200
+    assert (
+        opened_without_resolving.json()["human_assistance_state"]
+        == "REQUESTED"
+    )
+
     replied = client.post(
         f"/api/v1/support/conversations/{conversation_id}/messages",
         json={"message": "Yes, blue is available."},
@@ -1274,6 +1323,11 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     assert replied.status_code == 200, replied.text
     assert replied.json()["messages"][-1]["sender_type"] == "MERCHANT"
     assert replied.json()["automation_state"] == "HUMAN_TAKEOVER"
+    assert replied.json()["human_assistance_state"] == "RESOLVED"
+
+    pending_after_reply = client.get("/api/v1/support/human-requests")
+    assert pending_after_reply.status_code == 200
+    assert pending_after_reply.json()["pending_count"] == pending_before_count
 
     resumed = client.patch(
         f"/api/v1/support/conversations/{conversation_id}/automation",
@@ -2008,6 +2062,10 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         assert (
             explicit_handoff_public.json()["automation_state"]
             == "HUMAN_TAKEOVER"
+        )
+        assert (
+            explicit_handoff_public.json()["human_assistance_state"]
+            == "REQUESTED"
         )
         assert (
             explicit_handoff_public.json()["messages"][-1]["sender_type"]
@@ -16719,10 +16777,23 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
             "support_ai_knowledge_sources"
         )
     }
+    assert {
+        "human_handoff_offered_at",
+        "human_requested_at",
+        "human_resolved_at",
+        "human_request_reason",
+    }.issubset(
+        {
+            column["name"]
+            for column in inspect(upgraded_engine).get_columns(
+                "storefront_chat_conversations"
+            )
+        }
+    )
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260812_0081"
+        ).scalar() == "20260813_0082"
     upgraded_engine.dispose()
     command.check(config)
 
