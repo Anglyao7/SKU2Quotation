@@ -163,6 +163,7 @@ fi
 git checkout --detach "${resolved_commit}"
 
 export ATC_COMMIT_SHA="${resolved_commit}"
+export ATC_COMPOSE_COMMIT_SHA="${resolved_commit}"
 export ATC_RELEASE="production-$(date -u +%Y%m%dT%H%M%SZ)-${resolved_commit:0:12}"
 export ATC_MIGRATION_HEAD="20260813_0082"
 export ATC_CONFIG_VERSION="production-v1-${resolved_commit:0:12}"
@@ -179,19 +180,8 @@ prepare_web_static_store
 
 rollback_started=false
 
-database_migration_head() {
-  compose exec -T postgres \
-    psql --username=postgres --dbname=ai_trade_cloud \
-    --no-align --tuples-only \
-    --command 'SELECT version_num FROM alembic_version ORDER BY version_num' \
-    2>/dev/null \
-    | tr -d '\r' \
-    | awk 'NF { if (value != "") value = value ","; value = value $0 } END { print value }'
-}
-
 rollback_on_failure() {
   local status="${1:-1}"
-  local current_database_head=""
   if [[ "${rollback_started}" == "true" ]]; then
     exit "${status}"
   fi
@@ -201,18 +191,8 @@ rollback_on_failure() {
   printf '\n[atc] deployment failed with status %s\n' "${status}" >&2
   if [[ -f "${DEPLOYMENT_STATE_DIR}/previous.env" ]]; then
     printf '[atc] restoring the previously recorded application release\n' >&2
-    current_database_head="$(database_migration_head || true)"
-    if [[ "${current_database_head}" == "${ATC_MIGRATION_HEAD}" ]]; then
-      printf '[atc] retaining the current expand-compatible compose contract for database head %s\n' \
-        "${current_database_head}" >&2
-      ATC_ROLLBACK_KEEP_CURRENT_COMPOSE=true \
-        ATC_ROLLBACK_MIGRATION_HEAD="${current_database_head}" \
-        ATC_OPERATION_LOCK_HELD=true \
-        "${SCRIPT_DIR}/rollback.sh" "${DEPLOYMENT_STATE_DIR}/previous.env" || true
-    else
-      ATC_OPERATION_LOCK_HELD=true \
-        "${SCRIPT_DIR}/rollback.sh" "${DEPLOYMENT_STATE_DIR}/previous.env" || true
-    fi
+    ATC_OPERATION_LOCK_HELD=true \
+      "${SCRIPT_DIR}/rollback.sh" "${DEPLOYMENT_STATE_DIR}/previous.env" || true
   else
     printf '[atc] stopping the unrecorded first-release public workloads\n' >&2
     compose stop caddy web api keycloak >/dev/null 2>&1 || true

@@ -1572,12 +1572,16 @@ def _conversation_is_still_ai_owned(
 ) -> bool:
     if run.conversation_id is None or run.input_message_id is None:
         return False
-    conversation = support_repository.get_conversation_for_update(
-        session,
-        tenant_id=run.tenant_id,
-        conversation_id=run.conversation_id,
-    )
-    input_message = session.get(StorefrontChatMessageRow, run.input_message_id)
+    # The merchant reply path locks Conversation before cancelling Run/Task rows.
+    # Suppress autoflush here so the AI finalizer acquires locks in the same order
+    # even after it has changed its Run/Task objects in memory.
+    with session.no_autoflush:
+        conversation = support_repository.get_conversation_for_update(
+            session,
+            tenant_id=run.tenant_id,
+            conversation_id=run.conversation_id,
+        )
+        input_message = session.get(StorefrontChatMessageRow, run.input_message_id)
     if conversation is None or input_message is None:
         return False
     if conversation.status != "OPEN" or conversation.automation_state != "AI_ACTIVE":

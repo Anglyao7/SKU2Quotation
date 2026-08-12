@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -29,6 +30,7 @@ from app.services.support_ai_language import (
 from app.services.support_ai_orchestrator import (
     RetrievalEvidence,
     _contextual_retrieval_question,
+    _conversation_is_still_ai_owned,
     _handoff_message,
     _normalized_retrieval_query,
     _prompt_messages,
@@ -44,6 +46,55 @@ from app.services.support_ai_orchestrator import (
     detect_support_interaction_goal,
 )
 from app.services.support_ai_retrieval import _public_product_excerpt
+
+
+class _NoAutoflushConversationLockSession:
+    def __init__(self, conversation: object, input_message: object) -> None:
+        self.conversation = conversation
+        self.input_message = input_message
+        self.inside_no_autoflush = False
+        self.statements: list[object] = []
+
+    @property
+    @contextmanager
+    def no_autoflush(self):
+        self.inside_no_autoflush = True
+        try:
+            yield
+        finally:
+            self.inside_no_autoflush = False
+
+    def scalar(self, statement):
+        assert self.inside_no_autoflush
+        self.statements.append(statement)
+        return self.conversation
+
+    def get(self, _model, _identity):
+        assert self.inside_no_autoflush
+        return self.input_message
+
+
+def test_ai_ownership_lock_suppresses_run_autoflush_before_conversation_lock() -> None:
+    now = datetime.now(UTC)
+    conversation_id = uuid4()
+    input_message_id = uuid4()
+    session = _NoAutoflushConversationLockSession(
+        SimpleNamespace(
+            status="OPEN",
+            automation_state="AI_ACTIVE",
+            last_merchant_message_at=None,
+        ),
+        SimpleNamespace(created_at=now),
+    )
+    run = SimpleNamespace(
+        tenant_id=uuid4(),
+        conversation_id=conversation_id,
+        input_message_id=input_message_id,
+    )
+
+    assert _conversation_is_still_ai_owned(session, run=run) is True
+    assert session.inside_no_autoflush is False
+    assert len(session.statements) == 1
 
 
 @pytest.mark.parametrize(

@@ -253,6 +253,7 @@ write_release_metadata() {
   {
     printf 'ATC_RELEASE=%q\n' "${ATC_RELEASE}"
     printf 'ATC_COMMIT_SHA=%q\n' "${ATC_COMMIT_SHA}"
+    printf 'ATC_COMPOSE_COMMIT_SHA=%q\n' "${ATC_COMPOSE_COMMIT_SHA:-${ATC_COMMIT_SHA}}"
     printf 'ATC_MIGRATION_HEAD=%q\n' "${ATC_MIGRATION_HEAD}"
     printf 'ATC_IMAGE_DIGEST=%q\n' "${ATC_IMAGE_DIGEST}"
     printf 'ATC_CONFIG_VERSION=%q\n' "${ATC_CONFIG_VERSION}"

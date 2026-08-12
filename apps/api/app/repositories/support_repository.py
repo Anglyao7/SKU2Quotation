@@ -39,6 +39,7 @@ def get_conversation_for_update(
             StorefrontChatConversationRow.id == conversation_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
 

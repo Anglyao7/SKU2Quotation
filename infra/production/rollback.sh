@@ -7,8 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
 metadata_file="${1:-${DEPLOYMENT_STATE_DIR}/previous.env}"
-keep_current_compose="${ATC_ROLLBACK_KEEP_CURRENT_COMPOSE:-false}"
-migration_head_override="${ATC_ROLLBACK_MIGRATION_HEAD:-}"
 
 require_command git
 require_command docker
@@ -16,37 +14,62 @@ require_command curl
 (( EUID == 0 )) || die "production rollback must run as root"
 acquire_global_operation_lock
 load_production_env
-load_release_metadata "${metadata_file}"
-
-case "${keep_current_compose}" in
-  true)
-    [[ "${migration_head_override}" =~ ^[0-9]{8}_[0-9]{4}$ ]] \
-      || die "ATC_ROLLBACK_MIGRATION_HEAD must be an Alembic revision when retaining the current compose contract"
-    export ATC_MIGRATION_HEAD="${migration_head_override}"
-    ;;
-  false)
-    [[ -z "${migration_head_override}" ]] \
-      || die "ATC_ROLLBACK_MIGRATION_HEAD requires ATC_ROLLBACK_KEEP_CURRENT_COMPOSE=true"
-    ;;
-  *)
-    die "ATC_ROLLBACK_KEEP_CURRENT_COMPOSE must be true or false"
-    ;;
-esac
-
-[[ "${ATC_COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]] || die "rollback metadata has an invalid commit"
-docker image inspect "atc-api:${ATC_COMMIT_SHA}" >/dev/null 2>&1 \
-  || die "rollback API image is no longer present; rebuild commit ${ATC_COMMIT_SHA} first"
-docker image inspect "atc-web:${ATC_COMMIT_SHA}" >/dev/null 2>&1 \
-  || die "rollback web image is no longer present; rebuild commit ${ATC_COMMIT_SHA} first"
-
 cd "${REPOSITORY_ROOT}"
 git diff --quiet && git diff --cached --quiet \
   || die "tracked files are modified; rollback refuses to overwrite server-side edits"
-if [[ "${keep_current_compose}" == "true" ]]; then
-  info "retaining the current expand-compatible compose contract at database head ${ATC_MIGRATION_HEAD}"
-else
-  git checkout --detach "${ATC_COMMIT_SHA}"
-fi
+current_source_commit="$(git rev-parse HEAD)"
+unset ATC_COMPOSE_COMMIT_SHA
+load_release_metadata "${metadata_file}"
+
+rollback_app_commit="${ATC_COMMIT_SHA}"
+recorded_compose_commit="${ATC_COMPOSE_COMMIT_SHA:-${rollback_app_commit}}"
+
+database_migration_head() {
+  compose exec -T postgres \
+    psql --username=postgres --dbname=ai_trade_cloud \
+    --no-align --tuples-only \
+    --command 'SELECT version_num FROM alembic_version ORDER BY version_num' \
+    2>/dev/null \
+    | tr -d '\r' \
+    | awk 'NF { if (value != "") value = value ","; value = value $0 } END { print value }'
+}
+
+migration_head_for_commit() {
+  local commit="$1"
+  git show "${commit}:apps/api/Dockerfile" 2>/dev/null \
+    | awk -F= '$1 == "ARG ATC_MIGRATION_HEAD" { print $2; exit }'
+}
+
+[[ "${rollback_app_commit}" =~ ^[0-9a-f]{40}$ ]] || die "rollback metadata has an invalid commit"
+[[ "${recorded_compose_commit}" =~ ^[0-9a-f]{40}$ ]] || die "rollback metadata has an invalid compose commit"
+docker image inspect "atc-api:${rollback_app_commit}" >/dev/null 2>&1 \
+  || die "rollback API image is no longer present; rebuild commit ${rollback_app_commit} first"
+docker image inspect "atc-web:${rollback_app_commit}" >/dev/null 2>&1 \
+  || die "rollback web image is no longer present; rebuild commit ${rollback_app_commit} first"
+
+compose up --detach --wait postgres
+actual_migration_head="$(database_migration_head)"
+[[ "${actual_migration_head}" =~ ^[A-Za-z0-9_]+$ ]] \
+  || die "could not resolve the single current database migration head"
+
+selected_compose_commit=""
+for candidate in \
+  "${recorded_compose_commit}" \
+  "${rollback_app_commit}" \
+  "${current_source_commit}"; do
+  if [[ "$(migration_head_for_commit "${candidate}")" == "${actual_migration_head}" ]]; then
+    selected_compose_commit="${candidate}"
+    break
+  fi
+done
+[[ -n "${selected_compose_commit}" ]] \
+  || die "no available compose contract matches database head ${actual_migration_head}"
+
+export ATC_COMMIT_SHA="${rollback_app_commit}"
+export ATC_COMPOSE_COMMIT_SHA="${selected_compose_commit}"
+export ATC_MIGRATION_HEAD="${actual_migration_head}"
+git checkout --detach "${selected_compose_commit}"
+info "using compose contract ${selected_compose_commit:0:12} for database head ${actual_migration_head}"
 render_keycloak_realm
 render_caddy_sites
 

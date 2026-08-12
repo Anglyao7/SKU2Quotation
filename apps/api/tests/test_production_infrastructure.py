@@ -694,6 +694,12 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     backup = (
         REPOSITORY_ROOT / "infra" / "production" / "backup.sh"
     ).read_text(encoding="utf-8")
+    rollback = (
+        REPOSITORY_ROOT / "infra" / "production" / "rollback.sh"
+    ).read_text(encoding="utf-8")
+    production_lib = (
+        REPOSITORY_ROOT / "infra" / "production" / "scripts" / "lib.sh"
+    ).read_text(encoding="utf-8")
     restore = (
         REPOSITORY_ROOT / "infra" / "production" / "restore.sh"
     ).read_text(encoding="utf-8")
@@ -710,8 +716,6 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
         "rolling out API, web, and TLS edge"
     )
     assert "rollback_on_failure" in deploy
-    assert "database_migration_head" in deploy
-    assert "ATC_ROLLBACK_KEEP_CURRENT_COMPOSE=true" in deploy
     assert "trap 'rollback_on_failure 130' INT" in deploy
     assert "trap 'rollback_on_failure 143' TERM" in deploy
     assert "trap 'rollback_on_failure 129' HUP" in deploy
@@ -722,6 +726,12 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     assert deploy.index('"${SCRIPT_DIR}/backup.sh"') < deploy.index("db-migrate")
     assert "ATC_CONFIRMED_EXPAND_CONTRACT" in deploy
     assert "ATC_BACKUP_LEAVE_WRITERS_STOPPED=true" in deploy
+    assert "database_migration_head" in rollback
+    assert "migration_head_for_commit" in rollback
+    assert 'actual_migration_head="$(database_migration_head)"' in rollback
+    assert "no available compose contract matches database head" in rollback
+    assert 'export ATC_COMPOSE_COMMIT_SHA="${selected_compose_commit}"' in rollback
+    assert "ATC_COMPOSE_COMMIT_SHA" in production_lib
     assert "application.postgresql.dump" in backup
     assert "keycloak.postgresql.dump" in backup
     assert "backup-minio" in backup

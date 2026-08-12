@@ -1174,7 +1174,7 @@ def update_conversation_status(
     request: SupportConversationStatusUpdate,
 ) -> SupportConversationDetailResponse:
     _require(permissions, "support.reply")
-    row = repository.get_conversation(
+    row = repository.get_conversation_for_update(
         session,
         tenant_id=tenant_id,
         conversation_id=conversation_id,

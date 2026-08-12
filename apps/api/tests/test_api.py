@@ -1299,6 +1299,17 @@ def test_storefront_support_settings_and_human_conversation_flow() -> None:
     assert requested.status_code == 200, requested.text
     assert requested.json()["human_assistance_state"] == "REQUESTED"
     assert requested.json()["messages"][-1]["sender_type"] == "SYSTEM"
+    requested_message_count = len(requested.json()["messages"])
+    requested_at = requested.json()["human_assistance_requested_at"]
+
+    repeated_request = client.post(
+        "/api/store/demo/support/conversations/current/human-assistance",
+        headers={"X-Support-Token": support_token},
+    )
+    assert repeated_request.status_code == 200, repeated_request.text
+    assert repeated_request.json()["human_assistance_state"] == "REQUESTED"
+    assert repeated_request.json()["human_assistance_requested_at"] == requested_at
+    assert len(repeated_request.json()["messages"]) == requested_message_count
 
     pending = client.get("/api/v1/support/human-requests")
     assert pending.status_code == 200, pending.text
@@ -8663,6 +8674,18 @@ def test_import_batch_rollback_preserves_existing_and_manually_edited_skus() -> 
         assert by_code[edited_code].rollback_owner_batch_id is None
         assert by_code[owned_code].deleted_at is not None
 
+    cleanup = client.post(
+        "/api/v1/skus/batch-delete",
+        json={
+            "sku_ids": [
+                str(by_code[existing_code].id),
+                str(by_code[edited_code].id),
+            ]
+        },
+    )
+    assert cleanup.status_code == 200, cleanup.text
+    assert cleanup.json()["success_count"] == 2
+
 
 def test_batch_merchandising_updates_category_pin_status_and_storefront_order() -> None:
     suffix = uuid4().hex[:8].upper()
@@ -11786,6 +11809,14 @@ def test_phase4a1c_update_requires_expected_version_and_creates_new_snapshot(
                 expected_product_version=1,
             )
         assert conflict.value.code == "CANDIDATE_GROUP_ALREADY_APPLIED"
+        session.rollback()
+        session.execute(delete(SkuRow).where(SkuRow.id == protected_sku_id))
+        session.execute(
+            delete(CatalogImportBatchRow).where(
+                CatalogImportBatchRow.id == rollback_batch_id
+            )
+        )
+        session.commit()
 
 
 def test_multiline_catalog_header_does_not_pollute_field_mapping(tmp_path: Path) -> None:
@@ -14889,6 +14920,29 @@ class _CompileOnlyPostgresSession:
         statement.compile(dialect=postgresql.dialect())
         self.statements.append(statement)
         return _EmptyCompileResult()
+
+    def scalar(self, statement):
+        statement.compile(dialect=postgresql.dialect())
+        self.statements.append(statement)
+        return None
+
+
+def test_support_conversation_write_lock_refreshes_identity_mapped_state() -> None:
+    from app.repositories import support_repository
+
+    session = _CompileOnlyPostgresSession()
+
+    support_repository.get_conversation_for_update(
+        session,
+        tenant_id=uuid4(),
+        conversation_id=uuid4(),
+    )
+
+    assert len(session.statements) == 1
+    statement = session.statements[0]
+    sql = str(statement.compile(dialect=postgresql.dialect())).upper()
+    assert "FOR UPDATE" in sql
+    assert statement.get_execution_options()["populate_existing"] is True
 
 
 def test_public_catalog_page_query_has_database_limit_and_offset() -> None:
