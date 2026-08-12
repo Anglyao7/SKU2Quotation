@@ -56,6 +56,16 @@ from app.services.support_ai_retrieval import _public_product_excerpt
         ("Qual o preço para o produto?", "en-US", "pt"),
         ("Bu ürünün fiyatı nedir?", "en-US", "tr"),
         ("What is the MOQ for this product?", "zh-CN", "en-US"),
+        ("hi", "zh-CN", "en-US"),
+        ("¡Hola!", "zh-CN", "es"),
+        ("Olá", "zh-CN", "pt"),
+        ("Merhaba", "zh-CN", "tr"),
+        ("Bonjour", "zh-CN", "fr"),
+        ("Hallo", "zh-CN", "de"),
+        ("Ciao", "zh-CN", "it"),
+        ("Do you have toys for large dogs?", "zh-CN", "en-US"),
+        ("¿Tienen juguetes para perros grandes?", "zh-CN", "es"),
+        ("Tem brinquedos para cães grandes?", "zh-CN", "pt"),
     ),
 )
 def test_detect_message_language_prefers_the_actual_message(
@@ -660,8 +670,11 @@ def test_generation_prompts_require_the_latest_visitor_language() -> None:
     payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
     assert payload["storefront_locale_hint"] == "zh-CN"
     assert payload["required_response_language"] == "en-US"
-    assert "Write all customer-facing prose" in system
-    assert 'uses "en-US"' in system
+    assert "HIGHEST-PRIORITY OUTPUT LANGUAGE CONTRACT" in system
+    assert "latest visitor message itself" in system
+    assert "every customer-facing sentence" in system
+    assert 'first-pass target language is "en-US"' in system
+    assert "Do not switch to Chinese or English" in system
 
     social_messages = _social_prompt_messages(
         settings=settings,
