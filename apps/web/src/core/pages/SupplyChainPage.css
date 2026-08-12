@@ -154,7 +154,7 @@
 .supply-chain-row-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 8px;
 }
 
 .supply-chain-pagination {
@@ -177,45 +177,71 @@
 .supply-chain-dialog {
   width: min(760px, calc(100vw - 28px));
   max-width: 760px;
-  max-height: min(820px, calc(100vh - 28px));
+  max-height: min(820px, calc(100dvh - 32px));
   padding: 0 !important;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
-.supply-chain-dialog > h2 {
-  margin: 0;
-  padding: 20px 22px 14px;
+.supply-chain-dialog-header {
+  min-height: 70px;
+  flex: 0 0 auto;
+  padding: 18px 22px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
   border-bottom: 1px solid var(--core-line);
+  background: var(--core-surface);
 }
 
-.supply-chain-dialog form {
+.supply-chain-dialog-header .rt-Heading {
+  min-width: 0;
+  margin: 0;
+  line-height: 1.28;
+  overflow-wrap: anywhere;
+}
+
+.supply-chain-dialog-header .rt-IconButton {
+  flex: 0 0 auto;
+}
+
+.supply-chain-dialog-form {
   min-height: 0;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .supply-chain-form-scroll {
-  padding: 18px 22px;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 20px 22px 24px;
   display: grid;
-  gap: 20px;
+  align-content: start;
+  gap: 26px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .supply-chain-form-section {
   display: grid;
-  gap: 12px;
+  gap: 15px;
 }
 
 .supply-chain-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 15px 16px;
 }
 
 .supply-chain-field {
   min-width: 0;
   display: grid;
-  gap: 6px;
+  gap: 8px;
   color: var(--core-muted);
   font-size: 12px;
 }
@@ -226,6 +252,16 @@
 
 .supply-chain-status-field {
   max-width: 240px;
+}
+
+.supply-chain-field .rt-TextFieldRoot,
+.supply-chain-field .rt-SelectTrigger {
+  min-height: 40px;
+}
+
+.supply-chain-field textarea {
+  min-height: 108px;
+  resize: vertical;
 }
 
 .supply-chain-form-error {
@@ -239,12 +275,19 @@
 }
 
 .supply-chain-dialog-actions {
-  padding: 13px 22px;
+  min-height: 68px;
+  flex: 0 0 auto;
+  padding: 14px 22px 16px;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 9px;
+  gap: 12px;
   border-top: 1px solid var(--core-line);
   background: var(--core-surface);
+}
+
+.supply-chain-dialog-actions .rt-Button {
+  min-width: 82px;
 }
 
 @media (max-width: 760px) {
@@ -346,10 +389,25 @@
     max-height: calc(100dvh - 16px);
   }
 
-  .supply-chain-dialog > h2,
+  .supply-chain-dialog-header,
   .supply-chain-form-scroll,
   .supply-chain-dialog-actions {
     padding-inline: 16px;
+  }
+
+  .supply-chain-dialog-header {
+    min-height: 62px;
+    padding-block: 14px 12px;
+  }
+
+  .supply-chain-dialog-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .supply-chain-dialog-actions .rt-Button {
+    width: 100%;
+    min-width: 0;
   }
 
   .supply-chain-form-error {

@@ -1,4 +1,4 @@
-import type { StorefrontLocale } from "../types";
+import type { StorefrontLocale, TenantSubscriptionTier } from "../types";
 
 export type UiLocale = "zh-CN" | "en-US";
 export type BusinessMode = "DOMESTIC" | "EXPORT";
@@ -20,6 +20,7 @@ export interface AuthWorkspaceContext {
   defaultCurrency?: string;
   defaultWorkspace?: string;
   accountScope?: "STAFF" | "CUSTOMER_SUBACCOUNT";
+  subscriptionTier?: TenantSubscriptionTier;
 }
 
 export interface MembershipSummary {
@@ -327,6 +328,7 @@ export interface ManualProductCreateInput {
   barcode?: string;
   defaultMoq?: number;
   moqUnit?: string;
+  packingQuantity?: number;
   weight?: number;
   weightUnit?: string;
   unitPrice: number;
@@ -354,6 +356,9 @@ export interface SkuListItem {
     primarySupplierName?: string;
     names: string[];
   };
+  defaultMoq?: number;
+  moqUnit?: string;
+  packingQuantity?: string;
   publicPrice?: number;
   publicCurrency?: string;
   publicOfferStatus?: "DRAFT" | "PUBLISHED" | "SUSPENDED";
@@ -1186,6 +1191,7 @@ export interface PublicQuoteDraft {
   total: number;
   validUntil: string;
   createdAt: string;
+  updatedAt: string;
   contentHash: string;
   disclaimer: string;
   disclaimerVersion: string;
@@ -1203,6 +1209,7 @@ export interface PublicQuoteDraftSummary {
   total: number;
   validUntil: string;
   createdAt: string;
+  updatedAt: string;
 }
 
 export type QuoteTemplateField =

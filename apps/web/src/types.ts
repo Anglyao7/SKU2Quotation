@@ -432,6 +432,20 @@ export interface Quote {
   xlsx_url?: string;
 }
 
+export interface StorefrontVisitorQuote {
+  id: string;
+  quote_number: string;
+  status: "PENDING_CONFIRMATION" | "CONFIRMED" | "COMPLETED" | "CANCELLED" | "EXPIRED";
+  customer_name: string;
+  customer_company?: string | null;
+  locale: StorefrontLocale;
+  currency: string;
+  total_amount: number | string;
+  valid_until: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TenantPayload {
   name: string;
   slug?: string;

@@ -151,7 +151,7 @@ git checkout --detach "${resolved_commit}"
 
 export ATC_COMMIT_SHA="${resolved_commit}"
 export ATC_RELEASE="production-$(date -u +%Y%m%dT%H%M%SZ)-${resolved_commit:0:12}"
-export ATC_MIGRATION_HEAD="20260811_0078"
+export ATC_MIGRATION_HEAD="20260812_0079"
 export ATC_CONFIG_VERSION="production-v1-${resolved_commit:0:12}"
 export ATC_IMAGE_DIGEST="sha256:$(printf '%064d' 0)"
 export ATC_ENABLE_WORKERS="${ATC_ENABLE_WORKERS:-false}"
@@ -191,7 +191,7 @@ if [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]]; then
   compose pull caddy postgres redis keycloak-postgres keycloak object-storage-bootstrap
   compose_with_ops pull backup-local-objects restore-local-objects
 else
-  compose pull caddy postgres redis rabbitmq clamav keycloak-postgres keycloak
+  compose pull caddy postgres redis rabbitmq keycloak-postgres keycloak
   compose_with_ops pull backup-rabbitmq restore-rabbitmq
 fi
 
@@ -224,7 +224,7 @@ if [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]]; then
   info "initializing the compact local object volume"
   compose run --rm --no-deps object-storage-bootstrap
 else
-  compose up --detach --wait postgres redis rabbitmq minio clamav keycloak-postgres keycloak
+  compose up --detach --wait postgres redis rabbitmq minio keycloak-postgres keycloak
 fi
 
 info "bootstrapping roles, migrating, applying grants, and preparing dependencies"
@@ -240,7 +240,7 @@ info "reconciling Keycloak realm and confidential OIDC client"
 "${SCRIPT_DIR}/keycloak-reconcile.sh"
 
 info "rolling out API, web, and TLS edge without taking data services down"
-compose up --detach --no-deps --wait api web caddy
+compose up --detach --no-deps --wait --remove-orphans api web caddy
 if [[ "${ATC_ENABLE_WORKERS}" == "true" ]]; then
   compose_with_workers up --detach --no-deps --wait \
     tenant-worker product-event-consumer

@@ -34,6 +34,7 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftCreate,
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftResponse,
+    PublicQuoteDraftStatusUpdate,
     PublicQuoteDraftSummary,
     PublicCategoryOption,
     PublicProductDetail,
@@ -365,27 +366,18 @@ def _available_storefront_locales(
     tenant: object,
     profile: object,
 ) -> list[str]:
+    del session
     source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
-    configured = effective_storefront_locales(
+    # Visibility is a merchant setting, not a translation-runtime capability.
+    # A selected language must remain available even before its package is
+    # published or when live translation is temporarily unavailable; catalog
+    # responses already mark untranslated content as FALLBACK and return the
+    # source text. Hiding it here made the frontend remove the language switch
+    # despite the merchant having explicitly enabled multiple languages.
+    return effective_storefront_locales(
         getattr(profile, "storefront_locales", None),
         source_locale=source_locale,
     )
-    if translation_provider_is_configured(
-        session,
-        environment_check=catalog_translation_is_configured,
-    ):
-        return configured
-    published = set(
-        catalog_translation_repository.available_language_pack_locales(
-            session,
-            tenant_id=tenant.id,
-        )
-    )
-    return [
-        locale
-        for locale in configured
-        if locale == source_locale or locale in published
-    ]
 
 
 def _requested_storefront_locale(
@@ -2857,6 +2849,7 @@ def _draft_response(
         total_amount=draft.estimated_total,
         valid_until=draft.expires_at,
         created_at=draft.created_at,
+        updated_at=draft.updated_at,
         content_hash=draft.content_hash,
         disclaimer=PUBLIC_DRAFT_DISCLAIMER,
         disclaimer_version=draft.disclaimer_version,
@@ -2876,6 +2869,7 @@ def create_public_quote_draft(
     submitted_by_membership_id: UUID | None = None,
     submitted_by_tenant_id: UUID | None = None,
     submitted_by_user_id: UUID | None = None,
+    visitor_token: str | None = None,
 ) -> PublicQuoteDraftResponse:
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
@@ -3109,6 +3103,11 @@ def create_public_quote_draft(
         request_number=request_number,
         status="PENDING_CONFIRMATION",
         submitted_by_membership_id=submitted_by_membership_id,
+        visitor_token_hash=(
+            _storefront_visitor_token_hash(visitor_token)
+            if visitor_token is not None
+            else None
+        ),
         customer_name=request.customer_name,
         customer_company=request.customer_company,
         customer_email=request.customer_email,
@@ -3210,7 +3209,11 @@ def get_quote_document(
     draft = repository.get_quote_draft(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
     )
-    if draft is None or draft.status != "PENDING_CONFIRMATION":
+    if draft is None or draft.status not in {
+        "PENDING_CONFIRMATION",
+        "CONFIRMED",
+        "COMPLETED",
+    }:
         raise ApplicationError(
             "DOWNLOAD_NOT_FOUND", "Download was not found.", kind="not_found"
         )
@@ -3259,11 +3262,107 @@ def list_tenant_quote_drafts(
             total_amount=row.estimated_total,
             valid_until=row.expires_at,
             created_at=row.created_at,
+            updated_at=row.updated_at,
         )
         for row in repository.list_quote_drafts(
             session, tenant_id=tenant_id, limit=limit
         )
     ]
+
+
+def _storefront_visitor_token_hash(raw_token: str) -> str:
+    token = raw_token.strip()
+    if len(token) < 32 or len(token) > 500:
+        raise ApplicationError(
+            "STOREFRONT_VISITOR_SESSION_INVALID",
+            "访客会话已失效，请刷新页面后重试。",
+            kind="unauthorized",
+        )
+    return hash_secret(token)
+
+
+def list_storefront_visitor_quote_drafts(
+    session: Session,
+    *,
+    slug: str,
+    visitor_token: str,
+    limit: int = 100,
+) -> list[PublicQuoteDraftSummary]:
+    tenant, _profile = _resolve_store(session, slug=slug)
+    rows = repository.list_quote_drafts_by_visitor_token_hash(
+        session,
+        tenant_id=tenant.id,
+        visitor_token_hash=_storefront_visitor_token_hash(visitor_token),
+        limit=limit,
+    )
+    return [
+        PublicQuoteDraftSummary(
+            id=row.id,
+            quote_number=row.request_number,
+            status=row.status,
+            customer_name=row.customer_name,
+            customer_company=row.customer_company,
+            locale=_normalized_locale(
+                getattr(row, "document_locale", None),
+                default="zh-CN",
+            ),
+            currency=row.currency,
+            total_amount=row.estimated_total,
+            valid_until=row.expires_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+
+def update_tenant_quote_draft_status(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    request: PublicQuoteDraftStatusUpdate,
+) -> PublicQuoteDraftResponse:
+    _require(permissions, "quotation.create")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    transitions = {
+        "PENDING_CONFIRMATION": {"CONFIRMED", "CANCELLED"},
+        "CONFIRMED": {"COMPLETED", "CANCELLED"},
+        "COMPLETED": set(),
+        "CANCELLED": set(),
+        "EXPIRED": set(),
+    }
+    if request.status != draft.status and request.status not in transitions.get(
+        draft.status,
+        set(),
+    ):
+        raise ApplicationError(
+            "PUBLIC_QUOTE_STATUS_TRANSITION_INVALID",
+            "当前询价单状态不能执行此操作。",
+            kind="conflict",
+        )
+    if request.status != draft.status:
+        draft.status = request.status
+        draft.updated_at = utcnow()
+        session.commit()
+        session.refresh(draft)
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    return _draft_response(draft, items)
 
 
 def get_tenant_quote_draft(

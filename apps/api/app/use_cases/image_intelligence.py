@@ -11,7 +11,6 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..adapters.file_scanner import get_file_scanner
 from ..adapters.image_intelligence import (
     ImageIntelligenceUnavailable,
     get_image_intelligence_provider,
@@ -101,10 +100,6 @@ def search_by_image(session: Session, *, tenant_id: UUID, membership_id: UUID, p
     descriptor, raw_path = tempfile.mkstemp(prefix="atc-image-search-", suffix=suffix); os.close(descriptor); path = Path(raw_path)
     try:
         path.write_bytes(content); storage.put_file(path, object_key=quarantine, content_type=content_type)
-        scan = get_file_scanner().scan(path)
-        if not scan.clean:
-            storage.delete(quarantine)
-            raise ApplicationError("IMAGE_SECURITY_REJECTED", "Query image failed the malware scan.", kind="forbidden")
         storage.promote(quarantine_key=quarantine, source_key=source)
     finally:
         path.unlink(missing_ok=True)

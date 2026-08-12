@@ -25,7 +25,6 @@ def test_local_compose_declares_pinned_private_dependencies() -> None:
         "redis",
         "rabbitmq",
         "minio",
-        "clamav",
         "db-bootstrap",
         "db-migrate",
         "db-grants",
@@ -45,12 +44,6 @@ def test_local_compose_declares_pinned_private_dependencies() -> None:
             assert str(port).startswith("127.0.0.1:")
 
     assert value["networks"]["data"]["internal"] is True
-    assert set(services["clamav"]["networks"]) == {"data", "egress"}
-    assert services["clamav"]["environment"] == {
-        "CLAMD_CONF_StreamMaxLength": "260M",
-        "CLAMD_CONF_MaxFileSize": "250M",
-        "CLAMD_CONF_MaxScanSize": "500M",
-    }
     assert services["api"]["environment"]["ATC_PERSISTENCE_MODE"] == "postgresql"
     assert services["file-worker"]["environment"]["DATABASE_URL"].startswith(
         "postgresql+psycopg://atc_worker:"

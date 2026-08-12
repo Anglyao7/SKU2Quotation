@@ -790,7 +790,12 @@ def test_merchant_controls_languages_visible_on_the_storefront(
     monkeypatch.setattr(
         public_catalog_use_cases,
         "catalog_translation_is_configured",
-        lambda: True,
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "translation_provider_is_configured",
+        lambda *args, **kwargs: False,
     )
     with SessionLocal() as session:
         profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
@@ -1649,7 +1654,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         source = next(
             row for row in sources.json() if row["id"] == str(source_id)
         )
-        assert source["status"] == "READY"
+        assert source["status"] == "APPROVED"
         assert source["chunk_count"] >= 1
         copied_sources = client.get(
             f"/api/v1/support/ai/knowledge/sources?tenant_id={copied_tenant_id}"
@@ -2276,6 +2281,7 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     )
     assert login_response.status_code == 200, login_response.text
     token_data = login_response.json()["data"]
+    assert token_data["context"]["subscription_tier"] == "TRIAL"
     assert token_data["memberships"] == [
         {
             "id": str(DEFAULT_MEMBERSHIP_ID),
@@ -2323,6 +2329,7 @@ def test_trusted_auth_session_membership_refresh_and_logout(monkeypatch: pytest.
     assert me_response.status_code == 200, me_response.text
     assert me_response.json()["context"]["tenant_id"] == str(DEFAULT_TENANT_ID)
     assert me_response.json()["context"]["tenant_slug"] == "demo"
+    assert me_response.json()["context"]["subscription_tier"] == "TRIAL"
     assert me_response.json()["user"]["is_platform_admin"] is True
     permissions_response = client.get(
         "/api/v1/me/permissions", headers=bearer_headers
@@ -9990,7 +9997,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         assert image_a is not None and image_a.deleted_at is None
 
 
-def test_file_security_clean_upload_promotes_object_before_parsing() -> None:
+def test_backoffice_upload_promotes_object_before_parsing_without_review() -> None:
     response = client.post(
         "/api/v1/imports",
         files={
@@ -10023,6 +10030,7 @@ def test_file_security_clean_upload_promotes_object_before_parsing() -> None:
         assert worker_job is not None
         assert worker_job.status == "SUCCEEDED"
         assert worker_job.checkpoint["outcome"] == "PARSED"
+        assert worker_job.checkpoint["scan"] == "NOT_REQUIRED"
         source_key = media.object_key
     storage = get_object_storage()
     source_path = storage.local_path(source_key)
@@ -10033,7 +10041,7 @@ def test_file_security_clean_upload_promotes_object_before_parsing() -> None:
     assert quarantine_path is not None and not quarantine_path.exists()
 
 
-def test_malware_marker_stays_quarantined_and_never_reaches_parser() -> None:
+def test_backoffice_upload_content_is_not_subject_to_malware_review() -> None:
     response = client.post(
         "/api/v1/imports",
         files={
@@ -10047,7 +10055,7 @@ def test_malware_marker_stays_quarantined_and_never_reaches_parser() -> None:
     )
     assert response.status_code == 201, response.text
     payload = response.json()
-    assert payload["status"] == "failed"
+    assert payload["status"] == "needs_review"
     assert payload["candidate_fields"] == 0
     with SessionLocal() as session:
         import_job = session.get(ImportJobRow, payload["id"])
@@ -10058,24 +10066,15 @@ def test_malware_marker_stays_quarantined_and_never_reaches_parser() -> None:
             select(WorkerJobRow).where(WorkerJobRow.import_job_id == import_job.id)
         )
         assert media is not None and worker_job is not None
-        assert source.security_status == "QUARANTINED"
+        assert source.security_status == "ACCEPTED"
         assert (media.zone, media.status, media.scan_status) == (
-            "QUARANTINE",
-            "REJECTED",
-            "INFECTED",
+            "SOURCE",
+            "AVAILABLE",
+            "CLEAN",
         )
         assert worker_job.status == "SUCCEEDED"
-        assert worker_job.checkpoint["outcome"] == "QUARANTINED"
-        assert session.scalar(
-            select(func.count()).select_from(ReviewItemRow).where(
-                ReviewItemRow.job_id == import_job.id
-            )
-        ) == 0
-        assert session.scalar(
-            select(func.count()).select_from(AITaskRow).where(
-                AITaskRow.business_entity_id == source.id
-            )
-        ) == 0
+        assert worker_job.checkpoint["outcome"] == "PARSED"
+        assert worker_job.checkpoint["scan"] == "NOT_REQUIRED"
 
 
 def test_inline_startup_immediately_resumes_worker_from_stopped_api_process(
@@ -11705,6 +11704,7 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
         "barcode": f"BC-{prefix}",
         "default_moq": "12",
         "moq_unit": "piece",
+        "packing_quantity": "24",
         "weight": "0.75",
         "weight_unit": "kg",
         "unit_price": "19.90",
@@ -11728,6 +11728,7 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
     assert detail["skus"][0]["sku_code"] == payload["sku_code"]
     assert detail["skus"][0]["status"] == "ACTIVE"
     assert Decimal(detail["skus"][0]["default_moq"]) == Decimal("12")
+    assert detail["skus"][0]["option_values"]["装箱数"] == "24"
 
     offers = client.get(f"/api/v1/products/{detail['id']}/public-offers")
     assert offers.status_code == 200, offers.text
@@ -11743,6 +11744,9 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
     assert listed.status_code == 200, listed.text
     assert listed.json()["total"] == 1
     assert listed.json()["items"][0]["source_type"] == "MANUAL"
+    assert Decimal(listed.json()["items"][0]["default_moq"]) == Decimal("12")
+    assert listed.json()["items"][0]["moq_unit"] == "piece"
+    assert listed.json()["items"][0]["packing_quantity"] == "24"
     assert Decimal(listed.json()["items"][0]["public_price"]) == Decimal("19.90")
     assert listed.json()["items"][0]["public_currency"] == "USD"
     assert {
@@ -12020,6 +12024,7 @@ def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
             "option_values": {"color": color, "size": size},
             "default_moq": "10",
             "moq_unit": "piece",
+            "packing_quantity": "24",
             "status": "ACTIVE",
         }
         for color in ("BLACK", "WHITE")
@@ -12031,6 +12036,7 @@ def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
     assert sku_response.status_code == 201, sku_response.text
     created_skus = sku_response.json()
     assert len(created_skus) == 6
+    assert created_skus[0]["option_values"]["装箱数"] == "24"
 
     duplicate = client.post(
         f"/api/v1/products/{product_id}/skus", json={"items": [sku_items[0]]}
@@ -12041,10 +12047,22 @@ def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
     first_sku = created_skus[0]
     updated = client.patch(
         f"/api/v1/skus/{first_sku['id']}",
-        json={"expected_version": 1, "barcode": f"BC-{prefix}"},
+        json={
+            "expected_version": 1,
+            "barcode": f"BC-{prefix}",
+            "default_moq": "20",
+            "moq_unit": "box",
+            "option_values": {
+                **first_sku["option_values"],
+                "装箱数": "48",
+            },
+        },
     )
     assert updated.status_code == 200
     assert updated.json()["version"] == 2
+    assert Decimal(updated.json()["default_moq"]) == Decimal("20")
+    assert updated.json()["moq_unit"] == "box"
+    assert updated.json()["option_values"]["装箱数"] == "48"
     stale = client.patch(
         f"/api/v1/skus/{first_sku['id']}",
         json={"expected_version": 1, "barcode": "STALE"},
@@ -12211,8 +12229,8 @@ def test_image_intelligence_projection_search_and_media_gate(tmp_path: Path) -> 
         assert expired_search.status == "EXPIRED"
         assert expired_search.query_embedding is None
     assert not get_object_storage().local_path(expired_key).exists()
-    malware = client.post("/api/v1/image-searches", files={"file": ("evil.png", image_bytes + b"ATC-MALWARE-TEST", "image/png")})
-    assert malware.status_code == 403
+    marker_content = client.post("/api/v1/image-searches", files={"file": ("marker.png", image_bytes + b"ATC-MALWARE-TEST", "image/png")})
+    assert marker_content.status_code == 200, marker_content.text
     with SessionLocal() as session:
         assert session.scalar(select(func.count()).select_from(ImageEmbeddingRow).where(ImageEmbeddingRow.product_image_id == image_id)) == 1
         assert session.scalar(select(func.count()).select_from(VisionObservationRow).where(VisionObservationRow.product_image_id == image_id)) == 1
@@ -15892,6 +15910,76 @@ def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
         assert deleted.status_code == 204, deleted.text
 
 
+def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> None:
+    listing = client.get("/api/store/demo/skus", params={"q": "PF-8G01"})
+    assert listing.status_code == 200, listing.text
+    sku_id = listing.json()["items"][0]["id"]
+    visitor_token = "visitor-" + "a" * 56
+    other_visitor_token = "visitor-" + "b" * 56
+
+    created = client.post(
+        "/api/store/demo/quotes",
+        headers={"X-Storefront-Visitor-Token": visitor_token},
+        json={
+            "customer_name": "Temporary storefront visitor",
+            "privacy_acknowledged": True,
+            "items": [{"sku_id": sku_id, "quantity": 1}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    quote_id = created.json()["id"]
+
+    visitor_rows = client.get(
+        "/api/store/demo/visitor/quotes",
+        headers={"X-Storefront-Visitor-Token": visitor_token},
+    )
+    assert visitor_rows.status_code == 200, visitor_rows.text
+    assert quote_id in {row["id"] for row in visitor_rows.json()}
+    assert next(row for row in visitor_rows.json() if row["id"] == quote_id)["status"] == "PENDING_CONFIRMATION"
+
+    isolated_rows = client.get(
+        "/api/store/demo/visitor/quotes",
+        headers={"X-Storefront-Visitor-Token": other_visitor_token},
+    )
+    assert isolated_rows.status_code == 200, isolated_rows.text
+    assert quote_id not in {row["id"] for row in isolated_rows.json()}
+
+    confirmed = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == "CONFIRMED"
+
+    refreshed = client.get(
+        "/api/store/demo/visitor/quotes",
+        headers={"X-Storefront-Visitor-Token": visitor_token},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    visitor_quote = next(row for row in refreshed.json() if row["id"] == quote_id)
+    assert visitor_quote["status"] == "CONFIRMED"
+    assert visitor_quote["updated_at"] >= visitor_quote["created_at"]
+
+    completed = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/status",
+        json={"status": "COMPLETED"},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "COMPLETED"
+
+    invalid_transition = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+    assert invalid_transition.status_code == 409
+
+    with SessionLocal() as session:
+        stored = session.get(PublicQuoteDraftRow, UUID(quote_id))
+        assert stored is not None
+        assert stored.visitor_token_hash == hash_secret(visitor_token)
+        assert stored.visitor_token_hash != visitor_token
+
+
 def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_reads() -> None:
     organization_id = uuid4()
     tenant_b = uuid4()
@@ -16024,6 +16112,10 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
     }
     assert "document_locale" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
+    }
+    assert "visitor_token_hash" in {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
     }
@@ -16187,7 +16279,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260811_0078"
+        ).scalar() == "20260812_0079"
     upgraded_engine.dispose()
     command.check(config)
 

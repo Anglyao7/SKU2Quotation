@@ -308,7 +308,6 @@ def startup_configuration_errors(
     errors.extend(_refresh_retry_grace_errors(values))
 
     storage_profile = _value(values, "OBJECT_STORAGE_BACKEND").lower()
-    scanner_profile = _value(values, "FILE_SCANNER_PROFILE").lower()
     outbox_profile = _value(values, "OUTBOX_PUBLISHER_PROFILE").lower()
     inline_file_worker = _value(values, "FILE_WORKER_INLINE")
     if profile == "compact":
@@ -316,10 +315,6 @@ def startup_configuration_errors(
             errors.append("OBJECT_STORAGE_BACKEND_INVALID")
         if storage_profile == "s3" and not _value(values, "OBJECT_STORAGE_BUCKET"):
             errors.append("OBJECT_STORAGE_BUCKET_REQUIRED")
-        if scanner_profile not in {"restricted", "clamav"}:
-            errors.append("COMPACT_SCANNER_REQUIRED")
-        if scanner_profile == "clamav" and not _value(values, "CLAMAV_HOST"):
-            errors.append("CLAMAV_HOST_REQUIRED")
         if not (
             _is_true(inline_file_worker)
             or _is_explicit_false(inline_file_worker)
@@ -348,10 +343,6 @@ def startup_configuration_errors(
             errors.append("OBJECT_STORAGE_S3_REQUIRED")
         if not _value(values, "OBJECT_STORAGE_BUCKET"):
             errors.append("OBJECT_STORAGE_BUCKET_REQUIRED")
-        if scanner_profile != "clamav":
-            errors.append("CLAMAV_SCANNER_REQUIRED")
-        if not _value(values, "CLAMAV_HOST"):
-            errors.append("CLAMAV_HOST_REQUIRED")
         if not _is_explicit_false(inline_file_worker):
             errors.append("INLINE_FILE_WORKER_FORBIDDEN")
         if outbox_profile != "rabbitmq":

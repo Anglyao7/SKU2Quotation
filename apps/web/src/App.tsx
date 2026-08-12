@@ -46,6 +46,7 @@ const LandingPage = recoverableLazy(() => import("./pages/marketing/LandingPage"
 const StorePage = recoverableLazy(() => import("./pages/StorePage").then((module) => ({ default: module.StorePage })));
 const ProductDetailPage = recoverableLazy(() => import("./pages/ProductDetailPage").then((module) => ({ default: module.ProductDetailPage })));
 const SkuDetailPage = recoverableLazy(() => import("./pages/SkuDetailPage").then((module) => ({ default: module.SkuDetailPage })));
+const StorefrontVisitorCenterPage = recoverableLazy(() => import("./pages/StorefrontVisitorCenterPage").then((module) => ({ default: module.StorefrontVisitorCenterPage })));
 const PrivacyPage = recoverableLazy(() => import("./pages/PrivacyPage").then((module) => ({ default: module.PrivacyPage })));
 const ConsoleLayout = recoverableLazy(() => import("./pages/console/ConsoleLayout").then((module) => ({ default: module.ConsoleLayout })));
 const TenantManagementPage = recoverableLazy(() => import("./pages/console/TenantManagementPage").then((module) => ({ default: module.TenantManagementPage })));
@@ -369,6 +370,12 @@ const router = createBrowserRouter([{
     path: "/:tenantSlug/share/:shareId",
     loader: storefrontLoader,
     element: <StorePage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/me",
+    loader: storefrontLoader,
+    element: <StorefrontVisitorCenterPage />,
     errorElement: <StorefrontRouteError />,
   },
   {

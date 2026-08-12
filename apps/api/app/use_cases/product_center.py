@@ -97,6 +97,33 @@ FIELD_LABELS = {
     "description": "产品描述",
 }
 
+SKU_PACKING_QUANTITY_KEYS = (
+    "装箱数",
+    "一箱个数",
+    "packing_quantity",
+    "units_per_carton",
+)
+
+
+def _packing_quantity(option_values: dict[str, Any] | None) -> str | None:
+    for key in SKU_PACKING_QUANTITY_KEYS:
+        value = (option_values or {}).get(key)
+        if value not in (None, ""):
+            return str(value).strip() or None
+    return None
+
+
+def _with_packing_quantity(
+    option_values: dict[str, Any],
+    packing_quantity: Decimal | None,
+) -> dict[str, Any]:
+    values = dict(option_values)
+    for key in SKU_PACKING_QUANTITY_KEYS:
+        values.pop(key, None)
+    if packing_quantity is not None:
+        values["装箱数"] = format(packing_quantity, "f")
+    return values
+
 MAX_PRODUCT_IMAGE_BYTES = max(
     1,
     int(os.getenv("PRODUCT_IMAGE_MAX_BYTES", str(20 * 1024 * 1024))),
@@ -641,6 +668,7 @@ def list_skus(
                 ),
                 default_moq=row.sku.default_moq,
                 moq_unit=row.sku.moq_unit,
+                packing_quantity=_packing_quantity(row.sku.option_values),
                 public_price=offer.unit_price if offer else None,
                 public_currency=offer.currency if offer else None,
                 public_offer_status=offer.publication_status if offer else None,
@@ -1169,7 +1197,7 @@ def create_manual_product(
         product_id=product.id,
         sku_code=sku_code,
         name=request.sku_name or request.name,
-        option_values={},
+        option_values=_with_packing_quantity({}, request.packing_quantity),
         barcode=request.barcode,
         default_moq=request.default_moq,
         moq_unit=request.moq_unit,
@@ -1252,6 +1280,7 @@ def create_manual_product(
                     "barcode": sku.barcode,
                     "default_moq": request_snapshot["default_moq"],
                     "moq_unit": sku.moq_unit,
+                    "packing_quantity": request_snapshot["packing_quantity"],
                     "weight": request_snapshot["weight"],
                     "weight_unit": sku.weight_unit,
                     "status": sku.status,
@@ -1336,7 +1365,10 @@ def create_skus(
             product_id=product_id,
             sku_code=item.sku_code,
             name=item.name,
-            option_values=item.option_values,
+            option_values=_with_packing_quantity(
+                item.option_values,
+                item.packing_quantity,
+            ),
             barcode=item.barcode,
             default_moq=item.default_moq,
             moq_unit=item.moq_unit,

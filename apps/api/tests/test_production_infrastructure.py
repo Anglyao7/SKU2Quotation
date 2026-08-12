@@ -106,7 +106,6 @@ def test_production_compose_has_one_public_edge_and_private_dependencies() -> No
         "redis",
         "rabbitmq",
         "minio",
-        "clamav",
         "keycloak",
         "keycloak-postgres",
         "production-bootstrap",
@@ -171,13 +170,6 @@ def test_production_compose_has_one_public_edge_and_private_dependencies() -> No
     assert set(services["postgres"]["networks"]) == {"data"}
     assert set(services["keycloak-postgres"]["networks"]) == {"identity"}
     assert services["redis"]["command"][-1] == "noeviction"
-    assert services["clamav"]["environment"] == {
-        "CLAMD_CONF_StreamMaxLength": "260M",
-        "CLAMD_CONF_MaxFileSize": "250M",
-        "CLAMD_CONF_MaxScanSize": "500M",
-    }
-
-
 def test_production_workloads_are_pinned_bounded_and_health_checked() -> None:
     services = _compose()["services"]
     long_running = {
@@ -190,7 +182,6 @@ def test_production_workloads_are_pinned_bounded_and_health_checked() -> None:
         "redis",
         "rabbitmq",
         "minio",
-        "clamav",
         "keycloak",
         "keycloak-postgres",
     }
@@ -266,7 +257,6 @@ def test_compact_production_keeps_the_secure_core_without_heavy_daemons() -> Non
     assert environment["OBJECT_STORAGE_SECRET_ACCESS_KEY"] == (
         "${OBJECT_STORAGE_SECRET_ACCESS_KEY:-}"
     )
-    assert environment["FILE_SCANNER_PROFILE"] == "restricted"
     assert environment["FILE_WORKER_INLINE"] == "true"
     assert "atc_scheduler:" in environment["TENANT_DIRECTORY_DATABASE_URL"]
     assert environment["OUTBOX_PUBLISHER_PROFILE"] == "inline_database"

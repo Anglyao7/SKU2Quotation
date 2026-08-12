@@ -17,6 +17,49 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if op.get_bind().dialect.name == "sqlite":
+        category_columns = {
+            column["name"]
+            for column in sa.inspect(op.get_bind()).get_columns("product_categories")
+        }
+        if "cover_source" not in category_columns:
+            op.add_column(
+                "product_categories",
+                sa.Column(
+                    "cover_source",
+                    sa.String(20),
+                    nullable=False,
+                    server_default="NONE",
+                ),
+            )
+        if "cover_object_key" not in category_columns:
+            op.add_column(
+                "product_categories",
+                sa.Column("cover_object_key", sa.String(1000), nullable=True),
+            )
+        if "cover_product_id" not in category_columns:
+            op.add_column(
+                "product_categories",
+                sa.Column("cover_product_id", sa.Uuid(as_uuid=True), nullable=True),
+            )
+        profile_columns = {
+            column["name"]
+            for column in sa.inspect(op.get_bind()).get_columns(
+                "tenant_public_profiles"
+            )
+        }
+        if "category_showcase_enabled" not in profile_columns:
+            op.add_column(
+                "tenant_public_profiles",
+                sa.Column(
+                    "category_showcase_enabled",
+                    sa.Boolean(),
+                    nullable=False,
+                    server_default=sa.true(),
+                ),
+            )
+        return
+
     with op.batch_alter_table("product_categories") as batch:
         batch.add_column(
             sa.Column(
@@ -47,6 +90,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "sqlite":
+        profile_columns = {
+            column["name"]
+            for column in sa.inspect(op.get_bind()).get_columns(
+                "tenant_public_profiles"
+            )
+        }
+        if "category_showcase_enabled" in profile_columns:
+            op.drop_column("tenant_public_profiles", "category_showcase_enabled")
+        category_columns = {
+            column["name"]
+            for column in sa.inspect(op.get_bind()).get_columns("product_categories")
+        }
+        for column_name in (
+            "cover_product_id",
+            "cover_object_key",
+            "cover_source",
+        ):
+            if column_name in category_columns:
+                op.drop_column("product_categories", column_name)
+        return
+
     with op.batch_alter_table("tenant_public_profiles") as batch:
         batch.drop_column("category_showcase_enabled")
 

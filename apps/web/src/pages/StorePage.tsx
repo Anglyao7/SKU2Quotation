@@ -28,6 +28,7 @@ import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
+import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
@@ -762,6 +763,7 @@ export function StorePage() {
                   toLight: t("切换浅色模式"),
                 }}
               />
+              <StorefrontVisitorEntry tenantSlug={tenantSlug} locale={locale} />
               <CartDrawer
                 slug={tenantSlug}
                 storeName={store.name}
@@ -999,6 +1001,7 @@ export function StorePage() {
                     <ProductCard
                       key={product.id}
                       product={product}
+                      tenantSlug={tenantSlug}
                       detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
                       onOpenDetails={rememberCatalogPosition}
                       onPrefetchDetails={() => prefetchProductDetails(product.id)}

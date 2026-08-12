@@ -7,7 +7,7 @@ Revises: 20260810_0074
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 from sqlalchemy.dialects import postgresql
 
 
@@ -24,28 +24,43 @@ JSON_DOCUMENT = sa.JSON().with_variant(
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("merchant_identity_profiles") as batch:
-        batch.drop_constraint(
-            "ck_merchant_identity_profiles_code_allowed",
-            type_="check",
-        )
-        batch.add_column(
-            sa.Column(
-                "is_system",
-                sa.Boolean(),
-                nullable=False,
-                server_default=sa.false(),
+    bind = op.get_bind()
+    offline = context.is_offline_mode()
+    profile_columns = set() if offline else {
+        column["name"]
+        for column in sa.inspect(bind).get_columns("merchant_identity_profiles")
+    }
+    # SQLite batch DDL is non-transactional. A process interrupted between
+    # rebuilding this table and advancing alembic_version can leave the new
+    # column in place. Treat that shape as resumable instead of failing on a
+    # second attempt to drop the already-removed legacy check constraint.
+    if "is_system" not in profile_columns:
+        with op.batch_alter_table("merchant_identity_profiles") as batch:
+            batch.drop_constraint(
+                "ck_merchant_identity_profiles_code_allowed",
+                type_="check",
             )
-        )
+            batch.add_column(
+                sa.Column(
+                    "is_system",
+                    sa.Boolean(),
+                    nullable=False,
+                    server_default=sa.false(),
+                )
+            )
     op.execute(
         "UPDATE merchant_identity_profiles "
         "SET is_system = true WHERE code IN ('ADMIN', 'USER')"
     )
 
-    with op.batch_alter_table("memberships") as batch:
-        batch.add_column(
-            sa.Column("permission_overrides", JSON_DOCUMENT, nullable=True)
-        )
+    membership_columns = set() if offline else {
+        column["name"] for column in sa.inspect(bind).get_columns("memberships")
+    }
+    if "permission_overrides" not in membership_columns:
+        with op.batch_alter_table("memberships") as batch:
+            batch.add_column(
+                sa.Column("permission_overrides", JSON_DOCUMENT, nullable=True)
+            )
 
 
 def downgrade() -> None:

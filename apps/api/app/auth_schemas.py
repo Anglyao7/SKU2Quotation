@@ -12,6 +12,7 @@ from pydantic import (
 
 from .localization import UiLocale
 from .storefront_locales import StorefrontLocale
+from .tenant_subscriptions import TenantSubscriptionTier
 
 
 class LoginRequest(BaseModel):
@@ -103,6 +104,7 @@ class AuthContext(BaseModel):
     default_currency: str | None
     default_workspace: str | None
     account_scope: Literal["STAFF", "CUSTOMER_SUBACCOUNT"] | None = None
+    subscription_tier: TenantSubscriptionTier | None = None
 
 
 class MembershipSummary(BaseModel):

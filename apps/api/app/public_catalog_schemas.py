@@ -208,6 +208,7 @@ class PublicQuoteDraftResponse(BaseModel):
     total_amount: Decimal
     valid_until: datetime
     created_at: datetime
+    updated_at: datetime
     content_hash: str
     disclaimer: str = PUBLIC_DRAFT_DISCLAIMER
     disclaimer_version: str = PUBLIC_DRAFT_DISCLAIMER_VERSION
@@ -229,6 +230,11 @@ class PublicQuoteDraftSummary(BaseModel):
     total_amount: Decimal
     valid_until: datetime
     created_at: datetime
+    updated_at: datetime
+
+
+class PublicQuoteDraftStatusUpdate(BaseModel):
+    status: Literal["CONFIRMED", "COMPLETED", "CANCELLED"]
 
 
 class PublicQuoteDocument(BaseModel):

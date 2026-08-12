@@ -128,8 +128,9 @@
   翻译流程。
 - [`ai_data_models.py`](../apps/api/app/ai_data_models.py)：通用 `AITaskRow`、provider route 和
   source evidence 基础。
-- [`file_security_models.py`](../apps/api/app/file_security_models.py)、对象存储和 scanner port：
-  私有文件、哈希、隔离区、扫描状态及 Cloudflare R2/S3-compatible 存储能力。
+- [`file_security_models.py`](../apps/api/app/file_security_models.py) 与对象存储：
+  私有文件、哈希、历史兼容状态及 Cloudflare R2/S3-compatible 存储能力。后台知识文件不再
+  经过恶意内容扫描，完成格式解析与向量化后直接可用。
 - 前端客服窗口和 [`SupportCenterPage.tsx`](../apps/web/src/core/pages/SupportCenterPage.tsx)：
   客户消息与人工客服工作台。
 
@@ -157,7 +158,7 @@
 Product/SKU change ─────>│ Customer Product Projector│
                          └────────────┬─────────────┘
                                       │
-File upload -> R2 -> scan -> parse ───┤
+File upload -> R2 -> validate -> parse ┤
                                       ▼
                          Knowledge Source + Versions
                                       │

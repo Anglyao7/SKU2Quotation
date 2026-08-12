@@ -200,7 +200,7 @@ export function SupportAIAgentDetailPage() {
               <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("回答策略")}</Text><Heading size="5">{t("知识与回复")}</Heading></div><Robot weight="duotone" /></div>
               <div className="support-agent-policy-switches">
                 <label className="support-agent-switch"><span><strong>{t("SKU 商品知识")}</strong><small>{t("检索公开商品资料")}</small></span><Switch checked={skuKnowledgeEnabled} onCheckedChange={setSkuKnowledgeEnabled} /></label>
-                <label className="support-agent-switch"><span><strong>{t("文件知识库")}</strong><small>{t("使用已批准知识文件")}</small></span><Switch checked={fileKnowledgeEnabled} onCheckedChange={setFileKnowledgeEnabled} /></label>
+                <label className="support-agent-switch"><span><strong>{t("文件知识库")}</strong><small>{t("使用已处理知识文件")}</small></span><Switch checked={fileKnowledgeEnabled} onCheckedChange={setFileKnowledgeEnabled} /></label>
                 <label className="support-agent-switch"><span><strong>{t("多语言回答")}</strong><small>{t("按访客语言回复")}</small></span><Switch checked={multilingualEnabled} onCheckedChange={setMultilingualEnabled} /></label>
               </div>
               <div className="support-agent-form-grid">
@@ -212,7 +212,7 @@ export function SupportAIAgentDetailPage() {
                 <label><Text size="1" color="gray">{t("每日自动回复上限")}</Text><TextField.Root type="number" min="1" max="100000" value={dailyLimit} onChange={(event) => setDailyLimit(event.target.value)} /></label>
                 <label className="support-agent-wide"><Text size="1" color="gray">{t("系统提示词（选填）")}</Text><TextArea value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} maxLength={12000} /></label>
               </div>
-              <Text size="1" color="gray">{t("寒暄回复会由 AI 基于以上已批准内容生成；内部说明和系统提示词不会被当作企业事实。")}</Text>
+              <Text size="1" color="gray">{t("寒暄回复会由 AI 基于以上对客内容生成；内部说明和系统提示词不会被当作企业事实。")}</Text>
               <div className="support-agent-card-actions"><Button type="submit" loading={busy === "basic"} disabled={!name.trim() || !policyValid || Boolean(busy)}><FloppyDisk />{t("保存智能体配置")}</Button></div>
             </Card>
           </form>

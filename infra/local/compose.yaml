@@ -6,7 +6,7 @@ x-image-build: &image-build
   args:
     ATC_RELEASE: local-compose
     ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:-local}
-    ATC_MIGRATION_HEAD: "20260811_0078"
+    ATC_MIGRATION_HEAD: "20260812_0079"
     ATC_CONFIG_VERSION: local-compose-v1
 
 x-runtime-environment: &runtime-environment
@@ -42,6 +42,7 @@ x-runtime-environment: &runtime-environment
   LOCAL_LOGIN_PASSWORD: ${LOCAL_LOGIN_PASSWORD:-zhimaoyun123}
   LOCAL_LOGIN_PHONE: ${LOCAL_LOGIN_PHONE:-}
   PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8000}
+  PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
   TEXT_EMBEDDING_PROFILE: ${TEXT_EMBEDDING_PROFILE:-deterministic}
   TEXT_EMBEDDING_API_KEY: ${TEXT_EMBEDDING_API_KEY:-}
   TEXT_EMBEDDING_BASE_URL: ${TEXT_EMBEDDING_BASE_URL:-}
@@ -86,16 +87,16 @@ x-runtime-environment: &runtime-environment
   PUBLIC_TRANSLATION_CLEANUP_BATCH_SIZE: ${PUBLIC_TRANSLATION_CLEANUP_BATCH_SIZE:-500}
   STOREFRONT_ANALYTICS_RAW_IP_RETENTION_DAYS: ${STOREFRONT_ANALYTICS_RAW_IP_RETENTION_DAYS:-60}
   TRUST_CLOUDFLARE_VISITOR_HEADERS: "false"
-  OBJECT_STORAGE_BACKEND: s3
-  OBJECT_STORAGE_BUCKET: atc-local-files
-  OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
-  OBJECT_STORAGE_REGION: us-east-1
-  AWS_DEFAULT_REGION: us-east-1
+  OBJECT_STORAGE_BACKEND: ${OBJECT_STORAGE_BACKEND:-s3}
+  OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-atc-local-files}
+  OBJECT_STORAGE_ENDPOINT_URL: ${OBJECT_STORAGE_ENDPOINT_URL:-http://minio:9000}
+  OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+  OBJECT_STORAGE_ACCESS_KEY_ID: ${OBJECT_STORAGE_ACCESS_KEY_ID:-}
+  OBJECT_STORAGE_SECRET_ACCESS_KEY: ${OBJECT_STORAGE_SECRET_ACCESS_KEY:-}
+  PRODUCT_TEMPLATE_IMAGE_UPLOAD_CONCURRENCY: ${PRODUCT_TEMPLATE_IMAGE_UPLOAD_CONCURRENCY:-6}
+  AWS_DEFAULT_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
   AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-atclocal}
   AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-atc-local-minio-password}
-  FILE_SCANNER_PROFILE: clamav
-  CLAMAV_HOST: clamav
-  CLAMAV_PORT: "3310"
   FILE_WORKER_INLINE: "false"
   OUTBOX_PUBLISHER_PROFILE: rabbitmq
   RABBITMQ_URL: amqp://${RABBITMQ_USER:-atc_local}:${RABBITMQ_PASSWORD:-atc-local-rabbitmq}@rabbitmq:5672/atc
@@ -188,23 +189,6 @@ services:
       - no-new-privileges:true
     networks: [data]
 
-  clamav:
-    image: clamav/clamav:1.5.2
-    environment:
-      CLAMD_CONF_StreamMaxLength: 260M
-      CLAMD_CONF_MaxFileSize: 250M
-      CLAMD_CONF_MaxScanSize: 500M
-    volumes:
-      - clamav-data:/var/lib/clamav
-    healthcheck:
-      test: ["CMD-SHELL", "clamdscan --ping=1 --wait=30 >/dev/null 2>&1"]
-      interval: 15s
-      timeout: 35s
-      start_period: 120s
-      retries: 10
-    restart: unless-stopped
-    networks: [data, egress]
-
   db-bootstrap:
     image: atc-migration-local:${ATC_COMMIT_SHA:-local}
     build:
@@ -295,8 +279,6 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-      clamav:
-        condition: service_healthy
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -384,4 +366,3 @@ volumes:
   redis-data:
   rabbitmq-data:
   minio-data:
-  clamav-data:

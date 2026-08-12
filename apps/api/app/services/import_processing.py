@@ -38,7 +38,7 @@ def process_import(
         source_file = job.source_file
         if source_file.security_status not in {"ACCEPTED", "LEGACY_ACCEPTED"}:
             job.status = "failed"
-            job.error_message = "文件尚未通过安全扫描，禁止解析。"
+            job.error_message = "文件尚未完成接收，暂时无法解析。"
             session.commit()
             return
         path = source_path or Path(source_file.local_path)

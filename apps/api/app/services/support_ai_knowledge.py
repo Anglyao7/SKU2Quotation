@@ -324,13 +324,13 @@ def index_knowledge_source(
     source: SupportAIKnowledgeSourceRow,
     job: SupportAIIngestionJobRow,
 ) -> None:
-    previously_approved = (
-        source.status == "APPROVED" and source.approved_at is not None
+    previously_available = (
+        source.status in {"READY", "APPROVED"} and source.chunk_count > 0
     )
     job.status = "RUNNING"
     job.progress = 5
     job.started_at = utcnow()
-    if not previously_approved:
+    if not previously_available:
         source.status = "PROCESSING"
     source.failure_code = None
     source.failure_message = None
@@ -343,12 +343,11 @@ def index_knowledge_source(
             MediaObjectRow.tenant_id == source.tenant_id,
             MediaObjectRow.id == media,
             MediaObjectRow.status == "AVAILABLE",
-            MediaObjectRow.scan_status == "CLEAN",
         )
     )
     if media_row is None:
         raise KnowledgeIngestionError(
-            "KNOWLEDGE_MEDIA_UNAVAILABLE", "知识文件不存在或尚未通过安全扫描。"
+            "KNOWLEDGE_MEDIA_UNAVAILABLE", "知识文件不存在或当前不可用。"
         )
     with get_object_storage().materialize(media_row.object_key) as path:
         blocks, parser, parser_version = parse_knowledge_file(
@@ -402,7 +401,9 @@ def index_knowledge_source(
     source.language = detected_language
     source.chunk_count = len(chunks)
     source.version += 1
-    source.status = "APPROVED" if previously_approved else "READY"
+    source.status = "APPROVED"
+    source.approved_at = utcnow()
+    source.approved_by_user_id = source.created_by_user_id
     job.status = "SUCCEEDED"
     job.progress = 100
     job.chunks_written = len(chunks)

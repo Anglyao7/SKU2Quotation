@@ -49,7 +49,7 @@ const priorityKeys = [
 ];
 
 const importStatusLabel: Record<string, string> = {
-  scanning: "安全扫描",
+  scanning: "读取文件",
   parsing: "导入中",
   needs_review: "待复核",
   published: "已完成",

@@ -15,11 +15,11 @@ infra/
 docker-compose.yml
 ```
 
-主要技术栈：Python 3.12、FastAPI、React 19、TypeScript、PostgreSQL 16、pgvector、Redis、RabbitMQ、S3-compatible object storage 与 ClamAV。
+主要技术栈：Python 3.12、FastAPI、React 19、TypeScript、PostgreSQL 16、pgvector、Redis、RabbitMQ 与 S3-compatible object storage。
 
 ## 轻量本地开发
 
-轻量模式不要求 Docker。API 默认使用 `apps/api/var/mercator.db`，启动时自动执行 Alembic 并初始化脱敏演示租户；文件存储、扫描、消息发布和图片特征使用明确的本地开发适配器。
+轻量模式不要求 Docker。API 默认使用 `apps/api/var/mercator.db`，启动时自动执行 Alembic 并初始化脱敏演示租户；文件存储、消息发布和图片特征使用明确的本地开发适配器。
 
 启动 API：
 
@@ -50,15 +50,15 @@ VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 
 ## 完整 Docker Compose
 
-完整模式会启动 PostgreSQL + pgvector、Redis、RabbitMQ、MinIO、ClamAV、API、文件 Worker、Outbox Relay、产品事件消费者和 Web。启动过程会自动创建隔离数据库角色、执行 Alembic、应用运行权限、创建对象桶和消息拓扑，并初始化演示数据。
+完整模式会启动 PostgreSQL + pgvector、Redis、RabbitMQ、MinIO、API、文件 Worker、Outbox Relay、产品事件消费者和 Web。启动过程会自动创建隔离数据库角色、执行 Alembic、应用运行权限、创建对象桶和消息拓扑，并初始化演示数据。
 
 ```bash
 cp .env.example .env
-docker compose up --build -d
+docker compose up --build -d --remove-orphans
 docker compose ps
 ```
 
-首次构建 MinIO 并下载 ClamAV 病毒库可能耗时较长。默认端点：
+首次构建 MinIO 镜像可能耗时较长。默认端点：
 
 | 服务 | 地址 |
 |---|---|
@@ -70,7 +70,7 @@ docker compose ps
 
 若修改 `ATC_API_PORT`，也要把 `.env` 中的 `PUBLIC_BASE_URL` 改成同一个浏览器可达端口，确保报价下载链接有效。
 
-所有宿主机端口只绑定 `127.0.0.1`。PostgreSQL、Redis、RabbitMQ、MinIO 与 ClamAV 位于内部数据网络；本配置仅用于 Local/CI，不是生产部署方案。
+所有宿主机端口只绑定 `127.0.0.1`。PostgreSQL、Redis、RabbitMQ 与 MinIO 位于内部数据网络；本配置仅用于 Local/CI，不是生产部署方案。
 
 公网正式环境不要直接修改本地 Compose。域名、HTTPS、自托管 OIDC、
 最小暴露面、不可变提交部署、回滚和灾备步骤见

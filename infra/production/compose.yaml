@@ -6,7 +6,7 @@ x-api-build: &api-build
   args:
     ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
     ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
-    ATC_MIGRATION_HEAD: "20260811_0078"
+    ATC_MIGRATION_HEAD: "20260812_0079"
     ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
 
 x-api-environment: &api-environment
@@ -15,7 +15,7 @@ x-api-environment: &api-environment
   ATC_STRICT_RUNTIME: "true"
   ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
   ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
-  ATC_MIGRATION_HEAD: "20260811_0078"
+  ATC_MIGRATION_HEAD: "20260812_0079"
   ATC_IMAGE_DIGEST: ${ATC_IMAGE_DIGEST:?ATC_IMAGE_DIGEST is required}
   ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
   BOOTSTRAP_TENANT_SLUG: ${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}
@@ -111,10 +111,6 @@ x-api-environment: &api-environment
   AWS_DEFAULT_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
   AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
   AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
-  FILE_SCANNER_PROFILE: clamav
-  CLAMAV_HOST: clamav
-  CLAMAV_PORT: "3310"
-  CLAMAV_TIMEOUT_SECONDS: ${CLAMAV_TIMEOUT_SECONDS:-30}
   FILE_WORKER_INLINE: "false"
   OUTBOX_PUBLISHER_PROFILE: rabbitmq
   RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/atc
@@ -289,8 +285,6 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      clamav:
-        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -317,7 +311,7 @@ services:
       ATC_PERSISTENCE_MODE: postgresql
       ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
       ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
-      ATC_MIGRATION_HEAD: "20260811_0078"
+      ATC_MIGRATION_HEAD: "20260812_0079"
       ATC_IMAGE_DIGEST: ${ATC_IMAGE_DIGEST:?ATC_IMAGE_DIGEST is required}
       ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
       AUTO_MIGRATE: "false"
@@ -333,10 +327,6 @@ services:
       AWS_DEFAULT_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
-      FILE_SCANNER_PROFILE: clamav
-      CLAMAV_HOST: clamav
-      CLAMAV_PORT: "3310"
-      CLAMAV_TIMEOUT_SECONDS: ${CLAMAV_TIMEOUT_SECONDS:-30}
       FILE_WORKER_INLINE: "false"
       OUTBOX_PUBLISHER_PROFILE: rabbitmq
       RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/atc
@@ -368,7 +358,7 @@ services:
       ATC_PERSISTENCE_MODE: postgresql
       ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
       ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
-      ATC_MIGRATION_HEAD: "20260811_0078"
+      ATC_MIGRATION_HEAD: "20260812_0079"
       ATC_IMAGE_DIGEST: ${ATC_IMAGE_DIGEST:?ATC_IMAGE_DIGEST is required}
       ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
       AUTO_MIGRATE: "false"
@@ -499,30 +489,6 @@ services:
         reservations:
           memory: 256M
     networks: [data]
-
-  clamav:
-    <<: *service-defaults
-    image: clamav/clamav:1.5.2
-    environment:
-      CLAMD_CONF_StreamMaxLength: 260M
-      CLAMD_CONF_MaxFileSize: 250M
-      CLAMD_CONF_MaxScanSize: 500M
-    volumes:
-      - clamav-data:/var/lib/clamav
-    healthcheck:
-      test: ["CMD-SHELL", "clamdscan --ping=1 --wait=30 >/dev/null 2>&1"]
-      interval: 30s
-      timeout: 35s
-      start_period: 180s
-      retries: 10
-    deploy:
-      resources:
-        limits:
-          cpus: "1.00"
-          memory: 2G
-        reservations:
-          memory: 768M
-    networks: [data, egress]
 
   keycloak-postgres:
     <<: *service-defaults
@@ -798,5 +764,4 @@ volumes:
   redis-data:
   rabbitmq-data:
   minio-data:
-  clamav-data:
   keycloak-postgres-data:

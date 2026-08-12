@@ -14,6 +14,8 @@ import type { UiLocale } from "./types";
 const STORAGE_KEY = "zhimaoyun.console.locale";
 
 const english: Record<string, string> = {
+  "支持新版双表、历史模板和单元格内嵌图片":
+    "Supports Product + SKU workbooks, legacy templates, and images embedded in cells",
   "工作": "Workspace",
   "概览": "Overview",
   "AI 搜索": "AI Search",
@@ -105,7 +107,7 @@ const english: Record<string, string> = {
   "对客服务范围（AI 可引用）": "Public service scope (AI-approved)",
   "填写经管理员确认、允许向客户公开的一句话或短介绍。": "Enter a short, administrator-approved introduction that may be shown to customers.",
   "例如产品选型、规格、MOQ、包装与售前咨询。": "For example: product selection, specifications, MOQ, packaging, and pre-sales support.",
-  "寒暄回复会由 AI 基于以上已批准内容生成；内部说明和系统提示词不会被当作企业事实。": "AI generates social replies from the approved content above; internal descriptions and system prompts are not treated as company facts.",
+  "寒暄回复会由 AI 基于以上对客内容生成；内部说明和系统提示词不会被当作企业事实。": "AI generates social replies from the customer-facing content above; internal descriptions and system prompts are not treated as company facts.",
   "说明（选填）": "Description (optional)",
   "单次最大来源数": "Maximum sources per answer",
   "最低检索分数": "Minimum retrieval score",
@@ -114,7 +116,7 @@ const english: Record<string, string> = {
   "多语言回答": "Multilingual answers",
   "SKU 商品知识": "SKU product knowledge",
   "检索公开商品资料": "Search public product data",
-  "使用已批准知识文件": "Use approved knowledge files",
+  "使用已处理知识文件": "Use processed knowledge files",
   "按访客语言回复": "Reply in the visitor's language",
   "超时时间（秒）": "Timeout (seconds)",
   "最大输出 Token": "Maximum output tokens",
@@ -157,10 +159,11 @@ const english: Record<string, string> = {
   "知识库加载失败": "Could not load the knowledge base",
   "知识文件上传失败": "Could not upload the knowledge file",
   "知识文件操作失败": "Could not update the knowledge file",
-  "知识文件已批准": "Knowledge file approved",
   "知识文件已撤销": "Knowledge file revoked",
   "知识文件已重新提交处理": "Knowledge file submitted for reprocessing",
   "知识文件已提交到智能体绑定的店铺": "Knowledge file submitted to the agent's bound stores",
+  "处理中": "Processing",
+  "处理失败": "Processing failed",
   "商品": "Products",
   "SKU 商品库": "SKU Catalog",
   "导出": "Export",
@@ -776,7 +779,7 @@ const english: Record<string, string> = {
   "今日询盘": "Today's inquiries",
   "进行中询盘": "Open inquiries",
   "待确认报价": "Quotations to review",
-  "安全扫描": "Security scan",
+  "读取文件": "Reading file",
   "导入中": "Importing",
   "待复核": "Needs review",
   "已完成": "Completed",
@@ -1071,6 +1074,12 @@ const english: Record<string, string> = {
   "条码": "Barcode",
   "起订数": "MOQ",
   "起订单位": "MOQ unit",
+  "装箱数": "Units per carton",
+  "起订 / 装箱": "MOQ / carton",
+  "起订：未设置": "MOQ: not set",
+  "起订：{value}": "MOQ: {value}",
+  "装箱：未设置": "Carton: not set",
+  "装箱：{value}": "Carton: {value}",
   "毛重": "Gross weight",
   "重量单位": "Weight unit",
   "例如 多功能，便携，旅行用品": "e.g. multi-purpose, portable, travel gear",
@@ -1084,6 +1093,12 @@ const english: Record<string, string> = {
   "商品创建失败，请稍后重试。": "Could not create the product. Try again shortly.",
   "价格、起订数和重量必须是大于或等于 0 的数字。":
     "Price, MOQ, and weight must be numbers greater than or equal to zero.",
+  "价格、起订数、装箱数和重量必须是大于或等于 0 的数字。":
+    "Price, MOQ, units per carton, and weight must be numbers greater than or equal to zero.",
+  "起订数和装箱数必须是大于或等于 0 的数字。":
+    "MOQ and units per carton must be numbers greater than or equal to zero.",
+  "起订数、装箱数和价格必须是大于或等于 0 的数字。":
+    "MOQ, units per carton, and price must be numbers greater than or equal to zero.",
   "商品“{name}”已创建，可以继续添加更多 SKU。":
     "Product “{name}” was created. You can now add more SKUs.",
   "使用 Product 与 SKU 双表模板批量维护商品主数据，并在每个商品下管理不同 SKU、规格、价格与供应商。":
@@ -1274,8 +1289,8 @@ const english: Record<string, string> = {
   "正在确认文件类型与扩展名": "Verifying the file type and extension",
   "上传进度 {percent}%，请勿关闭页面":
     "Upload {percent}% complete. Keep this page open.",
-  "服务器已收到文件，即将进入安全检查和数据校验":
-    "The server has received the file and will begin security and data validation.",
+  "服务器已收到文件，即将读取并校验商品数据":
+    "The server has received the file and will begin reading and validating product data.",
   "本次未写入商品 · 共发现 {count} 个问题":
     "No products were written · {count} issues found",
   "正在读取工作簿": "Reading workbook",
@@ -1286,7 +1301,7 @@ const english: Record<string, string> = {
   "正在完成导入": "Finalizing import",
   "商品导入完成": "Product import complete",
   "数据校验未通过": "Data validation failed",
-  "正在进行文件安全检查": "Running file security checks",
+  "正在读取上传文件": "Reading the uploaded file",
   "正在处理商品数据": "Processing product data",
   "已处理 {processed} / {total} 行":
     "Processed {processed} of {total} rows",
@@ -1430,9 +1445,9 @@ const english: Record<string, string> = {
   "剩余 {remaining} 个 SKU · 断点 {time}": "{remaining} SKUs remaining · checkpoint {time}",
   "从断点继续": "Resume from checkpoint",
   "运行模式": "Run mode",
-  "安全存储 + 智能索引": "Secure storage + intelligent indexing",
-  "最大 25 MB；文件会先进行安全扫描，再加密存储并异步解析。":
-    "Maximum 25 MB. Files are security-scanned, stored securely, and parsed asynchronously.",
+  "存储 + 智能索引": "Storage + intelligent indexing",
+  "最大 25 MB；文件上传后会直接存储并异步解析。":
+    "Maximum 25 MB. Files are stored and parsed asynchronously after upload.",
   "翻译任务已从断点继续，只会处理剩余商品。":
     "Translation resumed from its checkpoint. Only remaining products will be processed.",
   "已发布版本 v{version}": "Published version v{version}",
@@ -1939,11 +1954,11 @@ const english: Record<string, string> = {
   "默认 1 个月": "1 month by default",
   "基础版": "Standard plan",
   "进阶版": "Silver plan",
-  "高级版": "Elite plan",
+  "企业版": "Enterprise plan",
   "默认 1 个月 · 500 SKU": "1 month by default · 500 SKUs",
   "基础版 · 5000 SKU": "Standard plan · 5,000 SKUs",
   "进阶版 · 5000 SKU": "Silver plan · 5,000 SKUs",
-  "高级版 · SKU 不限": "Elite plan · Unlimited SKUs",
+  "企业版 · SKU 不限": "Enterprise plan · Unlimited SKUs",
   "SKU 配额": "SKU quota",
   "SKU 配额：{used} / {limit}": "SKU quota: {used} / {limit}",
   "不限": "Unlimited",

@@ -58,7 +58,10 @@ from ..services.rbac import list_permissions
 from ..tenant_modules import merchant_identity_is_platform_admin
 from ..domain.errors import ApplicationError
 from ..localization import normalize_ui_locale
-from ..use_cases.authentication import get_current_user
+from ..use_cases.authentication import (
+    get_current_user,
+    get_tenant_subscription_tier,
+)
 from ..use_cases import tenant_settings, user_preferences
 from .errors import application_http_error
 
@@ -102,6 +105,7 @@ def _token_response(
     business_session: Session,
 ) -> AuthTokenResponse:
     permissions: list[str] = []
+    subscription_tier = None
     if result.membership is not None and result.tenant is not None:
         set_request_context(
             business_session,
@@ -115,6 +119,10 @@ def _token_response(
                 tenant_id=result.tenant.id,
                 user_id=result.user.id,
             )
+        )
+        subscription_tier = get_tenant_subscription_tier(
+            business_session,
+            tenant_id=result.tenant.id,
         )
     return AuthTokenResponse(
         data=AuthTokenData(
@@ -166,6 +174,7 @@ def _token_response(
                 account_scope=(
                     result.membership.account_scope if result.membership else None
                 ),
+                subscription_tier=subscription_tier,
             ),
             memberships=[
                 MembershipSummary(

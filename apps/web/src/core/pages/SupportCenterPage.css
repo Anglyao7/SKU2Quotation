@@ -65,7 +65,7 @@
 .support-translated-preview textarea { background: var(--color-panel-solid); }
 .support-translation-hint { color: var(--gray-9); font-size: 10px; line-height: 1.45; }
 .support-translation-error { margin: 0; padding: 7px 9px; border-radius: 9px; color: var(--red-11); background: var(--red-a3); font-size: 11px; line-height: 1.45; }
-.support-composer-actions { display: grid; justify-items: stretch; gap: 6px; }
+.support-composer-actions { display: grid; justify-items: stretch; gap: 8px; }
 .support-composer-actions > button:not([class]) { border: 0; padding: 3px 8px; color: var(--gray-9); background: transparent; font: inherit; font-size: 10px; cursor: pointer; }
 .support-composer-actions > button:not([class]):hover { color: var(--gray-12); }
 

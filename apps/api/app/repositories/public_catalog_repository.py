@@ -941,6 +941,31 @@ def list_quote_drafts(
     )
 
 
+def list_quote_drafts_by_visitor_token_hash(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    visitor_token_hash: str,
+    limit: int = 100,
+) -> list[PublicQuoteDraftRow]:
+    return list(
+        session.scalars(
+            select(PublicQuoteDraftRow)
+            .where(
+                PublicQuoteDraftRow.tenant_id == tenant_id,
+                PublicQuoteDraftRow.visitor_token_hash == visitor_token_hash,
+                PublicQuoteDraftRow.deleted_at.is_(None),
+            )
+            .order_by(
+                PublicQuoteDraftRow.updated_at.desc(),
+                PublicQuoteDraftRow.created_at.desc(),
+                PublicQuoteDraftRow.id,
+            )
+            .limit(limit)
+        ).all()
+    )
+
+
 def list_quote_draft_items(
     session: Session, *, tenant_id: UUID, quote_draft_id: UUID
 ) -> list[PublicQuoteDraftItemRow]:

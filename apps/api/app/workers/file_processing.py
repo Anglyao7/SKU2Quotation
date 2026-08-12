@@ -8,7 +8,6 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from ..adapters.file_scanner import get_file_scanner
 from ..adapters.object_storage import get_object_storage
 from ..database import set_request_context
 from ..ports.file_scanner import FileScannerPort
@@ -80,16 +79,14 @@ def _record_retry(
     job.available_at = now + timedelta(seconds=min(60, 2 ** max(0, job.attempt_count - 1)))
     job.lease_owner = None
     job.lease_expires_at = None
-    job.safe_error_code = (
-        "FILE_IMPORT_PIPELINE_ERROR" if promoted else "FILE_SECURITY_PIPELINE_ERROR"
-    )
+    job.safe_error_code = "FILE_IMPORT_PIPELINE_ERROR"
     job.safe_error_message = (
         f"File import pipeline failed: {type(error).__name__}."
         if promoted
-        else f"File security pipeline failed: {type(error).__name__}."
+        else f"File intake pipeline failed: {type(error).__name__}."
     )
     checkpoint = dict(job.checkpoint)
-    checkpoint["last_error_stage"] = "IMPORT" if promoted else "SECURITY"
+    checkpoint["last_error_stage"] = "IMPORT" if promoted else "INTAKE"
     checkpoint["last_error_type"] = type(error).__name__
     if template_snapshot_committed:
         checkpoint["template_snapshot_committed"] = True
@@ -113,19 +110,19 @@ def _record_retry(
             import_job.error_message = (
                 "文件导入处理失败并已停止重试。"
                 if terminal
-                else "文件导入处理暂时失败，将从已通过检查的源文件自动重试。"
+                else "文件导入处理暂时失败，将从已接收的源文件自动重试。"
             )
     else:
         media.status = "QUARANTINED"
         media.scan_status = "ERROR"
-        media.scan_result = {"code": "SCANNER_OR_STORAGE_ERROR"}
+        media.scan_result = {"code": "FILE_INTAKE_ERROR"}
         media.scan_at = now
         source.security_status = "SCAN_ERROR"
         import_job.status = "failed" if terminal else "scanning"
         import_job.error_message = (
-            "文件安全检查失败并已停止重试。"
+            "文件接收失败并已停止重试。"
             if terminal
-            else "文件安全检查暂时失败，等待自动重试。"
+            else "文件接收暂时失败，等待自动重试。"
         )
     if terminal:
         job.completed_at = now
@@ -147,7 +144,6 @@ def process_file_worker_job(
     now: datetime | None = None,
 ) -> FileWorkerResult:
     storage = storage or get_object_storage()
-    scanner = scanner or get_file_scanner()
     now = now or _now()
     _bind_worker_context(session, tenant_id)
     existing = load_file_job_graph(session, tenant_id=tenant_id, job_id=job_id)
@@ -207,17 +203,23 @@ def process_file_worker_job(
             import_job.progress = 10
             session.commit()
 
-            with storage.materialize(scan_key) as scan_path:
-                scan_result = scanner.scan(scan_path)
+            scan_result = None
+            if scanner is not None:
+                # Kept only as an explicit compatibility hook for isolated
+                # tests and legacy callers. Authenticated backoffice uploads
+                # do not provide a scanner and therefore proceed directly to
+                # format parsing.
+                with storage.materialize(scan_key) as scan_path:
+                    scan_result = scanner.scan(scan_path)
 
             _bind_worker_context(session, tenant_id)
             graph = load_file_job_graph(session, tenant_id=tenant_id, job_id=job_id)
             if graph is None:
                 raise RuntimeError("worker job graph disappeared")
             job, media, source, import_job = graph
-            media.scan_engine = scan_result.engine
-            media.scan_at = now
-            if not scan_result.clean:
+            media.scan_engine = scan_result.engine if scan_result is not None else None
+            media.scan_at = now if scan_result is not None else None
+            if scan_result is not None and not scan_result.clean:
                 if recovered_promotion:
                     # The object moved before the previous checkpoint, but it
                     # has now failed the repeated scan. Move it physically
@@ -237,7 +239,7 @@ def process_file_worker_job(
                 source.security_status = "QUARANTINED"
                 import_job.status = "failed"
                 import_job.progress = 100
-                import_job.error_message = "文件未通过安全检查，已隔离且不会进入解析流程。"
+                import_job.error_message = "文件处理已中止，未进入解析流程。"
                 import_job.completed_at = now
                 job.status = "SUCCEEDED"
                 checkpoint = dict(job.checkpoint)
@@ -263,12 +265,14 @@ def process_file_worker_job(
             media.zone = "SOURCE"
             media.status = "AVAILABLE"
             media.scan_status = "CLEAN"
-            media.scan_result = {"code": "CLEAN"}
+            media.scan_result = {
+                "code": "CLEAN" if scan_result is not None else "SCAN_NOT_REQUIRED"
+            }
             source.security_status = "ACCEPTED"
             local_path = storage.local_path(source_key)
             source.local_path = str(local_path) if local_path is not None else ""
             job.checkpoint = {
-                "scan": "CLEAN",
+                "scan": "CLEAN" if scan_result is not None else "NOT_REQUIRED",
                 "promoted": True,
                 "promotion_recovered": recovered_promotion,
             }
@@ -315,7 +319,7 @@ def process_file_worker_job(
                 job.status = "SUCCEEDED"
                 checkpoint = dict(job.checkpoint)
                 checkpoint.update({
-                    "scan": "CLEAN",
+                    "scan": checkpoint.get("scan", "NOT_REQUIRED"),
                     "promoted": True,
                     "outcome": outcome,
                     "imported": template_result.imported,
@@ -383,7 +387,7 @@ def process_file_worker_job(
         job.status = "SUCCEEDED" if workflow.status == "NEEDS_REVIEW" else "FAILED"
         checkpoint = dict(job.checkpoint)
         checkpoint.update({
-            "scan": "CLEAN",
+            "scan": checkpoint.get("scan", "NOT_REQUIRED"),
             "promoted": True,
             "outcome": "PARSED" if workflow.status == "NEEDS_REVIEW" else "PARSE_FAILED",
             "ai_task_id": str(workflow.task_id),

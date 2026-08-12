@@ -20,6 +20,7 @@ import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
+import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
@@ -193,6 +194,7 @@ export function SkuDetailPage() {
                   toLight: t("切换浅色模式"),
                 }}
               />
+              <StorefrontVisitorEntry tenantSlug={store.slug} locale={locale} />
               <CartDrawer
                 slug={store.slug}
                 storeName={store.name}

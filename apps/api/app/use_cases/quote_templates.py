@@ -5,7 +5,6 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
-from ..adapters.file_scanner import get_file_scanner
 from ..adapters.object_storage import get_object_storage
 from ..domain.errors import ApplicationError
 from ..model_mixins import mark_deleted
@@ -147,12 +146,6 @@ async def upload_template(
     committed = False
     try:
         with storage.materialize(stored.object_key) as path:
-            scan = get_file_scanner().scan(path)
-            if not scan.clean:
-                raise ApplicationError(
-                    "QUOTE_EXCEL_TEMPLATE_REJECTED",
-                    "The Excel template did not pass the security check.",
-                )
             inspection = inspect_quote_excel_template(path)
         storage.promote(
             quarantine_key=stored.object_key,

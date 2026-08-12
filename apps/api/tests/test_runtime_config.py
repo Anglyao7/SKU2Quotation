@@ -35,8 +35,6 @@ def _managed_environment(**overrides: str) -> dict[str, str]:
         "AUTH_REFRESH_RETRY_GRACE_SECONDS": "5",
         "OBJECT_STORAGE_BACKEND": "s3",
         "OBJECT_STORAGE_BUCKET": "atc-staging-files",
-        "FILE_SCANNER_PROFILE": "clamav",
-        "CLAMAV_HOST": "clamav.internal",
         "FILE_WORKER_INLINE": "false",
         "OUTBOX_PUBLISHER_PROFILE": "rabbitmq",
         "RABBITMQ_URL": "amqps://rabbitmq.internal/atc",
@@ -73,8 +71,6 @@ def test_compact_runtime_keeps_managed_security_and_accepts_local_infrastructure
         ATC_RUNTIME_PROFILE="compact",
         OBJECT_STORAGE_BACKEND="local",
         OBJECT_STORAGE_BUCKET="",
-        FILE_SCANNER_PROFILE="restricted",
-        CLAMAV_HOST="",
         FILE_WORKER_INLINE="true",
         TENANT_DIRECTORY_DATABASE_URL=(
             "postgresql+psycopg://atc_scheduler:secret@postgres/atc"
@@ -122,7 +118,6 @@ def test_managed_runtime_rejects_fake_adapters_and_placeholder_secrets() -> None
             AUTH_JWT_SECRET="atc-local-jwt-secret-not-for-staging",
             AUTH_TOKEN_PEPPER="replace-with-at-least-32-random-characters",
             OBJECT_STORAGE_BACKEND="local",
-            FILE_SCANNER_PROFILE="development",
             FILE_WORKER_INLINE="true",
             OUTBOX_PUBLISHER_PROFILE="memory",
             ATC_CORS_ORIGINS="http://localhost:5173",
@@ -134,7 +129,6 @@ def test_managed_runtime_rejects_fake_adapters_and_placeholder_secrets() -> None
         "AUTH_JWT_SECRET_INVALID",
         "AUTH_TOKEN_PEPPER_INVALID",
         "OBJECT_STORAGE_S3_REQUIRED",
-        "CLAMAV_SCANNER_REQUIRED",
         "INLINE_FILE_WORKER_FORBIDDEN",
         "RABBITMQ_OUTBOX_REQUIRED",
         "CORS_HTTPS_ORIGIN_REQUIRED",
