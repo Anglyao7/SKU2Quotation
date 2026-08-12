@@ -797,6 +797,9 @@ knowledge.approve
 - 每次生成都根据最新访客消息计算 `required_response_language`，同时写入 system prompt 和
   结构化输入；回答正文和 `detected_language` 必须使用该语言，店铺 locale、历史消息、证据
   语言及企业语气提示均不得覆盖它。
+- 短外语寒暄和短商品问句不得回退为店铺默认语言；服务端先识别常见词汇，生成模型
+  再以最新访客原文为唯一权威进行复核。从寒暄、商品说明到追问和无匹配引导，所有
+  对客句子都必须使用该语言，不得跟随中文知识库切换语言。
 - Retriever 使用多语言 Embedding，或对检索 query 生成受控翻译；不得翻译 SKU/订单号。
 - 首选与访客语言匹配的知识；缺失时可以跨语言检索并在回答阶段翻译。
 - customer citation title 可以按 locale 提供翻译；没有翻译时回退企业默认语言。

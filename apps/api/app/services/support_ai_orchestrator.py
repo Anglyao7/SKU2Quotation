@@ -54,7 +54,7 @@ from .translation_configuration import (
 logger = logging.getLogger(__name__)
 
 SUPPORT_AI_ORCHESTRATOR_VERSION = 4
-SUPPORT_AI_BASE_PROMPT_VERSION = 3
+SUPPORT_AI_BASE_PROMPT_VERSION = 4
 SUPPORT_AI_RECOMMENDATION_POLICY_VERSION = 1
 
 
@@ -92,15 +92,31 @@ def _required_response_language(*, question: str, locale_hint: str) -> str:
 
 
 def _with_required_response_language(system: str, *, language: str) -> str:
-    return system + (
-        "\nMandatory response-language rule for this turn: the latest visitor "
-        f"message uses {json.dumps(language)}. Write all customer-facing prose in "
-        "the answer field in that language. Set detected_language to that same "
-        "language. The storefront locale, evidence language, conversation history, "
-        "and merchant tone guidance must not override the latest visitor's language. "
-        "Keep product names, SKU codes, identifiers, numbers, and citation markers "
-        "unchanged when they must remain exact."
+    language_tag = json.dumps(language)
+    language_lock = (
+        "HIGHEST-PRIORITY OUTPUT LANGUAGE CONTRACT FOR THIS TURN:\n"
+        "1. Determine the natural language from the latest visitor message itself. "
+        "Do not infer it from the storefront locale, earlier messages, merchant "
+        "settings, evidence, product text, or source documents.\n"
+        f"2. The server's first-pass target language is {language_tag}. Use "
+        f"{language_tag} for every customer-facing sentence unless the latest "
+        "visitor message contains clear vocabulary or script proving another "
+        "language. In that case, the latest message is authoritative: correct the "
+        "language tag and answer in its actual language.\n"
+        "3. Write the entire answer, including greetings, explanations, caveats, "
+        "recommendations, follow-up questions, and no-match guidance, in that one "
+        "visitor language. Do not switch to Chinese or English merely because the "
+        "storefront, history, evidence, or merchant guidance uses it. Do not add a "
+        "second-language translation unless the visitor explicitly asks for one.\n"
+        "4. Set detected_language to the same BCP-47 language used by answer. Before "
+        "returning JSON, silently verify that every customer-facing sentence follows "
+        "this language contract; rewrite the answer if it does not.\n"
+        "5. Product names and proper nouns may remain as published when no approved "
+        "translation exists. Keep SKU/product/order identifiers, numbers, units, and "
+        "citation markers exact; this exception never permits the surrounding prose "
+        "to change language.\n"
     )
+    return language_lock + system
 
 
 DEFAULT_HANDOFF_MESSAGES = {

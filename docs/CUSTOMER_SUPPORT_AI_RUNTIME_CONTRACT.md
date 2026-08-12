@@ -459,7 +459,8 @@ UPLOADED -> QUARANTINED -> SCANNING -> PARSING -> REVIEW_REQUIRED
 - 使用有限的最近消息和受控会话摘要作为上下文，不无限发送完整历史。
 - 摘要必须标记“用户事实”“工具事实”“AI 未证实陈述”，不得混为一体。
 - 客户消息和人工回复不得自动成为企业知识；只有经过审核发布的内容可进入知识库。
-- 回答默认使用访客当前语言；商品代码、SKU、数字和单位保持原意。
+- 回答强制使用访客最新一条消息的实际语言；店铺 locale、历史消息、证据和
+  企业提示均不能覆盖。商品代码、SKU、数字和单位保持原意。
 - 跨语言检索可以使用多语言 Embedding 或翻译后的检索查询，但必须保留原始查询。
 - 当检索语料和问题均为中文时，不得为了检索把问题串行翻译为英文；非中文问题可以附加受控
   中文检索文本，模型仍必须看到并回答访客原文。
@@ -619,7 +620,7 @@ QUEUED
 版本，不随当前配置变化。
 
 v2.2 变更不修改知识 chunk 或 Embedding，因此不需要数据迁移和索引重建；运行时记录
-`orchestrator_version=4`、`base_prompt_version=3`、`recommendation_policy_version=1` 与
+`orchestrator_version=4`、`base_prompt_version=4`、`recommendation_policy_version=1` 与
 客服商品重投影 `field_policy_version=3`。该字段策略只允许客户安全的标量规格选项进入
 Evidence，剔除内部元数据、供应商、采购/成本、内部备注、评分和联系方式字段，并将内部
 `TPL-*` 模板码替换为与公开商品详情一致的客户可见产品编码。
