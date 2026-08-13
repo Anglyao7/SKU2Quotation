@@ -1339,6 +1339,28 @@ export interface PublicQuoteDraftSummary {
   updatedAt: string;
 }
 
+export interface StorefrontOrderCurrencyStatistics {
+  currency: string;
+  totalAmount: number;
+  completedAmount: number;
+  orderCount: number;
+}
+
+export interface StorefrontOrderPeriodStatistics {
+  startAt: string;
+  endAt: string;
+  orderCount: number;
+  completedOrderCount: number;
+  cancelledOrderCount: number;
+  amounts: StorefrontOrderCurrencyStatistics[];
+}
+
+export interface StorefrontOrderStatistics {
+  timezone: string;
+  currentMonth: StorefrontOrderPeriodStatistics;
+  currentYear: StorefrontOrderPeriodStatistics;
+}
+
 export type QuoteTemplateField =
   | "serial_number"
   | "sku_code"

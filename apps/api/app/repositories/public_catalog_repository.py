@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import Text, case, cast, exists, func, or_, select, update
@@ -15,6 +16,7 @@ from ..public_catalog_models import (
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
     PublicQuoteDraftRow,
+    StorefrontOrderRecordRow,
     TenantPublicProfileRow,
 )
 from ..storefront_analytics_models import StorefrontProductViewDailyRow
@@ -937,13 +939,74 @@ def get_download_token(
 
 
 def get_quote_draft(
-    session: Session, *, tenant_id: UUID, quote_draft_id: UUID
+    session: Session,
+    *,
+    tenant_id: UUID,
+    quote_draft_id: UUID,
+    for_update: bool = False,
 ) -> PublicQuoteDraftRow | None:
-    return session.scalar(
-        select(PublicQuoteDraftRow).where(
-            PublicQuoteDraftRow.tenant_id == tenant_id,
-            PublicQuoteDraftRow.id == quote_draft_id,
-        )
+    statement = select(PublicQuoteDraftRow).where(
+        PublicQuoteDraftRow.tenant_id == tenant_id,
+        PublicQuoteDraftRow.id == quote_draft_id,
+    )
+    if for_update:
+        statement = statement.with_for_update(of=PublicQuoteDraftRow)
+    return session.scalar(statement)
+
+
+def get_storefront_order_record_by_quote(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    quote_draft_id: UUID,
+    for_update: bool = False,
+) -> StorefrontOrderRecordRow | None:
+    statement = select(StorefrontOrderRecordRow).where(
+        StorefrontOrderRecordRow.tenant_id == tenant_id,
+        StorefrontOrderRecordRow.source_quote_draft_id == quote_draft_id,
+        StorefrontOrderRecordRow.deleted_at.is_(None),
+    )
+    if for_update:
+        statement = statement.with_for_update(of=StorefrontOrderRecordRow)
+    return session.scalar(statement)
+
+
+def add_storefront_order_record(
+    session: Session,
+    *,
+    record: StorefrontOrderRecordRow,
+) -> None:
+    session.add(record)
+    session.flush()
+
+
+def storefront_order_statistics_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    start_at: datetime,
+    end_at: datetime,
+) -> list[tuple[str, str, int, Decimal]]:
+    return list(
+        session.execute(
+            select(
+                StorefrontOrderRecordRow.currency,
+                StorefrontOrderRecordRow.status,
+                func.count(StorefrontOrderRecordRow.id),
+                func.coalesce(func.sum(StorefrontOrderRecordRow.total_amount), 0),
+            )
+            .where(
+                StorefrontOrderRecordRow.tenant_id == tenant_id,
+                StorefrontOrderRecordRow.confirmed_at >= start_at,
+                StorefrontOrderRecordRow.confirmed_at < end_at,
+                StorefrontOrderRecordRow.deleted_at.is_(None),
+            )
+            .group_by(
+                StorefrontOrderRecordRow.currency,
+                StorefrontOrderRecordRow.status,
+            )
+            .order_by(StorefrontOrderRecordRow.currency, StorefrontOrderRecordRow.status)
+        ).all()
     )
 
 

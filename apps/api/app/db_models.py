@@ -268,6 +268,7 @@ from .public_catalog_models import (  # noqa: E402,F401
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
     PublicQuoteDraftRow,
+    StorefrontOrderRecordRow,
     TenantPublicProfileRow,
 )
 

@@ -55,6 +55,7 @@ import type {
   SkuListItem,
   SkuListPage,
   StorefrontAnalyticsSnapshot,
+  StorefrontOrderStatistics,
   StorefrontProductRankingPage,
   PopularCategoryAssignResult,
   StorefrontAnnouncement,
@@ -4623,6 +4624,8 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
 interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
+interface ApiStorefrontOrderPeriodStatistics { start_at: string; end_at: string; order_count: number; completed_order_count: number; cancelled_order_count: number; amounts: Array<{ currency: string; total_amount: number | string; completed_amount: number | string; order_count: number }> }
+interface ApiStorefrontOrderStatistics { timezone: string; current_month: ApiStorefrontOrderPeriodStatistics; current_year: ApiStorefrontOrderPeriodStatistics }
 
 function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
   return {
@@ -4666,6 +4669,31 @@ export async function updatePublicQuoteDraftStatus(
     `/public-quote-drafts/${encodeURIComponent(draftId)}/status`,
     { method: "PATCH", body: JSON.stringify({ status }) },
   ));
+}
+
+function mapStorefrontOrderPeriod(row: ApiStorefrontOrderPeriodStatistics) {
+  return {
+    startAt: row.start_at,
+    endAt: row.end_at,
+    orderCount: row.order_count,
+    completedOrderCount: row.completed_order_count,
+    cancelledOrderCount: row.cancelled_order_count,
+    amounts: row.amounts.map((amount) => ({
+      currency: amount.currency,
+      totalAmount: Number(amount.total_amount),
+      completedAmount: Number(amount.completed_amount),
+      orderCount: amount.order_count,
+    })),
+  };
+}
+
+export async function getStorefrontOrderStatistics(): Promise<StorefrontOrderStatistics> {
+  const row = await request<ApiStorefrontOrderStatistics>("/storefront-orders/statistics");
+  return {
+    timezone: row.timezone,
+    currentMonth: mapStorefrontOrderPeriod(row.current_month),
+    currentYear: mapStorefrontOrderPeriod(row.current_year),
+  };
 }
 
 export async function downloadPublicQuoteDraftDocument(

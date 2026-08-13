@@ -339,6 +339,113 @@ class PublicQuoteDraftItemRow(AuditTimestampMixin, Base):
     line_total: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
 
 
+class StorefrontOrderRecordRow(AuditTimestampMixin, Base):
+    """Immutable commercial facts captured when a merchant confirms a quote.
+
+    The public quote remains the visitor-facing workflow record.  This row is
+    the reporting and audit fact: prices, customer details and line snapshots
+    no longer depend on the live catalog once the merchant confirms them.
+    """
+
+    __tablename__ = "storefront_order_records"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('CONFIRMED', 'COMPLETED', 'CANCELLED')",
+            name="status_allowed",
+        ),
+        CheckConstraint("subtotal_amount >= 0", name="subtotal_nonnegative"),
+        CheckConstraint("total_amount >= 0", name="total_nonnegative"),
+        CheckConstraint("item_count > 0", name="item_count_positive"),
+        CheckConstraint("total_quantity > 0", name="total_quantity_positive"),
+        CheckConstraint("length(content_hash) = 64", name="content_hash_sha256_length"),
+        CheckConstraint(
+            "length(currency) = 3 AND currency = upper(currency)",
+            name="currency_format",
+        ),
+        CheckConstraint(
+            "(status = 'COMPLETED' AND completed_at IS NOT NULL) OR "
+            "(status <> 'COMPLETED')",
+            name="completion_time_required",
+        ),
+        CheckConstraint(
+            "(status = 'CANCELLED' AND cancelled_at IS NOT NULL) OR "
+            "(status <> 'CANCELLED')",
+            name="cancellation_time_required",
+        ),
+        UniqueConstraint(
+            "tenant_id", "id", name="uq_storefront_order_records_tenant_identity"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "source_quote_draft_id",
+            name="uq_storefront_order_records_tenant_quote",
+        ),
+        UniqueConstraint(
+            "tenant_id", "order_number", name="uq_storefront_order_records_tenant_number"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "source_quote_draft_id"],
+            ["public_quote_drafts.tenant_id", "public_quote_drafts.id"],
+            name="fk_storefront_order_records_tenant_quote",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "submitted_by_membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_storefront_order_records_tenant_submitter",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "confirmed_by_membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_storefront_order_records_tenant_confirmer",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_storefront_order_records_tenant_confirmed",
+            "tenant_id",
+            "confirmed_at",
+        ),
+        Index(
+            "ix_storefront_order_records_tenant_status_confirmed",
+            "tenant_id",
+            "status",
+            "confirmed_at",
+        ),
+        Index(
+            "ix_storefront_order_records_tenant_customer_confirmed",
+            "tenant_id",
+            "submitted_by_membership_id",
+            "confirmed_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    source_quote_draft_id: Mapped[UUID] = mapped_column(nullable=False)
+    order_number: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="CONFIRMED", nullable=False)
+    submitted_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    customer_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    customer_company: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    customer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    customer_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    document_locale: Mapped[str] = mapped_column(String(20), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    subtotal_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    confirmed_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class PublicQuoteDownloadTokenRow(AuditTimestampMixin, Base):
     __tablename__ = "public_quote_download_tokens"
     __table_args__ = (

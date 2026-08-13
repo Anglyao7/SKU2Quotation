@@ -1992,6 +1992,8 @@ const english: Record<string, string> = {
   "客户前台草稿暂不可用：{message}":
     "Storefront drafts are unavailable: {message}",
   "客户前台草稿暂不可用": "Storefront drafts are unavailable",
+  "订单统计暂时无法读取，订单记录不受影响。":
+    "Order statistics are temporarily unavailable. Order recording is unaffected.",
   "报价详情加载失败": "Could not load quotation details",
   "客户草稿详情加载失败": "Could not load customer draft details",
   "请填写至少 3 个字符的修改原因。":
@@ -1999,6 +2001,9 @@ const english: Record<string, string> = {
   "报价版本保存失败": "Could not save the quotation version",
   "版本化报价": "Versioned quotations",
   "报价工作台": "Quotation workspace",
+  "本月确认订单": "Confirmed orders this month",
+  "今年确认订单": "Confirmed orders this year",
+  "{count} 笔有效订单": "{count} active orders",
   "客户前台提交的是待确认草稿；正式 Quotation 由内部规则计算并绑定人工审批。":
     "Storefront submissions are drafts pending review. Official quotations are calculated by internal rules and gated by human approval.",
   "正式报价": "Official quotations",

@@ -22,6 +22,7 @@ from ..public_catalog_schemas import (
     PublicSkuPage,
     PublicSkuResponse,
     PublicStoreResponse,
+    StorefrontOrderStatistics,
 )
 from ..catalog_translation_schemas import CatalogLanguagePackResponse
 from ..services.auth.dependencies import (
@@ -519,9 +520,30 @@ def update_tenant_public_quote_draft_status(
         return use_cases.update_tenant_quote_draft_status(
             session,
             tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
             request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/storefront-orders/statistics",
+    response_model=StorefrontOrderStatistics,
+)
+def get_tenant_storefront_order_statistics(
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> StorefrontOrderStatistics:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.get_tenant_order_statistics(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

@@ -69,6 +69,7 @@
 .core-metric-card > a:hover .core-metric-foot svg { transform: translateX(2px); }
 .core-metric-icon, .core-row-icon, .core-supplier-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 11px; color: var(--core-accent); background: var(--accent-soft); }
 .core-summary-card { min-height: 128px; padding: 18px !important; display: grid; align-content: space-between; gap: 7px; }
+.core-summary-card .core-order-total { font-size: clamp(17px, 1.8vw, 25px); line-height: 1.2; overflow-wrap: anywhere; }
 .core-tabular { font-variant-numeric: tabular-nums; }
 
 .core-dashboard-focus { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(310px, .65fr); gap: 14px; align-items: stretch; }
