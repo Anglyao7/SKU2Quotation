@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import timedelta
@@ -128,6 +130,101 @@ def _parse_text(path: Path) -> tuple[list[ParsedKnowledgeBlock], str, str]:
     return blocks, "plain-text", "1"
 
 
+def _json_child_path(path: str, key: str) -> str:
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+        return f"{path}.{key}"
+    return f"{path}[{json.dumps(key, ensure_ascii=False)}]"
+
+
+def _json_scalar(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return _clean_text(value)
+    if isinstance(value, (bool, int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise KnowledgeIngestionError(
+                "KNOWLEDGE_JSON_INVALID",
+                "JSON 文件包含无效数字。",
+            )
+        return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    return None
+
+
+def _parse_json(path: Path) -> tuple[list[ParsedKnowledgeBlock], str, str]:
+    try:
+        payload = json.loads(_decode_text(path))
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise KnowledgeIngestionError(
+            "KNOWLEDGE_JSON_INVALID",
+            "JSON 文件格式无效，请检查编码和语法。",
+        ) from exc
+    if (
+        isinstance(payload, dict)
+        and payload.get("schema_version") == "support-ai-training/v1"
+    ):
+        raise KnowledgeIngestionError(
+            "KNOWLEDGE_TRAINING_PACKAGE_REQUIRES_TRAINING_IMPORT",
+            "这是智能客服训练包，请通过智能体的人工训练入口导入，不能作为事实知识向量化。",
+        )
+
+    blocks: list[ParsedKnowledgeBlock] = []
+
+    def add_block(text: str, json_path: str) -> None:
+        cleaned = _clean_text(text)
+        if not cleaned:
+            return
+        blocks.append(
+            ParsedKnowledgeBlock(
+                text=cleaned,
+                section_path=json_path[:1000],
+                locator={"type": "json_path", "path": json_path[:2000]},
+            )
+        )
+
+    def visit(value: object, json_path: str, depth: int) -> None:
+        if depth > 32:
+            raise KnowledgeIngestionError(
+                "KNOWLEDGE_JSON_TOO_DEEP",
+                "JSON 嵌套层级超过 32 层，无法安全解析。",
+            )
+        scalar = _json_scalar(value)
+        if scalar is not None:
+            add_block(scalar, json_path)
+            return
+        if isinstance(value, dict):
+            scalar_lines: list[str] = []
+            nested: list[tuple[str, object]] = []
+            for raw_key, child in value.items():
+                key = str(raw_key)
+                child_scalar = _json_scalar(child)
+                if child_scalar is None and child is not None:
+                    nested.append((key, child))
+                elif child_scalar:
+                    scalar_lines.append(f"{key}: {child_scalar}")
+            if scalar_lines:
+                add_block("\n".join(scalar_lines), json_path)
+            for key, child in nested:
+                visit(child, _json_child_path(json_path, key), depth + 1)
+            return
+        if isinstance(value, list):
+            scalar_values: list[str] = []
+            nested_values: list[tuple[int, object]] = []
+            for index, child in enumerate(value):
+                child_scalar = _json_scalar(child)
+                if child_scalar is None and child is not None:
+                    nested_values.append((index, child))
+                elif child_scalar:
+                    scalar_values.append(child_scalar)
+            if scalar_values:
+                add_block("\n".join(scalar_values), json_path)
+            for index, child in nested_values:
+                visit(child, f"{json_path}[{index}]", depth + 1)
+
+    visit(payload, "$", 0)
+    return blocks, "json-structured", "1"
+
+
 def _parse_docx(path: Path) -> tuple[list[ParsedKnowledgeBlock], str, str]:
     document = Document(path)
     blocks: list[ParsedKnowledgeBlock] = []
@@ -224,6 +321,8 @@ def parse_knowledge_file(
     suffix = Path(original_filename).suffix.casefold()
     if suffix in {".txt", ".md"}:
         blocks, parser, version = _parse_text(path)
+    elif suffix == ".json":
+        blocks, parser, version = _parse_json(path)
     elif suffix == ".docx":
         blocks, parser, version = _parse_docx(path)
     elif suffix == ".pdf":
@@ -231,7 +330,7 @@ def parse_knowledge_file(
     else:
         raise KnowledgeIngestionError(
             "KNOWLEDGE_FILE_TYPE_UNSUPPORTED",
-            "仅支持 PDF、DOCX、TXT 和 Markdown 文件。",
+            "仅支持 PDF、DOCX、TXT、Markdown 和 JSON 文件。",
         )
     total = sum(len(block.text) for block in blocks)
     if total <= 0:

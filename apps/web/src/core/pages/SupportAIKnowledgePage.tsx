@@ -22,6 +22,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   getSupportAIIngestionJob,
+  importSupportAITraining,
   listSupportAIAgentKnowledgeSources,
   listSupportAIAgents,
   reindexSupportAIKnowledgeSource,
@@ -151,6 +152,28 @@ export function SupportAIKnowledgePage() {
     setError("");
     setMessage("");
     try {
+      if (file.name.toLowerCase().endsWith(".json")) {
+        let jsonPayload: unknown;
+        try {
+          jsonPayload = JSON.parse(await file.text()) as unknown;
+        } catch {
+          throw new Error(t("JSON 文件格式无效，请检查编码和语法。"));
+        }
+        if (
+          typeof jsonPayload === "object"
+          && jsonPayload !== null
+          && "schema_version" in jsonPayload
+          && jsonPayload.schema_version === "support-ai-training/v1"
+        ) {
+          await importSupportAITraining(selectedAgentId, jsonPayload);
+          setFile(undefined);
+          setTitle("");
+          const input = document.getElementById("support-agent-knowledge-file") as HTMLInputElement | null;
+          if (input) input.value = "";
+          setMessage(t("训练包已导入为草稿，请前往人工训练审核并发布。"));
+          return;
+        }
+      }
       const items = await uploadSupportAIAgentKnowledgeSource({
         agentId: selectedAgentId,
         file,
@@ -249,13 +272,14 @@ export function SupportAIKnowledgePage() {
               <form className="support-agent-upload-form" onSubmit={(event) => void upload(event)}>
                 <label className="support-agent-file-field">
                   <FileArrowUp weight="duotone" />
-                  <span><strong>{file?.name || t("选择 PDF、DOCX、TXT 或 Markdown")}</strong><small>{t("将同步到 {count} 个绑定店铺", { count: selectedAgent.stores.length })}</small></span>
-                  <input id="support-agent-knowledge-file" type="file" accept=".pdf,.docx,.txt,.md" onChange={(event) => setFile(event.target.files?.[0])} required />
+                  <span><strong>{file?.name || t("选择 PDF、DOCX、TXT、Markdown 或 JSON")}</strong><small>{t("普通 JSON 将作为知识解析；训练包 JSON 将自动导入人工训练草稿。")}</small><small>{t("将同步到 {count} 个绑定店铺", { count: selectedAgent.stores.length })}</small></span>
+                  <input id="support-agent-knowledge-file" type="file" accept=".pdf,.docx,.txt,.md,.json,application/json" onChange={(event) => setFile(event.target.files?.[0])} required />
                 </label>
                 <label><Text size="1" color="gray">{t("知识标题")}</Text><TextField.Root value={title} onChange={(event) => setTitle(event.target.value)} placeholder={file?.name.replace(/\.[^.]+$/, "") || t("文件标题")} /></label>
                 <label><Text size="1" color="gray">{t("文件语言")}</Text><TextField.Root value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="und / zh-CN / en" /></label>
                 <label><Text size="1" color="gray">{t("可用范围")}</Text><Select.Root value={classification} onValueChange={(value) => setClassification(value as typeof classification)}><Select.Trigger /><Select.Content><Select.Item value="CUSTOMER_APPROVED">{t("客户回答可用")}</Select.Item><Select.Item value="PUBLIC">{t("公开资料")}</Select.Item></Select.Content></Select.Root></label>
                 <Button type="submit" disabled={!file || Boolean(busy)} loading={busy === "upload"}><FileArrowUp />{t("上传并处理")}</Button>
+                <Button asChild variant="ghost" color="gray"><Link to={`/console/agents/${selectedAgent.id}/training`}>{t("前往人工训练")}</Link></Button>
               </form>
             )}
           </Card>

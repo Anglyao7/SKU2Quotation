@@ -78,12 +78,13 @@ from ..support_ai_schemas import (
 
 
 MAX_KNOWLEDGE_FILE_BYTES = 25 * 1024 * 1024
-SUPPORTED_KNOWLEDGE_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
+SUPPORTED_KNOWLEDGE_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".json"}
 CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".txt": "text/plain",
     ".md": "text/markdown",
+    ".json": "application/json",
 }
 
 
@@ -1325,7 +1326,7 @@ def _upload_knowledge_source_in_scope(
     if suffix not in SUPPORTED_KNOWLEDGE_EXTENSIONS:
         raise ApplicationError(
             "SUPPORT_AI_KNOWLEDGE_TYPE_UNSUPPORTED",
-            "仅支持 PDF、DOCX、TXT 和 Markdown 文件。",
+            "仅支持 PDF、DOCX、TXT、Markdown 和 JSON 文件。",
         )
     if not content:
         raise ApplicationError("SUPPORT_AI_KNOWLEDGE_EMPTY", "请选择知识文件。")
@@ -1335,6 +1336,23 @@ def _upload_knowledge_source_in_scope(
             "单个知识文件不能超过 25 MB。",
             kind="too_large",
         )
+    if suffix == ".json":
+        try:
+            json_payload = json.loads(content.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ApplicationError(
+                "SUPPORT_AI_KNOWLEDGE_JSON_INVALID",
+                "JSON 文件格式无效，请检查编码和语法。",
+            ) from exc
+        if (
+            isinstance(json_payload, dict)
+            and json_payload.get("schema_version") == "support-ai-training/v1"
+        ):
+            raise ApplicationError(
+                "SUPPORT_AI_TRAINING_PACKAGE_REQUIRES_TRAINING_IMPORT",
+                "这是智能客服训练包，请通过智能体的人工训练入口导入，不能作为事实知识向量化。",
+                kind="conflict",
+            )
     if classification not in {"PUBLIC", "CUSTOMER_APPROVED"}:
         raise ApplicationError(
             "SUPPORT_AI_KNOWLEDGE_CLASSIFICATION_INVALID",

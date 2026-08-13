@@ -20,9 +20,11 @@ from app.services.chat_generation import (
 from app.services.hybrid_search import _filter_ranked_results
 from app.services.support_ai_configuration import decrypt_api_key, encrypt_api_key
 from app.services.support_ai_knowledge import (
+    KnowledgeIngestionError,
     ParsedKnowledgeBlock,
     TARGET_CHUNK_CHARACTERS,
     build_knowledge_chunks,
+    parse_knowledge_file,
 )
 from app.services.support_ai_language import (
     detect_message_language,
@@ -74,6 +76,58 @@ class _NoAutoflushConversationLockSession:
     def get(self, _model, _identity):
         assert self.inside_no_autoflush
         return self.input_message
+
+
+def test_parse_structured_json_knowledge_file(tmp_path) -> None:
+    source = tmp_path / "brand.json"
+    source.write_text(
+        json.dumps(
+            {
+                "brand": {
+                    "name": "Northwind Outdoor",
+                    "introduction": "We focus on practical outdoor equipment.",
+                },
+                "policies": [
+                    {"topic": "samples", "answer": "Samples can be discussed."},
+                    {"topic": "packaging", "answer": "Custom packaging requires confirmation."},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    blocks, parser, version = parse_knowledge_file(
+        source,
+        original_filename="brand.json",
+    )
+
+    assert parser == "json-structured"
+    assert version == "1"
+    assert any(block.locator == {"type": "json_path", "path": "$.brand"} for block in blocks)
+    assert any("Northwind Outdoor" in block.text for block in blocks)
+    assert any(block.locator.get("path") == "$.policies[1]" for block in blocks)
+
+
+def test_training_package_json_cannot_be_parsed_as_factual_knowledge(tmp_path) -> None:
+    source = tmp_path / "training.json"
+    source.write_text(
+        json.dumps(
+            {
+                "schema_version": "support-ai-training/v1",
+                "cases": [],
+                "rules": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(KnowledgeIngestionError) as exc_info:
+        parse_knowledge_file(source, original_filename="training.json")
+
+    assert exc_info.value.code == (
+        "KNOWLEDGE_TRAINING_PACKAGE_REQUIRES_TRAINING_IMPORT"
+    )
 
 
 def test_ai_ownership_lock_suppresses_run_autoflush_before_conversation_lock() -> None:

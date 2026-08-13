@@ -9,7 +9,7 @@
 
 本次已完成运行契约的首个可上线闭环（知识与证据基础、店铺级 SKU/文件 RAG、
 启用/关闭、多语言、引用、人工接管与版本化行为训练），
-数据库版本为 `20260813_0084`。当前实现入口如下：
+数据库版本为 `20260814_0085`。当前实现入口如下：
 
 - 平台配置中心：`/console/system/configuration`，集中配置翻译与 Embedding API。智能客服
   模型密钥不再出现在公共配置页，统一在对应智能体详情中维护。
@@ -34,8 +34,9 @@
 
 1. SKU 客户知识只读取已发布商品资料；供应商名称、供应商标识、供应商 SKU 与供应商
    评分在向量化前排除，MOQ 保留。
-2. 企业文件支持 PDF、DOCX、TXT、Markdown；写入 Cloudflare R2/S3-compatible
+2. 企业文件支持 PDF、DOCX、TXT、Markdown 和普通 JSON；写入 Cloudflare R2/S3-compatible
    对象存储后解析、分块和向量化，处理成功的版本会直接进入检索。
+   `support-ai-training/v1` JSON 会被识别并导入人工训练草稿，不作为事实知识向量化。
 3. 客户原文永久保留。语言启发式由生成模型二次确认；跨语言时仅扩展内部检索 query，
    SKU/型号等标识不翻译，最终回答必须与客户实际语言一致。客户 query 不写入商品翻译
    记忆，受控翻译结果只随对应 Run 保存。
@@ -562,6 +563,7 @@ tenants/{tenant_id}/knowledge/{source_id}/{sha256}/source/{safe_filename}
 | PPTX | 幻灯片、标题、文本块和表格 |
 | XLSX | 工作表、命名表格和单元格范围 |
 | TXT/Markdown | 标题、段落、列表和代码块 |
+| JSON | 对象/数组内容和 JSONPath；训练包自动转入人工训练草稿 |
 
 每个 parser 返回统一 `ParsedDocument`，包括 blocks、locator、语言和 warnings。Parser 不直接
 写数据库；projector 统一完成 canonical payload、chunk 和版本激活。

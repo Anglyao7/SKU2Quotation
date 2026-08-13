@@ -1800,6 +1800,89 @@ def test_support_ai_training_cases_rules_publish_import_and_rollback(
                 session.commit()
 
 
+def test_support_ai_training_package_cannot_be_uploaded_as_fact_knowledge() -> None:
+    response = client.post(
+        "/api/v1/support/ai/knowledge/sources/upload",
+        data={
+            "title": "Training examples",
+            "classification": "CUSTOMER_APPROVED",
+            "language": "zh-CN",
+        },
+        files={
+            "file": (
+                "training.json",
+                json.dumps(
+                    {
+                        "schema_version": "support-ai-training/v1",
+                        "cases": [],
+                        "rules": [],
+                    }
+                ).encode(),
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == (
+        "SUPPORT_AI_TRAINING_PACKAGE_REQUIRES_TRAINING_IMPORT"
+    )
+
+
+def test_support_ai_accepts_structured_json_as_file_knowledge() -> None:
+    from app.adapters.object_storage import get_object_storage
+    from app.support_ai_models import SupportAIKnowledgeSourceRow
+
+    source_id: UUID | None = None
+    object_key: str | None = None
+    try:
+        response = client.post(
+            "/api/v1/support/ai/knowledge/sources/upload",
+            data={
+                "title": "Brand profile JSON",
+                "classification": "CUSTOMER_APPROVED",
+                "language": "en-US",
+            },
+            files={
+                "file": (
+                    "brand-profile.json",
+                    json.dumps(
+                        {
+                            "brand": {
+                                "name": "Northwind Outdoor",
+                                "introduction": "Practical outdoor equipment.",
+                            }
+                        }
+                    ).encode(),
+                    "application/json",
+                )
+            },
+        )
+
+        assert response.status_code == 202, response.text
+        source_id = UUID(response.json()["source"]["id"])
+        job_id = response.json()["job"]["id"]
+        job = client.get(f"/api/v1/support/ai/knowledge/jobs/{job_id}")
+        assert job.status_code == 200, job.text
+        assert job.json()["status"] == "SUCCEEDED"
+        assert job.json()["parser_identifier"] == "json-structured"
+        assert response.json()["source"]["content_type"] == "application/json"
+    finally:
+        if source_id is not None:
+            with SessionLocal() as session:
+                source = session.get(SupportAIKnowledgeSourceRow, source_id)
+                if source is not None:
+                    media = session.get(MediaObjectRow, source.media_object_id)
+                    object_key = media.object_key if media is not None else None
+                    session.delete(source)
+                    session.flush()
+                    if media is not None:
+                        session.delete(media)
+                    session.commit()
+            if object_key:
+                get_object_storage().delete(object_key)
+
+
 def test_support_ai_configuration_and_file_knowledge_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
