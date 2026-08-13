@@ -362,6 +362,11 @@ def _product_evidence(
             continue
         product = product_rows[0][2]
         excerpt = _public_product_excerpt(product_rows)
+        score_breakdown = ranked.get("score_breakdown") or {}
+        support_relevance_score = max(
+            float(ranked.get("score") or 0),
+            float(score_breakdown.get("semantic") or 0),
+        )
         evidence.append(
             RetrievalEvidence(
                 source_type="SKU",
@@ -380,7 +385,7 @@ def _product_evidence(
                 },
                 excerpt=excerpt,
                 content_hash=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
-                score=max(0.0, min(1.0, float(ranked.get("score") or 0))),
+                score=max(0.0, min(1.0, support_relevance_score)),
             )
         )
     return evidence, diagnostics

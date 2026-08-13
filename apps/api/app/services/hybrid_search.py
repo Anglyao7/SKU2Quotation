@@ -30,7 +30,7 @@ from .embedding import (
 from .embedding_configuration import resolved_text_embedding_provider
 
 
-RANKING_VERSION = "hybrid-product-v3-lexical-first"
+RANKING_VERSION = "hybrid-product-v4-semantic-recall"
 UNCATEGORIZED_CATEGORY_NAME = "未分类"
 WEIGHTS = {
     "keyword": 0.50,
@@ -41,6 +41,8 @@ WEIGHTS = {
 }
 MINIMUM_RESULT_SCORE = 0.20
 RELATIVE_RESULT_FLOOR = 0.62
+MINIMUM_SEMANTIC_SIMILARITY = 0.36
+SEMANTIC_RELATIVE_RESULT_FLOOR = 0.86
 SEARCH_SEGMENT_PATTERN = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
 SINGLE_CHARACTER_STOPWORDS = {"的", "了", "和", "与", "及", "或", "一", "个", "款"}
 QUERY_NOISE_PHRASES = (
@@ -205,6 +207,45 @@ def _lexical_priority(
     if keyword >= 0.18 or attribute >= 0.40 or tag >= 0.35:
         return 1
     return 0
+
+
+def _filter_ranked_results(
+    ranked: list[tuple[int, float, dict[str, Any]]],
+) -> list[tuple[int, float, dict[str, Any]]]:
+    """Keep strong semantic-only matches without weakening lexical precision."""
+
+    if not ranked:
+        return ranked
+    best_semantic_only_score = max(
+        (score for priority, score, _result in ranked if priority == 0),
+        default=0.0,
+    )
+    score_floor = max(
+        MINIMUM_RESULT_SCORE,
+        best_semantic_only_score * RELATIVE_RESULT_FLOOR,
+    )
+    best_semantic_similarity = max(
+        (
+            float(result["score_breakdown"]["semantic"])
+            for priority, _score, result in ranked
+            if priority == 0
+        ),
+        default=0.0,
+    )
+    semantic_floor = max(
+        MINIMUM_SEMANTIC_SIMILARITY,
+        best_semantic_similarity * SEMANTIC_RELATIVE_RESULT_FLOOR,
+    )
+    return [
+        item
+        for item in ranked
+        if (
+            item[0] > 0
+            or item[1] >= score_floor
+            or float(item[2]["score_breakdown"]["semantic"])
+            >= semantic_floor
+        )
+    ]
 
 
 def _compact_search_text(value: str) -> str:
@@ -801,20 +842,7 @@ def hybrid_product_search(
         }
         ranked.append((lexical_priority, final_score, result))
     ranked.sort(key=lambda item: (item[0], item[1], item[2]["product_code"] or ""), reverse=True)
-    if ranked:
-        best_semantic_score = max(
-            (score for priority, score, _result in ranked if priority == 0),
-            default=0.0,
-        )
-        score_floor = max(
-            MINIMUM_RESULT_SCORE,
-            best_semantic_score * RELATIVE_RESULT_FLOOR,
-        )
-        ranked = [
-            item
-            for item in ranked
-            if item[0] > 0 or item[1] >= score_floor
-        ]
+    ranked = _filter_ranked_results(ranked)
     return {
         "query": query,
         "ranking_version": RANKING_VERSION,

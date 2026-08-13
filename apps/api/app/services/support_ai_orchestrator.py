@@ -53,9 +53,9 @@ from .translation_configuration import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_AI_ORCHESTRATOR_VERSION = 4
+SUPPORT_AI_ORCHESTRATOR_VERSION = 5
 SUPPORT_AI_BASE_PROMPT_VERSION = 4
-SUPPORT_AI_RECOMMENDATION_POLICY_VERSION = 1
+SUPPORT_AI_RECOMMENDATION_POLICY_VERSION = 2
 
 
 def _generate_model_json(
@@ -430,9 +430,12 @@ SCRIPT_DECISIVE_LANGUAGES = {"ar", "ja", "ko", "ru", "zh"}
 RECOMMENDATION_INTENT_PATTERN = re.compile(
     r"(?:推荐|推薦|帮我(?:选|選|挑)|替我(?:选|選|挑)|给我(?:选|選|挑)|"
     r"选一(?:款|个)|選一(?:款|個)|哪一?款|哪一?个(?:更好|合适|適合)?|"
-    r"最适合|最適合|你决定|你決定|你看着办|你看著辦)"
+    r"最适合|最適合|你决定|你決定|你看着办|你看著辦|"
+    r"(?:有什么|有什麼|有哪些|有没有|有沒有|什么|什麼).{0,28}"
+    r"(?:适合|適合|合适|合適))"
     r"|\b(?:recommend(?:ation|ations)?|suggest(?:ion|ions)?|pick(?: one)?|"
-    r"choose(?: one)?|which (?:one|product|item)|best (?:option|product|one))\b"
+    r"choose(?: one)?|which (?:one|product|item)|best (?:option|product|one)|"
+    r"what (?:is|are|would be).{0,32}(?:suitable|good|best) for)\b"
     r"|\b(?:recomiend(?:a|as|an|e)|recomend(?:ar|aci[oó]n|aciones)|"
     r"suger(?:ir|encia|encias)|elige uno|cu[aá]l recomiendas)\b"
     r"|\b(?:recomend(?:ar|a|ação|ações)|suger(?:ir|e|estão)|"
@@ -460,6 +463,23 @@ CONTEXT_DEPENDENT_QUESTION_PATTERN = re.compile(
     r"|(?:多少钱|多少錢|价格呢|價格呢|MOQ呢|起订量呢|起訂量呢|怎么样|怎麼樣|哪个好|哪個好)"
     r"|\b(?:this|that|it|these|those|them|not sure|i don'?t know|you choose|"
     r"you decide|either is fine|what about it|how much|which one)\b",
+    re.IGNORECASE,
+)
+RECOMMENDATION_CONSTRAINT_FOLLOWUP_PATTERN = re.compile(
+    r"(?:主要(?:是)?为了|主要用于|主要用来|用途(?:是|为)|是为了|用来|"
+    r"预算(?:是|在)?|更(?:看重|注重|在意|喜欢|喜歡)|我(?:想要|希望)|"
+    r"偏向|侧重|側重)"
+    r"|\b(?:mainly for|primarily for|use it for|my use is|my budget is|"
+    r"i (?:prefer|need|want)|more important to me)\b"
+    r"|\b(?:principalmente para|lo usar[ií]a para|mi presupuesto|prefiero)\b"
+    r"|\b(?:principalmente para|vou usar para|meu orçamento|prefiro)\b"
+    r"|(?:主に|用途は|予算は|希望は)"
+    r"|(?:주로|용도는|예산은|선호)"
+    r"|\b(?:principalement pour|je l'utiliserai pour|mon budget|je préfère)\b"
+    r"|\b(?:hauptsächlich für|ich nutze es für|mein budget|ich bevorzuge)\b"
+    r"|\b(?:principalmente per|lo userei per|il mio budget|preferisco)\b"
+    r"|(?:в основном для|буду использовать для|мой бюджет|предпочитаю)"
+    r"|(?:بشكل رئيسي|سأستخدمه لـ|ميزانيتي|أفضل)",
     re.IGNORECASE,
 )
 GENERIC_RECOMMENDATION_FOLLOWUP_PATTERN = re.compile(
@@ -556,6 +576,38 @@ def detect_support_interaction_goal(message: str) -> str:
     return "QUESTION_ANSWERING"
 
 
+def _is_recommendation_constraint_followup(message: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", message).strip()
+    return bool(
+        normalized
+        and len(normalized) <= 180
+        and RECOMMENDATION_CONSTRAINT_FOLLOWUP_PATTERN.search(normalized)
+    )
+
+
+def _conversation_interaction_goal(
+    question: str,
+    history: list[dict[str, str]],
+) -> str:
+    """Keep a recommendation goal while the visitor adds a short constraint."""
+
+    direct_goal = detect_support_interaction_goal(question)
+    if direct_goal == "PRODUCT_RECOMMENDATION":
+        return direct_goal
+    if not _is_recommendation_constraint_followup(question):
+        return direct_goal
+    for message in reversed(history):
+        if message.get("role") != "user":
+            continue
+        previous = str(message.get("content") or "").strip()
+        if not previous or detect_safe_social_intent(previous) is not None:
+            continue
+        if detect_support_interaction_goal(previous) == "PRODUCT_RECOMMENDATION":
+            return "PRODUCT_RECOMMENDATION"
+        break
+    return direct_goal
+
+
 def _recommendation_has_specific_subject(message: str) -> bool:
     """Return whether a recommendation turn already names a meaningful subject."""
 
@@ -588,6 +640,8 @@ def _question_needs_conversation_topic(
     if not normalized:
         return False
     if interaction_goal == "PRODUCT_RECOMMENDATION":
+        if _is_recommendation_constraint_followup(normalized):
+            return True
         return not _recommendation_has_specific_subject(normalized)
     return bool(
         len(normalized) <= 80
@@ -628,7 +682,12 @@ def _contextual_retrieval_question(
         ):
             continue
         if goal == "PRODUCT_RECOMMENDATION":
-            return previous[:800], True
+            if GENERIC_RECOMMENDATION_FOLLOWUP_PATTERN.search(question):
+                return previous[:800], True
+            return (
+                f"{previous[:800]}\nFollow-up preference: {question[:400]}",
+                True,
+            )
         return (
             f"{previous[:800]}\nFollow-up question: {question}",
             True,
@@ -2483,7 +2542,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
         session.commit()
         return
     history = _history(session, run)
-    interaction_goal = detect_support_interaction_goal(run.question)
+    interaction_goal = _conversation_interaction_goal(run.question, history)
     contextual_question, contextual_query_used = _contextual_retrieval_question(
         run.question,
         history,

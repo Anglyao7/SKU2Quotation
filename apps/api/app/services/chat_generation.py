@@ -18,6 +18,33 @@ class _ChatGenerationTransportError(ChatGenerationError):
     """A request transport failure that is safe to retry once."""
 
 
+class _InvalidStructuredOutputError(ChatGenerationError):
+    """A successful provider response that did not honor the JSON contract."""
+
+    def __init__(self, raw_content: str) -> None:
+        super().__init__("generation provider returned invalid structured output")
+        self.raw_content = raw_content[:16000]
+
+
+JSON_OUTPUT_REMINDER = (
+    "OUTPUT FORMAT REMINDER (protocol instruction, not a visitor message; do not "
+    "use it for language detection): Return exactly one valid JSON object matching the "
+    "schema required by the system message. Output JSON only: no markdown fences, "
+    "headings, explanations, or prose outside the JSON object. Re-check every field "
+    "and all grounding rules before responding."
+)
+JSON_REPAIR_INSTRUCTION = (
+    "This is a protocol instruction, not a visitor message and must not change the "
+    "required response language. Your previous response did not honor the required "
+    "JSON output contract. "
+    "Re-evaluate it under every system safety, evidence, language, and grounding "
+    "rule; do not merely wrap the prose. If approved evidence is empty, do not claim "
+    "that this merchant or its catalog has or does not have a product. Return exactly "
+    "one valid JSON object matching the schema required by the system message. "
+    "Output JSON only, with no markdown or prose outside it."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ChatGenerationIdentity:
     provider: str
@@ -76,18 +103,22 @@ def _json_object(value: str) -> dict[str, Any]:
         start = normalized.find("{")
         end = normalized.rfind("}")
         if start < 0 or end <= start:
-            raise ChatGenerationError(
-                "generation provider returned invalid structured output"
-            ) from exc
+            raise _InvalidStructuredOutputError(value) from exc
         try:
             payload = json.loads(normalized[start : end + 1])
         except json.JSONDecodeError as nested:
-            raise ChatGenerationError(
-                "generation provider returned invalid structured output"
-            ) from nested
+            raise _InvalidStructuredOutputError(value) from nested
     if not isinstance(payload, dict):
-        raise ChatGenerationError("generation provider returned a non-object response")
+        raise _InvalidStructuredOutputError(value)
     return payload
+
+
+def _messages_with_json_reminder(
+    messages: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    if messages and messages[-1].get("content") == JSON_OUTPUT_REMINDER:
+        return messages
+    return [*messages, {"role": "user", "content": JSON_OUTPUT_REMINDER}]
 
 
 def _content_text(value: Any) -> str:
@@ -380,6 +411,62 @@ class OpenAICompatibleChatGeneration:
         assert last_error is not None
         raise last_error
 
+    def _buffered_json_request(
+        self,
+        payload: dict[str, Any],
+        *,
+        started_at: float,
+        transport_mode: str = "BUFFERED",
+    ) -> ChatGenerationResult:
+        response = self._request_with_transient_retry(payload)
+        # A few otherwise-compatible gateways do not implement response_format.
+        # Retry only that validation class, never authentication or server failures.
+        if response.status_code in {400, 404, 422}:
+            payload = {
+                key: value
+                for key, value in payload.items()
+                if key != "response_format"
+            }
+            response = self._request_with_transient_retry(payload)
+        if response.status_code < 200 or response.status_code >= 300:
+            raise ChatGenerationError(
+                f"generation provider returned HTTP {response.status_code}"
+            )
+        return _result_from_body(
+            _response_json(response),
+            transport_mode=transport_mode,
+            duration_ms=max(
+                0,
+                round((time.perf_counter() - started_at) * 1000),
+            ),
+        )
+
+    def _repair_invalid_structured_output(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        invalid: _InvalidStructuredOutputError,
+        max_output_tokens: int,
+        started_at: float,
+        transport_mode: str,
+    ) -> ChatGenerationResult:
+        repair_messages = [
+            *messages,
+            {"role": "assistant", "content": invalid.raw_content},
+            {"role": "user", "content": JSON_REPAIR_INSTRUCTION},
+        ]
+        return self._buffered_json_request(
+            {
+                "model": self.identity.model_name,
+                "messages": repair_messages,
+                "temperature": 0.0,
+                "max_tokens": max_output_tokens,
+                "response_format": {"type": "json_object"},
+            },
+            started_at=started_at,
+            transport_mode=transport_mode,
+        )
+
     def generate_json(
         self,
         *,
@@ -390,34 +477,32 @@ class OpenAICompatibleChatGeneration:
         if not messages:
             raise ChatGenerationError("generation messages are required")
         started_at = time.perf_counter()
+        output_tokens = (
+            self._max_output_tokens
+            if max_output_tokens is None
+            else max_output_tokens
+        )
+        request_messages = _messages_with_json_reminder(messages)
         payload: dict[str, Any] = {
             "model": self.identity.model_name,
-            "messages": messages,
+            "messages": request_messages,
             "temperature": self._temperature if temperature is None else temperature,
-            "max_tokens": (
-                self._max_output_tokens
-                if max_output_tokens is None
-                else max_output_tokens
-            ),
+            "max_tokens": output_tokens,
             "response_format": {"type": "json_object"},
         }
-        response = self._request_with_transient_retry(payload)
-        # A few otherwise-compatible gateways do not implement response_format.
-        # Retry only that validation class, never authentication or server failures.
-        if response.status_code in {400, 404, 422}:
-            payload.pop("response_format", None)
-            response = self._request_with_transient_retry(payload)
-        if response.status_code < 200 or response.status_code >= 300:
-            raise ChatGenerationError(
-                f"generation provider returned HTTP {response.status_code}"
+        try:
+            return self._buffered_json_request(
+                payload,
+                started_at=started_at,
             )
-        return _result_from_body(
-            _response_json(response),
-            duration_ms=max(
-                0,
-                round((time.perf_counter() - started_at) * 1000),
-            ),
-        )
+        except _InvalidStructuredOutputError as invalid:
+            return self._repair_invalid_structured_output(
+                messages=request_messages,
+                invalid=invalid,
+                max_output_tokens=output_tokens,
+                started_at=started_at,
+                transport_mode="BUFFERED_REPAIR",
+            )
 
     def generate_json_stream(
         self,
@@ -428,27 +513,52 @@ class OpenAICompatibleChatGeneration:
     ) -> ChatGenerationResult:
         if not messages:
             raise ChatGenerationError("generation messages are required")
+        started_at = time.perf_counter()
+        output_tokens = (
+            self._max_output_tokens
+            if max_output_tokens is None
+            else max_output_tokens
+        )
+        request_messages = _messages_with_json_reminder(messages)
         payload: dict[str, Any] = {
             "model": self.identity.model_name,
-            "messages": messages,
+            "messages": request_messages,
             "temperature": self._temperature if temperature is None else temperature,
-            "max_tokens": (
-                self._max_output_tokens
-                if max_output_tokens is None
-                else max_output_tokens
-            ),
+            "max_tokens": output_tokens,
             "response_format": {"type": "json_object"},
             "stream": True,
         }
-        status_code, result = self._stream_request_with_transient_retry(payload)
+        try:
+            status_code, result = self._stream_request_with_transient_retry(
+                payload
+            )
+        except _InvalidStructuredOutputError as invalid:
+            return self._repair_invalid_structured_output(
+                messages=request_messages,
+                invalid=invalid,
+                max_output_tokens=output_tokens,
+                started_at=started_at,
+                transport_mode="STREAM_REPAIR",
+            )
         if status_code in {400, 404, 422}:
             payload.pop("response_format", None)
-            status_code, result = self._stream_request_with_transient_retry(payload)
+            try:
+                status_code, result = self._stream_request_with_transient_retry(
+                    payload
+                )
+            except _InvalidStructuredOutputError as invalid:
+                return self._repair_invalid_structured_output(
+                    messages=request_messages,
+                    invalid=invalid,
+                    max_output_tokens=output_tokens,
+                    started_at=started_at,
+                    transport_mode="STREAM_REPAIR",
+                )
         if result is None and status_code in {400, 404, 422}:
             # Preserve availability for older OpenAI-compatible gateways while
             # making the transport downgrade visible in the returned trace.
             return self.generate_json(
-                messages=messages,
+                messages=request_messages,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
             )

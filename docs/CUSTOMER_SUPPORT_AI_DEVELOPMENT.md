@@ -285,6 +285,8 @@ class ChatModelPort(Protocol):
 
 - Provider identity 至少记录 provider/name/version。
 - 优先使用严格 Structured Output/JSON Schema；仍要在本地再次验证。
+- OpenAI-compatible 网关可能忽略 `response_format`。适配器应在末尾追加明确 JSON-only
+  契约；收到普通文本时只允许一次受限结构修复，修复结果仍须通过同一 Validator 链。
 - Provider 错误只能返回安全错误码，不能写入密钥和完整第三方响应。
 - Use case 不得知道 `/v1/responses`、Anthropic Messages 或厂商 SDK 类型。
 - Provider route 使用现有 `AIProviderRouteRow`，新增 capability
@@ -304,6 +306,8 @@ class ChatModelPort(Protocol):
   SKU、supplier score 或其他 supplier signal；客户上下文完全由公共目录重新投影。
 - 分别获取 Product 与 File 候选，按配置控制每类配额。
 - 先处理 SKU/商品编码、条码和精确名称，再进行语义召回。
+- 关键词与属性均不命中时，使用独立的语义相似度门槛保留高相关候选，不能把乘过语义权重的
+  混合总分再次当成语义阈值；客服侧使用语义支持度重新执行店铺配置阈值。
 - 统一 rerank，并返回 `RetrievedEvidence`，而不是 UI Product result。
 - 保留 document/chunk/source version/locator 和所有分数。
 - 对冲突、低支持度、无结果和语义检索降级返回明确 diagnostics；允许 Evidence 为空，但
@@ -588,6 +592,8 @@ claim task
 
 - `OpenAICompatibleChatGeneration.generate_json_stream()` 解析上游 `data:` 事件，记录
   `transport_mode=STREAM` 和 `first_delta_ms`；不支持流式的兼容网关显式降级到缓冲请求。
+- 每次生成末尾追加 JSON-only 提醒；忽略 `response_format` 的普通文本响应进入一次
+  `STREAM_REPAIR / BUFFERED_REPAIR`，而不是直接成为客户回答或通用固定兜底。
 - 编排器只消费累积后的结构化结果。未经引用、数字、语言、MOQ 和敏感字段校验的原始模型
   token 不进入客户通道。
 - `GET /api/store/{slug}/support/conversations/current/events` 使用请求头会话令牌，发送
@@ -855,6 +861,8 @@ knowledge.approve
 - 商品推荐复用现有混合检索，只把当前公开商品事实写入 Evidence，供应商字段永不出现。
 - “我不知道，你给我推荐一款”等追问继承上一轮实质客户主题；已经写明“大型犬玩具”等
   具体新主题时不得混入旧商品。
+- “有什么适合骑行的装备”等场景选择问法必须识别为推荐；“主要用于骑行”等下一轮约束应
+  继承推荐目标，并同时保留原主题和新增用途参与检索。
 - 推荐模型输出必须包含正文实际使用的主商品引用且最多引用两个商品；只列候选、缺少主
   推荐或引用非 SKU 证据时触发推荐契约失败。
 - Evidence 未出现 MOQ 时模型不得推断为“无起订量限制”；该断言由服务端按正文引用关联到

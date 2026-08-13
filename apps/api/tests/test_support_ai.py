@@ -17,6 +17,7 @@ from app.services.chat_generation import (
     OpenAICompatibleChatGeneration,
     chat_completions_endpoint,
 )
+from app.services.hybrid_search import _filter_ranked_results
 from app.services.support_ai_configuration import decrypt_api_key, encrypt_api_key
 from app.services.support_ai_knowledge import (
     ParsedKnowledgeBlock,
@@ -30,6 +31,7 @@ from app.services.support_ai_language import (
 from app.services.support_ai_orchestrator import (
     RetrievalEvidence,
     _contextual_retrieval_question,
+    _conversation_interaction_goal,
     _conversation_is_still_ai_owned,
     _handoff_message,
     _normalized_retrieval_query,
@@ -227,6 +229,7 @@ def test_uncertainty_or_product_discovery_is_not_a_human_request(
     ("message", "expected"),
     (
         ("你这里有什么产品推荐的？", "PRODUCT_RECOMMENDATION"),
+        ("你好，有什么是骑行比较适合的装备？", "PRODUCT_RECOMMENDATION"),
         ("我不知道，你给我推荐一款", "PRODUCT_RECOMMENDATION"),
         ("Can you recommend one?", "PRODUCT_RECOMMENDATION"),
         ("¿Me recomiendas uno?", "PRODUCT_RECOMMENDATION"),
@@ -265,6 +268,59 @@ def test_specific_recommendation_does_not_mix_in_an_old_topic() -> None:
     )
     assert contextualized is False
     assert question == "请推荐一款适合大型犬的玩具"
+
+
+def test_recommendation_constraint_inherits_goal_and_keeps_new_preference() -> None:
+    history = [
+        {"role": "user", "content": "你好，有什么是骑行比较适合的装备？"},
+        {"role": "assistant", "content": "您更关注什么使用场景？"},
+    ]
+    goal = _conversation_interaction_goal("主要是为了骑行", history)
+    assert goal == "PRODUCT_RECOMMENDATION"
+
+    question, contextualized = _contextual_retrieval_question(
+        "主要是为了骑行",
+        history,
+        interaction_goal=goal,
+    )
+    assert contextualized is True
+    assert "有什么是骑行比较适合的装备" in question
+    assert "Follow-up preference: 主要是为了骑行" in question
+
+
+def test_semantic_only_product_match_survives_blended_score_floor() -> None:
+    strong_semantic = (
+        0,
+        0.105,
+        {
+            "product_code": "CYCLING-1",
+            "score_breakdown": {"semantic": 0.42},
+        },
+    )
+    weak_semantic = (
+        0,
+        0.08,
+        {
+            "product_code": "UNRELATED-1",
+            "score_breakdown": {"semantic": 0.32},
+        },
+    )
+    lexical_match = (
+        1,
+        0.19,
+        {
+            "product_code": "EXACT-TEXT",
+            "score_breakdown": {"semantic": 0.0},
+        },
+    )
+
+    filtered = _filter_ranked_results(
+        [strong_semantic, weak_semantic, lexical_match]
+    )
+
+    assert strong_semantic in filtered
+    assert weak_semantic not in filtered
+    assert lexical_match in filtered
 
 
 def test_long_file_block_is_split_once_per_overlap_window() -> None:
@@ -931,6 +987,65 @@ def test_generation_provider_retries_one_transient_response() -> None:
     result = provider.generate_json(messages=[{"role": "user", "content": "hi"}])
     assert calls == 2
     assert result.data == {"answer": "ok"}
+
+
+def test_generation_provider_repairs_gateway_plain_text_output() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"content": "I can help with product selection."},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"detected_language":"en-US",'
+                                '"response_action":"CLARIFY",'
+                                '"grounding_mode":"GENERAL_GUIDANCE",'
+                                '"answer":"What will you use it for?",'
+                                '"confidence":0.7,"citations":[]}'
+                            )
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    provider = OpenAICompatibleChatGeneration(
+        api_key="test-key",
+        base_url="https://generation.example/v1",
+        model_name="test-model",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    result = provider.generate_json(
+        messages=[{"role": "user", "content": "Recommend something"}]
+    )
+
+    assert len(requests) == 2
+    assert "OUTPUT FORMAT REMINDER" in requests[0]["messages"][-1]["content"]
+    assert requests[1]["messages"][-2] == {
+        "role": "assistant",
+        "content": "I can help with product selection.",
+    }
+    assert "do not merely wrap" in requests[1]["messages"][-1]["content"]
+    assert result.data["response_action"] == "CLARIFY"
+    assert result.transport_mode == "BUFFERED_REPAIR"
 
 
 def test_generation_provider_receives_structured_output_as_sse() -> None:
