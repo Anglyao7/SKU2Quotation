@@ -211,6 +211,7 @@ def build_product_payload(
         "skus": [
             {
                 "code": sku.sku_code,
+                "source_code": sku.source_sku_code,
                 "name": sku.name,
                 "options": _json_value(sku.option_values),
                 "barcode": sku.barcode,

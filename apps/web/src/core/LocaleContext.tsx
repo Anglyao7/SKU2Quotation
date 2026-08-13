@@ -1247,6 +1247,7 @@ const english: Record<string, string> = {
   "SKU 商品列表": "SKU product list",
   "打开 SKU {code} 的编辑详情": "Open edit details for SKU {code}",
   "SKU / 商品": "SKU / Product",
+  "来源 SKU": "Source SKU",
   "SKU 编号": "SKU code",
   "商品 / 规格": "Product / Variant",
   "分类与标签": "Category & tags",
@@ -1524,6 +1525,7 @@ const english: Record<string, string> = {
   "不需要先配置变体属性；新建后先保存为草稿。":
     "No variant setup is required. New SKUs are saved as drafts.",
   "SKU 编码": "SKU code",
+  "原始 SKU 编号（可选）": "Original SKU code (optional)",
   "前台名称": "Storefront name",
   "创建草稿 SKU": "Create draft SKU",
   "当前角色只有查看权限。": "Your current role has view-only access.",

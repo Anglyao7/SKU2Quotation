@@ -33,6 +33,7 @@ from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY, SkuRow
 from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
 from ..public_catalog_models import PublicCatalogOfferRow
 from .import_progress import publish_runtime_import_progress
+from .sku_codes import CatalogSkuCodeAllocator
 from .sku_quotas import sku_quota_snapshot
 
 
@@ -489,6 +490,10 @@ def _normalize_sku_code(value: object) -> str:
     """Return the canonical SKU identity used by XLSX and tenant lookup."""
 
     return _cell_text(value).strip().upper()
+
+
+def _source_sku_identity(sku: SkuRow) -> str:
+    return _normalize_sku_code(sku.source_sku_code or sku.sku_code)
 
 
 def _generated_sku_code(
@@ -2173,6 +2178,7 @@ def _parse_product_sku_rows(
     first_row_by_sku: dict[str, int] = {}
     first_row_by_sku_definition: dict[str, int] = {}
     expanded_definition_rows = 0
+    generated_source_sku_count = 0
     referenced_product_codes: set[str] = set()
     effective_sku_rows = 0
     progress_interval = max(100, sku_rows_total // 100) if sku_rows_total else 100
@@ -2259,17 +2265,7 @@ def _parse_product_sku_rows(
                     suggestion="请先在 Product 表中新增相同商品编码，或修正拼写。",
                 )
             )
-        if not sku_code and 1 not in formula_indexes:
-            row_issues.append(
-                _issue(
-                    row_number=row_number,
-                    column="SKU编号",
-                    code="REQUIRED_VALUE_MISSING",
-                    message=f"SKU 第 {row_number} 行缺少 SKU 编号。",
-                    suggestion="请填写稳定且唯一的 SKU 编号，以便后续增量更新。",
-                )
-            )
-        elif len(sku_code) > 160 and 1 not in formula_indexes:
+        if len(sku_code) > 160 and 1 not in formula_indexes:
             row_issues.append(
                 _issue(
                     row_number=row_number,
@@ -2677,14 +2673,12 @@ def _parse_product_sku_rows(
             specification = explicit_specification or (
                 " / ".join(value for _name, value in variant_options) or None
             )
-            generated_sku_code = (
-                _variant_sku_code(
-                    product_key=f"PRODUCT:{product.product_code}",
-                    product_model=sku_code,
-                    specification=specification,
-                )
-                if schema_version >= 5 and specification
-                else sku_code
+            generated_sku_code = _variant_sku_code(
+                product_key=f"PRODUCT:{product.product_code}",
+                product_model=sku_code or None,
+                specification=(
+                    specification if schema_version >= 5 else None
+                ),
             )
             if generated_sku_code in generated_codes:
                 issues.append(
@@ -2737,8 +2731,11 @@ def _parse_product_sku_rows(
             )
         if len(prepared_rows) != len(variant_combinations):
             continue
-        if schema_version >= 5:
+        if not sku_code:
+            generated_source_sku_count += len(prepared_rows)
+        if schema_version >= 5 and sku_code:
             first_row_by_sku_definition[sku_code] = row_number
+        if schema_version >= 5:
             if len(prepared_rows) > 1:
                 expanded_definition_rows += 1
         referenced_product_codes.add(product_code)
@@ -2797,6 +2794,11 @@ def _parse_product_sku_rows(
     if expanded_definition_rows:
         warnings.append(
             f"已将 {expanded_definition_rows} 行规格候选值自动组合为具体 SKU。"
+        )
+    if generated_source_sku_count:
+        warnings.append(
+            f"有 {generated_source_sku_count} 个 SKU 未填写来源编号，"
+            "系统已按商品与规格生成稳定的导入标识。"
         )
     unreferenced_products = sorted(set(products) - referenced_product_codes)
     if unreferenced_products:
@@ -3841,9 +3843,15 @@ def process_product_template_import(
             )
             .execution_options(include_deleted=True)
         ).all()
+        sku_code_allocator = CatalogSkuCodeAllocator(
+            tenant=tenant,
+            products=product_rows,
+            skus=sku_rows,
+            issued_at=now,
+        )
         sku_groups: dict[str, list[SkuRow]] = defaultdict(list)
         for sku_row in sku_rows:
-            sku_groups[_normalize_sku_code(sku_row.sku_code)].append(sku_row)
+            sku_groups[_source_sku_identity(sku_row)].append(sku_row)
 
         skus = {
             code: rows[0]
@@ -4137,7 +4145,7 @@ def process_product_template_import(
                     else ()
                 )
                 candidate_sku_codes = {
-                    _normalize_sku_code(row.sku_code)
+                    _source_sku_identity(row)
                     for row in candidate_skus
                 }
                 if (
@@ -4155,7 +4163,7 @@ def process_product_template_import(
                         product
                         for product in current_products
                         if {
-                            _normalize_sku_code(row.sku_code)
+                            _source_sku_identity(row)
                             for row in sku_rows_by_product.get(product.id, ())
                         }.issubset(incoming_codes)
                     ),
@@ -4301,6 +4309,7 @@ def process_product_template_import(
                     updated_by=user_id,
                 )
                 session.add(product)
+                sku_code_allocator.ensure_product(product)
                 products[product_code] = product
                 products_by_id[product.id] = product
                 planned_product_by_key[template_row.product_key] = product
@@ -4326,6 +4335,7 @@ def process_product_template_import(
                     changed = True
 
             if sku is None:
+                system_sku_code, sku_sequence = sku_code_allocator.issue(product)
                 sku = SkuRow(
                     id=uuid4(),
                     tenant_id=tenant_id,
@@ -4333,7 +4343,9 @@ def process_product_template_import(
                     supplier_id=supplier.id if supplier is not None else None,
                     latest_import_job_id=job.id,
                     rollback_owner_batch_id=job.batch_id,
-                    sku_code=template_row.sku_code,
+                    sku_code=system_sku_code,
+                    source_sku_code=template_row.sku_code,
+                    sku_sequence=sku_sequence,
                     name=template_row.sku_name,
                     option_values=_template_option_values(template_row),
                     default_moq=template_row.default_moq,
@@ -4347,7 +4359,7 @@ def process_product_template_import(
                     updated_by_user_id=user_id,
                 )
                 session.add(sku)
-                skus[sku.sku_code] = sku
+                skus[template_row.sku_code] = sku
                 sku_rows.append(sku)
                 sku_rows_by_product[product.id].append(sku)
                 # Public offers reference the SKU through a composite tenant
@@ -4359,7 +4371,7 @@ def process_product_template_import(
                 sku_values = {
                     "product_id": product.id,
                     "supplier_id": supplier.id if supplier is not None else None,
-                    "sku_code": template_row.sku_code,
+                    "source_sku_code": template_row.sku_code,
                     "name": template_row.sku_name,
                     "option_values": _template_option_values(
                         template_row,
@@ -4560,7 +4572,7 @@ def process_product_template_import(
             1
             for sku in sku_rows
             if _is_template_managed_sku(sku)
-            and _normalize_sku_code(sku.sku_code) not in incoming_sku_codes
+            and _source_sku_identity(sku) not in incoming_sku_codes
             and sku.status == "ACTIVE"
             and sku.deleted_at is None
         )

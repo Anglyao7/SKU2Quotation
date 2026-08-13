@@ -92,7 +92,11 @@ def list_product_rows(
             select(SkuRow.id).where(
                 SkuRow.tenant_id == tenant_id,
                 SkuRow.product_id == ProductRow.id,
-                func.lower(SkuRow.sku_code) == normalized,
+                or_(
+                    func.lower(SkuRow.sku_code) == normalized,
+                    func.lower(func.coalesce(SkuRow.source_sku_code, ""))
+                    == normalized,
+                ),
                 SkuRow.deleted_at.is_(None),
             )
         )
@@ -100,7 +104,12 @@ def list_product_rows(
             select(SkuRow.id).where(
                 SkuRow.tenant_id == tenant_id,
                 SkuRow.product_id == ProductRow.id,
-                func.lower(SkuRow.sku_code).contains(normalized),
+                or_(
+                    func.lower(SkuRow.sku_code).contains(normalized),
+                    func.lower(func.coalesce(SkuRow.source_sku_code, "")).contains(
+                        normalized
+                    ),
+                ),
                 SkuRow.deleted_at.is_(None),
             )
         )
@@ -350,6 +359,9 @@ def list_sku_page_rows(
         conditions.append(
             or_(
                 func.lower(SkuRow.sku_code).contains(normalized, autoescape=True),
+                func.lower(func.coalesce(SkuRow.source_sku_code, "")).contains(
+                    normalized, autoescape=True
+                ),
                 func.lower(func.coalesce(SkuRow.name, "")).contains(
                     normalized, autoescape=True
                 ),
@@ -426,6 +438,11 @@ def list_sku_page_rows(
         statement = statement.order_by(
             case(
                 (func.lower(SkuRow.sku_code) == normalized, 0),
+                (
+                    func.lower(func.coalesce(SkuRow.source_sku_code, ""))
+                    == normalized,
+                    0,
+                ),
                 (
                     func.lower(func.coalesce(ProductRow.product_code, ""))
                     == normalized,
@@ -593,6 +610,24 @@ def sku_code_exists(session: Session, *, tenant_id: UUID, sku_code: str) -> bool
             func.lower(SkuRow.sku_code) == sku_code.casefold(),
         )
     ) > 0
+
+
+def source_sku_code_exists(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    source_sku_code: str,
+) -> bool:
+    statement = (
+        select(func.count())
+        .select_from(SkuRow)
+        .where(
+            SkuRow.tenant_id == tenant_id,
+            func.lower(SkuRow.source_sku_code) == source_sku_code.casefold(),
+        )
+        .execution_options(include_deleted=True)
+    )
+    return session.scalar(statement) > 0
 
 
 def list_sources(

@@ -102,6 +102,9 @@ class TenantRow(AuditTimestampMixin, Base):
     )
     slug: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    sku_prefix: Mapped[str] = mapped_column(
+        String(4), default="SHOP", server_default="SHOP", nullable=False
+    )
     default_locale: Mapped[str] = mapped_column(String(20), default="zh-CN", nullable=False)
     default_currency: Mapped[str] = mapped_column(String(3), default="CNY", nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", nullable=False)

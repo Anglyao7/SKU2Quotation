@@ -1183,6 +1183,7 @@ export function ProductsPage() {
                       <td className="core-sku-product-column">
                         <strong className="core-tabular" title={sku.skuCode}>{sku.skuCode}</strong>
                         <small title={`${sku.productName}${skuDisplayName ? ` · ${skuDisplayName}` : ""}`}>
+                          {sku.sourceSkuCode ? `${t("来源 SKU")} ${sku.sourceSkuCode} · ` : ""}
                           {sku.productName}{skuDisplayName ? ` · ${skuDisplayName}` : ""}
                           {sku.isPinned ? <span className="core-sku-pinned"><PushPin weight="fill" />{t("置顶")}</span> : null}
                         </small>
@@ -1960,7 +1961,7 @@ function ManualProductDialog({
               </div>
               <div className="core-product-create-grid">
                 <label>
-                  <Text size="2" weight="medium">{t("SKU 编码")}</Text>
+                  <Text size="2" weight="medium">{t("原始 SKU 编号（可选）")}</Text>
                   <TextField.Root name="sku_code" maxLength={160} placeholder={t("留空自动生成")} />
                 </label>
                 <label>
@@ -2304,7 +2305,7 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
   const canPublish = hasAnyPermission("catalog.publish");
   const canManageSku = canEdit || canPublish;
   const [offers, setOffers] = useState<PublicCatalogOffer[]>([]);
-  const [skuCode, setSkuCode] = useState(`${product.productCode ?? "SKU"}-${product.skus.length + 1}`);
+  const [skuCode, setSkuCode] = useState("");
   const [skuName, setSkuName] = useState(product.name);
   const [skuMoq, setSkuMoq] = useState("");
   const [skuMoqUnit, setSkuMoqUnit] = useState(product.defaultUnit || "piece");
@@ -2328,7 +2329,6 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
   useEffect(() => { void loadOffers(); }, [loadOffers]);
 
   const createSingle = async () => {
-    if (!skuCode.trim()) return;
     const defaultMoq = skuMoq.trim() ? Number(skuMoq) : undefined;
     const packingQuantity = skuPackingQuantity.trim() ? Number(skuPackingQuantity) : undefined;
     if (
@@ -2342,7 +2342,7 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
     setError("");
     try {
       await createSkus(product.id, [{
-        skuCode: skuCode.trim(),
+        skuCode: skuCode.trim() || undefined,
         name: skuName.trim() || undefined,
         optionValues: {},
         defaultMoq,
@@ -2351,7 +2351,7 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
         status: "DRAFT",
       }]);
       await onChanged();
-      setSkuCode(`${product.productCode ?? "SKU"}-${product.skus.length + 2}`);
+      setSkuCode("");
       setSkuName(product.name);
       setSkuMoq("");
       setSkuMoqUnit(product.defaultUnit || "piece");
@@ -2403,12 +2403,12 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
       </div>
       {createOpen ? (
         <Card className="core-sku-create-compact">
-          <label><Text size="1" color="gray">{t("SKU 编码")}</Text><TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} autoFocus /></label>
+          <label><Text size="1" color="gray">{t("原始 SKU 编号（可选）")}</Text><TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} placeholder={t("留空自动生成")} autoFocus /></label>
           <label><Text size="1" color="gray">{t("SKU 名称")}</Text><TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
           <label><Text size="1" color="gray">{t("起订数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={skuMoq} onChange={(event) => setSkuMoq(event.target.value)} /></label>
           <label><Text size="1" color="gray">{t("起订单位")}</Text><TextField.Root maxLength={32} value={skuMoqUnit} onChange={(event) => setSkuMoqUnit(event.target.value)} placeholder="piece" /></label>
           <label><Text size="1" color="gray">{t("装箱数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={skuPackingQuantity} onChange={(event) => setSkuPackingQuantity(event.target.value)} /></label>
-          <Button disabled={!skuCode.trim() || creating} onClick={() => void createSingle()}>{t(creating ? "正在添加…" : "添加")}</Button>
+          <Button disabled={creating} onClick={() => void createSingle()}>{t(creating ? "正在添加…" : "添加")}</Button>
         </Card>
       ) : null}
       {error ? <div className="core-form-error" role="alert">{error}</div> : null}
@@ -2431,7 +2431,10 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
                   onClick={() => toggleSkuDetails(sku.id)}
                 >
                   <Tag />
-                  <span><strong>{sku.skuCode}</strong><small>{skuLabel}</small></span>
+                  <span>
+                    <strong>{sku.skuCode}</strong>
+                    <small>{sku.sourceSkuCode ? `${t("来源 SKU")} ${sku.sourceSkuCode} · ` : ""}{skuLabel}</small>
+                  </span>
                   <CaretDown className="core-sku-detail-caret" aria-hidden="true" />
                 </button>
                 <div className="core-sku-detail-tags">

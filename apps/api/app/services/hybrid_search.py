@@ -619,6 +619,7 @@ def hybrid_product_search(
             func.lower(ProductRow.name),
             func.lower(func.coalesce(ProductRow.description, "")),
             func.lower(func.coalesce(SkuRow.sku_code, "")),
+            func.lower(func.coalesce(SkuRow.source_sku_code, "")),
             func.lower(func.coalesce(SkuRow.name, "")),
             func.lower(func.coalesce(SkuRow.barcode, "")),
             func.lower(func.coalesce(ProductCategoryRow.name, "")),

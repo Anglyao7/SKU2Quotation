@@ -32,6 +32,7 @@ SKU_HEADERS = (
     "商品ID",
     "商品编码",
     "SKU编号",
+    "来源SKU编号",
     "SKU名称",
     "规格",
     "条码",
@@ -124,7 +125,7 @@ def build_sku_catalog_workbook(
     _style_sheet(
         sku_sheet,
         headers=SKU_HEADERS,
-        widths=(38, 38, 18, 22, 30, 42, 20, 24, 14, 10, 28, 12, 12, 12, 12, 12, 12, 28, 20, 20),
+        widths=(38, 38, 18, 24, 22, 30, 42, 20, 24, 14, 10, 28, 12, 12, 12, 12, 12, 12, 28, 20, 20),
     )
     product_sheet.sheet_properties.tabColor = "D4AF37"
     sku_sheet.sheet_properties.tabColor = "42A58B"
@@ -167,6 +168,7 @@ def build_sku_catalog_workbook(
                 str(row.product.id),
                 row.product.product_code or "",
                 sku.sku_code,
+                sku.source_sku_code or "",
                 sku.name or row.product.name,
                 _display_option_values(sku.option_values),
                 sku.barcode or "",
@@ -200,17 +202,17 @@ def build_sku_catalog_workbook(
         sku_sheet.auto_filter.ref = f"A1:{get_column_letter(len(SKU_HEADERS))}{sku_sheet.max_row}"
         sku_sheet.column_dimensions["A"].hidden = True
         sku_sheet.column_dimensions["B"].hidden = True
-        for cell in sku_sheet["I"][1:]:
+        for cell in sku_sheet["J"][1:]:
             cell.number_format = "0.00"
-        for column in ("L", "N", "P"):
+        for column in ("M", "O", "Q"):
             for cell in sku_sheet[column][1:]:
                 cell.number_format = "0.######"
-        for column in ("S", "T"):
+        for column in ("T", "U"):
             for cell in sku_sheet[column][1:]:
                 cell.number_format = "yyyy-mm-dd hh:mm"
         for row in sku_sheet.iter_rows(min_row=2, max_col=len(SKU_HEADERS)):
             for cell in row:
-                cell.alignment = Alignment(vertical="center", wrap_text=cell.column in {5, 6, 11})
+                cell.alignment = Alignment(vertical="center", wrap_text=cell.column in {6, 7, 12})
 
     workbook.calculation.fullCalcOnLoad = True
     output = BytesIO()

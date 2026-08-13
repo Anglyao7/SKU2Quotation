@@ -1690,6 +1690,7 @@ def _lexical_semantic_rows(rows: list[object], *, query: str) -> list[object]:
     def relevance(row: object) -> float:
         offer, sku, product, row_category = row
         sku_code = str(sku.sku_code).casefold()
+        source_sku_code = str(sku.source_sku_code or "").casefold()
         sku_name = str(sku.name or "").casefold()
         product_name = str(product.name).casefold()
         description = str(product.description or "").casefold()
@@ -1697,6 +1698,7 @@ def _lexical_semantic_rows(rows: list[object], *, query: str) -> list[object]:
         tag_values = [str(tag).casefold() for tag in (offer.tags or [])]
         fields = [
             sku_code,
+            source_sku_code,
             sku_name,
             product_name,
             description,
@@ -1707,7 +1709,11 @@ def _lexical_semantic_rows(rows: list[object], *, query: str) -> list[object]:
         score = coverage
         if sku_code == normalized_query:
             score += 2.0
+        elif source_sku_code == normalized_query:
+            score += 2.0
         elif normalized_query in sku_code:
+            score += 0.8
+        elif normalized_query in source_sku_code:
             score += 0.8
         if normalized_query in sku_name or normalized_query in product_name:
             score += 0.6

@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .constants import DEFAULT_MEMBERSHIP_ID, DEFAULT_OWNER_USER_ID, DEFAULT_TENANT_ID
@@ -194,7 +194,10 @@ def seed_product_center_demo(session: Session) -> None:
         sku = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == sku_code,
+                or_(
+                    SkuRow.sku_code == sku_code,
+                    SkuRow.source_sku_code == sku_code,
+                ),
             )
             .execution_options(include_deleted=True)
         )

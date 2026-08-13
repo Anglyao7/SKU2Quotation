@@ -57,6 +57,7 @@ class SkuResponse(BaseModel):
     id: UUID
     product_id: UUID
     sku_code: str
+    source_sku_code: str | None = None
     name: str | None
     option_values: dict[str, Any]
     barcode: str | None
@@ -79,6 +80,7 @@ class SkuSupplierSummary(BaseModel):
 class SkuListItem(BaseModel):
     id: UUID
     sku_code: str
+    source_sku_code: str | None = None
     name: str
     product_id: UUID
     product_code: str | None
@@ -129,7 +131,7 @@ class SkuCatalogExportRequest(BaseModel):
 
 
 class SkuCreateItem(BaseModel):
-    sku_code: str = Field(min_length=1, max_length=160)
+    sku_code: str | None = Field(default=None, max_length=160)
     name: str | None = Field(default=None, max_length=500)
     option_values: dict[str, str | int | float | bool] = Field(default_factory=dict)
     barcode: str | None = Field(default=None, max_length=120)
@@ -140,10 +142,13 @@ class SkuCreateItem(BaseModel):
     weight_unit: str | None = Field(default=None, max_length=32)
     status: Literal["DRAFT", "ACTIVE", "INACTIVE"] = "DRAFT"
 
-    @field_validator("sku_code")
+    @field_validator("sku_code", mode="before")
     @classmethod
-    def normalize_code(cls, value: str) -> str:
-        return value.strip().upper()
+    def normalize_code(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        return normalized or None
 
 
 class SkuBatchCreateRequest(BaseModel):
@@ -151,7 +156,7 @@ class SkuBatchCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def unique_codes(self) -> "SkuBatchCreateRequest":
-        codes = [item.sku_code for item in self.items]
+        codes = [item.sku_code for item in self.items if item.sku_code is not None]
         if len(codes) != len(set(codes)):
             raise ValueError("SKU codes must be unique within the batch")
         return self

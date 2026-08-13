@@ -26,7 +26,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Font, PatternFill
 from PIL import Image
-from sqlalchemy import MetaData, create_engine, delete, func, inspect, select
+from sqlalchemy import MetaData, create_engine, delete, func, inspect, or_, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
@@ -274,7 +274,10 @@ def _cleanup_template_test_records(
             select(SkuRow)
             .where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code.in_(sku_codes),
+                or_(
+                    SkuRow.sku_code.in_(sku_codes),
+                    SkuRow.source_sku_code.in_(sku_codes),
+                ),
             )
             .execution_options(include_deleted=True)
         ).all()
@@ -4107,7 +4110,7 @@ def test_sku_quota_blocks_direct_creation_but_partially_accepts_template_import(
         assert session.scalar(
             select(func.count(SkuRow.id)).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == import_sku_code,
+                    SkuRow.source_sku_code == import_sku_code,
             )
         ) == 1
         assert session.scalar(
@@ -8878,10 +8881,10 @@ def test_import_batch_rollback_preserves_existing_and_manually_edited_skus() -> 
         rows = session.scalars(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code.in_([existing_code, edited_code, owned_code]),
+                SkuRow.source_sku_code.in_([existing_code, edited_code, owned_code]),
             )
         ).all()
-        by_code = {row.sku_code: row for row in rows}
+        by_code = {row.source_sku_code: row for row in rows}
         assert by_code[existing_code].rollback_owner_batch_id is None
         assert by_code[edited_code].rollback_owner_batch_id == batch_id
         assert by_code[owned_code].rollback_owner_batch_id == batch_id
@@ -8910,11 +8913,11 @@ def test_import_batch_rollback_preserves_existing_and_manually_edited_skus() -> 
             select(SkuRow)
             .where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code.in_([existing_code, edited_code, owned_code]),
+                SkuRow.source_sku_code.in_([existing_code, edited_code, owned_code]),
             )
             .execution_options(include_deleted=True)
         ).all()
-        by_code = {row.sku_code: row for row in rows}
+        by_code = {row.source_sku_code: row for row in rows}
         assert by_code[existing_code].deleted_at is None
         assert by_code[edited_code].deleted_at is None
         assert by_code[edited_code].rollback_owner_batch_id is None
@@ -9943,7 +9946,7 @@ def test_product_template_imports_embedded_images_into_managed_storage(
         sku = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == sku_code,
+                SkuRow.source_sku_code == sku_code,
             )
         )
         assert sku is not None
@@ -10190,7 +10193,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
                 select(SkuRow)
                 .where(
                     SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                    SkuRow.sku_code.in_(["TPL-API-001", "TPL-API-002"]),
+                    SkuRow.source_sku_code.in_(["TPL-API-001", "TPL-API-002"]),
                 )
                 .execution_options(include_deleted=True)
             ).all()
@@ -10408,7 +10411,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
     assert sku_response.status_code == 200
     assert sku_response.json()["total"] == 2
     sku_by_code = {
-        row["sku_code"]: row for row in sku_response.json()["items"]
+        row["source_sku_code"]: row for row in sku_response.json()["items"]
     }
     assert sku_by_code["TPL-API-001"]["default_moq"] is None
     assert sku_by_code["TPL-API-001"]["public_price"] == "12.50"
@@ -10436,7 +10439,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         sku_a = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "TPL-API-001",
+                SkuRow.source_sku_code == "TPL-API-001",
             )
         )
         assert sku_a is not None
@@ -10452,7 +10455,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         sku_b = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "TPL-API-002",
+                SkuRow.source_sku_code == "TPL-API-002",
             )
         )
         assert sku_b is not None
@@ -10516,7 +10519,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
     ).json()
     assert repeated_skus["total"] == 2
     repeated_by_code = {
-        row["sku_code"]: row for row in repeated_skus["items"]
+        row["source_sku_code"]: row for row in repeated_skus["items"]
     }
     assert repeated_by_code["TPL-API-001"]["version"] == 2
     assert repeated_by_code["TPL-API-002"]["version"] == 1
@@ -10526,7 +10529,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         preserved_sku = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "TPL-API-001",
+                SkuRow.source_sku_code == "TPL-API-001",
             )
         )
         assert preserved_sku is not None
@@ -10545,7 +10548,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         sku_a = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "TPL-API-001",
+                SkuRow.source_sku_code == "TPL-API-001",
             )
         )
         assert sku_a is not None
@@ -10619,7 +10622,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
             select(SkuRow)
             .where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "TPL-API-001",
+                SkuRow.source_sku_code == "TPL-API-001",
             )
             .execution_options(include_deleted=True)
         )
@@ -10642,7 +10645,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         sku_b = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "TPL-API-002",
+                SkuRow.source_sku_code == "TPL-API-002",
             )
         )
         assert sku_b is not None
@@ -10675,7 +10678,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         sku_a = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "TPL-API-001",
+                SkuRow.source_sku_code == "TPL-API-001",
             )
         )
         product_a = session.get(ProductRow, product_a_id)
@@ -11172,7 +11175,7 @@ def test_older_product_template_retry_cannot_override_newer_snapshot(
         common_before = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "SNAP-COMMON",
+                SkuRow.source_sku_code == "SNAP-COMMON",
             )
         )
         assert old_job is not None and newer_job is not None and common_before is not None
@@ -11241,14 +11244,14 @@ def test_older_product_template_retry_cannot_override_newer_snapshot(
         new_only = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "SNAP-NEW-ONLY",
+                SkuRow.source_sku_code == "SNAP-NEW-ONLY",
             )
         )
         old_only = session.scalar(
             select(SkuRow)
             .where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == "SNAP-OLD-ONLY",
+                SkuRow.source_sku_code == "SNAP-OLD-ONLY",
             )
             .execution_options(include_deleted=True)
         )
@@ -12451,7 +12454,8 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
     assert detail["status"] == "ACTIVE"
     assert detail["image_status"] == "APPROVED"
     assert len(detail["skus"]) == 1
-    assert detail["skus"][0]["sku_code"] == payload["sku_code"]
+    assert re.fullmatch(r"LOCA-\d{9}-001", detail["skus"][0]["sku_code"])
+    assert detail["skus"][0]["source_sku_code"] == payload["sku_code"]
     assert detail["skus"][0]["status"] == "ACTIVE"
     assert Decimal(detail["skus"][0]["default_moq"]) == Decimal("12")
     assert detail["skus"][0]["option_values"]["装箱数"] == "24"
@@ -12714,7 +12718,8 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
         assert len(product_sheet._images) == 0
         assert sku_values["SKU ID"] == sku_id
         assert sku_values["商品ID"] == str(product_id)
-        assert sku_values["SKU编号"] == f"IMG-SKU-{suffix}"
+        assert sku_values["SKU编号"] == detail["skus"][0]["sku_code"]
+        assert sku_values["来源SKU编号"] == f"IMG-SKU-{suffix}"
     finally:
         workbook.close()
 
@@ -12772,7 +12777,7 @@ def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
         f"/api/v1/products/{product_id}/skus", json={"items": [sku_items[0]]}
     )
     assert duplicate.status_code == 409
-    assert duplicate.json()["detail"]["code"] == "SKU_CODE_CONFLICT"
+    assert duplicate.json()["detail"]["code"] == "SOURCE_SKU_CODE_CONFLICT"
 
     first_sku = created_skus[0]
     updated = client.patch(
@@ -13020,6 +13025,11 @@ def test_disabled_image_intelligence_returns_service_unavailable(
     )
     assert search.status_code == 503
     assert search.json()["detail"]["code"] == "IMAGE_INTELLIGENCE_UNAVAILABLE"
+    with SessionLocal() as session:
+        session.execute(
+            delete(ProductImageRow).where(ProductImageRow.id == image_id)
+        )
+        session.commit()
 
 
 def test_dashboard_and_supplier_profiles_use_tenant_scoped_authoritative_data() -> None:
@@ -17085,7 +17095,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260813_0083"
+        ).scalar() == "20260813_0084"
     upgraded_engine.dispose()
     command.check(config)
 

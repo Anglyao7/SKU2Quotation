@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -78,6 +78,13 @@ class ProductRow(AuditTimestampMixin, Base):
         CheckConstraint("search_document_version >= 0", name="search_version_nonnegative"),
         UniqueConstraint("tenant_id", "id", name="uq_products_tenant_identity"),
         UniqueConstraint("tenant_id", "product_code", name="uq_products_tenant_code"),
+        Index(
+            "uq_products_tenant_sku_code_sequence",
+            "tenant_id",
+            "sku_code_date",
+            "sku_code_sequence",
+            unique=True,
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "category_id"],
             ["product_categories.tenant_id", "product_categories.id"],
@@ -97,6 +104,8 @@ class ProductRow(AuditTimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     product_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sku_code_date: Mapped[date | None] = mapped_column(nullable=True)
+    sku_code_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     category_id: Mapped[UUID | None] = mapped_column(nullable=True)

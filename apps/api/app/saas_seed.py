@@ -24,6 +24,7 @@ from .identity_models import (
 )
 from .model_mixins import restore_deleted, utcnow
 from .inventory_seed import ensure_default_warehouse
+from .services.sku_codes import derive_merchant_sku_prefix
 from .tenant_subscriptions import default_sku_limit, default_subscription_expiry
 
 
@@ -319,6 +320,7 @@ def seed_saas_foundation(session: Session) -> None:
             organization_id=DEFAULT_ORGANIZATION_ID,
             slug="demo",
             name="Local Demo Company",
+            sku_prefix=derive_merchant_sku_prefix("Local Demo Company", slug="demo"),
             identity_code="ADMIN",
             module_access_mode="INHERIT",
         )
