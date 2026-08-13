@@ -121,6 +121,18 @@
 .support-training-dialog { width: min(760px, calc(100vw - 28px)); max-width: 760px; }
 .support-training-dialog form, .support-training-release-notes { display: grid; gap: 16px; }
 .support-training-dialog .support-agent-form-grid > label, .support-training-release-notes { display: grid; gap: 7px; }
+.support-training-combination-picker { padding: 14px; display: grid; gap: 11px; border: 1px solid var(--line); border-radius: 13px; background: var(--page-soft); }
+.support-training-combination-picker > div:first-child { display: grid; gap: 3px; }
+.support-training-combination-picker > div:first-child > strong { font-size: 13px; }
+.support-training-combination-picker > div:first-child > small, .support-training-field-help { color: var(--text-soft); font-size: 10px; line-height: 1.5; }
+.support-training-combination-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.support-training-combination-grid > button { min-width: 0; padding: 11px 12px; display: grid; gap: 5px; text-align: left; color: var(--text); border: 1px solid var(--line); border-radius: 11px; background: var(--surface); cursor: pointer; transition: border-color 140ms ease, background 140ms ease, transform 140ms ease; }
+.support-training-combination-grid > button:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); transform: translateY(-1px); }
+.support-training-combination-grid > button.is-selected { border-color: color-mix(in srgb, var(--accent) 58%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 52%, var(--surface)); }
+.support-training-combination-grid > button > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.support-training-combination-grid > button > span svg { flex: none; color: var(--accent); }
+.support-training-combination-grid > button > small { color: var(--accent-strong); font-size: 10px; font-weight: 700; }
+.support-training-combination-grid > button > p { margin: 0; color: var(--text-soft); font-size: 11px; line-height: 1.55; }
 .support-training-dialog textarea { min-height: 104px; }
 .support-training-dialog label:nth-child(6) textarea { min-height: 140px; }
 
@@ -150,6 +162,7 @@
   .support-training-rule-list > article, .support-training-version-list > article { grid-template-columns: 1fr; align-items: start; }
   .support-training-rule-list .support-training-item-actions { justify-content: flex-start; }
   .support-training-preview-meta code { width: 100%; margin-left: 0; }
+  .support-training-combination-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 430px) {
