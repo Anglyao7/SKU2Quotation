@@ -305,6 +305,9 @@ from .support_ai_models import (  # noqa: E402,F401
     SupportAIProviderSettingsRow,
     SupportAIRunRow,
     SupportAISettingsRow,
+    SupportAITrainingCaseRow,
+    SupportAITrainingRuleRow,
+    SupportAITrainingVersionRow,
 )
 
 from .catalog_translation_models import (  # noqa: E402,F401

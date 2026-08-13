@@ -73,6 +73,14 @@ import type {
   SupportAIRunPage,
   SupportAISettings,
   SupportAIStoreConfiguration,
+  SupportAITrainingCase,
+  SupportAITrainingGroundingMode,
+  SupportAITrainingOverview,
+  SupportAITrainingPreview,
+  SupportAITrainingResponseAction,
+  SupportAITrainingRule,
+  SupportAITrainingStatus,
+  SupportAITrainingVersion,
   SupportAutomationState,
   SupportCitation,
   SupportConversationDetail,
@@ -3265,6 +3273,344 @@ export async function updateSupportAIAgent(
   );
 }
 
+interface ApiSupportAITrainingCase {
+  id: string;
+  agent_id: string;
+  external_id: string;
+  source_tenant_id?: string | null;
+  title: string;
+  language: string;
+  customer_message: string;
+  ideal_response: string;
+  response_action: SupportAITrainingResponseAction;
+  grounding_mode: SupportAITrainingGroundingMode;
+  behavior_notes?: string | null;
+  required_evidence_types: string[];
+  tags: string[];
+  forbidden_patterns: string[];
+  source_type: SupportAITrainingCase["sourceType"];
+  status: SupportAITrainingStatus;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ApiSupportAITrainingRule {
+  id: string;
+  agent_id: string;
+  rule_key: string;
+  title: string;
+  instruction: string;
+  scopes: string[];
+  source_case_ids: string[];
+  priority: number;
+  status: SupportAITrainingStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ApiSupportAITrainingVersion {
+  id: string;
+  agent_id: string;
+  version_number: number;
+  status: "PUBLISHED" | "RETIRED";
+  package_hash: string;
+  compiled_prompt: string;
+  case_count: number;
+  rule_count: number;
+  release_notes?: string | null;
+  published_at: string;
+  activated_at: string;
+  retired_at?: string | null;
+}
+
+interface ApiSupportAITrainingOverview {
+  agent_id: string;
+  cases: ApiSupportAITrainingCase[];
+  rules: ApiSupportAITrainingRule[];
+  versions: ApiSupportAITrainingVersion[];
+  active_version_id?: string | null;
+  active_version_number?: number | null;
+  draft_case_count: number;
+  approved_case_count: number;
+  draft_rule_count: number;
+  approved_rule_count: number;
+}
+
+const mapSupportAITrainingCase = (row: ApiSupportAITrainingCase): SupportAITrainingCase => ({
+  id: row.id,
+  agentId: row.agent_id,
+  externalId: row.external_id,
+  sourceTenantId: defined(row.source_tenant_id),
+  title: row.title,
+  language: row.language,
+  customerMessage: row.customer_message,
+  idealResponse: row.ideal_response,
+  responseAction: row.response_action,
+  groundingMode: row.grounding_mode,
+  behaviorNotes: defined(row.behavior_notes),
+  requiredEvidenceTypes: row.required_evidence_types || [],
+  tags: row.tags || [],
+  forbiddenPatterns: row.forbidden_patterns || [],
+  sourceType: row.source_type,
+  status: row.status,
+  sortOrder: row.sort_order,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const mapSupportAITrainingRule = (row: ApiSupportAITrainingRule): SupportAITrainingRule => ({
+  id: row.id,
+  agentId: row.agent_id,
+  ruleKey: row.rule_key,
+  title: row.title,
+  instruction: row.instruction,
+  scopes: row.scopes || [],
+  sourceCaseIds: row.source_case_ids || [],
+  priority: row.priority,
+  status: row.status,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const mapSupportAITrainingVersion = (row: ApiSupportAITrainingVersion): SupportAITrainingVersion => ({
+  id: row.id,
+  agentId: row.agent_id,
+  versionNumber: row.version_number,
+  status: row.status,
+  packageHash: row.package_hash,
+  compiledPrompt: row.compiled_prompt,
+  caseCount: row.case_count,
+  ruleCount: row.rule_count,
+  releaseNotes: defined(row.release_notes),
+  publishedAt: row.published_at,
+  activatedAt: row.activated_at,
+  retiredAt: defined(row.retired_at),
+});
+
+const mapSupportAITrainingOverview = (row: ApiSupportAITrainingOverview): SupportAITrainingOverview => ({
+  agentId: row.agent_id,
+  cases: row.cases.map(mapSupportAITrainingCase),
+  rules: row.rules.map(mapSupportAITrainingRule),
+  versions: row.versions.map(mapSupportAITrainingVersion),
+  activeVersionId: defined(row.active_version_id),
+  activeVersionNumber: defined(row.active_version_number),
+  draftCaseCount: row.draft_case_count,
+  approvedCaseCount: row.approved_case_count,
+  draftRuleCount: row.draft_rule_count,
+  approvedRuleCount: row.approved_rule_count,
+});
+
+export interface SupportAITrainingCaseInput {
+  externalId?: string;
+  sourceTenantId?: string;
+  title: string;
+  language: string;
+  customerMessage: string;
+  idealResponse: string;
+  responseAction: SupportAITrainingResponseAction;
+  groundingMode: SupportAITrainingGroundingMode;
+  behaviorNotes?: string;
+  requiredEvidenceTypes: string[];
+  tags: string[];
+  forbiddenPatterns: string[];
+  sourceType?: SupportAITrainingCase["sourceType"];
+  status: SupportAITrainingStatus;
+  sortOrder?: number;
+}
+
+const trainingCaseBody = (input: SupportAITrainingCaseInput) => ({
+  external_id: input.externalId || null,
+  source_tenant_id: input.sourceTenantId || null,
+  title: input.title,
+  language: input.language,
+  customer_message: input.customerMessage,
+  ideal_response: input.idealResponse,
+  response_action: input.responseAction,
+  grounding_mode: input.groundingMode,
+  behavior_notes: input.behaviorNotes || null,
+  required_evidence_types: input.requiredEvidenceTypes,
+  tags: input.tags,
+  forbidden_patterns: input.forbiddenPatterns,
+  source_type: input.sourceType || "MANUAL",
+  status: input.status,
+  sort_order: input.sortOrder || 0,
+});
+
+export interface SupportAITrainingRuleInput {
+  ruleKey?: string;
+  title: string;
+  instruction: string;
+  scopes: string[];
+  sourceCaseIds?: string[];
+  priority: number;
+  status: SupportAITrainingStatus;
+}
+
+const trainingRuleBody = (input: SupportAITrainingRuleInput) => ({
+  rule_key: input.ruleKey || null,
+  title: input.title,
+  instruction: input.instruction,
+  scopes: input.scopes,
+  source_case_ids: input.sourceCaseIds || [],
+  priority: input.priority,
+  status: input.status,
+});
+
+export async function getSupportAITrainingOverview(agentId: string): Promise<SupportAITrainingOverview> {
+  return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training`,
+    { cache: "no-store" },
+  ));
+}
+
+export async function createSupportAITrainingCase(agentId: string, input: SupportAITrainingCaseInput): Promise<SupportAITrainingCase> {
+  return mapSupportAITrainingCase(await request<ApiSupportAITrainingCase>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases`,
+    { method: "POST", body: JSON.stringify(trainingCaseBody(input)) },
+  ));
+}
+
+export async function updateSupportAITrainingCase(agentId: string, caseId: string, input: SupportAITrainingCaseInput): Promise<SupportAITrainingCase> {
+  return mapSupportAITrainingCase(await request<ApiSupportAITrainingCase>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases/${encodeURIComponent(caseId)}`,
+    { method: "PUT", body: JSON.stringify(trainingCaseBody(input)) },
+  ));
+}
+
+export async function deleteSupportAITrainingCase(agentId: string, caseId: string): Promise<void> {
+  await request<void>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases/${encodeURIComponent(caseId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function createSupportAITrainingRule(agentId: string, input: SupportAITrainingRuleInput): Promise<SupportAITrainingRule> {
+  return mapSupportAITrainingRule(await request<ApiSupportAITrainingRule>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules`,
+    { method: "POST", body: JSON.stringify(trainingRuleBody(input)) },
+  ));
+}
+
+export async function updateSupportAITrainingRule(agentId: string, ruleId: string, input: SupportAITrainingRuleInput): Promise<SupportAITrainingRule> {
+  return mapSupportAITrainingRule(await request<ApiSupportAITrainingRule>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules/${encodeURIComponent(ruleId)}`,
+    { method: "PUT", body: JSON.stringify(trainingRuleBody(input)) },
+  ));
+}
+
+export async function deleteSupportAITrainingRule(agentId: string, ruleId: string): Promise<void> {
+  await request<void>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules/${encodeURIComponent(ruleId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function generateSupportAITrainingCases(input: {
+  agentId: string;
+  tenantId?: string;
+  count: number;
+  languages: string[];
+}): Promise<{ items: SupportAITrainingCase[]; generationMode: "MODEL" | "TEMPLATE_FALLBACK"; productCount: number }> {
+  const row = await request<{
+    items: ApiSupportAITrainingCase[];
+    generation_mode: "MODEL" | "TEMPLATE_FALLBACK";
+    product_count: number;
+  }>(`/system/support-ai/agents/${encodeURIComponent(input.agentId)}/training/cases/generate`, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: input.tenantId || null,
+      count: input.count,
+      languages: input.languages,
+    }),
+  });
+  return {
+    items: row.items.map(mapSupportAITrainingCase),
+    generationMode: row.generation_mode,
+    productCount: row.product_count,
+  };
+}
+
+export async function summarizeSupportAITrainingRules(input: {
+  agentId: string;
+  caseIds?: string[];
+  maxRules: number;
+}): Promise<{ items: SupportAITrainingRule[]; generationMode: "MODEL" | "TEMPLATE_FALLBACK" }> {
+  const row = await request<{
+    items: ApiSupportAITrainingRule[];
+    generation_mode: "MODEL" | "TEMPLATE_FALLBACK";
+  }>(`/system/support-ai/agents/${encodeURIComponent(input.agentId)}/training/rules/summarize`, {
+    method: "POST",
+    body: JSON.stringify({ case_ids: input.caseIds || [], max_rules: input.maxRules }),
+  });
+  return { items: row.items.map(mapSupportAITrainingRule), generationMode: row.generation_mode };
+}
+
+export async function previewSupportAITraining(agentId: string): Promise<SupportAITrainingPreview> {
+  const row = await request<{
+    compiled_prompt: string;
+    package_hash: string;
+    approved_case_count: number;
+    approved_rule_count: number;
+  }>(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/preview`, { cache: "no-store" });
+  return {
+    compiledPrompt: row.compiled_prompt,
+    packageHash: row.package_hash,
+    approvedCaseCount: row.approved_case_count,
+    approvedRuleCount: row.approved_rule_count,
+  };
+}
+
+export async function publishSupportAITraining(agentId: string, releaseNotes?: string): Promise<SupportAITrainingVersion> {
+  return mapSupportAITrainingVersion(await request<ApiSupportAITrainingVersion>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/publish`,
+    { method: "POST", body: JSON.stringify({ release_notes: releaseNotes || null }) },
+  ));
+}
+
+export async function activateSupportAITrainingVersion(agentId: string, versionId: string): Promise<SupportAITrainingVersion> {
+  return mapSupportAITrainingVersion(await request<ApiSupportAITrainingVersion>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/versions/${encodeURIComponent(versionId)}/activate`,
+    { method: "POST" },
+  ));
+}
+
+export async function exportSupportAITraining(agentId: string, agentCode: string): Promise<void> {
+  await downloadCoreRequest(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/export`,
+    `support-ai-training-${agentCode}.json`,
+    {},
+    true,
+    true,
+  );
+}
+
+export async function importSupportAITraining(agentId: string, trainingPackage: unknown): Promise<SupportAITrainingOverview> {
+  return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/import`,
+    { method: "POST", body: JSON.stringify(trainingPackage) },
+  ));
+}
+
+export async function copySupportAITraining(input: {
+  agentId: string;
+  targetAgentId: string;
+  includeCases?: boolean;
+  includeRules?: boolean;
+}): Promise<SupportAITrainingOverview> {
+  return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
+    `/system/support-ai/agents/${encodeURIComponent(input.agentId)}/training/copy`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        target_agent_id: input.targetAgentId,
+        include_cases: input.includeCases ?? true,
+        include_rules: input.includeRules ?? true,
+      }),
+    },
+  ));
+}
+
 interface ApiSupportAISettings {
   enabled: boolean;
   sku_knowledge_enabled: boolean;
@@ -3625,6 +3971,8 @@ interface ApiSupportAIRun {
   handoff_reason?: string | null;
   model_display_name?: string | null;
   prompt_version: number;
+  training_version_id?: string | null;
+  training_case_ids: string[];
   retrieval_count: number;
   decision_trace: Record<string, unknown>;
   error_code?: string | null;
@@ -3654,6 +4002,8 @@ function mapSupportAIRun(row: ApiSupportAIRun): SupportAIRun {
     handoffReason: defined(row.handoff_reason),
     modelDisplayName: defined(row.model_display_name),
     promptVersion: row.prompt_version,
+    trainingVersionId: defined(row.training_version_id),
+    trainingCaseIds: row.training_case_ids || [],
     retrievalCount: row.retrieval_count,
     decisionTrace: row.decision_trace || {},
     errorCode: defined(row.error_code),

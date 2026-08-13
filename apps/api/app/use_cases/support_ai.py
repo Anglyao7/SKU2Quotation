@@ -46,6 +46,7 @@ from ..support_ai_models import (
     SupportAIProviderSettingsRow,
     SupportAIRunRow,
     SupportAISettingsRow,
+    SupportAITrainingVersionRow,
 )
 from ..support_ai_schemas import (
     SupportAIAgentCreate,
@@ -595,6 +596,24 @@ def _copy_agent_policy_to_store(
     settings.handoff_messages = _normalized_handoff_messages(
         agent.handoff_messages
     )
+    active_training = session.scalar(
+        select(SupportAITrainingVersionRow)
+        .where(
+            SupportAITrainingVersionRow.agent_id == agent.id,
+            SupportAITrainingVersionRow.status == "PUBLISHED",
+        )
+        .order_by(SupportAITrainingVersionRow.version_number.desc())
+    )
+    settings.training_version_id = active_training.id if active_training else None
+    settings.training_prompt = (
+        active_training.compiled_prompt if active_training else None
+    )
+    settings.training_package_hash = (
+        active_training.package_hash if active_training else None
+    )
+    settings.training_examples = (
+        list(active_training.case_snapshot or []) if active_training else []
+    )
     settings.prompt_version += 1
     settings.updated_by_user_id = user_id
     settings.updated_at = utcnow()
@@ -645,6 +664,10 @@ def _sync_agent_bindings(
             elif settings.agent_id == agent.id:
                 settings.agent_id = None
                 settings.enabled = False
+                settings.training_version_id = None
+                settings.training_prompt = None
+                settings.training_package_hash = None
+                settings.training_examples = []
                 settings.updated_by_user_id = context.user_id
                 settings.updated_at = utcnow()
             session.flush()
@@ -1596,6 +1619,12 @@ def _run_response(session: Session, row: SupportAIRunRow) -> SupportAIRunRespons
         )
         .order_by(SupportAIEvidenceUseRow.citation_number)
     ).all()
+    training_case_ids: list[UUID] = []
+    for value in row.training_case_ids or []:
+        try:
+            training_case_ids.append(UUID(str(value)))
+        except (TypeError, ValueError):
+            continue
     return SupportAIRunResponse(
         id=row.id,
         ai_task_id=row.ai_task_id,
@@ -1614,6 +1643,8 @@ def _run_response(session: Session, row: SupportAIRunRow) -> SupportAIRunRespons
         handoff_reason=row.handoff_reason,
         model_display_name=row.model_display_name,
         prompt_version=row.prompt_version,
+        training_version_id=row.training_version_id,
+        training_case_ids=training_case_ids,
         retrieval_count=row.retrieval_count,
         decision_trace=row.decision_trace,
         error_code=row.error_code,

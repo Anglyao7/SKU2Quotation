@@ -11,6 +11,7 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowLeft,
+  Brain,
   CheckCircle,
   Database,
   FloppyDisk,
@@ -153,6 +154,7 @@ export function SupportAIAgentDetailPage() {
             <Button asChild variant="soft" color="gray"><Link to="/console/agents"><ArrowLeft />{t("返回列表")}</Link></Button>
             <Button asChild variant="soft" color="gray"><Link to="/console/system/configuration"><SlidersHorizontal />{t("API 配置中心")}</Link></Button>
             {agent ? <Button asChild variant="soft"><Link to={`/console/agents/knowledge?agent_id=${agent.id}`}><Database />{t("知识库")}</Link></Button> : null}
+            {agent ? <Button asChild><Link to={`/console/agents/${agent.id}/training`}><Brain />{t("人工训练")}</Link></Button> : null}
           </>
         )}
       />

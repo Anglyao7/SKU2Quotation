@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
@@ -240,6 +240,206 @@ class SupportAIAgentResponse(BaseModel):
     updated_at: datetime
 
 
+TrainingCaseStatus = Literal["DRAFT", "APPROVED", "ARCHIVED"]
+TrainingResponseAction = Literal["ANSWER", "CLARIFY", "HANDOFF"]
+TrainingGroundingMode = Literal[
+    "EVIDENCE", "GENERAL_GUIDANCE", "APPROVED_COMPANY_PROFILE"
+]
+TrainingSourceType = Literal[
+    "MANUAL", "PRODUCT_GENERATED", "CONVERSATION_CORRECTION", "IMPORT"
+]
+
+
+class SupportAITrainingCaseWrite(BaseModel):
+    external_id: str | None = Field(default=None, max_length=120)
+    source_tenant_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=240)
+    language: str = Field(default="zh-CN", min_length=2, max_length=35)
+    customer_message: str = Field(min_length=1, max_length=4000)
+    ideal_response: str = Field(min_length=1, max_length=12000)
+    response_action: TrainingResponseAction = "ANSWER"
+    grounding_mode: TrainingGroundingMode = "EVIDENCE"
+    behavior_notes: str | None = Field(default=None, max_length=6000)
+    required_evidence_types: list[Literal["SKU", "FILE", "COMPANY_PROFILE"]] = Field(
+        default_factory=list,
+        max_length=3,
+    )
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    forbidden_patterns: list[str] = Field(default_factory=list, max_length=20)
+    source_type: TrainingSourceType = "MANUAL"
+    status: TrainingCaseStatus = "DRAFT"
+    sort_order: int = Field(default=0, ge=0, le=100000)
+
+    @field_validator(
+        "external_id",
+        "title",
+        "language",
+        "customer_message",
+        "ideal_response",
+        "behavior_notes",
+        mode="before",
+    )
+    @classmethod
+    def normalize_training_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("required_evidence_types", "tags", "forbidden_patterns")
+    @classmethod
+    def unique_training_lists(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip()[:240] for item in value if item.strip()))
+
+
+class SupportAITrainingCaseResponse(BaseModel):
+    id: UUID
+    agent_id: UUID
+    external_id: str
+    source_tenant_id: UUID | None = None
+    title: str
+    language: str
+    customer_message: str
+    ideal_response: str
+    response_action: TrainingResponseAction
+    grounding_mode: TrainingGroundingMode
+    behavior_notes: str | None = None
+    required_evidence_types: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    forbidden_patterns: list[str] = Field(default_factory=list)
+    source_type: TrainingSourceType
+    status: TrainingCaseStatus
+    sort_order: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SupportAITrainingRuleWrite(BaseModel):
+    rule_key: str | None = Field(default=None, max_length=120)
+    title: str = Field(min_length=1, max_length=240)
+    instruction: str = Field(min_length=1, max_length=6000)
+    scopes: list[str] = Field(default_factory=list, max_length=20)
+    source_case_ids: list[UUID] = Field(default_factory=list, max_length=200)
+    priority: int = Field(default=100, ge=0, le=1000)
+    status: TrainingCaseStatus = "DRAFT"
+
+    @field_validator("rule_key", "title", "instruction", mode="before")
+    @classmethod
+    def normalize_rule_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("scopes")
+    @classmethod
+    def unique_scopes(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip()[:80] for item in value if item.strip()))
+
+
+class SupportAITrainingRuleResponse(BaseModel):
+    id: UUID
+    agent_id: UUID
+    rule_key: str
+    title: str
+    instruction: str
+    scopes: list[str] = Field(default_factory=list)
+    source_case_ids: list[UUID] = Field(default_factory=list)
+    priority: int = Field(ge=0, le=1000)
+    status: TrainingCaseStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class SupportAITrainingVersionResponse(BaseModel):
+    id: UUID
+    agent_id: UUID
+    version_number: int = Field(ge=1)
+    status: Literal["PUBLISHED", "RETIRED"]
+    package_hash: str = Field(min_length=64, max_length=64)
+    compiled_prompt: str
+    case_count: int = Field(ge=0)
+    rule_count: int = Field(ge=0)
+    release_notes: str | None = None
+    published_at: datetime
+    activated_at: datetime
+    retired_at: datetime | None = None
+
+
+class SupportAITrainingOverviewResponse(BaseModel):
+    agent_id: UUID
+    cases: list[SupportAITrainingCaseResponse] = Field(default_factory=list)
+    rules: list[SupportAITrainingRuleResponse] = Field(default_factory=list)
+    versions: list[SupportAITrainingVersionResponse] = Field(default_factory=list)
+    active_version_id: UUID | None = None
+    active_version_number: int | None = None
+    draft_case_count: int = Field(ge=0)
+    approved_case_count: int = Field(ge=0)
+    draft_rule_count: int = Field(ge=0)
+    approved_rule_count: int = Field(ge=0)
+
+
+class SupportAITrainingGenerateRequest(BaseModel):
+    tenant_id: UUID | None = None
+    count: int = Field(default=12, ge=1, le=40)
+    languages: list[str] = Field(default_factory=lambda: ["zh-CN"], min_length=1, max_length=6)
+    @field_validator("languages")
+    @classmethod
+    def normalize_generation_languages(cls, value: list[str]) -> list[str]:
+        normalized = list(
+            dict.fromkeys(item.strip()[:35] for item in value if item.strip())
+        )
+        return normalized or ["zh-CN"]
+
+
+class SupportAITrainingGenerateResponse(BaseModel):
+    items: list[SupportAITrainingCaseResponse]
+    generation_mode: Literal["MODEL", "TEMPLATE_FALLBACK"]
+    product_count: int = Field(ge=0)
+
+
+class SupportAITrainingSummarizeRequest(BaseModel):
+    case_ids: list[UUID] = Field(default_factory=list, max_length=200)
+    max_rules: int = Field(default=8, ge=1, le=20)
+
+
+class SupportAITrainingSummarizeResponse(BaseModel):
+    items: list[SupportAITrainingRuleResponse]
+    generation_mode: Literal["MODEL", "TEMPLATE_FALLBACK"]
+
+
+class SupportAITrainingPreviewResponse(BaseModel):
+    compiled_prompt: str
+    package_hash: str = Field(min_length=64, max_length=64)
+    approved_case_count: int = Field(ge=0)
+    approved_rule_count: int = Field(ge=0)
+
+
+class SupportAITrainingPublishRequest(BaseModel):
+    release_notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("release_notes", mode="before")
+    @classmethod
+    def normalize_release_notes(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
+class SupportAITrainingCopyRequest(BaseModel):
+    target_agent_id: UUID
+    include_cases: bool = True
+    include_rules: bool = True
+
+
+class SupportAITrainingPackage(BaseModel):
+    schema_version: Literal["support-ai-training/v1"] = "support-ai-training/v1"
+    agent: dict[str, Any] = Field(default_factory=dict)
+    boundary: list[str] = Field(default_factory=list)
+    rules: list[SupportAITrainingRuleWrite] = Field(default_factory=list, max_length=500)
+    cases: list[SupportAITrainingCaseWrite] = Field(default_factory=list, max_length=2000)
+
+
 class SupportAISettingsResponse(BaseModel):
     enabled: bool
     sku_knowledge_enabled: bool
@@ -405,6 +605,8 @@ class SupportAIRunResponse(BaseModel):
     handoff_reason: str | None = None
     model_display_name: str | None = None
     prompt_version: int = Field(ge=1)
+    training_version_id: UUID | None = None
+    training_case_ids: list[UUID] = Field(default_factory=list)
     retrieval_count: int = Field(ge=0)
     decision_trace: dict[str, object] = Field(default_factory=dict)
     error_code: str | None = None

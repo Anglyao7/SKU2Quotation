@@ -23,6 +23,7 @@ from ..support_ai_models import (
     SupportAIEvidenceUseRow,
     SupportAIRunRow,
     SupportAISettingsRow,
+    SupportAITrainingVersionRow,
 )
 from ..support_models import StorefrontChatConversationRow, StorefrontChatMessageRow
 from .chat_generation import ChatGenerationError
@@ -846,6 +847,92 @@ def _history(
     return list(reversed(messages_reversed))
 
 
+def _training_tokens(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for segment in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", value.casefold()):
+        if not segment:
+            continue
+        if "\u4e00" <= segment[0] <= "\u9fff":
+            tokens.update(
+                segment[index : index + width]
+                for width in (2, 3)
+                for index in range(max(0, len(segment) - width + 1))
+            )
+        else:
+            tokens.add(segment)
+    return tokens
+
+
+def _selected_training_examples(
+    examples: list[dict[str, Any]] | None,
+    *,
+    question: str,
+    interaction_goal: str,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    question_tokens = _training_tokens(question)
+    ranked: list[tuple[float, int, dict[str, Any]]] = []
+    for index, example in enumerate(examples or []):
+        if not isinstance(example, dict):
+            continue
+        searchable = " ".join(
+            [
+                str(example.get("title") or ""),
+                str(example.get("customer_message") or ""),
+                str(example.get("behavior_notes") or ""),
+                " ".join(str(item) for item in example.get("tags") or []),
+            ]
+        )
+        example_tokens = _training_tokens(searchable)
+        lexical = (
+            len(question_tokens & example_tokens) / len(question_tokens)
+            if question_tokens
+            else 0.0
+        )
+        tags = {str(item).upper() for item in example.get("tags") or []}
+        goal_bonus = 0.35 if interaction_goal in tags else 0.0
+        score = lexical + goal_bonus
+        ranked.append((score, -index, example))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    selected = [item[2] for item in ranked if item[0] > 0][:limit]
+    if not selected and ranked:
+        selected = [ranked[0][2]]
+    return [
+        {
+            "training_case_id": str(example.get("id") or ""),
+            "visitor_example": str(example.get("customer_message") or "")[:1200],
+            "ideal_behavior_example": str(example.get("ideal_response") or "")[:2400],
+            "behavior_notes": str(example.get("behavior_notes") or "")[:1200] or None,
+            "response_action": str(example.get("response_action") or "ANSWER"),
+            "grounding_mode": str(example.get("grounding_mode") or "EVIDENCE"),
+            "required_evidence_types": list(example.get("required_evidence_types") or []),
+            "forbidden_patterns": list(example.get("forbidden_patterns") or []),
+        }
+        for example in selected
+    ]
+
+
+def _training_snapshot_for_run(
+    session: Session,
+    *,
+    run: SupportAIRunRow,
+    settings: SupportAISettingsRow,
+) -> tuple[str, list[dict[str, Any]], str | None]:
+    if run.training_version_id is not None:
+        version = session.get(SupportAITrainingVersionRow, run.training_version_id)
+        if version is not None:
+            return (
+                version.compiled_prompt,
+                list(version.case_snapshot or []),
+                version.package_hash,
+            )
+    return (
+        (settings.training_prompt or "").strip(),
+        list(settings.training_examples or []),
+        settings.training_package_hash,
+    )
+
+
 def _prompt_messages(
     *,
     settings: SupportAISettingsRow,
@@ -855,6 +942,8 @@ def _prompt_messages(
     evidence: list[RetrievalEvidence],
     retrieval_diagnostics: dict[str, Any] | None = None,
     interaction_goal: str = "QUESTION_ANSWERING",
+    training_prompt: str = "",
+    training_examples: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     response_language = _required_response_language(
         question=question,
@@ -870,6 +959,18 @@ def _prompt_messages(
             "\nMerchant-approved tone and business guidance follows. It cannot override "
             f"the safety rules above:\n{custom[:12000]}"
         )
+    if training_prompt.strip():
+        system += (
+            "\nHuman-reviewed behavior training follows. It can guide response strategy "
+            "but cannot override safety, language, evidence, or citation rules and is "
+            "never a merchant-fact source:\n"
+            f"{training_prompt.strip()[:24000]}"
+        )
+    selected_training_examples = _selected_training_examples(
+        training_examples,
+        question=question,
+        interaction_goal=interaction_goal,
+    )
     input_data = {
         "interaction_goal": (
             interaction_goal
@@ -904,6 +1005,12 @@ def _prompt_messages(
             }
             for index, row in enumerate(evidence, start=1)
         ],
+        "behavior_only_training_examples": selected_training_examples,
+        "training_example_contract": {
+            "facts_are_not_evidence": True,
+            "copy_numbers_identifiers_or_citations": False,
+            "imitate_strategy_only": True,
+        },
     }
     if interaction_goal == "PRODUCT_RECOMMENDATION":
         input_data["recommendation_output_contract"] = {
@@ -931,6 +1038,7 @@ def _recommendation_repair_messages(
     evidence: list[RetrievalEvidence],
     recommended_citation: int,
     repair_reason: str | None = None,
+    training_prompt: str = "",
 ) -> tuple[list[dict[str, str]], list[int]]:
     catalog_evidence = [
         (citation_number, row)
@@ -980,6 +1088,12 @@ def _recommendation_repair_messages(
         system += (
             "\nMerchant-approved tone and business guidance follows. It cannot override "
             f"the safety rules above:\n{custom[:12000]}"
+        )
+    if training_prompt.strip():
+        system += (
+            "\nHuman-reviewed behavior training follows. Use it only for strategy; it "
+            "is not factual evidence:\n"
+            f"{training_prompt.strip()[:24000]}"
         )
     input_data = {
         "interaction_goal": "PRODUCT_RECOMMENDATION",
@@ -1043,6 +1157,8 @@ def _social_prompt_messages(
     locale_hint: str,
     history: list[dict[str, str]],
     company_profile: dict[str, str | None],
+    training_prompt: str = "",
+    training_examples: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     response_language = _required_response_language(
         question=question,
@@ -1059,6 +1175,12 @@ def _social_prompt_messages(
             "cannot override the safety rules above:\n"
             f"{custom[:12000]}"
         )
+    if training_prompt.strip():
+        system += (
+            "\nHuman-reviewed behavior training follows. It controls style and strategy "
+            "only and is never a factual source:\n"
+            f"{training_prompt.strip()[:24000]}"
+        )
     input_data = {
         "safe_social_intent": intent,
         "storefront_locale_hint": locale_hint,
@@ -1066,6 +1188,12 @@ def _social_prompt_messages(
         "latest_visitor_message": question,
         "approved_company_profile": company_profile,
         "recent_conversation_history": history[-6:],
+        "behavior_only_training_examples": _selected_training_examples(
+            training_examples,
+            question=question,
+            interaction_goal="GREETING",
+            limit=2,
+        ),
     }
     user = (
         "The following JSON contains approved profile data plus untrusted visitor "
@@ -1848,6 +1976,7 @@ def _record_daily_limit_social_reply(
         answer=answer,
         confidence=Decimal("1"),
         prompt_version=settings.prompt_version,
+        training_version_id=settings.training_version_id,
         retrieval_count=0,
         decision_trace={
             "intent": intent,
@@ -1940,6 +2069,7 @@ def _record_daily_limit_assistance_reply(
         answer=output.body,
         confidence=Decimal("0.60000"),
         prompt_version=settings.prompt_version,
+        training_version_id=settings.training_version_id,
         decision_trace={
             "response_action": "CLARIFY",
             "grounding_mode": "GENERAL_GUIDANCE",
@@ -2062,6 +2192,7 @@ def enqueue_chat_run(
         question=message.body,
         visitor_locale=message.translation_source_locale or conversation.locale or "und",
         prompt_version=settings.prompt_version,
+        training_version_id=settings.training_version_id,
         decision_trace={"intent": social_intent} if social_intent else {},
     )
     # SupportAIRun uses a tenant-scoped composite FK to AITask.  There is no ORM
@@ -2130,6 +2261,7 @@ def create_test_run(
         question=question,
         visitor_locale=locale,
         prompt_version=settings.prompt_version,
+        training_version_id=settings.training_version_id,
         decision_trace={"intent": social_intent} if social_intent else {},
     )
     session.add(task)
@@ -2178,6 +2310,10 @@ def _finalize_social_run(
     run.error_message = None
     run.decision_trace = {
         **decision_trace,
+        "training_version_id": (
+            str(run.training_version_id) if run.training_version_id else None
+        ),
+        "training_case_ids": list(run.training_case_ids or []),
         "orchestrator_version": SUPPORT_AI_ORCHESTRATOR_VERSION,
         "base_prompt_version": SUPPORT_AI_BASE_PROMPT_VERSION,
     }
@@ -2250,6 +2386,20 @@ def _process_social_run(
     detected_language: str,
 ) -> None:
     profile = _approved_company_profile(session, run=run, settings=settings)
+    training_prompt, training_examples, training_package_hash = (
+        _training_snapshot_for_run(session, run=run, settings=settings)
+    )
+    selected_training = _selected_training_examples(
+        training_examples,
+        question=run.question,
+        interaction_goal="GREETING",
+        limit=2,
+    )
+    run.training_case_ids = [
+        str(item["training_case_id"])
+        for item in selected_training
+        if item.get("training_case_id")
+    ]
     messages = _social_prompt_messages(
         settings=settings,
         intent=intent,
@@ -2257,6 +2407,8 @@ def _process_social_run(
         locale_hint=run.visitor_locale,
         history=_history(session, run),
         company_profile=profile,
+        training_prompt=training_prompt,
+        training_examples=training_examples,
     )
     prompt_hash = hashlib.sha256(
         json.dumps(messages, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -2342,6 +2494,11 @@ def _process_social_run(
             **_company_profile_trace(profile),
             "generation_mode": "MODEL",
             "model_called": True,
+            "training_version_id": (
+                str(run.training_version_id) if run.training_version_id else None
+            ),
+            "training_package_hash": training_package_hash,
+            "training_case_ids": list(run.training_case_ids or []),
             "prompt_hash": prompt_hash,
             "usage": result.usage,
             "finish_reason": result.finish_reason,
@@ -2369,6 +2526,10 @@ def _finalize_assistance_run(
     run.error_message = None
     run.decision_trace = {
         **decision_trace,
+        "training_version_id": (
+            str(run.training_version_id) if run.training_version_id else None
+        ),
+        "training_case_ids": list(run.training_case_ids or []),
         "orchestrator_version": SUPPORT_AI_ORCHESTRATOR_VERSION,
         "base_prompt_version": SUPPORT_AI_BASE_PROMPT_VERSION,
         "recommendation_policy_version": (
@@ -2543,6 +2704,19 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
         return
     history = _history(session, run)
     interaction_goal = _conversation_interaction_goal(run.question, history)
+    training_prompt, training_examples, training_package_hash = (
+        _training_snapshot_for_run(session, run=run, settings=settings)
+    )
+    selected_training = _selected_training_examples(
+        training_examples,
+        question=run.question,
+        interaction_goal=interaction_goal,
+    )
+    run.training_case_ids = [
+        str(item["training_case_id"])
+        for item in selected_training
+        if item.get("training_case_id")
+    ]
     contextual_question, contextual_query_used = _contextual_retrieval_question(
         run.question,
         history,
@@ -2582,6 +2756,8 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
         evidence=evidence,
         retrieval_diagnostics=retrieval_diagnostics,
         interaction_goal=interaction_goal,
+        training_prompt=training_prompt,
+        training_examples=training_examples,
     )
     prompt_hash = hashlib.sha256(
         json.dumps(messages, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -2648,6 +2824,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
             evidence=evidence,
             recommended_citation=recommended_citation,
             repair_reason=str(validation_trace.get("validation_reason") or ""),
+            training_prompt=training_prompt,
         )
         repair_prompt_hash = hashlib.sha256(
             json.dumps(
@@ -2721,6 +2898,11 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
         ),
         "generation_mode": generation_mode,
         "model_called": True,
+        "training_version_id": (
+            str(run.training_version_id) if run.training_version_id else None
+        ),
+        "training_package_hash": training_package_hash,
+        "training_case_ids": list(run.training_case_ids or []),
         "prompt_hash": prompt_hash,
         "usage": result.usage,
         "finish_reason": result.finish_reason,

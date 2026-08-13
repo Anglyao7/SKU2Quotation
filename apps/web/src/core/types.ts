@@ -892,6 +892,81 @@ export interface SupportAIAgent {
   updatedAt: string;
 }
 
+export type SupportAITrainingStatus = "DRAFT" | "APPROVED" | "ARCHIVED";
+export type SupportAITrainingResponseAction = "ANSWER" | "CLARIFY" | "HANDOFF";
+export type SupportAITrainingGroundingMode = "EVIDENCE" | "GENERAL_GUIDANCE" | "APPROVED_COMPANY_PROFILE";
+
+export interface SupportAITrainingCase {
+  id: string;
+  agentId: string;
+  externalId: string;
+  sourceTenantId?: string;
+  title: string;
+  language: string;
+  customerMessage: string;
+  idealResponse: string;
+  responseAction: SupportAITrainingResponseAction;
+  groundingMode: SupportAITrainingGroundingMode;
+  behaviorNotes?: string;
+  requiredEvidenceTypes: string[];
+  tags: string[];
+  forbiddenPatterns: string[];
+  sourceType: "MANUAL" | "PRODUCT_GENERATED" | "CONVERSATION_CORRECTION" | "IMPORT";
+  status: SupportAITrainingStatus;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportAITrainingRule {
+  id: string;
+  agentId: string;
+  ruleKey: string;
+  title: string;
+  instruction: string;
+  scopes: string[];
+  sourceCaseIds: string[];
+  priority: number;
+  status: SupportAITrainingStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportAITrainingVersion {
+  id: string;
+  agentId: string;
+  versionNumber: number;
+  status: "PUBLISHED" | "RETIRED";
+  packageHash: string;
+  compiledPrompt: string;
+  caseCount: number;
+  ruleCount: number;
+  releaseNotes?: string;
+  publishedAt: string;
+  activatedAt: string;
+  retiredAt?: string;
+}
+
+export interface SupportAITrainingOverview {
+  agentId: string;
+  cases: SupportAITrainingCase[];
+  rules: SupportAITrainingRule[];
+  versions: SupportAITrainingVersion[];
+  activeVersionId?: string;
+  activeVersionNumber?: number;
+  draftCaseCount: number;
+  approvedCaseCount: number;
+  draftRuleCount: number;
+  approvedRuleCount: number;
+}
+
+export interface SupportAITrainingPreview {
+  compiledPrompt: string;
+  packageHash: string;
+  approvedCaseCount: number;
+  approvedRuleCount: number;
+}
+
 export interface SupportAISettings {
   enabled: boolean;
   skuKnowledgeEnabled: boolean;
@@ -979,6 +1054,8 @@ export interface SupportAIRun {
   handoffReason?: string;
   modelDisplayName?: string;
   promptVersion: number;
+  trainingVersionId?: string;
+  trainingCaseIds: string[];
   retrievalCount: number;
   decisionTrace: Record<string, unknown>;
   errorCode?: string;

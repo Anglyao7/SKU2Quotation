@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import (
@@ -43,8 +43,23 @@ from ..support_ai_schemas import (
     SupportAIStoreProviderBindingUpdate,
     SupportAIStoreProviderBulkBinding,
     SupportAITestRunRequest,
+    SupportAITrainingCaseResponse,
+    SupportAITrainingCaseWrite,
+    SupportAITrainingCopyRequest,
+    SupportAITrainingGenerateRequest,
+    SupportAITrainingGenerateResponse,
+    SupportAITrainingOverviewResponse,
+    SupportAITrainingPackage,
+    SupportAITrainingPreviewResponse,
+    SupportAITrainingPublishRequest,
+    SupportAITrainingRuleResponse,
+    SupportAITrainingRuleWrite,
+    SupportAITrainingSummarizeRequest,
+    SupportAITrainingSummarizeResponse,
+    SupportAITrainingVersionResponse,
 )
 from ..use_cases import support_ai as use_cases
+from ..use_cases import support_ai_training as training_use_cases
 from .errors import application_http_error
 
 
@@ -193,6 +208,299 @@ async def upload_support_ai_agent_knowledge_source(
                     job_id=item.job.id,
                 )
         return result
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/support-ai/agents/{agent_id}/training",
+    response_model=SupportAITrainingOverviewResponse,
+)
+def get_support_ai_agent_training(
+    agent_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingOverviewResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return training_use_cases.get_training_overview(
+            session, context=context, agent_id=agent_id
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/cases",
+    response_model=SupportAITrainingCaseResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_support_ai_training_case(
+    agent_id: UUID,
+    payload: SupportAITrainingCaseWrite,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingCaseResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.create_training_case(
+            session, context=context, agent_id=agent_id, request=payload
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/cases/{case_id}",
+    response_model=SupportAITrainingCaseResponse,
+)
+def update_support_ai_training_case(
+    agent_id: UUID,
+    case_id: UUID,
+    payload: SupportAITrainingCaseWrite,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingCaseResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.update_training_case(
+            session,
+            context=context,
+            agent_id=agent_id,
+            case_id=case_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/cases/{case_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_support_ai_training_case(
+    agent_id: UUID,
+    case_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> Response:
+    context = current_context(session)
+    try:
+        training_use_cases.delete_training_case(
+            session, context=context, agent_id=agent_id, case_id=case_id
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/rules",
+    response_model=SupportAITrainingRuleResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_support_ai_training_rule(
+    agent_id: UUID,
+    payload: SupportAITrainingRuleWrite,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingRuleResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.create_training_rule(
+            session, context=context, agent_id=agent_id, request=payload
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/rules/{rule_id}",
+    response_model=SupportAITrainingRuleResponse,
+)
+def update_support_ai_training_rule(
+    agent_id: UUID,
+    rule_id: UUID,
+    payload: SupportAITrainingRuleWrite,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingRuleResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.update_training_rule(
+            session,
+            context=context,
+            agent_id=agent_id,
+            rule_id=rule_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_support_ai_training_rule(
+    agent_id: UUID,
+    rule_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> Response:
+    context = current_context(session)
+    try:
+        training_use_cases.delete_training_rule(
+            session, context=context, agent_id=agent_id, rule_id=rule_id
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/cases/generate",
+    response_model=SupportAITrainingGenerateResponse,
+)
+def generate_support_ai_training_cases(
+    agent_id: UUID,
+    payload: SupportAITrainingGenerateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingGenerateResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.generate_training_cases(
+            session, context=context, agent_id=agent_id, request=payload
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/rules/summarize",
+    response_model=SupportAITrainingSummarizeResponse,
+)
+def summarize_support_ai_training_rules(
+    agent_id: UUID,
+    payload: SupportAITrainingSummarizeRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingSummarizeResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.summarize_training_rules(
+            session, context=context, agent_id=agent_id, request=payload
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/preview",
+    response_model=SupportAITrainingPreviewResponse,
+)
+def preview_support_ai_training(
+    agent_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingPreviewResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return training_use_cases.preview_training_package(
+            session, context=context, agent_id=agent_id
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/publish",
+    response_model=SupportAITrainingVersionResponse,
+)
+def publish_support_ai_training(
+    agent_id: UUID,
+    payload: SupportAITrainingPublishRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingVersionResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.publish_training_package(
+            session, context=context, agent_id=agent_id, request=payload
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/versions/{version_id}/activate",
+    response_model=SupportAITrainingVersionResponse,
+)
+def activate_support_ai_training_version(
+    agent_id: UUID,
+    version_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingVersionResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.activate_training_version(
+            session,
+            context=context,
+            agent_id=agent_id,
+            version_id=version_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/export",
+    response_model=dict[str, Any],
+)
+def export_support_ai_training(
+    agent_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> dict[str, Any]:
+    response.headers.update(NO_STORE_HEADERS)
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="support-ai-training-{agent_id}.json"'
+    )
+    context = current_context(session)
+    try:
+        return training_use_cases.export_training_package(
+            session, context=context, agent_id=agent_id
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/import",
+    response_model=SupportAITrainingOverviewResponse,
+)
+def import_support_ai_training(
+    agent_id: UUID,
+    payload: SupportAITrainingPackage,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingOverviewResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.import_training_package(
+            session, context=context, agent_id=agent_id, request=payload
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/training/copy",
+    response_model=SupportAITrainingOverviewResponse,
+)
+def copy_support_ai_training(
+    agent_id: UUID,
+    payload: SupportAITrainingCopyRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAITrainingOverviewResponse:
+    context = current_context(session)
+    try:
+        return training_use_cases.copy_training_drafts(
+            session, context=context, agent_id=agent_id, request=payload
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

@@ -781,6 +781,59 @@ def test_prompt_fixes_customer_safe_boundary_above_merchant_guidance() -> None:
     assert "cannot override the safety rules above" in system
 
 
+def test_published_training_guides_behavior_without_becoming_evidence() -> None:
+    settings = default_support_ai_settings(tenant_id=uuid4())
+    recommendation_case_id = uuid4()
+    shipping_case_id = uuid4()
+    messages = _prompt_messages(
+        settings=settings,
+        question="Can you recommend a camping chair?",
+        locale_hint="en-US",
+        history=[],
+        evidence=[_evidence()],
+        interaction_goal="PRODUCT_RECOMMENDATION",
+        training_prompt=(
+            "When current evidence contains a candidate, recommend one option "
+            "before asking a focused follow-up."
+        ),
+        training_examples=[
+            {
+                "id": str(recommendation_case_id),
+                "title": "Camping chair recommendation",
+                "customer_message": "Recommend a chair for camping",
+                "ideal_response": "Choose one current candidate and cite it.",
+                "behavior_notes": "Do not copy facts from this example.",
+                "response_action": "ANSWER",
+                "grounding_mode": "EVIDENCE",
+                "required_evidence_types": ["SKU"],
+                "tags": ["PRODUCT_RECOMMENDATION"],
+                "forbidden_patterns": ["copy stale price"],
+            },
+            {
+                "id": str(shipping_case_id),
+                "title": "Shipping question",
+                "customer_message": "When will my parcel arrive?",
+                "ideal_response": "Use an approved shipping policy.",
+                "tags": ["QUESTION_ANSWERING"],
+            },
+        ],
+    )
+    system = messages[0]["content"]
+    payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
+    assert "never a merchant-fact source" in system
+    assert payload["training_example_contract"] == {
+        "facts_are_not_evidence": True,
+        "copy_numbers_identifiers_or_citations": False,
+        "imitate_strategy_only": True,
+    }
+    selected_ids = {
+        item["training_case_id"]
+        for item in payload["behavior_only_training_examples"]
+    }
+    assert str(recommendation_case_id) in selected_ids
+    assert payload["approved_evidence"][0]["content"] == _evidence().excerpt
+
+
 def test_generation_prompts_require_the_latest_visitor_language() -> None:
     settings = default_support_ai_settings(tenant_id=uuid4())
     messages = _prompt_messages(

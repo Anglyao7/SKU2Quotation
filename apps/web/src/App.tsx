@@ -68,6 +68,7 @@ const AnnouncementsPage = recoverableLazy(() => import("./core/pages/Announcemen
 const SupportCenterPage = recoverableLazy(() => import("./core/pages/SupportCenterPage").then((module) => ({ default: module.SupportCenterPage })));
 const SupportAIAgentsPage = recoverableLazy(() => import("./core/pages/SupportAIAgentsPage").then((module) => ({ default: module.SupportAIAgentsPage })));
 const SupportAIAgentDetailPage = recoverableLazy(() => import("./core/pages/SupportAIAgentDetailPage").then((module) => ({ default: module.SupportAIAgentDetailPage })));
+const SupportAITrainingPage = recoverableLazy(() => import("./core/pages/SupportAITrainingPage").then((module) => ({ default: module.SupportAITrainingPage })));
 const SupportAIKnowledgePage = recoverableLazy(() => import("./core/pages/SupportAIKnowledgePage").then((module) => ({ default: module.SupportAIKnowledgePage })));
 const PersonalCenterPage = recoverableLazy(() => import("./core/pages/PersonalCenterPage").then((module) => ({ default: module.PersonalCenterPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
@@ -343,6 +344,7 @@ const router = createBrowserRouter([{
         { path: "support", element: <PermissionGate anyOf={["support.view"]}><SupportCenterPage /></PermissionGate> },
         { path: "agents", element: <PlatformAdminGate><SupportAIAgentsPage /></PlatformAdminGate> },
         { path: "agents/knowledge", element: <PlatformAdminGate><SupportAIKnowledgePage /></PlatformAdminGate> },
+        { path: "agents/:agentId/training", element: <PlatformAdminGate><SupportAITrainingPage /></PlatformAdminGate> },
         { path: "agents/:agentId", element: <PlatformAdminGate><SupportAIAgentDetailPage /></PlatformAdminGate> },
         { path: "support/ai", element: <Navigate to="/console/agents" replace /> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },

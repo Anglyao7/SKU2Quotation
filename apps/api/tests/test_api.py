@@ -1550,6 +1550,252 @@ def test_platform_support_ai_agent_management_and_knowledge_binding(
             session.commit()
 
 
+def test_support_ai_training_cases_rules_publish_import_and_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.support_ai_models import SupportAIAgentRow
+    from app.use_cases import support_ai_training
+
+    agent_ids: list[UUID] = []
+    try:
+        source_response = client.post(
+            "/api/v1/system/support-ai/agents",
+            json={"name": "Training source agent"},
+        )
+        assert source_response.status_code == 201, source_response.text
+        source = source_response.json()
+        source_id = UUID(source["id"])
+        agent_ids.append(source_id)
+
+        target_response = client.post(
+            "/api/v1/system/support-ai/agents",
+            json={"name": "Training target agent"},
+        )
+        assert target_response.status_code == 201, target_response.text
+        target_id = UUID(target_response.json()["id"])
+        agent_ids.append(target_id)
+
+        empty = client.get(
+            f"/api/v1/system/support-ai/agents/{source_id}/training"
+        )
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["cases"] == []
+        assert empty.json()["active_version_id"] is None
+
+        case_payload = {
+            "external_id": "manual-recommendation-1",
+            "title": "Recommend before asking",
+            "language": "en-US",
+            "customer_message": "Can you recommend a chair for camping?",
+            "ideal_response": (
+                "Recommend one current evidence-backed product first, cite it, "
+                "then ask one focused question only if needed."
+            ),
+            "response_action": "ANSWER",
+            "grounding_mode": "EVIDENCE",
+            "behavior_notes": "Teach strategy only; facts come from current evidence.",
+            "required_evidence_types": ["SKU"],
+            "tags": ["PRODUCT_RECOMMENDATION"],
+            "forbidden_patterns": ["copy stale prices"],
+            "source_type": "MANUAL",
+            "status": "DRAFT",
+            "sort_order": 0,
+        }
+        created_case = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/cases",
+            json=case_payload,
+        )
+        assert created_case.status_code == 201, created_case.text
+        case_id = created_case.json()["id"]
+
+        rule_payload = {
+            "rule_key": "recommend-first",
+            "title": "Recommend before broad clarification",
+            "instruction": (
+                "When current evidence contains a useful candidate, recommend one "
+                "option before asking a focused follow-up question."
+            ),
+            "scopes": ["PRODUCT_RECOMMENDATION", "CLARIFICATION"],
+            "source_case_ids": [case_id],
+            "priority": 200,
+            "status": "DRAFT",
+        }
+        created_rule = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/rules",
+            json=rule_payload,
+        )
+        assert created_rule.status_code == 201, created_rule.text
+        rule_id = created_rule.json()["id"]
+
+        approved_case = client.put(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/cases/{case_id}",
+            json={**case_payload, "status": "APPROVED"},
+        )
+        approved_rule = client.put(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/rules/{rule_id}",
+            json={**rule_payload, "status": "APPROVED"},
+        )
+        assert approved_case.status_code == 200, approved_case.text
+        assert approved_rule.status_code == 200, approved_rule.text
+
+        preview = client.get(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/preview"
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["approved_case_count"] == 1
+        assert preview.json()["approved_rule_count"] == 1
+        assert "training content is never factual evidence" in preview.json()[
+            "compiled_prompt"
+        ]
+
+        published_v1 = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/publish",
+            json={"release_notes": "Initial reviewed package"},
+        )
+        assert published_v1.status_code == 200, published_v1.text
+        first_version = published_v1.json()
+        assert first_version["version_number"] == 1
+        assert first_version["status"] == "PUBLISHED"
+
+        case_payload_v2 = {
+            **case_payload,
+            "ideal_response": case_payload["ideal_response"]
+            + " Do not transfer to a human merely because retrieval is empty.",
+            "status": "APPROVED",
+        }
+        changed_case = client.put(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/cases/{case_id}",
+            json=case_payload_v2,
+        )
+        assert changed_case.status_code == 200, changed_case.text
+        published_v2 = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/publish",
+            json={"release_notes": "Improve no-match behavior"},
+        )
+        assert published_v2.status_code == 200, published_v2.text
+        assert published_v2.json()["version_number"] == 2
+
+        rolled_back = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/versions/"
+            f"{first_version['id']}/activate"
+        )
+        assert rolled_back.status_code == 200, rolled_back.text
+        assert rolled_back.json()["status"] == "PUBLISHED"
+
+        exported = client.get(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/export"
+        )
+        assert exported.status_code == 200, exported.text
+        assert exported.json()["schema_version"] == "support-ai-training/v1"
+        assert "attachment" in exported.headers["content-disposition"]
+
+        imported = client.post(
+            f"/api/v1/system/support-ai/agents/{target_id}/training/import",
+            json=exported.json(),
+        )
+        assert imported.status_code == 200, imported.text
+        assert len(imported.json()["cases"]) == 1
+        assert imported.json()["cases"][0]["status"] == "DRAFT"
+        assert imported.json()["rules"][0]["status"] == "DRAFT"
+
+        model_calls: list[list[dict[str, str]]] = []
+
+        class _TrainingProvider:
+            def generate_json(self, *, messages, **_kwargs):
+                model_calls.append(messages)
+                if "Distill reusable" in messages[0]["content"]:
+                    return SimpleNamespace(
+                        data={
+                            "rules": [
+                                {
+                                    "rule_key": "mock-distilled-rule",
+                                    "title": "Use a focused follow-up",
+                                    "instruction": (
+                                        "Ask only the single condition that most "
+                                        "improves the current recommendation."
+                                    ),
+                                    "scopes": ["PRODUCT_RECOMMENDATION"],
+                                    "priority": 180,
+                                }
+                            ]
+                        }
+                    )
+                return SimpleNamespace(
+                    data={
+                        "cases": [
+                            {
+                                "title": "Generated chair recommendation",
+                                "language": "en-US",
+                                "customer_message": "Recommend a camping chair.",
+                                "ideal_response": (
+                                    "Recommend one current evidence-backed chair "
+                                    "and cite the matching evidence."
+                                ),
+                                "response_action": "ANSWER",
+                                "grounding_mode": "EVIDENCE",
+                                "behavior_notes": "Facts must be reloaded at runtime.",
+                                "required_evidence_types": ["SKU"],
+                                "tags": ["PRODUCT_RECOMMENDATION"],
+                                "forbidden_patterns": ["copy stale facts"],
+                            }
+                        ]
+                    }
+                )
+
+        generated_tenant_id = DEFAULT_TENANT_ID
+        monkeypatch.setattr(
+            support_ai_training,
+            "_catalog_training_products",
+            lambda *_args, **_kwargs: (
+                generated_tenant_id,
+                [
+                    {
+                        "product_id": str(uuid4()),
+                        "title": "Public camping chair",
+                        "approved_public_facts": (
+                            "Product: Public camping chair\n"
+                            "public_price=30 CNY; MOQ=30 piece"
+                        ),
+                    }
+                ],
+            ),
+        )
+        monkeypatch.setattr(
+            support_ai_training,
+            "resolved_support_ai_provider",
+            lambda *_args, **_kwargs: _TrainingProvider(),
+        )
+        generated = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/cases/generate",
+            json={"count": 1, "languages": ["en-US"]},
+        )
+        assert generated.status_code == 200, generated.text
+        assert generated.json()["generation_mode"] == "MODEL"
+        assert generated.json()["items"][0]["status"] == "DRAFT"
+        assert generated.json()["items"][0]["source_type"] == "PRODUCT_GENERATED"
+
+        summarized = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/rules/summarize",
+            json={
+                "case_ids": [generated.json()["items"][0]["id"]],
+                "max_rules": 1,
+            },
+        )
+        assert summarized.status_code == 200, summarized.text
+        assert summarized.json()["generation_mode"] == "MODEL"
+        assert summarized.json()["items"][0]["status"] == "DRAFT"
+        assert len(model_calls) == 2
+    finally:
+        with SessionLocal() as session:
+            if agent_ids:
+                session.execute(
+                    delete(SupportAIAgentRow).where(
+                        SupportAIAgentRow.id.in_(agent_ids)
+                    )
+                )
+                session.commit()
+
+
 def test_support_ai_configuration_and_file_knowledge_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -16839,7 +17085,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260813_0082"
+        ).scalar() == "20260813_0083"
     upgraded_engine.dispose()
     command.check(config)
 
@@ -16987,6 +17233,62 @@ def test_support_ai_agent_migration_preserves_existing_store_configuration(
     assert row["system_prompt"] == "Preserved prompt"
     assert row["agent_id"] is not None
     assert row["handoff_messages_type"] == "object"
+
+
+def test_support_ai_training_migration_is_reversible_on_sqlite(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "support-ai-training-migration.db"
+    migration_url = f"sqlite:///{database_path.as_posix()}"
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", migration_url)
+
+    command.upgrade(config, "20260813_0082")
+    before_engine = create_engine(migration_url)
+    before_inspector = inspect(before_engine)
+    assert "support_ai_training_cases" not in before_inspector.get_table_names()
+    assert "training_version_id" not in {
+        column["name"]
+        for column in before_inspector.get_columns("support_ai_settings")
+    }
+    before_engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_engine(migration_url)
+    upgraded_inspector = inspect(upgraded_engine)
+    assert {
+        "support_ai_training_cases",
+        "support_ai_training_rules",
+        "support_ai_training_versions",
+    }.issubset(upgraded_inspector.get_table_names())
+    assert {
+        "training_version_id",
+        "training_prompt",
+        "training_package_hash",
+        "training_examples",
+    }.issubset(
+        {
+            column["name"]
+            for column in upgraded_inspector.get_columns("support_ai_settings")
+        }
+    )
+    assert {"training_version_id", "training_case_ids"}.issubset(
+        {
+            column["name"]
+            for column in upgraded_inspector.get_columns("support_ai_runs")
+        }
+    )
+    upgraded_engine.dispose()
+
+    command.downgrade(config, "20260813_0082")
+    downgraded_engine = create_engine(migration_url)
+    downgraded_inspector = inspect(downgraded_engine)
+    assert "support_ai_training_cases" not in downgraded_inspector.get_table_names()
+    assert "training_version_id" not in {
+        column["name"]
+        for column in downgraded_inspector.get_columns("support_ai_settings")
+    }
+    downgraded_engine.dispose()
 
 
 def test_catalog_tag_color_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:

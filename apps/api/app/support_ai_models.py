@@ -149,6 +149,181 @@ class SupportAIAgentRow(AuditTimestampMixin, Base):
     )
 
 
+class SupportAITrainingCaseRow(AuditTimestampMixin, Base):
+    """Human-reviewed example that teaches behavior, never merchant facts."""
+
+    __tablename__ = "support_ai_training_cases"
+    __table_args__ = (
+        CheckConstraint(
+            "response_action IN ('ANSWER', 'CLARIFY', 'HANDOFF')",
+            name="response_action_allowed",
+        ),
+        CheckConstraint(
+            "grounding_mode IN ('EVIDENCE', 'GENERAL_GUIDANCE', 'APPROVED_COMPANY_PROFILE')",
+            name="grounding_mode_allowed",
+        ),
+        CheckConstraint(
+            "source_type IN ('MANUAL', 'PRODUCT_GENERATED', 'CONVERSATION_CORRECTION', 'IMPORT')",
+            name="source_type_allowed",
+        ),
+        CheckConstraint(
+            "status IN ('DRAFT', 'APPROVED', 'ARCHIVED')",
+            name="status_allowed",
+        ),
+        CheckConstraint("sort_order >= 0", name="sort_order_nonnegative"),
+        UniqueConstraint(
+            "agent_id", "external_id", name="uq_support_ai_training_cases_external"
+        ),
+        Index(
+            "ix_support_ai_training_cases_agent_status",
+            "agent_id",
+            "status",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    agent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("support_ai_agents.id", ondelete="CASCADE"), nullable=False
+    )
+    source_tenant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True
+    )
+    external_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    language: Mapped[str] = mapped_column(String(35), default="zh-CN", nullable=False)
+    customer_message: Mapped[str] = mapped_column(Text, nullable=False)
+    ideal_response: Mapped[str] = mapped_column(Text, nullable=False)
+    response_action: Mapped[str] = mapped_column(
+        String(24), default="ANSWER", nullable=False
+    )
+    grounding_mode: Mapped[str] = mapped_column(
+        String(40), default="EVIDENCE", nullable=False
+    )
+    behavior_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required_evidence_types: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    tags: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    forbidden_patterns: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    source_type: Mapped[str] = mapped_column(
+        String(40), default="MANUAL", nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class SupportAITrainingRuleRow(AuditTimestampMixin, Base):
+    """Reusable behavior rule distilled from reviewed training cases."""
+
+    __tablename__ = "support_ai_training_rules"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('DRAFT', 'APPROVED', 'ARCHIVED')",
+            name="status_allowed",
+        ),
+        CheckConstraint(
+            "priority >= 0 AND priority <= 1000", name="priority_range"
+        ),
+        UniqueConstraint(
+            "agent_id", "rule_key", name="uq_support_ai_training_rules_key"
+        ),
+        Index(
+            "ix_support_ai_training_rules_agent_status",
+            "agent_id",
+            "status",
+            "priority",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    agent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("support_ai_agents.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    source_case_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", nullable=False)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class SupportAITrainingVersionRow(AuditTimestampMixin, Base):
+    """Immutable published training package; exactly one version is active per agent."""
+
+    __tablename__ = "support_ai_training_versions"
+    __table_args__ = (
+        CheckConstraint("version_number >= 1", name="version_number_positive"),
+        CheckConstraint(
+            "status IN ('PUBLISHED', 'RETIRED')", name="status_allowed"
+        ),
+        CheckConstraint("length(package_hash) = 64", name="package_hash_length"),
+        UniqueConstraint(
+            "agent_id", "version_number", name="uq_support_ai_training_versions_number"
+        ),
+        Index(
+            "ix_support_ai_training_versions_agent_status",
+            "agent_id",
+            "status",
+            "version_number",
+        ),
+        Index(
+            "uq_support_ai_training_versions_active_agent",
+            "agent_id",
+            unique=True,
+            sqlite_where=text("status = 'PUBLISHED'"),
+            postgresql_where=text("status = 'PUBLISHED'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    agent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("support_ai_agents.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="PUBLISHED", nullable=False)
+    package_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    compiled_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    case_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    rule_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    release_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class SupportAISettingsRow(AuditTimestampMixin, Base):
     """Store-owned customer-service AI configuration."""
 
@@ -213,6 +388,17 @@ class SupportAISettingsRow(AuditTimestampMixin, Base):
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     handoff_messages: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT, default=dict, nullable=False
+    )
+    training_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("support_ai_training_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    training_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    training_package_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    training_examples: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
     )
     prompt_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     updated_by_user_id: Mapped[UUID | None] = mapped_column(
@@ -480,6 +666,13 @@ class SupportAIRunRow(AuditTimestampMixin, Base):
     model_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     model_display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     prompt_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    training_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("support_ai_training_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    training_case_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
     retrieval_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     decision_trace: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT, default=dict, nullable=False
