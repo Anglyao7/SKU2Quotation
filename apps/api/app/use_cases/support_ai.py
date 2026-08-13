@@ -1350,7 +1350,7 @@ def _upload_knowledge_source_in_scope(
         ):
             raise ApplicationError(
                 "SUPPORT_AI_TRAINING_PACKAGE_REQUIRES_TRAINING_IMPORT",
-                "这是智能客服训练包，请通过智能体的人工训练入口导入，不能作为事实知识向量化。",
+                "这是智能客服案例 JSON，请在后台知识库管理中选择智能体后导入，不能作为事实知识向量化。",
                 kind="conflict",
             )
     if classification not in {"PUBLIC", "CUSTOMER_APPROVED"}:

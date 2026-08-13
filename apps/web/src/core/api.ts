@@ -77,7 +77,6 @@ import type {
   SupportAITrainingCase,
   SupportAITrainingGroundingMode,
   SupportAITrainingOverview,
-  SupportAITrainingPreview,
   SupportAITrainingResponseAction,
   SupportAITrainingRule,
   SupportAITrainingStatus,
@@ -3511,71 +3510,9 @@ export async function deleteSupportAITrainingRule(agentId: string, ruleId: strin
   );
 }
 
-export async function generateSupportAITrainingCases(input: {
-  agentId: string;
-  tenantId?: string;
-  count: number;
-  languages: string[];
-}): Promise<{ items: SupportAITrainingCase[]; generationMode: "MODEL" | "TEMPLATE_FALLBACK"; productCount: number }> {
-  const row = await request<{
-    items: ApiSupportAITrainingCase[];
-    generation_mode: "MODEL" | "TEMPLATE_FALLBACK";
-    product_count: number;
-  }>(`/system/support-ai/agents/${encodeURIComponent(input.agentId)}/training/cases/generate`, {
-    method: "POST",
-    body: JSON.stringify({
-      tenant_id: input.tenantId || null,
-      count: input.count,
-      languages: input.languages,
-    }),
-  });
-  return {
-    items: row.items.map(mapSupportAITrainingCase),
-    generationMode: row.generation_mode,
-    productCount: row.product_count,
-  };
-}
-
-export async function summarizeSupportAITrainingRules(input: {
-  agentId: string;
-  caseIds?: string[];
-  maxRules: number;
-}): Promise<{ items: SupportAITrainingRule[]; generationMode: "MODEL" | "TEMPLATE_FALLBACK" }> {
-  const row = await request<{
-    items: ApiSupportAITrainingRule[];
-    generation_mode: "MODEL" | "TEMPLATE_FALLBACK";
-  }>(`/system/support-ai/agents/${encodeURIComponent(input.agentId)}/training/rules/summarize`, {
-    method: "POST",
-    body: JSON.stringify({ case_ids: input.caseIds || [], max_rules: input.maxRules }),
-  });
-  return { items: row.items.map(mapSupportAITrainingRule), generationMode: row.generation_mode };
-}
-
-export async function previewSupportAITraining(agentId: string): Promise<SupportAITrainingPreview> {
-  const row = await request<{
-    compiled_prompt: string;
-    package_hash: string;
-    approved_case_count: number;
-    approved_rule_count: number;
-  }>(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/preview`, { cache: "no-store" });
-  return {
-    compiledPrompt: row.compiled_prompt,
-    packageHash: row.package_hash,
-    approvedCaseCount: row.approved_case_count,
-    approvedRuleCount: row.approved_rule_count,
-  };
-}
-
-export async function publishSupportAITraining(agentId: string, releaseNotes?: string): Promise<SupportAITrainingVersion> {
-  return mapSupportAITrainingVersion(await request<ApiSupportAITrainingVersion>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/publish`,
-    { method: "POST", body: JSON.stringify({ release_notes: releaseNotes || null }) },
-  ));
-}
-
-export async function activateSupportAITrainingVersion(agentId: string, versionId: string): Promise<SupportAITrainingVersion> {
-  return mapSupportAITrainingVersion(await request<ApiSupportAITrainingVersion>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/versions/${encodeURIComponent(versionId)}/activate`,
+export async function approveAllSupportAITraining(agentId: string): Promise<SupportAITrainingOverview> {
+  return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/approve-all`,
     { method: "POST" },
   ));
 }
@@ -3594,25 +3531,6 @@ export async function importSupportAITraining(agentId: string, trainingPackage: 
   return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
     `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/import`,
     { method: "POST", body: JSON.stringify(trainingPackage) },
-  ));
-}
-
-export async function copySupportAITraining(input: {
-  agentId: string;
-  targetAgentId: string;
-  includeCases?: boolean;
-  includeRules?: boolean;
-}): Promise<SupportAITrainingOverview> {
-  return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
-    `/system/support-ai/agents/${encodeURIComponent(input.agentId)}/training/copy`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        target_agent_id: input.targetAgentId,
-        include_cases: input.includeCases ?? true,
-        include_rules: input.includeRules ?? true,
-      }),
-    },
   ));
 }
 

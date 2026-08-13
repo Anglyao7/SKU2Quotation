@@ -1,9 +1,9 @@
 # 智能客服开发设计
 
-> 状态：v2.3 人工训练与安全流式对话架构已实现 + 后续路线图
-> 版本：2.3
-> 日期：2026-08-13
-> 规范来源：[客服 AI 运行契约 v2.3](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
+> 状态：v2.4 知识库内 AI 训练工作台与安全流式对话架构已实现 + 后续路线图
+> 版本：2.4
+> 日期：2026-08-14
+> 规范来源：[客服 AI 运行契约 v2.4](./CUSTOMER_SUPPORT_AI_RUNTIME_CONTRACT.md)
 
 ## 0. 当前交付状态
 
@@ -17,11 +17,11 @@
   自动获得不可编辑、全局唯一的 8 位数字 ID，并可绑定一个或多个店铺。
 - 智能体详情：`/console/agents/{agent_id}`，集中维护名称、启停、店铺绑定、回答策略、提示词
   和该智能体的 OpenAI-compatible API 配置。
-- 人工训练工作台：`/console/agents/{agent_id}/training`，人工维护问答案例和可复用规则，
-  可让 AI 根据当前绑定店铺的公开商品生成案例、从批准案例总结规则，并执行审核、发布、
-  历史版本回滚、跨智能体复制以及 `support-ai-training/v1` JSON 导入导出。
-- 知识库管理：`/console/agents/knowledge`，先选择已创建智能体，再上传、解析、批准、撤销或
-  重建企业知识文件；文件按该智能体当前绑定的店铺隔离写入，运行时仍遵守 tenant 边界。
+- 知识库管理：`/console/agents/knowledge`，先选择已创建智能体，再统一上传企业知识文件或
+  案例 JSON；企业资料按绑定店铺隔离处理，案例 JSON 解析为该智能体的训练草稿。
+- AI 训练工作台：从知识库管理进入 `/console/agents/{agent_id}/training`，仅保留“案例训练”
+  和“复用规则”。可人工增删改、导出，并通过“一键审批”统一批准和立即生效；页面不提供
+  模型生成案例、总结规则、训练包导入、版本发布/回滚或跨智能体复制入口。
 - 商家人工工作台：`/console/support`，商家成员只查看和处理本店客服会话、AI 回答及其
   客户可见引用；可以人工接管，但不能恢复 AI、管理知识或修改任何 AI 配置。
 - 客户 Widget：按客户本次消息的实际语言回答，通过带请求头令牌的 SSE 实时显示处理状态并
@@ -36,7 +36,8 @@
    评分在向量化前排除，MOQ 保留。
 2. 企业文件支持 PDF、DOCX、TXT、Markdown 和普通 JSON；写入 Cloudflare R2/S3-compatible
    对象存储后解析、分块和向量化，处理成功的版本会直接进入检索。
-   `support-ai-training/v1` JSON 会被识别并导入人工训练草稿，不作为事实知识向量化。
+   `support-ai-training/v1` 案例 JSON 会在知识库入口被识别并导入训练草稿，不作为事实知识
+   向量化。
 3. 客户原文永久保留。语言启发式由生成模型二次确认；跨语言时仅扩展内部检索 query，
    SKU/型号等标识不翻译，最终回答必须与客户实际语言一致。客户 query 不写入商品翻译
    记忆，受控翻译结果只随对应 Run 保存。
@@ -70,9 +71,10 @@
     备选，不能再平铺检索结果。首轮安全草稿只因引用商品过多失败时，以它选出的主商品和
     一个备选执行一次受限模型重写；生成模型仍失败但已有公开商品证据时，会发送明确标注在
     Run 中的 `RETRIEVAL_FALLBACK` 推荐，而不是对客户声称“没有结果”。
-15. 人工训练与事实知识彻底分离。导入、复制和 AI 生成的案例/规则默认都是草稿；只有人工
-    批准并发布的不可变版本进入运行时。训练只指导回答策略，商品事实仍必须从当前店铺证据
-    读取。每个 Run 会保存训练版本、训练包哈希和实际命中的案例 ID，支持精确审计与回滚。
+15. 人工训练与事实知识彻底分离。案例 JSON 只能从知识库导入，人工新增和导入内容默认都是
+    草稿；一键审批会统一批准、发布不可变版本并同步绑定店铺。产品不调用模型 API 生成案例
+    或总结规则。训练只指导回答策略，商品事实仍必须从当前店铺证据读取；每个 Run 保存训练
+    版本、训练包哈希和实际命中的案例 ID。
 
 主要实现文件为 `support_ai_models.py`、`support_ai_schemas.py`、
 `services/support_ai_*`、`routers/support_ai.py`、`use_cases/support_ai.py` 和迁移
@@ -480,7 +482,7 @@ locator。Embedding 表继续引用 chunk，不需要为文件另建一套向量
 
 ### 6.9 智能体训练案例、规则与版本
 
-- `SupportAITrainingCaseRow` 保存人工或 AI 辅助形成的问答案例、期望动作、grounding 模式、
+- `SupportAITrainingCaseRow` 保存人工或案例 JSON 导入的问答案例、期望动作、grounding 模式、
   行为说明、所需证据类型、禁用模式、来源店铺和审核状态。
 - `SupportAITrainingRuleRow` 保存从多个案例归纳的可复用行为规则、适用意图、优先级、来源
   案例 ID 和审核状态；规则内容不得定义企业事实。
@@ -563,7 +565,7 @@ tenants/{tenant_id}/knowledge/{source_id}/{sha256}/source/{safe_filename}
 | PPTX | 幻灯片、标题、文本块和表格 |
 | XLSX | 工作表、命名表格和单元格范围 |
 | TXT/Markdown | 标题、段落、列表和代码块 |
-| JSON | 对象/数组内容和 JSONPath；训练包自动转入人工训练草稿 |
+| JSON | 对象/数组内容和 JSONPath；案例 JSON 自动转入对应智能体训练草稿 |
 
 每个 parser 返回统一 `ParsedDocument`，包括 blocks、locator、语言和 warnings。Parser 不直接
 写数据库；projector 统一完成 canonical payload、chunk 和版本激活。
@@ -711,18 +713,17 @@ GET    /api/v1/support/ai/knowledge/jobs/{job_id}?tenant_id={tenant_id}
 存储和 media ID；大文件后续可增加预签名直传，不改变 source API。全部接口先验证平台
 管理员身份，再切换到目标店铺 RLS 上下文。
 
-### 11.3 人工训练
+### 11.3 AI 训练工作台
 
 ```text
 GET    /api/v1/system/support-ai/agents/{agent_id}/training
 POST   /api/v1/system/support-ai/agents/{agent_id}/training/cases
 PUT    /api/v1/system/support-ai/agents/{agent_id}/training/cases/{case_id}
 DELETE /api/v1/system/support-ai/agents/{agent_id}/training/cases/{case_id}
-POST   /api/v1/system/support-ai/agents/{agent_id}/training/cases/generate
 POST   /api/v1/system/support-ai/agents/{agent_id}/training/rules
 PUT    /api/v1/system/support-ai/agents/{agent_id}/training/rules/{rule_id}
 DELETE /api/v1/system/support-ai/agents/{agent_id}/training/rules/{rule_id}
-POST   /api/v1/system/support-ai/agents/{agent_id}/training/rules/summarize
+POST   /api/v1/system/support-ai/agents/{agent_id}/training/approve-all
 GET    /api/v1/system/support-ai/agents/{agent_id}/training/preview
 POST   /api/v1/system/support-ai/agents/{agent_id}/training/publish
 POST   /api/v1/system/support-ai/agents/{agent_id}/training/versions/{version_id}/activate
@@ -731,9 +732,11 @@ POST   /api/v1/system/support-ai/agents/{agent_id}/training/import
 POST   /api/v1/system/support-ai/agents/{agent_id}/training/copy
 ```
 
-所有训练接口仅限平台管理员。生成接口读取服务端确认属于该智能体的店铺，只向模型发送
-对客公开商品投影；导入、复制和生成结果均为草稿。发布至少需要一个已批准案例，并以单次
-事务创建不可变版本、切换当前版本和同步绑定店铺快照。
+所有训练接口仅限平台管理员。前端只从知识库开放训练入口，训练 JSON 的导入由知识库上传
+流程调用 `training/import`；训练工作台不再显示单独导入、复制、预览、发布或版本回滚。
+`approve-all` 会批准全部草稿，并在一次服务端流程中创建不可变版本、切换当前版本和同步
+绑定店铺快照。`preview/publish/activate/copy` 继续作为兼容及运维接口，不属于日常页面流程。
+产品不提供在线模型生成案例或总结规则的接口。
 
 ### 11.4 部署配置
 
@@ -824,8 +827,8 @@ knowledge.approve
 3. **回答策略**：允许主题、强制人工主题、语言、品牌语气和安全失败文案。
 4. **测试实验室**：输入真实问题，查看改写、候选证据、回答、引用和 Validator。
 5. **回答检查**：按 Run 查看完整 evidence、工具、模型版本和人工修改。
-6. **人工训练**：从智能体详情进入训练工作台，维护案例/规则、AI 生成草稿、人工审核、
-   Prompt 预览、发布、历史版本回滚、训练包导入导出及跨智能体复制。
+6. **AI 训练工作台**：在知识库选择智能体后进入，只包含案例训练和复用规则；案例 JSON 在
+   知识库导入，工作台支持人工增删改、导出和一键审批生效。
 
 商家导航不显示该模块，直接访问也会被前后端同时拒绝。悬浮球展示设置继续属于个人中心；
 人工会话继续属于客服管理，不与知识配置混在一起。
@@ -1019,11 +1022,12 @@ knowledge.approve
 ### Phase 4.5：人工训练与版本治理（已完成）
 
 - 建立案例、规则、不可变训练版本和 Run 快照。
-- 支持人工增删改审、商品辅助生成、案例归纳规则、导入导出、复制和回滚。
+- 知识库统一导入案例 JSON，工作台支持人工增删改、导出与一键审批生效。
+- 商品案例与规则由人工或开发协作过程离线准备；产品不调用模型 API 在线生成或总结。
 - 训练内容只改变回答行为，不成为企业事实或引用来源。
 
-验收：草稿隔离、发布/回滚、导入强制草稿、跨智能体复制、AI 生成字段边界、运行时版本
-快照和“案例不是证据”回归测试通过。
+验收：草稿隔离、知识库导入强制草稿、一键审批原子发布、运行时版本快照和“案例不是证据”
+回归测试通过。
 
 ### Phase 5：实时只读工具
 

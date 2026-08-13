@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import defaultdict
 from contextlib import contextmanager
 from typing import Any, Iterator
 from uuid import UUID, uuid4
@@ -16,11 +15,7 @@ from ..database import set_request_context
 from ..domain.errors import ApplicationError
 from ..identity_models import TenantRow
 from ..model_mixins import mark_deleted, utcnow
-from ..repositories import public_catalog_repository
 from ..services.auth.dependencies import RequestContext
-from ..services.chat_generation import ChatGenerationError
-from ..services.support_ai_configuration import resolved_support_ai_provider
-from ..services.support_ai_retrieval import _public_product_excerpt
 from ..support_ai_models import (
     SupportAIAgentRow,
     SupportAISettingsRow,
@@ -32,16 +27,12 @@ from ..support_ai_schemas import (
     SupportAITrainingCaseResponse,
     SupportAITrainingCaseWrite,
     SupportAITrainingCopyRequest,
-    SupportAITrainingGenerateRequest,
-    SupportAITrainingGenerateResponse,
     SupportAITrainingOverviewResponse,
     SupportAITrainingPackage,
     SupportAITrainingPreviewResponse,
     SupportAITrainingPublishRequest,
     SupportAITrainingRuleResponse,
     SupportAITrainingRuleWrite,
-    SupportAITrainingSummarizeRequest,
-    SupportAITrainingSummarizeResponse,
     SupportAITrainingVersionResponse,
 )
 
@@ -51,7 +42,7 @@ TRAINING_BOUNDARY = [
     "Training cases and rules teach response behavior; they are not merchant-fact evidence.",
     "Product facts such as price, MOQ, stock, specification and product code must come from current approved evidence.",
     "A published example may be imitated structurally, but its facts, numbers, citations and identifiers must never be copied into another answer.",
-    "Imported and generated material remains draft until a platform administrator explicitly approves and publishes it.",
+    "Imported or manually edited material remains draft until a platform administrator approves it through the one-click release flow.",
 ]
 SUPPORTED_SCOPES = {
     "QUESTION_ANSWERING",
@@ -555,520 +546,6 @@ def _validate_case_source_tenant(
         )
 
 
-def _catalog_training_products(
-    session: Session,
-    *,
-    context: RequestContext,
-    agent_id: UUID,
-    tenant_id: UUID | None,
-    limit: int = 32,
-) -> tuple[UUID, list[dict[str, str]]]:
-    bound_ids = _bound_tenant_ids(
-        session,
-        context=context,
-        agent_id=agent_id,
-    )
-    if not bound_ids:
-        raise ApplicationError(
-            "SUPPORT_AI_AGENT_STORE_REQUIRED",
-            "请先为智能体绑定至少一个店铺。",
-            kind="conflict",
-        )
-    selected_tenant_id = tenant_id or bound_ids[0]
-    if selected_tenant_id not in bound_ids:
-        raise ApplicationError(
-            "SUPPORT_AI_AGENT_STORE_NOT_BOUND",
-            "所选店铺未绑定到该智能体。",
-            kind="conflict",
-        )
-    tenant = _tenant(session, selected_tenant_id)
-    with _tenant_scope(session, context=context, tenant=tenant):
-        product_ids = public_catalog_repository.list_public_catalog_product_ids(
-            session,
-            tenant_id=tenant.id,
-            now=utcnow(),
-        )[:limit]
-        rows = public_catalog_repository.list_public_catalog_rows_for_products(
-            session,
-            tenant_id=tenant.id,
-            now=utcnow(),
-            product_ids=product_ids,
-        )
-    grouped: dict[UUID, list[Any]] = defaultdict(list)
-    for row in rows:
-        grouped[row[2].id].append(row)
-    products = [
-        {
-            "product_id": str(product_id),
-            "title": str(product_rows[0][2].name)[:500],
-            "approved_public_facts": _public_product_excerpt(product_rows),
-        }
-        for product_id, product_rows in grouped.items()
-    ]
-    if not products:
-        raise ApplicationError(
-            "SUPPORT_AI_TRAINING_PRODUCTS_EMPTY",
-            "绑定店铺暂无可对客展示的商品，无法生成商品案例。",
-            kind="conflict",
-        )
-    return selected_tenant_id, products
-
-
-def _provider_generate_json(
-    provider: Any,
-    *,
-    messages: list[dict[str, str]],
-    max_output_tokens: int,
-) -> dict[str, Any]:
-    kwargs = {
-        "messages": messages,
-        "temperature": 0.25,
-        "max_output_tokens": max_output_tokens,
-    }
-    stream = getattr(provider, "generate_json_stream", None)
-    result = stream(**kwargs) if callable(stream) else provider.generate_json(**kwargs)
-    return result.data
-
-
-def _case_payload(value: Any, *, language: str) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    title = str(value.get("title") or "").strip()[:240]
-    customer_message = str(value.get("customer_message") or "").strip()[:4000]
-    ideal_response = str(value.get("ideal_response") or "").strip()[:12000]
-    if not (title and customer_message and ideal_response):
-        return None
-    response_action = str(value.get("response_action") or "ANSWER").upper()
-    if response_action not in {"ANSWER", "CLARIFY", "HANDOFF"}:
-        response_action = "ANSWER"
-    grounding_mode = str(value.get("grounding_mode") or "EVIDENCE").upper()
-    if grounding_mode not in {
-        "EVIDENCE",
-        "GENERAL_GUIDANCE",
-        "APPROVED_COMPANY_PROFILE",
-    }:
-        grounding_mode = "EVIDENCE"
-    required = [
-        item
-        for item in [str(item).upper() for item in value.get("required_evidence_types") or []]
-        if item in {"SKU", "FILE", "COMPANY_PROFILE"}
-    ]
-    return {
-        "title": title,
-        "language": str(value.get("language") or language).strip()[:35] or language,
-        "customer_message": customer_message,
-        "ideal_response": ideal_response,
-        "response_action": response_action,
-        "grounding_mode": grounding_mode,
-        "behavior_notes": str(value.get("behavior_notes") or "").strip()[:6000] or None,
-        "required_evidence_types": list(dict.fromkeys(required)),
-        "tags": list(
-            dict.fromkeys(
-                str(item).strip()[:240]
-                for item in value.get("tags") or []
-                if str(item).strip()
-            )
-        )[:20],
-        "forbidden_patterns": list(
-            dict.fromkeys(
-                str(item).strip()[:240]
-                for item in value.get("forbidden_patterns") or []
-                if str(item).strip()
-            )
-        )[:20],
-    }
-
-
-def _template_cases(
-    products: list[dict[str, str]],
-    *,
-    count: int,
-    languages: list[str],
-) -> list[dict[str, Any]]:
-    patterns = [
-        (
-            "场景推荐",
-            "我想买{product}，你能先告诉我它适合什么使用场景吗？",
-            "先给出基于当前商品证据的直接判断，并引用对应商品；若证据缺少关键场景信息，再提出一个最有区分度的追问。",
-            "PRODUCT_RECOMMENDATION",
-        ),
-        (
-            "MOQ 与价格",
-            "{product}的价格和起订量是多少？",
-            "只复述当前 SKU 证据中的公开价格、币种、MOQ 和单位；每个数字都紧邻引用，缺失字段明确说暂未提供。",
-            "MOQ_PRICE",
-        ),
-        (
-            "规格确认",
-            "请介绍一下{product}的规格和可选项。",
-            "按客户当前语言简洁整理证据中的规格、材质和选项，并引用商品；不展示供应商或内部字段。",
-            "SPECIFICATION",
-        ),
-        (
-            "信息不足追问",
-            "我需要这个类型的产品，但还没有想好具体规格。",
-            "先说明可以协助筛选，再只询问用途、尺寸、材质、预算或数量中最关键的一项；不要因为信息不足直接转人工。",
-            "CLARIFICATION",
-        ),
-        (
-            "同类比较",
-            "{product}和同类商品相比怎么选？",
-            "若有多个当前商品证据，先推荐一个主选项、最多一个备选并解释差异；证据不足时说明比较维度并追问，禁止编造优缺点。",
-            "COMPARISON",
-        ),
-    ]
-    result: list[dict[str, Any]] = []
-    for index in range(count):
-        product = products[index % len(products)]
-        title, question, response, tag = patterns[index % len(patterns)]
-        language = languages[index % len(languages)]
-        if not language.casefold().startswith("zh"):
-            question = f"Please help me understand and choose {product['title']}."
-            response = (
-                "Reply in the customer's language. Use current approved SKU evidence for "
-                "all merchant-specific facts, give a useful first recommendation, cite it, "
-                "and ask one focused follow-up only when it improves the choice."
-            )
-        result.append(
-            {
-                "title": f"{title} · {product['title']}"[:240],
-                "language": language,
-                "customer_message": question.format(product=product["title"]),
-                "ideal_response": response,
-                "response_action": "CLARIFY" if tag == "CLARIFICATION" else "ANSWER",
-                "grounding_mode": "GENERAL_GUIDANCE" if tag == "CLARIFICATION" else "EVIDENCE",
-                "behavior_notes": "案例用于学习回答策略；商品事实必须在运行时从当前证据重新读取。",
-                "required_evidence_types": [] if tag == "CLARIFICATION" else ["SKU"],
-                "tags": [tag, "PRODUCT_BASED"],
-                "forbidden_patterns": ["复制案例中的过期数字", "泄露供应商或内部字段", "无依据承诺库存"],
-            }
-        )
-    return result
-
-
-def generate_training_cases(
-    session: Session,
-    *,
-    context: RequestContext,
-    agent_id: UUID,
-    request: SupportAITrainingGenerateRequest,
-) -> SupportAITrainingGenerateResponse:
-    _require_platform_admin(context)
-    agent = _agent(session, agent_id)
-    tenant_id, products = _catalog_training_products(
-        session,
-        context=context,
-        agent_id=agent_id,
-        tenant_id=request.tenant_id,
-    )
-    generated: list[dict[str, Any]] = []
-    generation_mode = "MODEL"
-    try:
-        provider = resolved_support_ai_provider(
-            session,
-            profile_id=agent.provider_setting_id,
-        )
-        product_payload = products[: min(len(products), 24)]
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You create supervised training examples for a commerce customer-support agent. "
-                    "Return one JSON object with a cases array. Each case must contain title, language, "
-                    "customer_message, ideal_response, response_action, grounding_mode, behavior_notes, "
-                    "required_evidence_types, tags and forbidden_patterns. Generate varied recommendation, "
-                    "comparison, specification, MOQ/price, ambiguous-intent and multilingual examples. "
-                    "The ideal_response is a behavior exemplar: it may use only supplied public facts and "
-                    "must cite evidence as [1]. Never expose supplier identity, supplier SKU, supplier score, "
-                    "cost, margin or internal notes. Never treat omitted facts as negative facts. Information "
-                    "gaps normally lead to one useful clarifying question, not human handoff. Handoff is only "
-                    "for an explicit human request or a genuinely human-only action."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "requested_count": request.count,
-                        "languages": request.languages,
-                        "boundary": TRAINING_BOUNDARY,
-                        "approved_public_products": product_payload,
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            },
-        ]
-        data = _provider_generate_json(
-            provider,
-            messages=messages,
-            max_output_tokens=min(12000, max(2400, request.count * 500)),
-        )
-        raw_cases = data.get("cases") if isinstance(data, dict) else None
-        for index, raw in enumerate(raw_cases or []):
-            payload = _case_payload(
-                raw,
-                language=request.languages[index % len(request.languages)],
-            )
-            if payload is not None:
-                generated.append(payload)
-            if len(generated) >= request.count:
-                break
-        if len(generated) < max(1, min(3, request.count)):
-            raise ChatGenerationError("model returned too few valid training cases")
-        if len(generated) < request.count:
-            generated.extend(
-                _template_cases(
-                    products,
-                    count=request.count - len(generated),
-                    languages=request.languages,
-                )
-            )
-    except (ChatGenerationError, TypeError, ValueError):
-        generation_mode = "TEMPLATE_FALLBACK"
-        generated = _template_cases(
-            products,
-            count=request.count,
-            languages=request.languages,
-        )
-
-    items: list[SupportAITrainingCaseRow] = []
-    for index, payload in enumerate(generated[: request.count]):
-        row = SupportAITrainingCaseRow(
-            id=uuid4(),
-            agent_id=agent_id,
-            source_tenant_id=tenant_id,
-            external_id=_unique_external_id(
-                session,
-                agent_id=agent_id,
-                preferred=None,
-                prefix="product",
-            ),
-            title=payload["title"],
-            language=payload["language"],
-            customer_message=payload["customer_message"],
-            ideal_response=payload["ideal_response"],
-            response_action=payload["response_action"],
-            grounding_mode=payload["grounding_mode"],
-            behavior_notes=payload["behavior_notes"],
-            required_evidence_types=payload["required_evidence_types"],
-            tags=payload["tags"],
-            forbidden_patterns=payload["forbidden_patterns"],
-            source_type="PRODUCT_GENERATED",
-            status="DRAFT",
-            sort_order=index,
-            created_by_user_id=context.user_id,
-            updated_by_user_id=context.user_id,
-        )
-        session.add(row)
-        session.flush()
-        items.append(row)
-    session.commit()
-    return SupportAITrainingGenerateResponse(
-        items=[_case_response(row) for row in items],
-        generation_mode=generation_mode,
-        product_count=len(products),
-    )
-
-
-FALLBACK_RULES = [
-    (
-        "evidence-first",
-        "商品事实以实时证据为准",
-        "涉及商品、规格、价格、币种、MOQ、库存或交期时，只能使用本次检索到的已批准证据；案例中的事实和数字不得复用。",
-        ["QUESTION_ANSWERING", "PRODUCT_RECOMMENDATION"],
-    ),
-    (
-        "recommend-before-question",
-        "推荐优先于泛化追问",
-        "当证据中已有合理候选时，先给出一个主推荐及理由，再提出最多一个能改善选择的具体追问；不要重复索要客户已经说明的信息。",
-        ["PRODUCT_RECOMMENDATION", "CLARIFICATION"],
-    ),
-    (
-        "no-match-clarify",
-        "检索不足不等于转人工",
-        "检索无匹配或证据不足时，提供安全的一般性选型思路并询问一个关键条件；除非客户明确要求人工或请求必须由人工执行，否则继续由 AI 处理。",
-        ["QUESTION_ANSWERING", "CLARIFICATION", "HANDOFF"],
-    ),
-    (
-        "language-mirror",
-        "严格跟随客户当前语言",
-        "识别客户最后一条消息实际使用的语言，并使用同一种语言回答；商品名称和编码可保留原文。",
-        ["MULTILINGUAL", "QUESTION_ANSWERING", "PRODUCT_RECOMMENDATION"],
-    ),
-    (
-        "citation-near-claim",
-        "引用紧邻事实",
-        "每项关键商品事实后紧邻对应引用；不要用一个悬空引用支撑多项来源不明的事实。",
-        ["QUESTION_ANSWERING", "PRODUCT_RECOMMENDATION"],
-    ),
-    (
-        "protect-internal-fields",
-        "隔离内部供应链字段",
-        "不得向客户披露供应商名称、供应商 SKU、供应商评分、成本、利润、联系人或内部备注；MOQ 属于可回答的商品信息，但必须来自当前证据。",
-        ["QUESTION_ANSWERING", "PRODUCT_RECOMMENDATION"],
-    ),
-    (
-        "one-focused-question",
-        "一次只问关键问题",
-        "需要补充信息时，只问当前最能缩小选择范围的一项，例如用途、尺寸、材质、预算或数量，避免机械重复完整问题清单。",
-        ["CLARIFICATION", "PRODUCT_RECOMMENDATION"],
-    ),
-    (
-        "honest-uncertainty",
-        "区分缺失与否定",
-        "资料未提供某字段时应表达为暂未提供或需要确认，不得推断为没有、免费、无限库存或无最低起订量。",
-        ["QUESTION_ANSWERING", "PRODUCT_RECOMMENDATION"],
-    ),
-]
-
-
-def _rule_payload(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    title = str(value.get("title") or "").strip()[:240]
-    instruction = str(value.get("instruction") or "").strip()[:6000]
-    if not title or not instruction:
-        return None
-    scopes = [
-        scope
-        for scope in [str(item).upper() for item in value.get("scopes") or []]
-        if scope in SUPPORTED_SCOPES
-    ]
-    return {
-        "rule_key": str(value.get("rule_key") or "").strip()[:120] or None,
-        "title": title,
-        "instruction": instruction,
-        "scopes": list(dict.fromkeys(scopes)),
-        "source_case_ids": [],
-        "priority": max(0, min(1000, int(value.get("priority") or 100))),
-    }
-
-
-def summarize_training_rules(
-    session: Session,
-    *,
-    context: RequestContext,
-    agent_id: UUID,
-    request: SupportAITrainingSummarizeRequest,
-) -> SupportAITrainingSummarizeResponse:
-    _require_platform_admin(context)
-    agent = _agent(session, agent_id)
-    selected_ids = set(request.case_ids)
-    cases = [
-        row
-        for row in _cases(session, agent_id)
-        if not selected_ids or row.id in selected_ids
-    ]
-    if not cases:
-        raise ApplicationError(
-            "SUPPORT_AI_TRAINING_CASE_REQUIRED",
-            "请先创建或生成训练案例。",
-            kind="conflict",
-        )
-    generated: list[dict[str, Any]] = []
-    generation_mode = "MODEL"
-    try:
-        provider = resolved_support_ai_provider(
-            session,
-            profile_id=agent.provider_setting_id,
-        )
-        payload = [
-            {
-                "id": str(row.id),
-                "question": row.customer_message,
-                "ideal_behavior": row.ideal_response,
-                "notes": row.behavior_notes,
-                "action": row.response_action,
-                "grounding": row.grounding_mode,
-                "tags": row.tags,
-            }
-            for row in cases[:80]
-        ]
-        data = _provider_generate_json(
-            provider,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Distill reusable customer-support behavior rules from reviewed examples. "
-                        "Return one JSON object with a rules array. Each rule has rule_key, title, "
-                        "instruction, scopes and priority. Rules must be general, actionable and "
-                        "non-overlapping. Never copy a product name, product code, SKU, price, MOQ, "
-                        "specification, citation number or other merchant fact into a rule. Preserve "
-                        "the boundary that training teaches behavior while current approved evidence "
-                        "supplies facts."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "maximum_rules": request.max_rules,
-                            "boundary": TRAINING_BOUNDARY,
-                            "examples": payload,
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                },
-            ],
-            max_output_tokens=min(7000, max(1800, request.max_rules * 500)),
-        )
-        for raw in data.get("rules") or []:
-            item = _rule_payload(raw)
-            if item is not None:
-                generated.append(item)
-            if len(generated) >= request.max_rules:
-                break
-        if not generated:
-            raise ChatGenerationError("model returned no valid training rules")
-    except (ChatGenerationError, TypeError, ValueError):
-        generation_mode = "TEMPLATE_FALLBACK"
-        generated = [
-            {
-                "rule_key": key,
-                "title": title,
-                "instruction": instruction,
-                "scopes": scopes,
-                "source_case_ids": [],
-                "priority": 200 - index * 10,
-            }
-            for index, (key, title, instruction, scopes) in enumerate(
-                FALLBACK_RULES[: request.max_rules]
-            )
-        ]
-
-    case_ids = [str(row.id) for row in cases]
-    items: list[SupportAITrainingRuleRow] = []
-    for item in generated[: request.max_rules]:
-        row = SupportAITrainingRuleRow(
-            id=uuid4(),
-            agent_id=agent_id,
-            rule_key=_unique_rule_key(
-                session,
-                agent_id=agent_id,
-                preferred=item.get("rule_key"),
-            ),
-            title=item["title"],
-            instruction=item["instruction"],
-            scopes=item["scopes"],
-            source_case_ids=case_ids,
-            priority=item["priority"],
-            status="DRAFT",
-            created_by_user_id=context.user_id,
-            updated_by_user_id=context.user_id,
-        )
-        session.add(row)
-        session.flush()
-        items.append(row)
-    session.commit()
-    return SupportAITrainingSummarizeResponse(
-        items=[_rule_response(row) for row in items],
-        generation_mode=generation_mode,
-    )
-
-
 def _case_snapshot(row: SupportAITrainingCaseRow) -> dict[str, Any]:
     return {
         "id": str(row.id),
@@ -1257,6 +734,54 @@ def publish_training_package(
     )
     session.commit()
     return _version_response(row)
+
+
+def approve_and_publish_training(
+    session: Session,
+    *,
+    context: RequestContext,
+    agent_id: UUID,
+) -> SupportAITrainingOverviewResponse:
+    """Approve every draft and atomically activate the resulting package."""
+    _require_platform_admin(context)
+    _agent(session, agent_id)
+    now = utcnow()
+    for row in _cases(session, agent_id):
+        if row.status == "DRAFT":
+            row.status = "APPROVED"
+            row.updated_by_user_id = context.user_id
+            row.updated_at = now
+    for row in _rules(session, agent_id):
+        if row.status == "DRAFT":
+            row.status = "APPROVED"
+            row.updated_by_user_id = context.user_id
+            row.updated_at = now
+    session.flush()
+
+    _, package_hash, cases, _ = _compiled_package(session, agent_id=agent_id)
+    if not cases:
+        session.rollback()
+        raise ApplicationError(
+            "SUPPORT_AI_TRAINING_CASE_REQUIRED",
+            "请先导入或新增至少一个训练案例。",
+            kind="conflict",
+        )
+    active = session.scalar(
+        select(SupportAITrainingVersionRow).where(
+            SupportAITrainingVersionRow.agent_id == agent_id,
+            SupportAITrainingVersionRow.status == "PUBLISHED",
+        )
+    )
+    if active is None or active.package_hash != package_hash:
+        publish_training_package(
+            session,
+            context=context,
+            agent_id=agent_id,
+            request=SupportAITrainingPublishRequest(release_notes="一键审批并生效"),
+        )
+    else:
+        session.commit()
+    return get_training_overview(session, context=context, agent_id=agent_id)
 
 
 def activate_training_version(

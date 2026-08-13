@@ -962,13 +962,6 @@ export interface SupportAITrainingOverview {
   approvedRuleCount: number;
 }
 
-export interface SupportAITrainingPreview {
-  compiledPrompt: string;
-  packageHash: string;
-  approvedCaseCount: number;
-  approvedRuleCount: number;
-}
-
 export interface SupportAISettings {
   enabled: boolean;
   skuKnowledgeEnabled: boolean;

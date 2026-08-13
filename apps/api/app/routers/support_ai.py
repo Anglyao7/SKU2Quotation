@@ -46,16 +46,12 @@ from ..support_ai_schemas import (
     SupportAITrainingCaseResponse,
     SupportAITrainingCaseWrite,
     SupportAITrainingCopyRequest,
-    SupportAITrainingGenerateRequest,
-    SupportAITrainingGenerateResponse,
     SupportAITrainingOverviewResponse,
     SupportAITrainingPackage,
     SupportAITrainingPreviewResponse,
     SupportAITrainingPublishRequest,
     SupportAITrainingRuleResponse,
     SupportAITrainingRuleWrite,
-    SupportAITrainingSummarizeRequest,
-    SupportAITrainingSummarizeResponse,
     SupportAITrainingVersionResponse,
 )
 from ..use_cases import support_ai as use_cases
@@ -354,36 +350,17 @@ def delete_support_ai_training_rule(
 
 
 @router.post(
-    "/api/v1/system/support-ai/agents/{agent_id}/training/cases/generate",
-    response_model=SupportAITrainingGenerateResponse,
+    "/api/v1/system/support-ai/agents/{agent_id}/training/approve-all",
+    response_model=SupportAITrainingOverviewResponse,
 )
-def generate_support_ai_training_cases(
+def approve_all_support_ai_training(
     agent_id: UUID,
-    payload: SupportAITrainingGenerateRequest,
     session: Session = Depends(get_authenticated_session),
-) -> SupportAITrainingGenerateResponse:
+) -> SupportAITrainingOverviewResponse:
     context = current_context(session)
     try:
-        return training_use_cases.generate_training_cases(
-            session, context=context, agent_id=agent_id, request=payload
-        )
-    except ApplicationError as exc:
-        raise application_http_error(exc) from exc
-
-
-@router.post(
-    "/api/v1/system/support-ai/agents/{agent_id}/training/rules/summarize",
-    response_model=SupportAITrainingSummarizeResponse,
-)
-def summarize_support_ai_training_rules(
-    agent_id: UUID,
-    payload: SupportAITrainingSummarizeRequest,
-    session: Session = Depends(get_authenticated_session),
-) -> SupportAITrainingSummarizeResponse:
-    context = current_context(session)
-    try:
-        return training_use_cases.summarize_training_rules(
-            session, context=context, agent_id=agent_id, request=payload
+        return training_use_cases.approve_and_publish_training(
+            session, context=context, agent_id=agent_id
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

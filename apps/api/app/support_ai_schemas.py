@@ -379,35 +379,6 @@ class SupportAITrainingOverviewResponse(BaseModel):
     approved_rule_count: int = Field(ge=0)
 
 
-class SupportAITrainingGenerateRequest(BaseModel):
-    tenant_id: UUID | None = None
-    count: int = Field(default=12, ge=1, le=40)
-    languages: list[str] = Field(default_factory=lambda: ["zh-CN"], min_length=1, max_length=6)
-    @field_validator("languages")
-    @classmethod
-    def normalize_generation_languages(cls, value: list[str]) -> list[str]:
-        normalized = list(
-            dict.fromkeys(item.strip()[:35] for item in value if item.strip())
-        )
-        return normalized or ["zh-CN"]
-
-
-class SupportAITrainingGenerateResponse(BaseModel):
-    items: list[SupportAITrainingCaseResponse]
-    generation_mode: Literal["MODEL", "TEMPLATE_FALLBACK"]
-    product_count: int = Field(ge=0)
-
-
-class SupportAITrainingSummarizeRequest(BaseModel):
-    case_ids: list[UUID] = Field(default_factory=list, max_length=200)
-    max_rules: int = Field(default=8, ge=1, le=20)
-
-
-class SupportAITrainingSummarizeResponse(BaseModel):
-    items: list[SupportAITrainingRuleResponse]
-    generation_mode: Literal["MODEL", "TEMPLATE_FALLBACK"]
-
-
 class SupportAITrainingPreviewResponse(BaseModel):
     compiled_prompt: str
     package_hash: str = Field(min_length=64, max_length=64)

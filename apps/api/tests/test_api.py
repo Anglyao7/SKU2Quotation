@@ -1554,11 +1554,8 @@ def test_platform_support_ai_agent_management_and_knowledge_binding(
             session.commit()
 
 
-def test_support_ai_training_cases_rules_publish_import_and_rollback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_support_ai_training_cases_rules_approve_import_and_rollback() -> None:
     from app.support_ai_models import SupportAIAgentRow
-    from app.use_cases import support_ai_training
 
     agent_ids: list[UUID] = []
     try:
@@ -1585,6 +1582,19 @@ def test_support_ai_training_cases_rules_publish_import_and_rollback(
         assert empty.status_code == 200, empty.text
         assert empty.json()["cases"] == []
         assert empty.json()["active_version_id"] is None
+        openapi_paths = client.get("/openapi.json").json()["paths"]
+        assert (
+            f"/api/v1/system/support-ai/agents/{{agent_id}}/training/approve-all"
+            in openapi_paths
+        )
+        assert (
+            "/api/v1/system/support-ai/agents/{agent_id}/training/cases/generate"
+            not in openapi_paths
+        )
+        assert (
+            "/api/v1/system/support-ai/agents/{agent_id}/training/rules/summarize"
+            not in openapi_paths
+        )
 
         case_payload = {
             "external_id": "manual-recommendation-1",
@@ -1631,16 +1641,24 @@ def test_support_ai_training_cases_rules_publish_import_and_rollback(
         assert created_rule.status_code == 201, created_rule.text
         rule_id = created_rule.json()["id"]
 
-        approved_case = client.put(
-            f"/api/v1/system/support-ai/agents/{source_id}/training/cases/{case_id}",
-            json={**case_payload, "status": "APPROVED"},
+        approved = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/approve-all"
         )
-        approved_rule = client.put(
-            f"/api/v1/system/support-ai/agents/{source_id}/training/rules/{rule_id}",
-            json={**rule_payload, "status": "APPROVED"},
+        assert approved.status_code == 200, approved.text
+        approved_overview = approved.json()
+        assert approved_overview["draft_case_count"] == 0
+        assert approved_overview["draft_rule_count"] == 0
+        assert approved_overview["approved_case_count"] == 1
+        assert approved_overview["approved_rule_count"] == 1
+        assert approved_overview["active_version_number"] == 1
+        first_version = approved_overview["versions"][0]
+
+        approved_again = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/approve-all"
         )
-        assert approved_case.status_code == 200, approved_case.text
-        assert approved_rule.status_code == 200, approved_rule.text
+        assert approved_again.status_code == 200, approved_again.text
+        assert approved_again.json()["active_version_number"] == 1
+        assert len(approved_again.json()["versions"]) == 1
 
         preview = client.get(
             f"/api/v1/system/support-ai/agents/{source_id}/training/preview"
@@ -1652,12 +1670,6 @@ def test_support_ai_training_cases_rules_publish_import_and_rollback(
             "compiled_prompt"
         ]
 
-        published_v1 = client.post(
-            f"/api/v1/system/support-ai/agents/{source_id}/training/publish",
-            json={"release_notes": "Initial reviewed package"},
-        )
-        assert published_v1.status_code == 200, published_v1.text
-        first_version = published_v1.json()
         assert first_version["version_number"] == 1
         assert first_version["status"] == "PUBLISHED"
 
@@ -1665,19 +1677,18 @@ def test_support_ai_training_cases_rules_publish_import_and_rollback(
             **case_payload,
             "ideal_response": case_payload["ideal_response"]
             + " Do not transfer to a human merely because retrieval is empty.",
-            "status": "APPROVED",
+            "status": "DRAFT",
         }
         changed_case = client.put(
             f"/api/v1/system/support-ai/agents/{source_id}/training/cases/{case_id}",
             json=case_payload_v2,
         )
         assert changed_case.status_code == 200, changed_case.text
-        published_v2 = client.post(
-            f"/api/v1/system/support-ai/agents/{source_id}/training/publish",
-            json={"release_notes": "Improve no-match behavior"},
+        approved_v2 = client.post(
+            f"/api/v1/system/support-ai/agents/{source_id}/training/approve-all"
         )
-        assert published_v2.status_code == 200, published_v2.text
-        assert published_v2.json()["version_number"] == 2
+        assert approved_v2.status_code == 200, approved_v2.text
+        assert approved_v2.json()["active_version_number"] == 2
 
         rolled_back = client.post(
             f"/api/v1/system/support-ai/agents/{source_id}/training/versions/"
@@ -1702,93 +1713,14 @@ def test_support_ai_training_cases_rules_publish_import_and_rollback(
         assert imported.json()["cases"][0]["status"] == "DRAFT"
         assert imported.json()["rules"][0]["status"] == "DRAFT"
 
-        model_calls: list[list[dict[str, str]]] = []
+        target_approved = client.post(
+            f"/api/v1/system/support-ai/agents/{target_id}/training/approve-all"
+        )
+        assert target_approved.status_code == 200, target_approved.text
+        assert target_approved.json()["active_version_number"] == 1
+        assert target_approved.json()["draft_case_count"] == 0
+        assert target_approved.json()["draft_rule_count"] == 0
 
-        class _TrainingProvider:
-            def generate_json(self, *, messages, **_kwargs):
-                model_calls.append(messages)
-                if "Distill reusable" in messages[0]["content"]:
-                    return SimpleNamespace(
-                        data={
-                            "rules": [
-                                {
-                                    "rule_key": "mock-distilled-rule",
-                                    "title": "Use a focused follow-up",
-                                    "instruction": (
-                                        "Ask only the single condition that most "
-                                        "improves the current recommendation."
-                                    ),
-                                    "scopes": ["PRODUCT_RECOMMENDATION"],
-                                    "priority": 180,
-                                }
-                            ]
-                        }
-                    )
-                return SimpleNamespace(
-                    data={
-                        "cases": [
-                            {
-                                "title": "Generated chair recommendation",
-                                "language": "en-US",
-                                "customer_message": "Recommend a camping chair.",
-                                "ideal_response": (
-                                    "Recommend one current evidence-backed chair "
-                                    "and cite the matching evidence."
-                                ),
-                                "response_action": "ANSWER",
-                                "grounding_mode": "EVIDENCE",
-                                "behavior_notes": "Facts must be reloaded at runtime.",
-                                "required_evidence_types": ["SKU"],
-                                "tags": ["PRODUCT_RECOMMENDATION"],
-                                "forbidden_patterns": ["copy stale facts"],
-                            }
-                        ]
-                    }
-                )
-
-        generated_tenant_id = DEFAULT_TENANT_ID
-        monkeypatch.setattr(
-            support_ai_training,
-            "_catalog_training_products",
-            lambda *_args, **_kwargs: (
-                generated_tenant_id,
-                [
-                    {
-                        "product_id": str(uuid4()),
-                        "title": "Public camping chair",
-                        "approved_public_facts": (
-                            "Product: Public camping chair\n"
-                            "public_price=30 CNY; MOQ=30 piece"
-                        ),
-                    }
-                ],
-            ),
-        )
-        monkeypatch.setattr(
-            support_ai_training,
-            "resolved_support_ai_provider",
-            lambda *_args, **_kwargs: _TrainingProvider(),
-        )
-        generated = client.post(
-            f"/api/v1/system/support-ai/agents/{source_id}/training/cases/generate",
-            json={"count": 1, "languages": ["en-US"]},
-        )
-        assert generated.status_code == 200, generated.text
-        assert generated.json()["generation_mode"] == "MODEL"
-        assert generated.json()["items"][0]["status"] == "DRAFT"
-        assert generated.json()["items"][0]["source_type"] == "PRODUCT_GENERATED"
-
-        summarized = client.post(
-            f"/api/v1/system/support-ai/agents/{source_id}/training/rules/summarize",
-            json={
-                "case_ids": [generated.json()["items"][0]["id"]],
-                "max_rules": 1,
-            },
-        )
-        assert summarized.status_code == 200, summarized.text
-        assert summarized.json()["generation_mode"] == "MODEL"
-        assert summarized.json()["items"][0]["status"] == "DRAFT"
-        assert len(model_calls) == 2
     finally:
         with SessionLocal() as session:
             if agent_ids:
