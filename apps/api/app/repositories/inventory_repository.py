@@ -236,6 +236,9 @@ def list_stock_rows(
         conditions.append(
             or_(
                 func.lower(SkuRow.sku_code).contains(normalized),
+                func.lower(func.coalesce(SkuRow.source_sku_code, "")).contains(
+                    normalized
+                ),
                 func.lower(func.coalesce(SkuRow.name, "")).contains(normalized),
                 func.lower(ProductRow.name).contains(normalized),
                 func.lower(func.coalesce(ProductRow.product_code, "")).contains(normalized),
@@ -431,6 +434,9 @@ def list_movements(
         conditions.append(
             or_(
                 func.lower(SkuRow.sku_code).contains(normalized),
+                func.lower(func.coalesce(SkuRow.source_sku_code, "")).contains(
+                    normalized
+                ),
                 func.lower(func.coalesce(SkuRow.name, "")).contains(normalized),
                 func.lower(ProductRow.name).contains(normalized),
                 func.lower(InventoryDocumentRow.document_number).contains(normalized),

@@ -1211,6 +1211,7 @@ interface ApiSku {
   id: string;
   product_id: string;
   sku_code: string;
+  source_sku_code?: string | null;
   name?: string | null;
   option_values: Record<string, string | number | boolean>;
   barcode?: string | null;
@@ -1226,6 +1227,7 @@ interface ApiSku {
 interface ApiSkuListItem {
   id: string;
   sku_code: string;
+  source_sku_code?: string | null;
   name: string;
   product_id: string;
   product_code?: string | null;
@@ -1315,6 +1317,7 @@ function mapSku(row: ApiSku): ProductSku {
     id: row.id,
     productId: row.product_id,
     skuCode: row.sku_code,
+    sourceSkuCode: defined(row.source_sku_code),
     name: defined(row.name),
     optionValues: row.option_values,
     barcode: defined(row.barcode),
@@ -1332,6 +1335,7 @@ function mapSkuListItem(row: ApiSkuListItem): SkuListItem {
   return {
     id: row.id,
     skuCode: row.sku_code,
+    sourceSkuCode: defined(row.source_sku_code),
     name: row.name,
     productId: row.product_id,
     productCode: defined(row.product_code),
@@ -2193,7 +2197,7 @@ export async function createManualProduct(
 }
 
 export async function createSkus(productId: string, items: Array<{
-  skuCode: string;
+  skuCode?: string;
   name?: string;
   optionValues: Record<string, string>;
   defaultMoq?: number;
@@ -2204,7 +2208,7 @@ export async function createSkus(productId: string, items: Array<{
   const rows = await request<ApiSku[]>(`/products/${encodeURIComponent(productId)}/skus`, {
     method: "POST",
     body: JSON.stringify({ items: items.map((item) => ({
-      sku_code: item.skuCode,
+      sku_code: item.skuCode || undefined,
       name: item.name,
       option_values: item.optionValues,
       default_moq: item.defaultMoq,

@@ -83,6 +83,7 @@ from ..services.external_image_migration import (
 from ..adapters.object_storage import get_object_storage
 from ..services.sku_catalog_export import build_sku_catalog_workbook
 from ..services.sku_quotas import ensure_sku_capacity
+from ..services.sku_codes import issue_sku_codes
 from ..services.catalog_write_guard import (
     lock_catalog_write as _lock_catalog_write,
     release_rollback_ownership as _release_rollback_ownership,
@@ -286,6 +287,7 @@ def _sku_response(row: SkuRow) -> SkuResponse:
         id=row.id,
         product_id=row.product_id,
         sku_code=row.sku_code,
+        source_sku_code=row.source_sku_code,
         name=row.name,
         option_values=row.option_values,
         barcode=row.barcode,
@@ -656,6 +658,7 @@ def list_skus(
             SkuListItem(
                 id=row.sku.id,
                 sku_code=row.sku.sku_code,
+                source_sku_code=row.sku.source_sku_code,
                 name=row.sku.name or row.product.name,
                 product_id=row.product.id,
                 product_code=row.product.product_code,
@@ -1140,6 +1143,10 @@ def create_manual_product(
     _require(permissions, "product.view")
     _require(permissions, "product.edit")
     _require(permissions, "catalog.publish")
+    _lock_catalog_write(session, tenant_id=tenant_id)
+    tenant = session.get(TenantRow, tenant_id)
+    if tenant is None:
+        raise ApplicationError("TENANT_NOT_FOUND", "Tenant was not found.", kind="not_found")
 
     category = repository.get_category(
         session,
@@ -1169,23 +1176,15 @@ def create_manual_product(
             kind="conflict",
         )
 
-    sku_code = request.sku_code
-    if sku_code is None:
-        sku_code = f"MAN-{uuid4().hex[:12].upper()}"
-        while repository.sku_code_exists(
-            session,
-            tenant_id=tenant_id,
-            sku_code=sku_code,
-        ):
-            sku_code = f"MAN-{uuid4().hex[:12].upper()}"
-    elif repository.sku_code_exists(
+    source_sku_code = request.sku_code
+    if source_sku_code is not None and repository.source_sku_code_exists(
         session,
         tenant_id=tenant_id,
-        sku_code=sku_code,
+        source_sku_code=source_sku_code,
     ):
         raise ApplicationError(
-            "SKU_CODE_CONFLICT",
-            f"SKU code already exists: {sku_code}",
+            "SOURCE_SKU_CODE_CONFLICT",
+            f"Source SKU code already exists: {source_sku_code}",
             kind="conflict",
         )
 
@@ -1211,11 +1210,21 @@ def create_manual_product(
     session.add(product)
     session.flush()
 
+    sku_code, sku_sequence = issue_sku_codes(
+        session,
+        tenant=tenant,
+        product=product,
+        count=1,
+        issued_at=now,
+    )[0]
+
     sku = SkuRow(
         id=uuid4(),
         tenant_id=tenant_id,
         product_id=product.id,
         sku_code=sku_code,
+        source_sku_code=source_sku_code,
+        sku_sequence=sku_sequence,
         name=request.sku_name or request.name,
         option_values=_with_packing_quantity({}, request.packing_quantity),
         barcode=request.barcode,
@@ -1296,6 +1305,7 @@ def create_manual_product(
                 before={},
                 after={
                     "sku_code": sku.sku_code,
+                    "source_sku_code": sku.source_sku_code,
                     "name": sku.name,
                     "barcode": sku.barcode,
                     "default_moq": request_snapshot["default_moq"],
@@ -1356,15 +1366,22 @@ def create_skus(
     product = repository.get_product_row(session, tenant_id=tenant_id, product_id=product_id)
     if product is None:
         raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+    tenant = session.get(TenantRow, tenant_id)
+    if tenant is None:
+        raise ApplicationError("TENANT_NOT_FOUND", "Tenant was not found.", kind="not_found")
     definitions = repository.list_attribute_definitions(
         session, tenant_id=tenant_id, category_id=product.category_id
     )
     variant_keys = {row.attribute_key for row in definitions if row.is_variant and row.status == "ACTIVE"}
     for item in request.items:
-        if repository.sku_code_exists(session, tenant_id=tenant_id, sku_code=item.sku_code):
+        if item.sku_code is not None and repository.source_sku_code_exists(
+            session,
+            tenant_id=tenant_id,
+            source_sku_code=item.sku_code,
+        ):
             raise ApplicationError(
-                "SKU_CODE_CONFLICT",
-                f"SKU code already exists: {item.sku_code}",
+                "SOURCE_SKU_CODE_CONFLICT",
+                f"Source SKU code already exists: {item.sku_code}",
                 kind="conflict",
             )
         # Older clients stored carton quantity alongside variant attributes.
@@ -1387,11 +1404,24 @@ def create_skus(
     )
     rows: list[SkuRow] = []
     now = utcnow()
-    for item in request.items:
+    issued_codes = issue_sku_codes(
+        session,
+        tenant=tenant,
+        product=product,
+        count=len(request.items),
+        issued_at=now,
+    )
+    for item, (sku_code, sku_sequence) in zip(
+        request.items,
+        issued_codes,
+        strict=True,
+    ):
         row = SkuRow(
             tenant_id=tenant_id,
             product_id=product_id,
-            sku_code=item.sku_code,
+            sku_code=sku_code,
+            source_sku_code=item.sku_code,
+            sku_sequence=sku_sequence,
             name=item.name,
             option_values=_with_packing_quantity(
                 item.option_values,

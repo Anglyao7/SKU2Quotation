@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -40,6 +41,19 @@ class SkuRow(AuditTimestampMixin, Base):
         CheckConstraint("weight IS NULL OR weight >= 0", name="weight_nonnegative"),
         UniqueConstraint("tenant_id", "id", name="uq_skus_tenant_identity"),
         UniqueConstraint("tenant_id", "sku_code", name="uq_skus_tenant_code"),
+        Index(
+            "uq_skus_tenant_source_code",
+            "tenant_id",
+            "source_sku_code",
+            unique=True,
+        ),
+        Index(
+            "uq_skus_tenant_product_sequence",
+            "tenant_id",
+            "product_id",
+            "sku_sequence",
+            unique=True,
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "product_id"],
             ["products.tenant_id", "products.id"],
@@ -93,6 +107,8 @@ class SkuRow(AuditTimestampMixin, Base):
     # write retain this marker. Historical and merely-updated rows stay NULL.
     rollback_owner_batch_id: Mapped[UUID | None] = mapped_column(nullable=True)
     sku_code: Mapped[str] = mapped_column(String(160), nullable=False)
+    source_sku_code: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    sku_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     option_values: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT, default=dict, nullable=False

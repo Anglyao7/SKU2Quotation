@@ -30,7 +30,15 @@ def get_inquiry_item(session: Session, *, tenant_id: UUID, item_id: UUID) -> Inq
 
 def find_exact_products(session: Session, *, tenant_id: UUID, query: str, limit: int = 10) -> list[ProductRow]:
     normalized = query.strip()
-    sku_product_ids = select(SkuRow.product_id).where(SkuRow.tenant_id == tenant_id, func.lower(SkuRow.sku_code) == normalized.lower(), SkuRow.deleted_at.is_(None))
+    sku_product_ids = select(SkuRow.product_id).where(
+        SkuRow.tenant_id == tenant_id,
+        or_(
+            func.lower(SkuRow.sku_code) == normalized.lower(),
+            func.lower(func.coalesce(SkuRow.source_sku_code, ""))
+            == normalized.lower(),
+        ),
+        SkuRow.deleted_at.is_(None),
+    )
     return session.scalars(select(ProductRow).where(ProductRow.tenant_id == tenant_id, ProductRow.status == "ACTIVE", ProductRow.deleted_at.is_(None), or_(func.lower(ProductRow.product_code) == normalized.lower(), func.lower(ProductRow.name).contains(normalized.lower()), ProductRow.id.in_(sku_product_ids))).limit(limit)).all()
 
 

@@ -43,6 +43,7 @@ from ..services.storefront_paths import (
     allocate_storefront_slug,
     exact_storefront_slug_is_available,
 )
+from ..services.sku_codes import derive_merchant_sku_prefix
 from ..services.auth.local_credentials import normalize_local_identifier
 from ..services.auth.password_accounts import (
     PasswordIdentityProvisioningError,
@@ -511,6 +512,7 @@ def create_tenant(
         organization_id=context.organization_id,
         name=request.name,
         slug=slug,
+        sku_prefix=derive_merchant_sku_prefix(request.name, slug=slug),
         default_locale=request.default_locale,
         default_currency=request.default_currency,
         timezone=request.timezone,

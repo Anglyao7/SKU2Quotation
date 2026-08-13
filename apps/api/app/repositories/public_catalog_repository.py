@@ -188,6 +188,9 @@ def _public_catalog_statement(
         statement = statement.where(
             or_(
                 func.lower(SkuRow.sku_code).contains(normalized),
+                func.lower(func.coalesce(SkuRow.source_sku_code, "")).contains(
+                    normalized
+                ),
                 func.lower(func.coalesce(SkuRow.name, "")).contains(normalized),
                 func.lower(ProductRow.name).contains(normalized),
                 func.lower(func.coalesce(ProductRow.description, "")).contains(normalized),
@@ -231,7 +234,17 @@ def _ordered_public_catalog_statement(statement, *, query: str):
     normalized = query.casefold().strip()
     if normalized:
         return statement.order_by(
-            case((func.lower(SkuRow.sku_code) == normalized, 0), else_=1),
+            case(
+                (
+                    or_(
+                        func.lower(SkuRow.sku_code) == normalized,
+                        func.lower(func.coalesce(SkuRow.source_sku_code, ""))
+                        == normalized,
+                    ),
+                    0,
+                ),
+                else_=1,
+            ),
             ProductRow.name,
             SkuRow.sku_code,
             SkuRow.id,
@@ -306,6 +319,7 @@ def list_public_catalog_lexical_candidates(
     )
     searchable_fields = (
         func.lower(SkuRow.sku_code),
+        func.lower(func.coalesce(SkuRow.source_sku_code, "")),
         func.lower(func.coalesce(SkuRow.name, "")),
         func.lower(ProductRow.name),
         func.lower(func.coalesce(ProductRow.description, "")),
@@ -415,6 +429,11 @@ def _public_product_id_statement(
     match_rank = func.min(
         case(
             (func.lower(SkuRow.sku_code) == normalized, 0),
+            (
+                func.lower(func.coalesce(SkuRow.source_sku_code, ""))
+                == normalized,
+                0,
+            ),
             (func.lower(ProductRow.name) == normalized, 1),
             else_=2,
         )

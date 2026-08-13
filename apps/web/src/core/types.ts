@@ -334,6 +334,7 @@ export interface ProductSku {
   id: string;
   productId: string;
   skuCode: string;
+  sourceSkuCode?: string;
   name?: string;
   optionValues: Record<string, string | number | boolean>;
   barcode?: string;
@@ -370,6 +371,7 @@ export interface ManualProductCreateInput {
 export interface SkuListItem {
   id: string;
   skuCode: string;
+  sourceSkuCode?: string;
   name: string;
   productId: string;
   productCode?: string;

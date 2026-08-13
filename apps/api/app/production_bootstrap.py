@@ -23,6 +23,7 @@ from .model_mixins import utcnow
 from .public_catalog_models import TenantPublicProfileRow
 from .saas_seed import PERMISSION_SEEDS, ROLE_SEEDS
 from .inventory_seed import ensure_default_warehouse
+from .services.sku_codes import derive_merchant_sku_prefix
 from .tenant_slugs import is_reserved_tenant_slug, storefront_slug_from_name
 from .tenant_subscriptions import default_sku_limit, default_subscription_expiry
 
@@ -127,6 +128,10 @@ def bootstrap_production_owner(
             organization_id=organization.id,
             slug=canonical_slug,
             name=tenant_name.strip(),
+            sku_prefix=derive_merchant_sku_prefix(
+                tenant_name,
+                slug=canonical_slug,
+            ),
             identity_code="ADMIN" if platform_admin else "USER",
             module_access_mode="INHERIT",
             status="active",
