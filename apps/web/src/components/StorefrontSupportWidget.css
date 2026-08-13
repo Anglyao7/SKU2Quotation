@@ -277,8 +277,11 @@
   overflow-x: auto;
   overscroll-behavior-inline: contain;
   scroll-snap-type: inline mandatory;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
 }
+.storefront-support-products > div::-webkit-scrollbar { display: none; }
 .support-product-card {
   min-width: 0;
   flex: 0 0 min(278px, calc(100vw - 88px));
@@ -472,7 +475,22 @@
   border-radius: 16px;
   background: var(--gray-a2);
 }
-.storefront-support-composer textarea { max-height: 100px; resize: none; border: 0; outline: 0; padding: 5px 0; color: var(--gray-12); background: transparent; font: inherit; font-size: 13px; line-height: 1.45; }
+.storefront-support-composer textarea {
+  max-height: 100px;
+  overflow-y: auto;
+  resize: none;
+  border: 0;
+  outline: 0;
+  padding: 5px 0;
+  color: var(--gray-12);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.storefront-support-composer textarea::-webkit-scrollbar { display: none; }
 .storefront-support-composer textarea::placeholder { color: var(--gray-9); }
 .storefront-support-composer div > button { width: 34px; height: 34px; border: 0; border-radius: 11px; display: grid; place-items: center; color: white; background: var(--accent-9); cursor: pointer; }
 .storefront-support-composer div > button:disabled { opacity: 0.4; cursor: default; }
