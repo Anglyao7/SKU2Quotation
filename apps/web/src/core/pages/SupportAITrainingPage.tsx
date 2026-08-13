@@ -138,6 +138,55 @@ const statusColor = (status: SupportAITrainingStatus) => (
   status === "APPROVED" ? "jade" : status === "DRAFT" ? "amber" : "gray"
 );
 
+const RESPONSE_ACTION_LABELS: Record<SupportAITrainingResponseAction, string> = {
+  ANSWER: "直接回答",
+  CLARIFY: "追问澄清",
+  HANDOFF: "转人工",
+};
+
+const GROUNDING_MODE_LABELS: Record<SupportAITrainingGroundingMode, string> = {
+  EVIDENCE: "依据知识证据",
+  GENERAL_GUIDANCE: "通用建议",
+  APPROVED_COMPANY_PROFILE: "已批准企业资料",
+};
+
+const RECOMMENDED_COMBINATIONS: Array<{
+  key: string;
+  title: string;
+  description: string;
+  responseAction: SupportAITrainingResponseAction;
+  groundingMode: SupportAITrainingGroundingMode;
+}> = [
+  {
+    key: "product-recommendation",
+    title: "商品推荐",
+    description: "已有匹配商品证据时，直接给出主推荐、理由和引用，不先抛出一串泛化问题。",
+    responseAction: "ANSWER",
+    groundingMode: "EVIDENCE",
+  },
+  {
+    key: "ambiguous-request",
+    title: "需求太模糊",
+    description: "客户条件不足时，先提供通用选择方向，再只追问一个最关键条件，不因信息不足转人工。",
+    responseAction: "CLARIFY",
+    groundingMode: "GENERAL_GUIDANCE",
+  },
+  {
+    key: "greeting",
+    title: "打招呼",
+    description: "用于问候、致谢或告别，只使用已批准的企业介绍和服务范围，不编造商品事实。",
+    responseAction: "ANSWER",
+    groundingMode: "APPROVED_COMPANY_PROFILE",
+  },
+  {
+    key: "human-refund",
+    title: "明确要求人工处理退款",
+    description: "用于客户明确要求人工，或退款等必须人工执行的事务；停止自动处理并转交人工。",
+    responseAction: "HANDOFF",
+    groundingMode: "GENERAL_GUIDANCE",
+  },
+];
+
 export function SupportAITrainingPage() {
   const { agentId = "" } = useParams();
   const { t } = useLocale();
@@ -424,7 +473,7 @@ export function SupportAITrainingPage() {
                     {overview.cases.map((item) => (
                       <article key={item.id}>
                         <div className="support-training-item-heading">
-                          <div><Heading size="3">{item.title}</Heading><span><Badge color={statusColor(item.status)}>{t(item.status === "APPROVED" ? "已批准" : item.status === "DRAFT" ? "草稿" : "已归档")}</Badge><Badge color="gray">{item.language}</Badge><Badge color="gray">{t(item.responseAction)}</Badge>{item.tags.slice(0, 3).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span></div>
+                          <div><Heading size="3">{item.title}</Heading><span><Badge color={statusColor(item.status)}>{t(item.status === "APPROVED" ? "已批准" : item.status === "DRAFT" ? "草稿" : "已归档")}</Badge><Badge color="gray">{item.language}</Badge><Badge color="blue">{t(RESPONSE_ACTION_LABELS[item.responseAction])}</Badge><Badge color="gray">{t(GROUNDING_MODE_LABELS[item.groundingMode])}</Badge>{item.tags.slice(0, 3).map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</span></div>
                           <small>{coreDate(item.updatedAt)}</small>
                         </div>
                         <div className="support-training-qa"><div><small>{t("客户问题")}</small><p>{item.customerMessage}</p></div><div><small>{t("理想回答 / 行为")}</small><p>{item.idealResponse}</p></div></div>
@@ -478,11 +527,41 @@ export function SupportAITrainingPage() {
         <Dialog.Content className="support-training-dialog">
           <div className="core-dialog-heading"><div><Text size="1" color="gray">{t("人工训练")}</Text><Dialog.Title>{t(caseEditingId ? "编辑训练案例" : "新增训练案例")}</Dialog.Title><Dialog.Description>{t("案例描述理想行为；涉及商品事实时，运行时仍会重新读取证据。")}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={() => setCaseOpen(false)}><X /></Button></div>
           <form onSubmit={(event) => void saveCase(event)}>
+            <div className="support-training-combination-picker">
+              <div>
+                <Text size="1" color="gray">{t("推荐组合")}</Text>
+                <strong>{t("选择这个案例要训练的处理方式")}</strong>
+                <small>{t("点击组合会自动填写“回答动作”和“回答依据”，之后仍可单独修改。")}</small>
+              </div>
+              <div className="support-training-combination-grid">
+                {RECOMMENDED_COMBINATIONS.map((combination) => {
+                  const selected = caseDraft.responseAction === combination.responseAction
+                    && caseDraft.groundingMode === combination.groundingMode;
+                  return (
+                    <button
+                      key={combination.key}
+                      type="button"
+                      className={selected ? "is-selected" : undefined}
+                      aria-pressed={selected}
+                      onClick={() => setCaseDraft((current) => ({
+                        ...current,
+                        responseAction: combination.responseAction,
+                        groundingMode: combination.groundingMode,
+                      }))}
+                    >
+                      <span><strong>{t(combination.title)}</strong>{selected ? <Check weight="bold" /> : null}</span>
+                      <small>{t(RESPONSE_ACTION_LABELS[combination.responseAction])} + {t(GROUNDING_MODE_LABELS[combination.groundingMode])}</small>
+                      <p>{t(combination.description)}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="support-agent-form-grid">
               <label><Text size="1" color="gray">{t("案例标题")}</Text><TextField.Root required maxLength={240} value={caseDraft.title} onChange={(event) => setCaseDraft({ ...caseDraft, title: event.target.value })}/></label>
               <label><Text size="1" color="gray">{t("语言")}</Text><TextField.Root required maxLength={35} value={caseDraft.language} onChange={(event) => setCaseDraft({ ...caseDraft, language: event.target.value })}/></label>
-              <label><Text size="1" color="gray">{t("回答动作")}</Text><Select.Root value={caseDraft.responseAction} onValueChange={(value) => setCaseDraft({ ...caseDraft, responseAction: value as SupportAITrainingResponseAction })}><Select.Trigger/><Select.Content><Select.Item value="ANSWER">ANSWER</Select.Item><Select.Item value="CLARIFY">CLARIFY</Select.Item><Select.Item value="HANDOFF">HANDOFF</Select.Item></Select.Content></Select.Root></label>
-              <label><Text size="1" color="gray">{t("事实模式")}</Text><Select.Root value={caseDraft.groundingMode} onValueChange={(value) => setCaseDraft({ ...caseDraft, groundingMode: value as SupportAITrainingGroundingMode })}><Select.Trigger/><Select.Content><Select.Item value="EVIDENCE">EVIDENCE</Select.Item><Select.Item value="GENERAL_GUIDANCE">GENERAL_GUIDANCE</Select.Item><Select.Item value="APPROVED_COMPANY_PROFILE">APPROVED_COMPANY_PROFILE</Select.Item></Select.Content></Select.Root></label>
+              <label><Text size="1" color="gray">{t("回答动作")}</Text><Select.Root value={caseDraft.responseAction} onValueChange={(value) => setCaseDraft({ ...caseDraft, responseAction: value as SupportAITrainingResponseAction })}><Select.Trigger/><Select.Content><Select.Item value="ANSWER">{t("直接回答")}</Select.Item><Select.Item value="CLARIFY">{t("追问澄清")}</Select.Item><Select.Item value="HANDOFF">{t("转人工")}</Select.Item></Select.Content></Select.Root><small className="support-training-field-help">{t("决定 AI 是直接回答、继续追问，还是停止自动处理并转人工。")}</small></label>
+              <label><Text size="1" color="gray">{t("回答依据")}</Text><Select.Root value={caseDraft.groundingMode} onValueChange={(value) => setCaseDraft({ ...caseDraft, groundingMode: value as SupportAITrainingGroundingMode })}><Select.Trigger/><Select.Content><Select.Item value="EVIDENCE">{t("依据知识证据")}</Select.Item><Select.Item value="GENERAL_GUIDANCE">{t("通用建议")}</Select.Item><Select.Item value="APPROVED_COMPANY_PROFILE">{t("已批准企业资料")}</Select.Item></Select.Content></Select.Root><small className="support-training-field-help">{t("决定回答必须引用商品或文件证据，还是只能提供通用建议或企业介绍。")}</small></label>
               <label className="support-agent-wide"><Text size="1" color="gray">{t("客户问题")}</Text><TextArea required value={caseDraft.customerMessage} onChange={(event) => setCaseDraft({ ...caseDraft, customerMessage: event.target.value })}/></label>
               <label className="support-agent-wide"><Text size="1" color="gray">{t("理想回答 / 行为")}</Text><TextArea required value={caseDraft.idealResponse} onChange={(event) => setCaseDraft({ ...caseDraft, idealResponse: event.target.value })}/></label>
               <label className="support-agent-wide"><Text size="1" color="gray">{t("行为备注")}</Text><TextArea value={caseDraft.behaviorNotes || ""} onChange={(event) => setCaseDraft({ ...caseDraft, behaviorNotes: event.target.value })}/></label>
