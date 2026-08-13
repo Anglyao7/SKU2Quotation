@@ -237,6 +237,28 @@ class PublicQuoteDraftStatusUpdate(BaseModel):
     status: Literal["CONFIRMED", "COMPLETED", "CANCELLED"]
 
 
+class StorefrontOrderCurrencyStatistics(BaseModel):
+    currency: str = Field(min_length=3, max_length=3)
+    total_amount: Decimal = Field(ge=0)
+    completed_amount: Decimal = Field(ge=0)
+    order_count: int = Field(ge=0)
+
+
+class StorefrontOrderPeriodStatistics(BaseModel):
+    start_at: datetime
+    end_at: datetime
+    order_count: int = Field(ge=0)
+    completed_order_count: int = Field(ge=0)
+    cancelled_order_count: int = Field(ge=0)
+    amounts: list[StorefrontOrderCurrencyStatistics] = Field(default_factory=list)
+
+
+class StorefrontOrderStatistics(BaseModel):
+    timezone: str
+    current_month: StorefrontOrderPeriodStatistics
+    current_year: StorefrontOrderPeriodStatistics
+
+
 class PublicQuoteDocument(BaseModel):
     tenant_name: str
     contact_email: str | None

@@ -1,15 +1,20 @@
 import { Badge, Button, Card, Dialog, Heading, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
 import { CheckCircle, FilePdf, FileText, FileXls, PencilSimple, ShieldCheck, ShoppingCartSimple, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CoreApiError, decideQuotation, downloadPublicQuoteDraftDocument, getPublicQuoteDraft, getQuotation, listPublicQuoteDrafts, listQuotations, reviseQuotation, updatePublicQuoteDraftStatus } from "../api";
+import { CoreApiError, decideQuotation, downloadPublicQuoteDraftDocument, getPublicQuoteDraft, getQuotation, getStorefrontOrderStatistics, listPublicQuoteDrafts, listQuotations, reviseQuotation, updatePublicQuoteDraftStatus } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
-import type { PublicQuoteDraft, PublicQuoteDraftSummary, QuotationRecord, QuotationSummary } from "../types";
+import type { PublicQuoteDraft, PublicQuoteDraftSummary, QuotationRecord, QuotationSummary, StorefrontOrderCurrencyStatistics, StorefrontOrderStatistics } from "../types";
 
 const statusLabel: Record<string, string> = { DRAFT: "草稿", SUBMITTED: "客户已提交", PENDING_REVIEW: "待人工确认", PENDING_CONFIRMATION: "客户提交，待确认", CONFIRMED: "已确认并下发", COMPLETED: "已成交", CANCELLED: "已取消", CALCULATED: "待人工批准", NEEDS_APPROVAL: "规则审批", PENDING: "待批准", APPROVED: "已批准", SENT: "已发送", ACCEPTED: "已接受", REJECTED: "已拒绝", EXPIRED: "已过期", NOT_REQUIRED: "无需审批" };
 const label = (value: string) => statusLabel[value] ?? value;
 type LineDraft = { quantity: number; targetMarginRate: number };
+
+function orderAmounts(amounts: StorefrontOrderCurrencyStatistics[]) {
+  if (!amounts.length) return "—";
+  return amounts.map((amount) => `${amount.currency} ${amount.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`).join(" · ");
+}
 
 export function QuotesPage() {
   const { hasPermission } = useCoreAuth();
@@ -18,6 +23,7 @@ export function QuotesPage() {
   const canApprove = hasPermission("quotation.approve");
   const [quotes, setQuotes] = useState<QuotationSummary[]>([]);
   const [publicDrafts, setPublicDrafts] = useState<PublicQuoteDraftSummary[]>([]);
+  const [orderStatistics, setOrderStatistics] = useState<StorefrontOrderStatistics>();
   const [detail, setDetail] = useState<QuotationRecord>();
   const [publicDetail, setPublicDetail] = useState<PublicQuoteDraft>();
   const [drafts, setDrafts] = useState<Record<string, LineDraft>>({});
@@ -26,15 +32,18 @@ export function QuotesPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [draftNotice, setDraftNotice] = useState("");
+  const [statisticsNotice, setStatisticsNotice] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true); setError(""); setDraftNotice("");
-    const [quotationResult, draftResult] = await Promise.allSettled([listQuotations(), listPublicQuoteDrafts()]);
+    setLoading(true); setError(""); setDraftNotice(""); setStatisticsNotice("");
+    const [quotationResult, draftResult, statisticsResult] = await Promise.allSettled([listQuotations(), listPublicQuoteDrafts(), getStorefrontOrderStatistics()]);
     if (quotationResult.status === "fulfilled") setQuotes(quotationResult.value);
     else setError(quotationResult.reason instanceof Error ? quotationResult.reason.message : t("正式报价加载失败"));
     if (draftResult.status === "fulfilled") setPublicDrafts(draftResult.value);
     else if (draftResult.reason instanceof CoreApiError && draftResult.reason.status === 404) { setPublicDrafts([]); setDraftNotice(t("客户前台草稿接口尚未启用；正式报价不受影响。")); }
     else setDraftNotice(draftResult.reason instanceof Error ? t("客户前台草稿暂不可用：{message}", { message: draftResult.reason.message }) : t("客户前台草稿暂不可用"));
+    if (statisticsResult.status === "fulfilled") setOrderStatistics(statisticsResult.value);
+    else setStatisticsNotice(t("订单统计暂时无法读取，订单记录不受影响。"));
     setLoading(false);
   }, [t]);
   useEffect(() => { void load(); }, [load]);
@@ -90,6 +99,8 @@ export function QuotesPage() {
   return <div className="core-workspace">
     <CorePageHeading eyebrow={t("版本化报价")} title={t("报价工作台")} description={t("客户前台提交的是待确认草稿；正式 Quotation 由内部规则计算并绑定人工审批。")} actions={<Button variant="soft" color="gray" onClick={() => void load()}>{t("刷新")}</Button>} />
     <section className="core-metric-grid">
+      <Card className="core-summary-card"><Text size="2" color="gray">{t("本月确认订单")}</Text><strong className="core-order-total">{orderAmounts(orderStatistics?.currentMonth.amounts ?? [])}</strong><Text size="1">{t("{count} 笔有效订单", { count: orderStatistics?.currentMonth.orderCount ?? 0 })}</Text></Card>
+      <Card className="core-summary-card"><Text size="2" color="gray">{t("今年确认订单")}</Text><strong className="core-order-total">{orderAmounts(orderStatistics?.currentYear.amounts ?? [])}</strong><Text size="1">{t("{count} 笔有效订单", { count: orderStatistics?.currentYear.orderCount ?? 0 })}</Text></Card>
       <Card className="core-summary-card"><Text size="2" color="gray">{t("正式报价")}</Text><strong>{quotes.length}</strong><Text size="1">{t("当前租户权威报价表")}</Text></Card>
       <Card className="core-summary-card"><Text size="2" color="gray">{t("客户待确认草稿")}</Text><strong>{publicDrafts.length}</strong><Text size="1">{t("尚未形成内部正式承诺")}</Text></Card>
       <Card className="core-summary-card"><Text size="2" color="gray">{t("等待人工批准")}</Text><strong>{pending}</strong><Text size="1">{t("发送前必须完成审批")}</Text></Card>
@@ -97,6 +108,7 @@ export function QuotesPage() {
     </section>
     {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
     {draftNotice ? <Card className="core-notice"><FileText /><Text size="2">{draftNotice}</Text></Card> : null}
+    {statisticsNotice ? <Card className="core-notice"><FileText /><Text size="2">{statisticsNotice}</Text></Card> : null}
 
     <Tabs.Root defaultValue="official">
       <Tabs.List><Tabs.Trigger value="official">{t("正式报价")} ({quotes.length})</Tabs.Trigger><Tabs.Trigger value="public">{t("客户前台草稿")} ({publicDrafts.length})</Tabs.Trigger></Tabs.List>

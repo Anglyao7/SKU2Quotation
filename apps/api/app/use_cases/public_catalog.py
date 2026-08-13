@@ -13,6 +13,7 @@ from functools import lru_cache
 from types import SimpleNamespace
 from urllib.parse import quote
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,7 @@ from ..public_catalog_models import (
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
     PublicQuoteDraftRow,
+    StorefrontOrderRecordRow,
 )
 from ..public_catalog_schemas import (
     PUBLIC_DRAFT_DISCLAIMER,
@@ -36,6 +38,9 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftResponse,
     PublicQuoteDraftStatusUpdate,
     PublicQuoteDraftSummary,
+    StorefrontOrderCurrencyStatistics,
+    StorefrontOrderPeriodStatistics,
+    StorefrontOrderStatistics,
     PublicCategoryOption,
     PublicProductDetail,
     PublicProductPage,
@@ -3320,6 +3325,7 @@ def update_tenant_quote_draft_status(
     session: Session,
     *,
     tenant_id: UUID,
+    membership_id: UUID,
     permissions: frozenset[str],
     quote_draft_id: UUID,
     request: PublicQuoteDraftStatusUpdate,
@@ -3329,6 +3335,7 @@ def update_tenant_quote_draft_status(
         session,
         tenant_id=tenant_id,
         quote_draft_id=quote_draft_id,
+        for_update=True,
     )
     if draft is None or draft.deleted_at is not None:
         raise ApplicationError(
@@ -3352,17 +3359,266 @@ def update_tenant_quote_draft_status(
             "当前询价单状态不能执行此操作。",
             kind="conflict",
         )
-    if request.status != draft.status:
-        draft.status = request.status
-        draft.updated_at = utcnow()
-        session.commit()
-        session.refresh(draft)
     items = repository.list_quote_draft_items(
         session,
         tenant_id=tenant_id,
         quote_draft_id=quote_draft_id,
     )
+    now = utcnow()
+    order_record = repository.get_storefront_order_record_by_quote(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    order_changed = False
+    if request.status == "CONFIRMED" and order_record is None:
+        order_record = _create_storefront_order_record(
+            session,
+            draft=draft,
+            items=items,
+            membership_id=membership_id,
+            confirmed_at=now if draft.status == "PENDING_CONFIRMATION" else draft.updated_at,
+        )
+        order_changed = True
+    elif draft.status == "CONFIRMED" and request.status in {"COMPLETED", "CANCELLED"}:
+        if order_record is None:
+            order_record = _create_storefront_order_record(
+                session,
+                draft=draft,
+                items=items,
+                membership_id=membership_id,
+                confirmed_at=draft.updated_at,
+            )
+        order_record.status = request.status
+        order_record.updated_at = now
+        if request.status == "COMPLETED":
+            order_record.completed_at = now
+        else:
+            order_record.cancelled_at = now
+        order_changed = True
+    draft_changed = request.status != draft.status
+    if draft_changed:
+        draft.status = request.status
+        draft.updated_at = now
+    if draft_changed or order_changed:
+        # The draft and its order fact are committed atomically.  The explicit
+        # order_changed branch also repairs an older confirmed draft that did
+        # not yet have an order record.
+        session.commit()
+        session.refresh(draft)
     return _draft_response(draft, items)
+
+
+def _create_storefront_order_record(
+    session: Session,
+    *,
+    draft: PublicQuoteDraftRow,
+    items: list[PublicQuoteDraftItemRow],
+    membership_id: UUID,
+    confirmed_at: datetime,
+) -> StorefrontOrderRecordRow:
+    if not items:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_ITEMS_MISSING",
+            "询价单没有可确认的商品明细。",
+            kind="conflict",
+        )
+    snapshot_items = [
+        {
+            "position": item.position,
+            "sku_id": str(item.sku_id),
+            "product_id": str(item.product_id_snapshot),
+            "product_version": item.product_version,
+            "sku_version": item.sku_version,
+            "sku_code": item.sku_code_snapshot,
+            "name": item.name_snapshot,
+            "description": item.description_snapshot,
+            "specification": item.specification_snapshot,
+            "option_values": item.option_values_snapshot,
+            "category": item.category_snapshot,
+            "tags": item.tags_snapshot,
+            "image_url": item.image_url_snapshot,
+            "minimum_order_quantity": str(item.minimum_order_quantity),
+            "quantity": str(item.quantity),
+            "unit_code": item.unit_code_snapshot,
+            "currency": item.currency_snapshot,
+            "unit_price": str(item.unit_price_snapshot),
+            "line_total": str(item.line_total),
+        }
+        for item in items
+    ]
+    snapshot = {
+        "schema_version": "storefront-order-v1",
+        "source_quote": {
+            "id": str(draft.id),
+            "number": draft.request_number,
+            "content_hash": draft.content_hash,
+        },
+        "customer": {
+            "name": draft.customer_name,
+            "company": draft.customer_company,
+            "email": draft.customer_email,
+            "phone": draft.customer_phone,
+            "submitted_by_membership_id": (
+                str(draft.submitted_by_membership_id)
+                if draft.submitted_by_membership_id
+                else None
+            ),
+        },
+        "document_locale": draft.document_locale,
+        "currency": draft.currency,
+        "subtotal_amount": str(draft.subtotal_amount),
+        "total_amount": str(draft.estimated_total),
+        "items": snapshot_items,
+        "confirmation": {
+            "confirmed_at": confirmed_at.isoformat(),
+            "confirmed_by_membership_id": str(membership_id),
+        },
+    }
+    content_hash = hashlib.sha256(
+        json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    record = StorefrontOrderRecordRow(
+        tenant_id=draft.tenant_id,
+        source_quote_draft_id=draft.id,
+        order_number=draft.request_number,
+        status="CONFIRMED",
+        submitted_by_membership_id=draft.submitted_by_membership_id,
+        customer_name=draft.customer_name,
+        customer_company=draft.customer_company,
+        customer_email=draft.customer_email,
+        customer_phone=draft.customer_phone,
+        document_locale=draft.document_locale,
+        currency=draft.currency,
+        subtotal_amount=draft.subtotal_amount,
+        total_amount=draft.estimated_total,
+        item_count=len(items),
+        total_quantity=sum((item.quantity for item in items), Decimal("0")),
+        confirmed_by_membership_id=membership_id,
+        confirmed_at=confirmed_at,
+        snapshot=snapshot,
+        content_hash=content_hash,
+    )
+    repository.add_storefront_order_record(session, record=record)
+    return record
+
+
+def _reporting_timezone(configured: str | None = None) -> ZoneInfo:
+    configured = (
+        configured or os.getenv("ORDER_REPORTING_TIMEZONE", "Asia/Shanghai")
+    ).strip()
+    try:
+        return ZoneInfo(configured)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unknown ORDER_REPORTING_TIMEZONE=%s; falling back to UTC", configured)
+        return ZoneInfo("UTC")
+
+
+def _order_period_statistics(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    start_at: datetime,
+    end_at: datetime,
+) -> StorefrontOrderPeriodStatistics:
+    by_currency: dict[str, dict[str, Decimal | int]] = {}
+    completed_count = 0
+    cancelled_count = 0
+    for currency, status, count, amount in repository.storefront_order_statistics_rows(
+        session,
+        tenant_id=tenant_id,
+        start_at=start_at,
+        end_at=end_at,
+    ):
+        count = int(count)
+        amount = Decimal(amount)
+        if status == "CANCELLED":
+            cancelled_count += count
+            continue
+        row = by_currency.setdefault(
+            currency,
+            {
+                "total_amount": Decimal("0"),
+                "completed_amount": Decimal("0"),
+                "order_count": 0,
+            },
+        )
+        row["total_amount"] = Decimal(row["total_amount"]) + amount
+        row["order_count"] = int(row["order_count"]) + count
+        if status == "COMPLETED":
+            row["completed_amount"] = Decimal(row["completed_amount"]) + amount
+            completed_count += count
+    amounts = [
+        StorefrontOrderCurrencyStatistics(
+            currency=currency,
+            total_amount=Decimal(values["total_amount"]),
+            completed_amount=Decimal(values["completed_amount"]),
+            order_count=int(values["order_count"]),
+        )
+        for currency, values in sorted(by_currency.items())
+    ]
+    return StorefrontOrderPeriodStatistics(
+        start_at=start_at,
+        end_at=end_at,
+        order_count=sum(item.order_count for item in amounts),
+        completed_order_count=completed_count,
+        cancelled_order_count=cancelled_count,
+        amounts=amounts,
+    )
+
+
+def get_tenant_order_statistics(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    now: datetime | None = None,
+) -> StorefrontOrderStatistics:
+    _require(permissions, "quotation.view")
+    tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
+    timezone = _reporting_timezone(tenant.timezone if tenant is not None else None)
+    local_now = (now or utcnow()).astimezone(timezone)
+    month_start_local = local_now.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if month_start_local.month == 12:
+        month_end_local = month_start_local.replace(
+            year=month_start_local.year + 1,
+            month=1,
+        )
+    else:
+        month_end_local = month_start_local.replace(month=month_start_local.month + 1)
+    year_start_local = month_start_local.replace(month=1)
+    year_end_local = year_start_local.replace(year=year_start_local.year + 1)
+    month_start = month_start_local.astimezone(UTC)
+    month_end = month_end_local.astimezone(UTC)
+    year_start = year_start_local.astimezone(UTC)
+    year_end = year_end_local.astimezone(UTC)
+    return StorefrontOrderStatistics(
+        timezone=timezone.key,
+        current_month=_order_period_statistics(
+            session,
+            tenant_id=tenant_id,
+            start_at=month_start,
+            end_at=month_end,
+        ),
+        current_year=_order_period_statistics(
+            session,
+            tenant_id=tenant_id,
+            start_at=year_start,
+            end_at=year_end,
+        ),
+    )
 
 
 def get_tenant_quote_draft(

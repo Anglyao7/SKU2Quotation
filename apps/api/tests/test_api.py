@@ -235,6 +235,7 @@ from app.public_catalog_models import (
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
     PublicQuoteDraftRow,
+    StorefrontOrderRecordRow,
     TenantPublicProfileRow,
 )
 
@@ -4832,6 +4833,7 @@ def test_phase4a1a_schema_contains_only_approved_product_intelligence_tables() -
         "outbox_events",
         "tenant_public_profiles",
         "catalog_shares",
+        "storefront_order_records",
         "public_catalog_offers",
         "public_quote_drafts",
         "public_quote_draft_items",
@@ -16171,6 +16173,52 @@ def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> Non
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["status"] == "CONFIRMED"
 
+    repeated_confirmation = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+    assert repeated_confirmation.status_code == 200, repeated_confirmation.text
+
+    with SessionLocal() as session:
+        order_record = session.scalar(
+            select(StorefrontOrderRecordRow).where(
+                StorefrontOrderRecordRow.tenant_id == DEFAULT_TENANT_ID,
+                StorefrontOrderRecordRow.source_quote_draft_id == UUID(quote_id),
+            )
+        )
+        assert order_record is not None
+        assert order_record.status == "CONFIRMED"
+        assert order_record.order_number == confirmed.json()["quote_number"]
+        assert order_record.total_amount == Decimal(str(confirmed.json()["total"]))
+        assert order_record.item_count == 1
+        assert order_record.total_quantity == Decimal("1")
+        assert order_record.confirmed_by_membership_id == DEFAULT_MEMBERSHIP_ID
+        assert order_record.snapshot["items"][0]["sku_id"] == sku_id
+        assert session.scalar(
+            select(func.count(StorefrontOrderRecordRow.id)).where(
+                StorefrontOrderRecordRow.source_quote_draft_id == UUID(quote_id)
+            )
+        ) == 1
+        assert order_record.content_hash == hashlib.sha256(
+            json.dumps(
+                order_record.snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    statistics = client.get("/api/v1/storefront-orders/statistics")
+    assert statistics.status_code == 200, statistics.text
+    month = statistics.json()["current_month"]
+    assert month["order_count"] >= 1
+    currency_total = next(
+        amount for amount in month["amounts"] if amount["currency"] == confirmed.json()["currency"]
+    )
+    assert Decimal(str(currency_total["total_amount"])) >= Decimal(
+        str(confirmed.json()["total"])
+    )
+
     refreshed = client.get(
         "/api/store/demo/visitor/quotes",
         headers={"X-Storefront-Visitor-Token": visitor_token},
@@ -16186,6 +16234,16 @@ def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> Non
     )
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "COMPLETED"
+
+    with SessionLocal() as session:
+        completed_record = session.scalar(
+            select(StorefrontOrderRecordRow).where(
+                StorefrontOrderRecordRow.source_quote_draft_id == UUID(quote_id)
+            )
+        )
+        assert completed_record is not None
+        assert completed_record.status == "COMPLETED"
+        assert completed_record.completed_at is not None
 
     invalid_transition = client.patch(
         f"/api/v1/public-quote-drafts/{quote_id}/status",
@@ -16499,7 +16557,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260812_0080"
+        ).scalar() == "20260813_0081"
     upgraded_engine.dispose()
     command.check(config)
 
