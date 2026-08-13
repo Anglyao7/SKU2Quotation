@@ -107,7 +107,7 @@ const english: Record<string, string> = {
   "对客服务范围（AI 可引用）": "Public service scope (AI-approved)",
   "填写经管理员确认、允许向客户公开的一句话或短介绍。": "Enter a short, administrator-approved introduction that may be shown to customers.",
   "例如产品选型、规格、MOQ、包装与售前咨询。": "For example: product selection, specifications, MOQ, packaging, and pre-sales support.",
-  "寒暄回复会由 AI 基于以上已批准内容生成；内部说明和系统提示词不会被当作企业事实。": "AI generates social replies from the approved content above; internal descriptions and system prompts are not treated as company facts.",
+  "寒暄回复会由 AI 基于以上对客内容生成；内部说明和系统提示词不会被当作企业事实。": "AI generates social replies from the customer-facing content above; internal descriptions and system prompts are not treated as company facts.",
   "说明（选填）": "Description (optional)",
   "单次最大来源数": "Maximum sources per answer",
   "最低检索分数": "Minimum retrieval score",
@@ -116,7 +116,7 @@ const english: Record<string, string> = {
   "多语言回答": "Multilingual answers",
   "SKU 商品知识": "SKU product knowledge",
   "检索公开商品资料": "Search public product data",
-  "使用已批准知识文件": "Use approved knowledge files",
+  "使用已处理知识文件": "Use processed knowledge files",
   "按访客语言回复": "Reply in the visitor's language",
   "超时时间（秒）": "Timeout (seconds)",
   "最大输出 Token": "Maximum output tokens",
@@ -159,7 +159,6 @@ const english: Record<string, string> = {
   "知识库加载失败": "Could not load the knowledge base",
   "知识文件上传失败": "Could not upload the knowledge file",
   "知识文件操作失败": "Could not update the knowledge file",
-  "知识文件已批准": "Knowledge file approved",
   "知识文件已撤销": "Knowledge file revoked",
   "知识文件已重新提交处理": "Knowledge file submitted for reprocessing",
   "知识文件已提交到智能体绑定的店铺": "Knowledge file submitted to the agent's bound stores",
@@ -780,7 +779,7 @@ const english: Record<string, string> = {
   "今日询盘": "Today's inquiries",
   "进行中询盘": "Open inquiries",
   "待确认报价": "Quotations to review",
-  "安全扫描": "Security scan",
+  "读取文件": "Reading file",
   "导入中": "Importing",
   "待复核": "Needs review",
   "已完成": "Completed",
@@ -1353,8 +1352,8 @@ const english: Record<string, string> = {
   "正在确认文件类型与扩展名": "Verifying the file type and extension",
   "上传进度 {percent}%，请勿关闭页面":
     "Upload {percent}% complete. Keep this page open.",
-  "服务器已收到文件，即将进入安全检查和数据校验":
-    "The server has received the file and will begin security and data validation.",
+  "服务器已收到文件，即将读取并校验商品数据":
+    "The server has received the file and will begin reading and validating product data.",
   "本次未写入商品 · 共发现 {count} 个问题":
     "No products were written · {count} issues found",
   "正在读取工作簿": "Reading workbook",
@@ -1365,7 +1364,7 @@ const english: Record<string, string> = {
   "正在完成导入": "Finalizing import",
   "商品导入完成": "Product import complete",
   "数据校验未通过": "Data validation failed",
-  "正在进行文件安全检查": "Running file security checks",
+  "正在读取上传文件": "Reading the uploaded file",
   "正在处理商品数据": "Processing product data",
   "已处理 {processed} / {total} 行":
     "Processed {processed} of {total} rows",
@@ -1509,9 +1508,9 @@ const english: Record<string, string> = {
   "剩余 {remaining} 个 SKU · 断点 {time}": "{remaining} SKUs remaining · checkpoint {time}",
   "从断点继续": "Resume from checkpoint",
   "运行模式": "Run mode",
-  "安全存储 + 智能索引": "Secure storage + intelligent indexing",
-  "最大 25 MB；文件会先进行安全扫描，再加密存储并异步解析。":
-    "Maximum 25 MB. Files are security-scanned, stored securely, and parsed asynchronously.",
+  "存储 + 智能索引": "Storage + intelligent indexing",
+  "最大 25 MB；文件上传后会直接存储并异步解析。":
+    "Maximum 25 MB. Files are stored and parsed asynchronously after upload.",
   "翻译任务已从断点继续，只会处理剩余商品。":
     "Translation resumed from its checkpoint. Only remaining products will be processed.",
   "已发布版本 v{version}": "Published version v{version}",

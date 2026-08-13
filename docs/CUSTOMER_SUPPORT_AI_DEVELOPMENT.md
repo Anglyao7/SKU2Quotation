@@ -31,8 +31,8 @@
 
 1. SKU 客户知识只读取已发布商品资料；供应商名称、供应商标识、供应商 SKU 与供应商
    评分在向量化前排除，MOQ 保留。
-2. 企业文件支持 PDF、DOCX、TXT、Markdown；先扫描并写入 Cloudflare R2/S3-compatible
-   对象存储，再解析、分块、向量化，只有人工批准的版本可被检索。
+2. 企业文件支持 PDF、DOCX、TXT、Markdown；写入 Cloudflare R2/S3-compatible
+   对象存储后解析、分块和向量化，处理成功的版本会直接进入检索。
 3. 客户原文永久保留。语言启发式由生成模型二次确认；跨语言时仅扩展内部检索 query，
    SKU/型号等标识不翻译，最终回答必须与客户实际语言一致。客户 query 不写入商品翻译
    记忆，受控翻译结果只随对应 Run 保存。
@@ -131,8 +131,9 @@
   翻译流程。
 - [`ai_data_models.py`](../apps/api/app/ai_data_models.py)：通用 `AITaskRow`、provider route 和
   source evidence 基础。
-- [`file_security_models.py`](../apps/api/app/file_security_models.py)、对象存储和 scanner port：
-  私有文件、哈希、隔离区、扫描状态及 Cloudflare R2/S3-compatible 存储能力。
+- [`file_security_models.py`](../apps/api/app/file_security_models.py) 与对象存储：
+  私有文件、哈希、历史兼容状态及 Cloudflare R2/S3-compatible 存储能力。后台知识文件不再
+  经过恶意内容扫描，完成格式解析与向量化后直接可用。
 - 前端客服窗口和 [`SupportCenterPage.tsx`](../apps/web/src/core/pages/SupportCenterPage.tsx)：
   客户消息与人工客服工作台。
 
@@ -160,7 +161,7 @@
 Product/SKU change ─────>│ Customer Product Projector│
                          └────────────┬─────────────┘
                                       │
-File upload -> R2 -> scan -> parse ───┤
+File upload -> R2 -> validate -> parse ┤
                                       ▼
                          Knowledge Source + Versions
                                       │
@@ -191,7 +192,7 @@ Support AI Task -> Query Planner -> Policy-filtered Hybrid Retriever
 
 ### 4.1 请求链路与索引链路分离
 
-- 知识扫描、解析、chunk、Embedding 和版本激活走异步 ingestion job。
+- 知识解析、chunk、Embedding 和版本激活走异步 ingestion job。
 - 访客发消息先可靠保存，再创建幂等 AI Task。
 - AI worker 只读取已经 `ACTIVE + APPROVED` 的知识版本。
 - 新索引未完成时继续使用旧活动版本，不能让部分 chunk 对客户可见。
@@ -815,7 +816,7 @@ knowledge.approve
 
 - 对用户输入、文件文本和工具输出使用明确的数据分隔，绝不拼进 system instruction。
 - 文件 parser 删除脚本/宏执行能力，只读取静态内容。
-- 扫描未 CLEAN 的 media object 不进入 parser。
+- 只有对象存储中状态可用、格式受支持的 media object 才进入 parser。
 - 来源审批与客户 Agent 启用是服务端写操作，需权限和审计。
 
 ### 15.2 工具
@@ -942,7 +943,7 @@ knowledge.approve
 
 ### Phase 3：企业文件知识（v1 已完成）
 
-- 实现知识文件上传、扫描、parser、chunker、ingestion job 和审核预览。
+- 实现知识文件上传、parser、chunker、ingestion job 和处理预览。
 - 支持 PDF/DOCX/TXT/Markdown；PPTX/XLSX 按真实需求接续。
 - 实现页/章节/段落/表格引用及历史版本审计。
 - SKU 与文件候选统一 rerank。

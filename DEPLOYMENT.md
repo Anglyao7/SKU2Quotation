@@ -9,9 +9,10 @@ Let's Encrypt 证书，React SPA 与 `/api` 使用同一主域，Keycloak 在
 - `ATC_DEPLOYMENT_PROFILE=compact`：面向公开 Beta 和 2 vCPU / 3.4 GiB
   主机，保留 Caddy、Web、API、PostgreSQL + pgvector、Redis、Keycloak
   与独立 Keycloak PostgreSQL；文件存入本地 Docker volume，文件处理与
-  outbox 在请求/数据库内完成，不常驻 RabbitMQ、MinIO、ClamAV 或 Worker。
-- `ATC_DEPLOYMENT_PROFILE=standard`：保留原有 RabbitMQ、MinIO、ClamAV
-  与可选 Worker 的完整拓扑，适合 4 vCPU / 8 GiB 以上主机。
+  outbox 在请求/数据库内完成，不常驻 RabbitMQ、MinIO 或 Worker。
+- `ATC_DEPLOYMENT_PROFILE=standard`：保留 RabbitMQ、MinIO 与可选 Worker
+  的完整拓扑，适合 4 vCPU / 8 GiB 以上主机。新版本不再部署 ClamAV；
+  回滚到仍依赖 ClamAV 的旧版本时，回滚脚本会按旧 compose 恢复该服务。
 
 若云厂商交付的是已经由 Nginx 占用 80 端口、PID 1 不是 systemd 的托管
 容器，使用 compact 的 `ATC_EDGE_PROXY=nginx` 拓扑。外层 Nginx 保持为
@@ -394,7 +395,7 @@ PostgreSQL 的 outbox/inbox 与 RabbitMQ 持久队列则必须成对恢复。
 - 每次部署前检查磁盘、备份和数据库迁移说明。
 - 通过 `./infra/production/compose.sh logs` 查看轮转后的 JSON 容器日志。
 - 监控 `/api/v1/health/ready`、证书到期时间、磁盘、内存、PostgreSQL、
-  RabbitMQ 队列积压、ClamAV 更新时间以及最近一次 timer 成功时间。
+  RabbitMQ 队列积压以及最近一次 timer 成功时间。
 - 禁止使用 `docker compose down --volumes`、`docker volume rm` 或手工
   清理 `.deployments` 中仍可能需要的镜像元数据。
 - SSH 上线后改用 ed25519 密钥，禁用 root 密码登录，并立即轮换任何曾经

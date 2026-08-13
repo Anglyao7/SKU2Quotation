@@ -65,8 +65,8 @@ def _native_records(
 ) -> tuple[NativeProductRecord, ...]:
     if source_file.security_status not in {"ACCEPTED", "LEGACY_ACCEPTED"}:
         raise ProductParserError(
-            "SOURCE_FILE_SECURITY_GATE",
-            "Source file has not passed the security scan.",
+            "SOURCE_FILE_NOT_READY",
+            "Source file has not completed intake.",
         )
     path = source_path or Path(source_file.local_path)
     detection = detect_file_path(path, source_file.original_filename)

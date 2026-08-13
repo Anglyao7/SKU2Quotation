@@ -21,7 +21,6 @@ import {
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
-  approveSupportAIKnowledgeSource,
   getSupportAIIngestionJob,
   listSupportAIAgentKnowledgeSources,
   listSupportAIAgents,
@@ -41,10 +40,17 @@ import "./SupportAIAgentManagement.css";
 const ACTIVE_JOBS = new Set(["QUEUED", "RUNNING"]);
 const STATUS_COLOR: Record<string, "gray" | "blue" | "amber" | "jade" | "red"> = {
   PROCESSING: "blue",
-  READY: "amber",
+  READY: "jade",
   APPROVED: "jade",
   REVOKED: "gray",
   FAILED: "red",
+};
+const STATUS_LABEL: Record<string, string> = {
+  PROCESSING: "处理中",
+  READY: "可用",
+  APPROVED: "可用",
+  REVOKED: "已停用",
+  FAILED: "处理失败",
 };
 
 interface TrackedJob {
@@ -177,7 +183,7 @@ export function SupportAIKnowledgePage() {
 
   const sourceAction = async (
     item: SupportAIAgentKnowledgeSource,
-    action: "approve" | "reindex" | "revoke",
+    action: "reindex" | "revoke",
   ) => {
     const key = `${item.tenantId}:${item.source.id}`;
     if (busy) return;
@@ -185,11 +191,7 @@ export function SupportAIKnowledgePage() {
     setError("");
     setMessage("");
     try {
-      if (action === "approve") {
-        const source = await approveSupportAIKnowledgeSource(item.tenantId, item.source.id);
-        setSources((current) => current.map((row) => row.tenantId === item.tenantId && row.source.id === source.id ? { ...row, source } : row));
-        setMessage(t("知识文件已批准"));
-      } else if (action === "reindex") {
+      if (action === "reindex") {
         const job = await reindexSupportAIKnowledgeSource(item.tenantId, item.source.id);
         setJobs((current) => ({ ...current, [key]: { tenantId: item.tenantId, job } }));
         setMessage(t("知识文件已重新提交处理"));
@@ -269,13 +271,12 @@ export function SupportAIKnowledgePage() {
                 return <article key={key}>
                   <span><FileText weight="duotone" /></span>
                   <div>
-                    <div><strong>{item.source.title}</strong><Badge color={STATUS_COLOR[item.source.status] || "gray"}>{t(item.source.status)}</Badge></div>
+                    <div><strong>{item.source.title}</strong><Badge color={STATUS_COLOR[item.source.status] || "gray"}>{t(STATUS_LABEL[item.source.status] || item.source.status)}</Badge></div>
                     <small>{item.tenantName} · {item.source.originalFilename} · {(item.source.byteSize / 1024).toLocaleString(locale, { maximumFractionDigits: 1 })} KB</small>
                     {processing ? <Progress value={job?.progress ?? 10} /> : null}
                     {item.source.failureMessage ? <small className="is-error">{item.source.failureMessage}</small> : null}
                   </div>
                   <div className="support-agent-source-actions">
-                    {item.source.status === "READY" ? <Button size="1" onClick={() => void sourceAction(item, "approve")} disabled={Boolean(busy)}><Check />{t("批准")}</Button> : null}
                     {!processing ? <Button size="1" variant="soft" color="gray" onClick={() => void sourceAction(item, "reindex")} disabled={Boolean(busy)}><ArrowClockwise />{t("重新处理")}</Button> : null}
                     {!processing && item.source.status !== "REVOKED" ? <Button size="1" variant="ghost" color="red" onClick={() => void sourceAction(item, "revoke")} disabled={Boolean(busy)}><Prohibit />{t("撤销")}</Button> : null}
                   </div>

@@ -76,7 +76,7 @@ RLS 所需的事务上下文由 `app.database.set_request_context()` 设置：
 
 ## Local Compose
 
-仓库根目录的 `infra/local/compose.yaml` 提供 PostgreSQL + pgvector、Redis、RabbitMQ、MinIO、ClamAV、API、Worker 和 Web 的可重复本地基线。它会执行角色引导、Alembic、runtime grants、bucket versioning 和 RabbitMQ quorum/DLQ 初始化；详细命令见 [`infra/local/README.md`](../../infra/local/README.md)。
+仓库根目录的 `infra/local/compose.yaml` 提供 PostgreSQL + pgvector、Redis、RabbitMQ、MinIO、API、Worker 和 Web 的可重复本地基线。它会执行角色引导、Alembic、runtime grants、bucket versioning 和 RabbitMQ quorum/DLQ 初始化；详细命令见 [`infra/local/README.md`](../../infra/local/README.md)。
 
 ## Phase 1–4A-1C Schema
 
@@ -130,7 +130,7 @@ RLS 所需的事务上下文由 `app.database.set_request_context()` 设置：
 
 Migration `20260718_0012` 新增可撤销服务端 Session、只保存 hash 的旋转 Refresh Token family，以及 Membership permission version。生产使用独立 `AUTH_DATABASE_URL`：业务角色必须为非 Owner、`NOBYPASSRLS`；Identity 角色必须非 superuser、仅获身份/Session 表权限，不得读取业务表。
 
-Migration `20260718_0013` 新增 tenant-scoped `media_objects`、`worker_jobs` 以及 `source_files.security_status/media_object_id`。上传文件先写入 `tenants/{tenant_id}/quarantine/`，扫描为 CLEAN 后才提升至 `source/` 并交给解析器。生产使用 S3-compatible Adapter、ClamAV Adapter、`FILE_WORKER_INLINE=false` 和独立非 Owner、`NOBYPASSRLS` Worker 数据库角色；本地确定性扫描器在 production profile 下会拒绝启动。
+Migration `20260718_0013` 新增 tenant-scoped `media_objects`、`worker_jobs` 以及 `source_files.security_status/media_object_id`。当前后台上传文件在完成格式识别后直接提升至 `source/` 并交给解析器；生产使用 S3-compatible Adapter、`FILE_WORKER_INLINE=false` 和独立非 Owner、`NOBYPASSRLS` Worker 数据库角色。数据库中的历史扫描状态字段仅为兼容旧数据保留。
 
 Migration `20260718_0014` 为 `outbox_events` 增加 claim/lease、下一次执行、最大次数和 DEAD 状态，并创建 `inbox_events` 幂等消费回执。Relay 在业务事务之外发布，RabbitMQ 使用 durable topic exchange、persistent message、mandatory route 和 publisher confirms；发布成功后才标记 PUBLISHED。若进程在发布后、落库前崩溃，事件会重复投递，消费者以 `(tenant_id, consumer_name, event_id)` 去重。
 
@@ -142,7 +142,6 @@ Migrations `20260718_0016–0019` 创建受 APPROVED media gate 保护的 Vision
 
 ```powershell
 $env:DATABASE_URL='postgresql+psycopg://worker_role@127.0.0.1:5432/ai_trade_cloud'
-$env:FILE_SCANNER_PROFILE='clamav'
 $env:FILE_WORKER_INLINE='false'
 .\.venv\Scripts\python.exe scripts\run_file_worker.py --tenant-id <TENANT_UUID>
 ```

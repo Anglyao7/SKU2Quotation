@@ -83,7 +83,7 @@ const offerStatusLabel: Record<NonNullable<SkuListItem["publicOfferStatus"]>, st
 };
 
 const importStatusLabel: Record<ImportJob["status"], string> = {
-  scanning: "安全扫描",
+  scanning: "读取文件",
   parsing: "导入中",
   needs_review: "待复核",
   published: "已完成",
@@ -1553,7 +1553,7 @@ export function ProductsPage() {
                         ? "正在确认文件类型与扩展名"
                         : importSubmitStage === "uploading"
                         ? "上传进度 {percent}%，请勿关闭页面"
-                        : "服务器已收到文件，即将进入安全检查和数据校验",
+                        : "服务器已收到文件，即将读取并校验商品数据",
                       { percent: uploadProgress },
                     )}
                   </Text>
@@ -1590,7 +1590,7 @@ export function ProductsPage() {
                       <Text size="1" weight="medium">
                         {t(
                           importStageLabel[lastImport.resultDetails.importStage ?? ""]
-                          ?? (lastImport.status === "scanning" ? "正在进行文件安全检查" : "正在处理商品数据"),
+                          ?? (lastImport.status === "scanning" ? "正在读取上传文件" : "正在处理商品数据"),
                         )}
                       </Text>
                       <strong className="core-tabular">{lastImport.progress}%</strong>

@@ -1720,7 +1720,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
         source = next(
             row for row in sources.json() if row["id"] == str(source_id)
         )
-        assert source["status"] == "READY"
+        assert source["status"] == "APPROVED"
         assert source["chunk_count"] >= 1
         copied_sources = client.get(
             f"/api/v1/support/ai/knowledge/sources?tenant_id={copied_tenant_id}"
@@ -10442,7 +10442,7 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
         assert image_a is not None and image_a.deleted_at is None
 
 
-def test_file_security_clean_upload_promotes_object_before_parsing() -> None:
+def test_backoffice_upload_promotes_object_before_parsing_without_review() -> None:
     response = client.post(
         "/api/v1/imports",
         files={
@@ -10475,6 +10475,7 @@ def test_file_security_clean_upload_promotes_object_before_parsing() -> None:
         assert worker_job is not None
         assert worker_job.status == "SUCCEEDED"
         assert worker_job.checkpoint["outcome"] == "PARSED"
+        assert worker_job.checkpoint["scan"] == "NOT_REQUIRED"
         source_key = media.object_key
     storage = get_object_storage()
     source_path = storage.local_path(source_key)
@@ -10485,7 +10486,7 @@ def test_file_security_clean_upload_promotes_object_before_parsing() -> None:
     assert quarantine_path is not None and not quarantine_path.exists()
 
 
-def test_malware_marker_stays_quarantined_and_never_reaches_parser() -> None:
+def test_backoffice_upload_content_is_not_subject_to_malware_review() -> None:
     response = client.post(
         "/api/v1/imports",
         files={
@@ -10499,7 +10500,7 @@ def test_malware_marker_stays_quarantined_and_never_reaches_parser() -> None:
     )
     assert response.status_code == 201, response.text
     payload = response.json()
-    assert payload["status"] == "failed"
+    assert payload["status"] == "needs_review"
     assert payload["candidate_fields"] == 0
     with SessionLocal() as session:
         import_job = session.get(ImportJobRow, payload["id"])
@@ -10510,24 +10511,15 @@ def test_malware_marker_stays_quarantined_and_never_reaches_parser() -> None:
             select(WorkerJobRow).where(WorkerJobRow.import_job_id == import_job.id)
         )
         assert media is not None and worker_job is not None
-        assert source.security_status == "QUARANTINED"
+        assert source.security_status == "ACCEPTED"
         assert (media.zone, media.status, media.scan_status) == (
-            "QUARANTINE",
-            "REJECTED",
-            "INFECTED",
+            "SOURCE",
+            "AVAILABLE",
+            "CLEAN",
         )
         assert worker_job.status == "SUCCEEDED"
-        assert worker_job.checkpoint["outcome"] == "QUARANTINED"
-        assert session.scalar(
-            select(func.count()).select_from(ReviewItemRow).where(
-                ReviewItemRow.job_id == import_job.id
-            )
-        ) == 0
-        assert session.scalar(
-            select(func.count()).select_from(AITaskRow).where(
-                AITaskRow.business_entity_id == source.id
-            )
-        ) == 0
+        assert worker_job.checkpoint["outcome"] == "PARSED"
+        assert worker_job.checkpoint["scan"] == "NOT_REQUIRED"
 
 
 def test_inline_startup_immediately_resumes_worker_from_stopped_api_process(
@@ -12721,8 +12713,8 @@ def test_image_intelligence_projection_search_and_media_gate(tmp_path: Path) -> 
         assert expired_search.status == "EXPIRED"
         assert expired_search.query_embedding is None
     assert not get_object_storage().local_path(expired_key).exists()
-    malware = client.post("/api/v1/image-searches", files={"file": ("evil.png", image_bytes + b"ATC-MALWARE-TEST", "image/png")})
-    assert malware.status_code == 403
+    marker_content = client.post("/api/v1/image-searches", files={"file": ("marker.png", image_bytes + b"ATC-MALWARE-TEST", "image/png")})
+    assert marker_content.status_code == 200, marker_content.text
     with SessionLocal() as session:
         assert session.scalar(select(func.count()).select_from(ImageEmbeddingRow).where(ImageEmbeddingRow.product_image_id == image_id)) == 1
         assert session.scalar(select(func.count()).select_from(VisionObservationRow).where(VisionObservationRow.product_image_id == image_id)) == 1

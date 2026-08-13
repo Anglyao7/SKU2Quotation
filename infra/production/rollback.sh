@@ -73,7 +73,19 @@ info "using compose contract ${selected_compose_commit:0:12} for database head $
 render_keycloak_realm
 render_caddy_sites
 
-compose up --detach --no-deps --wait keycloak
+info "restoring durable dependencies required by the selected compose contract"
+rollback_dependencies=(postgres redis)
+if [[ "${ATC_DEPLOYMENT_PROFILE}" == "standard" ]]; then
+  rollback_dependencies+=(rabbitmq minio)
+fi
+# A selected rollback contract can predate removal of a durable service. Only
+# restore ClamAV when that exact compose contract declares it, so both old and
+# new standard releases remain valid rollback targets.
+if compose config --services | grep -Fxq clamav; then
+  rollback_dependencies+=(clamav)
+fi
+rollback_dependencies+=(keycloak-postgres keycloak)
+compose up --detach --wait "${rollback_dependencies[@]}"
 "${SCRIPT_DIR}/keycloak-reconcile.sh"
 info "restoring application containers from ${ATC_RELEASE}; persistent volumes are untouched"
 compose up --detach --no-deps --wait api web caddy

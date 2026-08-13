@@ -1008,8 +1008,8 @@ async function localDetection(file: File): Promise<FileDetection> {
 export async function detectFile(file: File) {
   // The server only inspects the leading signature bytes. Sending a large
   // catalog as multipart data just to detect those bytes duplicates the whole
-  // upload, so large files are inspected locally and still receive the full
-  // server-side security scan during the real import.
+  // upload, so large files are inspected locally; the import parser still
+  // validates the complete workbook structure after upload.
   if (file.size > 2 * 1024 * 1024) return localDetection(file);
   try {
     const body = new FormData();
@@ -3558,21 +3558,6 @@ export async function updateSupportAIKnowledgeSource(
           language: input.language,
         }),
       },
-    ),
-  );
-}
-
-export async function approveSupportAIKnowledgeSource(
-  tenantId: string,
-  sourceId: string,
-): Promise<SupportAIKnowledgeSource> {
-  return mapSupportAIKnowledgeSource(
-    await request<ApiSupportAIKnowledgeSource>(
-      supportAITenantPath(
-        `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}/approve`,
-        tenantId,
-      ),
-      { method: "POST" },
     ),
   );
 }

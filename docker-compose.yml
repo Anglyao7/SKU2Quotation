@@ -101,9 +101,6 @@ x-runtime-environment: &runtime-environment
   AWS_DEFAULT_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
   AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-atclocal}
   AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-atc-local-minio-password}
-  FILE_SCANNER_PROFILE: clamav
-  CLAMAV_HOST: clamav
-  CLAMAV_PORT: "3310"
   FILE_WORKER_INLINE: "false"
   OUTBOX_PUBLISHER_PROFILE: rabbitmq
   RABBITMQ_URL: amqp://${RABBITMQ_USER:-atc_local}:${RABBITMQ_PASSWORD:-atc-local-rabbitmq}@rabbitmq:5672/atc
@@ -153,23 +150,6 @@ services:
     security_opt:
       - no-new-privileges:true
     networks: [data]
-
-  clamav:
-    image: clamav/clamav:1.5.2
-    environment:
-      CLAMD_CONF_StreamMaxLength: 260M
-      CLAMD_CONF_MaxFileSize: 250M
-      CLAMD_CONF_MaxScanSize: 500M
-    volumes:
-      - clamav-data:/var/lib/clamav
-    healthcheck:
-      test: ["CMD-SHELL", "clamdscan --ping=1 --wait=30 >/dev/null 2>&1"]
-      interval: 15s
-      timeout: 35s
-      start_period: 120s
-      retries: 10
-    restart: unless-stopped
-    networks: [data, egress]
 
   rabbitmq:
     image: rabbitmq:4.1.8-management-alpine
@@ -303,8 +283,6 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-      clamav:
-        condition: service_healthy
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -391,4 +369,3 @@ volumes:
   redis-data:
   rabbitmq-data:
   minio-data:
-  clamav-data:

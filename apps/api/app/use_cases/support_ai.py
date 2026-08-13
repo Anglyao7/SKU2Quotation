@@ -15,7 +15,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..adapters.file_scanner import get_file_scanner
 from ..adapters.object_storage import get_object_storage
 from ..domain.errors import ApplicationError
 from ..database import set_request_context
@@ -469,7 +468,7 @@ def _agent_scope_maps(
             ).all()
             for sha256, status in sources:
                 source_hashes.setdefault(agent_id, set()).add(sha256)
-                if status == "APPROVED":
+                if status in {"READY", "APPROVED"}:
                     approved_hashes.setdefault(agent_id, set()).add(sha256)
     return (
         stores,
@@ -1064,7 +1063,7 @@ def _settings_response(
         session.scalar(
             select(func.count(SupportAIKnowledgeSourceRow.id)).where(
                 SupportAIKnowledgeSourceRow.tenant_id == tenant_id,
-                SupportAIKnowledgeSourceRow.status == "APPROVED",
+                SupportAIKnowledgeSourceRow.status.in_(["READY", "APPROVED"]),
             )
         )
         or 0
@@ -1334,19 +1333,6 @@ def _upload_knowledge_source_in_scope(
         temporary.flush()
         path = Path(temporary.name)
         try:
-            scan = get_file_scanner().scan(path)
-        except Exception as exc:
-            raise ApplicationError(
-                "SUPPORT_AI_KNOWLEDGE_SCAN_UNAVAILABLE",
-                "文件安全扫描暂不可用，请稍后重试。",
-                kind="unavailable",
-            ) from exc
-        if not scan.clean:
-            raise ApplicationError(
-                "SUPPORT_AI_KNOWLEDGE_REJECTED",
-                "文件未通过安全扫描，已拒绝上传。",
-            )
-        try:
             storage.put_file(
                 path,
                 object_key=object_key,
@@ -1358,7 +1344,6 @@ def _upload_knowledge_source_in_scope(
                 "知识文件上传到对象存储失败，请联系平台管理员。",
                 kind="unavailable",
             ) from exc
-    now = utcnow()
     media = MediaObjectRow(
         id=media_id,
         tenant_id=tenant_id,
@@ -1371,9 +1356,9 @@ def _upload_knowledge_source_in_scope(
         detected_media_type=CONTENT_TYPES[suffix],
         status="AVAILABLE",
         scan_status="CLEAN",
-        scan_engine=scan.engine,
-        scan_result={"detail_code": scan.detail_code},
-        scan_at=now,
+        scan_engine=None,
+        scan_result={"detail_code": "SCAN_NOT_REQUIRED"},
+        scan_at=None,
         retention_class="SOURCE_DEFAULT",
         created_by_user_id=requested_by_user_id,
     )
@@ -1453,15 +1438,10 @@ def update_knowledge_source(
                 "知识文件正在处理，请稍后再修改。",
                 kind="conflict",
             )
-        classification_changed = row.classification != request.classification
         row.title = request.title
         row.description = request.description
         row.classification = request.classification
         row.language = request.language
-        if classification_changed and row.status == "APPROVED":
-            row.status = "READY"
-            row.approved_at = None
-            row.approved_by_user_id = None
         row.version += 1
         session.commit()
         return _source_response(row)

@@ -415,7 +415,7 @@ def _file_evidence(
                 if agent_id is not None
                 else SupportAIKnowledgeSourceRow.agent_id.is_(None)
             ),
-            SupportAIKnowledgeSourceRow.status == "APPROVED",
+            SupportAIKnowledgeSourceRow.status.in_(["READY", "APPROVED"]),
             SupportAIKnowledgeSourceRow.classification.in_(
                 ["PUBLIC", "CUSTOMER_APPROVED"]
             ),
