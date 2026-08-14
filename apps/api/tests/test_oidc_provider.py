@@ -357,7 +357,7 @@ def test_keycloak_password_change_uses_service_account_and_exact_subject(
     assert all(request[2]["follow_redirects"] is False for request in requests)
 
 
-def test_keycloak_password_user_has_complete_profile_and_is_login_verified(
+def test_keycloak_password_user_preserves_business_name_symbols_and_is_login_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APP_ENV", "development")
@@ -417,7 +417,7 @@ def test_keycloak_password_user_has_complete_profile_and_is_login_verified(
             subject="new-keycloak-subject",
             email_normalized=None,
             email_verified=False,
-            display_name="青岚",
+            display_name="C&E创艺 / (华东)",
         )
 
     monkeypatch.setattr(
@@ -434,12 +434,12 @@ def test_keycloak_password_user_has_complete_profile_and_is_login_verified(
     claim = OidcIdentityProviderAdapter().provision_password_user(
         identifier="qinglan",
         password="Qinglan123",
-        display_name="青岚",
+        display_name="C&E创艺 / (华东)",
         email="owner@example.test",
     )
 
-    assert created_payload["firstName"] == "青岚"
-    assert created_payload["lastName"] == "青岚"
+    assert created_payload["firstName"] == "C&E创艺"
+    assert created_payload["lastName"] == "/ (华东)"
     assert created_payload["requiredActions"] == []
     assert created_payload["emailVerified"] is False
     assert created_payload["credentials"] == [

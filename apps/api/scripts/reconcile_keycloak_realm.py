@@ -80,8 +80,14 @@ BOOTSTRAP_USER_MANAGED_FIELDS = (
 SERVICE_ACCOUNT_REALM_MANAGEMENT_ROLES = ("manage-users",)
 
 
-def _email_optional_user_profile(profile: object) -> dict[str, Any]:
-    """Preserve the realm profile while making the product's email optional."""
+def _product_user_profile(profile: object) -> dict[str, Any]:
+    """Apply the product's account-field rules without losing operator config.
+
+    Email is optional because a merchant may use another login identifier.
+    Merchant display names are business names rather than legal person names,
+    so Keycloak's person-name punctuation blacklist must not reject symbols
+    such as ``&``, ``/`` or parentheses.
+    """
 
     if not isinstance(profile, dict) or not isinstance(profile.get("attributes"), list):
         raise SystemExit("Keycloak returned an invalid user-profile configuration.")
@@ -97,6 +103,23 @@ def _email_optional_user_profile(profile: object) -> dict[str, Any]:
     # remains validated when present, but cannot be a hidden prerequisite for
     # password login when the product form explicitly marks it optional.
     email_attributes[0].pop("required", None)
+
+    for field in ("firstName", "lastName"):
+        name_attributes = [
+            attribute
+            for attribute in updated["attributes"]
+            if isinstance(attribute, dict) and attribute.get("name") == field
+        ]
+        if len(name_attributes) != 1:
+            raise SystemExit(
+                f"Keycloak user profile must contain exactly one {field} attribute."
+            )
+        validations = name_attributes[0].get("validations")
+        if validations is None:
+            continue
+        if not isinstance(validations, dict):
+            raise SystemExit(f"Keycloak {field} validations are invalid.")
+        validations.pop("person-name-prohibited-characters", None)
     return updated
 
 
@@ -274,7 +297,7 @@ def reconcile(
         expected={200},
         headers=headers,
     ).json()
-    updated_user_profile = _email_optional_user_profile(current_user_profile)
+    updated_user_profile = _product_user_profile(current_user_profile)
     _request(
         client,
         "PUT",
@@ -505,8 +528,8 @@ def reconcile(
         expected={200},
         headers=headers,
     ).json()
-    if _email_optional_user_profile(verified_user_profile) != verified_user_profile:
-        raise SystemExit("Keycloak user profile still requires an email address.")
+    if _product_user_profile(verified_user_profile) != verified_user_profile:
+        raise SystemExit("Keycloak user profile does not match product account rules.")
     verified_user = _request(
         client,
         "GET",

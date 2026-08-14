@@ -239,10 +239,17 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
                 {
                     "name": "firstName",
                     "required": {"roles": ["user"]},
+                    "validations": {
+                        "length": {"max": 255},
+                        "person-name-prohibited-characters": {},
+                    },
                 },
                 {
                     "name": "lastName",
                     "required": {"roles": ["user"]},
+                    "validations": {
+                        "person-name-prohibited-characters": {},
+                    },
                 },
             ],
             "groups": [{"name": "user-metadata"}],
@@ -397,6 +404,18 @@ def test_reconcile_updates_only_managed_realm_and_client_configuration(
     )
     assert "required" not in email_profile
     assert email_profile["validations"] == {"email": {}}
+    first_name_profile = next(
+        attribute
+        for attribute in state["user_profile"]["attributes"]
+        if attribute["name"] == "firstName"
+    )
+    last_name_profile = next(
+        attribute
+        for attribute in state["user_profile"]["attributes"]
+        if attribute["name"] == "lastName"
+    )
+    assert first_name_profile["validations"] == {"length": {"max": 255}}
+    assert last_name_profile["validations"] == {}
     assert state["user_profile"]["groups"] == [{"name": "user-metadata"}]
     for field in BOOTSTRAP_USER_MANAGED_FIELDS:
         assert state["realm_user"][field] == desired_realm["users"][0][field]
