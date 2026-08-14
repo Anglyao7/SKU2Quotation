@@ -125,6 +125,14 @@ const productsPageSource = await fs.readFile(
   "utf8",
 );
 assert.ok(
+  productsPageSource.includes("listProductCatalog"),
+  "The SKU catalog screen must load product-first catalog rows",
+);
+assert.ok(
+  !productsPageSource.includes("const next = await listSkus"),
+  "The SKU catalog screen must not use the SKU-only page as its primary list",
+);
+assert.ok(
   productsPageSource.includes("{rollbackError ? <CoreError message={rollbackError} /> : null}"),
   "Rollback failures must remain visible inside the confirmation dialog",
 );

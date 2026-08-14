@@ -46,6 +46,7 @@ from ..product_center_schemas import (
     ProductCategorySummary,
     ProductDetail,
     ProductImageResponse,
+    ProductListPage,
     ProductOfferSummary,
     PublicCatalogOfferResponse,
     PublicCatalogOfferUpsertRequest,
@@ -223,6 +224,7 @@ def _image_response(
     )
 
 SKU_STATUSES = frozenset({"DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"})
+PRODUCT_STATUSES = frozenset({"DRAFT", "IN_REVIEW", "ACTIVE", "ARCHIVED"})
 
 
 def _require(permissions: frozenset[str], permission: str) -> None:
@@ -491,6 +493,61 @@ def list_products(
         )
         for row in rows
     ]
+
+
+def list_product_page(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    query: str,
+    category_id: UUID | None,
+    statuses: list[str],
+    missing_images_only: bool,
+    page: int,
+    page_size: int,
+) -> ProductListPage:
+    """List the catalog by product, including products without any SKU rows."""
+
+    _require(permissions, "product.view")
+    normalized_statuses = sorted(
+        {status.strip().upper() for status in statuses if status.strip()}
+    )
+    invalid_statuses = set(normalized_statuses) - PRODUCT_STATUSES
+    if invalid_statuses:
+        raise ApplicationError(
+            "PRODUCT_STATUS_INVALID",
+            f"Unsupported product status: {', '.join(sorted(invalid_statuses))}",
+        )
+
+    rows, total = repository.list_product_page_rows(
+        session,
+        tenant_id=tenant_id,
+        query=query,
+        category_id=category_id,
+        statuses=normalized_statuses,
+        missing_images_only=missing_images_only,
+        page=page,
+        page_size=page_size,
+    )
+    storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
+    items = [
+        _card(
+            session,
+            tenant_id=tenant_id,
+            product=row,
+            permissions=permissions,
+            storefront_slug=storefront_slug,
+        )
+        for row in rows
+    ]
+    return ProductListPage(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=(total + page_size - 1) // page_size,
+    )
 
 
 def list_skus(

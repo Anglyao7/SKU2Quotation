@@ -40,6 +40,7 @@ import type {
   ProductDetail,
   ProductOffer,
   ProductSku,
+  ProductListPage,
   PurchaseOrder,
   PurchaseOrderSummary,
   PublicCatalogOffer,
@@ -1246,6 +1247,14 @@ interface ApiProduct {
   tags: string[];
 }
 
+interface ApiProductListPage {
+  items: ApiProduct[];
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
+}
+
 interface ApiSku {
   id: string;
   product_id: string;
@@ -1444,6 +1453,31 @@ export async function listSkus(params: {
   const row = await request<ApiSkuListPage>(`/product-center/skus?${query}`);
   return {
     items: row.items.map(mapSkuListItem),
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    pages: row.pages,
+  };
+}
+
+export async function listProductCatalog(params: {
+  q?: string;
+  categoryId?: string;
+  statuses?: Array<"DRAFT" | "IN_REVIEW" | "ACTIVE" | "ARCHIVED">;
+  missingImagesOnly?: boolean;
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<ProductListPage> {
+  const query = new URLSearchParams();
+  if (params.q) query.set("q", params.q);
+  if (params.categoryId) query.set("category_id", params.categoryId);
+  for (const status of params.statuses ?? []) query.append("status", status);
+  if (params.missingImagesOnly) query.set("missing_images_only", "true");
+  query.set("page", String(params.page ?? 1));
+  query.set("page_size", String(params.pageSize ?? 50));
+  const row = await request<ApiProductListPage>(`/product-center/products?${query}`);
+  return {
+    items: row.items.map(mapProduct),
     page: row.page,
     pageSize: row.page_size,
     total: row.total,

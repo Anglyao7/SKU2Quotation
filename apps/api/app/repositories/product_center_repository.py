@@ -47,7 +47,70 @@ def list_product_rows(
     approved_images_only: bool,
     limit: int,
 ) -> list[ProductRow]:
-    statement = select(ProductRow).where(ProductRow.tenant_id == tenant_id)
+    statement = _product_statement(
+        tenant_id=tenant_id,
+        query=query,
+        category_id=category_id,
+        supplier_id=supplier_id,
+        statuses=statuses,
+        approved_images_only=approved_images_only,
+        missing_images_only=False,
+    )
+    return list(session.scalars(statement.limit(limit)).all())
+
+
+def list_product_page_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    query: str,
+    category_id: UUID | None,
+    statuses: list[str],
+    missing_images_only: bool,
+    page: int,
+    page_size: int,
+) -> tuple[list[ProductRow], int]:
+    """Return a tenant-scoped, product-first page and its total count.
+
+    This deliberately starts from ``products`` rather than ``skus`` so
+    product-only imports remain visible in the catalog.
+    """
+
+    statement = _product_statement(
+        tenant_id=tenant_id,
+        query=query,
+        category_id=category_id,
+        supplier_id=None,
+        statuses=statuses,
+        approved_images_only=False,
+        missing_images_only=missing_images_only,
+    )
+    total = int(
+        session.scalar(
+            select(func.count()).select_from(statement.order_by(None).subquery())
+        )
+        or 0
+    )
+    rows = list(
+        session.scalars(statement.limit(page_size).offset((page - 1) * page_size)).all()
+    )
+    return rows, total
+
+
+def _product_statement(
+    *,
+    tenant_id: UUID,
+    query: str,
+    category_id: UUID | None,
+    supplier_id: str | None,
+    statuses: list[str],
+    approved_images_only: bool,
+    missing_images_only: bool,
+):
+    statement = select(ProductRow).where(
+        ProductRow.tenant_id == tenant_id,
+        ProductRow.deleted_at.is_(None),
+    )
     if statuses:
         statement = statement.where(ProductRow.status.in_(statuses))
     else:
@@ -82,6 +145,16 @@ def list_product_rows(
                     ProductImageRow.tenant_id == tenant_id,
                     ProductImageRow.product_id == ProductRow.id,
                     ProductImageRow.approval_status == "APPROVED",
+                    ProductImageRow.deleted_at.is_(None),
+                )
+            )
+        )
+    if missing_images_only:
+        statement = statement.where(
+            ~exists(
+                select(ProductImageRow.id).where(
+                    ProductImageRow.tenant_id == tenant_id,
+                    ProductImageRow.product_id == ProductRow.id,
                     ProductImageRow.deleted_at.is_(None),
                 )
             )
@@ -133,7 +206,7 @@ def list_product_rows(
         )
     else:
         statement = statement.order_by(ProductRow.updated_at.desc(), ProductRow.id)
-    return list(session.scalars(statement.limit(limit)).all())
+    return statement
 
 
 def get_product_row(session: Session, *, tenant_id: UUID, product_id: UUID) -> ProductRow | None:

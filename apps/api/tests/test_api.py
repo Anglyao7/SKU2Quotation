@@ -8194,6 +8194,7 @@ def test_product_query_and_image_filter() -> None:
 def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
     suffix = uuid4().hex[:8].upper()
     product_id = uuid4()
+    product_only_id = uuid4()
     product_image_id = uuid4()
     first_sku_id = uuid4()
     second_sku_id = uuid4()
@@ -8217,6 +8218,17 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
             status="ACTIVE",
         )
         session.add(product)
+        session.flush()
+        session.add(
+            ProductRow(
+                id=product_only_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"PRODUCT-ONLY-{suffix}",
+                name=f"Product Only {suffix}",
+                category_id=category.id,
+                status="ACTIVE",
+            )
+        )
         session.flush()
         session.add_all(
             [
@@ -8376,6 +8388,19 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
     assert active["source_imported_at"] is None
     assert active["image_status"] == "APPROVED"
     assert active["thumbnail_url"] == f"/api/store/demo/media/{product_image_id}"
+
+    product_page = client.get(
+        "/api/v1/product-center/products",
+        params={"q": suffix, "page": 1, "page_size": 50},
+    )
+    assert product_page.status_code == 200, product_page.text
+    assert product_page.json()["total"] == 2
+    products_by_code = {
+        item["product_code"]: item for item in product_page.json()["items"]
+    }
+    assert products_by_code[f"PRODUCT-{suffix}"]["sku_count"] == 2
+    assert products_by_code[f"PRODUCT-ONLY-{suffix}"]["sku_count"] == 0
+    assert products_by_code[f"PRODUCT-ONLY-{suffix}"]["name"] == f"Product Only {suffix}"
 
     no_missing_images = client.get(
         "/api/v1/product-center/skus",

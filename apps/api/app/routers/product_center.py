@@ -37,6 +37,7 @@ from ..product_center_schemas import (
     ProductDeleteAllRequest,
     ProductDetail,
     ProductImageResponse,
+    ProductListPage,
     ProductReviewQueueItem,
     PublicCatalogOfferResponse,
     PublicCatalogOfferUpsertRequest,
@@ -121,6 +122,33 @@ def list_products(
             statuses=product_status,
             approved_images_only=approved_images_only,
             limit=limit,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get("/product-center/products", response_model=ProductListPage)
+def list_product_catalog(
+    q: str = Query(default="", max_length=200),
+    category_id: UUID | None = None,
+    product_status: list[str] = Query(default=[], alias="status"),
+    missing_images_only: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    session: Session = Depends(get_authenticated_session),
+) -> ProductListPage:
+    context = _context(session)
+    try:
+        return use_cases.list_product_page(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            query=q,
+            category_id=category_id,
+            statuses=product_status,
+            missing_images_only=missing_images_only,
+            page=page,
+            page_size=page_size,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

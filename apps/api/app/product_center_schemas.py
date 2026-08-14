@@ -53,6 +53,21 @@ class ProductCard(BaseModel):
     tags: list[str]
 
 
+class ProductListPage(BaseModel):
+    """Paginated product-first catalog results.
+
+    The SKU catalog screen is product-oriented: a product remains visible even
+    when it currently has no SKU rows. SKU details are loaded from
+    ``ProductDetail.skus`` after opening a product.
+    """
+
+    items: list[ProductCard]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total: int = Field(ge=0)
+    pages: int = Field(ge=0)
+
+
 class SkuResponse(BaseModel):
     id: UUID
     product_id: UUID

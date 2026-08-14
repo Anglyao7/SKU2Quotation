@@ -413,6 +413,14 @@ export interface SkuListPage {
   pages: number;
 }
 
+export interface ProductListPage {
+  items: CoreProduct[];
+  page: number;
+  pageSize: number;
+  total: number;
+  pages: number;
+}
+
 export interface PublicCatalogOffer {
   id: string;
   skuId: string;
