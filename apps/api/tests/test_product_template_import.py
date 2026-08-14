@@ -252,7 +252,7 @@ def test_product_sku_template_allows_an_empty_sku_sheet(tmp_path: Path) -> None:
     assert result.rows[0].sku_code == "PRODUCT-ONLY-001"
     assert result.warnings == (
         "已识别 Product + SKU 双表模板：1 个商品，0 个 SKU。",
-        "Product 表中有 1 个商品没有 SKU，已作为无 SKU 商品导入。",
+        "Product 表中有 1 个商品没有 SKU，系统将为每个商品创建 1 个无规格基础 SKU，可继续按 SKU 管理。",
     )
 
 
@@ -291,7 +291,7 @@ def test_product_sku_template_keeps_products_unreferenced_by_partial_sku_sheet(
     assert rows_by_product["PRODUCT:PRODUCT-WITH-SKU"].product_only is False
     assert rows_by_product["PRODUCT:PRODUCT-WITHOUT-SKU"].product_only is True
     assert result.warnings[-1] == (
-        "Product 表中有 1 个商品没有 SKU，已作为无 SKU 商品导入。"
+        "Product 表中有 1 个商品没有 SKU，系统将为每个商品创建 1 个无规格基础 SKU，可继续按 SKU 管理。"
     )
 
 

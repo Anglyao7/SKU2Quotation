@@ -172,6 +172,10 @@ MAX_CATEGORY_NAME_LENGTH = 200
 MAX_SUPPLIER_NAME_LENGTH = 300
 TEMPLATE_SOURCE_KEY = SKU_TEMPLATE_SOURCE_OPTION_KEY
 TEMPLATE_SOURCE_VALUE = "PRODUCT_TEMPLATE"
+# A product row without any explicit SKU is represented by one generated
+# no-specification SKU. Keep the flag inside the existing internal template
+# marker so exports and storefront option rendering continue to hide it.
+TEMPLATE_BASE_PRODUCT_FLAG = "base_product"
 TEMPLATE_IMAGE_BUCKET = "product-template"
 UNCATEGORIZED_CATEGORY_NAME = "未分类"
 PRODUCT_IMAGE_COLUMN_OFFSET = 8
@@ -2796,9 +2800,9 @@ def _parse_product_sku_rows(
                 category=product.category,
                 product_key=f"PRODUCT:{product.product_code}",
                 product_model=product.product_model,
-                # Product-only rows never create a SKU. Keeping the source
-                # product code here gives image storage a deterministic key
-                # without inventing a hidden catalog SKU.
+                # Product-only rows create a generated no-specification SKU
+                # during the apply phase. Keeping the source product code here
+                # still gives image storage and planning a deterministic key.
                 sku_code=product.product_code,
                 sku_name=product.name,
                 specification=None,
@@ -2840,7 +2844,7 @@ def _parse_product_sku_rows(
     if unreferenced_product_codes:
         warnings.append(
             f"Product 表中有 {len(unreferenced_product_codes)} 个商品没有 SKU，"
-            "已作为无 SKU 商品导入。"
+            "系统将为每个商品创建 1 个无规格基础 SKU，可继续按 SKU 管理。"
         )
     unmatched_embedded_images = sum(
         len(images)
@@ -3281,6 +3285,7 @@ def _template_option_values(
     row: ProductTemplateRow,
     *,
     existing: dict[str, object] | None = None,
+    base_product: bool = False,
 ) -> dict[str, object]:
     # The template owns its internal marker and the free-text note, but it
     # must not erase variant attributes maintained elsewhere in the product
@@ -3299,6 +3304,8 @@ def _template_option_values(
         "source": TEMPLATE_SOURCE_VALUE,
         "schema": row.schema_version,
     }
+    if base_product:
+        marker[TEMPLATE_BASE_PRODUCT_FLAG] = True
     if row.schema_version >= 3:
         marker["product_code"] = row.product_key.removeprefix("PRODUCT:")
         marker["variant_option_keys"] = [key for key, _value in row.variant_options]
@@ -3365,6 +3372,15 @@ def _is_template_managed_sku(sku: SkuRow) -> bool:
     return (
         isinstance(marker, dict)
         and marker.get("source") == TEMPLATE_SOURCE_VALUE
+    )
+
+
+def _is_base_product_sku(sku: SkuRow) -> bool:
+    marker = sku.option_values.get(TEMPLATE_SOURCE_KEY)
+    return (
+        isinstance(marker, dict)
+        and marker.get("source") == TEMPLATE_SOURCE_VALUE
+        and marker.get(TEMPLATE_BASE_PRODUCT_FLAG) is True
     )
 
 
@@ -3899,6 +3915,9 @@ def process_product_template_import(
             )
             .execution_options(include_deleted=True)
         ).all()
+        sku_rows_by_product: dict[UUID, list[SkuRow]] = defaultdict(list)
+        for sku_row in sku_rows:
+            sku_rows_by_product[sku_row.product_id].append(sku_row)
         sku_code_allocator = CatalogSkuCodeAllocator(
             tenant=tenant,
             products=product_rows,
@@ -3915,13 +3934,38 @@ def process_product_template_import(
             if len(rows) == 1
         }
         current_sku_count = sum(1 for row in sku_rows if row.deleted_at is None)
+
+        def product_only_consumes_capacity(template_row: ProductTemplateRow) -> bool:
+            """Return whether importing a no-spec product creates an active SKU."""
+
+            candidate_product = next(
+                (
+                    products.get(candidate_code)
+                    for candidate_code in (
+                        _product_code(template_row.product_key),
+                        _alternate_product_code(template_row.product_key),
+                    )
+                    if products.get(candidate_code) is not None
+                ),
+                None,
+            )
+            if candidate_product is None:
+                return True
+            return not any(
+                row.deleted_at is None
+                for row in sku_rows_by_product.get(candidate_product.id, ())
+            )
+
         additional_sku_count = sum(
             1
             for row in parsed.rows
-            if not row.product_only
-            and (
-                (existing := skus.get(_normalize_sku_code(row.sku_code))) is None
-                or existing.deleted_at is not None
+            if (
+                product_only_consumes_capacity(row)
+                if row.product_only
+                else (
+                    (existing := skus.get(_normalize_sku_code(row.sku_code))) is None
+                    or existing.deleted_at is not None
+                )
             )
         )
         quota = sku_quota_snapshot(
@@ -3936,10 +3980,10 @@ def process_product_template_import(
         quota_skipped_rows: list[ProductTemplateRow] = []
         for template_row in parsed.rows:
             if template_row.product_only:
-                import_rows.append(template_row)
-                continue
-            existing = skus.get(_normalize_sku_code(template_row.sku_code))
-            consumes_capacity = existing is None or existing.deleted_at is not None
+                consumes_capacity = product_only_consumes_capacity(template_row)
+            else:
+                existing = skus.get(_normalize_sku_code(template_row.sku_code))
+                consumes_capacity = existing is None or existing.deleted_at is not None
             if (
                 consumes_capacity
                 and remaining_capacity is not None
@@ -4068,9 +4112,6 @@ def process_product_template_import(
                     )
             supplier_plan[normalized_name] = (display_name, existing_supplier)
 
-        sku_rows_by_product: dict[UUID, list[SkuRow]] = defaultdict(list)
-        for sku_row in sku_rows:
-            sku_rows_by_product[sku_row.product_id].append(sku_row)
         products_by_id = {row.id: row for row in product_rows}
         existing_sku_ids = [row.id for row in sku_rows]
         offers = (
@@ -4213,6 +4254,7 @@ def process_product_template_import(
                 candidate_sku_codes = {
                     _source_sku_identity(row)
                     for row in candidate_skus
+                    if not _is_base_product_sku(row)
                 }
                 if (
                     candidate is None
@@ -4232,6 +4274,7 @@ def process_product_template_import(
                         if {
                             _source_sku_identity(row)
                             for row in sku_rows_by_product.get(product.id, ())
+                            if not _is_base_product_sku(row)
                         }.issubset(incoming_codes)
                     ),
                     None,
@@ -4297,6 +4340,7 @@ def process_product_template_import(
         updated = 0
         unchanged = 0
         dirty_product_ids: set[UUID] = set()
+        imported_base_product_ids: set[UUID] = set()
         touched_supplier_ids: set[str] = set()
         synced_image_product_keys: set[str] = set()
         moved_from_product_ids: set[UUID] = set()
@@ -4506,20 +4550,136 @@ def process_product_template_import(
                     changed = True
 
             if template_row.product_only:
-                if sync_product_images(product, template_row):
-                    changed = True
-                if is_new:
-                    created += 1
-                elif changed:
-                    updated += 1
+                # A Product row without any explicit SKU is still a concrete
+                # catalog SKU: one generated, no-specification base SKU. Reuse
+                # the marked row on subsequent imports so this operation is
+                # idempotent and does not consume another SKU sequence.
+                live_skus = [
+                    row
+                    for row in sku_rows_by_product.get(product.id, ())
+                    if (
+                        row.deleted_at is None
+                        and row.status != "ARCHIVED"
+                        and not _is_base_product_sku(row)
+                    )
+                ]
+                base_sku = next(
+                    (
+                        row
+                        for row in sku_rows_by_product.get(product.id, ())
+                        if _is_base_product_sku(row)
+                    ),
+                    None,
+                )
+                if not live_skus:
+                    if base_sku is None:
+                        system_sku_code, sku_sequence = sku_code_allocator.issue(product)
+                        base_sku = SkuRow(
+                            id=uuid4(),
+                            tenant_id=tenant_id,
+                            product_id=product.id,
+                            supplier_id=None,
+                            latest_import_job_id=job.id,
+                            rollback_owner_batch_id=job.batch_id,
+                            sku_code=system_sku_code,
+                            source_sku_code=None,
+                            sku_sequence=sku_sequence,
+                            name=template_row.sku_name or template_row.name,
+                            option_values=_template_option_values(
+                                template_row,
+                                base_product=True,
+                            ),
+                            default_moq=template_row.default_moq,
+                            moq_unit=None,
+                            weight=template_row.gross_weight,
+                            weight_unit=(
+                                "kg" if template_row.gross_weight is not None else None
+                            ),
+                            status="ACTIVE",
+                            created_by_user_id=user_id,
+                            updated_by_user_id=user_id,
+                        )
+                        session.add(base_sku)
+                        sku_rows.append(base_sku)
+                        sku_rows_by_product[product.id].append(base_sku)
+                        # Public offers reference the SKU through a composite
+                        # tenant foreign key, so establish it first.
+                        session.flush()
+                        changed = True
+                    else:
+                        base_values = {
+                            "product_id": product.id,
+                            "supplier_id": None,
+                            "source_sku_code": None,
+                            "name": template_row.sku_name or template_row.name,
+                            "option_values": _template_option_values(
+                                template_row,
+                                existing=base_sku.option_values,
+                                base_product=True,
+                            ),
+                            "default_moq": template_row.default_moq,
+                            "moq_unit": None,
+                            "weight": template_row.gross_weight,
+                            "weight_unit": (
+                                "kg" if template_row.gross_weight is not None else None
+                            ),
+                            "status": "ACTIVE",
+                            "deleted_at": None,
+                        }
+                        if any(
+                            getattr(base_sku, key) != value
+                            for key, value in base_values.items()
+                        ):
+                            for key, value in base_values.items():
+                                setattr(base_sku, key, value)
+                            base_sku.version += 1
+                            base_sku.updated_by_user_id = user_id
+                            changed = True
+                        base_sku.latest_import_job_id = job.id
+                        if base_sku.rollback_owner_batch_id != job.batch_id:
+                            base_sku.rollback_owner_batch_id = None
+                    sku = base_sku
+                    imported_base_product_ids.add(product.id)
                 else:
-                    unchanged += 1
-                if changed and product.status == "ACTIVE":
-                    product.search_document_version = 0
-                    dirty_product_ids.add(product.id)
-                if row_index % IMPORT_FLUSH_BATCH_SIZE == 0:
-                    session.flush()
-                continue
+                    # A product that already has a concrete SKU does not need
+                    # another base row; this product-only row still syncs the
+                    # product master data and gallery below.
+                    sku = None
+
+                if sku is None:
+                    if sync_product_images(product, template_row):
+                        changed = True
+                    if is_new:
+                        created += 1
+                    elif changed:
+                        updated += 1
+                    else:
+                        unchanged += 1
+                    if changed and product.status == "ACTIVE":
+                        product.search_document_version = 0
+                        dirty_product_ids.add(product.id)
+                    if row_index % IMPORT_FLUSH_BATCH_SIZE == 0:
+                        session.flush()
+                    continue
+
+            if not template_row.product_only:
+                # A generated base SKU is synthetic and should be retired when
+                # real variant rows arrive for the same product. It remains in
+                # history (soft-deleted) but no longer appears as an extra
+                # active variant.
+                for base_sku in list(sku_rows_by_product.get(product.id, ())):
+                    if not _is_base_product_sku(base_sku) or base_sku.id == getattr(sku, "id", None):
+                        continue
+                    if base_sku.deleted_at is None and base_sku.status != "ARCHIVED":
+                        base_sku.status = "ARCHIVED"
+                        base_sku.deleted_at = now
+                        base_sku.version += 1
+                        base_sku.updated_by_user_id = user_id
+                        base_offer = offers.get(base_sku.id)
+                        if base_offer is not None:
+                            base_offer.publication_status = "SUSPENDED"
+                            base_offer.deleted_at = now
+                        changed = True
 
             if sku is None:
                 system_sku_code, sku_sequence = sku_code_allocator.issue(product)
@@ -4553,7 +4713,7 @@ def process_product_template_import(
                 # foreign key, so establish the SKU before staging its offer.
                 session.flush()
                 changed = True
-            else:
+            elif not template_row.product_only:
                 old_product_id = sku.product_id
                 sku_values = {
                     "product_id": product.id,
@@ -4690,6 +4850,10 @@ def process_product_template_import(
             1
             for sku in sku_rows
             if _is_template_managed_sku(sku)
+            and not (
+                _is_base_product_sku(sku)
+                and sku.product_id in imported_base_product_ids
+            )
             and _source_sku_identity(sku) not in incoming_sku_codes
             and sku.status == "ACTIVE"
             and sku.deleted_at is None

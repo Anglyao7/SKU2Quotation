@@ -296,6 +296,16 @@ def _cleanup_template_test_records(
                     .execution_options(include_deleted=True)
                 ).all()
             )
+        if product_ids:
+            related_skus = session.scalars(
+                select(SkuRow)
+                .where(
+                    SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                    SkuRow.product_id.in_(product_ids),
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+            sku_ids = list({*sku_ids, *(row.id for row in related_skus)})
         if sku_ids:
             session.execute(
                 delete(PublicCatalogOfferRow).where(
@@ -4043,8 +4053,8 @@ def test_sku_quota_blocks_direct_creation_but_partially_accepts_template_import(
             )
             or 0
         )
-        # A product without an SKU does not consume capacity. Only SKU rows
-        # are counted by the subscription quota.
+        # Legacy rows created directly in the database without an SKU do not
+        # consume capacity; imports now materialize their no-spec base SKU.
         session.add(
             ProductRow(
                 id=product_id,
@@ -9994,8 +10004,9 @@ def test_product_template_import_creates_products_without_skus(
     payload = response.json()
     import_job_ids.append(payload["id"])
     assert payload["status"] == "published"
+    assert "保留未包含商品 0" in payload["error_message"]
     assert any(
-        "1 个商品没有 SKU，已作为无 SKU 商品导入" in warning
+        "1 个商品没有 SKU，系统将为每个商品创建 1 个无规格基础 SKU" in warning
         for warning in payload["warning_messages"]
     )
     with SessionLocal() as session:
@@ -10007,12 +10018,26 @@ def test_product_template_import_creates_products_without_skus(
         )
         assert product is not None
         assert product.status == "ACTIVE"
-        assert session.scalar(
-            select(func.count(SkuRow.id)).where(
+        base_sku = session.scalar(
+            select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
                 SkuRow.product_id == product.id,
             )
-        ) == 0
+        )
+        assert base_sku is not None
+        assert base_sku.source_sku_code is None
+        assert base_sku.name == product_name
+        assert base_sku.status == "ACTIVE"
+        assert base_sku.option_values["_sku2quotation"]["base_product"] is True
+        offer = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == base_sku.id,
+            )
+        )
+        assert offer is not None
+        assert offer.publication_status == "PUBLISHED"
+        assert offer.unit_price == Decimal("0.00")
         image = session.scalar(
             select(ProductImageRow).where(
                 ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
@@ -10021,6 +10046,87 @@ def test_product_template_import_creates_products_without_skus(
         )
         assert image is not None
         assert image.object_key == "https://img.example.com/product-only.jpg"
+
+    # Adding real variants later replaces the synthetic base SKU instead of
+    # leaving an extra no-spec row beside the explicit variants.
+    explicit_sku_code = f"PRODUCT-VARIANT-{suffix}"
+    variant_workbook = Workbook()
+    variant_product_sheet = variant_workbook.active
+    variant_product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    variant_product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS))
+    variant_product_sheet.append([
+        product_source_code,
+        product_name,
+        category_name,
+        None,
+        12.5,
+        None,
+        None,
+        None,
+        *([None] * 10),
+    ])
+    variant_sku_sheet = variant_workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
+    variant_sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS))
+    variant_sku_sheet.append([
+        product_source_code,
+        explicit_sku_code,
+        *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 2)),
+    ])
+    variant_content = BytesIO()
+    variant_workbook.save(variant_content)
+    variant_workbook.close()
+    variant_response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "无SKU商品补充规格.xlsx",
+                variant_content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert variant_response.status_code == 201, variant_response.text
+    import_job_ids.append(variant_response.json()["id"])
+    assert variant_response.json()["status"] == "published"
+    with SessionLocal() as session:
+        product = session.scalar(
+            select(ProductRow).where(
+                ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductRow.name == product_name,
+            )
+        )
+        assert product is not None
+        all_skus = session.scalars(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.product_id == product.id,
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+        base_skus = [
+            sku
+            for sku in all_skus
+            if sku.option_values.get("_sku2quotation", {}).get("base_product") is True
+        ]
+        assert len(base_skus) == 1
+        assert base_skus[0].status == "ARCHIVED"
+        assert base_skus[0].deleted_at is not None
+        explicit_sku = next(
+            sku for sku in all_skus if sku.source_sku_code == explicit_sku_code
+        )
+        assert explicit_sku.status == "ACTIVE"
+        base_offer = session.scalar(
+            select(PublicCatalogOfferRow).where(
+                PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                PublicCatalogOfferRow.sku_id == base_skus[0].id,
+            )
+            .execution_options(include_deleted=True)
+        )
+        assert base_offer is not None
+        assert base_offer.publication_status == "SUSPENDED"
+        assert base_offer.deleted_at is not None
 
 
 def test_product_template_import_reuses_existing_category_hierarchy(
