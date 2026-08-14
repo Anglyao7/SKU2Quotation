@@ -24,7 +24,7 @@ from ..services.quote_excel_templates import (
     inspect_quote_excel_template,
 )
 from ..services.public_quote_documents import render_default_quote_template_xlsx
-from ..services.storage import UploadTooLargeError, store_upload
+from ..services.storage import UploadTooLargeError, store_upload_with_inspection
 
 
 def _require_manage(permissions: frozenset[str]) -> None:
@@ -128,11 +128,12 @@ async def upload_template(
     template_id = uuid4()
     storage = get_object_storage()
     try:
-        stored = await store_upload(
+        stored, inspection = await store_upload_with_inspection(
             upload,
             f"quote-template-{template_id.hex}",
             tenant_id=tenant_id,
             storage=storage,
+            inspect_staged=inspect_quote_excel_template,
         )
     except UploadTooLargeError as exc:
         raise ApplicationError(
@@ -145,8 +146,6 @@ async def upload_template(
     promoted = False
     committed = False
     try:
-        with storage.materialize(stored.object_key) as path:
-            inspection = inspect_quote_excel_template(path)
         storage.promote(
             quarantine_key=stored.object_key,
             source_key=source_key,

@@ -1043,15 +1043,27 @@ async function uploadProductTemplate(
   }
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let uploadedPercent = 0;
+    let transportFailureReported = false;
     xhr.open("POST", `${API_BASE}/imports`);
     xhr.withCredentials = true;
     if (accessToken) xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
-        onUploadProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+        uploadedPercent = Math.min(100, Math.round((event.loaded / event.total) * 100));
+        onUploadProgress?.(uploadedPercent);
       }
     };
-    xhr.onerror = () => reject(new CoreApiError("无法连接服务，请检查网络后重试。", 0));
+    const reportTransportFailure = (kind: "error" | "abort" | "timeout") => {
+      if (transportFailureReported) return;
+      transportFailureReported = true;
+      void describeProductUploadFailure(uploadedPercent, kind)
+        .then((message) => reject(new CoreApiError(message, 0)))
+        .catch(() => reject(new CoreApiError("商品文件上传连接已中断，请重试。", 0)));
+    };
+    xhr.onerror = () => reportTransportFailure("error");
+    xhr.onabort = () => reportTransportFailure("abort");
+    xhr.ontimeout = () => reportTransportFailure("timeout");
     xhr.onload = () => {
       let payload: unknown = null;
       try {
@@ -1086,6 +1098,33 @@ async function uploadProductTemplate(
     };
     xhr.send(body);
   });
+}
+
+async function describeProductUploadFailure(
+  uploadedPercent: number,
+  kind: "error" | "abort" | "timeout",
+) {
+  if (kind === "abort") return "商品文件上传已取消，可以保留当前文件并重新上传。";
+  if (kind === "timeout") return "商品文件上传等待超时，系统未确认接收完成，请重试。";
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return `网络已断开，商品文件上传停在 ${uploadedPercent}%。恢复网络后可直接重试。`;
+  }
+  try {
+    const health = await fetch(`${API_BASE}/health/live`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!health.ok) throw new Error("health check failed");
+  } catch {
+    return `暂时无法连接商品上传服务，上传停在 ${uploadedPercent}%。请稍后直接重试。`;
+  }
+  if (uploadedPercent >= 100) {
+    return "文件已传完，但服务器在保存或检查文件时中断了连接；系统未确认导入，请直接重试。";
+  }
+  if (uploadedPercent > 0) {
+    return `商品文件上传在 ${uploadedPercent}% 时连接中断，请检查网络后直接重试。`;
+  }
+  return "商品上传请求未能发出，请刷新页面后重试。";
 }
 
 export async function createProductTemplateImport(
