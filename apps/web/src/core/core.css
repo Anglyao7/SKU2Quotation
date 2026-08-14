@@ -362,6 +362,9 @@
 .core-import-file-copy { min-width: 0; display: grid; gap: 3px; }
 .core-import-file-copy > .rt-Text:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .core-import-file-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.core-import-file > div { min-width: 0; display: grid; gap: 3px; }
+.core-import-file > div > .rt-Text:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.core-import-file.published > svg { color: var(--accent); }
 .core-import-file.failed > svg { color: #a43d35; }
 .core-import-rollback-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .core-import-rollback-toolbar > div { min-width: 0; display: grid; gap: 3px; }

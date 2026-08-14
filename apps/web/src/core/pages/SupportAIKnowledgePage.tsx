@@ -2,10 +2,12 @@ import {
   Badge,
   Button,
   Card,
+  Dialog,
   Heading,
   Progress,
   Select,
   Text,
+  TextArea,
   TextField,
 } from "@radix-ui/themes";
 import {
@@ -15,6 +17,7 @@ import {
   Database,
   FileArrowUp,
   FileText,
+  Plus,
   Prohibit,
   Robot,
   Storefront,
@@ -22,20 +25,23 @@ import {
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
+  createSupportAIKnowledgeBase,
   getSupportAIIngestionJob,
   importSupportAITraining,
-  listSupportAIAgentKnowledgeSources,
   listSupportAIAgents,
+  listSupportAIKnowledgeBaseSources,
+  listSupportAIKnowledgeBases,
   reindexSupportAIKnowledgeSource,
   revokeSupportAIKnowledgeSource,
-  uploadSupportAIAgentKnowledgeSource,
+  uploadSupportAIKnowledgeBaseSource,
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type {
   SupportAIAgent,
-  SupportAIAgentKnowledgeSource,
   SupportAIIngestionJob,
+  SupportAIKnowledgeBase,
+  SupportAIKnowledgeBaseSource,
 } from "../types";
 import "./SupportAIAgentManagement.css";
 
@@ -50,7 +56,7 @@ const STATUS_COLOR: Record<string, "gray" | "blue" | "amber" | "jade" | "red"> =
 const STATUS_LABEL: Record<string, string> = {
   PROCESSING: "处理中",
   READY: "可用",
-  APPROVED: "可用",
+  APPROVED: "已批准",
   REVOKED: "已停用",
   FAILED: "处理失败",
 };
@@ -64,11 +70,15 @@ export function SupportAIKnowledgePage() {
   const { locale, t } = useLocale();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedAgentId = searchParams.get("agent_id") || "";
+  const requestedKnowledgeBaseId = searchParams.get("knowledge_base_id") || "";
   const [agents, setAgents] = useState<SupportAIAgent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState("");
-  const [sources, setSources] = useState<SupportAIAgentKnowledgeSource[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<SupportAIKnowledgeBase[]>([]);
+  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState("");
+  const [sources, setSources] = useState<SupportAIKnowledgeBaseSource[]>([]);
   const [jobs, setJobs] = useState<Record<string, TrackedJob>>({});
   const [loading, setLoading] = useState(true);
+  const [baseLoading, setBaseLoading] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
@@ -76,6 +86,10 @@ export function SupportAIKnowledgePage() {
   const [title, setTitle] = useState("");
   const [language, setLanguage] = useState("und");
   const [classification, setClassification] = useState<"PUBLIC" | "CUSTOMER_APPROVED">("CUSTOMER_APPROVED");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newBaseName, setNewBaseName] = useState("");
+  const [newBaseDescription, setNewBaseDescription] = useState("");
+  const [newBaseTenantId, setNewBaseTenantId] = useState("");
 
   const loadAgents = useCallback(async () => {
     setLoading(true);
@@ -98,21 +112,51 @@ export function SupportAIKnowledgePage() {
     void loadAgents();
   }, [loadAgents]);
 
-  const loadSources = useCallback(async (quiet = false) => {
+  const loadKnowledgeBases = useCallback(async () => {
     if (!selectedAgentId) {
+      setKnowledgeBases([]);
+      setSelectedKnowledgeBaseId("");
+      return;
+    }
+    setBaseLoading(true);
+    try {
+      const next = await listSupportAIKnowledgeBases(selectedAgentId);
+      setKnowledgeBases(next);
+      setSelectedKnowledgeBaseId((current) => (
+        [requestedKnowledgeBaseId, current, next[0]?.id || ""]
+          .find((candidate) => next.some((base) => base.id === candidate)) || ""
+      ));
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("知识库加载失败"));
+    } finally {
+      setBaseLoading(false);
+    }
+  }, [requestedKnowledgeBaseId, selectedAgentId, t]);
+
+  useEffect(() => {
+    void loadKnowledgeBases();
+  }, [loadKnowledgeBases]);
+
+  const loadSources = useCallback(async (quiet = false) => {
+    const base = knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId);
+    if (!base) {
       setSources([]);
       return;
     }
     if (!quiet) setLoading(true);
     try {
-      setSources(await listSupportAIAgentKnowledgeSources(selectedAgentId));
+      setSources(await listSupportAIKnowledgeBaseSources({
+        knowledgeBaseId: base.id,
+        tenantId: base.tenantId,
+      }));
       setError("");
     } catch (reason) {
-      if (!quiet) setError(reason instanceof Error ? reason.message : t("知识库加载失败"));
+      if (!quiet) setError(reason instanceof Error ? reason.message : t("知识库文件加载失败"));
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [selectedAgentId, t]);
+  }, [knowledgeBases, selectedKnowledgeBaseId, t]);
 
   useEffect(() => {
     void loadSources();
@@ -137,18 +181,61 @@ export function SupportAIKnowledgePage() {
 
   const selectAgent = (agentId: string) => {
     setSelectedAgentId(agentId);
+    setKnowledgeBases([]);
+    setSelectedKnowledgeBaseId("");
+    setSources([]);
     setJobs({});
     setMessage("");
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
       next.set("agent_id", agentId);
+      next.delete("knowledge_base_id");
       return next;
     }, { replace: true });
   };
 
+  const selectKnowledgeBase = (knowledgeBaseId: string) => {
+    setSelectedKnowledgeBaseId(knowledgeBaseId);
+    setJobs({});
+    setMessage("");
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("agent_id", selectedAgentId);
+      next.set("knowledge_base_id", knowledgeBaseId);
+      return next;
+    }, { replace: true });
+  };
+
+  const createKnowledgeBase = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!selectedAgentId || !newBaseName.trim() || !newBaseTenantId || busy) return;
+    setBusy("create-base");
+    setError("");
+    try {
+      const created = await createSupportAIKnowledgeBase({
+        agentId: selectedAgentId,
+        tenantId: newBaseTenantId,
+        name: newBaseName.trim(),
+        description: newBaseDescription.trim() || undefined,
+      });
+      setKnowledgeBases((current) => [created, ...current]);
+      setSelectedKnowledgeBaseId(created.id);
+      setCreateOpen(false);
+      setNewBaseName("");
+      setNewBaseDescription("");
+      setMessage(t("知识库已创建"));
+      selectKnowledgeBase(created.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("知识库创建失败"));
+    } finally {
+      setBusy("");
+    }
+  };
+
   const upload = async (event: FormEvent) => {
     event.preventDefault();
-    if (!selectedAgentId || !file || busy) return;
+    const base = knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId);
+    if (!base || !file || busy) return;
     setBusy("upload");
     setError("");
     setMessage("");
@@ -169,35 +256,37 @@ export function SupportAIKnowledgePage() {
           await importSupportAITraining(selectedAgentId, jsonPayload);
           setFile(undefined);
           setTitle("");
-          const input = document.getElementById("support-agent-knowledge-file") as HTMLInputElement | null;
+          const input = document.getElementById("support-knowledge-file") as HTMLInputElement | null;
           if (input) input.value = "";
           setMessage(t("案例和规则已导入为草稿，请进入 AI 训练工作台一键审批。"));
           return;
         }
       }
-      const items = await uploadSupportAIAgentKnowledgeSource({
-        agentId: selectedAgentId,
+      const result = await uploadSupportAIKnowledgeBaseSource({
+        knowledgeBaseId: base.id,
+        tenantId: base.tenantId,
         file,
         title: title.trim() || file.name.replace(/\.[^.]+$/, ""),
         classification,
         language,
       });
-      setSources((current) => [
-        ...items.map(({ tenantId, tenantName, source }) => ({ tenantId, tenantName, source })),
+      setSources((current) => [{
+        knowledgeBaseId: base.id,
+        knowledgeBaseName: base.name,
+        source: result.source,
+      }, ...current]);
+      setJobs((current) => ({
         ...current,
-      ]);
-      setJobs((current) => {
-        const next = { ...current };
-        items.forEach((item) => {
-          next[`${item.tenantId}:${item.source.id}`] = { tenantId: item.tenantId, job: item.job };
-        });
-        return next;
-      });
+        [result.source.id]: { tenantId: base.tenantId, job: result.job },
+      }));
+      setKnowledgeBases((current) => current.map((item) => item.id === base.id
+        ? { ...item, sourceCount: item.sourceCount + 1 }
+        : item));
       setFile(undefined);
       setTitle("");
-      const input = document.getElementById("support-agent-knowledge-file") as HTMLInputElement | null;
+      const input = document.getElementById("support-knowledge-file") as HTMLInputElement | null;
       if (input) input.value = "";
-      setMessage(t("知识文件已提交到智能体绑定的店铺"));
+      setMessage(t("知识文件已提交到当前知识库"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("知识文件上传失败"));
     } finally {
@@ -205,23 +294,21 @@ export function SupportAIKnowledgePage() {
     }
   };
 
-  const sourceAction = async (
-    item: SupportAIAgentKnowledgeSource,
-    action: "reindex" | "revoke",
-  ) => {
-    const key = `${item.tenantId}:${item.source.id}`;
-    if (busy) return;
+  const sourceAction = async (item: SupportAIKnowledgeBaseSource, action: "reindex" | "revoke") => {
+    const base = knowledgeBases.find((candidate) => candidate.id === item.knowledgeBaseId);
+    if (!base || busy) return;
+    const key = item.source.id;
     setBusy(`${action}:${key}`);
     setError("");
     setMessage("");
     try {
       if (action === "reindex") {
-        const job = await reindexSupportAIKnowledgeSource(item.tenantId, item.source.id);
-        setJobs((current) => ({ ...current, [key]: { tenantId: item.tenantId, job } }));
+        const job = await reindexSupportAIKnowledgeSource(base.tenantId, item.source.id);
+        setJobs((current) => ({ ...current, [key]: { tenantId: base.tenantId, job } }));
         setMessage(t("知识文件已重新提交处理"));
       } else {
-        const source = await revokeSupportAIKnowledgeSource(item.tenantId, item.source.id);
-        setSources((current) => current.map((row) => row.tenantId === item.tenantId && row.source.id === source.id ? { ...row, source } : row));
+        const source = await revokeSupportAIKnowledgeSource(base.tenantId, item.source.id);
+        setSources((current) => current.map((row) => row.source.id === source.id ? { ...row, source } : row));
         setMessage(t("知识文件已撤销"));
       }
     } catch (reason) {
@@ -232,6 +319,8 @@ export function SupportAIKnowledgePage() {
   };
 
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
+  const selectedBase = knowledgeBases.find((base) => base.id === selectedKnowledgeBaseId);
+
   return (
     <div className="core-workspace support-agent-page">
       <CorePageHeading
@@ -240,7 +329,7 @@ export function SupportAIKnowledgePage() {
         actions={(
           <>
             {selectedAgentId ? <Button asChild><Link to={`/console/agents/${selectedAgentId}/training`}><Brain />{t("AI 训练工作台")}</Link></Button> : null}
-            <Button variant="soft" color="gray" disabled={loading || !selectedAgentId} onClick={() => void loadSources()}>
+            <Button variant="soft" color="gray" disabled={loading || !selectedAgentId} onClick={() => void loadKnowledgeBases()}>
               <ArrowClockwise />{t("刷新")}
             </Button>
           </>
@@ -257,62 +346,96 @@ export function SupportAIKnowledgePage() {
         {selectedAgent ? <Button asChild size="1" variant="ghost" color="gray"><Link to={`/console/agents/${selectedAgent.id}`}>{t("详情配置")}</Link></Button> : null}
       </Card>
 
-      {error ? <CoreError message={error} onRetry={() => void loadSources()} /> : null}
+      {error ? <CoreError message={error} onRetry={() => void loadKnowledgeBases()} /> : null}
       {message ? <Card className="support-agent-success"><Check weight="bold" /><Text size="2">{message}</Text></Card> : null}
-      {loading ? <CoreLoading label={t("正在读取知识库")} /> : null}
-      {!loading && !agents.length ? <CoreEmpty title={t("还没有智能体")} description={t("请先在智能体列表创建智能体。")}/> : null}
+      {loading && !selectedBase ? <CoreLoading label={t("正在读取知识库")} /> : null}
+      {!loading && !agents.length ? <CoreEmpty title={t("还没有智能体")} description={t("请先在智能体列表创建智能体。")} /> : null}
 
       {!loading && selectedAgent ? (
         <div className="support-agent-knowledge-layout">
-          <Card className="support-agent-upload-card">
-            <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("文件知识")}</Text><Heading size="5">{t("上传知识库")}</Heading></div><Database weight="duotone" /></div>
+          <Card className="support-agent-source-card">
+            <div className="support-agent-section-heading">
+              <div><Text size="1" color="gray">{t("当前智能体的知识库")}</Text><Heading size="5">{t("知识库")}</Heading></div>
+              <Button size="1" onClick={() => { setNewBaseTenantId(selectedAgent.stores[0]?.tenantId || ""); setCreateOpen(true); }} disabled={!selectedAgent.stores.length}>
+                <Plus />{t("新增知识库")}
+              </Button>
+            </div>
             {!selectedAgent.stores.length ? (
-              <CoreEmpty
-                title={t("尚未绑定店铺")}
-                description={t("先在智能体详情中绑定店铺，再上传知识文件。")}
-                action={<Button asChild size="1"><Link to={`/console/agents/${selectedAgent.id}`}><Storefront />{t("绑定店铺")}</Link></Button>}
-              />
+              <CoreEmpty title={t("尚未绑定店铺")} description={t("先在智能体详情中绑定店铺，再创建知识库。")} action={<Button asChild size="1"><Link to={`/console/agents/${selectedAgent.id}`}><Storefront />{t("绑定店铺")}</Link></Button>} />
+            ) : baseLoading ? <CoreLoading label={t("正在读取知识库")} /> : !knowledgeBases.length ? (
+              <CoreEmpty title={t("还没有知识库")} description={t("为智能体绑定的店铺创建一个知识库，再上传文件和训练。")} />
             ) : (
-              <form className="support-agent-upload-form" onSubmit={(event) => void upload(event)}>
-                <label className="support-agent-file-field">
-                  <FileArrowUp weight="duotone" />
-                  <span><strong>{file?.name || t("选择 PDF、DOCX、TXT、Markdown 或 JSON")}</strong><small>{t("普通 JSON 将作为知识解析；案例 JSON 将导入 AI 训练工作台。")}</small><small>{t("将同步到 {count} 个绑定店铺", { count: selectedAgent.stores.length })}</small></span>
-                  <input id="support-agent-knowledge-file" type="file" accept=".pdf,.docx,.txt,.md,.json,application/json" onChange={(event) => setFile(event.target.files?.[0])} required />
-                </label>
-                <label><Text size="1" color="gray">{t("知识标题")}</Text><TextField.Root value={title} onChange={(event) => setTitle(event.target.value)} placeholder={file?.name.replace(/\.[^.]+$/, "") || t("文件标题")} /></label>
-                <label><Text size="1" color="gray">{t("文件语言")}</Text><TextField.Root value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="und / zh-CN / en" /></label>
-                <label><Text size="1" color="gray">{t("可用范围")}</Text><Select.Root value={classification} onValueChange={(value) => setClassification(value as typeof classification)}><Select.Trigger /><Select.Content><Select.Item value="CUSTOMER_APPROVED">{t("客户回答可用")}</Select.Item><Select.Item value="PUBLIC">{t("公开资料")}</Select.Item></Select.Content></Select.Root></label>
-                <Button type="submit" disabled={!file || Boolean(busy)} loading={busy === "upload"}><FileArrowUp />{t("上传并处理")}</Button>
-              </form>
+              <div className="support-agent-source-list">
+                {knowledgeBases.map((base) => (
+                  <button type="button" key={base.id} className={`support-agent-knowledge-base-row${base.id === selectedKnowledgeBaseId ? " is-selected" : ""}`} onClick={() => selectKnowledgeBase(base.id)}>
+                    <span><Database weight="duotone" /></span>
+                    <div><strong>{base.name}</strong><small>{base.tenantName} · {base.approvedSourceCount}/{base.sourceCount} {t("个已批准文件")}</small></div>
+                    <Badge color={base.status === "ACTIVE" ? "jade" : "gray"}>{t(base.status === "ACTIVE" ? "启用" : "停用")}</Badge>
+                  </button>
+                ))}
+              </div>
             )}
           </Card>
 
-          <Card className="support-agent-source-card">
-            <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("智能体知识")}</Text><Heading size="5">{t("知识文件")}</Heading></div><Badge color="gray">{t("{count} 个店铺副本", { count: sources.length })}</Badge></div>
-            {!sources.length ? <CoreEmpty title={t("还没有知识文件")} description={t("上传后，文件会按绑定店铺完成解析和索引。")}/> : null}
-            <div className="support-agent-source-list">
-              {sources.map((item) => {
-                const key = `${item.tenantId}:${item.source.id}`;
-                const job = jobs[key]?.job;
-                const processing = item.source.status === "PROCESSING" || Boolean(job && ACTIVE_JOBS.has(job.status));
-                return <article key={key}>
-                  <span><FileText weight="duotone" /></span>
-                  <div>
-                    <div><strong>{item.source.title}</strong><Badge color={STATUS_COLOR[item.source.status] || "gray"}>{t(STATUS_LABEL[item.source.status] || item.source.status)}</Badge></div>
-                    <small>{item.tenantName} · {item.source.originalFilename} · {(item.source.byteSize / 1024).toLocaleString(locale, { maximumFractionDigits: 1 })} KB</small>
-                    {processing ? <Progress value={job?.progress ?? 10} /> : null}
-                    {item.source.failureMessage ? <small className="is-error">{item.source.failureMessage}</small> : null}
-                  </div>
-                  <div className="support-agent-source-actions">
-                    {!processing ? <Button size="1" variant="soft" color="gray" onClick={() => void sourceAction(item, "reindex")} disabled={Boolean(busy)}><ArrowClockwise />{t("重新处理")}</Button> : null}
-                    {!processing && item.source.status !== "REVOKED" ? <Button size="1" variant="ghost" color="red" onClick={() => void sourceAction(item, "revoke")} disabled={Boolean(busy)}><Prohibit />{t("撤销")}</Button> : null}
-                  </div>
-                </article>;
-              })}
-            </div>
-          </Card>
+          {selectedBase ? (
+            <>
+              <Card className="support-agent-upload-card">
+                <div className="support-agent-section-heading"><div><Text size="1" color="gray">{selectedBase.name}</Text><Heading size="5">{t("上传与训练")}</Heading></div><Database weight="duotone" /></div>
+                <Text size="2" color="gray">{selectedBase.tenantName} · {t("文件上传、解析、向量化和批准都只作用于当前知识库。")}</Text>
+                <form className="support-agent-upload-form" onSubmit={(event) => void upload(event)}>
+                  <label className="support-agent-file-field">
+                    <FileArrowUp weight="duotone" />
+                    <span><strong>{file?.name || t("选择 PDF、DOCX、TXT、Markdown 或训练 JSON")}</strong><small>{t("普通知识文件归属于当前知识库；案例 JSON 会导入 AI 训练工作台。")}</small></span>
+                    <input id="support-knowledge-file" type="file" accept=".pdf,.docx,.txt,.md,.json,application/json" onChange={(event) => setFile(event.target.files?.[0])} required />
+                  </label>
+                  <label><Text size="1" color="gray">{t("知识标题")}</Text><TextField.Root value={title} onChange={(event) => setTitle(event.target.value)} placeholder={file?.name.replace(/\.[^.]+$/, "") || t("文件标题")} /></label>
+                  <label><Text size="1" color="gray">{t("文件语言")}</Text><TextField.Root value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="und / zh-CN / en" /></label>
+                  <label><Text size="1" color="gray">{t("可用范围")}</Text><Select.Root value={classification} onValueChange={(value) => setClassification(value as typeof classification)}><Select.Trigger /><Select.Content><Select.Item value="CUSTOMER_APPROVED">{t("客户回答可用")}</Select.Item><Select.Item value="PUBLIC">{t("公开资料")}</Select.Item></Select.Content></Select.Root></label>
+                  <Button type="submit" disabled={!file || Boolean(busy)} loading={busy === "upload"}><FileArrowUp />{t("上传并处理")}</Button>
+                </form>
+              </Card>
+
+              <Card className="support-agent-source-card">
+                <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("当前知识库内容")}</Text><Heading size="5">{t("知识文件")}</Heading></div><Badge color="gray">{sources.length}</Badge></div>
+                {!sources.length ? <CoreEmpty title={t("还没有知识文件")} description={t("上传后，文件会在当前知识库中解析和索引。" )} /> : null}
+                <div className="support-agent-source-list">
+                  {sources.map((item) => {
+                    const key = item.source.id;
+                    const job = jobs[key]?.job;
+                    const processing = item.source.status === "PROCESSING" || Boolean(job && ACTIVE_JOBS.has(job.status));
+                    return <article key={key}>
+                      <span><FileText weight="duotone" /></span>
+                      <div>
+                        <div><strong>{item.source.title}</strong><Badge color={STATUS_COLOR[item.source.status] || "gray"}>{t(STATUS_LABEL[item.source.status] || item.source.status)}</Badge></div>
+                        <small>{item.source.originalFilename} · {(item.source.byteSize / 1024).toLocaleString(locale, { maximumFractionDigits: 1 })} KB</small>
+                        {processing ? <Progress value={job?.progress ?? 10} /> : null}
+                        {item.source.failureMessage ? <small className="is-error">{item.source.failureMessage}</small> : null}
+                      </div>
+                      <div className="support-agent-source-actions">
+                        {!processing ? <Button size="1" variant="soft" color="gray" onClick={() => void sourceAction(item, "reindex")} disabled={Boolean(busy)}><ArrowClockwise />{t("重新处理")}</Button> : null}
+                        {!processing && item.source.status !== "REVOKED" ? <Button size="1" variant="ghost" color="red" onClick={() => void sourceAction(item, "revoke")} disabled={Boolean(busy)}><Prohibit />{t("撤销")}</Button> : null}
+                      </div>
+                    </article>;
+                  })}
+                </div>
+              </Card>
+            </>
+          ) : null}
         </div>
       ) : null}
+
+      <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
+        <Dialog.Content className="support-agent-create-dialog" maxWidth="520px">
+          <Dialog.Title>{t("新增知识库")}</Dialog.Title>
+          <Dialog.Description>{t("一个知识库只绑定当前智能体和一个店铺；智能体可以拥有多个知识库。")}</Dialog.Description>
+          <form className="support-agent-dialog-form" onSubmit={(event) => void createKnowledgeBase(event)}>
+            <label><Text size="2" weight="medium">{t("所属店铺")}</Text><Select.Root value={newBaseTenantId} onValueChange={setNewBaseTenantId}><Select.Trigger placeholder={t("选择店铺")} /><Select.Content>{selectedAgent?.stores.map((store) => <Select.Item value={store.tenantId} key={store.tenantId}>{store.tenantName}</Select.Item>)}</Select.Content></Select.Root></label>
+            <label><Text size="2" weight="medium">{t("知识库名称")}</Text><TextField.Root value={newBaseName} onChange={(event) => setNewBaseName(event.target.value)} maxLength={160} autoFocus required placeholder={t("例如：品牌资料库、售前问答库")} /></label>
+            <label><Text size="2" weight="medium">{t("说明（选填）")}</Text><TextArea value={newBaseDescription} onChange={(event) => setNewBaseDescription(event.target.value)} maxLength={4000} placeholder={t("说明这个知识库的用途")}/></label>
+            <div className="core-dialog-actions"><Dialog.Close><Button type="button" variant="soft" color="gray" disabled={Boolean(busy)}>{t("取消")}</Button></Dialog.Close><Button type="submit" loading={busy === "create-base"} disabled={!newBaseName.trim() || !newBaseTenantId}>{t("创建知识库")}</Button></div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Root>
     </div>
   );
 }

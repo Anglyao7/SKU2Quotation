@@ -3276,8 +3276,30 @@ def _alternate_product_code(product_key: str) -> str:
     return f"TPLX-{digest[:48].upper()}"
 
 
-def _supplier_identity(name: str) -> tuple[str, str]:
-    digest = hashlib.sha256(name.casefold().encode("utf-8")).hexdigest().upper()
+def _supplier_name_key(name: str) -> str:
+    """Return the tenant-local identity used when matching supplier names.
+
+    Supplier records belong to a merchant.  Whitespace differences in an
+    uploaded workbook should not create a second record for that same
+    merchant, so use the same normalization for planning and assignment.
+    """
+
+    return " ".join(name.split()).casefold()
+
+
+def _supplier_identity(tenant_id: UUID, name: str) -> tuple[str, str]:
+    """Build an auto-created supplier identity scoped to one merchant.
+
+    ``suppliers.id`` is still a global primary key for legacy reasons, while
+    the business identity is tenant-local.  Including the tenant in the
+    digest means two merchants may both import a supplier with the same name
+    without colliding.  Existing records are matched by name before this
+    helper is called, so re-imports in the same merchant continue to append to
+    the existing supplier.
+    """
+
+    identity = f"{tenant_id}:{_supplier_name_key(name)}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest().upper()
     return f"SUP-TPL-{digest[:24]}", f"TPL-{digest[:24]}"
 
 
@@ -4059,15 +4081,15 @@ def process_product_template_import(
         suppliers_by_id = {row.id: row for row in supplier_rows}
         suppliers_by_code = {row.supplier_code: row for row in supplier_rows}
         for supplier_row in supplier_rows:
-            suppliers_by_name[
-                " ".join(supplier_row.name.split()).casefold()
-            ].append(supplier_row)
+            suppliers_by_name[_supplier_name_key(supplier_row.name)].append(
+                supplier_row
+            )
 
         requested_supplier_names: dict[str, str] = {}
         for template_row in accepted_rows:
             if template_row.supplier_name:
                 requested_supplier_names.setdefault(
-                    template_row.supplier_name.casefold(),
+                    _supplier_name_key(template_row.supplier_name),
                     template_row.supplier_name,
                 )
 
@@ -4090,17 +4112,18 @@ def process_product_template_import(
                 else matches[0] if matches else None
             )
             if existing_supplier is None:
-                supplier_id, supplier_code = _supplier_identity(display_name)
+                supplier_id, supplier_code = _supplier_identity(
+                    tenant_id,
+                    display_name,
+                )
                 id_collision = suppliers_by_id.get(supplier_id)
                 code_collision = suppliers_by_code.get(supplier_code)
                 if (
                     id_collision is not None
-                    and " ".join(id_collision.name.split()).casefold()
-                    != normalized_name
+                    and _supplier_name_key(id_collision.name) != normalized_name
                 ) or (
                     code_collision is not None
-                    and " ".join(code_collision.name.split()).casefold()
-                    != normalized_name
+                    and _supplier_name_key(code_collision.name) != normalized_name
                 ):
                     return _fail_import(
                         session,
@@ -4308,7 +4331,10 @@ def process_product_template_import(
         for normalized_name, (display_name, existing_supplier) in supplier_plan.items():
             supplier = existing_supplier
             if supplier is None:
-                supplier_id, supplier_code = _supplier_identity(display_name)
+                supplier_id, supplier_code = _supplier_identity(
+                    tenant_id,
+                    display_name,
+                )
                 supplier = SupplierRow(
                     id=supplier_id,
                     tenant_id=tenant_id,
@@ -4438,7 +4464,9 @@ def process_product_template_import(
                 )
             changed = False
             supplier = (
-                suppliers_for_template.get(template_row.supplier_name.casefold())
+                suppliers_for_template.get(
+                    _supplier_name_key(template_row.supplier_name)
+                )
                 if template_row.supplier_name
                 else None
             )

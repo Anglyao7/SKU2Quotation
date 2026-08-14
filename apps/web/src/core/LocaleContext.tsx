@@ -697,6 +697,7 @@ const english: Record<string, string> = {
   "正在读取翻译 API 配置": "Loading translation API settings",
   "翻译 API 配置读取失败": "Could not load the translation API settings",
   "OpenAI 兼容接口": "OpenAI-compatible endpoint",
+  "DeepLX 翻译": "DeepLX translation",
   "阿里云机器翻译": "Alibaba Cloud Machine Translation",
   "阿里云机器翻译（通用版）":
     "Alibaba Cloud Machine Translation (General Edition)",
@@ -704,6 +705,8 @@ const english: Record<string, string> = {
   "翻译服务商": "Translation provider",
   "全局翻译服务": "Global translation service",
   "适合大批量商品内容翻译。": "Suitable for large product catalogs.",
+  "使用 DeepLX 接口进行低成本机器翻译。":
+    "Use a DeepLX endpoint for lower-cost machine translation.",
   "适合需要上下文理解的翻译内容。": "Suitable for content that requires contextual understanding.",
   "已启用": "Enabled",
   "服务已停用": "Disabled",
@@ -711,6 +714,11 @@ const english: Record<string, string> = {
   "关闭后，所有翻译任务将暂停。": "All translation jobs pause when this is disabled.",
   "可以填写服务根地址、/v1，或完整的 /v1/chat/completions 地址。":
     "Enter the service root, /v1, or the complete /v1/chat/completions URL.",
+  "DeepLX 完整接口地址": "Complete DeepLX endpoint",
+  "接口地址已加密保存，留空则保持不变":
+    "The endpoint is encrypted; leave blank to keep it unchanged",
+  "请填写以 /translate 结尾的完整地址；地址中的 Token 会加密保存。":
+    "Enter the complete URL ending in /translate. Tokens in the URL are encrypted at rest.",
   "地域": "Region",
   "服务 Endpoint": "Service endpoint",
   "AccessKey ID": "AccessKey ID",

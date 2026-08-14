@@ -9,7 +9,7 @@
 
 本次已完成运行契约的首个可上线闭环（知识与证据基础、店铺级 SKU/文件 RAG、
 启用/关闭、多语言、引用、人工接管与版本化行为训练），
-数据库版本为 `20260814_0085`。当前实现入口如下：
+数据库版本为 `20260815_0088`。当前实现入口如下：
 
 - 平台配置中心：`/console/system/configuration`，集中配置翻译与 Embedding API。智能客服
   模型密钥不再出现在公共配置页，统一在对应智能体详情中维护。
@@ -18,7 +18,9 @@
 - 智能体详情：`/console/agents/{agent_id}`，集中维护名称、启停、店铺绑定、回答策略、提示词
   和该智能体的 OpenAI-compatible API 配置。
 - 知识库管理：`/console/agents/knowledge`，先选择已创建智能体，再统一上传企业知识文件或
-  案例 JSON；企业资料按绑定店铺隔离处理，案例 JSON 解析为该智能体的训练草稿。
+  案例 JSON；企业资料按绑定店铺隔离处理，案例 JSON 解析为该智能体的训练草稿。知识库是
+  独立实体，一个知识库只绑定一个智能体和一个店铺，一个智能体可以拥有多个知识库；文件
+  上传、解析、批准、撤销、重建以及后续训练都以知识库为边界，运行时仍遵守 tenant 边界。
 - AI 训练工作台：从知识库管理进入 `/console/agents/{agent_id}/training`，仅保留“案例训练”
   和“复用规则”。可人工增删改、导出，并通过“一键审批”统一批准和立即生效；页面不提供
   模型生成案例、总结规则、训练包导入、版本发布/回滚或跨智能体复制入口。
@@ -54,8 +56,9 @@
    授权记录，服务端也会过滤并拒绝管理接口；前端隐藏入口不是安全边界。
 9. 平台可以创建多个智能体，但单个店铺同一时间最多绑定一个智能体。智能体可复用于多个
    店铺；绑定或修改智能体策略时，服务端会同步该店铺的运行快照，解除绑定时自动停止 AI。
-10. 文件知识副本同时记录 `tenant_id` 与 `agent_id`。店铺更换智能体后，运行时只检索当前
-    智能体的知识，旧智能体文件不会混入新智能体回答。
+10. 知识库同时记录 `tenant_id` 与必填 `agent_id`；文件来源通过 `knowledge_base_id` 归属知识库。
+    店铺更换智能体后，运行时只检索当前智能体下、当前店铺的知识库，旧智能体文件不会混入新
+    智能体回答。
 11. 纯问候、致谢和告别由高精度规则分流，回复仍调用智能体绑定的大模型。模型只能使用
     店铺名称、管理员批准的企业对客简介和服务范围；Run 保存资料哈希且不执行向量检索。
     混合业务问题继续走 RAG，模型失败或日限额触发时使用多语言安全兜底并保持 AI 接待。
@@ -706,6 +709,13 @@ PATCH  /api/v1/support/ai/knowledge/sources/{source_id}?tenant_id={tenant_id}
 POST   /api/v1/support/ai/knowledge/sources/{source_id}/approve?tenant_id={tenant_id}
 POST   /api/v1/support/ai/knowledge/sources/{source_id}/reindex?tenant_id={tenant_id}
 DELETE /api/v1/support/ai/knowledge/sources/{source_id}?tenant_id={tenant_id}
+
+# Knowledge-base scoped management (the preferred contract)
+GET    /api/v1/system/support-ai/agents/{agent_id}/knowledge-bases
+POST   /api/v1/system/support-ai/agents/{agent_id}/knowledge-bases
+PATCH  /api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}?tenant_id={tenant_id}
+GET    /api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}/sources?tenant_id={tenant_id}
+POST   /api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}/sources/upload?tenant_id={tenant_id}
 GET    /api/v1/support/ai/knowledge/jobs/{job_id}?tenant_id={tenant_id}
 ```
 

@@ -7495,6 +7495,94 @@ def test_platform_admin_manages_aliyun_translation_credentials() -> None:
             session.commit()
 
 
+def test_platform_admin_manages_encrypted_deeplx_endpoint() -> None:
+    endpoint = (
+        "https://api.deeplx.example/"
+        "secret-endpoint-token-never-return/translate"
+    )
+    with SessionLocal() as session:
+        session.execute(delete(TranslationProviderSettingsRow))
+        session.commit()
+
+    try:
+        saved = client.put(
+            "/api/v1/system/translation/settings",
+            json={
+                "provider": "deeplx",
+                "enabled": True,
+                "base_url": endpoint,
+                "model_name": "DeepLX",
+                "timeout_seconds": 20,
+                "max_tokens": 16384,
+                "requests_per_minute": 60,
+                "max_retry_count": 3,
+                "catalog_batch_size": 50,
+                "catalog_batch_characters": 10000,
+                "reasoning_effort": "none",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        payload = saved.json()
+        assert payload["provider"] == "deeplx"
+        assert payload["base_url"] is None
+        assert payload["model_name"] == "DeepLX"
+        assert payload["api_key_configured"] is True
+        assert payload["api_key_hint"] is None
+        assert endpoint not in saved.text
+        assert "secret-endpoint-token-never-return" not in saved.text
+
+        with SessionLocal() as session:
+            row = session.get(
+                TranslationProviderSettingsRow,
+                "CATALOG_TRANSLATION",
+            )
+            assert row is not None
+            assert row.provider == "deeplx"
+            assert row.api_key_ciphertext is not None
+            assert "secret-endpoint-token-never-return" not in row.base_url
+            assert (
+                decrypt_translation_api_key(row.api_key_ciphertext)
+                == endpoint
+            )
+            provider = resolved_catalog_translator(
+                session,
+                environment_factory=lambda: (_ for _ in ()).throw(
+                    AssertionError("database settings must win")
+                ),
+            )
+            assert provider.identity.provider == "deeplx"
+
+        retained = client.put(
+            "/api/v1/system/translation/settings",
+            json={
+                "provider": "deeplx",
+                "enabled": True,
+                "base_url": "",
+                "model_name": "DeepLX",
+                "timeout_seconds": 25,
+                "max_tokens": 16384,
+                "requests_per_minute": 80,
+                "max_retry_count": 4,
+                "catalog_batch_size": 50,
+                "catalog_batch_characters": 10000,
+                "reasoning_effort": "none",
+            },
+        )
+        assert retained.status_code == 200, retained.text
+        assert retained.json()["base_url"] is None
+        with SessionLocal() as session:
+            row = session.get(
+                TranslationProviderSettingsRow,
+                "CATALOG_TRANSLATION",
+            )
+            assert row is not None and row.api_key_ciphertext is not None
+            assert decrypt_translation_api_key(row.api_key_ciphertext) == endpoint
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(TranslationProviderSettingsRow))
+            session.commit()
+
+
 def test_phase3b_tenant_boundaries_apply_to_links_and_retrieval() -> None:
     organization_id = uuid4()
     tenant_b = uuid4()
@@ -17506,7 +17594,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260814_0085"
+        ).scalar() == "20260815_0088"
     upgraded_engine.dispose()
     command.check(config)
 

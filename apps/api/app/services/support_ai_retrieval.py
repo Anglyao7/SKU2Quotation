@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..repositories import public_catalog_repository
 from ..support_ai_models import (
     SupportAIKnowledgeChunkRow,
+    SupportAIKnowledgeBaseRow,
     SupportAIKnowledgeSourceRow,
     SupportAISettingsRow,
 )
@@ -400,7 +401,11 @@ def _file_evidence(
     embedding: QueryEmbeddingState,
 ) -> tuple[list[RetrievalEvidence], int]:
     rows = session.execute(
-        select(SupportAIKnowledgeChunkRow, SupportAIKnowledgeSourceRow)
+        select(
+            SupportAIKnowledgeChunkRow,
+            SupportAIKnowledgeSourceRow,
+            SupportAIKnowledgeBaseRow,
+        )
         .join(
             SupportAIKnowledgeSourceRow,
             (
@@ -412,14 +417,17 @@ def _file_evidence(
                 == SupportAIKnowledgeChunkRow.source_id
             ),
         )
+        .join(
+            SupportAIKnowledgeBaseRow,
+            SupportAIKnowledgeBaseRow.id
+            == SupportAIKnowledgeSourceRow.knowledge_base_id,
+        )
         .where(
             SupportAIKnowledgeChunkRow.tenant_id == tenant_id,
             SupportAIKnowledgeChunkRow.status == "ACTIVE",
-            (
-                SupportAIKnowledgeSourceRow.agent_id == agent_id
-                if agent_id is not None
-                else SupportAIKnowledgeSourceRow.agent_id.is_(None)
-            ),
+            SupportAIKnowledgeBaseRow.tenant_id == tenant_id,
+            SupportAIKnowledgeBaseRow.status == "ACTIVE",
+            SupportAIKnowledgeBaseRow.agent_id == agent_id,
             SupportAIKnowledgeSourceRow.status.in_(["READY", "APPROVED"]),
             SupportAIKnowledgeSourceRow.classification.in_(
                 ["PUBLIC", "CUSTOMER_APPROVED"]
@@ -432,7 +440,7 @@ def _file_evidence(
         .limit(10000)
     ).all()
     evidence: list[RetrievalEvidence] = []
-    for chunk, source in rows:
+    for chunk, source, _knowledge_base in rows:
         content_vector: list[float] | None = None
         if (
             embedding.embedder is not None

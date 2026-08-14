@@ -1067,6 +1067,21 @@ def openai_compatible_translation_provider(
     )
 
 
+def deeplx_translation_provider(
+    *,
+    endpoint: str,
+    timeout_seconds: float = 20.0,
+    production: bool = False,
+) -> TranslationProvider:
+    """Build a cached DeepLX provider from an already-resolved endpoint."""
+
+    return _cached_deeplx_translator(
+        endpoint.strip(),
+        timeout_seconds,
+        production,
+    )
+
+
 def aliyun_alimt_translation_provider(
     *,
     access_key_id: str,

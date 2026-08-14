@@ -167,6 +167,7 @@ export function SupportAIAgentDetailPage() {
             <span><Robot weight="duotone" /></span>
             <div><Text size="1" color="gray">{t("智能体 ID")}</Text><code>{agent.agentCode}</code></div>
             <div><Text size="1" color="gray">{t("绑定店铺")}</Text><strong>{agent.stores.length}</strong></div>
+            <div><Text size="1" color="gray">{t("知识库")}</Text><strong>{agent.knowledgeBaseCount}</strong></div>
             <div><Text size="1" color="gray">{t("模型状态")}</Text><Badge color={agent.apiConfigured ? "jade" : "amber"}>{agent.apiConfigured ? (agent.modelDisplayName || t("已配置")) : t("未配置")}</Badge></div>
             <div><Text size="1" color="gray">{t("运行状态")}</Text><Badge color={agent.enabled ? "jade" : "gray"}>{t(agent.enabled ? "启用" : "停用")}</Badge></div>
           </Card>

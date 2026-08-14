@@ -68,6 +68,8 @@ import type {
   SupportAIAgent,
   SupportAIAgentKnowledgeSource,
   SupportAIAgentKnowledgeUploadItem,
+  SupportAIKnowledgeBase,
+  SupportAIKnowledgeBaseSource,
   SupportAIIngestionJob,
   SupportAIKnowledgeSource,
   SupportAIProviderSettings,
@@ -1910,7 +1912,7 @@ export async function updateEmbeddingSettings(input: {
 
 interface ApiTranslationSettings {
   source: "database" | "environment" | "disabled";
-  provider: TranslationProviderKind | "deeplx";
+  provider: TranslationProviderKind;
   enabled: boolean;
   base_url?: string | null;
   model_name?: string | null;
@@ -3225,6 +3227,8 @@ interface ApiSupportAIAgent {
   system_prompt?: string | null;
   handoff_messages: Record<string, string>;
   stores: Array<{ tenant_id: string; tenant_name: string }>;
+  knowledge_base_count: number;
+  active_knowledge_base_count: number;
   knowledge_source_count: number;
   approved_knowledge_source_count: number;
   created_at: string;
@@ -3256,6 +3260,8 @@ function mapSupportAIAgent(row: ApiSupportAIAgent): SupportAIAgent {
       tenantId: store.tenant_id,
       tenantName: store.tenant_name,
     })),
+    knowledgeBaseCount: row.knowledge_base_count,
+    activeKnowledgeBaseCount: row.active_knowledge_base_count,
     knowledgeSourceCount: row.knowledge_source_count,
     approvedKnowledgeSourceCount: row.approved_knowledge_source_count,
     createdAt: row.created_at,
@@ -3710,6 +3716,7 @@ export async function updateSupportAISettings(
 
 interface ApiSupportAIKnowledgeSource {
   id: string;
+  knowledge_base_id?: string | null;
   title: string;
   description?: string | null;
   classification: "PUBLIC" | "CUSTOMER_APPROVED";
@@ -3733,6 +3740,7 @@ function mapSupportAIKnowledgeSource(
 ): SupportAIKnowledgeSource {
   return {
     id: row.id,
+    knowledgeBaseId: defined(row.knowledge_base_id),
     title: row.title,
     description: defined(row.description),
     classification: row.classification,
@@ -3802,6 +3810,144 @@ export async function listSupportAIAgentKnowledgeSources(
     tenantName: row.tenant_name,
     source: mapSupportAIKnowledgeSource(row.source),
   }));
+}
+
+interface ApiSupportAIKnowledgeBase {
+  id: string;
+  tenant_id: string;
+  tenant_name: string;
+  agent_id: string;
+  name: string;
+  description?: string | null;
+  status: SupportAIKnowledgeBase["status"];
+  source_count: number;
+  approved_source_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapSupportAIKnowledgeBase(
+  row: ApiSupportAIKnowledgeBase,
+): SupportAIKnowledgeBase {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    tenantName: row.tenant_name,
+    agentId: row.agent_id,
+    name: row.name,
+    description: defined(row.description),
+    status: row.status,
+    sourceCount: row.source_count,
+    approvedSourceCount: row.approved_source_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function listSupportAIKnowledgeBases(
+  agentId: string,
+): Promise<SupportAIKnowledgeBase[]> {
+  const rows = await request<ApiSupportAIKnowledgeBase[]>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/knowledge-bases`,
+    { cache: "no-store" },
+  );
+  return rows.map(mapSupportAIKnowledgeBase);
+}
+
+export async function createSupportAIKnowledgeBase(input: {
+  agentId: string;
+  tenantId: string;
+  name: string;
+  description?: string;
+}): Promise<SupportAIKnowledgeBase> {
+  return mapSupportAIKnowledgeBase(
+    await request<ApiSupportAIKnowledgeBase>(
+      `/system/support-ai/agents/${encodeURIComponent(input.agentId)}/knowledge-bases`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          tenant_id: input.tenantId,
+          name: input.name,
+          description: input.description || null,
+        }),
+      },
+    ),
+  );
+}
+
+export async function updateSupportAIKnowledgeBase(input: {
+  knowledgeBaseId: string;
+  tenantId: string;
+  name?: string;
+  description?: string | null;
+  status?: "ACTIVE" | "DISABLED";
+}): Promise<SupportAIKnowledgeBase> {
+  return mapSupportAIKnowledgeBase(
+    await request<ApiSupportAIKnowledgeBase>(
+      `/system/support-ai/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}?tenant_id=${encodeURIComponent(input.tenantId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+        }),
+      },
+    ),
+  );
+}
+
+export async function listSupportAIKnowledgeBaseSources(input: {
+  knowledgeBaseId: string;
+  tenantId: string;
+}): Promise<SupportAIKnowledgeBaseSource[]> {
+  const rows = await request<Array<{
+    knowledge_base_id: string;
+    knowledge_base_name: string;
+    source: ApiSupportAIKnowledgeSource;
+  }>>(
+    `/system/support-ai/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/sources?tenant_id=${encodeURIComponent(input.tenantId)}`,
+    { cache: "no-store" },
+  );
+  return rows.map((row) => ({
+    knowledgeBaseId: row.knowledge_base_id,
+    knowledgeBaseName: row.knowledge_base_name,
+    source: mapSupportAIKnowledgeSource(row.source),
+  }));
+}
+
+export async function uploadSupportAIKnowledgeBaseSource(input: {
+  knowledgeBaseId: string;
+  tenantId: string;
+  file: File;
+  title: string;
+  description?: string;
+  classification: "PUBLIC" | "CUSTOMER_APPROVED";
+  language: string;
+}): Promise<{
+  knowledgeBase: SupportAIKnowledgeBase;
+  source: SupportAIKnowledgeSource;
+  job: SupportAIIngestionJob;
+}> {
+  const body = new FormData();
+  body.append("file", input.file);
+  body.append("title", input.title);
+  body.append("description", input.description || "");
+  body.append("classification", input.classification);
+  body.append("language", input.language);
+  const row = await request<{
+    knowledge_base: ApiSupportAIKnowledgeBase;
+    source: ApiSupportAIKnowledgeSource;
+    job: ApiSupportAIIngestionJob;
+  }>(
+    `/system/support-ai/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/sources/upload?tenant_id=${encodeURIComponent(input.tenantId)}`,
+    { method: "POST", body },
+  );
+  return {
+    knowledgeBase: mapSupportAIKnowledgeBase(row.knowledge_base),
+    source: mapSupportAIKnowledgeSource(row.source),
+    job: mapSupportAIIngestionJob(row.job),
+  };
 }
 
 export async function uploadSupportAIAgentKnowledgeSource(input: {

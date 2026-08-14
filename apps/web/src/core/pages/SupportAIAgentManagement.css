@@ -69,6 +69,12 @@
 .support-agent-file-field small { color: var(--text-soft); font-size: 10px; }
 .support-agent-file-field > input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .support-agent-source-list { display: grid; }
+.support-agent-knowledge-base-row { width: 100%; min-width: 0; padding: 13px 5px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 0; border-top: 1px solid var(--line); color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.support-agent-knowledge-base-row:hover, .support-agent-knowledge-base-row.is-selected { background: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
+.support-agent-knowledge-base-row > span { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; color: var(--accent); background: var(--accent-soft); }
+.support-agent-knowledge-base-row > div { min-width: 0; display: grid; gap: 4px; }
+.support-agent-knowledge-base-row strong, .support-agent-knowledge-base-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.support-agent-knowledge-base-row small { color: var(--text-soft); }
 .support-agent-source-list > article { min-width: 0; padding: 13px 1px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; border-top: 1px solid var(--line); }
 .support-agent-source-list > article > span { width: 39px; height: 39px; display: grid; place-items: center; border-radius: 11px; color: var(--accent); background: var(--accent-soft); }
 .support-agent-source-list > article > div:nth-child(2) { min-width: 0; display: grid; gap: 5px; }

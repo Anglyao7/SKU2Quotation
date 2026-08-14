@@ -45,6 +45,7 @@ const reasoningOptions: TranslationReasoningEffort[] = [
 const ALIYUN_ENDPOINT = "mt.cn-hangzhou.aliyuncs.com";
 const ALIYUN_REGION = "cn-hangzhou";
 const ALIYUN_EDITION = "translate_standard";
+const DEEPLX_MODEL = "DeepLX";
 
 
 export function TranslationApiSettingsPage({ embedded = false }: { embedded?: boolean } = {}) {
@@ -74,11 +75,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
 
   const applySettings = useCallback((next: TranslationApiSettings) => {
     setSettings(next);
-    setProvider(
-      next.provider === "aliyun-alimt"
-        ? "aliyun-alimt"
-        : "openai-compatible",
-    );
+    setProvider(next.provider);
     setEnabled(next.enabled);
     setBaseUrl(next.baseUrl ?? "");
     setModelName(next.modelName ?? "");
@@ -150,11 +147,17 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   ]);
 
   const isAliyun = provider === "aliyun-alimt";
+  const isDeepLX = provider === "deeplx";
+  const isOpenAICompatible = provider === "openai-compatible";
   const storedCredentialsMatch = settings?.provider === provider;
-  const hasSecret = Boolean(
+  const hasApiSecret = Boolean(
     input.apiKey
       || (storedCredentialsMatch && settings?.apiKeyConfigured)
       || !enabled,
+  );
+  const hasDeepLXEndpoint = Boolean(
+    input.baseUrl
+      || (storedCredentialsMatch && settings?.apiKeyConfigured),
   );
   const hasAccessKeyId = Boolean(
     input.accessKeyId
@@ -175,8 +178,8 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     && input.catalogBatchCharacters <= 100_000;
 
   const formValid = Boolean(
-    input.baseUrl
-      && (isAliyun ? input.regionId : input.modelName)
+    (isDeepLX ? hasDeepLXEndpoint : input.baseUrl)
+      && (isAliyun ? input.regionId : (isDeepLX || input.modelName))
       && Number.isInteger(input.timeoutSeconds)
       && input.timeoutSeconds >= 1
       && input.timeoutSeconds <= 120
@@ -184,12 +187,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
       && validRetryCount
       && validBatchSize
       && validBatchCharacters
-      && (isAliyun || (
+      && (!isOpenAICompatible || (
         Number.isInteger(input.maxTokens)
         && input.maxTokens >= 512
         && input.maxTokens <= 32768
       ))
-      && hasSecret
+      && (isDeepLX ? hasDeepLXEndpoint : hasApiSecret)
       && (!isAliyun || hasAccessKeyId),
   );
   const saveSettings = async (event: FormEvent<HTMLFormElement>) => {
@@ -226,7 +229,15 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
       setMaxTokens("16384");
       return;
     }
-    if (provider === "aliyun-alimt") {
+    if (next === "deeplx") {
+      setBaseUrl("");
+      setModelName(DEEPLX_MODEL);
+      setRegionId(ALIYUN_REGION);
+      setReasoningEffort("none");
+      setMaxTokens("16384");
+      return;
+    }
+    if (provider !== "openai-compatible") {
       setBaseUrl("");
       setModelName("");
       setRegionId(ALIYUN_REGION);
@@ -271,7 +282,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
               </span>
               <div>
                 <Text size="1" color="gray" as="div">
-                  {t(isAliyun ? "阿里云机器翻译" : "OpenAI 兼容接口")}
+                  {t(isAliyun
+                    ? "阿里云机器翻译"
+                    : (isDeepLX ? "DeepLX 翻译" : "OpenAI 兼容接口"))}
                 </Text>
                 <Heading size="5">{t("全局翻译服务")}</Heading>
                 <Text size="2" color="gray">
@@ -296,6 +309,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 >
                   <Select.Trigger />
                   <Select.Content>
+                    <Select.Item value="deeplx">
+                      {t("DeepLX 翻译")}
+                    </Select.Item>
                     <Select.Item value="aliyun-alimt">
                       {t("阿里云机器翻译（通用版）")}
                     </Select.Item>
@@ -307,7 +323,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 <Text size="1" color="gray">
                   {t(isAliyun
                     ? "适合大批量商品内容翻译。"
-                    : "适合需要上下文理解的翻译内容。")}
+                    : (isDeepLX
+                      ? "使用 DeepLX 接口进行低成本机器翻译。"
+                      : "适合需要上下文理解的翻译内容。"))}
                 </Text>
               </label>
 
@@ -401,6 +419,32 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                     />
                   </label>
                 </>
+              ) : isDeepLX ? (
+                <label className="core-translation-api-wide">
+                  <Text size="1" color="gray">
+                    {t("DeepLX 完整接口地址")}
+                  </Text>
+                  <TextField.Root
+                    type="password"
+                    autoComplete="new-password"
+                    value={baseUrl}
+                    onChange={(event) => {
+                      clearResult();
+                      setBaseUrl(event.target.value);
+                    }}
+                    placeholder={
+                      storedCredentialsMatch && settings.apiKeyConfigured
+                        ? t("接口地址已加密保存，留空则保持不变")
+                        : "https://api.deeplx.org/<token>/translate"
+                    }
+                    required={!((
+                      storedCredentialsMatch && settings.apiKeyConfigured
+                    ))}
+                  />
+                  <Text size="1" color="gray">
+                    {t("请填写以 /translate 结尾的完整地址；地址中的 Token 会加密保存。")}
+                  </Text>
+                </label>
               ) : (
                 <>
                   <label className="core-translation-api-wide">
@@ -569,7 +613,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 </div>
               </div>
 
-              {!isAliyun ? (
+              {isOpenAICompatible ? (
                 <>
                   <label>
                     <Text size="1" color="gray">{t("最大输出 Tokens")}</Text>

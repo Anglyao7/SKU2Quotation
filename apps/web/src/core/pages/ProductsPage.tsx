@@ -1493,7 +1493,14 @@ export function ProductsPage() {
                         {(item.file.size / 1024 / 1024).toFixed(2)} MB
                         {item.detection ? ` · ${item.detection.detected_type}` : ""}
                       </Text>
-                      {item.error ? <Text size="1" color="red">{item.error}</Text> : null}
+                      {item.error ? (
+                        <Text
+                          size="1"
+                          color={item.status === "failed" ? "red" : item.status === "published" ? "jade" : "gray"}
+                        >
+                          {item.error}
+                        </Text>
+                      ) : null}
                       {["uploading", "processing"].includes(item.status) ? <Progress value={item.progress} /> : null}
                     </div>
                     <Badge color={item.status === "published" || item.status === "ready" ? "jade" : item.status === "failed" ? "red" : "blue"}>{statusLabel}</Badge>

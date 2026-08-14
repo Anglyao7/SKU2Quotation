@@ -2,6 +2,7 @@ from decimal import Decimal
 import hashlib
 from pathlib import Path
 import re
+from uuid import UUID
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -57,6 +58,27 @@ def _write_product_sku_workbook(
         sku_sheet.append(row)
     workbook.save(path)
     workbook.close()
+
+
+def test_supplier_identity_is_scoped_to_merchant_and_normalizes_name() -> None:
+    first_tenant = UUID("11111111-1111-1111-1111-111111111111")
+    second_tenant = UUID("22222222-2222-2222-2222-222222222222")
+
+    first_identity = product_template_import_service._supplier_identity(
+        first_tenant,
+        "  同名供应商  ",
+    )
+    normalized_identity = product_template_import_service._supplier_identity(
+        first_tenant,
+        "同名供应商",
+    )
+    other_tenant_identity = product_template_import_service._supplier_identity(
+        second_tenant,
+        "同名供应商",
+    )
+
+    assert first_identity == normalized_identity
+    assert first_identity != other_tenant_identity
 
 
 def test_product_sku_template_allows_limit_effective_rows_and_ignores_formatted_blanks(

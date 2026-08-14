@@ -406,6 +406,54 @@ class SupportAISettingsRow(AuditTimestampMixin, Base):
     )
 
 
+class SupportAIKnowledgeBaseRow(AuditTimestampMixin, Base):
+    """A tenant-scoped knowledge base owned by exactly one AI agent.
+
+    An agent may own many knowledge bases.  Files are attached to a knowledge
+    base rather than directly to an agent so that uploads, approvals, training
+    and future knowledge-base settings have an explicit lifecycle boundary.
+    """
+
+    __tablename__ = "support_ai_knowledge_bases"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ACTIVE', 'DISABLED')",
+            name="status_allowed",
+        ),
+        UniqueConstraint(
+            "tenant_id", "id", name="uq_support_ai_knowledge_bases_tenant_identity"
+        ),
+        UniqueConstraint(
+            "tenant_id", "agent_id", "name",
+            name="uq_support_ai_knowledge_bases_tenant_agent_name",
+        ),
+        Index(
+            "ix_support_ai_knowledge_bases_tenant_agent_status",
+            "tenant_id",
+            "agent_id",
+            "status",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("support_ai_agents.id", ondelete="RESTRICT"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", nullable=False)
+    created_by_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class SupportAIKnowledgeSourceRow(AuditTimestampMixin, Base):
     """An uploaded and explicitly approved customer-facing knowledge source."""
 
@@ -430,6 +478,12 @@ class SupportAIKnowledgeSourceRow(AuditTimestampMixin, Base):
             name="fk_support_ai_knowledge_sources_tenant_media",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "knowledge_base_id"],
+            ["support_ai_knowledge_bases.tenant_id", "support_ai_knowledge_bases.id"],
+            name="fk_support_ai_knowledge_sources_tenant_knowledge_base",
+            ondelete="CASCADE",
+        ),
         Index(
             "ix_support_ai_knowledge_sources_tenant_status",
             "tenant_id",
@@ -444,6 +498,10 @@ class SupportAIKnowledgeSourceRow(AuditTimestampMixin, Base):
     )
     agent_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("support_ai_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
         nullable=True,
         index=True,
     )
