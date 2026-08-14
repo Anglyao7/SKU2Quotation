@@ -9990,7 +9990,7 @@ def test_product_template_import_reuses_existing_category_hierarchy(
         sku = session.scalar(
             select(SkuRow).where(
                 SkuRow.tenant_id == DEFAULT_TENANT_ID,
-                SkuRow.sku_code == sku_code,
+                SkuRow.source_sku_code == sku_code,
             )
         )
         assert sku is not None
