@@ -2436,6 +2436,9 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
                   {!offer?.tags.length ? <small>—</small> : null}
                 </div>
                 <strong className="core-sku-detail-price core-tabular">{offer ? `${offer.currency} ${offer.unitPrice.toFixed(2)}` : "—"}</strong>
+                <Badge color={offer?.publicationStatus === "PUBLISHED" ? "jade" : offer?.publicationStatus === "SUSPENDED" ? "amber" : "gray"}>
+                  {t(offer ? offerStatusLabel[offer.publicationStatus] : "未发布")}
+                </Badge>
                 <Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge>
                 <div className="core-sku-detail-actions">
                   <Button size="1" variant="ghost" color="gray" onClick={() => toggleSkuDetails(sku.id)}>
@@ -2511,6 +2514,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
   const [packingQuantity, setPackingQuantity] = useState(getSkuPackingQuantity(sku.optionValues));
   const [price, setPrice] = useState(offer ? String(offer.unitPrice) : "0");
   const [currency, setCurrency] = useState(offer?.currency ?? defaultCurrency);
+  const [publicationStatus, setPublicationStatus] = useState<PublicCatalogOffer["publicationStatus"]>(offer?.publicationStatus ?? "DRAFT");
   const [selectedTags, setSelectedTags] = useState<string[]>(offer?.tags ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2521,6 +2525,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
     setPackingQuantity(getSkuPackingQuantity(sku.optionValues));
     setPrice(offer ? String(offer.unitPrice) : "0");
     setCurrency(offer?.currency ?? defaultCurrency);
+    setPublicationStatus(offer?.publicationStatus ?? "DRAFT");
     setSelectedTags(offer?.tags ?? []);
   }, [defaultCurrency, offer, sku.defaultMoq, sku.moqUnit, sku.optionValues]);
 
@@ -2557,7 +2562,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
           tags: selectedTags,
           displayTag,
           tagColor: offer?.displayTag === displayTag ? offer.tagColor : undefined,
-          publicationStatus: sku.status === "ACTIVE" ? "PUBLISHED" : "DRAFT",
+          publicationStatus,
           validFrom: offer?.validFrom,
           validTo: offer?.validTo,
         });
@@ -2591,12 +2596,17 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
         {canPublishOffer ? <>
           <label><Text size="1" color="gray">{t("公开价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
           <label><Text size="1" color="gray">{t("币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option></select></label>
+          <label><Text size="1" color="gray">{t("是否发布")}</Text><select value={publicationStatus} onChange={(event) => setPublicationStatus(event.target.value as PublicCatalogOffer["publicationStatus"])} disabled={busy}>
+            <option value="DRAFT">{t("未发布")}</option>
+            <option value="PUBLISHED">{t("已发布")}</option>
+            <option value="SUSPENDED">{t("暂停公开")}</option>
+          </select></label>
         </> : null}
       </div>
       {canPublishOffer ? <div className="core-sku-quick-tags">
         <Text size="1" color="gray">{t("选择标签")}</Text>
         <ManagedTagPicker tags={managedTags} selected={selectedTags} onChange={setSelectedTags} disabled={busy} />
-      </div> : null}
+      </div> : <Text size="1" color="gray">{t("当前角色没有目录发布权限。")}</Text>}
       {error ? <div className="core-form-error" role="alert">{error}</div> : null}
       <div className="core-sku-quick-actions">
         <Button variant="ghost" color="gray" disabled={busy} onClick={onCancel}>{t("取消")}</Button>

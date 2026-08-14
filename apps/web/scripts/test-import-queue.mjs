@@ -133,6 +133,11 @@ assert.ok(
   "The SKU catalog screen must not use the SKU-only page as its primary list",
 );
 assert.ok(
+  productsPageSource.includes("publicationStatus")
+    && productsPageSource.includes('t("是否发布")'),
+  "SKU details must expose an editable publication status",
+);
+assert.ok(
   productsPageSource.includes("{rollbackError ? <CoreError message={rollbackError} /> : null}"),
   "Rollback failures must remain visible inside the confirmation dialog",
 );
