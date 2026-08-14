@@ -411,6 +411,14 @@ def _cleanup_template_test_records(
                 delete(ProductCategoryRow).where(
                     ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
                     ProductCategoryRow.name.in_(category_names),
+                    ProductCategoryRow.parent_id.is_not(None),
+                )
+            )
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    ProductCategoryRow.name.in_(category_names),
+                    ProductCategoryRow.parent_id.is_(None),
                 )
             )
         session.commit()
@@ -9889,6 +9897,106 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         assert response.headers["cache-control"] == "no-store"
     finally:
         workbook.close()
+
+
+def test_product_template_import_reuses_existing_category_hierarchy(
+    request: pytest.FixtureRequest,
+) -> None:
+    suffix = uuid4().hex[:10].upper()
+    root_name = f"Existing Root {suffix}"
+    child_name = f"Existing Child {suffix}"
+    sku_code = f"CATEGORY-DEDUP-{suffix}"
+    import_job_ids: list[str] = []
+    _cleanup_template_test_records(
+        import_job_ids=[],
+        sku_codes=[sku_code],
+        category_names=[child_name, root_name],
+    )
+    request.addfinalizer(
+        lambda: _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[sku_code],
+            category_names=[child_name, root_name],
+        )
+    )
+
+    with SessionLocal() as session:
+        root = ProductCategoryRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            code=f"MANUAL-ROOT-{suffix}",
+            name=root_name,
+            path=root_name,
+            sort_order=7,
+            status="ACTIVE",
+        )
+        session.add(root)
+        session.flush()
+        child = ProductCategoryRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            parent_id=root.id,
+            code=f"MANUAL-CHILD-{suffix}",
+            name=child_name,
+            path=f"{root_name}/{child_name}",
+            sort_order=3,
+            status="ACTIVE",
+        )
+        session.add(child)
+        session.commit()
+        root_id = root.id
+        child_id = child.id
+
+    content = _product_template_bytes(
+        [[
+            f"分类去重商品 {suffix}",
+            f"{root_name.lower()}/{child_name.lower()}",
+            sku_code,
+            None,
+            0,
+            "商品导入应复用已经存在的同名分类。",
+            None,
+            None,
+            *([None] * 10),
+        ]]
+    )
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "分类去重商品.xlsx",
+                content,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+
+    assert response.status_code == 201, response.text
+    import_job_ids.append(response.json()["id"])
+    assert response.json()["status"] == "published"
+    with SessionLocal() as session:
+        categories = list(
+            session.scalars(
+                select(ProductCategoryRow)
+                .where(
+                    ProductCategoryRow.tenant_id == DEFAULT_TENANT_ID,
+                    func.lower(ProductCategoryRow.name).in_(
+                        [root_name.lower(), child_name.lower()]
+                    ),
+                )
+                .execution_options(include_deleted=True)
+            ).all()
+        )
+        assert {row.id for row in categories} == {root_id, child_id}
+        sku = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.sku_code == sku_code,
+            )
+        )
+        assert sku is not None
+        product = session.get(ProductRow, sku.product_id)
+        assert product is not None
+        assert product.category_id == child_id
 
 
 def test_product_template_imports_embedded_images_into_managed_storage(

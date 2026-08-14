@@ -32,6 +32,7 @@ from ..model_mixins import utcnow
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY, SkuRow
 from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
 from ..public_catalog_models import PublicCatalogOfferRow
+from .category_template_import import category_name_key
 from .import_progress import publish_runtime_import_progress
 from .sku_codes import CatalogSkuCodeAllocator
 from .sku_quotas import sku_quota_snapshot
@@ -3814,16 +3815,36 @@ def process_product_template_import(
         user_id = media.created_by_user_id if media else None
         now = utcnow()
 
-        categories = {
-            row.code: row
-            for row in session.scalars(
+        category_rows = list(
+            session.scalars(
                 select(ProductCategoryRow)
                 .where(
                     ProductCategoryRow.tenant_id == tenant_id,
                 )
                 .execution_options(include_deleted=True)
             ).all()
-        }
+        )
+        categories = {row.code: row for row in category_rows}
+        categories_by_parent_and_name: dict[
+            tuple[UUID | None, str], ProductCategoryRow
+        ] = {}
+        # Category codes differ between manually created, category-template,
+        # and product-template records. Name + parent is the human identity
+        # shared by every import path, so prefer an active existing sibling
+        # before considering a new product-template category.
+        for row in sorted(
+            category_rows,
+            key=lambda item: (
+                item.deleted_at is not None,
+                item.status != "ACTIVE",
+                item.sort_order,
+                str(item.id),
+            ),
+        ):
+            categories_by_parent_and_name.setdefault(
+                (row.parent_id, category_name_key(row.name)),
+                row,
+            )
         product_rows = session.scalars(
             select(ProductRow)
             .where(
@@ -4256,12 +4277,27 @@ def process_product_template_import(
             parent: ProductCategoryRow | None = None
             category: ProductCategoryRow | None = None
             for depth, category_name in enumerate(category_parts, start=1):
-                category_path = "/".join(category_parts[:depth])
-                category_code = _category_code(category_path)
-                category = categories.get(category_code)
+                imported_category_path = "/".join(category_parts[:depth])
+                category_code = _category_code(imported_category_path)
+                parent_id = parent.id if parent is not None else None
+                category_identity = (
+                    parent_id,
+                    category_name_key(category_name),
+                )
+                category = categories_by_parent_and_name.get(category_identity)
+                if category is None:
+                    category = categories.get(category_code)
+                effective_name = (
+                    category.name if category is not None else category_name
+                )
+                category_path = (
+                    f"{parent.path or parent.name}/{effective_name}"
+                    if parent is not None
+                    else effective_name
+                )
                 category_values = {
-                    "parent_id": parent.id if parent is not None else None,
-                    "name": category_name,
+                    "parent_id": parent_id,
+                    "name": effective_name,
                     "path": category_path,
                     "status": "ACTIVE",
                     "deleted_at": None,
@@ -4275,6 +4311,7 @@ def process_product_template_import(
                     )
                     session.add(category)
                     categories[category_code] = category
+                    categories_by_parent_and_name[category_identity] = category
                     session.flush()
                     changed = True
                 elif any(
@@ -4285,6 +4322,11 @@ def process_product_template_import(
                         setattr(category, key, value)
                     category.version += 1
                     changed = True
+                # Keep both indexes hot for later rows in this file. An
+                # existing category may use a manual or category-template
+                # code, while this import uses a deterministic TPL code.
+                categories[category_code] = category
+                categories_by_parent_and_name[category_identity] = category
                 parent = category
             assert category is not None
 

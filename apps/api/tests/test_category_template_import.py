@@ -47,6 +47,22 @@ def test_category_template_groups_repeated_primary_categories_in_file_order() ->
     ]
 
 
+def test_category_template_deduplicates_normalized_names() -> None:
+    parsed = parse_category_template(
+        _workbook_bytes(
+            [
+                ["Ｐｅｔ　Supplies", "Travel  Bags"],
+                ["pet supplies", "travel bags"],
+            ]
+        )
+    )
+
+    assert parsed.processed_rows == 1
+    assert parsed.duplicate_rows_ignored == 1
+    assert len(parsed.groups) == 1
+    assert parsed.groups[0].secondary_names == ("Travel  Bags",)
+
+
 def test_category_template_requires_primary_category_when_secondary_is_present() -> None:
     with pytest.raises(CategoryTemplateValidationError) as caught:
         parse_category_template(_workbook_bytes([[None, "宠物服饰"]]))

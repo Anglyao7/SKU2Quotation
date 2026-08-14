@@ -67,7 +67,8 @@ class CategoryTemplateParseResult:
 
 
 def category_name_key(value: str) -> str:
-    return unicodedata.normalize("NFKC", value).casefold().strip()
+    normalized = unicodedata.normalize("NFKC", value)
+    return " ".join(normalized.split()).casefold()
 
 
 def _cell_text(value: object) -> str:
