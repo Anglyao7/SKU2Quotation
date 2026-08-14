@@ -226,6 +226,75 @@ def test_product_sku_template_groups_multiple_skus_under_one_product(
     ]
 
 
+def test_product_sku_template_allows_an_empty_sku_sheet(tmp_path: Path) -> None:
+    path = tmp_path / "无SKU商品.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_rows=[[
+            "PRODUCT-ONLY-001",
+            "暂未维护 SKU 的商品",
+            "待完善商品",
+            None,
+            None,
+            "商品主数据应当可以先于 SKU 导入。",
+            None,
+            None,
+            *([None] * 10),
+        ]],
+        sku_rows=[],
+    )
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert result.rows[0].product_key == "PRODUCT:PRODUCT-ONLY-001"
+    assert result.rows[0].product_only is True
+    assert result.rows[0].sku_code == "PRODUCT-ONLY-001"
+    assert result.warnings == (
+        "已识别 Product + SKU 双表模板：1 个商品，0 个 SKU。",
+        "Product 表中有 1 个商品没有 SKU，已作为无 SKU 商品导入。",
+    )
+
+
+def test_product_sku_template_keeps_products_unreferenced_by_partial_sku_sheet(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "部分商品无SKU.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_rows=[
+            [
+                "PRODUCT-WITH-SKU",
+                "已有 SKU 商品",
+                *([None] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 2)),
+            ],
+            [
+                "PRODUCT-WITHOUT-SKU",
+                "暂无 SKU 商品",
+                *([None] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 2)),
+            ],
+        ],
+        sku_rows=[[
+            "PRODUCT-WITH-SKU",
+            "SKU-001",
+            *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 2)),
+        ]],
+    )
+
+    result = parse_product_template(path)
+    rows_by_product = {row.product_key: row for row in result.rows}
+
+    assert set(rows_by_product) == {
+        "PRODUCT:PRODUCT-WITH-SKU",
+        "PRODUCT:PRODUCT-WITHOUT-SKU",
+    }
+    assert rows_by_product["PRODUCT:PRODUCT-WITH-SKU"].product_only is False
+    assert rows_by_product["PRODUCT:PRODUCT-WITHOUT-SKU"].product_only is True
+    assert result.warnings[-1] == (
+        "Product 表中有 1 个商品没有 SKU，已作为无 SKU 商品导入。"
+    )
+
+
 def test_product_sku_template_is_detected_by_headers_after_sheet_rename(
     tmp_path: Path,
 ) -> None:

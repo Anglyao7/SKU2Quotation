@@ -291,6 +291,7 @@ class ProductTemplateRow:
     image_urls: tuple[str, ...]
     image_url_columns: tuple[int, ...]
     embedded_images: tuple[EmbeddedTemplateImage, ...]
+    product_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2781,15 +2782,50 @@ def _parse_product_sku_rows(
         )
     if not products:
         raise ProductTemplateValidationError("Product 表中没有可导入的有效商品。")
-    if not rows:
-        raise ProductTemplateValidationError("SKU 表中没有可导入的有效 SKU。")
+
+    sku_count = len(rows)
+    unreferenced_product_codes = sorted(
+        set(products) - referenced_product_codes
+    )
+    for product_code in unreferenced_product_codes:
+        product = products[product_code]
+        rows.append(
+            ProductTemplateRow(
+                row_number=product.row_number,
+                name=product.name,
+                category=product.category,
+                product_key=f"PRODUCT:{product.product_code}",
+                product_model=product.product_model,
+                # Product-only rows never create a SKU. Keeping the source
+                # product code here gives image storage a deterministic key
+                # without inventing a hidden catalog SKU.
+                sku_code=product.product_code,
+                sku_name=product.name,
+                specification=None,
+                units_per_carton=None,
+                is_new=product.is_new,
+                schema_version=schema_version,
+                supplier_name=None,
+                unit_price=product.product_price,
+                description=product.description,
+                note=product.note,
+                tags=product.tags,
+                variant_options=(),
+                default_moq=None,
+                gross_weight=None,
+                image_urls=product.image_urls,
+                image_url_columns=product.image_url_columns,
+                embedded_images=product.embedded_images,
+                product_only=True,
+            )
+        )
 
     warnings = [
         *sheet_warnings,
         *embedded_image_warnings,
         (
             f"已识别 Product + SKU 双表模板："
-            f"{len(products)} 个商品，{len(rows)} 个 SKU。"
+            f"{len(products)} 个商品，{sku_count} 个 SKU。"
         ),
     ]
     if expanded_definition_rows:
@@ -2801,11 +2837,10 @@ def _parse_product_sku_rows(
             f"有 {generated_source_sku_count} 个 SKU 未填写来源编号，"
             "系统已按商品与规格生成稳定的导入标识。"
         )
-    unreferenced_products = sorted(set(products) - referenced_product_codes)
-    if unreferenced_products:
+    if unreferenced_product_codes:
         warnings.append(
-            f"Product 表中有 {len(unreferenced_products)} 个商品没有 SKU，"
-            "本次不会创建这些空商品。"
+            f"Product 表中有 {len(unreferenced_product_codes)} 个商品没有 SKU，"
+            "已作为无 SKU 商品导入。"
         )
     unmatched_embedded_images = sum(
         len(images)
@@ -3883,7 +3918,8 @@ def process_product_template_import(
         additional_sku_count = sum(
             1
             for row in parsed.rows
-            if (
+            if not row.product_only
+            and (
                 (existing := skus.get(_normalize_sku_code(row.sku_code))) is None
                 or existing.deleted_at is not None
             )
@@ -3899,6 +3935,9 @@ def process_product_template_import(
         import_rows: list[ProductTemplateRow] = []
         quota_skipped_rows: list[ProductTemplateRow] = []
         for template_row in parsed.rows:
+            if template_row.product_only:
+                import_rows.append(template_row)
+                continue
             existing = skus.get(_normalize_sku_code(template_row.sku_code))
             consumes_capacity = existing is None or existing.deleted_at is not None
             if (
@@ -3949,7 +3988,9 @@ def process_product_template_import(
                 ),
             )
 
-        incoming_sku_codes = {row.sku_code for row in accepted_rows}
+        incoming_sku_codes = {
+            row.sku_code for row in accepted_rows if not row.product_only
+        }
         conflicting_codes = sorted(
             code
             for code in incoming_sku_codes
@@ -4143,11 +4184,15 @@ def process_product_template_import(
         planned_product_by_key: dict[str, ProductRow | None] = {}
         planned_product_code_by_key: dict[str, str | None] = {}
         for product_key, template_rows in template_rows_by_product_key.items():
-            incoming_codes = {row.sku_code for row in template_rows}
+            product_only = any(row.product_only for row in template_rows)
+            incoming_codes = {
+                row.sku_code for row in template_rows if not row.product_only
+            }
             current_products = list(
                 dict.fromkeys(
                     products_by_id[sku.product_id]
                     for row in template_rows
+                    if not row.product_only
                     if (sku := skus.get(row.sku_code)) is not None
                     and sku.product_id in products_by_id
                 )
@@ -4171,6 +4216,7 @@ def process_product_template_import(
                 }
                 if (
                     candidate is None
+                    or product_only
                     or candidate in current_products
                     or not candidate_sku_codes
                     or bool(candidate_sku_codes & incoming_codes)
@@ -4255,6 +4301,85 @@ def process_product_template_import(
         synced_image_product_keys: set[str] = set()
         moved_from_product_ids: set[UUID] = set()
         runtime_warnings = [*parsed.warnings, *quota_warnings]
+
+        def sync_product_images(
+            product: ProductRow,
+            template_row: ProductTemplateRow,
+        ) -> bool:
+            if template_row.product_key in synced_image_product_keys:
+                return False
+            synced_image_product_keys.add(template_row.product_key)
+            image_changed = False
+            product_image_specs = image_specs_by_product_key[
+                template_row.product_key
+            ]
+            desired_image_keys = {
+                spec.object_key for spec in product_image_specs
+            }
+            for old_image in template_images_by_product.get(product.id, ()):
+                if (
+                    old_image.object_key not in desired_image_keys
+                    and old_image.deleted_at is None
+                ):
+                    old_image.deleted_at = now
+                    image_changed = True
+
+            for image_index, image_spec in enumerate(product_image_specs):
+                image = images.get(image_spec.object_key)
+                if image is not None and image.product_id != product.id:
+                    runtime_warnings.append(
+                        f"商品“{template_row.name}”的图片"
+                        f"{image_spec.image_column}已被其他商品使用，已跳过该图片。"
+                    )
+                    continue
+                if image is None:
+                    image = ProductImageRow(
+                        id=uuid4(),
+                        tenant_id=tenant_id,
+                        product_id=product.id,
+                        storage_provider=image_spec.storage_provider,
+                        bucket=TEMPLATE_IMAGE_BUCKET,
+                        object_key=image_spec.object_key,
+                        original_filename=image_spec.original_filename,
+                        content_type=image_spec.content_type,
+                        byte_size=image_spec.byte_size,
+                        sha256=image_spec.sha256,
+                        image_role="MAIN" if image_index == 0 else "GALLERY",
+                        sort_order=image_index,
+                        approval_status="APPROVED",
+                        alt_text=template_row.name,
+                        created_by=user_id,
+                    )
+                    session.add(image)
+                    images[image_spec.object_key] = image
+                    template_images_by_product[product.id].append(image)
+                    image_changed = True
+                    continue
+
+                image_values = {
+                    "storage_provider": image_spec.storage_provider,
+                    "bucket": TEMPLATE_IMAGE_BUCKET,
+                    "original_filename": image_spec.original_filename,
+                    "content_type": image_spec.content_type,
+                    "byte_size": image_spec.byte_size,
+                    "sha256": image_spec.sha256,
+                    "deleted_at": None,
+                    "image_role": "MAIN" if image_index == 0 else "GALLERY",
+                    "sort_order": image_index,
+                    "approval_status": "APPROVED",
+                    "alt_text": template_row.name,
+                }
+                if any(
+                    getattr(image, key) != value
+                    for key, value in image_values.items()
+                ):
+                    for key, value in image_values.items():
+                        setattr(image, key, value)
+                    image_changed = True
+                if image not in template_images_by_product[product.id]:
+                    template_images_by_product[product.id].append(image)
+            return image_changed
+
         progress_interval = max(1, len(accepted_rows) // 100)
         for row_index, template_row in enumerate(accepted_rows, start=1):
             if row_index == 1 or row_index % progress_interval == 0:
@@ -4330,12 +4455,16 @@ def process_product_template_import(
                 parent = category
             assert category is not None
 
-            sku = skus.get(template_row.sku_code)
+            sku = (
+                None
+                if template_row.product_only
+                else skus.get(template_row.sku_code)
+            )
             if sku is not None and sku.supplier_id is not None:
                 touched_supplier_ids.add(sku.supplier_id)
             product = planned_product_by_key[template_row.product_key]
             product_code = planned_product_code_by_key[template_row.product_key]
-            is_new = sku is None
+            is_new = product is None if template_row.product_only else sku is None
             if product is None:
                 assert product_code is not None
                 product = ProductRow(
@@ -4375,6 +4504,22 @@ def process_product_template_import(
                     product.current_version += 1
                     product.updated_by = user_id
                     changed = True
+
+            if template_row.product_only:
+                if sync_product_images(product, template_row):
+                    changed = True
+                if is_new:
+                    created += 1
+                elif changed:
+                    updated += 1
+                else:
+                    unchanged += 1
+                if changed and product.status == "ACTIVE":
+                    product.search_document_version = 0
+                    dirty_product_ids.add(product.id)
+                if row_index % IMPORT_FLUSH_BATCH_SIZE == 0:
+                    session.flush()
+                continue
 
             if sku is None:
                 system_sku_code, sku_sequence = sku_code_allocator.issue(product)
@@ -4493,77 +4638,8 @@ def process_product_template_import(
                     offer.published_at = now
                     changed = True
 
-            if template_row.product_key not in synced_image_product_keys:
-                synced_image_product_keys.add(template_row.product_key)
-                product_image_specs = image_specs_by_product_key[
-                    template_row.product_key
-                ]
-                desired_image_keys = {
-                    spec.object_key for spec in product_image_specs
-                }
-                for old_image in template_images_by_product.get(product.id, ()):
-                    if (
-                        old_image.object_key not in desired_image_keys
-                        and old_image.deleted_at is None
-                    ):
-                        old_image.deleted_at = now
-                        changed = True
-
-                for image_index, image_spec in enumerate(product_image_specs):
-                    image = images.get(image_spec.object_key)
-                    if image is not None and image.product_id != product.id:
-                        runtime_warnings.append(
-                            f"商品“{template_row.name}”的图片"
-                            f"{image_spec.image_column}已被其他商品使用，已跳过该图片。"
-                        )
-                        continue
-                    if image is None:
-                        image = ProductImageRow(
-                            id=uuid4(),
-                            tenant_id=tenant_id,
-                            product_id=product.id,
-                            storage_provider=image_spec.storage_provider,
-                            bucket=TEMPLATE_IMAGE_BUCKET,
-                            object_key=image_spec.object_key,
-                            original_filename=image_spec.original_filename,
-                            content_type=image_spec.content_type,
-                            byte_size=image_spec.byte_size,
-                            sha256=image_spec.sha256,
-                            image_role="MAIN" if image_index == 0 else "GALLERY",
-                            sort_order=image_index,
-                            approval_status="APPROVED",
-                            alt_text=template_row.name,
-                            created_by=user_id,
-                        )
-                        session.add(image)
-                        images[image_spec.object_key] = image
-                        template_images_by_product[product.id].append(image)
-                        changed = True
-                    else:
-                        image_values = {
-                            "storage_provider": image_spec.storage_provider,
-                            "bucket": TEMPLATE_IMAGE_BUCKET,
-                            "original_filename": image_spec.original_filename,
-                            "content_type": image_spec.content_type,
-                            "byte_size": image_spec.byte_size,
-                            "sha256": image_spec.sha256,
-                            "deleted_at": None,
-                            "image_role": (
-                                "MAIN" if image_index == 0 else "GALLERY"
-                            ),
-                            "sort_order": image_index,
-                            "approval_status": "APPROVED",
-                            "alt_text": template_row.name,
-                        }
-                        if any(
-                            getattr(image, key) != value
-                            for key, value in image_values.items()
-                        ):
-                            for key, value in image_values.items():
-                                setattr(image, key, value)
-                            changed = True
-                        if image not in template_images_by_product[product.id]:
-                            template_images_by_product[product.id].append(image)
+            if sync_product_images(product, template_row):
+                changed = True
 
             if is_new:
                 created += 1

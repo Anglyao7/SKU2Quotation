@@ -268,6 +268,7 @@ def _cleanup_template_test_records(
     import_job_ids: list[str],
     sku_codes: list[str],
     category_names: list[str],
+    product_names: list[str] | None = None,
 ) -> None:
     object_keys: list[str] = []
     with SessionLocal() as session:
@@ -283,7 +284,18 @@ def _cleanup_template_test_records(
             .execution_options(include_deleted=True)
         ).all()
         sku_ids = [row.id for row in sku_rows]
-        product_ids = [row.product_id for row in sku_rows]
+        product_ids = {row.product_id for row in sku_rows}
+        if product_names:
+            product_ids.update(
+                session.scalars(
+                    select(ProductRow.id)
+                    .where(
+                        ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductRow.name.in_(product_names),
+                    )
+                    .execution_options(include_deleted=True)
+                ).all()
+            )
         if sku_ids:
             session.execute(
                 delete(PublicCatalogOfferRow).where(
@@ -9897,6 +9909,93 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         assert response.headers["cache-control"] == "no-store"
     finally:
         workbook.close()
+
+
+def test_product_template_import_creates_products_without_skus(
+    request: pytest.FixtureRequest,
+) -> None:
+    suffix = uuid4().hex[:10].upper()
+    product_source_code = f"PRODUCT-ONLY-{suffix}"
+    product_name = f"无 SKU 商品 {suffix}"
+    category_name = f"无 SKU 分类 {suffix}"
+    import_job_ids: list[str] = []
+
+    def cleanup_import() -> None:
+        _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[],
+            category_names=[category_name],
+            product_names=[product_name],
+        )
+
+    cleanup_import()
+    request.addfinalizer(cleanup_import)
+
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS))
+    product_sheet.append([
+        product_source_code,
+        product_name,
+        category_name,
+        None,
+        None,
+        "允许先维护商品主数据，后续再补充 SKU。",
+        None,
+        None,
+        "https://img.example.com/product-only.jpg",
+        *([None] * 9),
+    ])
+    sku_sheet = workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS))
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+
+    response = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "无SKU商品.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    import_job_ids.append(payload["id"])
+    assert payload["status"] == "published"
+    assert any(
+        "1 个商品没有 SKU，已作为无 SKU 商品导入" in warning
+        for warning in payload["warning_messages"]
+    )
+    with SessionLocal() as session:
+        product = session.scalar(
+            select(ProductRow).where(
+                ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductRow.name == product_name,
+            )
+        )
+        assert product is not None
+        assert product.status == "ACTIVE"
+        assert session.scalar(
+            select(func.count(SkuRow.id)).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.product_id == product.id,
+            )
+        ) == 0
+        image = session.scalar(
+            select(ProductImageRow).where(
+                ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductImageRow.product_id == product.id,
+            )
+        )
+        assert image is not None
+        assert image.object_key == "https://img.example.com/product-only.jpg"
 
 
 def test_product_template_import_reuses_existing_category_hierarchy(
