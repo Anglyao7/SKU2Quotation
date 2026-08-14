@@ -2,9 +2,10 @@ import hashlib
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from ..adapters.object_storage import get_object_storage
@@ -12,6 +13,7 @@ from ..ports.object_storage import ObjectStoragePort
 
 
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+InspectionResult = TypeVar("InspectionResult")
 
 
 class UploadTooLargeError(ValueError):
@@ -44,13 +46,14 @@ def upload_size_limit_bytes() -> int:
     return MAX_UPLOAD_BYTES
 
 
-async def store_upload(
+async def _store_upload(
     upload: Any,
     source_id: str,
     *,
     tenant_id: UUID,
     storage: ObjectStoragePort | None = None,
-) -> StoredUpload:
+    inspect_staged: Callable[[Path], object] | None = None,
+) -> tuple[StoredUpload, object | None]:
     storage = storage or get_object_storage()
     max_upload_bytes = upload_size_limit_bytes()
     stored_filename = f"{source_id}{safe_suffix(upload.filename or '')}"
@@ -62,6 +65,7 @@ async def store_upload(
     target = Path(raw_path)
     digest = hashlib.sha256()
     size = 0
+    inspection: object | None = None
 
     try:
         with target.open("wb") as output:
@@ -73,6 +77,8 @@ async def store_upload(
                     )
                 digest.update(chunk)
                 output.write(chunk)
+        if inspect_staged is not None:
+            inspection = inspect_staged(target)
         storage.put_file(
             target,
             object_key=object_key,
@@ -84,10 +90,54 @@ async def store_upload(
         await upload.close()
         target.unlink(missing_ok=True)
 
-    return StoredUpload(
-        object_key=object_key,
-        stored_filename=stored_filename,
-        sha256=digest.hexdigest(),
-        byte_size=size,
-        declared_media_type=getattr(upload, "content_type", None),
+    return (
+        StoredUpload(
+            object_key=object_key,
+            stored_filename=stored_filename,
+            sha256=digest.hexdigest(),
+            byte_size=size,
+            declared_media_type=getattr(upload, "content_type", None),
+        ),
+        inspection,
     )
+
+
+async def store_upload(
+    upload: Any,
+    source_id: str,
+    *,
+    tenant_id: UUID,
+    storage: ObjectStoragePort | None = None,
+) -> StoredUpload:
+    stored, _inspection = await _store_upload(
+        upload,
+        source_id,
+        tenant_id=tenant_id,
+        storage=storage,
+    )
+    return stored
+
+
+async def store_upload_with_inspection(
+    upload: Any,
+    source_id: str,
+    *,
+    tenant_id: UUID,
+    inspect_staged: Callable[[Path], InspectionResult],
+    storage: ObjectStoragePort | None = None,
+) -> tuple[StoredUpload, InspectionResult]:
+    """Inspect the local upload once before sending it to object storage.
+
+    S3-compatible storage cannot expose a local path. Inspecting the staging
+    file avoids uploading a catalog and immediately downloading the same bytes
+    again while the browser is still waiting for the HTTP response.
+    """
+
+    stored, inspection = await _store_upload(
+        upload,
+        source_id,
+        tenant_id=tenant_id,
+        storage=storage,
+        inspect_staged=inspect_staged,
+    )
+    return stored, cast(InspectionResult, inspection)

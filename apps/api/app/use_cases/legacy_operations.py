@@ -59,7 +59,7 @@ from ..services.repository import (
     review_item_model,
     supplier_models,
 )
-from ..services.storage import UploadTooLargeError, store_upload
+from ..services.storage import UploadTooLargeError, store_upload_with_inspection
 from ..workers.file_processing import inline_worker_enabled, process_file_worker_job
 
 
@@ -206,17 +206,16 @@ async def create_import(
     job_id = new_id("JOB")
     storage = get_object_storage()
     try:
-        stored = await store_upload(
+        stored, detection = await store_upload_with_inspection(
             upload,
             source_id,
             tenant_id=tenant_id,
             storage=storage,
+            inspect_staged=lambda path: detect_file_path(path, original_filename),
         )
     except UploadTooLargeError as exc:
         raise ApplicationError("UPLOAD_TOO_LARGE", str(exc), kind="too_large") from exc
 
-    with storage.materialize(stored.object_key) as quarantine_path:
-        detection = detect_file_path(quarantine_path, original_filename)
     if normalized_source_type == "PRODUCT_TEMPLATE" and (
         detection.detected_type != "OOXML / XLSX" or not detection.extension_matches
     ):
