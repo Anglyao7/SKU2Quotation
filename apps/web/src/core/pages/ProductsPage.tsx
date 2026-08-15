@@ -27,6 +27,7 @@ import {
   updateSku,
   uploadProductMainImage,
   upsertPublicCatalogOffer,
+  CoreApiError,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
@@ -121,9 +122,25 @@ const deleteAllStageLabel: Record<string, string> = {
   FAILED: "全部商品删除失败",
 };
 
+const PRODUCT_UPLOAD_RETRY_DELAYS_MS = [1_500, 4_000, 8_000] as const;
+const PRODUCT_UPLOAD_MAX_BYTES = 250 * 1024 * 1024;
+
 const waitForDeletePoll = () => new Promise<void>((resolve) => {
   window.setTimeout(resolve, 900);
 });
+
+const waitForProductUploadRetry = (delayMs: number) => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, delayMs);
+});
+
+function isRetryableProductUploadError(reason: unknown) {
+  if (!(reason instanceof CoreApiError)) return true;
+  return reason.status === 0
+    || reason.status === 408
+    || reason.status === 425
+    || reason.status === 429
+    || reason.status >= 500;
+}
 
 function exportImportIssues(job: ImportJob) {
   const escape = (value: string | number | undefined) => {
@@ -521,6 +538,14 @@ export function ProductsPage() {
   };
 
   const inspectImportItem = async (item: ImportQueueItem) => {
+    if (item.file.size > PRODUCT_UPLOAD_MAX_BYTES) {
+      setImportFiles((current) => current.map((currentItem) => (
+        currentItem.id === item.id
+          ? { ...currentItem, status: "failed", error: t("文件超过 250 MB 上限，请拆分后再上传。") }
+          : currentItem
+      )));
+      return;
+    }
     try {
       const detection = await detectFile(item.file);
       const valid = detection.detected_type === "OOXML / XLSX" && detection.extension_matches;
@@ -607,6 +632,69 @@ export function ProductsPage() {
     setLastImport((current) => current?.id === item.job?.id ? undefined : current);
   };
 
+  const recoverUploadedImport = async (
+    batchId: string,
+    filename: string,
+    knownJobIds: ReadonlySet<string>,
+  ) => {
+    for (let check = 0; check < 3; check += 1) {
+      if (check > 0) await waitForProductUploadRetry(1_000);
+      try {
+        const latestBatch = (
+          await listCatalogImportBatches(10, AbortSignal.timeout(3_000))
+        ).find((batch) => batch.id === batchId);
+        const candidates = latestBatch?.jobs.filter((job) => (
+          job.filename === filename && !knownJobIds.has(job.id)
+        ));
+        const recovered = candidates?.[candidates.length - 1];
+        if (recovered) return recovered;
+      } catch {
+        // A status check is best effort. Keep polling briefly because the API
+        // may still be committing a request whose response was lost.
+      }
+    }
+    return undefined;
+  };
+
+  const uploadImportFileWithRetry = async (
+    item: ImportQueueItem,
+    batchId: string,
+    knownJobIds: ReadonlySet<string>,
+    index: number,
+    total: number,
+  ) => {
+    let lastReason: unknown;
+    for (let attempt = 0; attempt <= PRODUCT_UPLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        return await createProductTemplateImport(item.file, (progress) => {
+          setUploadProgress(Math.round(((index + progress / 100) / total) * 100));
+          setImportFiles((current) => current.map((currentItem) => (
+            currentItem.id === item.id ? { ...currentItem, progress, error: undefined } : currentItem
+          )));
+        }, batchId);
+      } catch (reason) {
+        lastReason = reason;
+        if (!isRetryableProductUploadError(reason)) throw reason;
+
+        // The browser may lose the response after the API has committed the
+        // import job. Recover that job before resending the same workbook so a
+        // flaky connection cannot duplicate an import.
+        const recovered = await recoverUploadedImport(batchId, item.file.name, knownJobIds);
+        if (recovered) return recovered;
+        if (attempt >= PRODUCT_UPLOAD_RETRY_DELAYS_MS.length) throw reason;
+
+        const retryNumber = attempt + 1;
+        setImportFiles((current) => current.map((currentItem) => (
+          currentItem.id === item.id
+            ? { ...currentItem, error: t("网络波动，正在自动重试第 {attempt} 次…", { attempt: retryNumber }) }
+            : currentItem
+        )));
+        await waitForProductUploadRetry(PRODUCT_UPLOAD_RETRY_DELAYS_MS[attempt]);
+      }
+    }
+    throw lastReason instanceof Error ? lastReason : new Error(t("商品导入失败"));
+  };
+
   const importTemplates = async () => {
     if (!canImport) {
       setImportError(t("当前账号没有导入商品的权限。"));
@@ -620,18 +708,21 @@ export function ProductsPage() {
     setImportError("");
     try {
       const batch = await createCatalogImportBatch(readyItems.length);
+      const knownJobIds = new Set(batch.jobs.map((job) => job.id));
       for (let index = 0; index < readyItems.length; index += 1) {
         const item = readyItems[index];
         setImportFiles((current) => current.map((currentItem) => (
           currentItem.id === item.id ? { ...currentItem, status: "uploading", progress: 0, error: undefined } : currentItem
         )));
         try {
-          const job = await createProductTemplateImport(item.file, (progress) => {
-            setUploadProgress(Math.round(((index + progress / 100) / readyItems.length) * 100));
-            setImportFiles((current) => current.map((currentItem) => (
-              currentItem.id === item.id ? { ...currentItem, progress } : currentItem
-            )));
-          }, batch.id);
+          const job = await uploadImportFileWithRetry(
+            item,
+            batch.id,
+            knownJobIds,
+            index,
+            readyItems.length,
+          );
+          knownJobIds.add(job.id);
           setImportFiles((current) => current.map((currentItem) => (
             currentItem.id === item.id
               ? {
@@ -1467,7 +1558,7 @@ export function ProductsPage() {
           >
             <FileArrowUp size={30} />
             <strong>{t("拖入或选择多个商品文件")}</strong>
-            <span>{t("支持 XLSX，多文件会归入同一批次")}</span>
+            <span>{t("支持 XLSX，单文件最大 250 MB，多文件会归入同一批次")}</span>
           </button>
 
           {importFiles.length ? (

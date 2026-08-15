@@ -655,6 +655,19 @@ def test_sensitive_query_strings_are_excluded_from_every_http_access_log() -> No
     assert "set_real_ip_from 172.31.20.0/24;" in nginx
     assert "limit_req zone=atc_api_per_ip" in nginx
     assert "client_max_body_size 260m;" in nginx
+    assert "client_body_timeout 3600s;" in nginx
+    assert "proxy_request_buffering off;" in nginx
+    assert "proxy_buffering off;" in nginx
+    assert "proxy_connect_timeout 30s;" in nginx
+    assert "proxy_send_timeout 3600s;" in nginx
+    assert "proxy_read_timeout 3600s;" in nginx
+    outer_nginx = (
+        REPOSITORY_ROOT / "infra" / "production" / "nginx" / "ai-trade-cloud.conf.in"
+    ).read_text(encoding="utf-8")
+    assert "client_max_body_size 260m;" in outer_nginx
+    assert "client_body_timeout 3600s;" in outer_nginx
+    assert "proxy_request_buffering off;" in outer_nginx
+    assert "proxy_read_timeout 3600s;" in outer_nginx
     assert "X-Quote-Download-Token" not in nginx
     assert 'default "no-store, no-cache, must-revalidate";' in nginx
     assert (

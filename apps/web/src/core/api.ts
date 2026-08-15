@@ -143,6 +143,10 @@ const API_BASE = resolveApiBase();
 export const PRODUCT_TEMPLATE_DOWNLOAD_URL = `${API_BASE}/product-template.xlsx`;
 export const CATEGORY_TEMPLATE_DOWNLOAD_URL = `${API_BASE}/category-template.xlsx`;
 
+const PRODUCT_UPLOAD_MIN_TIMEOUT_MS = 10 * 60 * 1000;
+const PRODUCT_UPLOAD_MAX_TIMEOUT_MS = 60 * 60 * 1000;
+const PRODUCT_UPLOAD_MIN_SPEED_BYTES_PER_SECOND = 128 * 1024;
+
 export class CoreApiError extends Error {
   status: number;
   details?: unknown;
@@ -1057,6 +1061,16 @@ async function uploadProductTemplate(
     xhr.open("POST", `${API_BASE}/imports`);
     xhr.withCredentials = true;
     if (accessToken) xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+    const file = body.get("file");
+    const estimatedUploadMs = file instanceof Blob
+      ? Math.ceil(file.size / PRODUCT_UPLOAD_MIN_SPEED_BYTES_PER_SECOND) * 1000
+      : 0;
+    // A slow connection must not be treated as a dead request. Keep a bounded
+    // timeout so a genuinely stalled socket still releases the import dialog.
+    xhr.timeout = Math.min(
+      PRODUCT_UPLOAD_MAX_TIMEOUT_MS,
+      Math.max(PRODUCT_UPLOAD_MIN_TIMEOUT_MS, estimatedUploadMs + 5 * 60 * 1000),
+    );
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
         uploadedPercent = Math.min(100, Math.round((event.loaded / event.total) * 100));
@@ -1185,9 +1199,10 @@ export async function createCatalogImportBatch(expectedFileCount: number) {
   return mapCatalogImportBatch(row);
 }
 
-export async function listCatalogImportBatches(limit = 30) {
+export async function listCatalogImportBatches(limit = 30, signal?: AbortSignal) {
   const rows = await request<ApiCatalogImportBatch[]>(`/import-batches?limit=${limit}`, {
     cache: "no-store",
+    signal,
   });
   return rows.map(mapCatalogImportBatch);
 }

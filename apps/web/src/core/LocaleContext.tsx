@@ -1432,6 +1432,8 @@ const english: Record<string, string> = {
   "拖入或选择多个商品文件": "Drop or select multiple catalog files",
   "支持 XLSX，多文件会归入同一批次":
     "XLSX is supported. Multiple files are grouped into one batch.",
+  "支持 XLSX，单文件最大 250 MB，多文件会归入同一批次":
+    "XLSX is supported. Each file can be up to 250 MB; multiple files are grouped into one batch.",
   "检查中": "Checking",
   "待导入": "Ready to import",
   "上传中": "Uploading",
@@ -1442,6 +1444,10 @@ const english: Record<string, string> = {
   "继续添加": "Add more",
   "导入 {count} 个文件": "Import {count} files",
   "只接受 .xlsx 商品文件。": "Only .xlsx catalog files are accepted.",
+  "文件超过 250 MB 上限，请拆分后再上传。":
+    "The file exceeds the 250 MB limit. Split it into smaller files and upload again.",
+  "网络波动，正在自动重试第 {attempt} 次…":
+    "The network is unstable. Retrying automatically ({attempt})…",
   "文件签名与 XLSX 格式不一致。":
     "The file signature does not match the XLSX format.",
   "每个批次最多选择 100 个文件。":
