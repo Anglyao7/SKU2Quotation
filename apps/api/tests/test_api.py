@@ -13562,6 +13562,52 @@ def test_dashboard_and_supplier_profiles_use_tenant_scoped_authoritative_data() 
     assert client.get(f"/api/v1/supplier-profiles/{other_supplier_id}").status_code == 404
 
 
+def test_supplier_profile_counts_products_from_direct_sku_supplier_links() -> None:
+    suffix = uuid4().hex[:10].upper()
+    supplier_id = f"SUP-DIRECT-{suffix}"
+    product_id = uuid4()
+    sku_id = uuid4()
+    with SessionLocal() as session:
+        session.add(
+            SupplierRow(
+                id=supplier_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                supplier_code=supplier_id,
+                name=f"Direct SKU Supplier {suffix}",
+                status="ACTIVE",
+                active_skus=1,
+            )
+        )
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"DIRECT-{suffix}",
+                name=f"Direct SKU Product {suffix}",
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            SkuRow(
+                id=sku_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                supplier_id=supplier_id,
+                sku_code=f"DIRECT-SKU-{suffix}",
+                name=f"Direct SKU Product {suffix}",
+                option_values={},
+                status="ACTIVE",
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/v1/supplier-profiles")
+    assert response.status_code == 200, response.text
+    supplier = next(row for row in response.json() if row["id"] == supplier_id)
+    assert supplier["active_products"] == 1
+    assert supplier["active_skus"] == 1
+
+
 def test_inquiry_matching_selection_and_human_gated_quotation() -> None:
     customer = client.post("/api/v1/customers", json={"company_name": f"ACG Customer {uuid4().hex[:6]}", "country_code": "US", "language": "en", "default_currency": "CNY"})
     assert customer.status_code == 201, customer.text

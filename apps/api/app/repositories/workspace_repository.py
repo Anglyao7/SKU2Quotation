@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, union
 from sqlalchemy.orm import Session
 
 from ..db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
@@ -238,33 +238,75 @@ def supplier_aggregate_maps(
     score_scope = (
         [] if supplier_ids is None else [SupplierScoreRow.supplier_id.in_(supplier_ids)]
     )
+    # A supplier can be linked in two ways: an explicit SupplierProductRow
+    # (supplier-catalog imports and AI adoption) or directly on SkuRow
+    # (product-template imports). The old product aggregate only considered
+    # the former, so a supplier with template-owned SKUs showed "0 products"
+    # even though its SKU count was populated from the denormalized supplier
+    # counter. Union both authoritative paths before counting to keep product
+    # and SKU totals consistent and avoid double-counting mixed imports.
+    supplier_product_links = select(
+        SupplierProductRow.supplier_id.label("supplier_id"),
+        SupplierProductRow.product_id.label("product_id"),
+    ).where(
+        SupplierProductRow.tenant_id == tenant_id,
+        SupplierProductRow.status == "ACTIVE",
+        SupplierProductRow.deleted_at.is_(None),
+        *source_scope,
+    )
+    direct_sku_product_links = select(
+        SkuRow.supplier_id.label("supplier_id"),
+        SkuRow.product_id.label("product_id"),
+    ).where(
+        SkuRow.tenant_id == tenant_id,
+        SkuRow.supplier_id.is_not(None),
+        SkuRow.status == "ACTIVE",
+        SkuRow.deleted_at.is_(None),
+        *([] if supplier_ids is None else [SkuRow.supplier_id.in_(supplier_ids)]),
+    )
+    product_links = union(
+        supplier_product_links,
+        direct_sku_product_links,
+    ).subquery()
     product_counts = dict(
         session.execute(
             select(
-                SupplierProductRow.supplier_id,
-                func.count(func.distinct(SupplierProductRow.product_id)),
-            )
-            .where(
-                SupplierProductRow.tenant_id == tenant_id,
-                SupplierProductRow.status == "ACTIVE",
-                *source_scope,
-            )
-            .group_by(SupplierProductRow.supplier_id)
+                product_links.c.supplier_id,
+                func.count().label("product_count"),
+            ).group_by(product_links.c.supplier_id)
         ).all()
     )
+
+    supplier_product_sku_links = select(
+        SupplierProductRow.supplier_id.label("supplier_id"),
+        SupplierProductRow.sku_id.label("sku_id"),
+    ).where(
+        SupplierProductRow.tenant_id == tenant_id,
+        SupplierProductRow.status == "ACTIVE",
+        SupplierProductRow.deleted_at.is_(None),
+        SupplierProductRow.sku_id.is_not(None),
+        *source_scope,
+    )
+    direct_sku_links = select(
+        SkuRow.supplier_id.label("supplier_id"),
+        SkuRow.id.label("sku_id"),
+    ).where(
+        SkuRow.tenant_id == tenant_id,
+        SkuRow.supplier_id.is_not(None),
+        SkuRow.status == "ACTIVE",
+        SkuRow.deleted_at.is_(None),
+        *([] if supplier_ids is None else [SkuRow.supplier_id.in_(supplier_ids)]),
+    )
+    sku_links = union(
+        supplier_product_sku_links,
+        direct_sku_links,
+    ).subquery()
     sku_counts = dict(
         session.execute(
             select(
-                SupplierProductRow.supplier_id,
-                func.count(func.distinct(SupplierProductRow.sku_id)),
-            )
-            .where(
-                SupplierProductRow.tenant_id == tenant_id,
-                SupplierProductRow.status == "ACTIVE",
-                SupplierProductRow.sku_id.is_not(None),
-                *source_scope,
-            )
-            .group_by(SupplierProductRow.supplier_id)
+                sku_links.c.supplier_id,
+                func.count().label("sku_count"),
+            ).group_by(sku_links.c.supplier_id)
         ).all()
     )
     review_counts = dict(
