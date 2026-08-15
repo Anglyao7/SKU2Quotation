@@ -42,20 +42,8 @@ printf '\n'
 IFS= read -r -s -p "Repeat new password: " confirmation
 printf '\n'
 [[ "${new_password}" == "${confirmation}" ]] || die "passwords do not match"
-(( ${#new_password} >= 8 && ${#new_password} <= 128 )) \
-  || die "password must contain 8-128 characters"
-[[ "${new_password}" =~ [A-Za-z] && "${new_password}" =~ [0-9] ]] \
-  || die "password must contain at least one letter and one digit"
-[[ ! "${new_password}" =~ [[:space:]] ]] \
-  || die "password must not contain whitespace"
-normalized_password="${new_password,,}"
-normalized_identifier="${login_identifier,,}"
-[[ "${normalized_password}" != "${normalized_identifier}" ]] \
-  || die "password must differ from the account identifier"
-if [[ "${normalized_identifier}" == *"@"* ]]; then
-  [[ "${normalized_password}" != "${normalized_identifier%%@*}" ]] \
-    || die "password must differ from the account identifier"
-fi
+[[ "${new_password}" =~ ^[0-9]{6}$ ]] \
+  || die "password must contain exactly six ASCII digits"
 
 payload="$(
   printf '%s' "${new_password}" \

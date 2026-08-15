@@ -38,16 +38,17 @@ class PasswordIdentityProvisioningError(ValueError):
 
 
 def password_is_valid(*, password: str, identifier: str, display_name: str) -> bool:
-    """Keep the product's simple policy: eight characters, letters and digits."""
+    """Validate the product's simple policy for newly provisioned accounts.
 
-    return (
-        8 <= len(password) <= 128
-        and not any(character.isspace() or ord(character) < 32 for character in password)
-        and any(character.isascii() and character.isalpha() for character in password)
-        and any(character.isdigit() for character in password)
-        and password.casefold()
-        not in {identifier.casefold(), display_name.casefold()}
-    )
+    Existing accounts may still have a legacy password and remain usable at
+    login.  New accounts, however, are intentionally limited to six ASCII
+    digits so an administrator can communicate an initial password reliably.
+    ``identifier`` and ``display_name`` stay in the signature for callers that
+    already provide them and for backwards compatibility with integrations.
+    """
+
+    del identifier, display_name
+    return len(password) == 6 and password.isascii() and password.isdigit()
 
 
 def provision_password_identity(

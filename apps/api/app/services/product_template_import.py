@@ -36,6 +36,7 @@ from .category_template_import import category_name_key
 from .import_progress import publish_runtime_import_progress
 from .sku_codes import CatalogSkuCodeAllocator
 from .sku_quotas import sku_quota_snapshot
+from .tag_service import get_or_create_tags
 
 
 PRODUCT_TEMPLATE_SHEET = "商品列表"
@@ -4922,6 +4923,23 @@ def process_product_template_import(
             f"未变化 {unchanged}，保留未包含商品 {preserved}，"
             f"跳过 {skipped}"
             f"{index_summary}。"
+        )
+        # Imported tags are stored on each public offer, but 标签管理 reads
+        # the tenant-level tag dictionary. Reconcile the whole successful
+        # workbook once, rather than issuing one lookup per SKU row.
+        imported_tag_names = sorted(
+            {
+                tag.strip()
+                for template_row in accepted_rows
+                for tag in template_row.tags
+                if isinstance(tag, str) and tag.strip()
+            },
+            key=str.casefold,
+        )
+        get_or_create_tags(
+            session,
+            tenant_id=tenant_id,
+            tag_names=imported_tag_names,
         )
         job.products_count = imported
         job.warnings_count = len(runtime_warnings)

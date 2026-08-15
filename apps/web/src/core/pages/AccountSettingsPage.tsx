@@ -548,11 +548,14 @@ export function AccountSettingsPage() {
                 type={visible.next ? "text" : "password"}
                 value={newPassword}
                 onChange={(event) => {
-                  setNewPassword(event.target.value);
+                  setNewPassword(event.target.value.replace(/\D/g, "").slice(0, 6));
                   clearFeedback("newPassword");
                 }}
                 autoComplete="new-password"
-                maxLength={128}
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                minLength={6}
+                maxLength={6}
                 required
                 aria-invalid={Boolean(fieldErrors.newPassword)}
                 aria-describedby={describedBy("account-password-rules", fieldErrors.newPassword && "account-new-password-error")}
@@ -578,7 +581,6 @@ export function AccountSettingsPage() {
                     {t(rule.label)}
                   </span>
                 ))}
-                <Text size="1" color="gray" className="account-password-symbol-note">{t("符号可以使用，但不是必填项。")}</Text>
               </div>
             </div>
 
@@ -591,11 +593,14 @@ export function AccountSettingsPage() {
                 type={visible.confirmation ? "text" : "password"}
                 value={confirmation}
                 onChange={(event) => {
-                  setConfirmation(event.target.value);
+                  setConfirmation(event.target.value.replace(/\D/g, "").slice(0, 6));
                   clearFeedback("confirmation");
                 }}
                 autoComplete="new-password"
-                maxLength={128}
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                minLength={6}
+                maxLength={6}
                 required
                 aria-invalid={Boolean(fieldErrors.confirmation)}
                 aria-describedby={fieldErrors.confirmation ? "account-confirm-password-error" : undefined}

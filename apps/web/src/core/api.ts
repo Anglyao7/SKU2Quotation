@@ -3917,7 +3917,7 @@ export async function createSupportAIKnowledgeBase(input: {
           tenant_id: input.tenantId,
           name: input.name,
           description: input.description || null,
-         rules_context: input.rulesContext || null,
+          rules_context: input.rulesContext || null,
         }),
       },
     ),
@@ -3940,7 +3940,7 @@ export async function updateSupportAIKnowledgeBase(input: {
         body: JSON.stringify({
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
-         ...(input.rulesContext !== undefined ? { rules_context: input.rulesContext } : {}),
+          ...(input.rulesContext !== undefined ? { rules_context: input.rulesContext } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
         }),
       },

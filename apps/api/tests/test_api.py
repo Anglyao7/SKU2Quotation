@@ -3189,7 +3189,7 @@ def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
             },
             json={
                 "current_password": "InitialPass!123",
-                "new_password": "Simple42",
+                "new_password": "123456",
             },
         )
 
@@ -3197,7 +3197,7 @@ def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
     assert response.content == b""
     assert response.headers["cache-control"] == "no-store"
     assert authenticated_passwords[-1] == (email, "InitialPass!123")
-    assert changed_passwords == [(subject, "Simple42")]
+    assert changed_passwords == [(subject, "123456")]
     assert limits == [
         {
             "scope": "auth-password-change",
@@ -3239,11 +3239,11 @@ def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
 @pytest.mark.parametrize(
     ("new_password", "expected_code"),
     [
-        ("short1", "PASSWORD_POLICY_VIOLATION"),
-        ("12345678", "PASSWORD_POLICY_VIOLATION"),
-        ("abcdefgh", "PASSWORD_POLICY_VIOLATION"),
-        ("Abcd 123", "PASSWORD_POLICY_VIOLATION"),
-        ("A1" + "b" * 127, "PASSWORD_POLICY_VIOLATION"),
+        ("12345", "PASSWORD_POLICY_VIOLATION"),
+        ("1234567", "PASSWORD_POLICY_VIOLATION"),
+        ("12345a", "PASSWORD_POLICY_VIOLATION"),
+        ("１２３４５６", "PASSWORD_POLICY_VIOLATION"),
+        ("123 56", "PASSWORD_POLICY_VIOLATION"),
         ("InitialPass!123", "PASSWORD_POLICY_VIOLATION"),
     ],
 )
@@ -3336,7 +3336,7 @@ def test_password_change_rejects_weak_or_reused_password_before_provider_update(
     assert provider_calls == []
 
 
-def test_new_password_policy_accepts_letters_digits_and_optional_symbols() -> None:
+def test_new_password_policy_accepts_exactly_six_ascii_digits() -> None:
     user = UserRow(
         id=uuid4(),
         email_normalized="merchant42@example.test",
@@ -3346,7 +3346,7 @@ def test_new_password_policy_accepts_letters_digits_and_optional_symbols() -> No
         status="active",
     )
 
-    for password in ("Simple42", "ABCDEFG1", "abcdefg1", "Abcd!234"):
+    for password in ("123456", "987654", "000001"):
         _validate_new_password(
             current_password="Current1",
             new_password=password,
@@ -3355,10 +3355,11 @@ def test_new_password_policy_accepts_letters_digits_and_optional_symbols() -> No
 
     for password in (
         "short1",
-        "12345678",
-        "abcdefgh",
-        "Abcd 123",
-        "A1" + "b" * 127,
+        "12345",
+        "1234567",
+        "12345a",
+        "１２３４５６",
+        "123 56",
         "Current1",
         "merchant42@example.test",
         "merchant42",
@@ -3455,7 +3456,7 @@ def test_password_change_hides_wrong_password_and_cross_account_claims(
                 },
                 json={
                     "current_password": candidate,
-                    "new_password": "UpdatedPass!456",
+                    "new_password": "123456",
                 },
             )
             assert response.status_code == 401
@@ -4232,12 +4233,13 @@ def test_platform_admin_can_open_a_password_login_owner_for_an_existing_merchant
     assert tenant["owner_account"] is None
 
     login_identifier = f"merchant-{suffix}"
+    owner_password = "246810"
     opened = client.post(
         f"/api/admin/tenants/{tenant['id']}/owner-account",
         json={
             "display_name": "Merchant Password Owner",
             "login_identifier": login_identifier,
-            "password": f"Merchant{suffix}9",
+            "password": owner_password,
             "email": f"merchant-{suffix}@owner.test",
         },
     )
@@ -4245,7 +4247,7 @@ def test_platform_admin_can_open_a_password_login_owner_for_an_existing_merchant
     owner = opened.json()
     assert owner["login_identifier"] == login_identifier
     assert owner["status"] == "active"
-    assert f"Merchant{suffix}9" not in opened.text
+    assert owner_password not in opened.text
 
     listed = client.get("/api/admin/tenants")
     assert listed.status_code == 200, listed.text
@@ -4258,7 +4260,7 @@ def test_platform_admin_can_open_a_password_login_owner_for_an_existing_merchant
         json={
             "display_name": "Another Owner",
             "login_identifier": f"another-{suffix}",
-            "password": f"Another{suffix}9",
+            "password": "135790",
         },
     )
     assert repeated.status_code == 409
@@ -4272,7 +4274,7 @@ def test_platform_admin_can_open_a_password_login_owner_for_an_existing_merchant
                 json={
                     "grant_type": "password",
                     "identifier": login_identifier,
-                    "password": f"Merchant{suffix}9",
+                    "password": owner_password,
                 },
             )
     assert login.status_code == 200, login.text
@@ -4296,6 +4298,7 @@ def test_preprovisioned_oidc_merchant_owner_can_use_an_account_without_verified_
     tenant_id = tenant_response.json()["id"]
     provider_key = f"oidc:{'o' * 32}"
     subject = f"owner-{suffix}"
+    owner_password = "864209"
 
     def provision(
         _self: OidcIdentityProviderAdapter,
@@ -4306,7 +4309,7 @@ def test_preprovisioned_oidc_merchant_owner_can_use_an_account_without_verified_
         email: str | None = None,
     ) -> IdentityClaim:
         assert identifier == f"oidc-owner-{suffix}"
-        assert password == f"Oidc{suffix}9"
+        assert password == owner_password
         assert display_name == "OIDC Merchant Owner"
         assert email is None
         return IdentityClaim(
@@ -4324,7 +4327,7 @@ def test_preprovisioned_oidc_merchant_owner_can_use_an_account_without_verified_
         password: str,
     ) -> IdentityClaim:
         assert identifier == f"oidc-owner-{suffix}"
-        assert password == f"Oidc{suffix}9"
+        assert password == owner_password
         return IdentityClaim(
             provider=provider_key,
             subject=subject,
@@ -4348,7 +4351,7 @@ def test_preprovisioned_oidc_merchant_owner_can_use_an_account_without_verified_
         json={
             "display_name": "OIDC Merchant Owner",
             "login_identifier": f"oidc-owner-{suffix}",
-            "password": f"Oidc{suffix}9",
+            "password": owner_password,
         },
     )
     assert opened.status_code == 201, opened.text
@@ -4361,7 +4364,7 @@ def test_preprovisioned_oidc_merchant_owner_can_use_an_account_without_verified_
                 json={
                     "grant_type": "password",
                     "identifier": f"oidc-owner-{suffix}",
-                    "password": f"Oidc{suffix}9",
+                    "password": owner_password,
                 },
             )
     assert login.status_code == 200, login.text
@@ -8649,6 +8652,14 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
     first_sku_id = uuid4()
     second_sku_id = uuid4()
     missing_sku_id = uuid4()
+    storage = get_object_storage()
+    image_key = (
+        f"tenants/{DEFAULT_TENANT_ID}/products/{product_id}/"
+        f"images/{suffix}.webp"
+    )
+    image_source = TEST_RUNTIME / f"batch-delete-{suffix}.webp"
+    image_source.write_bytes(b"batch-delete-product-image")
+    storage.put_file(image_source, object_key=image_key, content_type="image/webp")
     with SessionLocal() as session:
         category = ProductCategoryRow(
             tenant_id=DEFAULT_TENANT_ID,
@@ -8670,6 +8681,21 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
             )
         )
         session.flush()
+        session.add(
+            ProductImageRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                storage_provider=storage.backend_name.upper(),
+                bucket="product-template",
+                object_key=image_key,
+                original_filename="batch-delete.webp",
+                content_type="image/webp",
+                byte_size=26,
+                sha256="e" * 64,
+                image_role="MAIN",
+                approval_status="APPROVED",
+            )
+        )
         session.add_all(
             [
                 SkuRow(
@@ -8762,6 +8788,7 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
         assert product is not None
         assert product.status == "ACTIVE"
         assert product.search_document_version == 0
+        assert storage.exists(image_key)
 
     second_delete = client.post(
         "/api/v1/skus/batch-delete",
@@ -8774,6 +8801,14 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
         assert product is not None
         assert product.status == "ARCHIVED"
         assert product.archived_at is not None
+        assert not storage.exists(image_key)
+        image = session.scalar(
+            select(ProductImageRow)
+            .where(ProductImageRow.object_key == image_key)
+            .execution_options(include_deleted=True)
+        )
+        assert image is not None
+        assert image.deleted_at is not None
 
     empty_listing = client.get(
         "/api/v1/product-center/skus",
@@ -10910,6 +10945,11 @@ def test_fixed_product_template_imports_optional_supplier_and_publishes_blank_pr
     assert sku_by_code["TPL-API-001"]["source_type"] == "PRODUCT_TEMPLATE"
     assert sku_by_code["TPL-API-001"]["source_filename"] == "商品模版.xlsx"
     assert sku_by_code["TPL-API-001"]["source_imported_at"]
+    managed_tags = client.get("/api/tags")
+    assert managed_tags.status_code == 200, managed_tags.text
+    assert {"新品", "热卖"}.issubset(
+        {row["name"] for row in managed_tags.json()["tags"]}
+    )
     assert sku_by_code["TPL-API-002"]["public_price"] == "0.00"
     assert sku_by_code["TPL-API-002"]["public_offer_status"] == "PUBLISHED"
 
@@ -12955,6 +12995,11 @@ def test_manual_product_creation_builds_product_sku_offer_and_audit(
     assert offers.json()[0]["currency"] == "USD"
     assert offers.json()[0]["tags"] == ["manual", "new"]
     assert offers.json()[0]["publication_status"] == "PUBLISHED"
+    managed_tags = client.get("/api/tags")
+    assert managed_tags.status_code == 200, managed_tags.text
+    assert {"manual", "new"}.issubset(
+        {row["name"] for row in managed_tags.json()["tags"]}
+    )
 
     listed = client.get(
         "/api/v1/product-center/skus",
@@ -18533,12 +18578,13 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     """An owner creates a child; the child sees only its portal and own order trail."""
 
     suffix = uuid4().hex[:10]
+    subaccount_password = "975310"
     created = client.post(
         "/api/v1/customer-accounts",
         json={
             "display_name": f"Downstream Customer {suffix}",
             "login_identifier": f"customer-{suffix}",
-            "password": f"Customer{suffix}9",
+            "password": subaccount_password,
             "email": f"customer-{suffix}@subaccount.test",
         },
     )
@@ -18561,7 +18607,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 json={
                     "grant_type": "password",
                     "identifier": f"customer-{suffix}",
-                    "password": f"Customer{suffix}9",
+                    "password": subaccount_password,
                 },
             )
             assert login.status_code == 200, login.text
@@ -18618,7 +18664,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 json={
                     "grant_type": "password",
                     "identifier": f"customer-{suffix}",
-                    "password": f"Customer{suffix}9",
+                    "password": subaccount_password,
                 },
             )
             assert login.status_code == 200, login.text

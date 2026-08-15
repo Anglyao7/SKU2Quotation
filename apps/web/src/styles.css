@@ -40,7 +40,8 @@
 /* Catalog sharing */
 .core-catalog-share-dialog {
   max-height: min(88vh, 760px);
-  overflow-y: auto;
+  overflow: auto;
+  overflow-x: hidden;
 }
 
 .core-catalog-share-loading {
@@ -54,9 +55,9 @@
 
 .core-catalog-share-layout {
   display: grid;
-  grid-template-columns: minmax(260px, 0.82fr) minmax(320px, 1.18fr);
-  gap: 28px;
-  align-items: center;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: clamp(18px, 3vw, 30px);
+  align-items: start;
   margin-top: 22px;
 }
 
@@ -144,7 +145,10 @@
   position: relative;
   overflow: hidden;
   aspect-ratio: 4 / 5;
-  min-height: 470px;
+  width: min(100%, 340px);
+  min-width: 0;
+  min-height: 0;
+  justify-self: center;
   padding: 28px;
   display: flex;
   flex-direction: column;
@@ -229,6 +233,7 @@
 .core-catalog-share-qr img { display: block; width: 100%; height: 100%; }
 
 .core-catalog-share-actions { display: grid; gap: 24px; min-width: 0; }
+.core-catalog-share-actions > * { min-width: 0; }
 .core-catalog-share-actions > div:first-child { display: grid; gap: 7px; }
 .core-catalog-share-link { display: grid; gap: 8px; }
 .core-catalog-share-link > span { display: flex; align-items: center; gap: 7px; color: var(--gray-11); font-size: 13px; }
@@ -272,14 +277,14 @@
 .store-share-banner small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .store-share-banner small { color: var(--gray-10); }
 
-@media (max-width: 720px) {
+@media (max-width: 760px) {
   .core-catalog-share-dialog { max-height: 92dvh; }
   .core-catalog-share-branding { grid-template-columns: 1fr; }
   .core-catalog-share-logo-options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .core-catalog-share-logo-options > button { min-height: 58px; grid-template-columns: 28px minmax(0, 1fr); padding: 6px; }
   .core-catalog-share-logo-option-preview { width: 28px; height: 36px; }
   .core-catalog-share-layout { grid-template-columns: 1fr; gap: 20px; }
-  .core-catalog-share-card { min-height: 0; padding: 20px; border-radius: 20px; }
+  .core-catalog-share-card { width: min(100%, 360px); padding: 20px; border-radius: 20px; }
   .core-catalog-share-logo { top: 20px; width: 54px; height: 54px; border-radius: 13px; }
   .core-catalog-share-logo.is-top-left { left: 20px; }
   .core-catalog-share-logo.is-top-right { right: 20px; }

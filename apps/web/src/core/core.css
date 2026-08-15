@@ -305,13 +305,15 @@
 .core-sku-price-column { width: 115px; }
 .core-sku-status-column { width: 74px; }
 .core-sku-updated-column { width: 94px; }
-.core-sku-action-column { width: 64px; text-align: center !important; }
+.core-sku-action-column { width: 104px; text-align: center !important; }
 .core-sku-data-table th.core-sku-select-column { left: 0; z-index: 7; }
 .core-sku-data-table td.core-sku-select-column { position: sticky; left: 0; z-index: 2; }
 .core-sku-data-table th.core-sku-action-column { right: 0; z-index: 7; }
 .core-sku-data-table td.core-sku-action-column { position: sticky; right: 0; z-index: 2; box-shadow: -1px 0 0 var(--core-line); }
 .core-sku-data-table th.core-sku-action-column { box-shadow: -1px 0 0 var(--core-line); }
 .core-sku-data-table td.core-sku-action-column .rt-Button { min-width: 48px; }
+.core-sku-data-table td.core-sku-action-column .rt-Button + .rt-Button { min-width: 32px; margin-left: 3px; padding-inline: 7px; }
+.core-sku-data-table td.core-sku-action-column .rt-Button + .rt-Button svg { width: 15px; height: 15px; }
 .core-sku-image-state { width: 44px; height: 44px; display: grid !important; place-items: center; overflow: hidden; border: 1px solid var(--core-line); border-radius: 7px; color: var(--core-muted); background: var(--core-soft); }
 .core-sku-image-state.approved { color: var(--core-accent); background: var(--accent-soft); }
 .core-sku-image-state.source { color: #8a5c21; background: color-mix(in srgb, #d9a85f 17%, var(--core-surface)); }
@@ -333,6 +335,7 @@
 .core-sku-pagination-ellipsis { width: 28px; display: inline-grid; place-items: center; color: var(--core-muted); font-size: 12px; }
 .core-sku-delete-dialog { width: min(530px, calc(100vw - 28px)) !important; max-width: 530px !important; }
 .core-sku-delete-dialog .core-notice { margin-block: 4px 18px; }
+.core-sku-single-delete-summary { display: grid; gap: 4px; margin-block: 4px 18px; padding: 13px 14px !important; }
 .core-sku-bulk-dialog { width: min(560px, calc(100vw - 28px)) !important; max-width: 560px !important; }
 .core-sku-bulk-dialog .core-dialog-heading { margin-bottom: 18px; }
 .core-sku-bulk-dialog .core-notice { margin-block: 16px 18px; }

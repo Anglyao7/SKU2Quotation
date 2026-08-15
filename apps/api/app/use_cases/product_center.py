@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -71,7 +72,7 @@ from ..product_supplier_models import (
 from ..identity_models import TenantRow
 from ..public_catalog_models import PublicCatalogOfferRow, TenantPublicProfileRow
 from ..repositories import product_center_repository as repository
-from ..services import query_cache
+from ..services import query_cache, tag_service
 from ..services.category_template_import import (
     CategoryTemplateParseResult,
     category_name_key,
@@ -81,6 +82,7 @@ from ..services.external_image_migration import (
     SourcePolicy,
     download_image,
 )
+from ..services.product_image_cleanup import cleanup_product_images
 from ..adapters.object_storage import get_object_storage
 from ..services.sku_catalog_export import build_sku_catalog_workbook
 from ..services.sku_quotas import ensure_sku_capacity
@@ -102,6 +104,8 @@ FIELD_LABELS = {
     "packing": "包装",
     "description": "产品描述",
 }
+
+logger = logging.getLogger(__name__)
 
 SKU_PACKING_QUANTITY_KEYS = (
     "装箱数",
@@ -1309,6 +1313,14 @@ def create_manual_product(
         published_at=now if offer_status == "PUBLISHED" else None,
     )
     session.add(offer)
+    # Product tags are stored on the public offer for storefront reads, while
+    # the tag management screen uses the tenant-scoped dictionary table. Keep
+    # the dictionary in sync whenever tags are assigned from the product form.
+    tag_service.get_or_create_tags(
+        session,
+        tenant_id=tenant_id,
+        tag_names=list(request.tags),
+    )
 
     if request.image_url:
         session.add(
@@ -1663,6 +1675,14 @@ def upsert_public_offer(
         session.add(row)
     for field, value in request.model_dump().items():
         setattr(row, field, value)
+    # The offer JSON is the storefront representation; also register every
+    # assigned tag in the merchant's shared tag dictionary so it is available
+    # in 标签管理 and in subsequent product editors.
+    tag_service.get_or_create_tags(
+        session,
+        tenant_id=tenant_id,
+        tag_names=list(request.tags),
+    )
     if request.publication_status == "PUBLISHED":
         row.published_at = now
     elif request.publication_status == "DRAFT":
@@ -3126,6 +3146,7 @@ def batch_delete_skus(
     permissions: frozenset[str],
     sku_ids: list[UUID],
     commit: bool = True,
+    cleanup_images: bool = True,
 ) -> dict[str, Any]:
     """Soft-delete SKUs while preserving inventory and quotation history."""
     _require(permissions, "product.edit")
@@ -3233,6 +3254,7 @@ def batch_delete_skus(
             ProductRow.id.in_(product_ids),
         )
     ).all()
+    archived_product_ids: list[UUID] = []
     for product in products:
         product.current_version += 1
         product.search_document_version = 0
@@ -3241,6 +3263,7 @@ def batch_delete_skus(
         if remaining_by_product.get(product.id, 0) == 0:
             product.status = "ARCHIVED"
             product.archived_at = now
+            archived_product_ids.append(product.id)
 
     if supplier_ids:
         active_counts = dict(
@@ -3282,6 +3305,31 @@ def batch_delete_skus(
                 "批量删除失败，请刷新商品库后重试。",
                 kind="conflict",
             ) from exc
+
+    # Deleting one SKU must not remove images while another variant still
+    # keeps the product alive. Once the last SKU is archived, remove only the
+    # tenant-owned objects belonging to that product. Storage cleanup is
+    # intentionally best-effort and must never turn a successful soft-delete
+    # into a failed request.
+    if cleanup_images and archived_product_ids:
+        try:
+            cleanup = cleanup_product_images(
+                session,
+                tenant_id=tenant_id,
+                product_ids=archived_product_ids,
+                at=now,
+            )
+            if cleanup.removed_image_count:
+                session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "product image cleanup failed after SKU deletion",
+                extra={
+                    "tenant_id": str(tenant_id),
+                    "product_ids": [str(product_id) for product_id in archived_product_ids],
+                },
+            )
 
     return {
         "success_count": len(selected_rows),
@@ -3363,6 +3411,15 @@ def delete_all_products(
     if deleted_sku_count == 0 and deleted_product_count == 0:
         return {"deleted_product_count": 0, "deleted_sku_count": 0}
 
+    archived_product_ids = list(
+        session.scalars(
+            select(ProductRow.id).where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.deleted_at.is_(None),
+                ProductRow.status != "ARCHIVED",
+            )
+        ).all()
+    )
     now = utcnow()
     session.execute(
         update(PublicCatalogOfferRow)
@@ -3438,6 +3495,22 @@ def delete_all_products(
         conflict_code="DELETE_ALL_PRODUCTS_FAILED",
         conflict_message="全部商品删除失败，请刷新商品库后重试。",
     )
+
+    try:
+        cleanup = cleanup_product_images(
+            session,
+            tenant_id=tenant_id,
+            product_ids=archived_product_ids,
+            at=now,
+        )
+        if cleanup.removed_image_count:
+            session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception(
+            "product image cleanup failed after complete catalog deletion",
+            extra={"tenant_id": str(tenant_id)},
+        )
     return {
         "deleted_product_count": deleted_product_count,
         "deleted_sku_count": deleted_sku_count,

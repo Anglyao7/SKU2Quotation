@@ -1339,6 +1339,14 @@ const english: Record<string, string> = {
   "第 {page} 页": "Page {page}",
   "批量删除": "Bulk delete",
   "批量删除 SKU": "Bulk delete SKUs",
+  "删除 SKU": "Delete SKU",
+  "确认删除此 SKU？": "Delete this SKU?",
+  "删除 SKU {code}": "Delete SKU {code}",
+  "删除后将不再展示此 SKU。": "This SKU will no longer be shown.",
+  "删除后将不再展示 SKU {code}，商品历史业务数据会保留。":
+    "SKU {code} will no longer be shown; historical business data will be preserved.",
+  "单个 SKU 删除失败，请稍后重试。": "Could not delete this SKU. Try again shortly.",
+  "已删除 SKU {code}。": "Deleted SKU {code}.",
   "批量管理": "Bulk actions",
   "分类和置顶会应用到所选 SKU 对应的商品。":
     "Category and pinning apply to the products represented by the selected SKUs.",
@@ -2475,13 +2483,11 @@ const english: Record<string, string> = {
   "接近要求": "Almost ready",
   "符合要求": "Ready",
   "强度较高": "Strong",
-  "长度为 8-128 个字符": "Use 8–128 characters",
-  "至少包含一个字母": "Include at least one letter",
-  "包含数字": "Include a number",
-  "不包含空白字符": "Do not include spaces",
-  "不能与账号或邮箱相同": "Must differ from your username and email",
-  "符号可以使用，但不是必填项。":
-    "Symbols are allowed but not required.",
+  "长度为 6 位数字": "Exactly 6 digits",
+  "仅包含数字": "Digits only",
+  "请输入 6 位数字": "Enter 6 digits",
+  "密码为 6 位数字": "Password: 6 digits",
+  "密码必须是 6 位数字。": "Password must be exactly 6 digits.",
   "请输入当前密码": "Enter your current password",
   "请输入新密码": "Enter a new password",
   "新密码不能与当前密码相同":
@@ -2548,7 +2554,6 @@ const english: Record<string, string> = {
   "登录账号": "Sign-in account",
   "联系邮箱（可选）": "Contact email (optional)",
   "初始密码": "Initial password",
-  "至少 8 位，包含字母和数字": "At least 8 characters, including letters and numbers",
   "请将初始账号密码通过可靠渠道交给客户；密码不会在创建后再次显示。":
     "Share the initial account and password through a trusted channel. The password will not be shown again after creation.",
   "子账号创建失败": "Could not create subaccount",

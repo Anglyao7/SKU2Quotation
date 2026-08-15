@@ -20,24 +20,24 @@ const {
   validatePasswordChange,
 } = await import(moduleUrl);
 
-const securePassword = "SimplePass42";
+const securePassword = "123456";
 const rules = passwordRules(securePassword, ["owner@example.com"]);
 assert.equal(rules.every((rule) => rule.met), true);
-assert.equal(passwordStrength(securePassword, rules), "strong");
+assert.equal(passwordStrength(securePassword, rules), "ready");
 
-const weakRules = passwordRules("short1", ["owner@example.com"]);
+const weakRules = passwordRules("12345", ["owner@example.com"]);
 assert.equal(weakRules.find((rule) => rule.key === "length").met, false);
-assert.equal(weakRules.find((rule) => rule.key === "letter").met, true);
+assert.equal(weakRules.find((rule) => rule.key === "digits").met, true);
 assert.equal(passwordStrength("short1", weakRules), "progressing");
 
-for (const validPassword of ["Simple42", "ABCDEFG1", "abcdefg1", "Abcd!234"]) {
+for (const validPassword of ["123456", "987654", "000001"]) {
   assert.equal(
     passwordRules(validPassword, ["owner@example.com"]).every((rule) => rule.met),
     true,
   );
 }
 
-for (const invalidPassword of ["short1", "12345678", "abcdefgh", "Abcd 123"]) {
+for (const invalidPassword of ["short1", "12345", "1234567", "12345a", "１２３４５６"]) {
   assert.equal(
     passwordRules(invalidPassword, ["owner@example.com"]).some((rule) => !rule.met),
     true,
@@ -45,28 +45,28 @@ for (const invalidPassword of ["short1", "12345678", "abcdefgh", "Abcd 123"]) {
 }
 
 assert.equal(
-  passwordRules(`A1${"b".repeat(127)}`, [])
+  passwordRules("1234567", [])
     .find((rule) => rule.key === "length").met,
   false,
 );
 
 assert.equal(
-  passwordRules("Secure Trade2026!", [])
-    .find((rule) => rule.key === "whitespace").met,
+  passwordRules("123 56", [])
+    .find((rule) => rule.key === "digits").met,
   false,
 );
 
 assert.equal(
   passwordRules("OWNER@EXAMPLE.COM", ["owner@example.com"])
-    .find((rule) => rule.key === "identity").met,
+    .find((rule) => rule.key === "digits").met,
   false,
 );
 
 assert.deepEqual(
   validatePasswordChange({
     currentPassword: "",
-    newPassword: "short1",
-    confirmation: "different",
+    newPassword: "12345",
+    confirmation: "123456",
     identityCandidates: [],
   }),
   {

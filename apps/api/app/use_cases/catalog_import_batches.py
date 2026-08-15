@@ -20,9 +20,11 @@ from ..models import (
 from ..product_center_models import SkuRow
 from ..product_supplier_models import (
     ProductCategoryRow,
+    ProductImageRow,
     ProductRow,
 )
 from ..services.repository import import_job_model
+from ..services.product_image_cleanup import cleanup_product_images
 from .product_center import batch_delete_skus
 
 
@@ -365,6 +367,9 @@ def rollback_import_batch(
             permissions=permissions,
             sku_ids=active_sku_ids,
             commit=False,
+            # The rollback response reports image cleanup details below, so
+            # perform the cleanup once after the final product scope is known.
+            cleanup_images=False,
         )
         deleted_sku_count = int(result["success_count"])
 
@@ -387,7 +392,36 @@ def rollback_import_batch(
         for product_id in product_ids
         if remaining_by_product.get(product_id, 0) == 0
     ]
+    retained_product_ids = set(product_ids) - set(archived_product_ids)
+
+    all_images = (
+        session.scalars(
+            select(ProductImageRow)
+            .where(
+                ProductImageRow.tenant_id == tenant_id,
+                ProductImageRow.product_id.in_(product_ids),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+        if product_ids
+        else []
+    )
+    retained_shared_image_count = sum(
+        1
+        for image in all_images
+        if image.product_id in retained_product_ids and image.deleted_at is None
+    )
     now = utcnow()
+    cleanup = cleanup_product_images(
+        session,
+        tenant_id=tenant_id,
+        product_ids=archived_product_ids,
+        at=now,
+    )
+    removed_image_count = cleanup.removed_image_count
+    deleted_storage_image_count = cleanup.deleted_storage_image_count
+    preserved_external_image_count = cleanup.preserved_external_image_count
+    storage_delete_failures = cleanup.storage_delete_failures
     remaining_sku_count = int(
         session.scalar(
             select(func.count())

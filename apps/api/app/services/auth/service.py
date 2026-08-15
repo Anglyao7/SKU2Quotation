@@ -376,11 +376,7 @@ def verify_current_user_password(
 def _password_policy_error() -> AuthError:
     return AuthError(
         "PASSWORD_POLICY_VIOLATION",
-        (
-            "new password must be 8-128 characters, contain at least one "
-            "letter and one digit, contain no whitespace, and differ from "
-            "the current password and account identifier"
-        ),
+        "new password must be exactly 6 digits and differ from the current password",
         status_code=422,
     )
 
@@ -391,37 +387,12 @@ def _validate_new_password(
     new_password: str,
     user: UserRow,
 ) -> None:
-    if (
-        len(new_password) < 8
-        or len(new_password) > 128
-        or any(
-            character.isspace() or ord(character) < 32
-            for character in new_password
-        )
-        or not any(
-            character.isascii() and character.isalpha()
-            for character in new_password
-        )
-        or not any(character.isdigit() for character in new_password)
-    ):
+    if len(new_password) != 6 or not new_password.isascii() or not new_password.isdigit():
         raise _password_policy_error()
     if hmac.compare_digest(
         current_password.encode("utf-8"),
         new_password.encode("utf-8"),
     ):
-        raise _password_policy_error()
-    normalized = new_password.casefold()
-    email = (user.email_normalized or "").casefold()
-    account_identifiers = {
-        candidate
-        for candidate in (
-            email,
-            email.split("@", 1)[0] if email else "",
-            (user.display_name or "").strip().casefold(),
-        )
-        if candidate
-    }
-    if normalized in account_identifiers:
         raise _password_policy_error()
 
 

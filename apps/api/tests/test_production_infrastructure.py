@@ -541,20 +541,16 @@ def test_keycloak_initial_password_validation_matches_realm_policy() -> None:
             / "atc-realm.json.template"
         ).read_text(encoding="utf-8")
     )
-    assert realm_template["passwordPolicy"] == (
-        r"length(8) and maxLength(128) and digits(1) and "
-        r"regexPattern(^(?=.*[A-Za-z])\S+$) and notUsername(undefined) "
-        r"and notEmail(undefined)"
-    )
+    assert realm_template["passwordPolicy"] == r"length(6) and maxLength(6) and regexPattern(^[0-9]{6}$)"
 
-    for password in ("Simple42", "ABCDEFG1", "abcdefg1", "Abcd!234"):
+    for password in ("123456", "987654", "000001"):
         assert _valid_password(password, "owner@example.test", "owner")
     for password in (
-        "short1",
-        "12345678",
-        "abcdefgh",
-        "Abcd 123",
-        "A1" + "b" * 127,
+        "12345",
+        "1234567",
+        "12345a",
+        "１２３４５６",
+        "123 56",
         "OWNER@EXAMPLE.TEST",
         "OWNER",
     ):
@@ -566,11 +562,8 @@ def test_keycloak_initial_password_validation_matches_realm_policy() -> None:
         / "production"
         / "keycloak-reset-user-password.sh"
     ).read_text(encoding="utf-8")
-    assert ">= 8" in reset_script
-    assert "<= 128" in reset_script
-    assert "[A-Za-z]" in reset_script
-    assert "[0-9]" in reset_script
-    assert "[[:space:]]" in reset_script
+    assert "exactly six ASCII digits" in reset_script
+    assert "^[0-9]{6}$" in reset_script
     assert "special character" not in reset_script
 
     example = (REPOSITORY_ROOT / ".env.production.example").read_text(

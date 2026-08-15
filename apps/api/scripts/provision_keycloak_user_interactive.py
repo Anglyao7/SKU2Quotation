@@ -43,22 +43,8 @@ def _login_identifier(value: str | None, *, invited_email: str) -> str:
 
 
 def _valid_password(value: str, *identity_candidates: str) -> bool:
-    normalized = value.casefold()
-    identities = {
-        candidate.strip().casefold()
-        for candidate in identity_candidates
-        if candidate.strip()
-    }
-    return (
-        8 <= len(value) <= 128
-        and not any(character.isspace() for character in value)
-        and any(
-            character.isascii() and character.isalpha()
-            for character in value
-        )
-        and any(character.isdigit() for character in value)
-        and normalized not in identities
-    )
+    del identity_candidates
+    return len(value) == 6 and value.isascii() and value.isdigit()
 
 
 def _safe_base_url(value: str, *, allow_internal_keycloak_http: bool = False) -> str:
@@ -218,9 +204,7 @@ def provision(arguments: argparse.Namespace) -> None:
                 email.split("@", 1)[0],
             ):
                 raise SystemExit(
-                    "Passwords must match and contain 8-128 characters with at "
-                    "least one letter and one digit, no whitespace, and must "
-                    "differ from the account identifier."
+                    "Passwords must match and contain exactly six ASCII digits."
                 )
             create_response = _request(
                 client,

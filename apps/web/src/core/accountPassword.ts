@@ -4,7 +4,7 @@ export interface PasswordChangePayload {
 }
 
 export interface PasswordRuleResult {
-  key: "length" | "letter" | "number" | "whitespace" | "identity";
+  key: "length" | "digits";
   label: string;
   met: boolean;
 }
@@ -18,30 +18,18 @@ export interface PasswordChangeValidation {
 export type PasswordStrength = "empty" | "weak" | "progressing" | "ready" | "strong";
 
 export function passwordRules(password: string, identityCandidates: string[] = []): PasswordRuleResult[] {
-  const normalizedPassword = password.toLocaleLowerCase();
-  const normalizedIdentities = identityCandidates
-    .map((candidate) => candidate.trim().toLocaleLowerCase())
-    .filter(Boolean);
-
+  void identityCandidates;
   return [
-    { key: "length", label: "长度为 8-128 个字符", met: password.length >= 8 && password.length <= 128 },
-    { key: "letter", label: "至少包含一个字母", met: /[A-Za-z]/.test(password) },
-    { key: "number", label: "包含数字", met: /\d/.test(password) },
-    { key: "whitespace", label: "不包含空白字符", met: Boolean(password) && !/\s/.test(password) },
-    {
-      key: "identity",
-      label: "不能与账号或邮箱相同",
-      met: Boolean(password) && !normalizedIdentities.includes(normalizedPassword),
-    },
+    { key: "length", label: "长度为 6 位数字", met: password.length === 6 },
+    { key: "digits", label: "仅包含数字", met: Boolean(password) && /^[0-9]+$/.test(password) },
   ];
 }
 
 export function passwordStrength(password: string, rules: PasswordRuleResult[]): PasswordStrength {
   if (!password) return "empty";
   const metRules = rules.filter((rule) => rule.met).length;
-  if (metRules === rules.length && password.length >= 12) return "strong";
   if (metRules === rules.length) return "ready";
-  if (metRules >= 3) return "progressing";
+  if (metRules >= 1) return "progressing";
   return "weak";
 }
 
