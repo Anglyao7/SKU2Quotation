@@ -6,7 +6,6 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from ..adapters.object_storage import get_object_storage
 from ..catalog_operation_models import CatalogImportBatchRow
 from ..db_models import ImportJobRow
 from ..domain.errors import ApplicationError
@@ -23,6 +22,7 @@ from ..product_supplier_models import (
     ProductRow,
 )
 from ..services.repository import import_job_model
+from ..services.product_image_cleanup import cleanup_product_images
 from .product_center import batch_delete_skus
 
 
@@ -347,6 +347,9 @@ def rollback_import_batch(
             membership_id=membership_id,
             permissions=permissions,
             sku_ids=active_sku_ids,
+            # The rollback response reports image cleanup details below, so
+            # perform the cleanup once after the final product scope is known.
+            cleanup_images=False,
         )
         deleted_sku_count = int(result["success_count"])
 
@@ -388,35 +391,17 @@ def rollback_import_batch(
         for image in all_images
         if image.product_id in retained_product_ids and image.deleted_at is None
     )
-    candidate_images = [
-        image
-        for image in all_images
-        if image.product_id in archived_product_ids
-    ]
-    storage = get_object_storage()
     now = utcnow()
-    removed_image_count = 0
-    deleted_storage_image_count = 0
-    preserved_external_image_count = 0
-    storage_delete_failures = 0
-    for image in candidate_images:
-        if image.storage_provider.upper() == "EXTERNAL":
-            preserved_external_image_count += 1
-            if image.deleted_at is None:
-                image.deleted_at = now
-                image.updated_at = now
-                removed_image_count += 1
-            continue
-        try:
-            storage.delete(image.object_key)
-        except Exception:
-            storage_delete_failures += 1
-            continue
-        deleted_storage_image_count += 1
-        if image.deleted_at is None:
-            image.deleted_at = now
-            image.updated_at = now
-            removed_image_count += 1
+    cleanup = cleanup_product_images(
+        session,
+        tenant_id=tenant_id,
+        product_ids=archived_product_ids,
+        at=now,
+    )
+    removed_image_count = cleanup.removed_image_count
+    deleted_storage_image_count = cleanup.deleted_storage_image_count
+    preserved_external_image_count = cleanup.preserved_external_image_count
+    storage_delete_failures = cleanup.storage_delete_failures
 
     remaining_sku_count = int(
         session.scalar(

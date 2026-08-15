@@ -208,10 +208,15 @@ function InitialPasswordField() {
       name="password"
       type={visible ? "text" : "password"}
       required
-      minLength={8}
-      maxLength={128}
+      inputMode="numeric"
+      pattern="[0-9]{6}"
+      minLength={6}
+      maxLength={6}
       autoComplete="new-password"
-      placeholder={t("至少 8 位，包含字母和数字")}
+      placeholder={t("请输入 6 位数字")}
+      onInput={(event) => {
+        event.currentTarget.value = event.currentTarget.value.replace(/\D/g, "").slice(0, 6);
+      }}
     >
       <TextField.Slot side="right">
         <button
@@ -1145,7 +1150,7 @@ function MerchantOwnerDialog({
       setResult(owner);
       await onSaved().catch(() => undefined);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("登录账号开通失败。"));
+      setError(apiErrorCode(caught) === "PASSWORD_POLICY_VIOLATION" ? t("密码必须是 6 位数字。") : caught instanceof Error ? caught.message : t("登录账号开通失败。"));
     } finally {
       setSaving(false);
     }
@@ -1298,7 +1303,11 @@ function TenantFormDialog({
           await onChanged().catch(() => undefined);
         }
         const reason = caught instanceof Error ? caught.message : t("登录账号开通失败。");
-        setError(t("商家已创建，但登录账号开通失败：{reason}", { reason }));
+        setError(
+          apiErrorCode(caught) === "PASSWORD_POLICY_VIOLATION"
+            ? t("密码必须是 6 位数字。")
+            : t("商家已创建，但登录账号开通失败：{reason}", { reason }),
+        );
         return;
       }
       setCreatedOwner(owner);

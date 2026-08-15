@@ -21,7 +21,7 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
     __tablename__ = "translation_provider_settings"
     __table_args__ = (
         CheckConstraint(
-            "provider IN ('openai-compatible', 'aliyun-alimt')",
+            "provider IN ('openai-compatible', 'deeplx', 'aliyun-alimt')",
             name="provider_supported",
         ),
         CheckConstraint(
@@ -56,7 +56,7 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
         CheckConstraint(
             "is_active = false OR ("
             "api_key_ciphertext IS NOT NULL AND ("
-            "provider = 'openai-compatible' OR "
+            "provider IN ('openai-compatible', 'deeplx') OR "
             "access_key_id_ciphertext IS NOT NULL))",
             name="active_key_required",
         ),

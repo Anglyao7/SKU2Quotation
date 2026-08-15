@@ -59,6 +59,7 @@ export interface MerchantSettings {
   businessMode: BusinessMode;
   defaultCurrency: string;
   storefrontLocales: StorefrontLocale[];
+  storefrontDefaultLocale: StorefrontLocale;
   hotProductsEnabled: boolean;
 }
 
@@ -868,6 +869,8 @@ export interface SupportAIAgent {
   systemPrompt?: string;
   handoffMessages: Record<string, string>;
   stores: SupportAIAgentStore[];
+  knowledgeBaseCount: number;
+  activeKnowledgeBaseCount: number;
   knowledgeSourceCount: number;
   approvedKnowledgeSourceCount: number;
   createdAt: string;
@@ -898,6 +901,7 @@ export type SupportAIKnowledgeStatus = "PROCESSING" | "READY" | "APPROVED" | "RE
 
 export interface SupportAIKnowledgeSource {
   id: string;
+  knowledgeBaseId?: string;
   title: string;
   description?: string;
   classification: "PUBLIC" | "CUSTOMER_APPROVED";
@@ -914,6 +918,44 @@ export interface SupportAIKnowledgeSource {
   approvedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SupportAIKnowledgeBase {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  agentId: string;
+  name: string;
+  description?: string;
+  rulesContext?: string;
+  status: "ACTIVE" | "DISABLED";
+  sourceCount: number;
+  approvedSourceCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportAIKnowledgeBaseSource {
+  knowledgeBaseId: string;
+  knowledgeBaseName: string;
+  source: SupportAIKnowledgeSource;
+}
+
+export interface SupportAIKnowledgeChunk {
+  id: string;
+  chunkIndex: number;
+  sectionPath: string;
+  content: string;
+  tokenCount: number;
+  language: string;
+  locator: Record<string, unknown>;
+}
+
+export interface SupportAIKnowledgeBaseSourceDetail {
+  knowledgeBaseId: string;
+  knowledgeBaseName: string;
+  source: SupportAIKnowledgeSource;
+  chunks: SupportAIKnowledgeChunk[];
 }
 
 export interface SupportAIIngestionJob {
@@ -988,11 +1030,12 @@ export type TranslationReasoningEffort =
 
 export type TranslationProviderKind =
   | "openai-compatible"
+  | "deeplx"
   | "aliyun-alimt";
 
 export interface TranslationApiSettings {
   source: "database" | "environment" | "disabled";
-  provider: TranslationProviderKind | "deeplx";
+  provider: TranslationProviderKind;
   enabled: boolean;
   baseUrl?: string;
   modelName?: string;
@@ -1209,6 +1252,7 @@ export interface PublicQuoteDraft {
   id: string;
   tenantId: string;
   quoteNumber: string;
+  requestNumber?: string;
   status: string;
   customerName: string;
   customerCompany?: string;
@@ -1216,6 +1260,8 @@ export interface PublicQuoteDraft {
   customerPhone?: string;
   notes?: string;
   locale: StorefrontLocale;
+  documentStyle: "indigo" | "emerald" | "gold" | "slate" | "rose";
+  quoteTemplateId?: string;
   currency: string;
   subtotal: number;
   total: number;

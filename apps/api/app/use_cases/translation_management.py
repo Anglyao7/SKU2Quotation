@@ -157,7 +157,11 @@ def test_settings(
         model_name=(
             "阿里云机器翻译通用版"
             if request.provider == "aliyun-alimt"
-            else request.model_name.strip()
+            else (
+                "DeepLX"
+                if request.provider == "deeplx"
+                else request.model_name.strip()
+            )
         ),
         latency_ms=latency_ms,
         translated_text=translated,

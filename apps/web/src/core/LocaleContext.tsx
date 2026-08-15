@@ -225,6 +225,20 @@ const english: Record<string, string> = {
   "分类管理": "Categories",
   "分类": "Categories",
   "全部商品": "All products",
+  "二级分类门面": "Subcategory cover",
+  "这张样图会显示在前台二级分类卡片上": "This sample image appears on the storefront subcategory card.",
+  "{name} 的二级分类门面": "Cover image for {name}",
+  "自定义样图": "Custom sample image",
+  "默认分类图标": "Default category icon",
+  "当前门面": "Current cover",
+  "还没有门面图片": "No cover image yet",
+  "分类门面来源": "Cover source",
+  "默认图标": "Default icon",
+  "上传中…": "Uploading…",
+  "上传样图": "Upload sample",
+  "从商品选择": "Choose from products",
+  "开启后，前台会先展示二级分类样图；每个二级分类可单独上传图片或选择商品主图。":
+    "When enabled, the storefront shows subcategory samples first. Each subcategory can use an uploaded image or a product image.",
   "全部收起": "Collapse all",
   "全部展开": "Expand all",
   "收起 {name}": "Collapse {name}",
@@ -569,6 +583,7 @@ const english: Record<string, string> = {
   "正在读取翻译 API 配置": "Loading translation API settings",
   "翻译 API 配置读取失败": "Could not load the translation API settings",
   "OpenAI 兼容接口": "OpenAI-compatible endpoint",
+  "DeepLX 翻译": "DeepLX translation",
   "阿里云机器翻译": "Alibaba Cloud Machine Translation",
   "阿里云机器翻译（通用版）":
     "Alibaba Cloud Machine Translation (General Edition)",
@@ -576,6 +591,8 @@ const english: Record<string, string> = {
   "翻译服务商": "Translation provider",
   "全局翻译服务": "Global translation service",
   "适合大批量商品内容翻译。": "Suitable for large product catalogs.",
+  "使用 DeepLX 接口进行低成本机器翻译。":
+    "Use a DeepLX endpoint for lower-cost machine translation.",
   "适合需要上下文理解的翻译内容。": "Suitable for content that requires contextual understanding.",
   "已启用": "Enabled",
   "服务已停用": "Disabled",
@@ -583,6 +600,11 @@ const english: Record<string, string> = {
   "关闭后，所有翻译任务将暂停。": "All translation jobs pause when this is disabled.",
   "可以填写服务根地址、/v1，或完整的 /v1/chat/completions 地址。":
     "Enter the service root, /v1, or the complete /v1/chat/completions URL.",
+  "DeepLX 完整接口地址": "Complete DeepLX endpoint",
+  "接口地址已加密保存，留空则保持不变":
+    "The endpoint is encrypted; leave blank to keep it unchanged",
+  "请填写以 /translate 结尾的完整地址；地址中的 Token 会加密保存。":
+    "Enter the complete URL ending in /translate. Tokens in the URL are encrypted at rest.",
   "地域": "Region",
   "服务 Endpoint": "Service endpoint",
   "AccessKey ID": "AccessKey ID",
@@ -1160,6 +1182,14 @@ const english: Record<string, string> = {
   "第 {page} 页": "Page {page}",
   "批量删除": "Bulk delete",
   "批量删除 SKU": "Bulk delete SKUs",
+  "删除 SKU": "Delete SKU",
+  "确认删除此 SKU？": "Delete this SKU?",
+  "删除 SKU {code}": "Delete SKU {code}",
+  "删除后将不再展示此 SKU。": "This SKU will no longer be shown.",
+  "删除后将不再展示 SKU {code}，商品历史业务数据会保留。":
+    "SKU {code} will no longer be shown; historical business data will be preserved.",
+  "单个 SKU 删除失败，请稍后重试。": "Could not delete this SKU. Try again shortly.",
+  "已删除 SKU {code}。": "Deleted SKU {code}.",
   "批量管理": "Bulk actions",
   "分类和置顶会应用到所选 SKU 对应的商品。":
     "Category and pinning apply to the products represented by the selected SKUs.",
@@ -1412,6 +1442,12 @@ const english: Record<string, string> = {
   "前台语言": "Storefront languages",
   "勾选后会出现在访客语言菜单；简体中文始终保留。翻译与是否展示分开管理。":
     "Selected languages appear in the visitor menu. Simplified Chinese is always retained, while publication and translation are managed independently.",
+  "选择访客可以使用的语言；简体中文固定保留。翻译任务在下方单独管理。":
+    "Choose the languages visitors can use. Simplified Chinese is always retained; translation tasks are managed below.",
+  "默认语言": "Default language",
+  "访客首次打开商品前台时使用；访客主动切换后以选择为准。":
+    "Used when a visitor first opens the product storefront. A visitor's language choice takes precedence.",
+  "选择默认语言": "Choose the default language",
   "保存语言": "Save languages",
   "源语言": "Source language",
   "展示 {language}": "Show {language}",
@@ -2179,7 +2215,7 @@ const english: Record<string, string> = {
     "Merchant settings could not be loaded. Refresh the page and try again.",
   "商品前台语言": "Storefront languages",
   "勾选后才会出现在访客的语言菜单中；简体中文作为默认语言始终保留。":
-    "Only selected languages appear in the visitor language menu. Simplified Chinese always remains the default.",
+    "Only selected languages appear in the visitor language menu. Simplified Chinese is always retained and can be replaced as the default.",
   "默认": "Default",
   "爆款优先展示": "Prioritize bestsellers",
   "开启后，访客进入“全部商品”时会优先看到近 90 天浏览与下单热度更高的商品；搜索和分类顺序不受影响。":
@@ -2223,13 +2259,11 @@ const english: Record<string, string> = {
   "接近要求": "Almost ready",
   "符合要求": "Ready",
   "强度较高": "Strong",
-  "长度为 8-128 个字符": "Use 8–128 characters",
-  "至少包含一个字母": "Include at least one letter",
-  "包含数字": "Include a number",
-  "不包含空白字符": "Do not include spaces",
-  "不能与账号或邮箱相同": "Must differ from your username and email",
-  "符号可以使用，但不是必填项。":
-    "Symbols are allowed but not required.",
+  "长度为 6 位数字": "Exactly 6 digits",
+  "仅包含数字": "Digits only",
+  "请输入 6 位数字": "Enter 6 digits",
+  "密码为 6 位数字": "Password: 6 digits",
+  "密码必须是 6 位数字。": "Password must be exactly 6 digits.",
   "请输入当前密码": "Enter your current password",
   "请输入新密码": "Enter a new password",
   "新密码不能与当前密码相同":
@@ -2296,7 +2330,6 @@ const english: Record<string, string> = {
   "登录账号": "Sign-in account",
   "联系邮箱（可选）": "Contact email (optional)",
   "初始密码": "Initial password",
-  "至少 8 位，包含字母和数字": "At least 8 characters, including letters and numbers",
   "请将初始账号密码通过可靠渠道交给客户；密码不会在创建后再次显示。":
     "Share the initial account and password through a trusted channel. The password will not be shown again after creation.",
   "子账号创建失败": "Could not create subaccount",

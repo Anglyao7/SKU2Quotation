@@ -216,6 +216,9 @@
 .language-option-indicator svg { width: 14px; height: 14px; }
 .language-package-option.is-enabled .language-option-indicator { border-color: var(--core-accent); color: white; background: var(--core-accent); box-shadow: 0 4px 12px color-mix(in srgb, var(--core-accent) 20%, transparent); }
 .language-package-option.is-source .language-option-indicator { border-color: var(--core-line); color: var(--core-muted); background: color-mix(in srgb, var(--core-muted) 8%, var(--core-surface)); box-shadow: none; }
+.language-default-row { margin-top: 16px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid var(--core-line); border-radius: 13px; background: color-mix(in srgb, var(--core-accent) 3%, var(--core-surface)); }
+.language-default-row > div { min-width: 0; display: grid; gap: 3px; }
+.language-default-row .rt-SelectTrigger { min-width: 170px; }
 .language-status-controls { display: flex !important; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px !important; }
 .language-target-trigger { min-width: 158px; }
 .language-pack-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .85fr); gap: 16px; }
@@ -251,6 +254,8 @@
   .language-selection-toolbar .rt-Button { min-width: 112px; }
   .language-target-trigger { flex: 1; min-width: 0; }
   .language-package-options { grid-template-columns: 1fr; }
+  .language-default-row { align-items: stretch; flex-direction: column; }
+  .language-default-row .rt-SelectTrigger { width: 100%; }
   .language-pack-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .language-pack-metrics > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--core-line); }
   .language-pack-metrics > div:nth-child(4) { border-top: 1px solid var(--core-line); }
@@ -300,13 +305,15 @@
 .core-sku-price-column { width: 115px; }
 .core-sku-status-column { width: 74px; }
 .core-sku-updated-column { width: 94px; }
-.core-sku-action-column { width: 64px; text-align: center !important; }
+.core-sku-action-column { width: 104px; text-align: center !important; }
 .core-sku-data-table th.core-sku-select-column { left: 0; z-index: 7; }
 .core-sku-data-table td.core-sku-select-column { position: sticky; left: 0; z-index: 2; }
 .core-sku-data-table th.core-sku-action-column { right: 0; z-index: 7; }
 .core-sku-data-table td.core-sku-action-column { position: sticky; right: 0; z-index: 2; box-shadow: -1px 0 0 var(--core-line); }
 .core-sku-data-table th.core-sku-action-column { box-shadow: -1px 0 0 var(--core-line); }
 .core-sku-data-table td.core-sku-action-column .rt-Button { min-width: 48px; }
+.core-sku-data-table td.core-sku-action-column .rt-Button + .rt-Button { min-width: 32px; margin-left: 3px; padding-inline: 7px; }
+.core-sku-data-table td.core-sku-action-column .rt-Button + .rt-Button svg { width: 15px; height: 15px; }
 .core-sku-image-state { width: 44px; height: 44px; display: grid !important; place-items: center; overflow: hidden; border: 1px solid var(--core-line); border-radius: 7px; color: var(--core-muted); background: var(--core-soft); }
 .core-sku-image-state.approved { color: var(--core-accent); background: var(--accent-soft); }
 .core-sku-image-state.source { color: #8a5c21; background: color-mix(in srgb, #d9a85f 17%, var(--core-surface)); }
@@ -328,6 +335,7 @@
 .core-sku-pagination-ellipsis { width: 28px; display: inline-grid; place-items: center; color: var(--core-muted); font-size: 12px; }
 .core-sku-delete-dialog { width: min(530px, calc(100vw - 28px)) !important; max-width: 530px !important; }
 .core-sku-delete-dialog .core-notice { margin-block: 4px 18px; }
+.core-sku-single-delete-summary { display: grid; gap: 4px; margin-block: 4px 18px; padding: 13px 14px !important; }
 .core-sku-bulk-dialog { width: min(560px, calc(100vw - 28px)) !important; max-width: 560px !important; }
 .core-sku-bulk-dialog .core-dialog-heading { margin-bottom: 18px; }
 .core-sku-bulk-dialog .core-notice { margin-block: 16px 18px; }
@@ -361,6 +369,7 @@
 .core-import-file > svg { color: var(--core-accent); }
 .core-import-file > div { min-width: 0; display: grid; gap: 3px; }
 .core-import-file > div > .rt-Text:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.core-import-file.published > svg { color: var(--accent); }
 .core-import-file.failed > svg { color: #a43d35; }
 .core-import-rollback-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .core-import-rollback-toolbar > div { min-width: 0; display: grid; gap: 3px; }
@@ -524,6 +533,14 @@
 .core-category-cover-field { padding: 13px; display: grid; gap: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-strong); }
 .core-category-cover-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .core-category-cover-heading > span { min-width: 0; display: grid; gap: 2px; }
+.core-category-cover-current, .core-category-cover-empty { min-width: 0; min-height: 70px; padding: 8px; display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.core-category-cover-current > img, .core-category-cover-current > span { width: 58px; height: 58px; display: grid; place-items: center; object-fit: cover; border-radius: 8px; color: var(--text-soft); background: var(--page-soft); }
+.core-category-cover-current > div { min-width: 0; display: grid; gap: 2px; }
+.core-category-cover-current strong, .core-category-cover-current small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.core-category-cover-current small { color: var(--text-soft); font-size: 10px; }
+.core-category-cover-current > svg { width: 17px; height: 17px; color: var(--accent); }
+.core-category-cover-empty { grid-template-columns: auto minmax(0, 1fr); min-height: 48px; color: var(--text-soft); font-size: 12px; }
+.core-category-cover-empty > svg { width: 22px; height: 22px; color: var(--text-soft); }
 .core-category-cover-sources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .core-category-cover-sources > button { min-width: 0; min-height: 62px; padding: 9px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); background: var(--surface); text-align: left; cursor: pointer; transition: border-color 140ms ease, background 140ms ease, transform 100ms ease; }
 .core-category-cover-sources > button:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); background: var(--accent-soft); }

@@ -301,6 +301,7 @@ from .support_ai_models import (  # noqa: E402,F401
     SupportAIAgentRow,
     SupportAIEvidenceUseRow,
     SupportAIIngestionJobRow,
+    SupportAIKnowledgeBaseRow,
     SupportAIKnowledgeChunkRow,
     SupportAIKnowledgeSourceRow,
     SupportAIProviderSettingsRow,

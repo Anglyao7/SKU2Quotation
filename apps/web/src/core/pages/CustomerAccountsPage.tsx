@@ -13,6 +13,7 @@ import {
   CaretLeft,
   CaretRight,
   Eye,
+  EyeSlash,
   FileText,
   Plus,
   Power,
@@ -24,6 +25,7 @@ import {
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   createCustomerSubaccount,
+  CoreApiError,
   getCustomerSubaccountDashboard,
   listCustomerSubaccountOrders,
   updateCustomerSubaccountStatus,
@@ -52,6 +54,12 @@ const SUBACCOUNT_CAPABILITIES: Array<{ code: CustomerSubaccountCapability; label
   { code: "submit_orders", label: "提交报价" },
   { code: "view_orders", label: "查看本人订单" },
 ];
+
+function isPasswordPolicyError(reason: unknown): boolean {
+  if (!(reason instanceof CoreApiError) || !reason.details || typeof reason.details !== "object") return false;
+  const detail = (reason.details as { detail?: unknown }).detail;
+  return Boolean(detail && typeof detail === "object" && (detail as { code?: unknown }).code === "PASSWORD_POLICY_VIOLATION");
+}
 
 export function CustomerAccountsPage() {
   const { t } = useLocale();
@@ -240,6 +248,7 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
   const [identifier, setIdentifier] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [capabilities, setCapabilities] = useState<Set<CustomerSubaccountCapability>>(
     new Set(SUBACCOUNT_CAPABILITIES.map((item) => item.code)),
   );
@@ -259,7 +268,7 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
       });
       await onCreated();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("子账号创建失败"));
+      setError(isPasswordPolicyError(caught) ? t("密码必须是 6 位数字。") : caught instanceof Error ? caught.message : t("子账号创建失败"));
     } finally {
       setSaving(false);
     }
@@ -273,7 +282,33 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
           <label><Text size="2" weight="medium">{t("客户名称")}</Text><TextField.Root value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={t("例如 上海澄明贸易") } required maxLength={120} /></label>
           <label><Text size="2" weight="medium">{t("登录账号")}</Text><TextField.Root value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder={t("账号、邮箱或手机号") } required maxLength={320} autoCapitalize="none" /></label>
           <label><Text size="2" weight="medium">{t("联系邮箱（可选）")}</Text><TextField.Root value={email} onChange={(event) => setEmail(event.target.value)} placeholder={t("name@example.com") } type="email" maxLength={320} /></label>
-          <label><Text size="2" weight="medium">{t("初始密码")}</Text><TextField.Root value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("至少 8 位，包含字母和数字") } type="password" required minLength={8} maxLength={128} /></label>
+          <label>
+            <Text size="2" weight="medium">{t("初始密码")}</Text>
+            <TextField.Root
+              value={password}
+              onChange={(event) => setPassword(event.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder={t("请输入 6 位数字")}
+              type={passwordVisible ? "text" : "password"}
+              inputMode="numeric"
+              pattern="[0-9]{6}"
+              required
+              minLength={6}
+              maxLength={6}
+              autoComplete="new-password"
+            >
+              <TextField.Slot side="right">
+                <button
+                  type="button"
+                  className="login-password-toggle"
+                  aria-label={t(passwordVisible ? "隐藏密码" : "显示密码")}
+                  aria-pressed={passwordVisible}
+                  onClick={() => setPasswordVisible((current) => !current)}
+                >
+                  {passwordVisible ? <EyeSlash size={18} /> : <Eye size={18} />}
+                </button>
+              </TextField.Slot>
+            </TextField.Root>
+          </label>
         </div>
         <div className="subaccount-access-options">
           {SUBACCOUNT_CAPABILITIES.map((item) => <label key={item.code}>

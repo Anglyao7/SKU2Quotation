@@ -773,7 +773,7 @@ def provision_merchant_owner(
     ):
         raise ApplicationError(
             "PASSWORD_POLICY_VIOLATION",
-            "Password must be 8-128 characters and include both letters and numbers.",
+            "Password must be exactly 6 digits.",
             kind="invalid",
         )
 

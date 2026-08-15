@@ -86,6 +86,8 @@ export function LanguagePackagesPage() {
     "zh-CN",
     "en-US",
   ]);
+  const [defaultLocale, setDefaultLocale] = useState<StorefrontLocale>("zh-CN");
+  const [savedDefaultLocale, setSavedDefaultLocale] = useState<StorefrontLocale>("zh-CN");
   const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>("en-US");
   const [status, setStatus] = useState<CatalogTranslationStatus>();
   const [job, setJob] = useState<CatalogTranslationJob>();
@@ -96,7 +98,8 @@ export function LanguagePackagesPage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  const languagesChanged = enabledLocales.join(",") !== savedLocales.join(",");
+  const languagesChanged = enabledLocales.join(",") !== savedLocales.join(",")
+    || defaultLocale !== savedDefaultLocale;
   const activeJob = job && ["QUEUED", "RUNNING", "PAUSED"].includes(job.status)
     ? job
     : undefined;
@@ -124,6 +127,12 @@ export function LanguagePackagesPage() {
         if (!active) return;
         setEnabledLocales(settings.storefrontLocales);
         setSavedLocales(settings.storefrontLocales);
+        const nextDefault = settings.storefrontDefaultLocale
+          && settings.storefrontLocales.includes(settings.storefrontDefaultLocale)
+          ? settings.storefrontDefaultLocale
+          : settings.storefrontLocales[0] || "zh-CN";
+        setDefaultLocale(nextDefault);
+        setSavedDefaultLocale(nextDefault);
         setStatus(translationStatus);
         setJob(translationStatus.latestJob);
       })
@@ -192,6 +201,9 @@ export function LanguagePackagesPage() {
         .map((language) => language.code)
         .filter((code) => values.has(code));
     });
+    if (!checked && defaultLocale === locale) {
+      setDefaultLocale("zh-CN");
+    }
     setError("");
     setSuccess("");
   };
@@ -202,9 +214,14 @@ export function LanguagePackagesPage() {
     setError("");
     setSuccess("");
     try {
-      const updated = await updateMerchantSettings({ storefrontLocales: enabledLocales });
+      const updated = await updateMerchantSettings({
+        storefrontLocales: enabledLocales,
+        storefrontDefaultLocale: defaultLocale,
+      });
       setEnabledLocales(updated.storefrontLocales);
       setSavedLocales(updated.storefrontLocales);
+      setDefaultLocale(updated.storefrontDefaultLocale);
+      setSavedDefaultLocale(updated.storefrontDefaultLocale);
       setSuccess(t("前台语言已更新。尚未完成翻译的内容会暂时显示原文。"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("前台语言保存失败。"));
@@ -344,6 +361,32 @@ export function LanguagePackagesPage() {
               </button>
             );
           })}
+        </div>
+        <div className="language-default-row">
+          <div>
+            <Text size="2" weight="bold">{t("默认语言")}</Text>
+            <Text size="1" color="gray">{t("访客首次打开商品前台时使用；访客主动切换后以选择为准。")}</Text>
+          </div>
+          <Select.Root
+            value={defaultLocale}
+            onValueChange={(value) => {
+              setDefaultLocale(value as StorefrontLocale);
+              setError("");
+              setSuccess("");
+            }}
+            disabled={!canManageSettings}
+          >
+            <Select.Trigger aria-label={t("选择默认语言")} />
+            <Select.Content position="popper">
+              {STOREFRONT_LANGUAGE_OPTIONS
+                .filter((language) => enabledLocales.includes(language.code))
+                .map((language) => (
+                  <Select.Item key={language.code} value={language.code}>
+                    {language.flag} {language.label}
+                  </Select.Item>
+                ))}
+            </Select.Content>
+          </Select.Root>
         </div>
       </Card>
 

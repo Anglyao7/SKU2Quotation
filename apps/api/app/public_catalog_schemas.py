@@ -19,6 +19,8 @@ PUBLIC_DRAFT_DISCLAIMER = (
 PUBLIC_DRAFT_DISCLAIMER_VERSION = "public-draft-v1"
 PUBLIC_PRIVACY_NOTICE_VERSION = "privacy-v1"
 
+QuoteDocumentStyle = Literal["indigo", "emerald", "gold", "slate", "rose"]
+
 
 class PublicStoreResponse(BaseModel):
     id: UUID
@@ -195,6 +197,7 @@ class PublicQuoteDraftResponse(BaseModel):
     id: UUID
     tenant_id: UUID
     quote_number: str
+    request_number: str | None = None
     status: str
     customer_name: str
     customer_company: str | None
@@ -202,6 +205,8 @@ class PublicQuoteDraftResponse(BaseModel):
     customer_phone: str | None
     notes: str | None
     locale: StorefrontLocale = "zh-CN"
+    document_style: QuoteDocumentStyle = "indigo"
+    quote_template_id: UUID | None = None
     currency: str
     subtotal: Decimal
     total: Decimal
@@ -217,6 +222,14 @@ class PublicQuoteDraftResponse(BaseModel):
     download_expires_at: datetime | None = None
     pdf_url: str | None = None
     xlsx_url: str | None = None
+
+
+class PublicQuoteDraftSettingsUpdate(BaseModel):
+    """Presentation settings used by the merchant quote workspace."""
+
+    locale: StorefrontLocale = "zh-CN"
+    style: QuoteDocumentStyle = "indigo"
+    template_id: UUID | None = None
 
 
 class PublicQuoteDraftSummary(BaseModel):
@@ -265,3 +278,4 @@ class PublicQuoteDocument(BaseModel):
     contact_phone: str | None
     quote: PublicQuoteDraftResponse
     excel_template: QuoteExcelTemplateRenderSpec | None = None
+    style: QuoteDocumentStyle = "indigo"

@@ -70,6 +70,11 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         default=lambda: ["zh-CN", "en-US"],
         nullable=False,
     )
+    storefront_default_locale: Mapped[str] = mapped_column(
+        String(20),
+        default="zh-CN",
+        nullable=False,
+    )
     hot_products_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -214,6 +219,11 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
         UniqueConstraint(
             "tenant_id", "request_number", name="uq_public_quote_drafts_tenant_number"
         ),
+        UniqueConstraint(
+            "tenant_id",
+            "quotation_number",
+            name="uq_public_quote_drafts_tenant_quotation_number",
+        ),
         Index(
             "ix_public_quote_drafts_tenant_status_created",
             "tenant_id",
@@ -245,6 +255,7 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
         ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
     request_number: Mapped[str] = mapped_column(String(80), nullable=False)
+    quotation_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(
         String(30), default="PENDING_CONFIRMATION", nullable=False
     )
@@ -257,6 +268,16 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     document_locale: Mapped[str] = mapped_column(
         String(20), default="zh-CN", nullable=False
+    )
+    # Settings for the merchant-issued document workspace.  The original
+    # storefront request remains immutable; these fields only control how the
+    # merchant prepares the document for export.
+    document_style: Mapped[str] = mapped_column(
+        String(24), default="indigo", nullable=False
+    )
+    quote_template_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("quote_excel_templates.id", ondelete="SET NULL"),
+        nullable=True,
     )
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     subtotal_amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)

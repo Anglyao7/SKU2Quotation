@@ -22,7 +22,10 @@ from ..services.storefront_branding import (
     storefront_logo_url,
 )
 from ..services.storefront_paths import allocate_storefront_slug
-from ..storefront_locales import effective_storefront_locales
+from ..storefront_locales import (
+    effective_storefront_locales,
+    normalize_storefront_locale,
+)
 from ..tenant_slugs import storefront_slug_from_name
 
 
@@ -39,6 +42,19 @@ def _response(
     tenant: TenantRow,
     profile: TenantPublicProfileRow | None,
 ) -> MerchantSettingsResponse:
+    storefront_locales = effective_storefront_locales(
+        profile.storefront_locales if profile is not None else None,
+        source_locale=tenant.default_locale,
+    )
+    storefront_default_locale = (
+        normalize_storefront_locale(
+            profile.storefront_default_locale if profile is not None else None
+        )
+        or normalize_storefront_locale(tenant.default_locale)
+        or "zh-CN"
+    )
+    if storefront_default_locale not in storefront_locales:
+        storefront_default_locale = storefront_locales[0]
     return MerchantSettingsResponse(
         name=tenant.name,
         slug=tenant.slug,
@@ -51,10 +67,8 @@ def _response(
             "DOMESTIC" if tenant.default_currency.upper() == "CNY" else "EXPORT"
         ),
         default_currency=tenant.default_currency.upper(),
-        storefront_locales=effective_storefront_locales(
-            profile.storefront_locales if profile is not None else None,
-            source_locale=tenant.default_locale,
-        ),
+        storefront_locales=storefront_locales,
+        storefront_default_locale=storefront_default_locale,
         hot_products_enabled=(
             bool(profile.hot_products_enabled) if profile is not None else False
         ),
@@ -185,6 +199,7 @@ def update_merchant_settings(
         request.name is not None
         or request.share_card_subtitle is not None
         or request.storefront_locales is not None
+        or request.storefront_default_locale is not None
         or request.hot_products_enabled is not None
     ):
         profile = TenantPublicProfileRow(
@@ -235,6 +250,30 @@ def update_merchant_settings(
             request.storefront_locales,
             source_locale=tenant.default_locale,
         )
+        current_default = normalize_storefront_locale(
+            profile.storefront_default_locale
+        )
+        if current_default not in profile.storefront_locales:
+            profile.storefront_default_locale = (
+                normalize_storefront_locale(tenant.default_locale)
+                or profile.storefront_locales[0]
+            )
+
+    if request.storefront_default_locale is not None:
+        assert profile is not None
+        enabled_locales = effective_storefront_locales(
+            profile.storefront_locales,
+            source_locale=tenant.default_locale,
+        )
+        requested_default = normalize_storefront_locale(
+            request.storefront_default_locale
+        )
+        if requested_default is None or requested_default not in enabled_locales:
+            raise ApplicationError(
+                "STOREFRONT_DEFAULT_LOCALE_DISABLED",
+                "默认语言必须是已启用的前台语言。",
+            )
+        profile.storefront_default_locale = requested_default
 
     if request.share_card_subtitle is not None:
         assert profile is not None

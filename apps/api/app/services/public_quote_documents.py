@@ -791,6 +791,14 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
     quote = document.quote
     locale = quote_locale(quote.locale)
     font_name = _register_quote_pdf_font(locale)
+    style_palette = {
+        "indigo": {"accent": "#314B9B", "soft": "#EEF2FF", "border": "#CBD5E1"},
+        "emerald": {"accent": "#087F5B", "soft": "#E8F7F0", "border": "#B7E4D2"},
+        "gold": {"accent": "#8A6418", "soft": "#FBF3D7", "border": "#E4CF8A"},
+        "slate": {"accent": "#334155", "soft": "#F1F5F9", "border": "#CBD5E1"},
+        "rose": {"accent": "#9F3B5B", "soft": "#FFF0F4", "border": "#F0C4D2"},
+    }
+    palette = style_palette.get(document.style, style_palette["indigo"])
     buffer = BytesIO()
     styles = getSampleStyleSheet()
     rtl = quote_is_rtl(locale)
@@ -800,7 +808,7 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
         fontName=font_name,
         fontSize=18,
         leading=24,
-        textColor=colors.HexColor("#172033"),
+        textColor=colors.HexColor(palette["accent"]),
         alignment=TA_RIGHT if rtl else styles["Title"].alignment,
     )
     body_style = ParagraphStyle(
@@ -879,10 +887,10 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
             [
                 ("FONTNAME", (0, 0), (-1, -1), font_name),
                 ("FONTSIZE", (0, 0), (-1, -1), 8.2),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#172033")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(palette["accent"])),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -2), 0.35, colors.HexColor("#CBD3DF")),
-                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#EEF2F7")),
+                ("GRID", (0, 0), (-1, -2), 0.35, colors.HexColor(palette["border"])),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor(palette["soft"])),
                 ("ALIGN", (0, 0), (0, -1), "CENTER"),
                 ("ALIGN", (3, 1), (3, -1), "RIGHT"),
                 ("ALIGN", (5, 1), (-1, -1), "RIGHT"),

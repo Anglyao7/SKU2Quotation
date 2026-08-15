@@ -39,7 +39,7 @@ import { useLocale } from "../LocaleContext";
 import { automaticTagColor, TAG_COLOR_PALETTE, tagGlassStyle } from "../../lib/tagColors";
 import type { ProductCategory, SkuListItem } from "../types";
 
-type CategoryCoverSource = ProductCategory["coverSource"];
+type CategoryCoverSource = NonNullable<ProductCategory["coverSource"]>;
 
 type Draft =
   | { mode: "create"; parentId?: string; name: string; sortOrder: number; displayColor?: string; status: "ACTIVE" }
@@ -164,7 +164,7 @@ export function CategoryManager({
             version: latest.version,
             sortOrder: latest.sortOrder,
             displayColor: latest.displayColor,
-            coverSource: latest.coverSource,
+            coverSource: latest.coverSource ?? "NONE",
             coverProductId: latest.coverProductId,
             coverProductName: latest.coverProductName,
             coverImageUrl: latest.coverImageUrl,
@@ -300,7 +300,7 @@ export function CategoryManager({
       displayColor: category.displayColor,
       status: category.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
       version: category.version,
-      coverSource: category.coverSource,
+      coverSource: category.coverSource ?? "NONE",
       coverProductId: category.coverProductId,
       coverProductName: category.coverProductName,
       coverImageUrl: category.coverImageUrl,
@@ -317,6 +317,20 @@ export function CategoryManager({
   const parentLocked = selectedChildren.length > 0;
   const selectedParent = draft.parentId ? roots.find((root) => root.id === draft.parentId) : undefined;
   const coverEditor = draft.mode === "edit" && draft.parentId ? draft : undefined;
+  const coverPreviewUrl = draft.mode === "edit"
+    ? draft.coverSource === "UPLOAD"
+      ? draft.uploadedCoverImageUrl ?? draft.coverImageUrl
+      : draft.coverSource === "PRODUCT"
+        ? draft.coverProductImageUrl ?? draft.coverImageUrl
+        : undefined
+    : undefined;
+  const coverPreviewLabel = draft.mode === "edit"
+    ? draft.coverSource === "UPLOAD"
+      ? t("自定义样图")
+      : draft.coverSource === "PRODUCT"
+        ? draft.coverProductName || t("商品主图")
+        : t("默认分类图标")
+    : "";
   const colorPreviewName = draft.name.trim() || t("一级分类");
   const activeCategoryColor = draft.displayColor || automaticTagColor(colorPreviewName);
   const changeParent = (value: string) => {
@@ -373,7 +387,8 @@ export function CategoryManager({
   const chooseCoverSource = (source: CategoryCoverSource) => {
     if (draft.mode !== "edit" || !draft.parentId) return;
     setCoverError("");
-    if (source === "UPLOAD" && !draft.uploadedCoverImageUrl) {
+    // Clicking upload always opens the picker so replacing a sample image is one step.
+    if (source === "UPLOAD") {
       coverInputRef.current?.click();
       return;
     }
@@ -382,11 +397,9 @@ export function CategoryManager({
       coverSource: source,
       coverProductId: source === "PRODUCT" ? draft.coverProductId : undefined,
       coverProductName: source === "PRODUCT" ? draft.coverProductName : undefined,
-      coverImageUrl: source === "UPLOAD"
-        ? draft.uploadedCoverImageUrl
-        : source === "PRODUCT"
-          ? draft.coverProductImageUrl
-          : undefined,
+      coverImageUrl: source === "PRODUCT"
+        ? draft.coverProductImageUrl
+        : undefined,
     });
   };
 
@@ -973,8 +986,8 @@ export function CategoryManager({
           <section className="core-category-cover-field">
             <div className="core-category-cover-heading">
               <span>
-                <Text size="2" weight="medium">{t("分类门面")}</Text>
-                <Text size="1" color="gray">{t("访客进入一级分类后看到的图片")}</Text>
+                <Text size="2" weight="medium">{t("二级分类门面")}</Text>
+                <Text size="1" color="gray">{t("这张样图会显示在前台二级分类卡片上")}</Text>
               </span>
               {draft.coverSource !== "NONE" ? (
                 <Badge color="jade" variant="soft">{t("已设置")}</Badge>
@@ -993,58 +1006,56 @@ export function CategoryManager({
               }}
             />
 
-            <div className="core-category-cover-sources" role="group" aria-label={t("分类门面来源")}>
-              <button
-                type="button"
-                className={draft.coverSource === "NONE" ? "is-active" : ""}
-                onClick={() => chooseCoverSource("NONE")}
-              >
-                <Folder weight="duotone" />
-                <span><strong>{t("不设置图片")}</strong><small>{t("使用默认分类图标")}</small></span>
-                {draft.coverSource === "NONE" ? <CheckCircle weight="fill" /> : null}
-              </button>
-              <button
-                type="button"
-                className={draft.coverSource === "UPLOAD" ? "is-active" : ""}
-                disabled={coverUploadBusy}
-                onClick={() => chooseCoverSource("UPLOAD")}
-              >
-                <UploadSimple weight="duotone" />
-                <span><strong>{t("上传图片")}</strong><small>{t("自行维护分类主图")}</small></span>
-                {draft.coverSource === "UPLOAD" ? <CheckCircle weight="fill" /> : null}
-              </button>
-              <button
-                type="button"
-                className={draft.coverSource === "PRODUCT" ? "is-active" : ""}
-                onClick={() => chooseCoverSource("PRODUCT")}
-              >
-                <ImageSquare weight="duotone" />
-                <span><strong>{t("选择商品")}</strong><small>{t("使用商品主图充当门面")}</small></span>
-                {draft.coverSource === "PRODUCT" ? <CheckCircle weight="fill" /> : null}
-              </button>
-            </div>
-
-            {draft.coverSource === "UPLOAD" ? (
-              <div className="core-category-cover-preview">
-                {draft.uploadedCoverImageUrl ? (
-                  <img src={draft.uploadedCoverImageUrl} alt={t("{name} 分类门面", { name: draft.name })} />
+            {draft.coverSource !== "NONE" ? (
+              <div className="core-category-cover-current">
+                {coverPreviewUrl ? (
+                  <img src={coverPreviewUrl} alt={t("{name} 的二级分类门面", { name: draft.name })} />
                 ) : (
                   <span><ImageSquare weight="duotone" /></span>
                 )}
                 <div>
-                  <strong>{t(coverUploadBusy ? "正在上传…" : "自定义分类图片")}</strong>
-                  <small>{t("建议使用清晰的正方形图片")}</small>
+                  <small>{t("当前门面")}</small>
+                  <strong>{coverPreviewLabel}</strong>
                 </div>
-                <Button
-                  size="1"
-                  variant="soft"
-                  disabled={coverUploadBusy}
-                  onClick={() => coverInputRef.current?.click()}
-                >
-                  <UploadSimple />{t(draft.uploadedCoverImageUrl ? "更换图片" : "上传图片")}
-                </Button>
+                {coverUploadBusy ? <Spinner /> : <CheckCircle weight="fill" />}
               </div>
-            ) : null}
+            ) : (
+              <div className="core-category-cover-empty">
+                <ImageSquare weight="duotone" />
+                <span>{t("还没有门面图片")}</span>
+              </div>
+            )}
+
+            <div className="core-category-cover-sources" role="group" aria-label={t("分类门面来源")}>
+              <button
+                type="button"
+                className={`core-category-cover-source-button${draft.coverSource === "NONE" ? " is-active" : ""}`}
+                onClick={() => chooseCoverSource("NONE")}
+              >
+                <Folder weight="duotone" />
+                <span><strong>{t("默认图标")}</strong></span>
+                {draft.coverSource === "NONE" ? <CheckCircle weight="fill" /> : null}
+              </button>
+              <button
+                type="button"
+                className={`core-category-cover-source-button${draft.coverSource === "UPLOAD" ? " is-active" : ""}`}
+                disabled={coverUploadBusy}
+                onClick={() => chooseCoverSource("UPLOAD")}
+              >
+                <UploadSimple weight="duotone" />
+                <span><strong>{t(coverUploadBusy ? "上传中…" : "上传样图")}</strong></span>
+                {draft.coverSource === "UPLOAD" ? <CheckCircle weight="fill" /> : null}
+              </button>
+              <button
+                type="button"
+                className={`core-category-cover-source-button${draft.coverSource === "PRODUCT" ? " is-active" : ""}`}
+                onClick={() => chooseCoverSource("PRODUCT")}
+              >
+                <ImageSquare weight="duotone" />
+                <span><strong>{t("从商品选择")}</strong></span>
+                {draft.coverSource === "PRODUCT" ? <CheckCircle weight="fill" /> : null}
+              </button>
+            </div>
 
             {draft.coverSource === "PRODUCT" ? (
               <div className="core-category-cover-products">
@@ -1056,13 +1067,6 @@ export function CategoryManager({
                 >
                   <TextField.Slot><MagnifyingGlass /></TextField.Slot>
                 </TextField.Root>
-                {draft.coverProductId && draft.coverProductName ? (
-                  <div className="core-category-cover-selected">
-                    {draft.coverProductImageUrl ? <img src={draft.coverProductImageUrl} alt="" /> : <span><ImageSquare /></span>}
-                    <div><small>{t("当前门面")}</small><strong>{draft.coverProductName}</strong></div>
-                    <CheckCircle weight="fill" />
-                  </div>
-                ) : null}
                 <div className="core-category-cover-product-list" aria-busy={coverCandidatesLoading}>
                   {coverCandidates.map((candidate) => (
                     <button

@@ -234,6 +234,8 @@ class SupportAIAgentResponse(BaseModel):
     system_prompt: str | None = None
     handoff_messages: dict[str, str] = Field(default_factory=dict)
     stores: list[SupportAIAgentStoreResponse] = Field(default_factory=list)
+    knowledge_base_count: int = Field(ge=0)
+    active_knowledge_base_count: int = Field(ge=0)
     knowledge_source_count: int = Field(ge=0)
     approved_knowledge_source_count: int = Field(ge=0)
     created_at: datetime
@@ -300,6 +302,7 @@ class SupportAISettingsUpdate(BaseModel):
 
 class SupportAIKnowledgeSourceResponse(BaseModel):
     id: UUID
+    knowledge_base_id: UUID | None = None
     title: str
     description: str | None = None
     source_type: Literal["FILE"] = "FILE"
@@ -317,6 +320,23 @@ class SupportAIKnowledgeSourceResponse(BaseModel):
     approved_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class SupportAIKnowledgeChunkResponse(BaseModel):
+    id: UUID
+    chunk_index: int = Field(ge=0)
+    section_path: str
+    content: str
+    token_count: int = Field(ge=0)
+    language: str
+    locator: dict[str, object] = Field(default_factory=dict)
+
+
+class SupportAIKnowledgeBaseSourceDetailResponse(BaseModel):
+    knowledge_base_id: UUID
+    knowledge_base_name: str
+    source: SupportAIKnowledgeSourceResponse
+    chunks: list[SupportAIKnowledgeChunkResponse]
 
 
 class SupportAIKnowledgeSourceUpdate(BaseModel):
@@ -354,6 +374,78 @@ class SupportAIIngestionJobResponse(BaseModel):
 
 
 class SupportAIKnowledgeUploadResponse(BaseModel):
+    source: SupportAIKnowledgeSourceResponse
+    job: SupportAIIngestionJobResponse
+
+
+class SupportAIKnowledgeBaseResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    tenant_name: str
+    agent_id: UUID
+    name: str
+    description: str | None = None
+    rules_context: str | None = None
+    status: Literal["ACTIVE", "DISABLED"]
+    source_count: int = Field(ge=0)
+    approved_source_count: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SupportAIKnowledgeBaseCreate(BaseModel):
+    tenant_id: UUID
+    name: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+    rules_context: str | None = Field(default=None, max_length=20000)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_base_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_base_description(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
+class SupportAIKnowledgeBaseUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+    rules_context: str | None = Field(default=None, max_length=20000)
+    status: Literal["ACTIVE", "DISABLED"] | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_optional_base_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_optional_base_description(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @field_validator("rules_context", mode="before")
+    @classmethod
+    def normalize_rules_context(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
+class SupportAIKnowledgeBaseSourceResponse(BaseModel):
+    knowledge_base_id: UUID
+    knowledge_base_name: str
+    source: SupportAIKnowledgeSourceResponse
+
+
+class SupportAIKnowledgeBaseUploadResponse(BaseModel):
+    knowledge_base: SupportAIKnowledgeBaseResponse
     source: SupportAIKnowledgeSourceResponse
     job: SupportAIIngestionJobResponse
 

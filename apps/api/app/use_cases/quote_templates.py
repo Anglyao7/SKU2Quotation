@@ -353,3 +353,37 @@ def default_render_spec(
         columns=response.columns,
         column_mappings=response.column_mappings,
     )
+
+
+def render_spec_for_template(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    template_id: UUID | None,
+) -> QuoteExcelTemplateRenderSpec | None:
+    """Return a tenant-owned render spec, falling back to the default template.
+
+    A quote stores the selected template id so future exports remain stable
+    even if the merchant later changes which template is marked as default.
+    """
+    row = (
+        repository.get_for_tenant(
+            session,
+            tenant_id=tenant_id,
+            template_id=template_id,
+        )
+        if template_id is not None
+        else repository.get_default(session, tenant_id=tenant_id)
+    )
+    if row is None or not row.column_mappings:
+        return None
+    response = _response(row)
+    return QuoteExcelTemplateRenderSpec(
+        object_key=row.object_key,
+        sheet_name=row.sheet_name,
+        header_row=row.header_row,
+        data_start_row=row.data_start_row,
+        data_end_row=row.data_end_row,
+        columns=response.columns,
+        column_mappings=response.column_mappings,
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import timedelta
@@ -165,6 +166,62 @@ def _parse_docx(path: Path) -> tuple[list[ParsedKnowledgeBlock], str, str]:
     return blocks, "python-docx", "1"
 
 
+def _parse_json_strategy(path: Path) -> tuple[list[ParsedKnowledgeBlock], str, str]:
+    """Parse an uploaded Q&A strategy file into searchable, human-readable blocks."""
+
+    try:
+        payload = json.loads(_decode_text(path))
+    except json.JSONDecodeError as exc:
+        raise KnowledgeIngestionError(
+            "KNOWLEDGE_JSON_INVALID", "问答策略必须是有效的 JSON 文件。"
+        ) from exc
+
+    blocks: list[ParsedKnowledgeBlock] = []
+    question_keys = ("question", "query", "user", "input", "询问", "问题")
+    answer_keys = ("answer", "response", "output", "reply", "回答", "回复")
+
+    def first_text(item: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+        for key in keys:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return _clean_text(value)
+        return None
+
+    def visit(value: Any, path: str = "问答策略") -> None:
+        if isinstance(value, list):
+            for index, item in enumerate(value, start=1):
+                visit(item, f"{path} / {index}")
+            return
+        if isinstance(value, dict):
+            question = first_text(value, question_keys)
+            answer = first_text(value, answer_keys)
+            if question and answer:
+                blocks.append(
+                    ParsedKnowledgeBlock(
+                        text=f"问题：{question}\n回答：{answer}",
+                        section_path=path,
+                        locator={"type": "json_qa", "path": path},
+                    )
+                )
+                return
+            for key, item in value.items():
+                if isinstance(item, (dict, list)):
+                    visit(item, f"{path} / {key}")
+
+    visit(payload)
+    if not blocks:
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+        if rendered.strip():
+            blocks.append(
+                ParsedKnowledgeBlock(
+                    text=_clean_text(rendered),
+                    section_path="问答策略",
+                    locator={"type": "json_document"},
+                )
+            )
+    return blocks, "json-strategy", "1"
+
+
 def _parse_pdf(path: Path) -> tuple[list[ParsedKnowledgeBlock], str, str]:
     try:
         from pypdf import PdfReader
@@ -226,12 +283,14 @@ def parse_knowledge_file(
         blocks, parser, version = _parse_text(path)
     elif suffix == ".docx":
         blocks, parser, version = _parse_docx(path)
+    elif suffix == ".json":
+        blocks, parser, version = _parse_json_strategy(path)
     elif suffix == ".pdf":
         blocks, parser, version = _parse_pdf(path)
     else:
         raise KnowledgeIngestionError(
             "KNOWLEDGE_FILE_TYPE_UNSUPPORTED",
-            "仅支持 PDF、DOCX、TXT 和 Markdown 文件。",
+            "仅支持 PDF、DOCX、TXT、Markdown 和 JSON 文件。",
         )
     total = sum(len(block.text) for block in blocks)
     if total <= 0:
@@ -401,9 +460,17 @@ def index_knowledge_source(
     source.language = detected_language
     source.chunk_count = len(chunks)
     source.version += 1
-    source.status = "APPROVED"
-    source.approved_at = utcnow()
-    source.approved_by_user_id = source.created_by_user_id
+    # Merchant background documents are approved after a successful parse. A
+    # JSON Q&A strategy is deliberately held for the administrator's one-click
+    # approval so an unfinished strategy cannot silently affect replies.
+    if Path(source.original_filename).suffix.casefold() == ".json":
+        source.status = "READY"
+        source.approved_at = None
+        source.approved_by_user_id = None
+    else:
+        source.status = "APPROVED"
+        source.approved_at = utcnow()
+        source.approved_by_user_id = source.created_by_user_id
     job.status = "SUCCEEDED"
     job.progress = 100
     job.chunks_written = len(chunks)

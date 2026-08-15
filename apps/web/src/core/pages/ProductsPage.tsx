@@ -284,6 +284,9 @@ export function ProductsPage() {
   );
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [singleDeleteTarget, setSingleDeleteTarget] = useState<SkuListItem>();
+  const [singleDeleteBusy, setSingleDeleteBusy] = useState(false);
+  const [singleDeleteError, setSingleDeleteError] = useState("");
   const [bulkAction, setBulkAction] = useState<BulkSkuAction>();
   const [bulkCategoryId, setBulkCategoryId] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -828,6 +831,43 @@ export function ProductsPage() {
       setDeleteBusy(false);
     }
   };
+  const requestSingleDelete = (sku: SkuListItem) => {
+    if (!canDelete) return;
+    setSingleDeleteError("");
+    setSingleDeleteTarget(sku);
+  };
+  const deleteSingleSku = async () => {
+    if (!canDelete || !singleDeleteTarget) return;
+    setSingleDeleteBusy(true);
+    setSingleDeleteError("");
+    try {
+      const target = singleDeleteTarget;
+      const response = await batchDeleteSkus([target.id]);
+      if (response.failedCount || response.successCount !== 1) {
+        throw new Error(response.failedItems[0]?.reason || t("单个 SKU 删除失败，请稍后重试。"));
+      }
+      setSelectedSkuIds((current) => {
+        const next = new Set(current);
+        next.delete(target.id);
+        return next;
+      });
+      setSingleDeleteTarget(undefined);
+      setBulkNotice(t("已删除 SKU {code}。", { code: target.skuCode }));
+      const remainingTotal = Math.max(0, result.total - 1);
+      const lastAvailablePage = Math.max(1, Math.ceil(remainingTotal / pageSize));
+      if (page > lastAvailablePage) {
+        setPage(lastAvailablePage);
+      } else {
+        await load();
+      }
+    } catch (reason) {
+      setSingleDeleteError(
+        reason instanceof Error ? reason.message : t("单个 SKU 删除失败，请稍后重试。"),
+      );
+    } finally {
+      setSingleDeleteBusy(false);
+    }
+  };
   const setDeleteAllOpen = (open: boolean) => {
     if (!canDelete || deleteAllBusy) return;
     setDeleteAllDialogOpen(open);
@@ -1207,6 +1247,18 @@ export function ProductsPage() {
                         >
                           {t("详情")}
                         </Button>
+                        {canDelete ? (
+                          <Button
+                            size="1"
+                            variant="ghost"
+                            color="red"
+                            onClick={() => requestSingleDelete(sku)}
+                            aria-label={t("删除 SKU {code}", { code: sku.skuCode })}
+                            title={t("删除")}
+                          >
+                            <Trash />
+                          </Button>
+                        ) : null}
                       </td>
                     </tr>
                   );
@@ -1324,6 +1376,59 @@ export function ProductsPage() {
             <Button variant="soft" color="gray" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(false)}>{t("取消")}</Button>
             <Button color="red" disabled={deleteBusy || !selectedSkuIds.size} onClick={() => void deleteSelectedSkus()}>
               <Trash />{t(deleteBusy ? "正在删除…" : "确认删除")}
+            </Button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      <Dialog.Root
+        open={Boolean(singleDeleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !singleDeleteBusy) {
+            setSingleDeleteTarget(undefined);
+            setSingleDeleteError("");
+          }
+        }}
+      >
+        <Dialog.Content className="core-sku-delete-dialog">
+          <div className="core-dialog-heading">
+            <div>
+              <Text size="1" color="red">{t("删除 SKU")}</Text>
+              <Dialog.Title>{t("确认删除此 SKU？")}</Dialog.Title>
+              <Dialog.Description>
+                {singleDeleteTarget
+                  ? t("删除后将不再展示 SKU {code}，商品历史业务数据会保留。", { code: singleDeleteTarget.skuCode })
+                  : t("删除后将不再展示此 SKU。")}
+              </Dialog.Description>
+            </div>
+            <Button
+              variant="ghost"
+              color="gray"
+              disabled={singleDeleteBusy}
+              onClick={() => setSingleDeleteTarget(undefined)}
+              aria-label={t("关闭")}
+            >
+              <X />
+            </Button>
+          </div>
+          {singleDeleteTarget ? (
+            <Card className="core-sku-single-delete-summary">
+              <Text size="2" weight="bold">{singleDeleteTarget.productName}</Text>
+              <Text size="1" color="gray">{singleDeleteTarget.skuCode}</Text>
+            </Card>
+          ) : null}
+          {singleDeleteError ? <div className="core-form-error" role="alert">{singleDeleteError}</div> : null}
+          <div className="core-dialog-actions">
+            <Button
+              variant="soft"
+              color="gray"
+              disabled={singleDeleteBusy}
+              onClick={() => setSingleDeleteTarget(undefined)}
+            >
+              {t("取消")}
+            </Button>
+            <Button color="red" disabled={singleDeleteBusy || !singleDeleteTarget} onClick={() => void deleteSingleSku()}>
+              <Trash />{t(singleDeleteBusy ? "正在删除…" : "确认删除")}
             </Button>
           </div>
         </Dialog.Content>
@@ -1473,7 +1578,14 @@ export function ProductsPage() {
                         {(item.file.size / 1024 / 1024).toFixed(2)} MB
                         {item.detection ? ` · ${item.detection.detected_type}` : ""}
                       </Text>
-                      {item.error ? <Text size="1" color="red">{item.error}</Text> : null}
+                      {item.error ? (
+                        <Text
+                          size="1"
+                          color={item.status === "failed" ? "red" : item.status === "published" ? "jade" : "gray"}
+                        >
+                          {item.error}
+                        </Text>
+                      ) : null}
                       {["uploading", "processing"].includes(item.status) ? <Progress value={item.progress} /> : null}
                     </div>
                     <Badge color={item.status === "published" || item.status === "ready" ? "jade" : item.status === "failed" ? "red" : "blue"}>{statusLabel}</Badge>

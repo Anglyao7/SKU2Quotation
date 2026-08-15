@@ -6,6 +6,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -19,8 +20,10 @@ from .translation import (
     TranslationProvider,
     TranslationProviderError,
     _aliyun_endpoint,
+    _deeplx_endpoint,
     _openai_chat_completions_endpoint,
     aliyun_alimt_translation_provider,
+    deeplx_translation_provider,
     openai_compatible_translation_provider,
 )
 from .translation_rate_limit import (
@@ -42,7 +45,7 @@ MAX_CATALOG_BATCH_CHARACTERS = 100_000
 MAX_TRANSLATION_RETRY_COUNT = 10
 DEFAULT_REASONING_EFFORT = "low"
 SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high"}
-SUPPORTED_PROVIDERS = {"openai-compatible", "aliyun-alimt"}
+SUPPORTED_PROVIDERS = {"openai-compatible", "deeplx", "aliyun-alimt"}
 ALIYUN_GENERAL_EDITION = "translate_standard"
 
 
@@ -127,9 +130,16 @@ def _normalized_provider(value: str) -> str:
     normalized = value.strip().lower().replace("_", "-")
     if normalized not in SUPPORTED_PROVIDERS:
         raise TranslationProviderError(
-            "translation provider must be openai-compatible or aliyun-alimt"
+            "translation provider must be openai-compatible, deeplx, or aliyun-alimt"
         )
     return normalized
+
+
+def _redacted_deeplx_endpoint(endpoint: str) -> str:
+    """Keep the token-bearing path out of the plaintext settings column."""
+
+    parsed = urlsplit(endpoint)
+    return urlunsplit((parsed.scheme, parsed.netloc, "/translate", "", ""))
 
 
 def normalized_catalog_translation_batch_limits(
@@ -212,6 +222,12 @@ def _validated_provider(
     normalized_provider = _normalized_provider(provider)
     normalized_base_url = base_url.strip().rstrip("/")
     normalized_model = model_name.strip()
+    if normalized_provider == "deeplx":
+        return deeplx_translation_provider(
+            endpoint=api_key,
+            timeout_seconds=float(timeout_seconds),
+            production=_managed_environment(),
+        )
     if normalized_provider == "aliyun-alimt":
         if normalized_model != ALIYUN_GENERAL_EDITION:
             raise TranslationProviderError(
@@ -249,6 +265,8 @@ def get_managed_translation_settings(
 
 def _environment_provider() -> str | None:
     profile = os.getenv("CATALOG_TRANSLATION_PROFILE", "disabled").strip().lower()
+    if profile == "deeplx":
+        return "deeplx"
     if profile == "openai_compatible":
         return "openai-compatible"
     if profile == "aliyun_alimt":
@@ -260,9 +278,13 @@ def _environment_api_key(provider: str) -> str:
     if _environment_provider() != provider:
         return ""
     variable = (
-        "ALIYUN_TRANSLATION_ACCESS_KEY_SECRET"
-        if provider == "aliyun-alimt"
-        else "OPENAI_TRANSLATION_API_KEY"
+        "DEEPLX_TRANSLATE_URL"
+        if provider == "deeplx"
+        else (
+            "ALIYUN_TRANSLATION_ACCESS_KEY_SECRET"
+            if provider == "aliyun-alimt"
+            else "OPENAI_TRANSLATION_API_KEY"
+        )
     )
     return os.getenv(variable, "").strip()
 
@@ -422,7 +444,8 @@ def translation_configuration_snapshot(
         source="database",
         provider=settings.provider,
         enabled=settings.is_active,
-        base_url=settings.base_url,
+        # DeepLX endpoints commonly include the access token in the path.
+        base_url=None if settings.provider == "deeplx" else settings.base_url,
         model_name=settings.model_name,
         region_id=settings.region_id,
         timeout_seconds=settings.timeout_seconds,
@@ -435,7 +458,7 @@ def translation_configuration_snapshot(
         api_key_configured=bool(settings.api_key_ciphertext),
         api_key_hint=(
             f"••••{settings.api_key_last_four}"
-            if settings.api_key_last_four
+            if settings.provider != "deeplx" and settings.api_key_last_four
             else None
         ),
         access_key_id_configured=bool(settings.access_key_id_ciphertext),
@@ -576,10 +599,14 @@ def candidate_translation_provider(
 ) -> TranslationProvider:
     normalized_translation_requests_per_minute(requests_per_minute)
     normalized_provider = _normalized_provider(provider)
-    resolved_key = _resolved_api_key(
-        session,
-        provider=normalized_provider,
-        api_key=api_key,
+    resolved_key = (
+        base_url.strip()
+        if normalized_provider == "deeplx" and base_url.strip()
+        else _resolved_api_key(
+            session,
+            provider=normalized_provider,
+            api_key=api_key,
+        )
     )
     if not resolved_key:
         raise TranslationProviderError(
@@ -639,7 +666,34 @@ def save_managed_translation_settings(
             catalog_batch_characters,
         )
     )
-    if normalized_provider == "aliyun-alimt":
+    settings = get_managed_translation_settings(session)
+    provider_changed = bool(
+        settings is not None and settings.provider != normalized_provider
+    )
+    resolved_key = (
+        base_url.strip()
+        if normalized_provider == "deeplx" and base_url.strip()
+        else _resolved_api_key(
+            session,
+            provider=normalized_provider,
+            api_key=api_key,
+        )
+    )
+    if normalized_provider == "deeplx":
+        if not resolved_key:
+            raise TranslationProviderError(
+                "DeepLX translation endpoint is required for the first configuration"
+            )
+        endpoint = _deeplx_endpoint(
+            resolved_key,
+            production=_managed_environment(),
+        )
+        resolved_key = endpoint
+        normalized_base_url = _redacted_deeplx_endpoint(endpoint)
+        normalized_model = "DeepLX"
+        normalized_region = None
+        normalized_reasoning = "none"
+    elif normalized_provider == "aliyun-alimt":
         normalized_base_url = _aliyun_endpoint(base_url)
         normalized_model = ALIYUN_GENERAL_EDITION
         normalized_region = (
@@ -659,15 +713,6 @@ def save_managed_translation_settings(
         if not normalized_model:
             raise TranslationProviderError("translation model is required")
 
-    settings = get_managed_translation_settings(session)
-    provider_changed = bool(
-        settings is not None and settings.provider != normalized_provider
-    )
-    resolved_key = _resolved_api_key(
-        session,
-        provider=normalized_provider,
-        api_key=api_key,
-    )
     resolved_access_key_id = _resolved_access_key_id(
         session,
         provider=normalized_provider,
@@ -698,7 +743,11 @@ def save_managed_translation_settings(
             reasoning_effort=normalized_reasoning,
         )
 
-    normalized_input_key = (api_key or "").strip()
+    normalized_input_key = (
+        base_url.strip()
+        if normalized_provider == "deeplx"
+        else (api_key or "").strip()
+    )
     normalized_input_access_key_id = (access_key_id or "").strip()
     should_store_key = bool(normalized_input_key) or bool(
         resolved_key
@@ -735,7 +784,11 @@ def save_managed_translation_settings(
                 if should_store_key
                 else None
             ),
-            api_key_last_four=resolved_key[-4:] if should_store_key else None,
+            api_key_last_four=(
+                resolved_key[-4:]
+                if should_store_key and normalized_provider != "deeplx"
+                else None
+            ),
             access_key_id_ciphertext=(
                 encrypt_translation_api_key(resolved_access_key_id)
                 if should_store_access_key_id
@@ -776,8 +829,12 @@ def save_managed_translation_settings(
             settings.api_key_ciphertext = encrypt_translation_api_key(
                 resolved_key
             )
-            settings.api_key_last_four = resolved_key[-4:]
-        if normalized_provider == "openai-compatible":
+            settings.api_key_last_four = (
+                resolved_key[-4:]
+                if normalized_provider != "deeplx"
+                else None
+            )
+        if normalized_provider != "aliyun-alimt":
             settings.access_key_id_ciphertext = None
             settings.access_key_id_last_four = None
         elif should_store_access_key_id:

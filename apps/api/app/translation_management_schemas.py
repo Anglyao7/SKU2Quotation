@@ -5,7 +5,11 @@ from pydantic import BaseModel, Field, SecretStr
 
 
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
-TranslationProviderKind = Literal["openai-compatible", "aliyun-alimt"]
+TranslationProviderKind = Literal[
+    "openai-compatible",
+    "deeplx",
+    "aliyun-alimt",
+]
 
 
 class TranslationSettingsResponse(BaseModel):
@@ -31,7 +35,7 @@ class TranslationSettingsResponse(BaseModel):
 
 class TranslationProviderParameters(BaseModel):
     provider: TranslationProviderKind = "openai-compatible"
-    base_url: str = Field(min_length=1, max_length=1000)
+    base_url: str = Field(default="", max_length=1000)
     api_key: SecretStr | None = Field(default=None, max_length=4096)
     access_key_id: SecretStr | None = Field(default=None, max_length=4096)
     model_name: str = Field(min_length=1, max_length=300)

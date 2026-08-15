@@ -27,6 +27,12 @@ from ..support_ai_schemas import (
     SupportAIAgentResponse,
     SupportAIAgentUpdate,
     SupportAIIngestionJobResponse,
+    SupportAIKnowledgeBaseCreate,
+    SupportAIKnowledgeBaseResponse,
+    SupportAIKnowledgeBaseSourceResponse,
+    SupportAIKnowledgeBaseSourceDetailResponse,
+    SupportAIKnowledgeBaseUpdate,
+    SupportAIKnowledgeBaseUploadResponse,
     SupportAIKnowledgeSourceResponse,
     SupportAIKnowledgeSourceUpdate,
     SupportAIKnowledgeUploadResponse,
@@ -126,6 +132,175 @@ def update_support_ai_agent(
             agent_id=agent_id,
             request=payload,
         )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/support-ai/agents/{agent_id}/knowledge-bases",
+    response_model=list[SupportAIKnowledgeBaseResponse],
+)
+def list_support_ai_agent_knowledge_bases(
+    agent_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> list[SupportAIKnowledgeBaseResponse]:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.list_agent_knowledge_bases(
+            session,
+            context=context,
+            agent_id=agent_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/agents/{agent_id}/knowledge-bases",
+    response_model=SupportAIKnowledgeBaseResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_support_ai_knowledge_base(
+    agent_id: UUID,
+    payload: SupportAIKnowledgeBaseCreate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIKnowledgeBaseResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.create_agent_knowledge_base(
+            session,
+            context=context,
+            agent_id=agent_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}",
+    response_model=SupportAIKnowledgeBaseResponse,
+)
+def update_support_ai_knowledge_base(
+    knowledge_base_id: UUID,
+    payload: SupportAIKnowledgeBaseUpdate,
+    response: Response,
+    tenant_id: UUID = Query(...),
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIKnowledgeBaseResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_knowledge_base(
+            session,
+            context=context,
+            knowledge_base_id=knowledge_base_id,
+            request=payload,
+            tenant_id=tenant_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}/sources",
+    response_model=list[SupportAIKnowledgeBaseSourceResponse],
+)
+def list_support_ai_knowledge_base_sources(
+    knowledge_base_id: UUID,
+    response: Response,
+    tenant_id: UUID = Query(...),
+    session: Session = Depends(get_authenticated_session),
+) -> list[SupportAIKnowledgeBaseSourceResponse]:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.list_knowledge_base_sources(
+            session,
+            context=context,
+            knowledge_base_id=knowledge_base_id,
+            tenant_id=tenant_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}/sources/{source_id}",
+    response_model=SupportAIKnowledgeBaseSourceDetailResponse,
+)
+def get_support_ai_knowledge_base_source_detail(
+    knowledge_base_id: UUID,
+    source_id: UUID,
+    response: Response,
+    tenant_id: UUID = Query(...),
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIKnowledgeBaseSourceDetailResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.get_knowledge_base_source_detail(
+            session,
+            context=context,
+            knowledge_base_id=knowledge_base_id,
+            source_id=source_id,
+            tenant_id=tenant_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}/sources/upload",
+    response_model=SupportAIKnowledgeBaseUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_support_ai_knowledge_base_source(
+    knowledge_base_id: UUID,
+    background_tasks: BackgroundTasks,
+    title: str = Form(default="", max_length=300),
+    description: str | None = Form(default=None, max_length=4000),
+    classification: Literal["PUBLIC", "CUSTOMER_APPROVED"] = Form(
+        default="CUSTOMER_APPROVED"
+    ),
+    language: str = Form(default="und", min_length=2, max_length=35),
+    knowledge_type: Literal["QA_STRATEGY", "MERCHANT_PROFILE"] = Form(
+        default="MERCHANT_PROFILE"
+    ),
+    file: UploadFile = File(...),
+    tenant_id: UUID = Query(...),
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIKnowledgeBaseUploadResponse:
+    context = current_context(session)
+    try:
+        use_cases.require_platform_admin(context)
+        content = await file.read(use_cases.MAX_KNOWLEDGE_FILE_BYTES + 1)
+        result = use_cases.upload_knowledge_base_source(
+            session,
+            context=context,
+            knowledge_base_id=knowledge_base_id,
+            tenant_id=tenant_id,
+            title=title,
+            description=description,
+            classification=classification,
+            language=language,
+            knowledge_type=knowledge_type,
+            filename=file.filename,
+            declared_content_type=file.content_type,
+            content=content,
+        )
+        if support_ai_inline_processing_enabled():
+            background_tasks.add_task(
+                process_knowledge_ingestion,
+                tenant_id=tenant_id,
+                source_id=result.source.id,
+                job_id=result.job.id,
+            )
+        return result
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
