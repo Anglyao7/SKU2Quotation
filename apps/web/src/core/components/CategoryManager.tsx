@@ -846,7 +846,12 @@ export function CategoryManager({
                           {collapsed ? <Folder weight="duotone" /> : <FolderOpen weight="duotone" />}
                         </span>
                         <span>
-                          <strong>{root.name}</strong>
+                          <span className="core-category-name-line">
+                            <strong>{root.name}</strong>
+                            <small className="core-category-product-count">
+                              {t("{count} 个商品", { count: root.productCount })}
+                            </small>
+                          </span>
                           {children.length ? <small>{t("{count} 个二级分类", { count: children.length })}</small> : null}
                         </span>
                       </button>
@@ -864,7 +869,12 @@ export function CategoryManager({
                           {dragHandle(child, children)}
                           <button className="core-category-node-main" type="button" onClick={() => beginEdit(child)}>
                             <Folder weight="duotone" />
-                            <span><strong>{child.name}</strong></span>
+                            <span className="core-category-name-line">
+                              <strong>{child.name}</strong>
+                              <small className="core-category-product-count">
+                                {t("{count} 个商品", { count: child.productCount })}
+                              </small>
+                            </span>
                           </button>
                           {child.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
                         </div>

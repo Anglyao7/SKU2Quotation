@@ -441,6 +441,7 @@ class CategoryResponse(CategoryCreateRequest):
     path: str | None
     status: str
     version: int
+    product_count: int = Field(default=0, ge=0)
     cover_source: Literal["NONE", "UPLOAD", "PRODUCT"] = "NONE"
     cover_product_id: UUID | None = None
     cover_product_name: str | None = None

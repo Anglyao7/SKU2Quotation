@@ -2396,7 +2396,7 @@ export async function upsertPublicCatalogOffer(
   }));
 }
 
-interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; display_color?: string | null; status: string; sort_order: number; version: number; cover_source?: ProductCategory["coverSource"]; cover_product_id?: string | null; cover_product_name?: string | null; cover_image_url?: string | null; uploaded_cover_image_url?: string | null; cover_product_image_url?: string | null }
+interface ApiCategory { id: string; parent_id?: string | null; code: string; name: string; path?: string | null; display_color?: string | null; status: string; sort_order: number; version: number; product_count?: number; cover_source?: ProductCategory["coverSource"]; cover_product_id?: string | null; cover_product_name?: string | null; cover_image_url?: string | null; uploaded_cover_image_url?: string | null; cover_product_image_url?: string | null }
 interface ApiAttributeDefinition { id: string; category_id?: string | null; attribute_key: string; display_name: string; data_type: AttributeDefinition["dataType"]; unit_code?: string | null; enum_values?: string[] | null; is_required: boolean; is_variant: boolean; is_filterable: boolean; is_matchable: boolean; status: string; version: number }
 
 interface ApiCategoryImportResult {
@@ -2600,7 +2600,7 @@ export async function updateCategoryLayout(
 }
 
 function mapCategory(row: ApiCategory): ProductCategory {
-  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), displayColor: defined(row.display_color), coverSource: row.cover_source ?? "NONE", coverProductId: defined(row.cover_product_id), coverProductName: defined(row.cover_product_name), coverImageUrl: defined(row.cover_image_url), uploadedCoverImageUrl: defined(row.uploaded_cover_image_url), coverProductImageUrl: defined(row.cover_product_image_url), status: row.status, sortOrder: row.sort_order, version: row.version };
+  return { id: row.id, parentId: defined(row.parent_id), code: row.code, name: row.name, path: defined(row.path), displayColor: defined(row.display_color), coverSource: row.cover_source ?? "NONE", coverProductId: defined(row.cover_product_id), coverProductName: defined(row.cover_product_name), coverImageUrl: defined(row.cover_image_url), uploadedCoverImageUrl: defined(row.uploaded_cover_image_url), coverProductImageUrl: defined(row.cover_product_image_url), status: row.status, sortOrder: row.sort_order, version: row.version, productCount: Number(row.product_count ?? 0) };
 }
 
 export async function createCategory(input: { name: string; parentId?: string; sortOrder?: number; displayColor?: string }): Promise<ProductCategory> {

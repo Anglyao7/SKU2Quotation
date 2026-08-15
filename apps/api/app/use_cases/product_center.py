@@ -1699,7 +1699,7 @@ def list_categories(
     cache_slot = query_cache.lookup(
         tenant_id=tenant_id,
         domain=query_cache.DOMAIN_METADATA,
-        identity={"kind": "categories"},
+        identity={"kind": "categories", "schema": 2},
     )
     if cache_slot.hit and isinstance(cache_slot.value, list):
         try:
@@ -1852,6 +1852,7 @@ def update_category_layout(
 def _category_response(
     row: ProductCategoryRow,
     *,
+    product_count: int = 0,
     uploaded_cover_image_url: str | None = None,
     cover_product_name: str | None = None,
     cover_product_image_url: str | None = None,
@@ -1874,6 +1875,7 @@ def _category_response(
         path=row.path,
         status=row.status,
         version=row.version,
+        product_count=product_count,
         cover_source=cover_source,
         cover_product_id=row.cover_product_id,
         cover_product_name=cover_product_name,
@@ -1891,6 +1893,38 @@ def _category_responses(
 ) -> list[CategoryResponse]:
     if not rows:
         return []
+    category_ids = {row.id for row in rows}
+    children_by_parent: dict[UUID, list[UUID]] = {}
+    for row in rows:
+        if row.parent_id is not None:
+            children_by_parent.setdefault(row.parent_id, []).append(row.id)
+    for row in rows:
+        if row.parent_id is not None:
+            continue
+        if row.id in children_by_parent:
+            continue
+        child_ids = [
+            child.id
+            for child in repository.list_child_categories(
+                session,
+                tenant_id=tenant_id,
+                parent_id=row.id,
+            )
+        ]
+        if child_ids:
+            children_by_parent[row.id] = child_ids
+            category_ids.update(child_ids)
+    product_counts = repository.product_counts_by_category(
+        session,
+        tenant_id=tenant_id,
+        category_ids=list(category_ids),
+    )
+    # A product assigned to a second-level category is also associated with
+    # its first-level category in the managed hierarchy.
+    for parent_id, child_ids in children_by_parent.items():
+        product_counts[parent_id] = product_counts.get(parent_id, 0) + sum(
+            product_counts.get(child_id, 0) for child_id in child_ids
+        )
     storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
     product_ids = {
         row.cover_product_id for row in rows if row.cover_product_id is not None
@@ -1932,6 +1966,7 @@ def _category_responses(
         responses.append(
             _category_response(
                 row,
+                product_count=product_counts.get(row.id, 0),
                 uploaded_cover_image_url=uploaded_cover_image_url,
                 cover_product_name=product.name if product is not None else None,
                 cover_product_image_url=(
@@ -2275,7 +2310,11 @@ def reorder_categories(
         conflict_code="CATEGORY_REORDER_CONFLICT",
         conflict_message="分类顺序保存失败，请刷新后重试。",
     )
-    return [_category_response(rows_by_id[item.id]) for item in request.items]
+    return _category_responses(
+        session,
+        tenant_id=tenant_id,
+        rows=[rows_by_id[item.id] for item in request.items],
+    )
 
 
 def update_category(

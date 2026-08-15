@@ -266,6 +266,38 @@ def list_categories(session: Session, *, tenant_id: UUID) -> list[ProductCategor
     return sorted(rows, key=hierarchy_order)
 
 
+def product_counts_by_category(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    category_ids: list[UUID],
+) -> dict[UUID, int]:
+    """Return non-archived product counts for the requested categories.
+
+    Counts are based on products rather than SKUs so a product with multiple
+    variants is shown once in the category manager.  Soft-deleted and
+    archived products are intentionally excluded because they are no longer
+    part of the active catalog.
+    """
+    if not category_ids:
+        return {}
+    rows = session.execute(
+        select(ProductRow.category_id, func.count(ProductRow.id))
+        .where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.category_id.in_(category_ids),
+            ProductRow.deleted_at.is_(None),
+            ProductRow.status != "ARCHIVED",
+        )
+        .group_by(ProductRow.category_id)
+    ).all()
+    return {
+        category_id: int(count)
+        for category_id, count in rows
+        if category_id is not None
+    }
+
+
 def list_categories_by_ids(
     session: Session, *, tenant_id: UUID, category_ids: list[UUID]
 ) -> list[ProductCategoryRow]:

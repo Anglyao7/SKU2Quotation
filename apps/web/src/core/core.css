@@ -513,6 +513,9 @@
 .core-category-node-main > span { min-width: 0; display: grid; gap: 1px; }
 .core-category-node-main strong, .core-category-node-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .core-category-node-main small { color: var(--text-soft); font-size: 10px; font-variant-numeric: tabular-nums; }
+.core-category-name-line { min-width: 0; display: flex !important; align-items: baseline; gap: 7px; }
+.core-category-name-line > strong { min-width: 0; }
+.core-category-name-line .core-category-product-count { flex: 0 0 auto; overflow: visible; text-overflow: clip; color: var(--accent); font-weight: 650; }
 .core-category-children[hidden] { display: none; }
 .core-category-node.child { min-height: 44px; margin-left: 34px; grid-template-columns: auto minmax(0, 1fr) auto; }
 .core-category-node.child .core-category-node-main { grid-template-columns: auto minmax(0, 1fr); padding-block: 5px; }

@@ -191,7 +191,9 @@ def mark_tenant_dirty(
 
 _TABLE_DOMAINS: dict[str, frozenset[str]] = {
     # Catalog read models.
-    "products": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD, DOMAIN_INVENTORY}),
+    "products": frozenset(
+        {DOMAIN_CATALOG, DOMAIN_DASHBOARD, DOMAIN_INVENTORY, DOMAIN_METADATA}
+    ),
     "skus": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD, DOMAIN_INVENTORY}),
     "product_images": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),
     "public_catalog_offers": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),

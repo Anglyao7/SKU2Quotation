@@ -16383,6 +16383,117 @@ def test_category_api_enforces_two_levels_and_updates_human_paths() -> None:
                 session.commit()
 
 
+def test_category_list_includes_product_counts() -> None:
+    suffix = uuid4().hex[:10].upper()
+    category_ids: list[str] = []
+    product_ids = [uuid4() for _ in range(5)]
+    try:
+        root_response = client.post(
+            "/api/v1/categories",
+            json={
+                "code": f"COUNT-ROOT-{suffix}",
+                "name": f"商品计数一级-{suffix}",
+                "sort_order": 990,
+            },
+        )
+        assert root_response.status_code == 201, root_response.text
+        root = root_response.json()
+        category_ids.append(root["id"])
+
+        child_response = client.post(
+            "/api/v1/categories",
+            json={
+                "parent_id": root["id"],
+                "code": f"COUNT-CHILD-{suffix}",
+                "name": f"商品计数二级-{suffix}",
+                "sort_order": 0,
+            },
+        )
+        assert child_response.status_code == 201, child_response.text
+        child = child_response.json()
+        category_ids.append(child["id"])
+
+        with SessionLocal() as session:
+            session.add_all(
+                [
+                    ProductRow(
+                        id=product_ids[0],
+                        tenant_id=DEFAULT_TENANT_ID,
+                        product_code=f"COUNT-ROOT-{suffix}",
+                        name="一级分类商品",
+                        category_id=UUID(root["id"]),
+                        status="ACTIVE",
+                    ),
+                    ProductRow(
+                        id=product_ids[1],
+                        tenant_id=DEFAULT_TENANT_ID,
+                        product_code=f"COUNT-CHILD-A-{suffix}",
+                        name="二级分类商品甲",
+                        category_id=UUID(child["id"]),
+                        status="ACTIVE",
+                    ),
+                    ProductRow(
+                        id=product_ids[2],
+                        tenant_id=DEFAULT_TENANT_ID,
+                        product_code=f"COUNT-CHILD-B-{suffix}",
+                        name="二级分类商品乙",
+                        category_id=UUID(child["id"]),
+                        status="DRAFT",
+                    ),
+                    ProductRow(
+                        id=product_ids[3],
+                        tenant_id=DEFAULT_TENANT_ID,
+                        product_code=f"COUNT-ARCHIVED-{suffix}",
+                        name="已归档商品",
+                        category_id=UUID(child["id"]),
+                        status="ARCHIVED",
+                    ),
+                    ProductRow(
+                        id=product_ids[4],
+                        tenant_id=DEFAULT_TENANT_ID,
+                        product_code=f"COUNT-DELETED-{suffix}",
+                        name="已删除商品",
+                        category_id=UUID(child["id"]),
+                        status="ACTIVE",
+                        deleted_at=datetime.now(UTC),
+                    ),
+                ]
+            )
+            session.commit()
+
+        response = client.get("/api/v1/categories")
+        assert response.status_code == 200, response.text
+        categories = {row["id"]: row for row in response.json()}
+        assert categories[root["id"]]["product_count"] == 3
+        assert categories[child["id"]]["product_count"] == 2
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ProductRow).where(ProductRow.id.in_(product_ids))
+            )
+            session.execute(
+                delete(ProductAuditEventRow).where(
+                    ProductAuditEventRow.entity_type == "CATEGORY",
+                    ProductAuditEventRow.entity_id.in_(category_ids),
+                )
+            )
+            if category_ids:
+                category_uuids = [UUID(value) for value in category_ids]
+                session.execute(
+                    delete(ProductCategoryRow).where(
+                        ProductCategoryRow.id.in_(category_uuids),
+                        ProductCategoryRow.parent_id.is_not(None),
+                    )
+                )
+                session.flush()
+                session.execute(
+                    delete(ProductCategoryRow).where(
+                        ProductCategoryRow.id.in_(category_uuids)
+                    )
+                )
+            session.commit()
+
+
 def test_secondary_category_cover_upload_is_publicly_served() -> None:
     suffix = uuid4().hex[:10].upper()
     category_ids: list[UUID] = []

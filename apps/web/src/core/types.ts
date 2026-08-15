@@ -483,6 +483,7 @@ export interface ProductCategory {
   status: string;
   sortOrder: number;
   version: number;
+  productCount: number;
 }
 
 export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY";

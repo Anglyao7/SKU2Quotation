@@ -1898,6 +1898,7 @@ const english: Record<string, string> = {
     "The category cannot be restored after deletion, but no products will be deleted.",
   "正在计算删除影响…": "Checking deletion impact…",
   "包含 {count} 个二级分类": "Includes {count} subcategories",
+  "{count} 个商品": "{count} products",
   "仅当前分类": "This category only",
   "关联商品": "Linked products",
   "商品保留并改为未分类": "Products remain and become uncategorized",
