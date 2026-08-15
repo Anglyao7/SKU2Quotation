@@ -175,7 +175,7 @@ export function CategoriesPage() {
         <div>
           <Text weight="bold" as="div">{t("二级分类门面")}</Text>
           <Text size="2" color="gray">
-            {t("开启后，访客选择一级分类时先看到二级分类图片，再进入商品列表。")}
+            {t("开启后，前台会先展示二级分类样图；每个二级分类可单独上传图片或选择商品主图。")}
           </Text>
           {layoutError ? <Text size="1" color="red">{layoutError}</Text> : null}
         </div>

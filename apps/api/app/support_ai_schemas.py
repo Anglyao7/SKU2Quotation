@@ -493,6 +493,23 @@ class SupportAIKnowledgeSourceResponse(BaseModel):
     updated_at: datetime
 
 
+class SupportAIKnowledgeChunkResponse(BaseModel):
+    id: UUID
+    chunk_index: int = Field(ge=0)
+    section_path: str
+    content: str
+    token_count: int = Field(ge=0)
+    language: str
+    locator: dict[str, object] = Field(default_factory=dict)
+
+
+class SupportAIKnowledgeBaseSourceDetailResponse(BaseModel):
+    knowledge_base_id: UUID
+    knowledge_base_name: str
+    source: SupportAIKnowledgeSourceResponse
+    chunks: list[SupportAIKnowledgeChunkResponse]
+
+
 class SupportAIKnowledgeSourceUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     description: str | None = Field(default=None, max_length=4000)
@@ -539,6 +556,7 @@ class SupportAIKnowledgeBaseResponse(BaseModel):
     agent_id: UUID
     name: str
     description: str | None = None
+    rules_context: str | None = None
     status: Literal["ACTIVE", "DISABLED"]
     source_count: int = Field(ge=0)
     approved_source_count: int = Field(ge=0)
@@ -550,6 +568,7 @@ class SupportAIKnowledgeBaseCreate(BaseModel):
     tenant_id: UUID
     name: str = Field(min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=4000)
+    rules_context: str | None = Field(default=None, max_length=20000)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -567,6 +586,7 @@ class SupportAIKnowledgeBaseCreate(BaseModel):
 class SupportAIKnowledgeBaseUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=4000)
+    rules_context: str | None = Field(default=None, max_length=20000)
     status: Literal["ACTIVE", "DISABLED"] | None = None
 
     @field_validator("name", mode="before")
@@ -577,6 +597,13 @@ class SupportAIKnowledgeBaseUpdate(BaseModel):
     @field_validator("description", mode="before")
     @classmethod
     def normalize_optional_base_description(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @field_validator("rules_context", mode="before")
+    @classmethod
+    def normalize_rules_context(cls, value: object) -> object:
         if not isinstance(value, str):
             return value
         return value.strip() or None

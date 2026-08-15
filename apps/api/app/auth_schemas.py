@@ -11,7 +11,7 @@ from pydantic import (
 )
 
 from .localization import UiLocale
-from .storefront_locales import StorefrontLocale
+from .storefront_locales import StorefrontLocale, normalize_storefront_locale
 from .tenant_subscriptions import TenantSubscriptionTier
 
 
@@ -150,6 +150,7 @@ class MerchantSettingsUpdate(BaseModel):
         min_length=1,
         max_length=8,
     )
+    storefront_default_locale: StorefrontLocale | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -181,6 +182,16 @@ class MerchantSettingsUpdate(BaseModel):
             return None
         return list(dict.fromkeys(value))
 
+    @field_validator("storefront_default_locale", mode="before")
+    @classmethod
+    def normalize_storefront_default_locale(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = normalize_storefront_locale(str(value))
+        if normalized is None:
+            raise ValueError("storefront default locale is not supported")
+        return normalized
+
     @model_validator(mode="after")
     def require_change(self) -> "MerchantSettingsUpdate":
         if (
@@ -190,6 +201,7 @@ class MerchantSettingsUpdate(BaseModel):
             and self.default_currency is None
             and self.hot_products_enabled is None
             and self.storefront_locales is None
+            and self.storefront_default_locale is None
         ):
             raise ValueError("at least one merchant setting is required")
         return self
@@ -204,6 +216,7 @@ class MerchantSettingsResponse(BaseModel):
     business_mode: Literal["DOMESTIC", "EXPORT"]
     default_currency: str
     storefront_locales: list[StorefrontLocale]
+    storefront_default_locale: StorefrontLocale
     hot_products_enabled: bool
 
 

@@ -12,20 +12,26 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowClockwise,
+  ArrowLeft,
   Brain,
+  CaretRight,
   Check,
+  CheckCircle,
   Database,
   FileArrowUp,
   FileText,
+  FileCode,
   Plus,
   Prohibit,
   Robot,
   Storefront,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   createSupportAIKnowledgeBase,
+  approveSupportAIKnowledgeSource,
+  getSupportAIKnowledgeBaseSourceDetail,
   getSupportAIIngestionJob,
   importSupportAITraining,
   listSupportAIAgents,
@@ -33,6 +39,7 @@ import {
   listSupportAIKnowledgeBases,
   reindexSupportAIKnowledgeSource,
   revokeSupportAIKnowledgeSource,
+  updateSupportAIKnowledgeBase,
   uploadSupportAIKnowledgeBaseSource,
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
@@ -68,14 +75,20 @@ interface TrackedJob {
 
 export function SupportAIKnowledgePage() {
   const { locale, t } = useLocale();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { knowledgeBaseId: routeKnowledgeBaseId } = useParams();
+  const [searchParams] = useSearchParams();
   const requestedAgentId = searchParams.get("agent_id") || "";
-  const requestedKnowledgeBaseId = searchParams.get("knowledge_base_id") || "";
+  const requestedKnowledgeBaseId = routeKnowledgeBaseId || searchParams.get("knowledge_base_id") || "";
+  const detailView = Boolean(requestedKnowledgeBaseId);
   const [agents, setAgents] = useState<SupportAIAgent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [knowledgeBases, setKnowledgeBases] = useState<SupportAIKnowledgeBase[]>([]);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState("");
   const [sources, setSources] = useState<SupportAIKnowledgeBaseSource[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [sourceDetail, setSourceDetail] = useState<Awaited<ReturnType<typeof getSupportAIKnowledgeBaseSourceDetail>>>();
+  const [sourceDetailLoading, setSourceDetailLoading] = useState(false);
   const [jobs, setJobs] = useState<Record<string, TrackedJob>>({});
   const [loading, setLoading] = useState(true);
   const [baseLoading, setBaseLoading] = useState(false);
@@ -86,6 +99,9 @@ export function SupportAIKnowledgePage() {
   const [title, setTitle] = useState("");
   const [language, setLanguage] = useState("und");
   const [classification, setClassification] = useState<"PUBLIC" | "CUSTOMER_APPROVED">("CUSTOMER_APPROVED");
+  const [uploadType, setUploadType] = useState<"QA_STRATEGY" | "MERCHANT_PROFILE">("MERCHANT_PROFILE");
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [rulesDraft, setRulesDraft] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [newBaseName, setNewBaseName] = useState("");
   const [newBaseDescription, setNewBaseDescription] = useState("");
@@ -139,6 +155,10 @@ export function SupportAIKnowledgePage() {
   }, [loadKnowledgeBases]);
 
   const loadSources = useCallback(async (quiet = false) => {
+    if (!detailView) {
+      setSources([]);
+      return;
+    }
     const base = knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId);
     if (!base) {
       setSources([]);
@@ -146,21 +166,49 @@ export function SupportAIKnowledgePage() {
     }
     if (!quiet) setLoading(true);
     try {
-      setSources(await listSupportAIKnowledgeBaseSources({
+      const nextSources = await listSupportAIKnowledgeBaseSources({
         knowledgeBaseId: base.id,
         tenantId: base.tenantId,
-      }));
+      });
+      setSources(nextSources);
+      setSelectedSourceId((current) => (
+        current && nextSources.some((item) => item.source.id === current)
+          ? current
+          : nextSources[0]?.source.id || ""
+      ));
       setError("");
     } catch (reason) {
       if (!quiet) setError(reason instanceof Error ? reason.message : t("知识库文件加载失败"));
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [knowledgeBases, selectedKnowledgeBaseId, t]);
+  }, [detailView, knowledgeBases, selectedKnowledgeBaseId, t]);
 
   useEffect(() => {
     void loadSources();
   }, [loadSources]);
+
+  useEffect(() => {
+    const base = knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId);
+    setRulesDraft(base?.rulesContext || "");
+  }, [knowledgeBases, selectedKnowledgeBaseId]);
+
+  useEffect(() => {
+    const base = knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId);
+    if (!base || !selectedSourceId) {
+      setSourceDetail(undefined);
+      return;
+    }
+    setSourceDetailLoading(true);
+    void getSupportAIKnowledgeBaseSourceDetail({
+      knowledgeBaseId: base.id,
+      tenantId: base.tenantId,
+      sourceId: selectedSourceId,
+    }).then(setSourceDetail).catch((reason) => {
+      setSourceDetail(undefined);
+      setError(reason instanceof Error ? reason.message : t("解析内容加载失败"));
+    }).finally(() => setSourceDetailLoading(false));
+  }, [knowledgeBases, selectedKnowledgeBaseId, selectedSourceId, sources, t]);
 
   useEffect(() => {
     const active = Object.entries(jobs).filter(([, tracked]) => ACTIVE_JOBS.has(tracked.job.status));
@@ -184,26 +232,20 @@ export function SupportAIKnowledgePage() {
     setKnowledgeBases([]);
     setSelectedKnowledgeBaseId("");
     setSources([]);
+    setSelectedSourceId("");
+    setSourceDetail(undefined);
     setJobs({});
     setMessage("");
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current);
-      next.set("agent_id", agentId);
-      next.delete("knowledge_base_id");
-      return next;
-    }, { replace: true });
+    navigate(`/console/agents/knowledge?agent_id=${encodeURIComponent(agentId)}`, { replace: true });
   };
 
   const selectKnowledgeBase = (knowledgeBaseId: string) => {
     setSelectedKnowledgeBaseId(knowledgeBaseId);
     setJobs({});
+    setSelectedSourceId("");
+    setSourceDetail(undefined);
     setMessage("");
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current);
-      next.set("agent_id", selectedAgentId);
-      next.set("knowledge_base_id", knowledgeBaseId);
-      return next;
-    }, { replace: true });
+    navigate(`/console/agents/knowledge/${encodeURIComponent(knowledgeBaseId)}?agent_id=${encodeURIComponent(selectedAgentId)}`);
   };
 
   const createKnowledgeBase = async (event: FormEvent) => {
@@ -224,7 +266,7 @@ export function SupportAIKnowledgePage() {
       setNewBaseName("");
       setNewBaseDescription("");
       setMessage(t("知识库已创建"));
-      selectKnowledgeBase(created.id);
+      navigate(`/console/agents/knowledge/${encodeURIComponent(created.id)}?agent_id=${encodeURIComponent(selectedAgentId)}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("知识库创建失败"));
     } finally {
@@ -240,7 +282,7 @@ export function SupportAIKnowledgePage() {
     setError("");
     setMessage("");
     try {
-      if (file.name.toLowerCase().endsWith(".json")) {
+      if (uploadType === "QA_STRATEGY" && file.name.toLowerCase().endsWith(".json")) {
         let jsonPayload: unknown;
         try {
           jsonPayload = JSON.parse(await file.text()) as unknown;
@@ -258,6 +300,7 @@ export function SupportAIKnowledgePage() {
           setTitle("");
           const input = document.getElementById("support-knowledge-file") as HTMLInputElement | null;
           if (input) input.value = "";
+          setUploadOpen(false);
           setMessage(t("案例和规则已导入为草稿，请进入 AI 训练工作台一键审批。"));
           return;
         }
@@ -269,6 +312,7 @@ export function SupportAIKnowledgePage() {
         title: title.trim() || file.name.replace(/\.[^.]+$/, ""),
         classification,
         language,
+        knowledgeType: uploadType,
       });
       setSources((current) => [{
         knowledgeBaseId: base.id,
@@ -286,6 +330,8 @@ export function SupportAIKnowledgePage() {
       setTitle("");
       const input = document.getElementById("support-knowledge-file") as HTMLInputElement | null;
       if (input) input.value = "";
+      setUploadOpen(false);
+      setSelectedSourceId(result.source.id);
       setMessage(t("知识文件已提交到当前知识库"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("知识文件上传失败"));
@@ -318,17 +364,63 @@ export function SupportAIKnowledgePage() {
     }
   };
 
+  const saveRules = async () => {
+    const base = knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId);
+    if (!base || busy) return;
+    setBusy("rules");
+    setError("");
+    setMessage("");
+    try {
+      const updated = await updateSupportAIKnowledgeBase({
+        knowledgeBaseId: base.id,
+        tenantId: base.tenantId,
+        rulesContext: rulesDraft.trim() || null,
+      });
+      setKnowledgeBases((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setRulesDraft(updated.rulesContext || "");
+      setMessage(t("复用规则已保存，将作为当前知识库的上下文使用"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("复用规则保存失败"));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const approveSource = async (item: SupportAIKnowledgeBaseSource) => {
+    const base = knowledgeBases.find((candidate) => candidate.id === item.knowledgeBaseId);
+    if (!base || busy || item.source.status === "APPROVED") return;
+    setBusy(`approve:${item.source.id}`);
+    setError("");
+    setMessage("");
+    try {
+      const source = await approveSupportAIKnowledgeSource(base.tenantId, item.source.id);
+      setSources((current) => current.map((row) => row.source.id === source.id ? { ...row, source } : row));
+      setSourceDetail((current) => current?.source.id === source.id ? { ...current, source } : current);
+      setKnowledgeBases((current) => current.map((row) => row.id === base.id ? {
+        ...row,
+        approvedSourceCount: row.approvedSourceCount + (item.source.status === "APPROVED" ? 0 : 1),
+      } : row));
+      setMessage(t("问答策略已一键批准"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("问答策略批准失败"));
+    } finally {
+      setBusy("");
+    }
+  };
+
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
   const selectedBase = knowledgeBases.find((base) => base.id === selectedKnowledgeBaseId);
 
   return (
     <div className="core-workspace support-agent-page">
       <CorePageHeading
-        eyebrow={t("智能体管理")}
-        title={t("知识库管理")}
+        eyebrow={detailView ? t("知识库详情") : t("智能体管理")}
+        title={detailView ? (selectedBase?.name || t("知识库详情")) : t("知识库管理")}
         actions={(
           <>
             {selectedAgentId ? <Button asChild><Link to={`/console/agents/${selectedAgentId}/training`}><Brain />{t("AI 训练工作台")}</Link></Button> : null}
+            {detailView && selectedBase ? <Button onClick={() => setUploadOpen(true)}><FileArrowUp />{t("上传文件")}</Button> : null}
+            {detailView ? <Button variant="soft" color="gray" onClick={() => navigate(`/console/agents/knowledge?agent_id=${encodeURIComponent(selectedAgentId)}`)}><ArrowLeft />{t("返回知识库列表")}</Button> : null}
             <Button variant="soft" color="gray" disabled={loading || !selectedAgentId} onClick={() => void loadKnowledgeBases()}>
               <ArrowClockwise />{t("刷新")}
             </Button>
@@ -351,78 +443,109 @@ export function SupportAIKnowledgePage() {
       {loading && !selectedBase ? <CoreLoading label={t("正在读取知识库")} /> : null}
       {!loading && !agents.length ? <CoreEmpty title={t("还没有智能体")} description={t("请先在智能体列表创建智能体。")} /> : null}
 
-      {!loading && selectedAgent ? (
-        <div className="support-agent-knowledge-layout">
-          <Card className="support-agent-source-card">
-            <div className="support-agent-section-heading">
-              <div><Text size="1" color="gray">{t("当前智能体的知识库")}</Text><Heading size="5">{t("知识库")}</Heading></div>
-              <Button size="1" onClick={() => { setNewBaseTenantId(selectedAgent.stores[0]?.tenantId || ""); setCreateOpen(true); }} disabled={!selectedAgent.stores.length}>
-                <Plus />{t("新增知识库")}
-              </Button>
+      {!loading && selectedAgent && !detailView ? (
+        <Card className="support-agent-source-card support-agent-knowledge-list-card">
+          <div className="support-agent-section-heading">
+            <div><Text size="1" color="gray">{t("当前智能体的知识库")}</Text><Heading size="5">{t("知识库列表")}</Heading></div>
+            <Button size="1" onClick={() => { setNewBaseTenantId(selectedAgent.stores[0]?.tenantId || ""); setCreateOpen(true); }} disabled={!selectedAgent.stores.length}>
+              <Plus />{t("新增知识库")}
+            </Button>
+          </div>
+          <Text size="2" color="gray">{t("选择一个知识库进入详情，再上传文件、查看来源或进行 AI 训练。")}</Text>
+          {!selectedAgent.stores.length ? (
+            <CoreEmpty title={t("尚未绑定店铺")} description={t("先在智能体详情中绑定店铺，再创建知识库。")} action={<Button asChild size="1"><Link to={`/console/agents/${selectedAgent.id}`}><Storefront />{t("绑定店铺")}</Link></Button>} />
+          ) : baseLoading ? <CoreLoading label={t("正在读取知识库")} /> : !knowledgeBases.length ? (
+            <CoreEmpty title={t("还没有知识库")} description={t("为智能体绑定的店铺创建一个知识库，再进入详情上传文件和训练。")} />
+          ) : (
+            <div className="support-agent-knowledge-list">
+              {knowledgeBases.map((base) => (
+                <button type="button" key={base.id} className="support-agent-knowledge-base-row" onClick={() => selectKnowledgeBase(base.id)}>
+                  <span><Database weight="duotone" /></span>
+                  <div><strong>{base.name}</strong><small>{base.tenantName} · {base.approvedSourceCount}/{base.sourceCount} {t("个已批准文件")}</small></div>
+                  <Badge color={base.status === "ACTIVE" ? "jade" : "gray"}>{t(base.status === "ACTIVE" ? "启用" : "停用")}</Badge>
+                  <CaretRight />
+                </button>
+              ))}
             </div>
-            {!selectedAgent.stores.length ? (
-              <CoreEmpty title={t("尚未绑定店铺")} description={t("先在智能体详情中绑定店铺，再创建知识库。")} action={<Button asChild size="1"><Link to={`/console/agents/${selectedAgent.id}`}><Storefront />{t("绑定店铺")}</Link></Button>} />
-            ) : baseLoading ? <CoreLoading label={t("正在读取知识库")} /> : !knowledgeBases.length ? (
-              <CoreEmpty title={t("还没有知识库")} description={t("为智能体绑定的店铺创建一个知识库，再上传文件和训练。")} />
-            ) : (
-              <div className="support-agent-source-list">
-                {knowledgeBases.map((base) => (
-                  <button type="button" key={base.id} className={`support-agent-knowledge-base-row${base.id === selectedKnowledgeBaseId ? " is-selected" : ""}`} onClick={() => selectKnowledgeBase(base.id)}>
-                    <span><Database weight="duotone" /></span>
-                    <div><strong>{base.name}</strong><small>{base.tenantName} · {base.approvedSourceCount}/{base.sourceCount} {t("个已批准文件")}</small></div>
-                    <Badge color={base.status === "ACTIVE" ? "jade" : "gray"}>{t(base.status === "ACTIVE" ? "启用" : "停用")}</Badge>
-                  </button>
-                ))}
-              </div>
-            )}
-          </Card>
-
-          {selectedBase ? (
-            <>
-              <Card className="support-agent-upload-card">
-                <div className="support-agent-section-heading"><div><Text size="1" color="gray">{selectedBase.name}</Text><Heading size="5">{t("上传与训练")}</Heading></div><Database weight="duotone" /></div>
-                <Text size="2" color="gray">{selectedBase.tenantName} · {t("文件上传、解析、向量化和批准都只作用于当前知识库。")}</Text>
-                <form className="support-agent-upload-form" onSubmit={(event) => void upload(event)}>
-                  <label className="support-agent-file-field">
-                    <FileArrowUp weight="duotone" />
-                    <span><strong>{file?.name || t("选择 PDF、DOCX、TXT、Markdown 或训练 JSON")}</strong><small>{t("普通知识文件归属于当前知识库；案例 JSON 会导入 AI 训练工作台。")}</small></span>
-                    <input id="support-knowledge-file" type="file" accept=".pdf,.docx,.txt,.md,.json,application/json" onChange={(event) => setFile(event.target.files?.[0])} required />
-                  </label>
-                  <label><Text size="1" color="gray">{t("知识标题")}</Text><TextField.Root value={title} onChange={(event) => setTitle(event.target.value)} placeholder={file?.name.replace(/\.[^.]+$/, "") || t("文件标题")} /></label>
-                  <label><Text size="1" color="gray">{t("文件语言")}</Text><TextField.Root value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="und / zh-CN / en" /></label>
-                  <label><Text size="1" color="gray">{t("可用范围")}</Text><Select.Root value={classification} onValueChange={(value) => setClassification(value as typeof classification)}><Select.Trigger /><Select.Content><Select.Item value="CUSTOMER_APPROVED">{t("客户回答可用")}</Select.Item><Select.Item value="PUBLIC">{t("公开资料")}</Select.Item></Select.Content></Select.Root></label>
-                  <Button type="submit" disabled={!file || Boolean(busy)} loading={busy === "upload"}><FileArrowUp />{t("上传并处理")}</Button>
-                </form>
-              </Card>
-
-              <Card className="support-agent-source-card">
-                <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("当前知识库内容")}</Text><Heading size="5">{t("知识文件")}</Heading></div><Badge color="gray">{sources.length}</Badge></div>
-                {!sources.length ? <CoreEmpty title={t("还没有知识文件")} description={t("上传后，文件会在当前知识库中解析和索引。" )} /> : null}
-                <div className="support-agent-source-list">
-                  {sources.map((item) => {
-                    const key = item.source.id;
-                    const job = jobs[key]?.job;
-                    const processing = item.source.status === "PROCESSING" || Boolean(job && ACTIVE_JOBS.has(job.status));
-                    return <article key={key}>
-                      <span><FileText weight="duotone" /></span>
-                      <div>
-                        <div><strong>{item.source.title}</strong><Badge color={STATUS_COLOR[item.source.status] || "gray"}>{t(STATUS_LABEL[item.source.status] || item.source.status)}</Badge></div>
-                        <small>{item.source.originalFilename} · {(item.source.byteSize / 1024).toLocaleString(locale, { maximumFractionDigits: 1 })} KB</small>
-                        {processing ? <Progress value={job?.progress ?? 10} /> : null}
-                        {item.source.failureMessage ? <small className="is-error">{item.source.failureMessage}</small> : null}
-                      </div>
-                      <div className="support-agent-source-actions">
-                        {!processing ? <Button size="1" variant="soft" color="gray" onClick={() => void sourceAction(item, "reindex")} disabled={Boolean(busy)}><ArrowClockwise />{t("重新处理")}</Button> : null}
-                        {!processing && item.source.status !== "REVOKED" ? <Button size="1" variant="ghost" color="red" onClick={() => void sourceAction(item, "revoke")} disabled={Boolean(busy)}><Prohibit />{t("撤销")}</Button> : null}
-                      </div>
-                    </article>;
-                  })}
-                </div>
-              </Card>
-            </>
-          ) : null}
-        </div>
+          )}
+        </Card>
       ) : null}
+
+      {!loading && selectedAgent && detailView && selectedBase ? (
+        <>
+          <Card className="support-agent-knowledge-detail-header">
+            <span><Database weight="duotone" /></span>
+            <div><Text size="1" color="gray">{t("所属智能体")}</Text><strong>{selectedAgent.name}</strong><small>{selectedBase.tenantName} · {selectedBase.description || t("文件和训练内容均独立归属于此知识库")}</small></div>
+            <div className="support-agent-knowledge-detail-stats"><span><strong>{selectedBase.sourceCount}</strong><small>{t("知识文件")}</small></span><span><strong>{selectedBase.approvedSourceCount}</strong><small>{t("已批准")}</small></span></div>
+          </Card>
+          <Card className="support-agent-rules-card">
+            <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("复用规则")}</Text><Heading size="5">{t("训练规则")}</Heading></div><Robot weight="duotone" /></div>
+            <Text size="2" color="gray">{t("把人工总结的回答边界、语气和处理规则写在这里；保存后会作为当前知识库的上下文使用。")}</Text>
+            <TextArea value={rulesDraft} onChange={(event) => setRulesDraft(event.target.value)} rows={6} maxLength={20000} placeholder={t("例如：推荐商品时先询问使用场景；必须保留产品编号和 MOQ；不确定时先追问，不要直接转人工。")} />
+            <div className="support-agent-inline-actions"><Text size="1" color="gray">{rulesDraft.length}/20000</Text><Button onClick={() => void saveRules()} disabled={Boolean(busy)} loading={busy === "rules"}><CheckCircle />{t("开始训练")}</Button></div>
+          </Card>
+          <Card className="support-agent-parsed-card">
+            <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("文件解析结果")}</Text><Heading size="5">{t("当前文件内容")}</Heading></div><Badge color="gray">{sourceDetail?.chunks.length || 0} {t("个内容块")}</Badge></div>
+            {!sources.length ? <CoreEmpty title={t("还没有知识文件")} description={t("上传后，解析出来的段落和问答会显示在这里。")} /> : null}
+            {sources.length && !selectedSourceId ? <Text size="2" color="gray">{t("请在下方文件列表中选择一个文件查看解析详情。")}</Text> : null}
+            {sourceDetailLoading ? <CoreLoading label={t("正在读取解析内容")} /> : null}
+            {!sourceDetailLoading && selectedSourceId && sourceDetail ? (
+              <div className="support-agent-parsed-content">
+                <div className="support-agent-parsed-meta"><strong>{sourceDetail.source.title}</strong><small>{sourceDetail.source.originalFilename} · {sourceDetail.source.chunkCount} {t("个内容块")}</small></div>
+                {sourceDetail.chunks.length ? sourceDetail.chunks.map((chunk) => <article key={chunk.id}><div><Badge color="gray">{chunk.sectionPath || t("正文")}</Badge><small>#{chunk.chunkIndex + 1}</small></div><p>{chunk.content}</p></article>) : <Text size="2" color="gray">{t("文件尚未完成解析，处理完成后会自动显示内容。")}</Text>}
+              </div>
+            ) : null}
+          </Card>
+          <Card className="support-agent-source-card">
+            <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("当前知识库内容")}</Text><Heading size="5">{t("知识文件")}</Heading></div><Badge color="gray">{sources.length}</Badge></div>
+            {!sources.length ? <CoreEmpty title={t("还没有知识文件")} description={t("上传后，文件会在当前知识库中解析和索引。")} /> : null}
+            <div className="support-agent-source-list">
+              {sources.map((item) => {
+                const key = item.source.id;
+                const job = jobs[key]?.job;
+                const processing = item.source.status === "PROCESSING" || Boolean(job && ACTIVE_JOBS.has(job.status));
+                const isStrategy = item.source.originalFilename.toLocaleLowerCase().endsWith(".json");
+                return <article key={key} className={selectedSourceId === key ? "is-selected" : ""} onClick={() => setSelectedSourceId(key)}>
+                  <span><FileText weight="duotone" /></span>
+                  <div>
+                    <div><strong>{item.source.title}</strong><Badge color={STATUS_COLOR[item.source.status] || "gray"}>{t(STATUS_LABEL[item.source.status] || item.source.status)}</Badge></div>
+                    <small>{item.source.originalFilename} · {(item.source.byteSize / 1024).toLocaleString(locale, { maximumFractionDigits: 1 })} KB · {isStrategy ? t("问答策略") : t("商家背景资料")}</small>
+                    {processing ? <Progress value={job?.progress ?? 10} /> : null}
+                    {item.source.failureMessage ? <small className="is-error">{item.source.failureMessage}</small> : null}
+                  </div>
+                  <div className="support-agent-source-actions">
+                    {isStrategy && !processing && item.source.status !== "APPROVED" ? <Button size="1" variant="solid" onClick={(event) => { event.stopPropagation(); void approveSource(item); }} disabled={Boolean(busy)} loading={busy === `approve:${key}`}><CheckCircle />{t("一键审批")}</Button> : null}
+                    {!processing ? <Button size="1" variant="soft" color="gray" onClick={() => void sourceAction(item, "reindex")} disabled={Boolean(busy)}><ArrowClockwise />{t("重新处理")}</Button> : null}
+                    {!processing && item.source.status !== "REVOKED" ? <Button size="1" variant="ghost" color="red" onClick={(event) => { event.stopPropagation(); void sourceAction(item, "revoke"); }} disabled={Boolean(busy)}><Prohibit />{t("撤销")}</Button> : null}
+                  </div>
+                </article>;
+              })}
+            </div>
+          </Card>
+        </>
+      ) : null}
+
+      {!loading && selectedAgent && detailView && !selectedBase && !baseLoading ? (
+        <CoreEmpty title={t("知识库不存在")} description={t("请返回知识库列表后重新选择。")} action={<Button onClick={() => navigate(`/console/agents/knowledge?agent_id=${encodeURIComponent(selectedAgentId)}`)}><ArrowLeft />{t("返回知识库列表")}</Button>} />
+      ) : null}
+
+      <Dialog.Root open={uploadOpen} onOpenChange={setUploadOpen}>
+        <Dialog.Content className="support-agent-upload-dialog" maxWidth="620px">
+          <Dialog.Title>{t("上传知识文件")}</Dialog.Title>
+          <Dialog.Description>{t("选择文件类型后，系统会按对应规则解析并归档到当前知识库。")}</Dialog.Description>
+          <form className="support-agent-dialog-form" onSubmit={(event) => void upload(event)}>
+            <label><Text size="2" weight="medium">{t("文件类型")}</Text><Select.Root value={uploadType} onValueChange={(value) => { setUploadType(value as typeof uploadType); setFile(undefined); const input = document.getElementById("support-knowledge-file") as HTMLInputElement | null; if (input) input.value = ""; }}><Select.Trigger /><Select.Content><Select.Item value="QA_STRATEGY"><FileCode />{t("问答策略（仅 JSON）")}</Select.Item><Select.Item value="MERCHANT_PROFILE"><FileText />{t("商家背景资料（MD / Word / TXT）")}</Select.Item></Select.Content></Select.Root></label>
+            <label className="support-agent-file-field">
+              <FileArrowUp weight="duotone" />
+              <span><strong>{file?.name || (uploadType === "QA_STRATEGY" ? t("选择 JSON 问答策略文件") : t("选择 MD、DOCX 或 TXT 文件"))}</strong><small>{t("文件会归属于当前知识库")}</small></span>
+              <input id="support-knowledge-file" type="file" accept={uploadType === "QA_STRATEGY" ? ".json,application/json" : ".md,.docx,.txt,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"} onChange={(event) => setFile(event.target.files?.[0])} required />
+            </label>
+            <label><Text size="2" weight="medium">{t("知识标题（选填）")}</Text><TextField.Root value={title} onChange={(event) => setTitle(event.target.value)} placeholder={file?.name.replace(/\.[^.]+$/, "") || t("文件标题")} /></label>
+            {uploadType === "MERCHANT_PROFILE" ? <><label><Text size="2" weight="medium">{t("文件语言")}</Text><TextField.Root value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="und / zh-CN / en" /></label><label><Text size="2" weight="medium">{t("可用范围")}</Text><Select.Root value={classification} onValueChange={(value) => setClassification(value as typeof classification)}><Select.Trigger /><Select.Content><Select.Item value="CUSTOMER_APPROVED">{t("客户回答可用")}</Select.Item><Select.Item value="PUBLIC">{t("公开资料")}</Select.Item></Select.Content></Select.Root></label></> : <Text size="1" color="gray">{t("问答策略解析后需要人工一键审批，审批前不会作为客户回答依据。")}</Text>}
+            <div className="core-dialog-actions"><Dialog.Close><Button type="button" variant="soft" color="gray" disabled={Boolean(busy)}>{t("取消")}</Button></Dialog.Close><Button type="submit" disabled={!file || Boolean(busy)} loading={busy === "upload"}><FileArrowUp />{t("上传并处理")}</Button></div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Root>
 
       <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
         <Dialog.Content className="support-agent-create-dialog" maxWidth="520px">

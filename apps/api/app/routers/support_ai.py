@@ -30,6 +30,7 @@ from ..support_ai_schemas import (
     SupportAIKnowledgeBaseCreate,
     SupportAIKnowledgeBaseResponse,
     SupportAIKnowledgeBaseSourceResponse,
+    SupportAIKnowledgeBaseSourceDetailResponse,
     SupportAIKnowledgeBaseUpdate,
     SupportAIKnowledgeBaseUploadResponse,
     SupportAIKnowledgeSourceResponse,
@@ -239,6 +240,31 @@ def list_support_ai_knowledge_base_sources(
         raise application_http_error(exc) from exc
 
 
+@router.get(
+    "/api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}/sources/{source_id}",
+    response_model=SupportAIKnowledgeBaseSourceDetailResponse,
+)
+def get_support_ai_knowledge_base_source_detail(
+    knowledge_base_id: UUID,
+    source_id: UUID,
+    response: Response,
+    tenant_id: UUID = Query(...),
+    session: Session = Depends(get_authenticated_session),
+) -> SupportAIKnowledgeBaseSourceDetailResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.get_knowledge_base_source_detail(
+            session,
+            context=context,
+            knowledge_base_id=knowledge_base_id,
+            source_id=source_id,
+            tenant_id=tenant_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.post(
     "/api/v1/system/support-ai/knowledge-bases/{knowledge_base_id}/sources/upload",
     response_model=SupportAIKnowledgeBaseUploadResponse,
@@ -253,6 +279,9 @@ async def upload_support_ai_knowledge_base_source(
         default="CUSTOMER_APPROVED"
     ),
     language: str = Form(default="und", min_length=2, max_length=35),
+    knowledge_type: Literal["QA_STRATEGY", "MERCHANT_PROFILE"] = Form(
+        default="MERCHANT_PROFILE"
+    ),
     file: UploadFile = File(...),
     tenant_id: UUID = Query(...),
     session: Session = Depends(get_authenticated_session),
@@ -270,6 +299,7 @@ async def upload_support_ai_knowledge_base_source(
             description=description,
             classification=classification,
             language=language,
+            knowledge_type=knowledge_type,
             filename=file.filename,
             declared_content_type=file.content_type,
             content=content,

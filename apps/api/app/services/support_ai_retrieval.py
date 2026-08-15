@@ -428,7 +428,13 @@ def _file_evidence(
             SupportAIKnowledgeBaseRow.tenant_id == tenant_id,
             SupportAIKnowledgeBaseRow.status == "ACTIVE",
             SupportAIKnowledgeBaseRow.agent_id == agent_id,
-            SupportAIKnowledgeSourceRow.status.in_(["READY", "APPROVED"]),
+            (
+                SupportAIKnowledgeSourceRow.status == "APPROVED"
+            )
+            | (
+                (SupportAIKnowledgeSourceRow.status == "READY")
+                & ~SupportAIKnowledgeSourceRow.original_filename.ilike("%.json")
+            ),
             SupportAIKnowledgeSourceRow.classification.in_(
                 ["PUBLIC", "CUSTOMER_APPROVED"]
             ),

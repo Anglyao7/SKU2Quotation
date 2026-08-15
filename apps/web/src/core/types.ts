@@ -59,6 +59,7 @@ export interface MerchantSettings {
   businessMode: BusinessMode;
   defaultCurrency: string;
   storefrontLocales: StorefrontLocale[];
+  storefrontDefaultLocale: StorefrontLocale;
   hotProductsEnabled: boolean;
 }
 
@@ -1022,6 +1023,7 @@ export interface SupportAIKnowledgeBase {
   agentId: string;
   name: string;
   description?: string;
+  rulesContext?: string;
   status: "ACTIVE" | "DISABLED";
   sourceCount: number;
   approvedSourceCount: number;
@@ -1033,6 +1035,23 @@ export interface SupportAIKnowledgeBaseSource {
   knowledgeBaseId: string;
   knowledgeBaseName: string;
   source: SupportAIKnowledgeSource;
+}
+
+export interface SupportAIKnowledgeChunk {
+  id: string;
+  chunkIndex: number;
+  sectionPath: string;
+  content: string;
+  tokenCount: number;
+  language: string;
+  locator: Record<string, unknown>;
+}
+
+export interface SupportAIKnowledgeBaseSourceDetail {
+  knowledgeBaseId: string;
+  knowledgeBaseName: string;
+  source: SupportAIKnowledgeSource;
+  chunks: SupportAIKnowledgeChunk[];
 }
 
 export interface SupportAIIngestionJob {
@@ -1331,6 +1350,7 @@ export interface PublicQuoteDraft {
   id: string;
   tenantId: string;
   quoteNumber: string;
+  requestNumber?: string;
   status: string;
   customerName: string;
   customerCompany?: string;
@@ -1338,6 +1358,8 @@ export interface PublicQuoteDraft {
   customerPhone?: string;
   notes?: string;
   locale: StorefrontLocale;
+  documentStyle: "indigo" | "emerald" | "gold" | "slate" | "rose";
+  quoteTemplateId?: string;
   currency: string;
   subtotal: number;
   total: number;

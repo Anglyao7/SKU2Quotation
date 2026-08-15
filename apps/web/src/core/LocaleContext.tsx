@@ -353,6 +353,20 @@ const english: Record<string, string> = {
   "分类管理": "Categories",
   "分类": "Categories",
   "全部商品": "All products",
+  "二级分类门面": "Subcategory cover",
+  "这张样图会显示在前台二级分类卡片上": "This sample image appears on the storefront subcategory card.",
+  "{name} 的二级分类门面": "Cover image for {name}",
+  "自定义样图": "Custom sample image",
+  "默认分类图标": "Default category icon",
+  "当前门面": "Current cover",
+  "还没有门面图片": "No cover image yet",
+  "分类门面来源": "Cover source",
+  "默认图标": "Default icon",
+  "上传中…": "Uploading…",
+  "上传样图": "Upload sample",
+  "从商品选择": "Choose from products",
+  "开启后，前台会先展示二级分类样图；每个二级分类可单独上传图片或选择商品主图。":
+    "When enabled, the storefront shows subcategory samples first. Each subcategory can use an uploaded image or a product image.",
   "全部收起": "Collapse all",
   "全部展开": "Expand all",
   "收起 {name}": "Collapse {name}",
@@ -1637,6 +1651,12 @@ const english: Record<string, string> = {
   "前台语言": "Storefront languages",
   "勾选后会出现在访客语言菜单；简体中文始终保留。翻译与是否展示分开管理。":
     "Selected languages appear in the visitor menu. Simplified Chinese is always retained, while publication and translation are managed independently.",
+  "选择访客可以使用的语言；简体中文固定保留。翻译任务在下方单独管理。":
+    "Choose the languages visitors can use. Simplified Chinese is always retained; translation tasks are managed below.",
+  "默认语言": "Default language",
+  "访客首次打开商品前台时使用；访客主动切换后以选择为准。":
+    "Used when a visitor first opens the product storefront. A visitor's language choice takes precedence.",
+  "选择默认语言": "Choose the default language",
   "保存语言": "Save languages",
   "源语言": "Source language",
   "展示 {language}": "Show {language}",
@@ -2404,7 +2424,7 @@ const english: Record<string, string> = {
     "Merchant settings could not be loaded. Refresh the page and try again.",
   "商品前台语言": "Storefront languages",
   "勾选后才会出现在访客的语言菜单中；简体中文作为默认语言始终保留。":
-    "Only selected languages appear in the visitor language menu. Simplified Chinese always remains the default.",
+    "Only selected languages appear in the visitor language menu. Simplified Chinese is always retained and can be replaced as the default.",
   "默认": "Default",
   "爆款优先展示": "Prioritize bestsellers",
   "开启后，访客进入“全部商品”时会优先看到近 90 天浏览与下单热度更高的商品；搜索和分类顺序不受影响。":

@@ -70,6 +70,8 @@ import type {
   SupportAIAgentKnowledgeUploadItem,
   SupportAIKnowledgeBase,
   SupportAIKnowledgeBaseSource,
+  SupportAIKnowledgeBaseSourceDetail,
+  SupportAIKnowledgeChunk,
   SupportAIIngestionJob,
   SupportAIKnowledgeSource,
   SupportAIProviderSettings,
@@ -640,6 +642,7 @@ interface ApiMerchantSettings {
   business_mode: "DOMESTIC" | "EXPORT";
   default_currency: string;
   storefront_locales: MerchantSettings["storefrontLocales"];
+  storefront_default_locale: MerchantSettings["storefrontDefaultLocale"];
   hot_products_enabled: boolean;
 }
 
@@ -653,6 +656,7 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
     businessMode: row.business_mode,
     defaultCurrency: row.default_currency,
     storefrontLocales: row.storefront_locales,
+    storefrontDefaultLocale: row.storefront_default_locale,
     hotProductsEnabled: row.hot_products_enabled,
   };
 }
@@ -667,6 +671,7 @@ export async function updateMerchantSettings(input: {
   businessMode?: "DOMESTIC" | "EXPORT";
   defaultCurrency?: string;
   storefrontLocales?: MerchantSettings["storefrontLocales"];
+  storefrontDefaultLocale?: MerchantSettings["storefrontDefaultLocale"];
   hotProductsEnabled?: boolean;
 }): Promise<MerchantSettings> {
   const row = await request<ApiMerchantSettings>(
@@ -679,6 +684,7 @@ export async function updateMerchantSettings(input: {
         business_mode: input.businessMode,
         default_currency: input.defaultCurrency,
         storefront_locales: input.storefrontLocales,
+        storefront_default_locale: input.storefrontDefaultLocale,
         hot_products_enabled: input.hotProductsEnabled,
       }),
     },
@@ -3735,6 +3741,30 @@ interface ApiSupportAIKnowledgeSource {
   updated_at: string;
 }
 
+interface ApiSupportAIKnowledgeChunk {
+  id: string;
+  chunk_index: number;
+  section_path: string;
+  content: string;
+  token_count: number;
+  language: string;
+  locator?: Record<string, unknown>;
+}
+
+function mapSupportAIKnowledgeChunk(
+  row: ApiSupportAIKnowledgeChunk,
+): SupportAIKnowledgeChunk {
+  return {
+    id: row.id,
+    chunkIndex: row.chunk_index,
+    sectionPath: row.section_path,
+    content: row.content,
+    tokenCount: row.token_count,
+    language: row.language,
+    locator: row.locator || {},
+  };
+}
+
 function mapSupportAIKnowledgeSource(
   row: ApiSupportAIKnowledgeSource,
 ): SupportAIKnowledgeSource {
@@ -3819,6 +3849,7 @@ interface ApiSupportAIKnowledgeBase {
   agent_id: string;
   name: string;
   description?: string | null;
+  rules_context?: string | null;
   status: SupportAIKnowledgeBase["status"];
   source_count: number;
   approved_source_count: number;
@@ -3836,6 +3867,7 @@ function mapSupportAIKnowledgeBase(
     agentId: row.agent_id,
     name: row.name,
     description: defined(row.description),
+    rulesContext: defined(row.rules_context),
     status: row.status,
     sourceCount: row.source_count,
     approvedSourceCount: row.approved_source_count,
@@ -3859,6 +3891,7 @@ export async function createSupportAIKnowledgeBase(input: {
   tenantId: string;
   name: string;
   description?: string;
+  rulesContext?: string;
 }): Promise<SupportAIKnowledgeBase> {
   return mapSupportAIKnowledgeBase(
     await request<ApiSupportAIKnowledgeBase>(
@@ -3869,6 +3902,7 @@ export async function createSupportAIKnowledgeBase(input: {
           tenant_id: input.tenantId,
           name: input.name,
           description: input.description || null,
+         rules_context: input.rulesContext || null,
         }),
       },
     ),
@@ -3880,6 +3914,7 @@ export async function updateSupportAIKnowledgeBase(input: {
   tenantId: string;
   name?: string;
   description?: string | null;
+  rulesContext?: string | null;
   status?: "ACTIVE" | "DISABLED";
 }): Promise<SupportAIKnowledgeBase> {
   return mapSupportAIKnowledgeBase(
@@ -3890,6 +3925,7 @@ export async function updateSupportAIKnowledgeBase(input: {
         body: JSON.stringify({
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
+         ...(input.rulesContext !== undefined ? { rules_context: input.rulesContext } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
         }),
       },
@@ -3916,6 +3952,28 @@ export async function listSupportAIKnowledgeBaseSources(input: {
   }));
 }
 
+export async function getSupportAIKnowledgeBaseSourceDetail(input: {
+  knowledgeBaseId: string;
+  tenantId: string;
+  sourceId: string;
+}): Promise<SupportAIKnowledgeBaseSourceDetail> {
+  const row = await request<{
+    knowledge_base_id: string;
+    knowledge_base_name: string;
+    source: ApiSupportAIKnowledgeSource;
+    chunks: ApiSupportAIKnowledgeChunk[];
+  }>(
+    `/system/support-ai/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/sources/${encodeURIComponent(input.sourceId)}?tenant_id=${encodeURIComponent(input.tenantId)}`,
+    { cache: "no-store" },
+  );
+  return {
+    knowledgeBaseId: row.knowledge_base_id,
+    knowledgeBaseName: row.knowledge_base_name,
+    source: mapSupportAIKnowledgeSource(row.source),
+    chunks: row.chunks.map(mapSupportAIKnowledgeChunk),
+  };
+}
+
 export async function uploadSupportAIKnowledgeBaseSource(input: {
   knowledgeBaseId: string;
   tenantId: string;
@@ -3924,6 +3982,7 @@ export async function uploadSupportAIKnowledgeBaseSource(input: {
   description?: string;
   classification: "PUBLIC" | "CUSTOMER_APPROVED";
   language: string;
+  knowledgeType?: "QA_STRATEGY" | "MERCHANT_PROFILE";
 }): Promise<{
   knowledgeBase: SupportAIKnowledgeBase;
   source: SupportAIKnowledgeSource;
@@ -3935,6 +3994,7 @@ export async function uploadSupportAIKnowledgeBaseSource(input: {
   body.append("description", input.description || "");
   body.append("classification", input.classification);
   body.append("language", input.language);
+  body.append("knowledge_type", input.knowledgeType || "MERCHANT_PROFILE");
   const row = await request<{
     knowledge_base: ApiSupportAIKnowledgeBase;
     source: ApiSupportAIKnowledgeSource;
@@ -3948,6 +4008,18 @@ export async function uploadSupportAIKnowledgeBaseSource(input: {
     source: mapSupportAIKnowledgeSource(row.source),
     job: mapSupportAIIngestionJob(row.job),
   };
+}
+
+export async function approveSupportAIKnowledgeSource(
+  tenantId: string,
+  sourceId: string,
+): Promise<SupportAIKnowledgeSource> {
+  return mapSupportAIKnowledgeSource(
+    await request<ApiSupportAIKnowledgeSource>(
+      `/support/ai/knowledge/sources/${encodeURIComponent(sourceId)}/approve?tenant_id=${encodeURIComponent(tenantId)}`,
+      { method: "POST" },
+    ),
+  );
 }
 
 export async function uploadSupportAIAgentKnowledgeSource(input: {
@@ -4759,7 +4831,7 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
 }
 
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
 interface ApiStorefrontOrderPeriodStatistics { start_at: string; end_at: string; order_count: number; completed_order_count: number; cancelled_order_count: number; amounts: Array<{ currency: string; total_amount: number | string; completed_amount: number | string; order_count: number }> }
 interface ApiStorefrontOrderStatistics { timezone: string; current_month: ApiStorefrontOrderPeriodStatistics; current_year: ApiStorefrontOrderPeriodStatistics }
@@ -4769,6 +4841,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     id: row.id,
     tenantId: row.tenant_id,
     quoteNumber: row.quote_number,
+    requestNumber: defined(row.request_number),
     status: row.status,
     customerName: row.customer_name,
     customerCompany: defined(row.customer_company),
@@ -4776,6 +4849,8 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     customerPhone: defined(row.customer_phone),
     notes: defined(row.notes),
     locale: row.locale,
+    documentStyle: row.document_style ?? "indigo",
+    quoteTemplateId: defined(row.quote_template_id),
     currency: row.currency,
     subtotal: Number(row.subtotal),
     total: Number(row.total),
@@ -4796,6 +4871,27 @@ export async function listPublicQuoteDrafts(): Promise<PublicQuoteDraftSummary[]
 
 export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(`/public-quote-drafts/${encodeURIComponent(draftId)}`));
+}
+
+export async function updatePublicQuoteDraftSettings(
+  draftId: string,
+  input: {
+    locale: StorefrontLocale;
+    style: PublicQuoteDraft["documentStyle"];
+    templateId?: string | null;
+  },
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/settings`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        locale: input.locale,
+        style: input.style,
+        template_id: input.templateId ?? null,
+      }),
+    },
+  ));
 }
 
 export async function updatePublicQuoteDraftStatus(

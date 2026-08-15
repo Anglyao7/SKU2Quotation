@@ -37,11 +37,6 @@ export function ProductCard({
   )
     ? `${money(product.price_from, product.currency)} – ${money(product.price_to, product.currency)}`
     : money(product.price_from, product.currency);
-  const priceDensity = priceLabel.length > 20
-    ? " is-compact"
-    : priceLabel.length > 12
-      ? " is-condensed"
-      : "";
 
   useEffect(() => {
     setImageFailed(!product.image_url);
@@ -106,7 +101,7 @@ export function ProductCard({
               as="div"
               size="4"
               weight="bold"
-              className={`price-text${priceDensity}`}
+              className="price-text"
               title={priceLabel}
             >
               {priceLabel}

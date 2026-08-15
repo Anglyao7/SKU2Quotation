@@ -889,6 +889,52 @@ def test_merchant_controls_languages_visible_on_the_storefront(
             session.commit()
 
 
+def test_merchant_default_storefront_language_is_used_for_first_visit() -> None:
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_locales = list(profile.storefront_locales or [])
+        original_default = profile.storefront_default_locale
+
+    try:
+        response = client.patch(
+            "/api/v1/me/merchant",
+            json={
+                "storefront_locales": ["zh-CN", "en-US"],
+                "storefront_default_locale": "en-US",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["storefront_default_locale"] == "en-US"
+
+        first_visit = client.get("/api/store/demo")
+        assert first_visit.status_code == 200, first_visit.text
+        assert first_visit.json()["locale"] == "en-US"
+
+        explicit_source = client.get("/api/store/demo", params={"locale": "zh-CN"})
+        assert explicit_source.status_code == 200, explicit_source.text
+        assert explicit_source.json()["locale"] == "zh-CN"
+
+        disabled_default = client.patch(
+            "/api/v1/me/merchant",
+            json={
+                "storefront_locales": ["zh-CN"],
+                "storefront_default_locale": "en-US",
+            },
+        )
+        assert disabled_default.status_code == 422
+        assert disabled_default.json()["detail"]["code"] == (
+            "STOREFRONT_DEFAULT_LOCALE_DISABLED"
+        )
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.storefront_locales = original_locales
+            profile.storefront_default_locale = original_default
+            session.commit()
+
+
 def test_merchant_controls_hot_product_merchandising() -> None:
     with SessionLocal() as session:
         profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
@@ -17462,6 +17508,8 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     }
     assert "storefront_locales" in profile_columns
     assert profile_columns["storefront_locales"]["nullable"] is False
+    assert "storefront_default_locale" in profile_columns
+    assert profile_columns["storefront_default_locale"]["nullable"] is False
     assert "hot_products_enabled" in profile_columns
     assert profile_columns["hot_products_enabled"]["nullable"] is False
     assert "support_widget_config" in profile_columns
@@ -17594,7 +17642,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260815_0088"
+        ).scalar() == "20260815_0092"
     upgraded_engine.dispose()
     command.check(config)
 

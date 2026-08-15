@@ -36,6 +36,7 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftCreate,
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftResponse,
+    PublicQuoteDraftSettingsUpdate,
     PublicQuoteDraftStatusUpdate,
     PublicQuoteDraftSummary,
     StorefrontOrderCurrencyStatistics,
@@ -51,6 +52,7 @@ from ..public_catalog_schemas import (
 )
 from ..repositories import public_catalog_repository as repository
 from ..repositories import catalog_translation_repository
+from ..repositories import quote_template_repository
 from ..services.catalog_translation import (
     CatalogTranslationResult,
     catalog_translation_source,
@@ -393,8 +395,14 @@ def _requested_storefront_locale(
     profile: object,
 ) -> tuple[str, str, list[str]]:
     source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
-    requested_locale = _normalized_locale(locale, default=source_locale)
     available_locales = _available_storefront_locales(session, tenant, profile)
+    default_locale = _normalized_locale(
+        getattr(profile, "storefront_default_locale", None),
+        default=source_locale,
+    )
+    if default_locale not in available_locales:
+        default_locale = source_locale
+    requested_locale = _normalized_locale(locale, default=default_locale)
     if requested_locale not in available_locales:
         raise ApplicationError(
             "PUBLIC_LOCALE_DISABLED",
@@ -708,6 +716,7 @@ def _sku_response(
     locale: str,
     display_currency: str,
     translation: object | None = None,
+    product_translation: PublicProductTranslation | None = None,
 ) -> PublicSkuResponse:
     offer, sku, product, category = row
     source = catalog_translation_source(row)
@@ -733,6 +742,36 @@ def _sku_response(
         if translated
         else source.display_tag
     )
+    source_specification = str(
+        (sku.option_values or {}).get("规格名称") or ""
+    ).strip() or None
+    translated_specification = (
+        str(getattr(translation, "specification", "") or "").strip() or None
+        if translated
+        else None
+    )
+    localized_specification = (
+        translated_specification
+        or (
+            product_translation.specifications.get(
+                source_specification,
+                source_specification,
+            )
+            if product_translation is not None and source_specification
+            else source_specification
+        )
+        or None
+    )
+    localized_options = _localized_public_option_values(
+        dict(sku.option_values or {}),
+        translation=(
+            product_translation
+            if locale != source_locale
+            else None
+        ),
+    )
+    if localized_specification:
+        localized_options["规格名称"] = localized_specification
     return PublicSkuResponse(
         id=sku.id,
         product_id=product.id,
@@ -771,11 +810,8 @@ def _sku_response(
         sku_version=sku.version,
         source_updated_at=_catalog_row_updated_at(row),
         translation_source_hash=catalog_sku_package_source_hash(row),
-        specification=(
-            str((sku.option_values or {}).get("规格名称") or "").strip()
-            or None
-        ),
-        option_values=dict(sku.option_values or {}),
+        specification=localized_specification,
+        option_values=localized_options,
         source_locale=source_locale,
         locale=locale,
         translation_status=(
@@ -1210,6 +1246,10 @@ def _live_sku_translation_map(
     if translator is None or not rows:
         return {}
     sources = [catalog_translation_source(row) for row in rows]
+    specifications = [
+        str((row[1].option_values or {}).get("规格名称") or "").strip()
+        for row in rows
+    ]
     names = [source.name for source in sources]
     description_parts: list[list[tuple[str, str, bool]]] = []
     translation_values: list[str] = [
@@ -1241,6 +1281,11 @@ def _live_sku_translation_map(
         )
         metadata_candidates.extend(source.tags)
     metadata_candidates.extend(additional_values or [])
+    metadata_candidates.extend(
+        specification
+        for specification in specifications
+        if specification
+    )
     translation_values.extend(
         value
         for value in metadata_candidates
@@ -1312,6 +1357,7 @@ def _live_sku_translation_map(
                 ),
                 *category_segments,
                 *source.tags,
+                specifications[index],
             )
             if _is_translatable_catalog_text(value)
         ]
@@ -1332,6 +1378,14 @@ def _live_sku_translation_map(
                 translated_tags[display_tag_index]
                 if display_tag_index is not None
                 else translated_tags[0] if translated_tags else None
+            ),
+            specification=(
+                translated_values.get(
+                    specifications[index],
+                    specifications[index],
+                )
+                if specifications[index]
+                else None
             ),
             complete=all(
                 value.strip() in complete_values
@@ -1430,6 +1484,7 @@ def _live_product_translation_map(
     source_locale: str,
     target_locale: str,
     include_sku_options: bool = False,
+    sku_translation_sink: dict[UUID, CatalogTranslationResult] | None = None,
 ) -> dict[UUID, PublicProductTranslation]:
     if translator is None or not groups:
         return {}
@@ -1495,6 +1550,15 @@ def _live_product_translation_map(
         translation_values.extend(
             value for value in values if _is_translatable_catalog_text(value)
         )
+        sku_sources = [
+            catalog_translation_source(row)
+            for row in rows
+        ] if sku_translation_sink is not None else []
+        translation_values.extend(
+            source.name
+            for source in sku_sources
+            if _is_translatable_catalog_text(source.name)
+        )
         sources.append(
             {
                 "product_id": product.id,
@@ -1507,6 +1571,8 @@ def _live_product_translation_map(
                 "specifications": specifications,
                 "option_labels": option_labels,
                 "option_choice_values": option_choice_values,
+                "rows": rows,
+                "sku_sources": sku_sources,
             }
         )
 
@@ -1529,6 +1595,8 @@ def _live_product_translation_map(
         specifications = source["specifications"]
         option_labels = source["option_labels"]
         option_choice_values = source["option_choice_values"]
+        rows = source["rows"]
+        sku_sources = source["sku_sources"]
         translated_tags = tuple(
             translated_values.get(tag, tag) for tag in tags
         )
@@ -1557,28 +1625,30 @@ def _live_product_translation_map(
             )
             if _is_translatable_catalog_text(value)
         ]
+        localized_description = (
+            "".join(
+                (
+                    translated_values.get(content, content)
+                    if needs_translation
+                    else content
+                )
+                + ending
+                for content, ending, needs_translation in description_parts
+            )
+            if description is not None
+            else None
+        )
+        localized_category = (
+            "/".join(
+                translated_values.get(segment, segment)
+                for segment in category_segments
+            )
+            or None
+        )
         results[source["product_id"]] = PublicProductTranslation(
             name=translated_values.get(name, name),
-            description=(
-                "".join(
-                    (
-                        translated_values.get(content, content)
-                        if needs_translation
-                        else content
-                    )
-                    + ending
-                    for content, ending, needs_translation in description_parts
-                )
-                if description is not None
-                else None
-            ),
-            category=(
-                "/".join(
-                    translated_values.get(segment, segment)
-                    for segment in category_segments
-                )
-                or None
-            ),
+            description=localized_description,
+            category=localized_category,
             tags=translated_tags,
             display_tag=(
                 translated_tags[display_tag_index]
@@ -1610,6 +1680,72 @@ def _live_product_translation_map(
                 value.strip() in complete_values for value in required_values
             ),
         )
+        if sku_translation_sink is not None:
+            for row, sku_source in zip(rows, sku_sources, strict=True):
+                sku_category_segments = [
+                    segment.strip()
+                    for segment in (sku_source.category or "")
+                    .replace("／", "/")
+                    .split("/")
+                    if segment.strip()
+                ]
+                localized_sku_tags = tuple(
+                    translated_values.get(tag, tag)
+                    for tag in sku_source.tags
+                )
+                source_specification = str(
+                    (row[1].option_values or {}).get("规格名称") or ""
+                ).strip()
+                display_tag_index = next(
+                    (
+                        index
+                        for index, tag in enumerate(sku_source.tags)
+                        if sku_source.display_tag
+                        and tag.casefold() == sku_source.display_tag.casefold()
+                    ),
+                    None,
+                )
+                if sku_source.sku_id in sku_translation_sink:
+                    continue
+                sku_translation_sink[sku_source.sku_id] = CatalogTranslationResult(
+                    sku_id=sku_source.sku_id,
+                    source_hash=sku_source.source_hash,
+                    name=translated_values.get(sku_source.name, sku_source.name),
+                    description=localized_description,
+                    category=(
+                        "/".join(
+                            translated_values.get(segment, segment)
+                            for segment in sku_category_segments
+                        )
+                        or None
+                    ),
+                    tags=localized_sku_tags,
+                    display_tag=(
+                        localized_sku_tags[display_tag_index]
+                        if display_tag_index is not None
+                        else localized_sku_tags[0]
+                        if localized_sku_tags
+                        else None
+                    ),
+                    specification=(
+                        translated_values.get(
+                            source_specification,
+                            source_specification,
+                        )
+                        if source_specification
+                        else None
+                    ),
+                    complete=all(
+                        value.strip() in complete_values
+                        for value in (
+                            sku_source.name,
+                            *sku_category_segments,
+                            *sku_source.tags,
+                            source_specification,
+                        )
+                        if _is_translatable_catalog_text(value)
+                    ),
+                )
     return results
 
 
@@ -1999,15 +2135,17 @@ def list_public_products(
         tenant_id=tenant.id,
         product_ids=set(selected_product_ids),
     )
-    translator = _live_translation_provider(
+    _sku_translations, translations = _quote_translation_maps(
         session,
+        tenant_id=tenant.id,
+        rows=selected_rows,
         source_locale=source_locale,
         target_locale=requested_locale,
+        include_product_translations=True,
+        include_sku_options=False,
     )
-    translations = _live_product_translation_map(
-        groups,
-        tenant_id=tenant.id,
-        translator=translator,
+    translator = _live_translation_provider(
+        session,
         source_locale=source_locale,
         target_locale=requested_locale,
     )
@@ -2137,17 +2275,13 @@ def get_public_product(
         tenant_id=tenant.id,
         product_id=product_id,
     )
-    translator = _live_translation_provider(
+    sku_translations, product_translations = _quote_translation_maps(
         session,
-        source_locale=source_locale,
-        target_locale=requested_locale,
-    )
-    product_translations = _live_product_translation_map(
-        [rows],
         tenant_id=tenant.id,
-        translator=translator,
+        rows=rows,
         source_locale=source_locale,
         target_locale=requested_locale,
+        include_product_translations=True,
         include_sku_options=True,
     )
     product_translation = product_translations.get(product_id)
@@ -2193,7 +2327,8 @@ def get_public_product(
             source_locale=source_locale,
             locale=requested_locale,
             display_currency=tenant.default_currency.upper(),
-            translation=None,
+            translation=sku_translations.get(row[1].id),
+            product_translation=product_translation,
         )
         source_specification = str(
             (row[1].option_values or {}).get("规格名称") or ""
@@ -2244,21 +2379,57 @@ def get_public_product(
             localized_display_tag = (
                 localized_sku_tags[0] if localized_sku_tags else None
             )
+        sku_translation = sku_translations.get(row[1].id)
+        localized_sku_name = (
+            getattr(sku_translation, "name", None) or summary.name
+        )
+        should_append_specification = bool(
+            specification
+            and not (
+                localized_sku_name.strip().casefold()
+                == specification.casefold()
+                or any(
+                    localized_sku_name.strip().casefold().endswith(suffix)
+                    for suffix in (
+                        f" {specification.casefold()}",
+                        f"·{specification.casefold()}",
+                        f"· {specification.casefold()}",
+                        f"/{specification.casefold()}",
+                        f"-{specification.casefold()}",
+                        f"_{specification.casefold()}",
+                    )
+                )
+            )
+        )
         response = response.model_copy(
             update={
                 "name": (
-                    f"{summary.name} · {specification}"
-                    if specification
-                    else summary.name
+                    f"{localized_sku_name} · {specification}"
+                    if should_append_specification
+                    else localized_sku_name
                 ),
-                "description": summary.description,
-                "category_label": summary.category_label,
-                "tags": localized_sku_tags,
-                "display_tag": localized_display_tag,
+                "description": (
+                    getattr(sku_translation, "description", None)
+                    if sku_translation is not None
+                    else summary.description
+                ),
+                "category_label": (
+                    getattr(sku_translation, "category", None)
+                    or summary.category_label
+                ),
+                "tags": (
+                    list(getattr(sku_translation, "tags", ()) or ())
+                    if sku_translation is not None
+                    else localized_sku_tags
+                ),
+                "display_tag": (
+                    getattr(sku_translation, "display_tag", None)
+                    or localized_display_tag
+                ),
                 "specification": specification,
                 "option_values": localized_option_values,
                 "locale": requested_locale,
-                "translation_status": summary.translation_status,
+                "translation_status": response.translation_status,
             }
         )
         skus.append(response)
@@ -2387,25 +2558,19 @@ def list_public_skus(
         tenant_id=tenant.id,
         product_ids={row[2].id for row in selected},
     )
+    translations, product_translations = _quote_translation_maps(
+        session,
+        tenant_id=tenant.id,
+        rows=selected,
+        source_locale=source_locale,
+        target_locale=requested_locale,
+        include_product_translations=True,
+        include_sku_options=True,
+    )
     translator = _live_translation_provider(
         session,
         source_locale=source_locale,
         target_locale=requested_locale,
-    )
-    translations = _live_sku_translation_map(
-        selected,
-        tenant_id=tenant.id,
-        translator=translator,
-        source_locale=source_locale,
-        target_locale=requested_locale,
-        additional_values=[
-            segment.strip()
-            for category_path in categories
-            for segment in category_path.replace("／", "/").split("/")
-            if segment.strip()
-        ]
-        if requested_locale != source_locale and include_facets
-        else None,
     )
     category_labels = (
         _live_category_labels(
@@ -2433,6 +2598,7 @@ def list_public_skus(
                 locale=requested_locale,
                 display_currency=tenant.default_currency.upper(),
                 translation=translations.get(row[1].id),
+                product_translation=product_translations.get(row[2].id),
             )
             for row in selected
         ],
@@ -2535,17 +2701,14 @@ def get_public_sku(
         tenant_id=tenant.id,
         product_ids={row[2].id},
     )
-    translator = _live_translation_provider(
+    translations, product_translations = _quote_translation_maps(
         session,
-        source_locale=source_locale,
-        target_locale=requested_locale,
-    )
-    translations = _live_sku_translation_map(
-        [row],
         tenant_id=tenant.id,
-        translator=translator,
+        rows=[row],
         source_locale=source_locale,
         target_locale=requested_locale,
+        include_product_translations=True,
+        include_sku_options=True,
     )
     return _sku_response(
         row,
@@ -2558,6 +2721,7 @@ def get_public_sku(
         locale=requested_locale,
         display_currency=tenant.default_currency.upper(),
         translation=translations.get(sku_id),
+        product_translation=product_translations.get(row[2].id),
     )
 
 
@@ -2718,6 +2882,56 @@ def _valid_pack_sku_entry(entry: object, row: object) -> dict[str, object] | Non
     return entry
 
 
+def _pack_sku_translation(
+    entry: object,
+    row: object,
+) -> CatalogTranslationResult | None:
+    """Convert an immutable language-pack SKU entry to the runtime shape.
+
+    Language-pack ``source_hash`` fingerprints the complete package source,
+    while ``_sku_response`` validates against the live catalog translation
+    source hash.  Validate the former here, then expose the latter to the
+    response layer so both paths use the same stale-data protection.
+    """
+
+    valid = _valid_pack_sku_entry(entry, row)
+    if valid is None:
+        return None
+    source = catalog_translation_source(row)
+    source_specification = str(
+        (row[1].option_values or {}).get("规格名称") or ""
+    ).strip() or None
+    tags = tuple(
+        str(tag).strip()
+        for tag in (valid.get("tags") or [])
+        if str(tag).strip()
+    )
+    return CatalogTranslationResult(
+        sku_id=source.sku_id,
+        source_hash=source.source_hash,
+        name=str(valid.get("name") or "").strip() or source.name,
+        description=(
+            str(valid.get("description")).strip()
+            if valid.get("description") not in (None, "")
+            else source.description
+        ),
+        category=(
+            str(valid.get("category_label") or "").strip()
+            or source.category
+        ),
+        tags=tags or source.tags,
+        display_tag=(
+            str(valid.get("display_tag") or "").strip()
+            or source.display_tag
+        ),
+        specification=(
+            str(valid.get("specification") or "").strip()
+            or source_specification
+        ),
+        complete=True,
+    )
+
+
 def _quote_translation_maps(
     session: Session,
     *,
@@ -2725,6 +2939,8 @@ def _quote_translation_maps(
     rows: list[object],
     source_locale: str,
     target_locale: str,
+    include_product_translations: bool = True,
+    include_sku_options: bool = True,
 ) -> tuple[
     dict[UUID, object],
     dict[UUID, PublicProductTranslation],
@@ -2745,11 +2961,15 @@ def _quote_translation_maps(
     for row in rows:
         sku = row[1]
         product = row[2]
-        rows_by_product.setdefault(product.id, []).append(row)
-        entry = _valid_pack_sku_entry(pack_skus.get(str(sku.id)), row)
-        if entry is not None:
-            sku_translations[sku.id] = entry
-        if product.id not in product_translations:
+        if include_product_translations:
+            rows_by_product.setdefault(product.id, []).append(row)
+        translated_sku = _pack_sku_translation(
+            pack_skus.get(str(sku.id)),
+            row,
+        )
+        if translated_sku is not None:
+            sku_translations[sku.id] = translated_sku
+        if include_product_translations and product.id not in product_translations:
             translated_product = _pack_product_translation(
                 pack_products.get(str(product.id)),
                 product_version=product.current_version,
@@ -2777,11 +2997,15 @@ def _quote_translation_maps(
                 sku_translations[row[1].id] = translated
 
     missing_rows = [row for row in rows if row[1].id not in sku_translations]
-    missing_groups = [
-        group
-        for product_id, group in rows_by_product.items()
-        if product_id not in product_translations
-    ]
+    missing_groups = (
+        [
+            group
+            for product_id, group in rows_by_product.items()
+            if product_id not in product_translations
+        ]
+        if include_product_translations
+        else []
+    )
     if not missing_rows and not missing_groups:
         return sku_translations, product_translations
 
@@ -2790,16 +3014,6 @@ def _quote_translation_maps(
         source_locale=source_locale,
         target_locale=target_locale,
     )
-    if missing_rows:
-        sku_translations.update(
-            _live_sku_translation_map(
-                missing_rows,
-                tenant_id=tenant_id,
-                translator=translator,
-                source_locale=source_locale,
-                target_locale=target_locale,
-            )
-        )
     if missing_groups:
         product_translations.update(
             _live_product_translation_map(
@@ -2808,7 +3022,20 @@ def _quote_translation_maps(
                 translator=translator,
                 source_locale=source_locale,
                 target_locale=target_locale,
-                include_sku_options=True,
+                include_sku_options=include_sku_options,
+                sku_translation_sink=sku_translations,
+            )
+        )
+    missing_rows = [row for row in rows if row[1].id not in sku_translations]
+    if missing_rows:
+        sku_translations.update(
+            _live_sku_translation_map(
+                missing_rows,
+                tenant_id=tenant_id,
+                translator=translator,
+                source_locale=source_locale,
+                target_locale=target_locale,
+                additional_values=None,
             )
         )
     return sku_translations, product_translations
@@ -2843,7 +3070,8 @@ def _draft_response(
     return PublicQuoteDraftResponse(
         id=draft.id,
         tenant_id=draft.tenant_id,
-        quote_number=draft.request_number,
+        quote_number=(getattr(draft, "quotation_number", None) or draft.request_number),
+        request_number=draft.request_number,
         status=draft.status,
         customer_name=draft.customer_name,
         customer_company=draft.customer_company,
@@ -2854,6 +3082,8 @@ def _draft_response(
             getattr(draft, "document_locale", None),
             default="zh-CN",
         ),
+        document_style=(getattr(draft, "document_style", None) or "indigo"),
+        quote_template_id=getattr(draft, "quote_template_id", None),
         currency=draft.currency,
         subtotal=draft.subtotal_amount,
         total=draft.estimated_total,
@@ -2870,6 +3100,127 @@ def _draft_response(
         pdf_url=f"{document_base}/pdf" if raw_token else None,
         xlsx_url=f"{document_base}/xlsx" if raw_token else None,
     )
+
+
+def _localized_quote_response(
+    session: Session,
+    *,
+    draft: PublicQuoteDraftRow,
+    items: list[PublicQuoteDraftItemRow],
+    tenant: object,
+) -> PublicQuoteDraftResponse:
+    """Render the saved quote snapshot in its currently selected locale.
+
+    A visitor may submit an inquiry in one language while the merchant
+    prepares the commercial document in another.  Re-read the current
+    translation package for the SKU/Product ids when available, but always
+    fall back to the immutable snapshot so a catalog edit cannot erase an
+    existing quote line.
+    """
+    response = _draft_response(draft, items)
+    target_locale = response.locale
+    source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
+    if target_locale == source_locale or not items:
+        return response
+    sku_ids = [item.sku_id for item in items]
+    rows = repository.list_public_catalog_rows_by_sku_ids(
+        session,
+        tenant_id=draft.tenant_id,
+        sku_ids=sku_ids,
+        now=utcnow(),
+    )
+    row_by_sku = {row[1].id: row for row in rows}
+    if not row_by_sku:
+        return response
+    try:
+        sku_translations, product_translations = _quote_translation_maps(
+            session,
+            tenant_id=draft.tenant_id,
+            rows=rows,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+    except Exception:
+        # Export must remain available when an upstream translation provider is
+        # temporarily unavailable. The saved quote snapshot is the fallback.
+        logger.warning(
+            "quote export translation unavailable; using saved snapshot",
+            extra={"quote_draft_id": str(draft.id), "locale": target_locale},
+            exc_info=True,
+        )
+        return response
+    localized_items = []
+    for item in response.items:
+        row = row_by_sku.get(item.sku_id)
+        if row is None:
+            localized_items.append(item)
+            continue
+        offer, sku, product, category = row
+        sku_translation = sku_translations.get(sku.id)
+        product_translation = product_translations.get(product.id)
+        source_name = str(sku.name or product.name or item.name_snapshot).strip()
+        translated_name = _quote_translation_value(sku_translation, "name")
+        if translated_name is None:
+            translated_name = _quote_translation_value(product_translation, "name")
+        source_description = product.description or item.description_snapshot
+        translated_description = _quote_translation_value(
+            sku_translation, "description"
+        ) or _quote_translation_value(product_translation, "description")
+        source_category = _category_path(category) or item.category_snapshot
+        translated_category = _quote_translation_value(
+            sku_translation, "category_label", "category"
+        ) or _quote_translation_value(product_translation, "category")
+        source_tags = [
+            str(tag).strip() for tag in (offer.tags or item.tags_snapshot) if str(tag).strip()
+        ]
+        translated_tags = _quote_translation_value(sku_translation, "tags")
+        if translated_tags is None:
+            translated_tags = _quote_translation_value(product_translation, "tags")
+        source_options = {
+            str(key): value
+            for key, value in (sku.option_values or {}).items()
+            if str(key).strip() and not str(key).startswith("_")
+        }
+        localized_options = _localized_public_option_values(
+            source_options,
+            translation=product_translation,
+        )
+        source_specification = str(source_options.get("规格名称") or "").strip()
+        translated_specification = _quote_translation_value(
+            sku_translation, "specification"
+        )
+        if translated_specification in (None, "") and product_translation is not None:
+            translated_specification = product_translation.specifications.get(
+                source_specification,
+                source_specification,
+            )
+        localized_items.append(
+            item.model_copy(
+                update={
+                    "name_snapshot": str(translated_name or source_name).strip(),
+                    "description_snapshot": (
+                        str(translated_description).strip()
+                        if translated_description not in (None, "")
+                        else source_description
+                    ),
+                    "category_snapshot": str(translated_category or source_category).strip()
+                    if translated_category or source_category
+                    else None,
+                    "tags_snapshot": [
+                        str(tag).strip()
+                        for tag in (translated_tags or source_tags)
+                        if str(tag).strip()
+                    ],
+                    "specification_snapshot": (
+                        str(translated_specification).strip()
+                        if translated_specification not in (None, "")
+                        else item.specification_snapshot
+                    ),
+                    "option_values_snapshot": localized_options or item.option_values_snapshot,
+                }
+            )
+        )
+    return response.model_copy(update={"items": localized_items})
 
 
 def create_public_quote_draft(
@@ -3241,11 +3592,18 @@ def get_quote_document(
         tenant_name=tenant.name,
         contact_email=profile.contact_email,
         contact_phone=profile.contact_phone,
-        quote=_draft_response(draft, items),
-        excel_template=quote_template_use_cases.default_render_spec(
+        quote=_localized_quote_response(
+            session,
+            draft=draft,
+            items=items,
+            tenant=tenant,
+        ),
+        excel_template=quote_template_use_cases.render_spec_for_template(
             session,
             tenant_id=tenant_id,
+            template_id=getattr(draft, "quote_template_id", None),
         ),
+        style=(getattr(draft, "document_style", None) or "indigo"),
     )
 
 
@@ -3267,7 +3625,7 @@ def list_tenant_quote_drafts(
     return [
         PublicQuoteDraftSummary(
             id=row.id,
-            quote_number=row.request_number,
+            quote_number=(getattr(row, "quotation_number", None) or row.request_number),
             status=row.status,
             customer_name=row.customer_name,
             customer_company=row.customer_company,
@@ -3316,7 +3674,7 @@ def list_storefront_visitor_quote_drafts(
     return [
         PublicQuoteDraftSummary(
             id=row.id,
-            quote_number=row.request_number,
+            quote_number=(getattr(row, "quotation_number", None) or row.request_number),
             status=row.status,
             customer_name=row.customer_name,
             customer_company=row.customer_company,
@@ -3481,6 +3839,7 @@ def _create_storefront_order_record(
         "source_quote": {
             "id": str(draft.id),
             "number": draft.request_number,
+            "quotation_number": getattr(draft, "quotation_number", None),
             "content_hash": draft.content_hash,
         },
         "customer": {
@@ -3515,7 +3874,7 @@ def _create_storefront_order_record(
     record = StorefrontOrderRecordRow(
         tenant_id=draft.tenant_id,
         source_quote_draft_id=draft.id,
-        order_number=draft.request_number,
+        order_number=(getattr(draft, "quotation_number", None) or draft.request_number),
         status="CONFIRMED",
         submitted_by_membership_id=draft.submitted_by_membership_id,
         customer_name=draft.customer_name,
@@ -3669,7 +4028,81 @@ def get_tenant_quote_draft(
     items = repository.list_quote_draft_items(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
     )
-    return _draft_response(draft, items)
+    tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
+    return (
+        _localized_quote_response(session, draft=draft, items=items, tenant=tenant)
+        if tenant is not None
+        else _draft_response(draft, items)
+    )
+
+
+def update_tenant_quote_draft_settings(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    request: PublicQuoteDraftSettingsUpdate,
+) -> PublicQuoteDraftResponse:
+    """Save the presentation settings used by the quote document workspace."""
+    _require(permissions, "quotation.create")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
+    profile = repository.find_profile_by_tenant(session, tenant_id=tenant_id)
+    if tenant is None or profile is None:
+        raise ApplicationError(
+            "TENANT_NOT_FOUND",
+            "Merchant profile was not found.",
+            kind="not_found",
+        )
+    _source_locale, requested_locale, _available_locales = _requested_storefront_locale(
+        session,
+        request.locale,
+        tenant=tenant,
+        profile=profile,
+    )
+    if request.template_id is not None:
+        template = quote_template_repository.get_for_tenant(
+            session,
+            tenant_id=tenant_id,
+            template_id=request.template_id,
+        )
+        if template is None or not template.column_mappings:
+            raise ApplicationError(
+                "QUOTE_EXCEL_TEMPLATE_NOT_READY",
+                "所选 Excel 模板不存在或尚未完成字段映射。",
+                kind="conflict",
+            )
+    draft.document_locale = requested_locale
+    draft.document_style = request.style
+    draft.quote_template_id = request.template_id
+    if not getattr(draft, "quotation_number", None):
+        draft.quotation_number = f"QT-{utcnow():%Y%m%d}-{uuid4().hex[:8].upper()}"
+    draft.updated_at = utcnow()
+    session.commit()
+    session.refresh(draft)
+    updated_items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    return _localized_quote_response(
+        session,
+        draft=draft,
+        items=updated_items,
+        tenant=tenant,
+    )
 
 
 def get_tenant_quote_document(
@@ -3698,9 +4131,16 @@ def get_tenant_quote_document(
         tenant_name=tenant.name,
         contact_email=profile.contact_email if profile else None,
         contact_phone=profile.contact_phone if profile else None,
-        quote=_draft_response(draft, items),
-        excel_template=quote_template_use_cases.default_render_spec(
+        quote=_localized_quote_response(
+            session,
+            draft=draft,
+            items=items,
+            tenant=tenant,
+        ),
+        excel_template=quote_template_use_cases.render_spec_for_template(
             session,
             tenant_id=tenant_id,
+            template_id=getattr(draft, "quote_template_id", None),
         ),
+        style=(getattr(draft, "document_style", None) or "indigo"),
     )

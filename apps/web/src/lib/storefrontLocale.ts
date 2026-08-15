@@ -44,9 +44,13 @@ const localeAliases: Record<string, StorefrontLocale> = {
   "pt-br": "pt",
 };
 
+export function parseStorefrontLocale(value?: string | null): StorefrontLocale | undefined {
+  const normalized = String(value || "").replaceAll("_", "-").toLocaleLowerCase();
+  return localeAliases[normalized];
+}
+
 export function normalizeStorefrontLocale(value?: string | null): StorefrontLocale {
-  return localeAliases[String(value || "").replaceAll("_", "-").toLocaleLowerCase()]
-    ?? "zh-CN";
+  return parseStorefrontLocale(value) ?? "zh-CN";
 }
 
 export function storefrontLocaleQuery(locale: StorefrontLocale) {

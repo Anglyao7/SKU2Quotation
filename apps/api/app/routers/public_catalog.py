@@ -17,6 +17,7 @@ from ..public_catalog_schemas import (
     PublicProductPage,
     PublicQuoteDraftCreate,
     PublicQuoteDraftResponse,
+    PublicQuoteDraftSettingsUpdate,
     PublicQuoteDraftStatusUpdate,
     PublicQuoteDraftSummary,
     PublicSkuPage,
@@ -521,6 +522,30 @@ def update_tenant_public_quote_draft_status(
             session,
             tenant_id=context.tenant_id,
             membership_id=context.membership_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/settings",
+    response_model=PublicQuoteDraftResponse,
+)
+def update_tenant_public_quote_draft_settings(
+    quote_draft_id: UUID,
+    payload: PublicQuoteDraftSettingsUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_tenant_quote_draft_settings(
+            session,
+            tenant_id=context.tenant_id,
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
             request=payload,

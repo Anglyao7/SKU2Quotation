@@ -28,7 +28,7 @@ import {
   readStorefrontCatalogSnapshot,
   readStorefrontViewState,
 } from "./lib/storefrontViewState";
-import { normalizeStorefrontLocale } from "./lib/storefrontLocale";
+import { parseStorefrontLocale } from "./lib/storefrontLocale";
 import {
   importWithChunkRecovery,
   isChunkLoadFailure,
@@ -73,6 +73,7 @@ const SupportAIKnowledgePage = recoverableLazy(() => import("./core/pages/Suppor
 const PersonalCenterPage = recoverableLazy(() => import("./core/pages/PersonalCenterPage").then((module) => ({ default: module.PersonalCenterPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
+const QuoteWorkbenchPage = recoverableLazy(() => import("./core/pages/QuoteWorkbenchPage").then((module) => ({ default: module.QuoteWorkbenchPage })));
 const QuoteTemplatesPage = recoverableLazy(() => import("./core/pages/QuoteTemplatesPage").then((module) => ({ default: module.QuoteTemplatesPage })));
 const TagManagementPage = recoverableLazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
 const CustomerAccountsPage = recoverableLazy(() => import("./core/pages/CustomerAccountsPage").then((module) => ({ default: module.CustomerAccountsPage })));
@@ -155,7 +156,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
-  const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
+  const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
   const pathShareId = params.shareId?.trim();
   const shareToken = pathShareId || currentUrl.searchParams.get("share")?.trim() || undefined;
   const storefrontPath = (slug: string) => pathShareId
@@ -163,7 +164,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     : `/${encodeURIComponent(slug)}`;
   try {
     const savedView = shareToken ? undefined : readStorefrontViewState(tenantSlug);
-    const catalogSnapshot = shareToken
+    const catalogSnapshot = shareToken || !locale
       ? null
       : readStorefrontCatalogSnapshot(tenantSlug, locale);
     if (catalogSnapshot) {
@@ -207,7 +208,7 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   const productId = params.productId;
   if (!tenantSlug || !productId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
-  const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
+  const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
   const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const [store, product] = await Promise.all([
@@ -239,7 +240,7 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   const skuId = params.skuId;
   if (!tenantSlug || !skuId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
-  const locale = normalizeStorefrontLocale(currentUrl.searchParams.get("lang"));
+  const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
   const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const [store, sku] = await Promise.all([
@@ -332,6 +333,7 @@ const router = createBrowserRouter([{
         { path: "suppliers", element: <Navigate to="/console/supply-chain" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
+        { path: "quotes/:quoteDraftId/workbench", element: <PermissionGate anyOf={["quotation.create"]}><QuoteWorkbenchPage /></PermissionGate> },
         { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
@@ -345,6 +347,7 @@ const router = createBrowserRouter([{
         { path: "agents", element: <PlatformAdminGate><SupportAIAgentsPage /></PlatformAdminGate> },
         { path: "agents/knowledge", element: <PlatformAdminGate><SupportAIKnowledgePage /></PlatformAdminGate> },
         { path: "agents/:agentId/training", element: <PlatformAdminGate><SupportAITrainingPage /></PlatformAdminGate> },
+        { path: "agents/knowledge/:knowledgeBaseId", element: <PlatformAdminGate><SupportAIKnowledgePage /></PlatformAdminGate> },
         { path: "agents/:agentId", element: <PlatformAdminGate><SupportAIAgentDetailPage /></PlatformAdminGate> },
         { path: "support/ai", element: <Navigate to="/console/agents" replace /> },
         { path: "skus", element: <Navigate to="/console/products" replace /> },

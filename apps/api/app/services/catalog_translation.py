@@ -87,6 +87,7 @@ class CatalogTranslationResult:
     category: str | None
     tags: tuple[str, ...]
     display_tag: str | None
+    specification: str | None = None
     complete: bool = True
 
 

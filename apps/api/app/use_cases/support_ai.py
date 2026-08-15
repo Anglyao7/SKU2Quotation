@@ -43,6 +43,7 @@ from ..support_ai_models import (
     SupportAIEvidenceUseRow,
     SupportAIIngestionJobRow,
     SupportAIKnowledgeBaseRow,
+    SupportAIKnowledgeChunkRow,
     SupportAIKnowledgeSourceRow,
     SupportAIProviderSettingsRow,
     SupportAIRunRow,
@@ -62,6 +63,8 @@ from ..support_ai_schemas import (
     SupportAIKnowledgeBaseCreate,
     SupportAIKnowledgeBaseResponse,
     SupportAIKnowledgeBaseSourceResponse,
+    SupportAIKnowledgeBaseSourceDetailResponse,
+    SupportAIKnowledgeChunkResponse,
     SupportAIKnowledgeBaseUpdate,
     SupportAIKnowledgeBaseUploadResponse,
     SupportAIKnowledgeSourceResponse,
@@ -469,14 +472,18 @@ def _agent_scope_maps(
                 select(
                     SupportAIKnowledgeSourceRow.sha256,
                     SupportAIKnowledgeSourceRow.status,
+                    SupportAIKnowledgeSourceRow.original_filename,
                 ).where(
                     SupportAIKnowledgeSourceRow.tenant_id == tenant.id,
                     SupportAIKnowledgeSourceRow.agent_id == agent_id,
                 )
             ).all()
-            for sha256, status in sources:
+            for sha256, status, original_filename in sources:
                 source_hashes.setdefault(agent_id, set()).add(sha256)
-                if status in {"READY", "APPROVED"}:
+                if status == "APPROVED" or (
+                    status == "READY"
+                    and not str(original_filename or "").casefold().endswith(".json")
+                ):
                     approved_hashes.setdefault(agent_id, set()).add(sha256)
     return (
         stores,
@@ -886,7 +893,7 @@ def _knowledge_base_response(
             select(func.count(SupportAIKnowledgeSourceRow.id)).where(
                 SupportAIKnowledgeSourceRow.tenant_id == row.tenant_id,
                 SupportAIKnowledgeSourceRow.knowledge_base_id == row.id,
-                SupportAIKnowledgeSourceRow.status.in_(["READY", "APPROVED"]),
+                SupportAIKnowledgeSourceRow.status == "APPROVED",
                 SupportAIKnowledgeSourceRow.deleted_at.is_(None),
             )
         )
@@ -899,6 +906,7 @@ def _knowledge_base_response(
         agent_id=row.agent_id,
         name=row.name,
         description=row.description,
+        rules_context=row.rules_context,
         status=row.status,
         source_count=source_count,
         approved_source_count=approved_source_count,
@@ -974,6 +982,7 @@ def create_agent_knowledge_base(
             agent_id=agent_id,
             name=request.name,
             description=request.description,
+            rules_context=request.rules_context,
             status="ACTIVE",
             created_by_user_id=context.user_id,
             updated_by_user_id=context.user_id,
@@ -1017,6 +1026,8 @@ def update_knowledge_base(
             row.name = request.name
         if "description" in request.model_fields_set:
             row.description = request.description
+        if "rules_context" in request.model_fields_set:
+            row.rules_context = request.rules_context
         if request.status is not None:
             row.status = request.status
         row.updated_by_user_id = context.user_id
@@ -1073,6 +1084,66 @@ def list_knowledge_base_sources(
         ]
 
 
+def get_knowledge_base_source_detail(
+    session: Session,
+    *,
+    context: RequestContext,
+    knowledge_base_id: UUID,
+    source_id: UUID,
+    tenant_id: UUID,
+) -> SupportAIKnowledgeBaseSourceDetailResponse:
+    """Return the committed parser output for one file in a knowledge base."""
+
+    _require_platform_admin(context)
+    tenant = _platform_tenant(session, tenant_id=tenant_id)
+    with _tenant_scope(session, context=context, tenant=tenant):
+        base = _knowledge_base(
+            session,
+            tenant_id=tenant.id,
+            knowledge_base_id=knowledge_base_id,
+        )
+        source = session.scalar(
+            select(SupportAIKnowledgeSourceRow).where(
+                SupportAIKnowledgeSourceRow.tenant_id == tenant.id,
+                SupportAIKnowledgeSourceRow.id == source_id,
+                SupportAIKnowledgeSourceRow.knowledge_base_id == base.id,
+                SupportAIKnowledgeSourceRow.deleted_at.is_(None),
+            )
+        )
+        if source is None:
+            raise ApplicationError(
+                "SUPPORT_AI_KNOWLEDGE_SOURCE_NOT_FOUND",
+                "知识文件不存在。",
+                kind="not_found",
+            )
+        chunks = session.scalars(
+            select(SupportAIKnowledgeChunkRow)
+            .where(
+                SupportAIKnowledgeChunkRow.tenant_id == tenant.id,
+                SupportAIKnowledgeChunkRow.source_id == source.id,
+                SupportAIKnowledgeChunkRow.status == "ACTIVE",
+            )
+            .order_by(SupportAIKnowledgeChunkRow.chunk_index)
+        ).all()
+        return SupportAIKnowledgeBaseSourceDetailResponse(
+            knowledge_base_id=base.id,
+            knowledge_base_name=base.name,
+            source=_source_response(source),
+            chunks=[
+                SupportAIKnowledgeChunkResponse(
+                    id=chunk.id,
+                    chunk_index=chunk.chunk_index,
+                    section_path=chunk.section_path,
+                    content=chunk.content,
+                    token_count=chunk.token_count,
+                    language=chunk.language,
+                    locator=dict(chunk.locator or {}),
+                )
+                for chunk in chunks
+            ],
+        )
+
+
 def upload_knowledge_base_source(
     session: Session,
     *,
@@ -1086,8 +1157,28 @@ def upload_knowledge_base_source(
     filename: str | None,
     declared_content_type: str | None,
     content: bytes,
+    knowledge_type: str = "MERCHANT_PROFILE",
 ) -> SupportAIKnowledgeBaseUploadResponse:
     _require_platform_admin(context)
+    suffix = Path(filename or "").suffix.casefold()
+    allowed_by_type = {
+        "QA_STRATEGY": {".json"},
+        "MERCHANT_PROFILE": {".md", ".docx", ".txt"},
+    }
+    allowed_extensions = allowed_by_type.get(knowledge_type)
+    if allowed_extensions is None:
+        raise ApplicationError(
+            "SUPPORT_AI_KNOWLEDGE_TYPE_INVALID",
+            "知识文件类型无效。",
+            kind="validation",
+        )
+    if suffix not in allowed_extensions:
+        labels = "JSON" if knowledge_type == "QA_STRATEGY" else "MD、DOCX 或 TXT"
+        raise ApplicationError(
+            "SUPPORT_AI_KNOWLEDGE_TYPE_MISMATCH",
+            f"{('问答策略' if knowledge_type == 'QA_STRATEGY' else '商家背景资料')}只接受 {labels} 文件。",
+            kind="validation",
+        )
     tenant = _platform_tenant(session, tenant_id=tenant_id)
     with _tenant_scope(session, context=context, tenant=tenant):
         base = _knowledge_base(
