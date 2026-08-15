@@ -268,8 +268,9 @@ export function StorePage() {
   const activeLocaleRef = useRef<StorefrontLocale>(locale);
   const activeShareTokenRef = useRef(shareToken);
   const facetsLoadedRef = useRef(Boolean(
-    initialCatalogSnapshot || loadedStore.categories?.length,
+    !initialCatalogSnapshot && loadedStore.categories?.length,
   ));
+  const snapshotFacetRefreshRef = useRef(Boolean(initialCatalogSnapshot));
   const initialLoadPageRef = useRef<number | null>(
     initialCatalogSnapshot ? null : initialView?.page ?? 1,
   );
@@ -380,11 +381,15 @@ export function StorePage() {
     };
   }, [loadedStore.name, locale]);
 
-  const loadProducts = useCallback(async (targetPage = 1) => {
+  const loadProducts = useCallback(async (
+    targetPage = 1,
+    options: { preserveCurrent?: boolean } = {},
+  ) => {
+    const preserveCurrent = options.preserveCurrent === true;
     const currentRequest = ++requestId.current;
     const includeFacets = !facetsLoadedRef.current;
     setPage(targetPage);
-    setLoading(true);
+    if (!preserveCurrent) setLoading(true);
     setError("");
     try {
       const data = await api.getStoreProducts(tenantSlug, {
@@ -404,8 +409,10 @@ export function StorePage() {
       setPages(data.pages ?? Math.ceil(data.total / 24));
       setStore((current) => current ? {
         ...current,
-        categories: data.categories?.length ? data.categories : current.categories,
-        category_options: data.category_options?.length
+        categories: includeFacets && data.categories?.length
+          ? data.categories
+          : current.categories,
+        category_options: includeFacets && data.category_options?.length
           ? data.category_options
           : current.category_options,
         tags: data.tags?.length ? data.tags : current.tags,
@@ -421,10 +428,12 @@ export function StorePage() {
       } : current);
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
-      setError(caught instanceof Error ? caught.message : t("商品加载失败。"));
-      setProducts([]);
+      if (!preserveCurrent) {
+        setError(caught instanceof Error ? caught.message : t("商品加载失败。"));
+        setProducts([]);
+      }
     } finally {
-      if (currentRequest === requestId.current) {
+      if (!preserveCurrent && currentRequest === requestId.current) {
         setLoading(false);
       }
     }
@@ -438,6 +447,13 @@ export function StorePage() {
     const targetPage = initialLoadPageRef.current ?? 1;
     void loadProducts(targetPage);
   }, [currentCatalogRequestKey, loadProducts]);
+
+  useEffect(() => {
+    if (!snapshotFacetRefreshRef.current || !initialCatalogSnapshot) return;
+    snapshotFacetRefreshRef.current = false;
+    facetsLoadedRef.current = false;
+    void loadProducts(initialCatalogSnapshot.page, { preserveCurrent: true });
+  }, [initialCatalogSnapshot, loadProducts]);
 
   useEffect(
     () => subscribePublicCatalogRevision(() => {
