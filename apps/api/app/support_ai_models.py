@@ -149,6 +149,46 @@ class SupportAIAgentRow(AuditTimestampMixin, Base):
     )
 
 
+class SupportAIKnowledgeBaseRow(AuditTimestampMixin, Base):
+    """A tenant-scoped knowledge base owned by exactly one AI agent."""
+
+    __tablename__ = "support_ai_knowledge_bases"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ACTIVE', 'DISABLED')",
+            name="status_allowed",
+        ),
+        UniqueConstraint(
+            "tenant_id", "id", name="uq_support_ai_knowledge_bases_tenant_identity"
+        ),
+        UniqueConstraint(
+            "tenant_id", "agent_id", "name",
+            name="uq_support_ai_knowledge_bases_tenant_agent_name",
+        ),
+        Index(
+            "ix_support_ai_knowledge_bases_tenant_agent_status",
+            "tenant_id", "agent_id", "status", "updated_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("support_ai_agents.id", ondelete="RESTRICT"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", nullable=False)
+    created_by_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class SupportAITrainingCaseRow(AuditTimestampMixin, Base):
     """Human-reviewed example that teaches behavior, never merchant facts."""
 
@@ -172,7 +212,10 @@ class SupportAITrainingCaseRow(AuditTimestampMixin, Base):
         ),
         CheckConstraint("sort_order >= 0", name="sort_order_nonnegative"),
         UniqueConstraint(
-            "agent_id", "external_id", name="uq_support_ai_training_cases_external"
+            "agent_id",
+            "knowledge_base_id",
+            "external_id",
+            name="uq_support_ai_training_cases_knowledge_base_external",
         ),
         Index(
             "ix_support_ai_training_cases_agent_status",
@@ -185,6 +228,11 @@ class SupportAITrainingCaseRow(AuditTimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(
         ForeignKey("support_ai_agents.id", ondelete="CASCADE"), nullable=False
+    )
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("support_ai_knowledge_bases.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     source_tenant_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True
@@ -234,7 +282,10 @@ class SupportAITrainingRuleRow(AuditTimestampMixin, Base):
             "priority >= 0 AND priority <= 1000", name="priority_range"
         ),
         UniqueConstraint(
-            "agent_id", "rule_key", name="uq_support_ai_training_rules_key"
+            "agent_id",
+            "knowledge_base_id",
+            "rule_key",
+            name="uq_support_ai_training_rules_knowledge_base_key",
         ),
         Index(
             "ix_support_ai_training_rules_agent_status",
@@ -247,6 +298,11 @@ class SupportAITrainingRuleRow(AuditTimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(
         ForeignKey("support_ai_agents.id", ondelete="CASCADE"), nullable=False
+    )
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("support_ai_knowledge_bases.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     rule_key: Mapped[str] = mapped_column(String(120), nullable=False)
     title: Mapped[str] = mapped_column(String(240), nullable=False)
@@ -268,7 +324,7 @@ class SupportAITrainingRuleRow(AuditTimestampMixin, Base):
 
 
 class SupportAITrainingVersionRow(AuditTimestampMixin, Base):
-    """Immutable published training package; exactly one version is active per agent."""
+    """Immutable published training package; one active version per knowledge base scope."""
 
     __tablename__ = "support_ai_training_versions"
     __table_args__ = (
@@ -278,7 +334,10 @@ class SupportAITrainingVersionRow(AuditTimestampMixin, Base):
         ),
         CheckConstraint("length(package_hash) = 64", name="package_hash_length"),
         UniqueConstraint(
-            "agent_id", "version_number", name="uq_support_ai_training_versions_number"
+            "agent_id",
+            "knowledge_base_id",
+            "version_number",
+            name="uq_support_ai_training_versions_knowledge_base_number",
         ),
         Index(
             "ix_support_ai_training_versions_agent_status",
@@ -287,17 +346,29 @@ class SupportAITrainingVersionRow(AuditTimestampMixin, Base):
             "version_number",
         ),
         Index(
-            "uq_support_ai_training_versions_active_agent",
+            "uq_support_ai_training_versions_active_knowledge_base",
+            "knowledge_base_id",
+            unique=True,
+            sqlite_where=text("status = 'PUBLISHED' AND knowledge_base_id IS NOT NULL"),
+            postgresql_where=text("status = 'PUBLISHED' AND knowledge_base_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_support_ai_training_versions_active_legacy_agent",
             "agent_id",
             unique=True,
-            sqlite_where=text("status = 'PUBLISHED'"),
-            postgresql_where=text("status = 'PUBLISHED'"),
+            sqlite_where=text("status = 'PUBLISHED' AND knowledge_base_id IS NULL"),
+            postgresql_where=text("status = 'PUBLISHED' AND knowledge_base_id IS NULL"),
         ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(
         ForeignKey("support_ai_agents.id", ondelete="CASCADE"), nullable=False
+    )
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("support_ai_knowledge_bases.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="PUBLISHED", nullable=False)
@@ -430,6 +501,12 @@ class SupportAIKnowledgeSourceRow(AuditTimestampMixin, Base):
             name="fk_support_ai_knowledge_sources_tenant_media",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "knowledge_base_id"],
+            ["support_ai_knowledge_bases.tenant_id", "support_ai_knowledge_bases.id"],
+            name="fk_support_ai_knowledge_sources_tenant_knowledge_base",
+            ondelete="CASCADE",
+        ),
         Index(
             "ix_support_ai_knowledge_sources_tenant_status",
             "tenant_id",
@@ -444,6 +521,10 @@ class SupportAIKnowledgeSourceRow(AuditTimestampMixin, Base):
     )
     agent_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("support_ai_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
         nullable=True,
         index=True,
     )

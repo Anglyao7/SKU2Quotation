@@ -234,6 +234,8 @@ class SupportAIAgentResponse(BaseModel):
     system_prompt: str | None = None
     handoff_messages: dict[str, str] = Field(default_factory=dict)
     stores: list[SupportAIAgentStoreResponse] = Field(default_factory=list)
+    knowledge_base_count: int = Field(ge=0)
+    active_knowledge_base_count: int = Field(ge=0)
     knowledge_source_count: int = Field(ge=0)
     approved_knowledge_source_count: int = Field(ge=0)
     created_at: datetime
@@ -295,6 +297,7 @@ class SupportAITrainingCaseWrite(BaseModel):
 class SupportAITrainingCaseResponse(BaseModel):
     id: UUID
     agent_id: UUID
+    knowledge_base_id: UUID | None = None
     external_id: str
     source_tenant_id: UUID | None = None
     title: str
@@ -340,6 +343,7 @@ class SupportAITrainingRuleWrite(BaseModel):
 class SupportAITrainingRuleResponse(BaseModel):
     id: UUID
     agent_id: UUID
+    knowledge_base_id: UUID | None = None
     rule_key: str
     title: str
     instruction: str
@@ -354,6 +358,7 @@ class SupportAITrainingRuleResponse(BaseModel):
 class SupportAITrainingVersionResponse(BaseModel):
     id: UUID
     agent_id: UUID
+    knowledge_base_id: UUID | None = None
     version_number: int = Field(ge=1)
     status: Literal["PUBLISHED", "RETIRED"]
     package_hash: str = Field(min_length=64, max_length=64)
@@ -368,6 +373,7 @@ class SupportAITrainingVersionResponse(BaseModel):
 
 class SupportAITrainingOverviewResponse(BaseModel):
     agent_id: UUID
+    knowledge_base_id: UUID | None = None
     cases: list[SupportAITrainingCaseResponse] = Field(default_factory=list)
     rules: list[SupportAITrainingRuleResponse] = Field(default_factory=list)
     versions: list[SupportAITrainingVersionResponse] = Field(default_factory=list)
@@ -399,6 +405,7 @@ class SupportAITrainingPublishRequest(BaseModel):
 
 class SupportAITrainingCopyRequest(BaseModel):
     target_agent_id: UUID
+    target_knowledge_base_id: UUID | None = None
     include_cases: bool = True
     include_rules: bool = True
 
@@ -471,6 +478,7 @@ class SupportAISettingsUpdate(BaseModel):
 
 class SupportAIKnowledgeSourceResponse(BaseModel):
     id: UUID
+    knowledge_base_id: UUID | None = None
     title: str
     description: str | None = None
     source_type: Literal["FILE"] = "FILE"
@@ -525,6 +533,70 @@ class SupportAIIngestionJobResponse(BaseModel):
 
 
 class SupportAIKnowledgeUploadResponse(BaseModel):
+    source: SupportAIKnowledgeSourceResponse
+    job: SupportAIIngestionJobResponse
+
+
+class SupportAIKnowledgeBaseResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    tenant_name: str
+    agent_id: UUID
+    name: str
+    description: str | None = None
+    status: Literal["ACTIVE", "DISABLED"]
+    source_count: int = Field(ge=0)
+    approved_source_count: int = Field(ge=0)
+    training_case_count: int = Field(ge=0)
+    training_rule_count: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SupportAIKnowledgeBaseCreate(BaseModel):
+    tenant_id: UUID
+    name: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_base_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_base_description(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
+class SupportAIKnowledgeBaseUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+    status: Literal["ACTIVE", "DISABLED"] | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_optional_base_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_optional_base_description(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
+class SupportAIKnowledgeBaseSourceResponse(BaseModel):
+    knowledge_base_id: UUID
+    knowledge_base_name: str
+    source: SupportAIKnowledgeSourceResponse
+
+
+class SupportAIKnowledgeBaseUploadResponse(BaseModel):
+    knowledge_base: SupportAIKnowledgeBaseResponse
     source: SupportAIKnowledgeSourceResponse
     job: SupportAIIngestionJobResponse
 

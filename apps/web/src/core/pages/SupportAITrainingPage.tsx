@@ -21,7 +21,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   approveAllSupportAITraining,
   createSupportAITrainingCase,
@@ -167,6 +167,8 @@ const RECOMMENDED_COMBINATIONS: Array<{
 
 export function SupportAITrainingPage() {
   const { agentId = "" } = useParams();
+  const [searchParams] = useSearchParams();
+  const knowledgeBaseId = searchParams.get("knowledge_base_id") || undefined;
   const { t } = useLocale();
   const [agent, setAgent] = useState<SupportAIAgent>();
   const [overview, setOverview] = useState<SupportAITrainingOverview>();
@@ -188,7 +190,7 @@ export function SupportAITrainingPage() {
     try {
       const [nextAgent, nextOverview] = await Promise.all([
         getSupportAIAgent(agentId),
-        getSupportAITrainingOverview(agentId),
+        getSupportAITrainingOverview(agentId, knowledgeBaseId),
       ]);
       setAgent(nextAgent);
       setOverview(nextOverview);
@@ -197,14 +199,14 @@ export function SupportAITrainingPage() {
     } finally {
       setLoading(false);
     }
-  }, [agentId, t]);
+  }, [agentId, knowledgeBaseId, t]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const reloadOverview = async () => {
-    setOverview(await getSupportAITrainingOverview(agentId));
+    setOverview(await getSupportAITrainingOverview(agentId, knowledgeBaseId));
   };
 
   const runAction = async (
@@ -238,9 +240,9 @@ export function SupportAITrainingPage() {
     await runAction("case-save", async () => {
       const payload = { ...caseDraft, status: "DRAFT" as const };
       if (caseEditingId) {
-        await updateSupportAITrainingCase(agentId, caseEditingId, payload);
+        await updateSupportAITrainingCase(agentId, caseEditingId, payload, knowledgeBaseId);
       } else {
-        await createSupportAITrainingCase(agentId, payload);
+        await createSupportAITrainingCase(agentId, payload, knowledgeBaseId);
       }
       await reloadOverview();
       setCaseOpen(false);
@@ -250,7 +252,7 @@ export function SupportAITrainingPage() {
   const removeCase = (item: SupportAITrainingCase) => runAction(
     `case-delete-${item.id}`,
     async () => {
-      await deleteSupportAITrainingCase(agentId, item.id);
+      await deleteSupportAITrainingCase(agentId, item.id, knowledgeBaseId);
       await reloadOverview();
     },
     t("训练案例已删除，请一键审批使变更生效"),
@@ -268,9 +270,9 @@ export function SupportAITrainingPage() {
     await runAction("rule-save", async () => {
       const payload = { ...ruleDraft, status: "DRAFT" as const };
       if (ruleEditingId) {
-        await updateSupportAITrainingRule(agentId, ruleEditingId, payload);
+        await updateSupportAITrainingRule(agentId, ruleEditingId, payload, knowledgeBaseId);
       } else {
-        await createSupportAITrainingRule(agentId, payload);
+        await createSupportAITrainingRule(agentId, payload, knowledgeBaseId);
       }
       await reloadOverview();
       setRuleOpen(false);
@@ -280,18 +282,18 @@ export function SupportAITrainingPage() {
   const removeRule = (item: SupportAITrainingRule) => runAction(
     `rule-delete-${item.id}`,
     async () => {
-      await deleteSupportAITrainingRule(agentId, item.id);
+      await deleteSupportAITrainingRule(agentId, item.id, knowledgeBaseId);
       await reloadOverview();
     },
     t("复用规则已删除，请一键审批使变更生效"),
   );
 
   const approveAll = () => runAction("approve-all", async () => {
-    setOverview(await approveAllSupportAITraining(agentId));
+    setOverview(await approveAllSupportAITraining(agentId, knowledgeBaseId));
   }, t("全部草稿已审批并生效"));
 
   const exportTraining = () => runAction("export", async () => {
-    await exportSupportAITraining(agentId, agent?.agentCode || agentId);
+    await exportSupportAITraining(agentId, agent?.agentCode || agentId, knowledgeBaseId);
   }, t("训练数据已导出"));
 
   return (
@@ -302,7 +304,9 @@ export function SupportAITrainingPage() {
         actions={(
           <>
             <Button asChild variant="soft" color="gray">
-              <Link to={`/console/agents/knowledge?agent_id=${agentId}`}><ArrowLeft />{t("返回知识库")}</Link>
+              <Link to={knowledgeBaseId
+                ? `/console/agents/knowledge/${encodeURIComponent(knowledgeBaseId)}?agent_id=${encodeURIComponent(agentId)}`
+                : `/console/agents/knowledge?agent_id=${encodeURIComponent(agentId)}`}><ArrowLeft />{t("返回知识库")}</Link>
             </Button>
             <Button
               variant="soft"
@@ -335,7 +339,9 @@ export function SupportAITrainingPage() {
             <div>
               <Heading size="4">{t("案例和规则统一审批")}</Heading>
               <Text size="2" color="gray">
-                {t("知识库中导入的训练 JSON 会在这里解析为草稿。人工新增或编辑后，点击“一键审批”即可统一审核并立即生效。")}
+                {knowledgeBaseId
+                  ? t("当前知识库中的案例和规则会在这里单独训练、审批和发布；不会影响同一智能体的其他知识库。")
+                  : t("未选择具体知识库，当前页面仅显示智能体级兼容训练数据。请选择知识库后再新增或导入。")}
               </Text>
             </div>
             <Badge color={overview.activeVersionId ? "jade" : "gray"}>

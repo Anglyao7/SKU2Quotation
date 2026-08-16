@@ -18,6 +18,7 @@ from ..model_mixins import mark_deleted, utcnow
 from ..services.auth.dependencies import RequestContext
 from ..support_ai_models import (
     SupportAIAgentRow,
+    SupportAIKnowledgeBaseRow,
     SupportAISettingsRow,
     SupportAITrainingCaseRow,
     SupportAITrainingRuleRow,
@@ -87,6 +88,30 @@ def _tenant(session: Session, tenant_id: UUID) -> TenantRow:
     return row
 
 
+def _knowledge_base(
+    session: Session,
+    *,
+    agent_id: UUID,
+    knowledge_base_id: UUID | None,
+) -> SupportAIKnowledgeBaseRow | None:
+    if knowledge_base_id is None:
+        return None
+    row = session.scalar(
+        select(SupportAIKnowledgeBaseRow).where(
+            SupportAIKnowledgeBaseRow.id == knowledge_base_id,
+            SupportAIKnowledgeBaseRow.agent_id == agent_id,
+            SupportAIKnowledgeBaseRow.deleted_at.is_(None),
+        )
+    )
+    if row is None:
+        raise ApplicationError(
+            "SUPPORT_AI_KNOWLEDGE_BASE_NOT_FOUND",
+            "知识库不存在或未绑定到该智能体。",
+            kind="not_found",
+        )
+    return row
+
+
 @contextmanager
 def _tenant_scope(
     session: Session,
@@ -115,6 +140,7 @@ def _case_response(row: SupportAITrainingCaseRow) -> SupportAITrainingCaseRespon
     return SupportAITrainingCaseResponse(
         id=row.id,
         agent_id=row.agent_id,
+        knowledge_base_id=row.knowledge_base_id,
         external_id=row.external_id,
         source_tenant_id=row.source_tenant_id,
         title=row.title,
@@ -145,6 +171,7 @@ def _rule_response(row: SupportAITrainingRuleRow) -> SupportAITrainingRuleRespon
     return SupportAITrainingRuleResponse(
         id=row.id,
         agent_id=row.agent_id,
+        knowledge_base_id=row.knowledge_base_id,
         rule_key=row.rule_key,
         title=row.title,
         instruction=row.instruction,
@@ -163,6 +190,7 @@ def _version_response(
     return SupportAITrainingVersionResponse(
         id=row.id,
         agent_id=row.agent_id,
+        knowledge_base_id=row.knowledge_base_id,
         version_number=row.version_number,
         status=row.status,
         package_hash=row.package_hash,
@@ -176,11 +204,18 @@ def _version_response(
     )
 
 
-def _cases(session: Session, agent_id: UUID) -> list[SupportAITrainingCaseRow]:
+def _cases(
+    session: Session,
+    agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
+) -> list[SupportAITrainingCaseRow]:
+    scope = SupportAITrainingCaseRow.knowledge_base_id.is_(None)
+    if knowledge_base_id is not None:
+        scope = scope | (SupportAITrainingCaseRow.knowledge_base_id == knowledge_base_id)
     return list(
         session.scalars(
             select(SupportAITrainingCaseRow)
-            .where(SupportAITrainingCaseRow.agent_id == agent_id)
+            .where(SupportAITrainingCaseRow.agent_id == agent_id, scope)
             .order_by(
                 SupportAITrainingCaseRow.sort_order,
                 SupportAITrainingCaseRow.updated_at.desc(),
@@ -189,11 +224,18 @@ def _cases(session: Session, agent_id: UUID) -> list[SupportAITrainingCaseRow]:
     )
 
 
-def _rules(session: Session, agent_id: UUID) -> list[SupportAITrainingRuleRow]:
+def _rules(
+    session: Session,
+    agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
+) -> list[SupportAITrainingRuleRow]:
+    scope = SupportAITrainingRuleRow.knowledge_base_id.is_(None)
+    if knowledge_base_id is not None:
+        scope = scope | (SupportAITrainingRuleRow.knowledge_base_id == knowledge_base_id)
     return list(
         session.scalars(
             select(SupportAITrainingRuleRow)
-            .where(SupportAITrainingRuleRow.agent_id == agent_id)
+            .where(SupportAITrainingRuleRow.agent_id == agent_id, scope)
             .order_by(
                 SupportAITrainingRuleRow.priority.desc(),
                 SupportAITrainingRuleRow.updated_at.desc(),
@@ -203,12 +245,17 @@ def _rules(session: Session, agent_id: UUID) -> list[SupportAITrainingRuleRow]:
 
 
 def _versions(
-    session: Session, agent_id: UUID
+    session: Session,
+    agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> list[SupportAITrainingVersionRow]:
+    scope = SupportAITrainingVersionRow.knowledge_base_id.is_(None)
+    if knowledge_base_id is not None:
+        scope = scope | (SupportAITrainingVersionRow.knowledge_base_id == knowledge_base_id)
     return list(
         session.scalars(
             select(SupportAITrainingVersionRow)
-            .where(SupportAITrainingVersionRow.agent_id == agent_id)
+            .where(SupportAITrainingVersionRow.agent_id == agent_id, scope)
             .order_by(SupportAITrainingVersionRow.version_number.desc())
         ).all()
     )
@@ -219,15 +266,38 @@ def get_training_overview(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> SupportAITrainingOverviewResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
-    cases = _cases(session, agent_id)
-    rules = _rules(session, agent_id)
-    versions = _versions(session, agent_id)
-    active = next((row for row in versions if row.status == "PUBLISHED"), None)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
+    cases = _cases(session, agent_id, knowledge_base_id)
+    rules = _rules(session, agent_id, knowledge_base_id)
+    versions = _versions(session, agent_id, knowledge_base_id)
+    active = next(
+        (
+            row
+            for row in versions
+            if row.status == "PUBLISHED"
+            and (
+                knowledge_base_id is not None
+                and row.knowledge_base_id == knowledge_base_id
+            )
+        ),
+        None,
+    )
+    if active is None:
+        active = next(
+            (
+                row
+                for row in versions
+                if row.status == "PUBLISHED" and row.knowledge_base_id is None
+            ),
+            None,
+        )
     return SupportAITrainingOverviewResponse(
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         cases=[_case_response(row) for row in cases],
         rules=[_rule_response(row) for row in rules],
         versions=[_version_response(row) for row in versions],
@@ -244,18 +314,25 @@ def _unique_external_id(
     session: Session,
     *,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
     preferred: str | None,
     prefix: str,
 ) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_.-]+", "-", preferred or "").strip("-.")
     base = (normalized or f"{prefix}-{uuid4().hex[:12]}")[:110]
     candidate = base
+    knowledge_base_scope = (
+        SupportAITrainingCaseRow.knowledge_base_id == knowledge_base_id
+        if knowledge_base_id is not None
+        else SupportAITrainingCaseRow.knowledge_base_id.is_(None)
+    )
     for suffix in range(1, 1000):
         exists = session.scalar(
             select(SupportAITrainingCaseRow.id)
             .execution_options(include_deleted=True)
             .where(
                 SupportAITrainingCaseRow.agent_id == agent_id,
+                knowledge_base_scope,
                 SupportAITrainingCaseRow.external_id == candidate,
             )
         )
@@ -269,17 +346,24 @@ def _unique_rule_key(
     session: Session,
     *,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
     preferred: str | None,
 ) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_.-]+", "-", preferred or "").strip("-.")
     base = (normalized or f"rule-{uuid4().hex[:12]}")[:110]
     candidate = base
+    knowledge_base_scope = (
+        SupportAITrainingRuleRow.knowledge_base_id == knowledge_base_id
+        if knowledge_base_id is not None
+        else SupportAITrainingRuleRow.knowledge_base_id.is_(None)
+    )
     for suffix in range(1, 1000):
         exists = session.scalar(
             select(SupportAITrainingRuleRow.id)
             .execution_options(include_deleted=True)
             .where(
                 SupportAITrainingRuleRow.agent_id == agent_id,
+                knowledge_base_scope,
                 SupportAITrainingRuleRow.rule_key == candidate,
             )
         )
@@ -318,22 +402,27 @@ def create_training_case(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
     request: SupportAITrainingCaseWrite,
 ) -> SupportAITrainingCaseResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     _validate_case_source_tenant(
         session,
         context=context,
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         source_tenant_id=request.source_tenant_id,
     )
     row = SupportAITrainingCaseRow(
         id=uuid4(),
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         external_id=_unique_external_id(
             session,
             agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
             preferred=request.external_id,
             prefix="manual",
         ),
@@ -362,14 +451,21 @@ def update_training_case(
     context: RequestContext,
     agent_id: UUID,
     case_id: UUID,
+    knowledge_base_id: UUID | None = None,
     request: SupportAITrainingCaseWrite,
 ) -> SupportAITrainingCaseResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     row = session.scalar(
         select(SupportAITrainingCaseRow).where(
             SupportAITrainingCaseRow.id == case_id,
             SupportAITrainingCaseRow.agent_id == agent_id,
+            (
+                SupportAITrainingCaseRow.knowledge_base_id == knowledge_base_id
+                if knowledge_base_id is not None
+                else SupportAITrainingCaseRow.knowledge_base_id.is_(None)
+            ),
         )
     )
     if row is None:
@@ -380,6 +476,7 @@ def update_training_case(
         session,
         context=context,
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         source_tenant_id=request.source_tenant_id,
         existing_source_tenant_id=row.source_tenant_id,
     )
@@ -394,13 +491,20 @@ def delete_training_case(
     context: RequestContext,
     agent_id: UUID,
     case_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> None:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     row = session.scalar(
         select(SupportAITrainingCaseRow).where(
             SupportAITrainingCaseRow.id == case_id,
             SupportAITrainingCaseRow.agent_id == agent_id,
+            (
+                SupportAITrainingCaseRow.knowledge_base_id == knowledge_base_id
+                if knowledge_base_id is not None
+                else SupportAITrainingCaseRow.knowledge_base_id.is_(None)
+            ),
         )
     )
     if row is None:
@@ -433,15 +537,21 @@ def create_training_rule(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
     request: SupportAITrainingRuleWrite,
 ) -> SupportAITrainingRuleResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     row = SupportAITrainingRuleRow(
         id=uuid4(),
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         rule_key=_unique_rule_key(
-            session, agent_id=agent_id, preferred=request.rule_key
+            session,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
+            preferred=request.rule_key,
         ),
         title=request.title,
         instruction=request.instruction,
@@ -460,14 +570,21 @@ def update_training_rule(
     context: RequestContext,
     agent_id: UUID,
     rule_id: UUID,
+    knowledge_base_id: UUID | None = None,
     request: SupportAITrainingRuleWrite,
 ) -> SupportAITrainingRuleResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     row = session.scalar(
         select(SupportAITrainingRuleRow).where(
             SupportAITrainingRuleRow.id == rule_id,
             SupportAITrainingRuleRow.agent_id == agent_id,
+            (
+                SupportAITrainingRuleRow.knowledge_base_id == knowledge_base_id
+                if knowledge_base_id is not None
+                else SupportAITrainingRuleRow.knowledge_base_id.is_(None)
+            ),
         )
     )
     if row is None:
@@ -485,13 +602,20 @@ def delete_training_rule(
     context: RequestContext,
     agent_id: UUID,
     rule_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> None:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     row = session.scalar(
         select(SupportAITrainingRuleRow).where(
             SupportAITrainingRuleRow.id == rule_id,
             SupportAITrainingRuleRow.agent_id == agent_id,
+            (
+                SupportAITrainingRuleRow.knowledge_base_id == knowledge_base_id
+                if knowledge_base_id is not None
+                else SupportAITrainingRuleRow.knowledge_base_id.is_(None)
+            ),
         )
     )
     if row is None:
@@ -508,7 +632,15 @@ def _bound_tenant_ids(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> list[UUID]:
+    knowledge_base = _knowledge_base(
+        session,
+        agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
+    )
+    if knowledge_base is not None:
+        return [knowledge_base.tenant_id]
     result: list[UUID] = []
     tenants = session.scalars(
         select(TenantRow).where(
@@ -529,6 +661,7 @@ def _validate_case_source_tenant(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
     source_tenant_id: UUID | None,
     existing_source_tenant_id: UUID | None = None,
 ) -> None:
@@ -538,6 +671,7 @@ def _validate_case_source_tenant(
         session,
         context=context,
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
     ):
         raise ApplicationError(
             "SUPPORT_AI_AGENT_STORE_NOT_BOUND",
@@ -579,9 +713,18 @@ def _compiled_package(
     session: Session,
     *,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> tuple[str, str, list[dict[str, Any]], list[dict[str, Any]]]:
-    approved_cases = [row for row in _cases(session, agent_id) if row.status == "APPROVED"]
-    approved_rules = [row for row in _rules(session, agent_id) if row.status == "APPROVED"]
+    approved_cases = [
+        row
+        for row in _cases(session, agent_id, knowledge_base_id)
+        if row.status == "APPROVED"
+    ]
+    approved_rules = [
+        row
+        for row in _rules(session, agent_id, knowledge_base_id)
+        if row.status == "APPROVED"
+    ]
     case_snapshot = [_case_snapshot(row) for row in approved_cases]
     rule_snapshot = [_rule_snapshot(row) for row in approved_rules]
     lines = [
@@ -620,11 +763,13 @@ def preview_training_package(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> SupportAITrainingPreviewResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     prompt, package_hash, cases, rules = _compiled_package(
-        session, agent_id=agent_id
+        session, agent_id=agent_id, knowledge_base_id=knowledge_base_id
     )
     return SupportAITrainingPreviewResponse(
         compiled_prompt=prompt,
@@ -639,11 +784,14 @@ def _activate_version(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None,
     version: SupportAITrainingVersionRow,
     user_id: UUID,
 ) -> None:
     now = utcnow()
-    for row in _versions(session, agent_id):
+    for row in _versions(session, agent_id, knowledge_base_id):
+        if knowledge_base_id is not None and row.knowledge_base_id != knowledge_base_id:
+            continue
         if row.id != version.id and row.status == "PUBLISHED":
             row.status = "RETIRED"
             row.retired_at = now
@@ -656,6 +804,7 @@ def _activate_version(
         session,
         context=context,
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
     ):
         tenant = _tenant(session, tenant_id)
         with _tenant_scope(session, context=context, tenant=tenant):
@@ -677,11 +826,17 @@ def publish_training_package(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
     request: SupportAITrainingPublishRequest,
 ) -> SupportAITrainingVersionResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
-    prompt, package_hash, cases, rules = _compiled_package(session, agent_id=agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
+    prompt, package_hash, cases, rules = _compiled_package(
+        session,
+        agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
+    )
     if not cases:
         raise ApplicationError(
             "SUPPORT_AI_TRAINING_APPROVED_CASE_REQUIRED",
@@ -691,6 +846,11 @@ def publish_training_package(
     active = session.scalar(
         select(SupportAITrainingVersionRow).where(
             SupportAITrainingVersionRow.agent_id == agent_id,
+            (
+                SupportAITrainingVersionRow.knowledge_base_id == knowledge_base_id
+                if knowledge_base_id is not None
+                else SupportAITrainingVersionRow.knowledge_base_id.is_(None)
+            ),
             SupportAITrainingVersionRow.status == "PUBLISHED",
         )
     )
@@ -703,7 +863,12 @@ def publish_training_package(
     next_version = int(
         session.scalar(
             select(func.max(SupportAITrainingVersionRow.version_number)).where(
-                SupportAITrainingVersionRow.agent_id == agent_id
+                SupportAITrainingVersionRow.agent_id == agent_id,
+                (
+                    SupportAITrainingVersionRow.knowledge_base_id == knowledge_base_id
+                    if knowledge_base_id is not None
+                    else SupportAITrainingVersionRow.knowledge_base_id.is_(None)
+                ),
             )
         )
         or 0
@@ -712,6 +877,7 @@ def publish_training_package(
     row = SupportAITrainingVersionRow(
         id=uuid4(),
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         version_number=next_version,
         status="RETIRED",
         package_hash=package_hash,
@@ -729,6 +895,7 @@ def publish_training_package(
         session,
         context=context,
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         version=row,
         user_id=context.user_id,
     )
@@ -741,24 +908,30 @@ def approve_and_publish_training(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> SupportAITrainingOverviewResponse:
     """Approve every draft and atomically activate the resulting package."""
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     now = utcnow()
-    for row in _cases(session, agent_id):
+    for row in _cases(session, agent_id, knowledge_base_id):
         if row.status == "DRAFT":
             row.status = "APPROVED"
             row.updated_by_user_id = context.user_id
             row.updated_at = now
-    for row in _rules(session, agent_id):
+    for row in _rules(session, agent_id, knowledge_base_id):
         if row.status == "DRAFT":
             row.status = "APPROVED"
             row.updated_by_user_id = context.user_id
             row.updated_at = now
     session.flush()
 
-    _, package_hash, cases, _ = _compiled_package(session, agent_id=agent_id)
+    _, package_hash, cases, _ = _compiled_package(
+        session,
+        agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
+    )
     if not cases:
         session.rollback()
         raise ApplicationError(
@@ -769,6 +942,11 @@ def approve_and_publish_training(
     active = session.scalar(
         select(SupportAITrainingVersionRow).where(
             SupportAITrainingVersionRow.agent_id == agent_id,
+            (
+                SupportAITrainingVersionRow.knowledge_base_id == knowledge_base_id
+                if knowledge_base_id is not None
+                else SupportAITrainingVersionRow.knowledge_base_id.is_(None)
+            ),
             SupportAITrainingVersionRow.status == "PUBLISHED",
         )
     )
@@ -777,11 +955,17 @@ def approve_and_publish_training(
             session,
             context=context,
             agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
             request=SupportAITrainingPublishRequest(release_notes="一键审批并生效"),
         )
     else:
         session.commit()
-    return get_training_overview(session, context=context, agent_id=agent_id)
+    return get_training_overview(
+        session,
+        context=context,
+        agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
+    )
 
 
 def activate_training_version(
@@ -790,13 +974,20 @@ def activate_training_version(
     context: RequestContext,
     agent_id: UUID,
     version_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> SupportAITrainingVersionResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     row = session.scalar(
         select(SupportAITrainingVersionRow).where(
             SupportAITrainingVersionRow.id == version_id,
             SupportAITrainingVersionRow.agent_id == agent_id,
+            (
+                SupportAITrainingVersionRow.knowledge_base_id == knowledge_base_id
+                if knowledge_base_id is not None
+                else SupportAITrainingVersionRow.knowledge_base_id.is_(None)
+            ),
         )
     )
     if row is None:
@@ -809,6 +1000,7 @@ def activate_training_version(
         session,
         context=context,
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         version=row,
         user_id=context.user_id,
     )
@@ -821,9 +1013,11 @@ def export_training_package(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
 ) -> dict[str, Any]:
     _require_platform_admin(context)
     agent = _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     return {
         "schema_version": TRAINING_SCHEMA_VERSION,
         "agent": {
@@ -842,7 +1036,7 @@ def export_training_package(
                 "priority": row.priority,
                 "status": row.status,
             }
-            for row in _rules(session, agent_id)
+            for row in _rules(session, agent_id, knowledge_base_id)
         ],
         "cases": [
             {
@@ -862,7 +1056,7 @@ def export_training_package(
                 "status": row.status,
                 "sort_order": row.sort_order,
             }
-            for row in _cases(session, agent_id)
+            for row in _cases(session, agent_id, knowledge_base_id)
         ],
     }
 
@@ -872,21 +1066,25 @@ def import_training_package(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
     request: SupportAITrainingPackage,
 ) -> SupportAITrainingOverviewResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     bound_tenant_ids = set(
         _bound_tenant_ids(
             session,
             context=context,
             agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
         )
     )
     for item in request.cases:
         row = SupportAITrainingCaseRow(
             id=uuid4(),
             agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
             source_tenant_id=(
                 item.source_tenant_id
                 if item.source_tenant_id in bound_tenant_ids
@@ -895,6 +1093,7 @@ def import_training_package(
             external_id=_unique_external_id(
                 session,
                 agent_id=agent_id,
+                knowledge_base_id=knowledge_base_id,
                 preferred=item.external_id,
                 prefix="import",
             ),
@@ -920,8 +1119,12 @@ def import_training_package(
         row = SupportAITrainingRuleRow(
             id=uuid4(),
             agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
             rule_key=_unique_rule_key(
-                session, agent_id=agent_id, preferred=item.rule_key
+                session,
+                agent_id=agent_id,
+                knowledge_base_id=knowledge_base_id,
+                preferred=item.rule_key,
             ),
             title=item.title,
             instruction=item.instruction,
@@ -935,7 +1138,12 @@ def import_training_package(
         session.add(row)
         session.flush()
     session.commit()
-    return get_training_overview(session, context=context, agent_id=agent_id)
+    return get_training_overview(
+        session,
+        context=context,
+        agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
+    )
 
 
 def copy_training_drafts(
@@ -943,11 +1151,26 @@ def copy_training_drafts(
     *,
     context: RequestContext,
     agent_id: UUID,
+    knowledge_base_id: UUID | None = None,
     request: SupportAITrainingCopyRequest,
 ) -> SupportAITrainingOverviewResponse:
     _require_platform_admin(context)
     _agent(session, agent_id)
+    _knowledge_base(session, agent_id=agent_id, knowledge_base_id=knowledge_base_id)
     _agent(session, request.target_agent_id)
+    target_knowledge_base_id = request.target_knowledge_base_id
+    if knowledge_base_id is not None and target_knowledge_base_id is None:
+        raise ApplicationError(
+            "SUPPORT_AI_TRAINING_COPY_TARGET_KNOWLEDGE_BASE_REQUIRED",
+            "从知识库复制训练内容时，请指定目标知识库。",
+            kind="conflict",
+        )
+    if target_knowledge_base_id is not None:
+        _knowledge_base(
+            session,
+            agent_id=request.target_agent_id,
+            knowledge_base_id=target_knowledge_base_id,
+        )
     if request.target_agent_id == agent_id:
         raise ApplicationError(
             "SUPPORT_AI_TRAINING_COPY_SAME_AGENT",
@@ -955,14 +1178,16 @@ def copy_training_drafts(
             kind="conflict",
         )
     if request.include_cases:
-        for source in _cases(session, agent_id):
+        for source in _cases(session, agent_id, knowledge_base_id):
             session.add(
                 SupportAITrainingCaseRow(
                     id=uuid4(),
                     agent_id=request.target_agent_id,
+                    knowledge_base_id=target_knowledge_base_id,
                     external_id=_unique_external_id(
                         session,
                         agent_id=request.target_agent_id,
+                        knowledge_base_id=target_knowledge_base_id,
                         preferred=source.external_id,
                         prefix="copy",
                     ),
@@ -985,14 +1210,16 @@ def copy_training_drafts(
             )
             session.flush()
     if request.include_rules:
-        for source in _rules(session, agent_id):
+        for source in _rules(session, agent_id, knowledge_base_id):
             session.add(
                 SupportAITrainingRuleRow(
                     id=uuid4(),
                     agent_id=request.target_agent_id,
+                    knowledge_base_id=target_knowledge_base_id,
                     rule_key=_unique_rule_key(
                         session,
                         agent_id=request.target_agent_id,
+                        knowledge_base_id=target_knowledge_base_id,
                         preferred=source.rule_key,
                     ),
                     title=source.title,
@@ -1011,4 +1238,5 @@ def copy_training_drafts(
         session,
         context=context,
         agent_id=request.target_agent_id,
+        knowledge_base_id=target_knowledge_base_id,
     )

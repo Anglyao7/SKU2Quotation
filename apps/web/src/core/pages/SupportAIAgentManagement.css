@@ -69,6 +69,26 @@
 .support-agent-file-field small { color: var(--text-soft); font-size: 10px; }
 .support-agent-file-field > input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .support-agent-source-list { display: grid; }
+.support-agent-knowledge-list-card { gap: 12px; }
+.support-agent-knowledge-list { display: grid; border-top: 1px solid var(--line); }
+.support-agent-knowledge-base-row { width: 100%; min-width: 0; padding: 16px 4px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 13px; text-align: left; color: var(--text); border: 0; border-bottom: 1px solid var(--line); background: transparent; cursor: pointer; transition: background 140ms ease, padding 140ms ease; }
+.support-agent-knowledge-base-row:hover, .support-agent-knowledge-base-row.is-selected { background: color-mix(in srgb, var(--accent-soft) 38%, transparent); }
+.support-agent-knowledge-base-row > span { width: 39px; height: 39px; display: grid; place-items: center; border-radius: 11px; color: var(--accent); background: var(--accent-soft); }
+.support-agent-knowledge-base-row > div { min-width: 0; display: grid; gap: 4px; }
+.support-agent-knowledge-base-row strong, .support-agent-knowledge-base-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.support-agent-knowledge-base-row small { color: var(--text-soft); font-size: 10px; }
+.support-agent-knowledge-base-row > svg { width: 18px; height: 18px; color: var(--text-soft); }
+.support-agent-knowledge-detail-header { min-width: 0; padding: 18px 20px !important; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; }
+.support-agent-knowledge-detail-header > span { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; color: var(--accent); background: var(--accent-soft); }
+.support-agent-knowledge-detail-header > span svg { width: 27px; height: 27px; }
+.support-agent-knowledge-detail-header > div:nth-child(2) { min-width: 0; display: grid; gap: 4px; }
+.support-agent-knowledge-detail-header > div:nth-child(2) strong, .support-agent-knowledge-detail-header > div:nth-child(2) small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.support-agent-knowledge-detail-header > div:nth-child(2) small { color: var(--text-soft); font-size: 11px; }
+.support-agent-knowledge-detail-stats { display: flex; align-items: center; gap: 20px; }
+.support-agent-knowledge-detail-stats > span { min-width: 54px; display: grid; gap: 3px; text-align: right; }
+.support-agent-knowledge-detail-stats strong { font-size: 19px; font-variant-numeric: tabular-nums; }
+.support-agent-knowledge-detail-stats small { color: var(--text-soft); font-size: 10px; }
+.support-agent-create-dialog { width: min(560px, calc(100vw - 28px)); }
 .support-agent-source-list > article { min-width: 0; padding: 13px 1px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; border-top: 1px solid var(--line); }
 .support-agent-source-list > article > span { width: 39px; height: 39px; display: grid; place-items: center; border-radius: 11px; color: var(--accent); background: var(--accent-soft); }
 .support-agent-source-list > article > div:nth-child(2) { min-width: 0; display: grid; gap: 5px; }
@@ -132,6 +152,9 @@
   .support-agent-wide { grid-column: 1; }
   .support-agent-knowledge-scope { grid-template-columns: auto minmax(0, 1fr); }
   .support-agent-knowledge-scope > .rt-SelectTrigger, .support-agent-knowledge-scope > .rt-Button { grid-column: 1 / -1; }
+  .support-agent-knowledge-detail-header { grid-template-columns: auto minmax(0, 1fr); }
+  .support-agent-knowledge-detail-stats { grid-column: 1 / -1; justify-content: space-between; }
+  .support-agent-knowledge-detail-stats > span { text-align: left; }
   .support-agent-source-list > article { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
   .support-agent-source-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .support-training-boundary { grid-template-columns: auto minmax(0, 1fr); align-items: start; }

@@ -119,7 +119,7 @@ export function SupportAIAgentsPage() {
 
   const enabledCount = agents.filter((agent) => agent.enabled).length;
   const boundStoreCount = new Set(agents.flatMap((agent) => agent.stores.map((store) => store.tenantId))).size;
-  const knowledgeCount = agents.reduce((total, agent) => total + agent.knowledgeSourceCount, 0);
+  const knowledgeCount = agents.reduce((total, agent) => total + agent.knowledgeBaseCount, 0);
 
   return (
     <div className="core-workspace support-agent-page">
@@ -143,7 +143,7 @@ export function SupportAIAgentsPage() {
         <Card><Robot weight="duotone" /><span><small>{t("智能体")}</small><strong>{agents.length}</strong></span></Card>
         <Card><Brain weight="duotone" /><span><small>{t("运行中")}</small><strong>{enabledCount}</strong></span></Card>
         <Card><Storefront weight="duotone" /><span><small>{t("已绑定店铺")}</small><strong>{boundStoreCount}</strong></span></Card>
-        <Card><Database weight="duotone" /><span><small>{t("知识文件")}</small><strong>{knowledgeCount}</strong></span></Card>
+        <Card><Database weight="duotone" /><span><small>{t("知识库")}</small><strong>{knowledgeCount}</strong></span></Card>
       </section>
 
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
@@ -211,7 +211,7 @@ export function SupportAIAgentsPage() {
                       </div>
                     </Table.Cell>
                     <Table.Cell>{agent.stores.length}</Table.Cell>
-                    <Table.Cell>{agent.approvedKnowledgeSourceCount} / {agent.knowledgeSourceCount}</Table.Cell>
+                    <Table.Cell>{agent.activeKnowledgeBaseCount} / {agent.knowledgeBaseCount}</Table.Cell>
                     <Table.Cell><Text size="1" color="gray">{coreDate(agent.updatedAt)}</Text></Table.Cell>
                     <Table.Cell justify="end">
                       <Button asChild size="1" variant="soft" color="gray">

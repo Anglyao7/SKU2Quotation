@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..repositories import public_catalog_repository
 from ..support_ai_models import (
     SupportAIKnowledgeChunkRow,
+    SupportAIKnowledgeBaseRow,
     SupportAIKnowledgeSourceRow,
     SupportAISettingsRow,
 )
@@ -399,6 +400,24 @@ def _file_evidence(
     query: str,
     embedding: QueryEmbeddingState,
 ) -> tuple[list[RetrievalEvidence], int]:
+    if agent_id is not None:
+        scope_filter = (
+            (
+                SupportAIKnowledgeBaseRow.id.is_not(None)
+                & (SupportAIKnowledgeBaseRow.agent_id == agent_id)
+                & (SupportAIKnowledgeBaseRow.status == "ACTIVE")
+            )
+            | (
+                SupportAIKnowledgeSourceRow.knowledge_base_id.is_(None)
+                & (SupportAIKnowledgeSourceRow.agent_id == agent_id)
+            )
+        )
+    else:
+        scope_filter = (
+            SupportAIKnowledgeBaseRow.id.is_(None)
+            & SupportAIKnowledgeSourceRow.knowledge_base_id.is_(None)
+            & SupportAIKnowledgeSourceRow.agent_id.is_(None)
+        )
     rows = session.execute(
         select(SupportAIKnowledgeChunkRow, SupportAIKnowledgeSourceRow)
         .join(
@@ -412,14 +431,23 @@ def _file_evidence(
                 == SupportAIKnowledgeChunkRow.source_id
             ),
         )
+        .outerjoin(
+            SupportAIKnowledgeBaseRow,
+            (
+                SupportAIKnowledgeBaseRow.tenant_id
+                == SupportAIKnowledgeSourceRow.tenant_id
+            )
+            & (
+                SupportAIKnowledgeBaseRow.id
+                == SupportAIKnowledgeSourceRow.knowledge_base_id
+            ),
+        )
         .where(
             SupportAIKnowledgeChunkRow.tenant_id == tenant_id,
             SupportAIKnowledgeChunkRow.status == "ACTIVE",
-            (
-                SupportAIKnowledgeSourceRow.agent_id == agent_id
-                if agent_id is not None
-                else SupportAIKnowledgeSourceRow.agent_id.is_(None)
-            ),
+            # Rows written before first-class knowledge bases were introduced
+            # remain readable while migrations/backfills complete.
+            scope_filter,
             SupportAIKnowledgeSourceRow.status.in_(["READY", "APPROVED"]),
             SupportAIKnowledgeSourceRow.classification.in_(
                 ["PUBLIC", "CUSTOMER_APPROVED"]

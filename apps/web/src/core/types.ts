@@ -888,6 +888,8 @@ export interface SupportAIAgent {
   systemPrompt?: string;
   handoffMessages: Record<string, string>;
   stores: SupportAIAgentStore[];
+  knowledgeBaseCount: number;
+  activeKnowledgeBaseCount: number;
   knowledgeSourceCount: number;
   approvedKnowledgeSourceCount: number;
   createdAt: string;
@@ -901,6 +903,7 @@ export type SupportAITrainingGroundingMode = "EVIDENCE" | "GENERAL_GUIDANCE" | "
 export interface SupportAITrainingCase {
   id: string;
   agentId: string;
+  knowledgeBaseId?: string;
   externalId: string;
   sourceTenantId?: string;
   title: string;
@@ -923,6 +926,7 @@ export interface SupportAITrainingCase {
 export interface SupportAITrainingRule {
   id: string;
   agentId: string;
+  knowledgeBaseId?: string;
   ruleKey: string;
   title: string;
   instruction: string;
@@ -937,6 +941,7 @@ export interface SupportAITrainingRule {
 export interface SupportAITrainingVersion {
   id: string;
   agentId: string;
+  knowledgeBaseId?: string;
   versionNumber: number;
   status: "PUBLISHED" | "RETIRED";
   packageHash: string;
@@ -951,6 +956,7 @@ export interface SupportAITrainingVersion {
 
 export interface SupportAITrainingOverview {
   agentId: string;
+  knowledgeBaseId?: string;
   cases: SupportAITrainingCase[];
   rules: SupportAITrainingRule[];
   versions: SupportAITrainingVersion[];
@@ -986,6 +992,7 @@ export type SupportAIKnowledgeStatus = "PROCESSING" | "READY" | "APPROVED" | "RE
 
 export interface SupportAIKnowledgeSource {
   id: string;
+  knowledgeBaseId?: string;
   title: string;
   description?: string;
   classification: "PUBLIC" | "CUSTOMER_APPROVED";
@@ -1002,6 +1009,28 @@ export interface SupportAIKnowledgeSource {
   approvedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SupportAIKnowledgeBase {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  agentId: string;
+  name: string;
+  description?: string;
+  status: "ACTIVE" | "DISABLED";
+  sourceCount: number;
+  approvedSourceCount: number;
+  trainingCaseCount: number;
+  trainingRuleCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportAIKnowledgeBaseSource {
+  knowledgeBaseId: string;
+  knowledgeBaseName: string;
+  source: SupportAIKnowledgeSource;
 }
 
 export interface SupportAIIngestionJob {

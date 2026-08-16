@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -42,10 +42,13 @@ from ..support_ai_models import (
     SupportAIAgentRow,
     SupportAIEvidenceUseRow,
     SupportAIIngestionJobRow,
+    SupportAIKnowledgeBaseRow,
     SupportAIKnowledgeSourceRow,
     SupportAIProviderSettingsRow,
     SupportAIRunRow,
     SupportAISettingsRow,
+    SupportAITrainingCaseRow,
+    SupportAITrainingRuleRow,
     SupportAITrainingVersionRow,
 )
 from ..support_ai_schemas import (
@@ -58,6 +61,11 @@ from ..support_ai_schemas import (
     SupportAIAgentUpdate,
     SupportAIEvidenceResponse,
     SupportAIIngestionJobResponse,
+    SupportAIKnowledgeBaseCreate,
+    SupportAIKnowledgeBaseResponse,
+    SupportAIKnowledgeBaseSourceResponse,
+    SupportAIKnowledgeBaseUpdate,
+    SupportAIKnowledgeBaseUploadResponse,
     SupportAIKnowledgeSourceResponse,
     SupportAIKnowledgeSourceUpdate,
     SupportAIKnowledgeUploadResponse,
@@ -479,11 +487,34 @@ def _agent_scope_maps(
     )
 
 
+def _knowledge_base_counts(session: Session) -> dict[UUID, tuple[int, int]]:
+    rows = session.execute(
+        select(
+            SupportAIKnowledgeBaseRow.agent_id,
+            func.count(SupportAIKnowledgeBaseRow.id),
+            func.sum(
+                case(
+                    (SupportAIKnowledgeBaseRow.status == "ACTIVE", 1),
+                    else_=0,
+                )
+            ),
+        )
+        .where(SupportAIKnowledgeBaseRow.deleted_at.is_(None))
+        .group_by(SupportAIKnowledgeBaseRow.agent_id)
+    ).all()
+    return {
+        agent_id: (int(total or 0), int(active or 0))
+        for agent_id, total, active in rows
+    }
+
+
 def _agent_response(
     session: Session,
     *,
     row: SupportAIAgentRow,
     stores: list[SupportAIAgentStoreResponse],
+    knowledge_base_count: int,
+    active_knowledge_base_count: int,
     knowledge_source_count: int,
     approved_knowledge_source_count: int,
 ) -> SupportAIAgentResponse:
@@ -519,6 +550,8 @@ def _agent_response(
         system_prompt=row.system_prompt,
         handoff_messages=_normalized_handoff_messages(row.handoff_messages),
         stores=stores,
+        knowledge_base_count=knowledge_base_count,
+        active_knowledge_base_count=active_knowledge_base_count,
         knowledge_source_count=knowledge_source_count,
         approved_knowledge_source_count=approved_knowledge_source_count,
         created_at=row.created_at,
@@ -542,11 +575,14 @@ def list_agents(
         session,
         context=context,
     )
+    knowledge_base_counts = _knowledge_base_counts(session)
     return [
         _agent_response(
             session,
             row=row,
             stores=stores.get(row.id, []),
+            knowledge_base_count=knowledge_base_counts.get(row.id, (0, 0))[0],
+            active_knowledge_base_count=knowledge_base_counts.get(row.id, (0, 0))[1],
             knowledge_source_count=source_counts.get(row.id, 0),
             approved_knowledge_source_count=approved_counts.get(row.id, 0),
         )
@@ -566,10 +602,13 @@ def get_agent(
         session,
         context=context,
     )
+    knowledge_base_counts = _knowledge_base_counts(session)
     return _agent_response(
         session,
         row=row,
         stores=stores.get(row.id, []),
+        knowledge_base_count=knowledge_base_counts.get(row.id, (0, 0))[0],
+        active_knowledge_base_count=knowledge_base_counts.get(row.id, (0, 0))[1],
         knowledge_source_count=source_counts.get(row.id, 0),
         approved_knowledge_source_count=approved_counts.get(row.id, 0),
     )
@@ -580,6 +619,7 @@ def _copy_agent_policy_to_store(
     settings: SupportAISettingsRow,
     *,
     agent: SupportAIAgentRow,
+    knowledge_base_id: UUID | None,
     user_id: UUID,
 ) -> None:
     settings.agent_id = agent.id
@@ -601,9 +641,26 @@ def _copy_agent_policy_to_store(
         select(SupportAITrainingVersionRow)
         .where(
             SupportAITrainingVersionRow.agent_id == agent.id,
+            (
+                (
+                    SupportAITrainingVersionRow.knowledge_base_id == knowledge_base_id
+                )
+                | SupportAITrainingVersionRow.knowledge_base_id.is_(None)
+                if knowledge_base_id is not None
+                else SupportAITrainingVersionRow.knowledge_base_id.is_(None)
+            ),
             SupportAITrainingVersionRow.status == "PUBLISHED",
         )
-        .order_by(SupportAITrainingVersionRow.version_number.desc())
+        .order_by(
+            case(
+                (
+                    SupportAITrainingVersionRow.knowledge_base_id == knowledge_base_id,
+                    1,
+                ),
+                else_=0,
+            ).desc(),
+            SupportAITrainingVersionRow.version_number.desc(),
+        )
     )
     settings.training_version_id = active_training.id if active_training else None
     settings.training_prompt = (
@@ -656,10 +713,17 @@ def _sync_agent_bindings(
             if settings is None:
                 continue
             if tenant.id in target_tenants:
+                knowledge_base = _get_or_create_default_knowledge_base(
+                    session,
+                    tenant=tenant,
+                    agent=agent,
+                    user_id=context.user_id,
+                )
                 _copy_agent_policy_to_store(
                     session,
                     settings,
                     agent=agent,
+                    knowledge_base_id=knowledge_base.id,
                     user_id=context.user_id,
                 )
             elif settings.agent_id == agent.id:
@@ -804,6 +868,323 @@ def update_agent(
         ) from exc
 
 
+def _knowledge_base(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    knowledge_base_id: UUID,
+) -> SupportAIKnowledgeBaseRow:
+    row = session.scalar(
+        select(SupportAIKnowledgeBaseRow).where(
+            SupportAIKnowledgeBaseRow.tenant_id == tenant_id,
+            SupportAIKnowledgeBaseRow.id == knowledge_base_id,
+            SupportAIKnowledgeBaseRow.deleted_at.is_(None),
+        )
+    )
+    if row is None:
+        raise ApplicationError(
+            "SUPPORT_AI_KNOWLEDGE_BASE_NOT_FOUND",
+            "知识库不存在。",
+            kind="not_found",
+        )
+    settings = get_support_ai_settings(
+        session,
+        tenant_id=tenant_id,
+        create=False,
+    )
+    if settings is not None and settings.agent_id not in (None, row.agent_id):
+        raise ApplicationError(
+            "SUPPORT_AI_KNOWLEDGE_BASE_AGENT_STORE_MISMATCH",
+            "知识库所属智能体当前未绑定该店铺。",
+            kind="conflict",
+        )
+    return row
+
+
+def _get_or_create_default_knowledge_base(
+    session: Session,
+    *,
+    tenant: TenantRow,
+    agent: SupportAIAgentRow,
+    user_id: UUID,
+) -> SupportAIKnowledgeBaseRow:
+    row = session.scalar(
+        select(SupportAIKnowledgeBaseRow)
+        .where(
+            SupportAIKnowledgeBaseRow.tenant_id == tenant.id,
+            SupportAIKnowledgeBaseRow.agent_id == agent.id,
+            SupportAIKnowledgeBaseRow.deleted_at.is_(None),
+        )
+        .order_by(SupportAIKnowledgeBaseRow.created_at)
+    )
+    if row is not None:
+        return row
+    base_name = f"{tenant.name} · {agent.name}知识库".strip()[:160]
+    existing_names = set(
+        session.scalars(
+            select(SupportAIKnowledgeBaseRow.name).where(
+                SupportAIKnowledgeBaseRow.tenant_id == tenant.id,
+                SupportAIKnowledgeBaseRow.agent_id == agent.id,
+            )
+        ).all()
+    )
+    name = base_name
+    for index in range(2, 1000):
+        if name not in existing_names:
+            break
+        suffix = f" {index}"
+        name = f"{base_name[: max(1, 160 - len(suffix))]}{suffix}"
+    row = SupportAIKnowledgeBaseRow(
+        id=uuid4(),
+        tenant_id=tenant.id,
+        agent_id=agent.id,
+        name=name,
+        status="ACTIVE",
+        created_by_user_id=user_id,
+        updated_by_user_id=user_id,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _knowledge_base_response(
+    session: Session,
+    *,
+    row: SupportAIKnowledgeBaseRow,
+    tenant_name: str,
+) -> SupportAIKnowledgeBaseResponse:
+    source_filter = (
+        SupportAIKnowledgeSourceRow.tenant_id == row.tenant_id,
+        SupportAIKnowledgeSourceRow.knowledge_base_id == row.id,
+        SupportAIKnowledgeSourceRow.deleted_at.is_(None),
+    )
+    source_count = int(
+        session.scalar(select(func.count(SupportAIKnowledgeSourceRow.id)).where(*source_filter)) or 0
+    )
+    approved_source_count = int(
+        session.scalar(
+            select(func.count(SupportAIKnowledgeSourceRow.id)).where(
+                *source_filter,
+                SupportAIKnowledgeSourceRow.status.in_(["READY", "APPROVED"]),
+            )
+        )
+        or 0
+    )
+    training_case_count = int(
+        session.scalar(
+            select(func.count(SupportAITrainingCaseRow.id)).where(
+                SupportAITrainingCaseRow.agent_id == row.agent_id,
+                (SupportAITrainingCaseRow.knowledge_base_id == row.id)
+                | SupportAITrainingCaseRow.knowledge_base_id.is_(None),
+                SupportAITrainingCaseRow.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+    training_rule_count = int(
+        session.scalar(
+            select(func.count(SupportAITrainingRuleRow.id)).where(
+                SupportAITrainingRuleRow.agent_id == row.agent_id,
+                (SupportAITrainingRuleRow.knowledge_base_id == row.id)
+                | SupportAITrainingRuleRow.knowledge_base_id.is_(None),
+                SupportAITrainingRuleRow.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+    return SupportAIKnowledgeBaseResponse(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        tenant_name=tenant_name,
+        agent_id=row.agent_id,
+        name=row.name,
+        description=row.description,
+        status=row.status,
+        source_count=source_count,
+        approved_source_count=approved_source_count,
+        training_case_count=training_case_count,
+        training_rule_count=training_rule_count,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def list_agent_knowledge_bases(
+    session: Session,
+    *,
+    context: RequestContext,
+    agent_id: UUID,
+) -> list[SupportAIKnowledgeBaseResponse]:
+    _require_platform_admin(context)
+    _support_agent(session, agent_id=agent_id)
+    stores, _source_counts, _approved_counts = _agent_scope_maps(session, context=context)
+    result: list[SupportAIKnowledgeBaseResponse] = []
+    for store in stores.get(agent_id, []):
+        tenant = _platform_tenant(session, tenant_id=store.tenant_id)
+        with _tenant_scope(session, context=context, tenant=tenant):
+            rows = session.scalars(
+                select(SupportAIKnowledgeBaseRow)
+                .where(
+                    SupportAIKnowledgeBaseRow.tenant_id == tenant.id,
+                    SupportAIKnowledgeBaseRow.agent_id == agent_id,
+                    SupportAIKnowledgeBaseRow.deleted_at.is_(None),
+                )
+                .order_by(SupportAIKnowledgeBaseRow.updated_at.desc())
+            ).all()
+            result.extend(
+                _knowledge_base_response(session, row=row, tenant_name=tenant.name)
+                for row in rows
+            )
+    return sorted(result, key=lambda item: item.updated_at, reverse=True)
+
+
+def create_agent_knowledge_base(
+    session: Session,
+    *,
+    context: RequestContext,
+    agent_id: UUID,
+    request: SupportAIKnowledgeBaseCreate,
+) -> SupportAIKnowledgeBaseResponse:
+    _require_platform_admin(context)
+    _support_agent(session, agent_id=agent_id)
+    tenant = _platform_tenant(session, tenant_id=request.tenant_id)
+    with _tenant_scope(session, context=context, tenant=tenant):
+        settings = get_support_ai_settings(session, tenant_id=tenant.id, create=False)
+        if settings is None or settings.agent_id != agent_id:
+            raise ApplicationError(
+                "SUPPORT_AI_KNOWLEDGE_BASE_AGENT_STORE_MISMATCH",
+                "只能为该智能体已绑定的店铺创建知识库。",
+                kind="conflict",
+            )
+        row = SupportAIKnowledgeBaseRow(
+            id=uuid4(),
+            tenant_id=tenant.id,
+            agent_id=agent_id,
+            name=request.name,
+            description=request.description,
+            status="ACTIVE",
+            created_by_user_id=context.user_id,
+            updated_by_user_id=context.user_id,
+        )
+        session.add(row)
+        try:
+            session.flush()
+            response = _knowledge_base_response(session, row=row, tenant_name=tenant.name)
+            session.commit()
+            return response
+        except IntegrityError as exc:
+            session.rollback()
+            raise ApplicationError(
+                "SUPPORT_AI_KNOWLEDGE_BASE_NAME_CONFLICT",
+                "该店铺下已经存在同名知识库。",
+                kind="conflict",
+            ) from exc
+
+
+def update_knowledge_base(
+    session: Session,
+    *,
+    context: RequestContext,
+    knowledge_base_id: UUID,
+    request: SupportAIKnowledgeBaseUpdate,
+    tenant_id: UUID,
+) -> SupportAIKnowledgeBaseResponse:
+    _require_platform_admin(context)
+    tenant = _platform_tenant(session, tenant_id=tenant_id)
+    with _tenant_scope(session, context=context, tenant=tenant):
+        row = _knowledge_base(session, tenant_id=tenant.id, knowledge_base_id=knowledge_base_id)
+        if request.name is not None:
+            row.name = request.name
+        if "description" in request.model_fields_set:
+            row.description = request.description
+        if request.status is not None:
+            row.status = request.status
+        row.updated_by_user_id = context.user_id
+        row.updated_at = utcnow()
+        try:
+            session.flush()
+            response = _knowledge_base_response(session, row=row, tenant_name=tenant.name)
+            session.commit()
+            return response
+        except IntegrityError as exc:
+            session.rollback()
+            raise ApplicationError(
+                "SUPPORT_AI_KNOWLEDGE_BASE_NAME_CONFLICT",
+                "该店铺下已经存在同名知识库。",
+                kind="conflict",
+            ) from exc
+
+
+def list_knowledge_base_sources(
+    session: Session,
+    *,
+    context: RequestContext,
+    knowledge_base_id: UUID,
+    tenant_id: UUID,
+) -> list[SupportAIKnowledgeBaseSourceResponse]:
+    _require_platform_admin(context)
+    tenant = _platform_tenant(session, tenant_id=tenant_id)
+    with _tenant_scope(session, context=context, tenant=tenant):
+        base = _knowledge_base(session, tenant_id=tenant.id, knowledge_base_id=knowledge_base_id)
+        rows = session.scalars(
+            select(SupportAIKnowledgeSourceRow)
+            .where(
+                SupportAIKnowledgeSourceRow.tenant_id == tenant.id,
+                SupportAIKnowledgeSourceRow.knowledge_base_id == base.id,
+                SupportAIKnowledgeSourceRow.deleted_at.is_(None),
+            )
+            .order_by(SupportAIKnowledgeSourceRow.created_at.desc())
+        ).all()
+        return [
+            SupportAIKnowledgeBaseSourceResponse(
+                knowledge_base_id=base.id,
+                knowledge_base_name=base.name,
+                source=_source_response(row),
+            )
+            for row in rows
+        ]
+
+
+def upload_knowledge_base_source(
+    session: Session,
+    *,
+    context: RequestContext,
+    knowledge_base_id: UUID,
+    tenant_id: UUID,
+    title: str,
+    description: str | None,
+    classification: str,
+    language: str,
+    filename: str | None,
+    declared_content_type: str | None,
+    content: bytes,
+) -> SupportAIKnowledgeBaseUploadResponse:
+    _require_platform_admin(context)
+    tenant = _platform_tenant(session, tenant_id=tenant_id)
+    with _tenant_scope(session, context=context, tenant=tenant):
+        base = _knowledge_base(session, tenant_id=tenant.id, knowledge_base_id=knowledge_base_id)
+        uploaded = _upload_knowledge_source_in_scope(
+            session,
+            tenant_id=tenant.id,
+            agent_id=base.agent_id,
+            knowledge_base_id=base.id,
+            requested_by_user_id=context.user_id,
+            title=title,
+            description=description,
+            classification=classification,
+            language=language,
+            filename=filename,
+            declared_content_type=declared_content_type,
+            content=content,
+        )
+        return SupportAIKnowledgeBaseUploadResponse(
+            knowledge_base=_knowledge_base_response(session, row=base, tenant_name=tenant.name),
+            source=uploaded.source,
+            job=uploaded.job,
+        )
+
+
 def list_agent_knowledge_sources(
     session: Session,
     *,
@@ -873,10 +1254,18 @@ def upload_agent_knowledge_source(
     for store in bound_stores:
         tenant = _platform_tenant(session, tenant_id=store.tenant_id)
         with _tenant_scope(session, context=context, tenant=tenant):
+            agent = _support_agent(session, agent_id=agent_id)
+            knowledge_base = _get_or_create_default_knowledge_base(
+                session,
+                tenant=tenant,
+                agent=agent,
+                user_id=context.user_id,
+            )
             uploaded = _upload_knowledge_source_in_scope(
                 session,
                 tenant_id=tenant.id,
                 agent_id=agent_id,
+                knowledge_base_id=knowledge_base.id,
                 requested_by_user_id=context.user_id,
                 title=title,
                 description=description,
@@ -1190,6 +1579,7 @@ def update_settings(
 def _source_response(row: SupportAIKnowledgeSourceRow) -> SupportAIKnowledgeSourceResponse:
     return SupportAIKnowledgeSourceResponse(
         id=row.id,
+        knowledge_base_id=row.knowledge_base_id,
         title=row.title,
         description=row.description,
         source_type="FILE",
@@ -1287,15 +1677,38 @@ def upload_knowledge_source(
         tenant_id=tenant_id,
     )
     with _tenant_scope(session, context=context, tenant=tenant):
-        settings = get_support_ai_settings(
+        settings = get_support_ai_settings(session, tenant_id=tenant.id, create=True)
+        assert settings is not None
+        agent = _support_agent(session, agent_id=settings.agent_id) if settings.agent_id else None
+        if agent is None:
+            # Keep the old tenant-scoped upload endpoint usable for existing
+            # installations.  New UI flows always select an explicit agent
+            # and knowledge base first.
+            agent = SupportAIAgentRow(
+                id=uuid4(),
+                agent_code=_new_agent_code(session),
+                name="默认智能客服",
+                description="由旧版知识库上传接口创建的兼容智能体",
+                enabled=False,
+                created_by_user_id=context.user_id,
+                updated_by_user_id=context.user_id,
+            )
+            session.add(agent)
+            session.flush()
+            settings.agent_id = agent.id
+            settings.updated_by_user_id = context.user_id
+            settings.updated_at = utcnow()
+        knowledge_base = _get_or_create_default_knowledge_base(
             session,
-            tenant_id=tenant.id,
-            create=False,
+            tenant=tenant,
+            agent=agent,
+            user_id=context.user_id,
         )
         return _upload_knowledge_source_in_scope(
             session,
             tenant_id=tenant.id,
-            agent_id=settings.agent_id if settings is not None else None,
+            agent_id=agent.id,
+            knowledge_base_id=knowledge_base.id,
             requested_by_user_id=context.user_id,
             title=title,
             description=description,
@@ -1312,6 +1725,7 @@ def _upload_knowledge_source_in_scope(
     *,
     tenant_id: UUID,
     agent_id: UUID | None,
+    knowledge_base_id: UUID,
     requested_by_user_id: UUID,
     title: str,
     description: str | None,
@@ -1350,7 +1764,7 @@ def _upload_knowledge_source_in_scope(
         ):
             raise ApplicationError(
                 "SUPPORT_AI_TRAINING_PACKAGE_REQUIRES_TRAINING_IMPORT",
-                "这是智能客服案例 JSON，请在后台知识库管理中选择智能体后导入，不能作为事实知识向量化。",
+                "这是智能客服案例 JSON，请在当前知识库的 AI 训练工作台导入，不能作为事实知识向量化。",
                 kind="conflict",
             )
     if classification not in {"PUBLIC", "CUSTOMER_APPROVED"}:
@@ -1407,6 +1821,7 @@ def _upload_knowledge_source_in_scope(
         id=source_id,
         tenant_id=tenant_id,
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         source_type="FILE",
         title=resolved_title[:300],
         description=(description or "").strip()[:4000] or None,
