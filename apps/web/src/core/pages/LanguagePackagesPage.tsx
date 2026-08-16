@@ -432,7 +432,7 @@ export function LanguagePackagesPage() {
               size="3"
               onClick={() => void startJob(false)}
               loading={startingJob && !activeJob}
-              disabled={!canEditProducts || Boolean(activeJob) || !status?.providerConfigured || !status?.packageStorageConfigured}
+              disabled={!canEditProducts || Boolean(activeJob)}
             >
               <ArrowsClockwise />
               {t("翻译新增与变更")}
@@ -443,7 +443,7 @@ export function LanguagePackagesPage() {
                   size="3"
                   variant="soft"
                   color="gray"
-                  disabled={!canEditProducts || Boolean(activeJob) || !status?.providerConfigured || !status?.packageStorageConfigured}
+                  disabled={!canEditProducts || Boolean(activeJob)}
                 >
                   {t("全量翻译")}
                 </Button>

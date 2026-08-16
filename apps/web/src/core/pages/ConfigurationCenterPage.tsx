@@ -15,6 +15,7 @@ import {
   Copy,
   Database,
   FloppyDisk,
+  ImageSquare,
   Plus,
   Translate,
 } from "@phosphor-icons/react";
@@ -24,19 +25,30 @@ import {
   copySupportAIProviderProfile,
   createSupportAIProviderProfile,
   getEmbeddingSettings,
+  getImageGenerationSettings,
   listSupportAIProviderProfiles,
   updateEmbeddingSettings,
+  updateImageGenerationSettings,
   updateSupportAIProviderProfile,
 } from "../api";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
-import type { EmbeddingSettings, SupportAIProviderSettings } from "../types";
+import type {
+  EmbeddingSettings,
+  ImageGenerationSettings,
+  SupportAIProviderSettings,
+} from "../types";
 import { TranslationApiSettingsPage } from "./TranslationApiSettingsPage";
 import "./ConfigurationCenterPage.css";
 
-type ConfigurationSection = "support-ai" | "translation" | "embedding";
+type ConfigurationSection = "support-ai" | "translation" | "embedding" | "image-generation";
 
-const SECTIONS = new Set<ConfigurationSection>(["support-ai", "translation", "embedding"]);
+const SECTIONS = new Set<ConfigurationSection>([
+  "support-ai",
+  "translation",
+  "embedding",
+  "image-generation",
+]);
 
 function GenerationSettingsPanel() {
   const { t } = useLocale();
@@ -423,6 +435,169 @@ function EmbeddingSettingsPanel() {
   );
 }
 
+function ImageGenerationSettingsPanel() {
+  const { t } = useLocale();
+  const [settings, setSettings] = useState<ImageGenerationSettings>();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [baseUrl, setBaseUrl] = useState("https://apihub.agnes-ai.com/v1/images/generations");
+  const [modelName, setModelName] = useState("agnes-image-2.0-flash");
+  const [apiKey, setApiKey] = useState("");
+  const [timeoutSeconds, setTimeoutSeconds] = useState("180");
+  const [requestsPerMinute, setRequestsPerMinute] = useState("6");
+  const [concurrencyLimit, setConcurrencyLimit] = useState("3");
+
+  const apply = useCallback((next: ImageGenerationSettings) => {
+    setSettings(next);
+    setEnabled(next.enabled);
+    setBaseUrl(next.baseUrl ?? "https://apihub.agnes-ai.com/v1/images/generations");
+    setModelName(next.modelName ?? "agnes-image-2.0-flash");
+    setTimeoutSeconds(String(next.timeoutSeconds || 180));
+    setRequestsPerMinute(String(next.requestsPerMinute || 6));
+    setConcurrencyLimit(String(next.concurrencyLimit || 3));
+    setApiKey("");
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      apply(await getImageGenerationSettings());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("图生图配置读取失败"));
+    } finally {
+      setLoading(false);
+    }
+  }, [apply, t]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const valid = Boolean(
+    baseUrl.trim()
+    && modelName.trim()
+    && (apiKey.trim() || settings?.apiKeyConfigured)
+    && Number.isInteger(Number(timeoutSeconds))
+    && Number(timeoutSeconds) >= 60
+    && Number(timeoutSeconds) <= 360
+    && Number.isInteger(Number(requestsPerMinute))
+    && Number(requestsPerMinute) >= 1
+    && Number(requestsPerMinute) <= 10000
+    && Number.isInteger(Number(concurrencyLimit))
+    && Number(concurrencyLimit) >= 1
+    && Number(concurrencyLimit) <= 32,
+  );
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!valid || saving) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const saved = await updateImageGenerationSettings({
+        enabled,
+        baseUrl: baseUrl.trim(),
+        modelName: modelName.trim(),
+        apiKey: apiKey.trim() || undefined,
+        timeoutSeconds: Number(timeoutSeconds),
+        requestsPerMinute: Number(requestsPerMinute),
+        concurrencyLimit: Number(concurrencyLimit),
+      });
+      apply(saved);
+      setMessage(t("图生图配置已保存并立即生效。"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("图生图配置保存失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading && !settings) return <CoreLoading label={t("正在读取图生图配置")} />;
+  if (error && !settings) return <CoreError message={error} onRetry={() => void load()} />;
+
+  return (
+    <Card className="configuration-provider-card">
+      <div className="configuration-card-heading">
+        <span><ImageSquare weight="duotone" /></span>
+        <div>
+          <Text size="1" color="gray">{t("图片处理")}</Text>
+          <Heading size="5">{t("图生图 API")}</Heading>
+          <Text size="2" color="gray">{t("仅接入图生图；调用时支持 URL 或 Base64 两种返回格式。")}</Text>
+          <Text size="1" color="gray">{t("图生图请求达到 RPM 或并发上限后会排队等待。")}</Text>
+        </div>
+        <div className="configuration-statuses">
+          <Badge color={settings?.apiKeyConfigured ? "jade" : "amber"}>
+            {t(settings?.apiKeyConfigured ? "已配置" : "待配置")}
+          </Badge>
+          <Badge color={enabled ? "blue" : "gray"}>{t(enabled ? "已启用" : "已停用")}</Badge>
+        </div>
+      </div>
+
+      <form className="configuration-form" onSubmit={(event) => void save(event)}>
+        <label className="configuration-wide">
+          <Text size="1" color="gray">API Endpoint</Text>
+          <TextField.Root
+            type="url"
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            placeholder="https://apihub.agnes-ai.com/v1/images/generations"
+            required
+          />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("模型名称")}</Text>
+          <TextField.Root value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="agnes-image-2.0-flash" required />
+        </label>
+        <label>
+          <Text size="1" color="gray">API Key</Text>
+          <TextField.Root
+            type="password"
+            autoComplete="new-password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder={settings?.apiKeyConfigured ? t("已配置 {hint}，留空保持不变", { hint: settings.apiKeyHint ?? "" }) : t("请输入 API Key")}
+            required={!settings?.apiKeyConfigured}
+          />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("请求超时（秒）")}</Text>
+          <TextField.Root type="number" min="60" max="360" value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(event.target.value)} required />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("每分钟最大请求数（RPM）")}</Text>
+          <TextField.Root type="number" min="1" max="10000" value={requestsPerMinute} onChange={(event) => setRequestsPerMinute(event.target.value)} required />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("并发请求数")}</Text>
+          <TextField.Root type="number" min="1" max="32" value={concurrencyLimit} onChange={(event) => setConcurrencyLimit(event.target.value)} required />
+        </label>
+        <label className="configuration-switch configuration-wide">
+          <span><strong>{t("启用图生图")}</strong><small>{t("停用后，后续图像编辑请求不会调用该模型。")}</small></span>
+          <Switch checked={enabled} onCheckedChange={setEnabled} />
+        </label>
+        <div className="configuration-wide configuration-format-summary">
+          <Text size="1" color="gray">{t("支持的工作流")}</Text>
+          <div className="configuration-statuses">
+            <Badge color="violet">{t("图生图")}</Badge>
+            <Badge color="blue">URL</Badge>
+            <Badge color="jade">Base64</Badge>
+          </div>
+        </div>
+        <div className="configuration-actions configuration-wide">
+          <Button type="submit" size="3" disabled={!valid || saving} loading={saving}><FloppyDisk />{t(saving ? "保存中…" : "保存配置")}</Button>
+        </div>
+      </form>
+      {message ? <Text size="2" color="green"><CheckCircle weight="fill" /> {message}</Text> : null}
+      {error ? <Text size="2" color="red">{error}</Text> : null}
+    </Card>
+  );
+}
+
 export function ConfigurationCenterPage() {
   const { t } = useLocale();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -448,10 +623,12 @@ export function ConfigurationCenterPage() {
           <Tabs.Trigger value="support-ai"><Brain />{t("智能体 API")}</Tabs.Trigger>
           <Tabs.Trigger value="translation"><Translate />{t("翻译 API")}</Tabs.Trigger>
           <Tabs.Trigger value="embedding"><Database />Embedding</Tabs.Trigger>
+          <Tabs.Trigger value="image-generation"><ImageSquare />{t("图生图 API")}</Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="support-ai" className="configuration-tab-panel"><GenerationSettingsPanel /></Tabs.Content>
         <Tabs.Content value="translation" className="configuration-tab-panel"><TranslationApiSettingsPage embedded /></Tabs.Content>
         <Tabs.Content value="embedding" className="configuration-tab-panel"><EmbeddingSettingsPanel /></Tabs.Content>
+        <Tabs.Content value="image-generation" className="configuration-tab-panel"><ImageGenerationSettingsPanel /></Tabs.Content>
       </Tabs.Root>
     </div>
   );

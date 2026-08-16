@@ -5,6 +5,7 @@ from .routers.auth import router as auth_router
 from .routers.announcements import router as announcements_router
 from .routers.health import router as health_router
 from .routers.image_intelligence import router as image_intelligence_router
+from .routers.image_enhancement import router as image_enhancement_router
 from .routers.inventory import router as inventory_router
 from .routers.knowledge_search import router as knowledge_search_router
 from .routers.legacy_operations import router as legacy_operations_router
@@ -59,7 +60,7 @@ def create_app() -> FastAPI:
         product_center_router,
         inventory_router,
         platform_admin_router,
-        image_intelligence_router,
+        image_intelligence_router, image_enhancement_router,
         trade_flow_router,
         public_catalog_router,
         quote_templates_router,
@@ -76,5 +77,4 @@ def create_app() -> FastAPI:
     ):
         application.include_router(router)
     return application
-_initialize_runtime()
-app = create_app()
+_initialize_runtime(); app = create_app()

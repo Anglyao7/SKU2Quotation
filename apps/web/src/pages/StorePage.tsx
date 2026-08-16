@@ -247,6 +247,8 @@ export function StorePage() {
   );
   const [total, setTotal] = useState(initialCatalogSnapshot?.total ?? 0);
   const [loading, setLoading] = useState(!initialCatalogSnapshot);
+  const [pageTransitioning, setPageTransitioning] = useState(false);
+  const [pageTransitionError, setPageTransitionError] = useState("");
   const [page, setPage] = useState(
     initialCatalogSnapshot?.page ?? initialView?.page ?? 1,
   );
@@ -263,6 +265,7 @@ export function StorePage() {
   );
   const [cartTenant, setCartTenant] = useState(loadedStore.slug);
   const requestId = useRef(0);
+  const hasCatalogResultsRef = useRef(Boolean(initialCatalogSnapshot?.products.length));
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
   const paginationRef = useRef<HTMLElement>(null);
   const activeTenantRef = useRef(loadedStore.slug);
@@ -336,6 +339,9 @@ export function StorePage() {
     setPage(nextSnapshot?.page ?? restoredView?.page ?? 1);
     setPages(nextSnapshot?.pages ?? 0);
     setLoading(!nextSnapshot);
+    hasCatalogResultsRef.current = Boolean(nextSnapshot?.products.length);
+    setPageTransitioning(false);
+    setPageTransitionError("");
   }, [loadedStore, locale, shareToken]);
 
   useEffect(() => {
@@ -384,13 +390,19 @@ export function StorePage() {
 
   const loadProducts = useCallback(async (
     targetPage = 1,
-    options: { preserveCurrent?: boolean } = {},
+    options: { preserveCurrent?: boolean; keepCurrentResults?: boolean } = {},
   ) => {
     const preserveCurrent = options.preserveCurrent === true;
+    const keepCurrentResults = options.keepCurrentResults
+      ?? (!preserveCurrent && hasCatalogResultsRef.current);
     const currentRequest = ++requestId.current;
     const includeFacets = !facetsLoadedRef.current;
     setPage(targetPage);
-    if (!preserveCurrent) setLoading(true);
+    if (!preserveCurrent) {
+      setPageTransitionError("");
+      setPageTransitioning(keepCurrentResults);
+      if (!keepCurrentResults) setLoading(true);
+    }
     setError("");
     try {
       const data = await api.getStoreProducts(tenantSlug, {
@@ -405,6 +417,7 @@ export function StorePage() {
       if (currentRequest !== requestId.current) return;
       if (includeFacets) facetsLoadedRef.current = true;
       setProducts(data.items);
+      hasCatalogResultsRef.current = data.items.length > 0;
       setTotal(data.total);
       setPage(data.page ?? targetPage);
       setPages(data.pages ?? Math.ceil(data.total / 24));
@@ -429,13 +442,17 @@ export function StorePage() {
       } : current);
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
-      if (!preserveCurrent) {
+      if (keepCurrentResults) {
+        setPageTransitionError(caught instanceof Error ? caught.message : t("商品加载失败。"));
+      } else if (!preserveCurrent) {
         setError(caught instanceof Error ? caught.message : t("商品加载失败。"));
         setProducts([]);
+        hasCatalogResultsRef.current = false;
       }
     } finally {
       if (!preserveCurrent && currentRequest === requestId.current) {
         setLoading(false);
+        setPageTransitioning(false);
       }
     }
   }, [tenantSlug, deferredSearch, category, locale, shareToken, t]);
@@ -472,13 +489,12 @@ export function StorePage() {
   }, [loading]);
 
   useEffect(() => {
-    const sourceLocale = store.source_locale ?? "zh-CN";
     if (
       loading
+      || pageTransitioning
       || error
       || page < 1
       || page >= pages
-      || locale === sourceLocale
     ) {
       return;
     }
@@ -521,8 +537,8 @@ export function StorePage() {
     loading,
     locale,
     page,
+    pageTransitioning,
     pages,
-    store.source_locale,
     shareToken,
     tenantSlug,
   ]);
@@ -553,7 +569,7 @@ export function StorePage() {
   );
 
   useEffect(() => {
-    if (loading || error || products.length === 0) return;
+    if (loading || pageTransitioning || error || products.length === 0) return;
     void preloadProductDetailModule().catch(() => undefined);
 
     const sourceLocale = store.source_locale ?? "zh-CN";
@@ -577,6 +593,7 @@ export function StorePage() {
     error,
     loading,
     locale,
+    pageTransitioning,
     products,
     shareToken,
     store.source_locale,
@@ -733,13 +750,19 @@ export function StorePage() {
     }
   };
   const goToPage = (targetPage: number) => {
-    if (loading || targetPage === page || targetPage < 1 || targetPage > pages) return;
+    if (
+      loading
+      || pageTransitioning
+      || targetPage === page
+      || targetPage < 1
+      || targetPage > pages
+    ) return;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     resultsHeaderRef.current?.scrollIntoView({
       behavior: reducedMotion ? "auto" : "smooth",
       block: "start",
     });
-    void loadProducts(targetPage);
+    void loadProducts(targetPage, { keepCurrentResults: true });
   };
 
   return (
@@ -965,6 +988,8 @@ export function StorePage() {
                   ? t("搜索中……")
                   : loading
                     ? t("正在查找")
+                  : pageTransitioning
+                    ? t("切换中…")
                   : t("{count} 条结果", { count: total.toLocaleString(locale) })}
               </Badge>
             </div>
@@ -1013,18 +1038,42 @@ export function StorePage() {
                   action={hasFilters ? <Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button> : undefined}
                 />
               ) : (
-                <div className="sku-grid">
-                  {products.map((product) => (
-                    <ProductCard
-                      key={product.id}
-                      product={product}
-                      tenantSlug={tenantSlug}
-                      detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
-                      onOpenDetails={rememberCatalogPosition}
-                      onPrefetchDetails={() => prefetchProductDetails(product.id)}
-                      locale={locale}
-                    />
-                  ))}
+                <div
+                  className={`sku-grid-shell${pageTransitioning ? " is-transitioning" : ""}`}
+                  aria-busy={pageTransitioning}
+                >
+                  <div className="sku-grid">
+                    {products.map((product) => (
+                      <ProductCard
+                        key={product.id}
+                        product={product}
+                        tenantSlug={tenantSlug}
+                        detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
+                        onOpenDetails={rememberCatalogPosition}
+                        onPrefetchDetails={() => prefetchProductDetails(product.id)}
+                        locale={locale}
+                      />
+                    ))}
+                  </div>
+                  {pageTransitioning ? (
+                    <div className="store-grid-transition-indicator" role="status" aria-live="polite">
+                      <ArrowCounterClockwise className="is-spinning" size={15} aria-hidden="true" />
+                      <span>{t("正在切换")}</span>
+                    </div>
+                  ) : null}
+                  {pageTransitionError ? (
+                    <div className="store-grid-transition-error" role="status">
+                      <span>{pageTransitionError}</span>
+                      <Button
+                        type="button"
+                        size="1"
+                        variant="soft"
+                        onClick={() => void loadProducts(page, { keepCurrentResults: true })}
+                      >
+                        {t("重试")}
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
               )}
               {!showCategoryShowcase && !searchPending && !loading && !error && products.length > 0 && pages > 1 && (
@@ -1038,7 +1087,7 @@ export function StorePage() {
                     size="2"
                     variant="soft"
                     color="gray"
-                    disabled={page <= 1}
+                    disabled={page <= 1 || pageTransitioning}
                     aria-label={t("上一页")}
                     onClick={() => goToPage(page - 1)}
                   >
@@ -1053,7 +1102,7 @@ export function StorePage() {
                           className={`store-pagination-page${item === page ? " is-active" : ""}${hidePaginationItemOnMobile(index, page, pages) ? " is-mobile-hidden" : ""}`}
                           aria-label={t("第 {page} 页", { page: item })}
                           aria-current={item === page ? "page" : undefined}
-                          disabled={loading}
+                          disabled={loading || pageTransitioning}
                           onClick={() => goToPage(item)}
                           key={item}
                         >
@@ -1069,7 +1118,7 @@ export function StorePage() {
                     size="2"
                     variant="soft"
                     color="gray"
-                    disabled={page >= pages}
+                    disabled={page >= pages || pageTransitioning}
                     aria-label={t("下一页")}
                     onClick={() => goToPage(page + 1)}
                   >

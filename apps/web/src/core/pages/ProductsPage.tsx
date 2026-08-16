@@ -35,6 +35,7 @@ import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { removeImportItem, resetFailedImportItem, selectUniqueImportFiles } from "../importQueueState";
 import { useLocale } from "../LocaleContext";
 import { CatalogShareDialog, type CatalogShareTarget } from "../components/CatalogShareDialog";
+import { ImageEnhancementDialog, type ImageEnhancementTarget } from "../components/ImageEnhancementDialog";
 import { primaryCategoryLabel } from "../../lib/format";
 import { api } from "../../lib/api";
 import type { ProductTag } from "../../types";
@@ -290,6 +291,7 @@ export function ProductsPage() {
   const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
   const canEdit = hasPermission("product.edit");
+  const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const canDelete = canEdit;
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
@@ -353,6 +355,7 @@ export function ProductsPage() {
   const [bulkNotice, setBulkNotice] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
   const [shareTarget, setShareTarget] = useState<CatalogShareTarget>();
+  const [imageEnhancementTargets, setImageEnhancementTargets] = useState<ImageEnhancementTarget[]>([]);
   const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
@@ -886,6 +889,20 @@ export function ProductsPage() {
     setBulkAction(undefined);
     setBulkError("");
   };
+  const openImageEnhancementForProducts = () => {
+    if (!isPlatformAdmin || !canEdit || !selectedProductIds.size) return;
+    setImageEnhancementTargets(
+      [...selectedProductIds].map((productId) => ({ productId, skuIds: [] })),
+    );
+  };
+  const openImageEnhancementForSkus = (productId: string, skuIds: string[]) => {
+    if (!isPlatformAdmin || !canEdit || !skuIds.length) return;
+    setImageEnhancementTargets([{ productId, skuIds }]);
+  };
+  const openImageEnhancementForProduct = (productId: string) => {
+    if (!isPlatformAdmin || !canEdit) return;
+    setImageEnhancementTargets([{ productId, skuIds: [] }]);
+  };
   const openBulkAction = (action: BulkSkuAction) => {
     if (!canEdit || !selectedProductIds.size) return;
     setBulkError("");
@@ -1226,6 +1243,7 @@ export function ProductsPage() {
             <Text size="2" weight="bold">{t("已选 {count} 个商品", { count: selectedProductIds.size })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
+            {isPlatformAdmin && canEdit ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
             <Button size="2" color="red" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(true)}><Trash />{t("删除已选商品")}</Button>
             <Button size="2" variant="ghost" color="gray" onClick={clearProductSelection}><X />{t("取消选择")}</Button>
           </div>
@@ -2001,7 +2019,7 @@ export function ProductsPage() {
 
       <Dialog.Root open={Boolean(selected || detailLoading)} onOpenChange={(open) => { if (!open) close(); }}>
         <Dialog.Content className="core-detail-dialog">
-          {detailLoading || !selected ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} selectedSkuId={selectedSkuId} managedTags={managedTags} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
+          {detailLoading || !selected ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} selectedSkuId={selectedSkuId} managedTags={managedTags} onEnhanceProduct={openImageEnhancementForProduct} onEnhanceSkus={openImageEnhancementForSkus} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
         </Dialog.Content>
       </Dialog.Root>
 
@@ -2009,6 +2027,12 @@ export function ProductsPage() {
         open={Boolean(shareTarget)}
         target={shareTarget}
         onOpenChange={(open) => { if (!open) setShareTarget(undefined); }}
+      />
+      <ImageEnhancementDialog
+        open={imageEnhancementTargets.length > 0}
+        targets={imageEnhancementTargets}
+        onOpenChange={(open) => { if (!open) setImageEnhancementTargets([]); }}
+        onApplied={async () => { await refreshSelected(); await load(); }}
       />
     </div>
   );
@@ -2278,14 +2302,16 @@ function ManagedTagPicker({ tags, selected, onChange, disabled = false }: {
   );
 }
 
-function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, onClose }: {
+function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProduct, onEnhanceSkus, onChanged, onClose }: {
   product: ProductDetail;
   selectedSkuId?: string;
   managedTags: ProductTag[];
+  onEnhanceProduct: (productId: string) => void;
+  onEnhanceSkus: (productId: string, skuIds: string[]) => void;
   onChanged: () => Promise<void>;
   onClose: () => void;
 }) {
-  const { hasPermission } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const imageInputRef = useRef<HTMLInputElement>(null);
   const imageDragDepthRef = useRef(0);
@@ -2296,6 +2322,7 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
   const [imageFailed, setImageFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
   const canEdit = hasPermission("product.edit");
+  const canEnhanceImages = canEdit && Boolean(profile?.user.isPlatformAdmin);
 
   useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
   useEffect(() => {
@@ -2436,6 +2463,17 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
                       <DownloadSimple />{t("下载图片")}
                     </Button>
                   ) : null}
+                  {canEnhanceImages ? (
+                    <Button
+                      size="2"
+                      variant="soft"
+                      color="purple"
+                      disabled={product.imageStatus === "NONE" || imageUploading || imageDownloading}
+                      onClick={() => onEnhanceProduct(product.id)}
+                    >
+                      <Sparkle />{t("图片变清晰")}
+                    </Button>
+                  ) : null}
                   {canEdit ? (
                     <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
                       <FileArrowUp />{t(product.imageStatus !== "NONE" ? "替换图片" : "上传图片")}
@@ -2467,22 +2505,24 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onChanged, on
           </div>
         </Tabs.Content>
         <Tabs.Content value="skus" className="core-product-detail-tab-panel">
-          <SkuPanel product={product} initialSkuId={selectedSkuId} managedTags={managedTags} onChanged={onChanged} />
+          <SkuPanel product={product} initialSkuId={selectedSkuId} managedTags={managedTags} onEnhanceSkus={onEnhanceSkus} onChanged={onChanged} />
         </Tabs.Content>
       </Tabs.Root>
     </>
   );
 }
 
-function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
+function SkuPanel({ product, initialSkuId, managedTags, onEnhanceSkus, onChanged }: {
   product: ProductDetail;
   initialSkuId?: string;
   managedTags: ProductTag[];
+  onEnhanceSkus: (productId: string, skuIds: string[]) => void;
   onChanged: () => Promise<void>;
 }) {
-  const { hasAnyPermission, hasPermission } = useCoreAuth();
+  const { hasAnyPermission, hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const canEdit = hasPermission("product.edit");
+  const canEnhanceImages = canEdit && Boolean(profile?.user.isPlatformAdmin);
   const canViewCatalog = hasAnyPermission("catalog.view", "catalog.publish");
   const canPublish = hasAnyPermission("catalog.publish");
   const canManageSku = canEdit || canPublish;
@@ -2498,10 +2538,12 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
   const [busySkuId, setBusySkuId] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const [selectedSkuIds, setSelectedSkuIds] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     setEditingSkuId(undefined);
     setExpandedSkuIds(new Set(initialSkuId ? [initialSkuId] : []));
+    setSelectedSkuIds(new Set());
   }, [initialSkuId, product.id]);
   const loadOffers = useCallback(async () => {
     if (!canViewCatalog) { setOffers([]); return; }
@@ -2581,7 +2623,10 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
           <Heading size="4">{t("SKU 详情")}</Heading>
           <Text size="1" color="gray">{t("共 {count} 个 SKU，可逐条展开查看", { count: product.skus.length })}</Text>
         </div>
-        {canEdit ? <Button size="2" variant={createOpen ? "soft" : "solid"} color={createOpen ? "gray" : undefined} onClick={() => setCreateOpen((open) => !open)}><Plus />{t(createOpen ? "取消" : "添加 SKU")}</Button> : null}
+        <div className="core-sku-detail-heading-actions">
+          {canEnhanceImages ? <Button size="2" variant="soft" color="blue" disabled={!selectedSkuIds.size} onClick={() => { onEnhanceSkus(product.id, [...selectedSkuIds]); setSelectedSkuIds(new Set()); }}><Sparkle />{t("图片变清晰")}</Button> : null}
+          {canEdit ? <Button size="2" variant={createOpen ? "soft" : "solid"} color={createOpen ? "gray" : undefined} onClick={() => setCreateOpen((open) => !open)}><Plus />{t(createOpen ? "取消" : "添加 SKU")}</Button> : null}
+        </div>
       </div>
       {createOpen ? (
         <Card className="core-sku-create-compact">
@@ -2605,6 +2650,19 @@ function SkuPanel({ product, initialSkuId, managedTags, onChanged }: {
           return (
             <Card className="core-sku-detail-card" data-expanded={expanded || undefined} data-editing={editing || undefined} key={sku.id}>
               <div className="core-sku-detail-row">
+                {canEnhanceImages ? (
+                  <span className="core-sku-select" onClick={(event) => event.stopPropagation()}>
+                    <Checkbox
+                      checked={selectedSkuIds.has(sku.id)}
+                      onCheckedChange={(checked) => setSelectedSkuIds((current) => {
+                        const next = new Set(current);
+                        if (checked === true) next.add(sku.id); else next.delete(sku.id);
+                        return next;
+                      })}
+                      aria-label={t(selectedSkuIds.has(sku.id) ? "取消选择 SKU {code}" : "选择 SKU {code}", { code: sku.skuCode })}
+                    />
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   className="core-sku-detail-main"

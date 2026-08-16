@@ -15,6 +15,8 @@ from ..platform_admin_schemas import (
     PlatformMerchantIdentityUpdate,
     PlatformMerchantOwnerAccount,
     PlatformMerchantOwnerCreate,
+    PlatformMerchantOwnerPasswordReset,
+    PlatformMerchantOwnerPasswordResetResponse,
     PlatformTenantCreate,
     PlatformTenantSubscriptionUpdate,
     PlatformTenantSummary,
@@ -190,6 +192,29 @@ def provision_merchant_owner_endpoint(
 ) -> PlatformMerchantOwnerAccount:
     try:
         return use_cases.provision_merchant_owner(
+            session,
+            _identity_write_session(session, identity_session),
+            context=context,
+            tenant_id=tenant_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/tenants/{tenant_id}/owner-account/password-reset",
+    response_model=PlatformMerchantOwnerPasswordResetResponse,
+)
+def reset_merchant_owner_password_endpoint(
+    tenant_id: UUID,
+    request: PlatformMerchantOwnerPasswordReset,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+    identity_session: Session = Depends(get_auth_session),
+) -> PlatformMerchantOwnerPasswordResetResponse:
+    try:
+        return use_cases.reset_merchant_owner_password(
             session,
             _identity_write_session(session, identity_session),
             context=context,

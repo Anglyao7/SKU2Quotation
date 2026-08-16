@@ -30,7 +30,11 @@ from .contracts import (
     IdentityProviderPort,
 )
 from .fake_provider import FakeIdentityProviderAdapter
-from .local_credentials import normalize_local_identifier, verify_local_password
+from .local_credentials import (
+    new_local_password_material,
+    normalize_local_identifier,
+    verify_local_password,
+)
 from .oidc_provider import OidcIdentityProviderAdapter
 from .tokens import (
     ACCESS_TTL_SECONDS,
@@ -484,6 +488,72 @@ def change_password(
             "password could not be changed; please retry",
             status_code=503,
         ) from exc
+
+
+def reset_password_for_user(
+    session: Session,
+    *,
+    user_id: UUID,
+    new_password: str,
+) -> None:
+    """Reset a merchant password from a trusted platform-admin workflow.
+
+    Local merchant accounts keep only a salted verifier in the application
+    database. Enterprise accounts delegate the reset to the configured OIDC
+    provider. In both cases every existing browser session for the target
+    account is revoked before the new credential can be used.
+    """
+
+    user = session.get(UserRow, user_id)
+    if user is None or user.status != "active":
+        raise AuthError(
+            "PASSWORD_RESET_ACCOUNT_INVALID",
+            "the merchant account is not available",
+            status_code=404,
+        )
+
+    credential = session.get(LocalAccountCredentialRow, user.id)
+    if credential is not None:
+        salt, password_hash = new_local_password_material(new_password)
+        credential.password_salt = salt
+        credential.password_hash = password_hash
+        credential.updated_at = utcnow()
+    elif user.identity_provider.startswith("oidc:"):
+        try:
+            OidcIdentityProviderAdapter().change_password(
+                subject=user.identity_subject,
+                new_password=new_password,
+            )
+        except IdentityProviderPasswordPolicyError as exc:
+            raise AuthError(
+                "PASSWORD_POLICY_VIOLATION",
+                "the identity provider rejected the new password",
+                status_code=422,
+            ) from exc
+        except IdentityProviderError as exc:
+            raise AuthError(
+                "PASSWORD_RESET_FAILED",
+                "the merchant password could not be reset; please retry",
+                status_code=503,
+            ) from exc
+    else:
+        raise AuthError(
+            "PASSWORD_RESET_UNAVAILABLE",
+            "password reset is unavailable for this account",
+            status_code=409,
+        )
+
+    active_sessions = session.scalars(
+        select(AuthSessionRow)
+        .where(
+            AuthSessionRow.user_id == user.id,
+            AuthSessionRow.revoked_at.is_(None),
+        )
+        .with_for_update()
+    ).all()
+    for auth_session in active_sessions:
+        _revoke_family(session, auth_session, "ADMIN_PASSWORD_RESET")
+    session.commit()
 
 
 def _issue_authenticated_session(

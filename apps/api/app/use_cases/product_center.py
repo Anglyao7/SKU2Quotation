@@ -1062,6 +1062,171 @@ def upload_product_main_image(
     )
 
 
+def replace_product_main_image(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+    source_image_id: UUID | None,
+    filename: str | None,
+    content: bytes,
+) -> ProductImageResponse:
+    """Replace the existing main-image record and remove its old object.
+
+    Image enhancement is a replacement workflow, not an image-import flow:
+    keep one ``ProductImageRow`` for the product, upload the new bytes to a
+    temporary key, update that row, then delete the previous managed object.
+    This avoids accumulating a second active image and keeps storage bounded.
+    External source URLs cannot be deleted; they are migrated to our object
+    storage once and the same database image record is reused.
+    """
+
+    _require(permissions, "product.edit")
+    if not content:
+        raise ApplicationError("PRODUCT_IMAGE_EMPTY", "请选择一张商品图片。")
+    if len(content) > MAX_PRODUCT_IMAGE_BYTES:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_TOO_LARGE",
+            f"商品图片不能超过 {MAX_PRODUCT_IMAGE_BYTES // (1024 * 1024)} MB。",
+            kind="too_large",
+        )
+    _lock_catalog_write(session, tenant_id=tenant_id)
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if product is None:
+        raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+
+    images = repository.list_images(session, tenant_id=tenant_id, product_id=product_id)
+    image = next(
+        (
+            candidate
+            for candidate in images
+            if candidate.image_role == "MAIN"
+            and (source_image_id is None or candidate.id == source_image_id)
+        ),
+        next((candidate for candidate in images if candidate.image_role == "MAIN"), None),
+    )
+    if image is None:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_NOT_FOUND",
+            "商品原图不存在，无法替换。",
+            kind="not_found",
+        )
+
+    processed, width, height = _normalized_product_image(content)
+    storage = get_object_storage()
+    old_object_key = str(image.object_key or "").strip()
+    old_storage_provider = str(image.storage_provider or "").upper()
+    replacement_key = (
+        f"tenants/{tenant_id}/products/{product_id}/images/"
+        f"{image.id}-replacement-{uuid4()}.webp"
+    )
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".webp") as temporary:
+            temporary.write(processed)
+            temporary.flush()
+            storage.put_file(
+                Path(temporary.name),
+                object_key=replacement_key,
+                content_type="image/webp",
+            )
+    except Exception as exc:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_STORAGE_UNAVAILABLE",
+            "图片上传到对象存储失败，请稍后重试。",
+            kind="unavailable",
+        ) from exc
+
+    now = utcnow()
+    old_snapshot = {
+        "image_id": str(image.id),
+        "object_key": old_object_key,
+        "sha256": image.sha256,
+        "width": image.width,
+        "height": image.height,
+    }
+    image.storage_provider = storage.backend_name.upper()
+    image.bucket = os.getenv("OBJECT_STORAGE_BUCKET", "local") or "local"
+    image.object_key = replacement_key
+    image.original_filename = (filename or f"{product.name}.webp")[:500]
+    image.content_type = "image/webp"
+    image.byte_size = len(processed)
+    image.sha256 = sha256(processed).hexdigest()
+    image.width = width
+    image.height = height
+    image.image_role = "MAIN"
+    image.sort_order = 0
+    image.approval_status = "APPROVED"
+    image.alt_text = product.name
+    image.created_by = user_id
+    image.updated_at = now
+    image.deleted_at = None
+    product.current_version += 1
+    product.updated_by = user_id
+    product.updated_at = now
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=product.id,
+            entity_type="PRODUCT",
+            entity_id=str(image.id),
+            action="product.image.replaced",
+            before=old_snapshot,
+            after={
+                "image_id": str(image.id),
+                "object_key": replacement_key,
+                "sha256": image.sha256,
+                "width": width,
+                "height": height,
+            },
+            actor_membership_id=membership_id,
+            occurred_at=now,
+        )
+    )
+    try:
+        _commit(
+            session,
+            conflict_code="PRODUCT_IMAGE_CONFLICT",
+            conflict_message="Product image could not be replaced.",
+        )
+    except Exception:
+        try:
+            storage.delete(replacement_key)
+        except Exception:
+            pass
+        raise
+
+    managed_providers = {
+        "S3",
+        "R2",
+        "LOCAL",
+        "LOCAL-S3-COMPATIBLE",
+        "LOCAL_S3_COMPATIBLE",
+    }
+    if (
+        old_object_key
+        and old_object_key != replacement_key
+        and old_storage_provider in managed_providers
+        and old_object_key.startswith(f"tenants/{tenant_id}/")
+    ):
+        try:
+            storage.delete(old_object_key)
+        except Exception:
+            logger.warning("could not remove replaced product image object: %s", old_object_key)
+
+    session.refresh(image)
+    return _image_response(
+        image,
+        storefront_slug=_storefront_slug(session, tenant_id=tenant_id),
+    )
+
+
 _PRODUCT_IMAGE_DOWNLOAD_EXTENSIONS = {
     "image/avif": "avif",
     "image/bmp": "bmp",

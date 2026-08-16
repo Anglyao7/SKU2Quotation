@@ -59,6 +59,11 @@ export interface MerchantOwnerAccount {
   created_at: string;
 }
 
+export interface MerchantOwnerPasswordResetResult {
+  account: MerchantOwnerAccount;
+  one_time_password: string;
+}
+
 export interface Storefront {
   id?: string;
   name: string;

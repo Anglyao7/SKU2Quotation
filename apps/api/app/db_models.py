@@ -293,6 +293,15 @@ from .embedding_management_models import (  # noqa: E402,F401
     KnowledgeIndexJobRow,
 )
 
+from .image_generation_models import (  # noqa: E402,F401
+    ImageGenerationProviderSettingsRow,
+)
+
+from .image_enhancement_models import (  # noqa: E402,F401
+    ImageEnhancementItemRow,
+    ImageEnhancementTaskRow,
+)
+
 from .translation_management_models import (  # noqa: E402,F401
     TranslationProviderSettingsRow,
 )
@@ -335,3 +344,5 @@ from .support_models import (  # noqa: E402,F401
     StorefrontChatConversationRow,
     StorefrontChatMessageRow,
 )
+
+from .dashboard_models import DashboardStatisticsRow  # noqa: E402,F401

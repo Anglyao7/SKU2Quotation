@@ -14,7 +14,6 @@ from ..repositories import workspace_repository as repository
 from ..services import query_cache
 from ..workspace_schemas import (
     DashboardDataHealth,
-    DashboardImport,
     DashboardMetric,
     DashboardResponse,
     SupplyChainCreateRequest,
@@ -62,7 +61,6 @@ def get_dashboard(
             "membership_id": str(membership_id),
             "tenant_scope": tenant_scope,
             "permissions": sorted(permissions),
-            "import_limit": import_limit,
         },
     )
     if cache_slot.hit:
@@ -118,25 +116,14 @@ def get_dashboard(
             supplier_source_coverage=source_coverage,
             valid_price_coverage=price_coverage,
         )
-    recent_imports = [
-        DashboardImport(
-            id=job.id,
-            filename=source.original_filename,
-            source_type=job.source_type,
-            supplier_name=job.supplier_name,
-            status=job.status,
-            progress=job.progress,
-            products_count=job.products_count,
-            warnings_count=job.warnings_count,
-            created_at=job.created_at,
-        )
-        for job, source in data["recent_imports"]
-    ] if "product.import" in permissions else []
     response = DashboardResponse(
         generated_at=now,
         data_scope="TENANT" if tenant_scope else "SELF",
         metrics=metrics,
-        recent_imports=recent_imports,
+        # Kept as an empty compatibility field for older clients.  Import
+        # history is no longer loaded by the overview; source-file provenance
+        # remains on the product/SKU records and import-job detail screens.
+        recent_imports=[],
         data_health=data_health,
     )
     query_cache.store(

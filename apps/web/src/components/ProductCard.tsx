@@ -25,6 +25,7 @@ export function ProductCard({
   const [imageFailed, setImageFailed] = useState(!product.image_url);
   const [favorite, setFavorite] = useState(() => isStorefrontFavorite(tenantSlug, product.id));
   const prefetchedDetails = useRef(false);
+  const prefetchTimer = useRef<number | null>(null);
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
@@ -43,8 +44,27 @@ export function ProductCard({
     setFavorite(isStorefrontFavorite(tenantSlug, product.id));
   }, [product.id, product.image_url, tenantSlug]);
 
-  const prefetchDetails = () => {
+  useEffect(() => () => {
+    if (prefetchTimer.current !== null) window.clearTimeout(prefetchTimer.current);
+  }, []);
+
+  const cancelPrefetch = () => {
+    if (prefetchTimer.current === null) return;
+    window.clearTimeout(prefetchTimer.current);
+    prefetchTimer.current = null;
+  };
+
+  const prefetchDetails = (immediate = false) => {
     if (prefetchedDetails.current) return;
+    if (!immediate) {
+      if (prefetchTimer.current !== null) return;
+      prefetchTimer.current = window.setTimeout(() => {
+        prefetchTimer.current = null;
+        prefetchDetails(true);
+      }, 140);
+      return;
+    }
+    cancelPrefetch();
     prefetchedDetails.current = true;
     onPrefetchDetails();
   };
@@ -53,9 +73,11 @@ export function ProductCard({
     <Card
       className="sku-card product-card"
       variant="surface"
-      onPointerEnter={prefetchDetails}
-      onPointerDown={prefetchDetails}
-      onFocus={prefetchDetails}
+      onPointerEnter={() => prefetchDetails()}
+      onPointerLeave={cancelPrefetch}
+      onPointerDown={() => prefetchDetails(true)}
+      onFocus={() => prefetchDetails()}
+      onBlur={cancelPrefetch}
     >
       <button
         type="button"

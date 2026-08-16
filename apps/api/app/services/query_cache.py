@@ -29,6 +29,7 @@ DOMAIN_INVENTORY = "inventory"
 DOMAIN_METADATA = "metadata"
 
 _PENDING_INVALIDATIONS = "query_cache_pending_invalidations"
+_PENDING_DASHBOARD_STATISTICS = "dashboard_statistics_pending_refresh"
 _CLIENT_LOCK = RLock()
 _redis_client: Any | None = None
 _redis_client_url: str | None = None
@@ -71,6 +72,83 @@ def _disable_temporarily(exc: Exception) -> None:
         _redis_client_url = None
         _redis_disabled_until = monotonic() + 30
     logger.warning("Query cache temporarily disabled: %s", type(exc).__name__)
+
+
+def _mark_dashboard_statistics_dirty(
+    tenant_ids: Iterable[str],
+    *,
+    bind: Any | None = None,
+    request_context: dict[str, str] | None = None,
+) -> None:
+    """Mark existing dashboard read models stale after a successful write.
+
+    This runs in a short, independent transaction because SQLAlchemy's
+    ``after_commit`` hook has already closed the write transaction.  Missing
+    rows are intentionally ignored; the first dashboard request creates and
+    refreshes them.  Statistics are never allowed to make a business write
+    fail, so this helper is best-effort just like the Redis invalidation path.
+    """
+
+    unique_ids: list[UUID | str] = []
+    for tenant_id in sorted({str(value) for value in tenant_ids if value}):
+        try:
+            unique_ids.append(UUID(tenant_id))
+        except ValueError:
+            # A few legacy supplier records still use string tenant keys in
+            # local compatibility databases.  Keep those values usable on
+            # SQLite while normal UUID tenants use the native UUID binder.
+            unique_ids.append(tenant_id)
+    if not unique_ids:
+        return
+    try:
+        from sqlalchemy import update
+        from sqlalchemy import text
+
+        from ..dashboard_models import DashboardStatisticsRow
+        from ..model_mixins import utcnow
+
+        # Reuse the committing session's bind so tests and deployments that
+        # use a separate database URL do not accidentally mark another
+        # database's read model.
+        statistics_session = Session(bind=bind, autoflush=False, expire_on_commit=False)
+        with statistics_session:
+            if bind is not None and bind.dialect.name == "postgresql":
+                # The summary table is tenant-RLS protected just like the
+                # source tables.  Rebind the transaction-local context before
+                # updating it; the current tenant is replaced per target so
+                # a multi-tenant admin session cannot bypass isolation.
+                context = request_context or {}
+                for tenant_id in unique_ids:
+                    statistics_session.execute(
+                        text(
+                            "SELECT set_config('app.current_organization_id', :organization_id, true), "
+                            "set_config('app.current_tenant_id', :tenant_id, true), "
+                            "set_config('app.current_user_id', :user_id, true)"
+                        ),
+                        {
+                            "organization_id": context.get(
+                                "organization_id", "00000000-0000-0000-0000-000000000000"
+                            ),
+                            "tenant_id": str(tenant_id),
+                            "user_id": context.get(
+                                "user_id", "00000000-0000-0000-0000-000000000000"
+                            ),
+                        },
+                    )
+                    statistics_session.execute(
+                        update(DashboardStatisticsRow)
+                        .where(DashboardStatisticsRow.tenant_id == tenant_id)
+                        .values(is_dirty=True, updated_at=utcnow())
+                    )
+            else:
+                statistics_session.execute(
+                    update(DashboardStatisticsRow)
+                    .where(DashboardStatisticsRow.tenant_id.in_(unique_ids))
+                    .values(is_dirty=True, updated_at=utcnow())
+                )
+            statistics_session.commit()
+    except Exception as exc:  # pragma: no cover - operational fail-open guard
+        logger.warning("Dashboard statistics dirty mark failed: %s", type(exc).__name__)
 
 
 def _client() -> Any | None:
@@ -199,8 +277,11 @@ _TABLE_DOMAINS: dict[str, frozenset[str]] = {
     "public_catalog_offers": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),
     "supplier_products": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),
     "suppliers": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD, DOMAIN_INVENTORY}),
-    "source_files": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),
-    "import_jobs": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),
+    # Import history is no longer read by the dashboard.  Source provenance
+    # remains available on the product/import records, while job progress
+    # updates no longer invalidate the statistics read model.
+    "source_files": frozenset({DOMAIN_CATALOG}),
+    "import_jobs": frozenset({DOMAIN_CATALOG}),
     "product_categories": frozenset(
         {DOMAIN_CATALOG, DOMAIN_DASHBOARD, DOMAIN_INVENTORY, DOMAIN_METADATA}
     ),
@@ -236,8 +317,6 @@ def _collect_orm_invalidations(
     _flush_context: object,
     _instances: object,
 ) -> None:
-    if not _enabled():
-        return
     candidates = set(session.new).union(session.deleted)
     candidates.update(
         row
@@ -249,22 +328,38 @@ def _collect_orm_invalidations(
         domains = _TABLE_DOMAINS.get(table_name)
         tenant_id = getattr(row, "tenant_id", None)
         if domains and tenant_id is not None:
-            mark_tenant_dirty(
-                session,
-                tenant_id=tenant_id,
-                domains=domains,
-            )
+            if _enabled():
+                mark_tenant_dirty(
+                    session,
+                    tenant_id=tenant_id,
+                    domains=domains,
+                )
+            if DOMAIN_DASHBOARD in domains:
+                session.info.setdefault(_PENDING_DASHBOARD_STATISTICS, set()).add(
+                    str(tenant_id)
+                )
 
 
 @event.listens_for(Session, "after_commit")
 def _publish_invalidations(session: Session) -> None:
     pending = session.info.pop(_PENDING_INVALIDATIONS, set())
+    pending_dashboard = session.info.pop(_PENDING_DASHBOARD_STATISTICS, set())
+    _mark_dashboard_statistics_dirty(
+        pending_dashboard,
+        bind=session.get_bind(),
+        request_context={
+            key: str(session.info[key])
+            for key in ("organization_id", "user_id")
+            if session.info.get(key)
+        },
+    )
     invalidate_versions(pending)
 
 
 @event.listens_for(Session, "after_rollback")
 def _discard_invalidations(session: Session) -> None:
     session.info.pop(_PENDING_INVALIDATIONS, None)
+    session.info.pop(_PENDING_DASHBOARD_STATISTICS, None)
 
 
 def _reset_for_tests() -> None:

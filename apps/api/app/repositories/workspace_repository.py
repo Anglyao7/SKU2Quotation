@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select, union
 from sqlalchemy.orm import Session
 
+from ..dashboard_models import DashboardStatisticsRow
 from ..db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
 from ..product_center_models import SkuRow, SupplierPriceRow
 from ..product_supplier_models import ProductImageRow, ProductRow, SupplierProductRow, SupplierScoreRow
@@ -23,29 +24,183 @@ def dashboard_snapshot(
     now: datetime,
     import_limit: int,
 ) -> dict[str, object]:
-    inquiry_filters = [InquiryRow.tenant_id == tenant_id]
-    quotation_filters = [QuotationRow.tenant_id == tenant_id]
-    if not tenant_scope:
-        inquiry_filters.append(InquiryRow.owner_membership_id == membership_id)
-        quotation_filters.append(QuotationRow.created_by_membership_id == membership_id)
+    # ``import_limit`` remains in the function signature for clients that
+    # still send it, but imports are deliberately not part of the overview
+    # read model anymore.  Product provenance remains on each SKU/import row.
+    del import_limit
+    row = session.scalar(
+        select(DashboardStatisticsRow).where(
+            DashboardStatisticsRow.tenant_id == tenant_id,
+        )
+    )
+    if (
+        row is None
+        or row.is_dirty
+        or row.statistics_date != now.date()
+    ):
+        row = refresh_dashboard_statistics(
+            session,
+            tenant_id=tenant_id,
+            start_of_day=start_of_day,
+            now=now,
+            existing=row,
+        )
 
-    active_skus = int(session.scalar(select(func.count()).select_from(SkuRow).where(SkuRow.tenant_id == tenant_id, SkuRow.status == "ACTIVE")) or 0)
-    today_inquiries = int(session.scalar(select(func.count()).select_from(InquiryRow).where(*inquiry_filters, InquiryRow.created_at >= start_of_day)) or 0)
-    open_inquiries = int(session.scalar(select(func.count()).select_from(InquiryRow).where(*inquiry_filters, InquiryRow.status.not_in(("QUOTED", "CLOSED")))) or 0)
-    pending_quotes = int(session.scalar(select(func.count()).select_from(QuotationRow).where(*quotation_filters, QuotationRow.status.in_(("CALCULATED", "NEEDS_APPROVAL")))) or 0)
-    pending_reviews = int(session.scalar(select(func.count()).select_from(ReviewItemRow).where(ReviewItemRow.tenant_id == tenant_id, ReviewItemRow.status == "pending")) or 0)
-    active_suppliers = int(session.scalar(select(func.count()).select_from(SupplierRow).where(SupplierRow.tenant_id == tenant_id, SupplierRow.status == "ACTIVE")) or 0)
+    membership_metrics = row.membership_metrics or {}
+    member_metrics = membership_metrics.get(str(membership_id), {})
+    return {
+        "active_skus": int(row.active_skus or 0),
+        "today_inquiries": int(
+            row.today_inquiries if tenant_scope else member_metrics.get("today_inquiries", 0)
+        ),
+        "open_inquiries": int(
+            row.open_inquiries if tenant_scope else member_metrics.get("open_inquiries", 0)
+        ),
+        "pending_quotes": int(
+            row.pending_quotes if tenant_scope else member_metrics.get("pending_quotes", 0)
+        ),
+        "pending_reviews": int(row.pending_reviews or 0),
+        "active_suppliers": int(row.active_suppliers or 0),
+        # Keep the raw health counters in the read model for future reporting;
+        # the current overview no longer renders a "data completeness" panel.
+        "active_products": int(row.active_products or 0),
+        "approved_images": int(row.approved_images or 0),
+        "sourced_products": int(row.sourced_products or 0),
+        "priced_products": int(row.priced_products or 0),
+        "recent_imports": [],
+    }
 
-    recent_imports = session.execute(
-        select(ImportJobRow, SourceFileRow)
-        .join(SourceFileRow, and_(SourceFileRow.tenant_id == ImportJobRow.tenant_id, SourceFileRow.id == ImportJobRow.source_file_id))
-        .where(ImportJobRow.tenant_id == tenant_id)
-        .order_by(ImportJobRow.created_at.desc())
-        .limit(import_limit)
+
+def _grouped_member_counts(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    start_of_day: datetime,
+) -> dict[str, dict[str, int]]:
+    """Build the small per-membership portion of the dashboard read model."""
+
+    today_rows = session.execute(
+        select(InquiryRow.owner_membership_id, func.count())
+        .where(
+            InquiryRow.tenant_id == tenant_id,
+            InquiryRow.created_at >= start_of_day,
+        )
+        .group_by(InquiryRow.owner_membership_id)
     ).all()
+    open_rows = session.execute(
+        select(InquiryRow.owner_membership_id, func.count())
+        .where(
+            InquiryRow.tenant_id == tenant_id,
+            InquiryRow.status.not_in(("QUOTED", "CLOSED")),
+        )
+        .group_by(InquiryRow.owner_membership_id)
+    ).all()
+    quote_rows = session.execute(
+        select(QuotationRow.created_by_membership_id, func.count())
+        .where(
+            QuotationRow.tenant_id == tenant_id,
+            QuotationRow.status.in_(("CALCULATED", "NEEDS_APPROVAL")),
+        )
+        .group_by(QuotationRow.created_by_membership_id)
+    ).all()
+    result: dict[str, dict[str, int]] = {}
+    for membership_id, count in today_rows:
+        result.setdefault(str(membership_id), {})["today_inquiries"] = int(count)
+    for membership_id, count in open_rows:
+        result.setdefault(str(membership_id), {})["open_inquiries"] = int(count)
+    for membership_id, count in quote_rows:
+        result.setdefault(str(membership_id), {})["pending_quotes"] = int(count)
+    return result
 
-    active_products = int(session.scalar(select(func.count()).select_from(ProductRow).where(ProductRow.tenant_id == tenant_id, ProductRow.status == "ACTIVE")) or 0)
-    approved_images = int(
+
+def refresh_dashboard_statistics(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    start_of_day: datetime,
+    now: datetime,
+    existing: DashboardStatisticsRow | None = None,
+) -> DashboardStatisticsRow:
+    """Rebuild one tenant's dashboard read model after it becomes dirty."""
+
+    row = existing or session.scalar(
+        select(DashboardStatisticsRow).where(
+            DashboardStatisticsRow.tenant_id == tenant_id,
+        )
+    )
+    if row is None:
+        row = DashboardStatisticsRow(tenant_id=tenant_id)
+        session.add(row)
+
+    row.active_skus = int(
+        session.scalar(
+            select(func.count())
+            .select_from(SkuRow)
+            .where(SkuRow.tenant_id == tenant_id, SkuRow.status == "ACTIVE")
+        )
+        or 0
+    )
+    row.active_products = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProductRow)
+            .where(ProductRow.tenant_id == tenant_id, ProductRow.status == "ACTIVE")
+        )
+        or 0
+    )
+    row.active_suppliers = int(
+        session.scalar(
+            select(func.count())
+            .select_from(SupplierRow)
+            .where(SupplierRow.tenant_id == tenant_id, SupplierRow.status == "ACTIVE")
+        )
+        or 0
+    )
+    row.today_inquiries = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InquiryRow)
+            .where(
+                InquiryRow.tenant_id == tenant_id,
+                InquiryRow.created_at >= start_of_day,
+            )
+        )
+        or 0
+    )
+    row.open_inquiries = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InquiryRow)
+            .where(
+                InquiryRow.tenant_id == tenant_id,
+                InquiryRow.status.not_in(("QUOTED", "CLOSED")),
+            )
+        )
+        or 0
+    )
+    row.pending_quotes = int(
+        session.scalar(
+            select(func.count())
+            .select_from(QuotationRow)
+            .where(
+                QuotationRow.tenant_id == tenant_id,
+                QuotationRow.status.in_(("CALCULATED", "NEEDS_APPROVAL")),
+            )
+        )
+        or 0
+    )
+    row.pending_reviews = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ReviewItemRow)
+            .where(
+                ReviewItemRow.tenant_id == tenant_id,
+                ReviewItemRow.status == "pending",
+            )
+        )
+        or 0
+    )
+    row.approved_images = int(
         session.scalar(
             select(func.count(func.distinct(ProductImageRow.product_id)))
             .join(
@@ -63,7 +218,7 @@ def dashboard_snapshot(
         )
         or 0
     )
-    sourced_products = int(
+    row.sourced_products = int(
         session.scalar(
             select(func.count(func.distinct(SupplierProductRow.product_id)))
             .join(
@@ -81,50 +236,51 @@ def dashboard_snapshot(
         )
         or 0
     )
-    priced_products = int(session.scalar(
-        select(func.count(func.distinct(SkuRow.product_id)))
-        .join(
-            PublicCatalogOfferRow,
-            and_(
-                PublicCatalogOfferRow.tenant_id == SkuRow.tenant_id,
-                PublicCatalogOfferRow.sku_id == SkuRow.id,
-            ),
+    row.priced_products = int(
+        session.scalar(
+            select(func.count(func.distinct(SkuRow.product_id)))
+            .join(
+                PublicCatalogOfferRow,
+                and_(
+                    PublicCatalogOfferRow.tenant_id == SkuRow.tenant_id,
+                    PublicCatalogOfferRow.sku_id == SkuRow.id,
+                ),
+            )
+            .join(
+                ProductRow,
+                and_(
+                    ProductRow.tenant_id == SkuRow.tenant_id,
+                    ProductRow.id == SkuRow.product_id,
+                ),
+            )
+            .where(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.status == "ACTIVE",
+                ProductRow.status == "ACTIVE",
+                PublicCatalogOfferRow.publication_status == "PUBLISHED",
+                or_(
+                    PublicCatalogOfferRow.valid_from.is_(None),
+                    PublicCatalogOfferRow.valid_from <= now,
+                ),
+                or_(
+                    PublicCatalogOfferRow.valid_to.is_(None),
+                    PublicCatalogOfferRow.valid_to >= now,
+                ),
+            )
         )
-        .join(
-            ProductRow,
-            and_(
-                ProductRow.tenant_id == SkuRow.tenant_id,
-                ProductRow.id == SkuRow.product_id,
-            ),
-        )
-        .where(
-            SkuRow.tenant_id == tenant_id,
-            SkuRow.status == "ACTIVE",
-            ProductRow.status == "ACTIVE",
-            PublicCatalogOfferRow.publication_status == "PUBLISHED",
-            or_(
-                PublicCatalogOfferRow.valid_from.is_(None),
-                PublicCatalogOfferRow.valid_from <= now,
-            ),
-            or_(
-                PublicCatalogOfferRow.valid_to.is_(None),
-                PublicCatalogOfferRow.valid_to >= now,
-            ),
-        )
-    ) or 0)
-    return {
-        "active_skus": active_skus,
-        "today_inquiries": today_inquiries,
-        "open_inquiries": open_inquiries,
-        "pending_quotes": pending_quotes,
-        "pending_reviews": pending_reviews,
-        "active_suppliers": active_suppliers,
-        "recent_imports": recent_imports,
-        "active_products": active_products,
-        "approved_images": approved_images,
-        "sourced_products": sourced_products,
-        "priced_products": priced_products,
-    }
+        or 0
+    )
+    row.statistics_date = now.date()
+    row.refreshed_at = now
+    row.is_dirty = False
+    row.membership_metrics = _grouped_member_counts(
+        session,
+        tenant_id=tenant_id,
+        start_of_day=start_of_day,
+    )
+    session.flush()
+    session.commit()
+    return row
 
 
 def list_supplier_rows(session: Session, *, tenant_id: UUID) -> list[SupplierRow]:

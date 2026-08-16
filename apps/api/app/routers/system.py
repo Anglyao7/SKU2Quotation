@@ -4,18 +4,59 @@ from sqlalchemy.orm import Session
 from ..domain.errors import ApplicationError
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..system_schemas import OutboxMetricsResponse, SystemMonitoringResponse
+from ..image_generation_schemas import (
+    ImageGenerationSettingsResponse,
+    ImageGenerationSettingsUpdateRequest,
+)
 from ..translation_management_schemas import (
     TranslationSettingsResponse,
     TranslationSettingsTestRequest,
     TranslationSettingsTestResponse,
     TranslationSettingsUpdateRequest,
 )
-from ..use_cases import system_operations, translation_management
+from ..use_cases import image_generation, system_operations, translation_management
 from .errors import application_http_error
 
 
 router = APIRouter(prefix="/api/v1/system", tags=["system"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+@router.get(
+    "/image-generation/settings",
+    response_model=ImageGenerationSettingsResponse,
+)
+def get_image_generation_settings(
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> ImageGenerationSettingsResponse:
+    context = current_context(session)
+    response.headers.update(NO_STORE_HEADERS)
+    try:
+        return image_generation.get_settings(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/image-generation/settings",
+    response_model=ImageGenerationSettingsResponse,
+)
+def update_image_generation_settings(
+    payload: ImageGenerationSettingsUpdateRequest,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> ImageGenerationSettingsResponse:
+    context = current_context(session)
+    response.headers.update(NO_STORE_HEADERS)
+    try:
+        return image_generation.update_settings(
+            session,
+            context=context,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
 
 
 @router.get(

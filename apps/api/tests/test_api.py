@@ -218,7 +218,10 @@ from app.workers.file_processing import process_file_worker_job
 import app.workers.file_processing as file_processing_worker
 import app.use_cases.legacy_operations as legacy_operations_use_cases
 from app.workers.outbox_relay import relay_one_outbox_event
-from app.use_cases.product_center import list_products as list_authoritative_products
+from app.use_cases.product_center import (
+    list_products as list_authoritative_products,
+    replace_product_main_image,
+)
 from app.use_cases.product_center import delete_all_products as delete_all_products_use_case
 from app.use_cases.product_center import list_skus as list_authoritative_skus
 from app.use_cases.product_center import upsert_public_offer as upsert_public_offer_use_case
@@ -4280,6 +4283,71 @@ def test_platform_admin_can_open_a_password_login_owner_for_an_existing_merchant
     assert login.status_code == 200, login.text
     assert login.json()["data"]["context"]["tenant_id"] == tenant["id"]
     assert login.json()["data"]["context"]["account_scope"] == "STAFF"
+
+
+def test_platform_admin_can_reset_a_merchant_owner_password_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suffix = uuid4().hex[:10]
+    created = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": f"Password Reset Merchant {suffix}",
+            "slug": f"password-reset-{suffix}",
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    tenant = created.json()
+    login_identifier = f"reset-{suffix}"
+    old_password = "246810"
+    opened = client.post(
+        f"/api/admin/tenants/{tenant['id']}/owner-account",
+        json={
+            "display_name": "Password Reset Owner",
+            "login_identifier": login_identifier,
+            "password": old_password,
+        },
+    )
+    assert opened.status_code == 201, opened.text
+
+    new_password = "135790"
+    reset = client.post(
+        f"/api/admin/tenants/{tenant['id']}/owner-account/password-reset",
+        json={"password": new_password},
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["one_time_password"] == new_password
+    assert new_password in reset.text
+
+    invalid = client.post(
+        f"/api/admin/tenants/{tenant['id']}/owner-account/password-reset",
+        json={"password": "12345"},
+    )
+    assert invalid.status_code == 422, invalid.text
+    assert invalid.json()["detail"]["code"] == "PASSWORD_POLICY_VIOLATION"
+
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        with TestClient(app) as owner_client:
+            old_login = owner_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": login_identifier,
+                    "password": old_password,
+                },
+            )
+            new_login = owner_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": login_identifier,
+                    "password": new_password,
+                },
+            )
+    assert old_login.status_code == 401, old_login.text
+    assert new_login.status_code == 200, new_login.text
 
 
 def test_preprovisioned_oidc_merchant_owner_can_use_an_account_without_verified_email(
@@ -13330,6 +13398,106 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
         workbook.close()
 
 
+def test_image_enhancement_replaces_the_existing_storage_object_without_adding_an_image(
+    tmp_path: Path,
+) -> None:
+    suffix = uuid4().hex[:10].upper()
+    product_id = uuid4()
+    image_id = uuid4()
+    old_key = f"tenants/{DEFAULT_TENANT_ID}/products/{product_id}/images/{image_id}.webp"
+    old_path = tmp_path / "old.webp"
+    Image.new("RGB", (120, 90), color=(45, 27, 105)).save(old_path, format="WEBP")
+    storage = get_object_storage()
+    storage.put_file(old_path, object_key=old_key, content_type="image/webp")
+
+    with SessionLocal() as session:
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"ENH-{suffix}",
+                name=f"Enhancement replacement {suffix}",
+                status="ACTIVE",
+                current_version=1,
+                created_by=DEFAULT_OWNER_USER_ID,
+                updated_by=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.flush()
+        session.add(
+            ProductImageRow(
+                id=image_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                storage_provider="LOCAL",
+                bucket="local",
+                object_key=old_key,
+                original_filename="old.webp",
+                content_type="image/webp",
+                byte_size=old_path.stat().st_size,
+                sha256=hashlib.sha256(old_path.read_bytes()).hexdigest(),
+                width=120,
+                height=90,
+                image_role="MAIN",
+                sort_order=0,
+                approval_status="APPROVED",
+                created_by=DEFAULT_OWNER_USER_ID,
+            )
+        )
+        session.commit()
+
+    replacement = BytesIO()
+    Image.new("RGB", (80, 80), color=(212, 175, 55)).save(replacement, format="PNG")
+    with SessionLocal() as session:
+        response = replace_product_main_image(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            user_id=DEFAULT_OWNER_USER_ID,
+            membership_id=DEFAULT_MEMBERSHIP_ID,
+            permissions=frozenset({"product.edit"}),
+            product_id=product_id,
+            source_image_id=image_id,
+            filename="enhanced.png",
+            content=replacement.getvalue(),
+        )
+        assert UUID(str(response.id)) == image_id
+        row = session.get(ProductImageRow, image_id)
+        assert row is not None
+        new_key = row.object_key
+        assert new_key != old_key
+        assert session.scalar(
+            select(func.count(ProductImageRow.id)).where(
+                ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductImageRow.product_id == product_id,
+                ProductImageRow.deleted_at.is_(None),
+            )
+        ) == 1
+
+    assert not storage.exists(old_key)
+    assert storage.exists(new_key)
+    with SessionLocal() as session:
+        session.execute(
+            delete(ProductAuditEventRow).where(
+                ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductAuditEventRow.product_id == product_id,
+            )
+        )
+        session.execute(
+            delete(ProductImageRow).where(
+                ProductImageRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductImageRow.product_id == product_id,
+            )
+        )
+        session.execute(
+            delete(ProductRow).where(
+                ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductRow.id == product_id,
+            )
+        )
+        session.commit()
+    storage.delete(new_key)
+
+
 def test_product_center_sku_matrix_price_history_attributes_and_audit() -> None:
     product_id = UUID("71000000-0000-0000-0000-000000000002")
     detail_response = client.get(f"/api/v1/products/{product_id}")
@@ -17916,7 +18084,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260815_0092"
+        ).scalar() == "20260816_0097"
     upgraded_engine.dispose()
     command.check(config)
 

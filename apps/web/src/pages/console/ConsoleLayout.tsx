@@ -148,6 +148,14 @@ function initialNavigationGroup(pathname: string) {
     group.items.some((item) => navigationItemIsActive(pathname, item)))?.key ?? "workspace";
 }
 
+type GreetingKey = "早上好" | "下午好" | "晚上好";
+
+function greetingKeyForHour(hour: number): GreetingKey {
+  if (hour < 12) return "早上好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+}
+
 export function ConsoleLayout() {
   const {
     profile,
@@ -167,6 +175,9 @@ export function ConsoleLayout() {
   const [currencyPreset, setCurrencyPreset] = useState("CNY");
   const [customCurrency, setCustomCurrency] = useState("");
   const [toolbarError, setToolbarError] = useState("");
+  const [greetingKey, setGreetingKey] = useState<GreetingKey>(() => (
+    greetingKeyForHour(new Date().getHours())
+  ));
   const [expandedNavigationGroups, setExpandedNavigationGroups] = useState<Set<string>>(
     () => new Set([initialNavigationGroup(location.pathname)]),
   );
@@ -208,6 +219,13 @@ export function ConsoleLayout() {
     sku_limit: subscriptionTier === "ELITE" ? null : subscriptionTier === "TRIAL" ? 500 : 5_000,
     sku_remaining: subscriptionTier === "ELITE" ? null : subscriptionTier === "TRIAL" ? 500 : 5_000,
   } : undefined, [activeTenantId, activeTenantSlug, profile?.context.tenantName, subscriptionTier, t]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setGreetingKey(greetingKeyForHour(new Date().getHours()));
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!activeNavigationGroup) return;
@@ -341,7 +359,7 @@ export function ConsoleLayout() {
             {mobileMore.map(({ to, label, icon: Icon }) => <DropdownMenu.Item asChild key={to}><Link to={to} onPointerEnter={() => preloadConsoleRoute(to)} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)}><Icon size={17} />{t(label)}</Link></DropdownMenu.Item>)}
             <DropdownMenu.Separator />
             <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />{t("账户与安全")}</Link></DropdownMenu.Item>
-            <DropdownMenu.Item asChild><Link to={storefrontPath}><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>
+            <DropdownMenu.Item asChild><Link to={storefrontPath} target="_blank" rel="noopener noreferrer"><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>
             <DropdownMenu.Separator />
             <DropdownMenu.Item color="red" onSelect={() => void logout()}><SignOut size={17} />{t("退出登录")}</DropdownMenu.Item>
           </DropdownMenu.Content>
@@ -353,14 +371,25 @@ export function ConsoleLayout() {
           <span><Text size="2" weight="medium">{displayName}</Text><Text size="1" color="gray">{t("账户与安全")}</Text></span>
           <CaretRight size={15} />
         </Link>
-        <Button asChild variant="ghost" color="gray"><Link to={storefrontPath}><StoreIcon size={18} />{t("查看商品前台")}</Link></Button>
       </div>
     </aside>
 
     <div className="console-main">
       <header className="console-topbar">
         <div className="mobile-brand"><Brand compact /></div>
-        <div className="tenant-context"><div><Text size="1" color="gray" as="div">{t("当前工作区")}</Text>{memberships.length > 1 ? <Select.Root value={activeMembershipId} disabled={status === "restoring"} onValueChange={(value) => void selectTenant(value)}><Select.Trigger className="tenant-select" placeholder={t("选择租户")} /><Select.Content>{memberships.filter((membership) => membership.status.toUpperCase() === "ACTIVE").map((membership) => <Select.Item value={membership.id} key={membership.id}>{membership.tenantName}</Select.Item>)}</Select.Content></Select.Root> : <Text size="2" weight="medium">{profile?.context.tenantName ?? t("当前租户")}</Text>}{tenantError ? <Text size="1" color="red">{tenantError}</Text> : null}</div></div>
+        <div className="tenant-context">
+          <div className="tenant-context-heading">
+            <div className="tenant-context-name">
+              <Text size="1" color="gray" as="div">{t(greetingKey)}</Text>
+              {memberships.length > 1 ? <Select.Root value={activeMembershipId} disabled={status === "restoring"} onValueChange={(value) => void selectTenant(value)}><Select.Trigger className="tenant-select" placeholder={t("选择租户")} /><Select.Content>{memberships.filter((membership) => membership.status.toUpperCase() === "ACTIVE").map((membership) => <Select.Item value={membership.id} key={membership.id}>{membership.tenantName}</Select.Item>)}</Select.Content></Select.Root> : <Text size="2" weight="medium">{profile?.context.tenantName ?? t("当前租户")}</Text>}
+              {tenantError ? <Text size="1" color="red">{tenantError}</Text> : null}
+            </div>
+            <Link className="topbar-storefront-link" to={storefrontPath} target="_blank" rel="noopener noreferrer" title={t("查看商品前台")}>
+              <StoreIcon size={16} weight="duotone" />
+              <span>{t("查看商品前台")}</span>
+            </Link>
+          </div>
+        </div>
         <div className="topbar-user">
           <SupportNotificationBell
             tenantId={activeTenantId}
@@ -431,7 +460,7 @@ export function ConsoleLayout() {
                 </div>
               </DropdownMenu.Label>
               <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />{t("账户与安全")}</Link></DropdownMenu.Item>
-              <DropdownMenu.Item asChild><Link to={storefrontPath}><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>
+              <DropdownMenu.Item asChild><Link to={storefrontPath} target="_blank" rel="noopener noreferrer"><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item color="red" onSelect={() => void logout()}><SignOut size={17} />{t("退出登录")}</DropdownMenu.Item>
             </DropdownMenu.Content>

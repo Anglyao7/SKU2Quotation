@@ -15,6 +15,9 @@ import type {
   CurrentUser,
   DashboardSnapshot,
   EmbeddingSettings,
+  ImageGenerationSettings,
+  ImageEnhancementItem,
+  ImageEnhancementTask,
   FileDetection,
   HybridSearchResponse,
   ImportJob,
@@ -1345,6 +1348,84 @@ interface ApiProductDetail extends ApiProduct {
   activity: Array<{ id: string; entity_type: string; entity_id: string; action: string; before: Record<string, unknown>; after: Record<string, unknown>; actor_membership_id: string; occurred_at: string }>;
 }
 
+interface ApiImageEnhancementItem {
+  id: string;
+  product_id: string;
+  product_name: string;
+  sku_ids: string[];
+  sku_snapshot: Array<{ id: string; sku_code?: string | null; name?: string | null }>;
+  source_image_url: string;
+  status: ImageEnhancementItem["status"];
+  review_status: ImageEnhancementItem["reviewStatus"];
+  result_url?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  reviewed_at?: string | null;
+  applied_at?: string | null;
+}
+
+interface ApiImageEnhancementTask {
+  id: string;
+  status: ImageEnhancementTask["status"];
+  prompt: string;
+  size: string;
+  output_format: "url";
+  total_items: number;
+  completed_items: number;
+  failed_items: number;
+  cancelled_items: number;
+  progress_percent: number;
+  cancellation_requested: boolean;
+  error_message?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  items: ApiImageEnhancementItem[];
+}
+
+function mapImageEnhancementItem(row: ApiImageEnhancementItem): ImageEnhancementItem {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    productName: row.product_name,
+    skuIds: row.sku_ids ?? [],
+    skuSnapshot: row.sku_snapshot ?? [],
+    sourceImageUrl: row.source_image_url,
+    status: row.status,
+    reviewStatus: row.review_status,
+    resultUrl: defined(row.result_url),
+    errorMessage: defined(row.error_message),
+    createdAt: row.created_at,
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+    reviewedAt: defined(row.reviewed_at),
+    appliedAt: defined(row.applied_at),
+  };
+}
+
+function mapImageEnhancementTask(row: ApiImageEnhancementTask): ImageEnhancementTask {
+  return {
+    id: row.id,
+    status: row.status,
+    prompt: row.prompt,
+    size: row.size,
+    outputFormat: row.output_format,
+    totalItems: row.total_items,
+    completedItems: row.completed_items,
+    failedItems: row.failed_items,
+    cancelledItems: row.cancelled_items,
+    progressPercent: row.progress_percent,
+    cancellationRequested: row.cancellation_requested,
+    errorMessage: defined(row.error_message),
+    createdAt: row.created_at,
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+    items: (row.items ?? []).map(mapImageEnhancementItem),
+  };
+}
+
 function mapOffer(row: ApiOffer): ProductOffer {
   return {
     supplierProductId: row.supplier_product_id,
@@ -1580,6 +1661,76 @@ export async function downloadProductMainImage(
     filename,
     true,
     true,
+  );
+}
+
+export async function startImageEnhancement(
+  targets: Array<{ productId: string; skuIds?: string[] }>,
+  prompt?: string,
+  size: "1024x1024" | "1024x768" | "768x1024" = "1024x1024",
+): Promise<ImageEnhancementTask> {
+  const row = await request<ApiImageEnhancementTask>("/product-center/image-enhancements", {
+    method: "POST",
+    body: JSON.stringify({
+      targets: targets.map((target) => ({ product_id: target.productId, sku_ids: target.skuIds ?? [] })),
+      ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+      size,
+    }),
+  });
+  return mapImageEnhancementTask(row);
+}
+
+export async function listImageEnhancementTasks(limit = 20): Promise<ImageEnhancementTask[]> {
+  const rows = await request<ApiImageEnhancementTask[]>(
+    `/product-center/image-enhancements?limit=${Math.max(1, Math.min(limit, 50))}`,
+    { cache: "no-store" },
+  );
+  return rows.map(mapImageEnhancementTask);
+}
+
+export async function getImageEnhancementTask(taskId: string): Promise<ImageEnhancementTask> {
+  return mapImageEnhancementTask(
+    await request<ApiImageEnhancementTask>(
+      `/product-center/image-enhancements/${encodeURIComponent(taskId)}`,
+      { cache: "no-store" },
+    ),
+  );
+}
+
+export async function cancelImageEnhancementTask(
+  taskId: string,
+  itemIds: string[] = [],
+): Promise<ImageEnhancementTask> {
+  return mapImageEnhancementTask(
+    await request<ApiImageEnhancementTask>(
+      `/product-center/image-enhancements/${encodeURIComponent(taskId)}/cancel`,
+      { method: "POST", body: JSON.stringify({ item_ids: itemIds }) },
+    ),
+  );
+}
+
+export async function reviewImageEnhancementTask(
+  taskId: string,
+  itemIds: string[],
+  decision: "APPROVE" | "REJECT",
+): Promise<ImageEnhancementTask> {
+  return mapImageEnhancementTask(
+    await request<ApiImageEnhancementTask>(
+      `/product-center/image-enhancements/${encodeURIComponent(taskId)}/review`,
+      { method: "POST", body: JSON.stringify({ item_ids: itemIds, decision }) },
+    ),
+  );
+}
+
+export async function confirmImageEnhancementTask(
+  taskId: string,
+  itemIds: string[] = [],
+): Promise<ImageEnhancementTask> {
+  return mapImageEnhancementTask(
+    await request<ApiImageEnhancementTask>(
+      `/product-center/image-enhancements/${encodeURIComponent(taskId)}/confirm`,
+      { method: "POST", body: JSON.stringify({ item_ids: itemIds }) },
+    ),
   );
 }
 
@@ -1923,6 +2074,75 @@ function mapEmbeddingSettings(row: ApiEmbeddingSettings): EmbeddingSettings {
     clearedFileEmbeddings: row.cleared_file_embeddings ?? 0,
     invalidatedProducts: row.invalidated_products ?? 0,
   };
+}
+
+interface ApiImageGenerationSettings {
+  source: "database" | "environment" | "disabled";
+  provider: string;
+  enabled: boolean;
+  base_url?: string | null;
+  model_name?: string | null;
+  timeout_seconds: number;
+  requests_per_minute?: number;
+  concurrency_limit?: number;
+  api_key_configured: boolean;
+  api_key_hint?: string | null;
+  supported_workflows: Array<"image-to-image">;
+  supported_output_formats: Array<"url" | "b64_json">;
+  updated_at?: string | null;
+}
+
+function mapImageGenerationSettings(
+  row: ApiImageGenerationSettings,
+): ImageGenerationSettings {
+  return {
+    source: row.source,
+    provider: row.provider,
+    enabled: row.enabled,
+    baseUrl: defined(row.base_url),
+    modelName: defined(row.model_name),
+    timeoutSeconds: row.timeout_seconds,
+    requestsPerMinute: row.requests_per_minute ?? 6,
+    concurrencyLimit: row.concurrency_limit ?? 3,
+    apiKeyConfigured: row.api_key_configured,
+    apiKeyHint: defined(row.api_key_hint),
+    supportedWorkflows: row.supported_workflows,
+    supportedOutputFormats: row.supported_output_formats,
+    updatedAt: defined(row.updated_at),
+  };
+}
+
+export async function getImageGenerationSettings(): Promise<ImageGenerationSettings> {
+  return mapImageGenerationSettings(
+    await request<ApiImageGenerationSettings>("/system/image-generation/settings", {
+      cache: "no-store",
+    }),
+  );
+}
+
+export async function updateImageGenerationSettings(input: {
+  enabled: boolean;
+  baseUrl: string;
+  modelName: string;
+  apiKey?: string;
+  timeoutSeconds: number;
+  requestsPerMinute: number;
+  concurrencyLimit: number;
+}): Promise<ImageGenerationSettings> {
+  return mapImageGenerationSettings(
+    await request<ApiImageGenerationSettings>("/system/image-generation/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: input.enabled,
+        base_url: input.baseUrl,
+        model_name: input.modelName,
+        api_key: input.apiKey || undefined,
+        timeout_seconds: input.timeoutSeconds,
+        requests_per_minute: input.requestsPerMinute,
+        concurrency_limit: input.concurrencyLimit,
+      }),
+    }),
+  );
 }
 
 export async function getEmbeddingSettings(): Promise<EmbeddingSettings> {

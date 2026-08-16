@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .catalog_translations import recover_interrupted_translation_jobs
 from .knowledge_search import recover_interrupted_index_jobs
+from .image_enhancement import recover_interrupted_image_enhancement_jobs
 
 
 def recover_interrupted_jobs() -> int:
@@ -10,4 +11,5 @@ def recover_interrupted_jobs() -> int:
     return (
         recover_interrupted_translation_jobs()
         + recover_interrupted_index_jobs()
+        + recover_interrupted_image_enhancement_jobs()
     )

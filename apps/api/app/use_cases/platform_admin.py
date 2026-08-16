@@ -28,6 +28,8 @@ from ..platform_admin_schemas import (
     PlatformMemberInvitationCreate,
     PlatformMerchantOwnerAccount,
     PlatformMerchantOwnerCreate,
+    PlatformMerchantOwnerPasswordReset,
+    PlatformMerchantOwnerPasswordResetResponse,
     PlatformTenantCreate,
     PlatformTenantSubscriptionUpdate,
     PlatformTenantSummary,
@@ -38,6 +40,7 @@ from ..repositories import platform_admin_repository as repository
 from ..saas_seed import ensure_tenant_rbac
 from ..inventory_seed import ensure_default_warehouse
 from ..services.auth.dependencies import RequestContext
+from ..services.auth.service import AuthError, reset_password_for_user
 from ..services.member_invitations import invite_tenant_member as create_member_invitation
 from ..services.storefront_paths import (
     allocate_storefront_slug,
@@ -961,6 +964,75 @@ def provision_merchant_owner(
             kind="conflict",
         ) from exc
     return _owner_account_summary(membership, user)
+
+
+def reset_merchant_owner_password(
+    session: Session,
+    identity_session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID,
+    request: PlatformMerchantOwnerPasswordReset,
+) -> PlatformMerchantOwnerPasswordResetResponse:
+    """Reset an existing merchant owner password and return it once."""
+
+    _require_platform_admin(context)
+    tenant = repository.get_tenant(session, tenant_id)
+    if tenant is None:
+        raise ApplicationError("TENANT_NOT_FOUND", "Tenant was not found.", kind="not_found")
+
+    password = request.password.get_secret_value()
+    if not password_is_valid(
+        password=password,
+        identifier="merchant-owner",
+        display_name=tenant.name,
+    ):
+        raise ApplicationError(
+            "PASSWORD_POLICY_VIOLATION",
+            "Password must be exactly 6 digits.",
+            kind="invalid",
+        )
+
+    with _tenant_scope(session, context=context, tenant_id=tenant.id):
+        owner = repository.get_tenant_owner_account(session, tenant.id)
+    if owner is None:
+        raise ApplicationError(
+            "MERCHANT_OWNER_NOT_CONFIGURED",
+            "This merchant does not have a main account yet.",
+            kind="conflict",
+        )
+
+    membership, user = owner
+    try:
+        reset_password_for_user(
+            identity_session,
+            user_id=user.id,
+            new_password=password,
+        )
+    except AuthError as exc:
+        kind = (
+            "unavailable"
+            if exc.status_code >= 500
+            else "invalid"
+            if exc.status_code == 422
+            else "not_found"
+            if exc.status_code == 404
+            else "conflict"
+        )
+        raise ApplicationError(exc.code, exc.message, kind=kind) from exc
+    except Exception:
+        identity_session.rollback()
+        raise ApplicationError(
+            "PASSWORD_RESET_FAILED",
+            "The merchant password could not be reset. Please try again.",
+            kind="unavailable",
+        )
+
+    account = _owner_account_summary(membership, user)
+    return PlatformMerchantOwnerPasswordResetResponse(
+        account=account,
+        one_time_password=password,
+    )
 
 
 def invite_tenant_member(

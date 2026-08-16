@@ -69,6 +69,19 @@ class PlatformMerchantOwnerAccount(BaseModel):
     created_at: datetime
 
 
+class PlatformMerchantOwnerPasswordReset(BaseModel):
+    """A new password supplied by a platform administrator."""
+
+    password: SecretStr
+
+
+class PlatformMerchantOwnerPasswordResetResponse(BaseModel):
+    """Password is returned only in the reset response, never in listings."""
+
+    account: PlatformMerchantOwnerAccount
+    one_time_password: str
+
+
 class PlatformTenantSummary(BaseModel):
     id: UUID
     organization_id: UUID

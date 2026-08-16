@@ -18,6 +18,7 @@ import {
   Eye,
   EyeSlash,
   IdentificationCard,
+  Key,
   NotePencil,
   Plus,
   SlidersHorizontal,
@@ -40,6 +41,7 @@ import type {
   MerchantIdentityProfile,
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
+  MerchantOwnerPasswordResetResult,
   Tenant,
   TenantModuleCode,
   TenantPayload,
@@ -242,6 +244,7 @@ export function TenantManagementPage() {
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Tenant | "new" | null>(null);
   const [ownerSetup, setOwnerSetup] = useState<Tenant | null>(null);
+  const [passwordReset, setPasswordReset] = useState<Tenant | null>(null);
   const [moduleEditor, setModuleEditor] = useState<Tenant | null>(null);
   const [subscriptionEditor, setSubscriptionEditor] = useState<Tenant | null>(null);
   const [deleting, setDeleting] = useState<Tenant | null>(null);
@@ -435,7 +438,20 @@ export function TenantManagementPage() {
                       </Table.Cell>
                       <Table.Cell justify="end">
                         <div className="table-actions">
-                          {tenant.owner_account?.status === "active" ? null : (
+                          {tenant.owner_account?.status === "active" ? (
+                            <Tooltip content={t("密码管理")}>
+                              <IconButton
+                                size="1"
+                                variant="ghost"
+                                color="jade"
+                                disabled={tenant.status !== "active"}
+                                aria-label={t("重置 {name} 的密码", { name: tenant.name })}
+                                onClick={() => setPasswordReset(tenant)}
+                              >
+                                <Key size={17} />
+                              </IconButton>
+                            </Tooltip>
+                          ) : (
                             <Tooltip content={t("开通登录账号")}>
                               <IconButton
                                 size="1"
@@ -454,6 +470,7 @@ export function TenantManagementPage() {
                               <Link
                                 to={`/${tenant.slug}`}
                                 target="_blank"
+                                rel="noopener noreferrer"
                                 aria-label={t("查看 {name} 商品前台", { name: tenant.name })}
                               >
                                 <Eye size={17} />
@@ -573,7 +590,19 @@ export function TenantManagementPage() {
                       <Button className="merchant-card-button" asChild size="1" variant="soft">
                         <Link to={`/${tenant.slug}`}>{t("查看前台")}</Link>
                       </Button>
-                      {tenant.owner_account?.status === "active" ? null : (
+                      {tenant.owner_account?.status === "active" ? (
+                        <Button
+                          className="merchant-card-button"
+                          size="1"
+                          variant="soft"
+                          color="jade"
+                          disabled={tenant.status !== "active"}
+                          onClick={() => setPasswordReset(tenant)}
+                        >
+                          <Key />
+                          {t("密码管理")}
+                        </Button>
+                      ) : (
                         <Button
                           className="merchant-card-button"
                           size="1"
@@ -628,6 +657,12 @@ export function TenantManagementPage() {
           if (!open) setOwnerSetup(null);
         }}
         onSaved={refreshAll}
+      />
+      <MerchantOwnerPasswordResetDialog
+        tenant={passwordReset}
+        onOpenChange={(open) => {
+          if (!open) setPasswordReset(null);
+        }}
       />
       <TenantModuleDialog
         tenant={moduleEditor}
@@ -1215,6 +1250,148 @@ function MerchantOwnerDialog({
               <Button type="submit" loading={saving}>
                 <UserPlus />
                 {t("确认开通")}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function MerchantOwnerPasswordResetDialog({
+  tenant,
+  onOpenChange,
+}: {
+  tenant: Tenant | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useLocale();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [password, setPassword] = useState("");
+  const [visible, setVisible] = useState(false);
+  const [result, setResult] = useState<MerchantOwnerPasswordResetResult | null>(null);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!tenant) return;
+    const nextPassword = password.trim();
+    if (!/^\d{6}$/.test(nextPassword)) {
+      setError(t("密码必须是 6 位数字。"));
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const reset = await api.resetMerchantOwnerPassword(tenant.id, nextPassword);
+      setResult(reset);
+    } catch (caught) {
+      setError(
+        apiErrorCode(caught) === "PASSWORD_POLICY_VIOLATION"
+          ? t("密码必须是 6 位数字。")
+          : caught instanceof Error
+            ? caught.message
+            : t("密码重置失败，请稍后重试。"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleOpenChange = (open: boolean) => {
+    if (!open) {
+      setResult(null);
+      setError("");
+      setPassword("");
+      setVisible(false);
+    }
+    onOpenChange(open);
+  };
+
+  return (
+    <Dialog.Root open={Boolean(tenant)} onOpenChange={handleOpenChange}>
+      <Dialog.Content className="merchant-dialog">
+        <Dialog.Title>{t("密码管理")}</Dialog.Title>
+        <Dialog.Description>
+          {t("管理“{name}”的商家登录密码。", { name: tenant?.name ?? "" })}
+        </Dialog.Description>
+        {result ? (
+          <div className="dialog-form">
+            <Callout.Root color="green">
+              <Callout.Icon><CheckCircle /></Callout.Icon>
+              <Callout.Text>{t("密码已重置")}</Callout.Text>
+            </Callout.Root>
+            <Callout.Root color="amber">
+              <Callout.Icon><Key /></Callout.Icon>
+              <Callout.Text>
+                {t("新密码仅显示一次，请立即保存并通过安全渠道发送给商家。")}
+              </Callout.Text>
+            </Callout.Root>
+            <div className="password-reset-result">
+              <Text size="2" color="gray">
+                {t("登录邮箱：{email}", {
+                  email: result.account.email || result.account.login_identifier || "—",
+                })}
+              </Text>
+              <Text size="2" weight="medium">
+                {t("新密码")}
+              </Text>
+              <TextField.Root readOnly value={result.one_time_password} />
+            </div>
+            <div className="dialog-actions">
+              <Dialog.Close><Button>{t("完成")}</Button></Dialog.Close>
+            </div>
+          </div>
+        ) : (
+          <form className="dialog-form" onSubmit={submit} key={tenant?.id}>
+            <Callout.Root color="gray">
+              <Callout.Icon><Key /></Callout.Icon>
+              <Callout.Text>
+                {t("当前密码无法直接读取，系统只保存加密后的密码摘要。需要查看时，请重置后显示一次新密码。")}
+              </Callout.Text>
+            </Callout.Root>
+            <label className="field-group">
+              <Text size="2" weight="medium">{t("新密码")} *</Text>
+              <TextField.Root
+                name="password"
+                type={visible ? "text" : "password"}
+                required
+                value={password}
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                minLength={6}
+                maxLength={6}
+                autoComplete="new-password"
+                placeholder={t("请输入 6 位数字")}
+                onChange={(event) => setPassword(event.currentTarget.value.replace(/\D/g, "").slice(0, 6))}
+              >
+                <TextField.Slot side="right">
+                  <button
+                    type="button"
+                    className="login-password-toggle"
+                    aria-label={t(visible ? "隐藏密码" : "显示密码")}
+                    aria-pressed={visible}
+                    onClick={() => setVisible((current) => !current)}
+                  >
+                    {visible ? <EyeSlash size={18} /> : <Eye size={18} />}
+                  </button>
+                </TextField.Slot>
+              </TextField.Root>
+            </label>
+            {error ? (
+              <Callout.Root color="red">
+                <Callout.Icon><WarningCircle /></Callout.Icon>
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            ) : null}
+            <div className="dialog-actions">
+              <Dialog.Close>
+                <Button type="button" variant="soft" color="gray">{t("取消")}</Button>
+              </Dialog.Close>
+              <Button type="submit" loading={saving}>
+                <Key />
+                {t("确认重置密码")}
               </Button>
             </div>
           </form>

@@ -7,6 +7,7 @@ import type {
   MerchantIdentityProfile,
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
+  MerchantOwnerPasswordResetResult,
   ProductTag,
   ProductTagList,
   ProductTagPayload,
@@ -943,6 +944,12 @@ export const api = {
     request<MerchantOwnerAccount>(
       `/api/admin/tenants/${encodeURIComponent(tenantId)}/owner-account`,
       { method: "POST", body: JSON.stringify(payload) },
+      true,
+    ),
+  resetMerchantOwnerPassword: (tenantId: string, password: string) =>
+    request<MerchantOwnerPasswordResetResult>(
+      `/api/admin/tenants/${encodeURIComponent(tenantId)}/owner-account/password-reset`,
+      { method: "POST", body: JSON.stringify({ password }) },
       true,
     ),
 };

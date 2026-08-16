@@ -467,6 +467,47 @@ export interface ProductDetail extends CoreProduct {
   activity: ProductActivity[];
 }
 
+export type ImageEnhancementTaskStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "PARTIAL" | "FAILED" | "CANCELLED";
+export type ImageEnhancementItemStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+export type ImageEnhancementReviewStatus = "PENDING" | "APPROVED" | "REJECTED" | "APPLIED";
+
+export interface ImageEnhancementItem {
+  id: string;
+  productId: string;
+  productName: string;
+  skuIds: string[];
+  skuSnapshot: Array<{ id: string; skuCode?: string | null; name?: string | null }>;
+  sourceImageUrl: string;
+  status: ImageEnhancementItemStatus;
+  reviewStatus: ImageEnhancementReviewStatus;
+  resultUrl?: string;
+  errorMessage?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  reviewedAt?: string;
+  appliedAt?: string;
+}
+
+export interface ImageEnhancementTask {
+  id: string;
+  status: ImageEnhancementTaskStatus;
+  prompt: string;
+  size: string;
+  outputFormat: "url";
+  totalItems: number;
+  completedItems: number;
+  failedItems: number;
+  cancelledItems: number;
+  progressPercent: number;
+  cancellationRequested: boolean;
+  errorMessage?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  items: ImageEnhancementItem[];
+}
+
 export interface ProductCategory {
   id: string;
   parentId?: string;
@@ -843,6 +884,22 @@ export interface EmbeddingSettings {
   clearedProductEmbeddings: number;
   clearedFileEmbeddings: number;
   invalidatedProducts: number;
+}
+
+export interface ImageGenerationSettings {
+  source: "database" | "environment" | "disabled";
+  provider: string;
+  enabled: boolean;
+  baseUrl?: string;
+  modelName?: string;
+  timeoutSeconds: number;
+  requestsPerMinute: number;
+  concurrencyLimit: number;
+  apiKeyConfigured: boolean;
+  apiKeyHint?: string;
+  supportedWorkflows: Array<"image-to-image">;
+  supportedOutputFormats: Array<"url" | "b64_json">;
+  updatedAt?: string;
 }
 
 export interface SupportAIProviderSettings {
