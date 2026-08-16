@@ -291,7 +291,6 @@ export function ProductsPage() {
   const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
   const canEdit = hasPermission("product.edit");
-  const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const canDelete = canEdit;
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
@@ -890,17 +889,17 @@ export function ProductsPage() {
     setBulkError("");
   };
   const openImageEnhancementForProducts = () => {
-    if (!isPlatformAdmin || !canEdit || !selectedProductIds.size) return;
+    if (!canEdit || !selectedProductIds.size) return;
     setImageEnhancementTargets(
       [...selectedProductIds].map((productId) => ({ productId, skuIds: [] })),
     );
   };
   const openImageEnhancementForSkus = (productId: string, skuIds: string[]) => {
-    if (!isPlatformAdmin || !canEdit || !skuIds.length) return;
+    if (!canEdit || !skuIds.length) return;
     setImageEnhancementTargets([{ productId, skuIds }]);
   };
   const openImageEnhancementForProduct = (productId: string) => {
-    if (!isPlatformAdmin || !canEdit) return;
+    if (!canEdit) return;
     setImageEnhancementTargets([{ productId, skuIds: [] }]);
   };
   const openBulkAction = (action: BulkSkuAction) => {
@@ -1243,7 +1242,7 @@ export function ProductsPage() {
             <Text size="2" weight="bold">{t("已选 {count} 个商品", { count: selectedProductIds.size })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
-            {isPlatformAdmin && canEdit ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
+            {canEdit ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
             <Button size="2" color="red" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(true)}><Trash />{t("删除已选商品")}</Button>
             <Button size="2" variant="ghost" color="gray" onClick={clearProductSelection}><X />{t("取消选择")}</Button>
           </div>
@@ -2311,7 +2310,7 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProd
   onChanged: () => Promise<void>;
   onClose: () => void;
 }) {
-  const { hasPermission, profile } = useCoreAuth();
+  const { hasPermission } = useCoreAuth();
   const { t } = useLocale();
   const imageInputRef = useRef<HTMLInputElement>(null);
   const imageDragDepthRef = useRef(0);
@@ -2322,7 +2321,7 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProd
   const [imageFailed, setImageFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
   const canEdit = hasPermission("product.edit");
-  const canEnhanceImages = canEdit && Boolean(profile?.user.isPlatformAdmin);
+  const canEnhanceImages = canEdit;
 
   useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
   useEffect(() => {
@@ -2519,10 +2518,10 @@ function SkuPanel({ product, initialSkuId, managedTags, onEnhanceSkus, onChanged
   onEnhanceSkus: (productId: string, skuIds: string[]) => void;
   onChanged: () => Promise<void>;
 }) {
-  const { hasAnyPermission, hasPermission, profile } = useCoreAuth();
+  const { hasAnyPermission, hasPermission } = useCoreAuth();
   const { t } = useLocale();
   const canEdit = hasPermission("product.edit");
-  const canEnhanceImages = canEdit && Boolean(profile?.user.isPlatformAdmin);
+  const canEnhanceImages = canEdit;
   const canViewCatalog = hasAnyPermission("catalog.view", "catalog.publish");
   const canPublish = hasAnyPermission("catalog.publish");
   const canManageSku = canEdit || canPublish;

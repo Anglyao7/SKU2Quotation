@@ -55,15 +55,6 @@ def _require(permissions: frozenset[str], code: str = "product.edit") -> None:
         )
 
 
-def _require_platform_admin(context: RequestContext) -> None:
-    if not context.is_platform_admin:
-        raise ApplicationError(
-            "PLATFORM_ADMIN_REQUIRED",
-            "只有管理员可以使用图片清晰化功能。",
-            kind="forbidden",
-        )
-
-
 def _item_response(item: ImageEnhancementItemRow) -> ImageEnhancementItemResponse:
     return ImageEnhancementItemResponse(
         id=item.id,
@@ -168,7 +159,6 @@ def start_task(
     request: ImageEnhancementStartRequest,
 ) -> ImageEnhancementTaskResponse:
     _require(context.permissions)
-    _require_platform_admin(context)
     task = ImageEnhancementTaskRow(
         tenant_id=context.tenant_id,
         requested_by_user_id=context.user_id,
@@ -483,7 +473,6 @@ def cancel_task(
     request: ImageEnhancementCancelRequest,
 ) -> ImageEnhancementTaskResponse:
     _require(context.permissions)
-    _require_platform_admin(context)
     task = _get_task(session, tenant_id=context.tenant_id, task_id=task_id)
     ids = set(request.item_ids)
     items = list(session.scalars(select(ImageEnhancementItemRow).where(ImageEnhancementItemRow.task_id == task.id)).all())
@@ -514,7 +503,6 @@ def review_task(
     request: ImageEnhancementReviewRequest,
 ) -> ImageEnhancementTaskResponse:
     _require(context.permissions)
-    _require_platform_admin(context)
     task = _get_task(session, tenant_id=context.tenant_id, task_id=task_id)
     item_ids = set(request.item_ids)
     items = list(session.scalars(select(ImageEnhancementItemRow).where(ImageEnhancementItemRow.task_id == task.id)).all())
@@ -552,7 +540,6 @@ def confirm_task(
     request: ImageEnhancementConfirmRequest,
 ) -> ImageEnhancementTaskResponse:
     _require(context.permissions)
-    _require_platform_admin(context)
     task = _get_task(session, tenant_id=context.tenant_id, task_id=task_id)
     requested_ids = set(request.item_ids)
     items = list(session.scalars(select(ImageEnhancementItemRow).where(ImageEnhancementItemRow.task_id == task.id)).all())
