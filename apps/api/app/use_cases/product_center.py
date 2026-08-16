@@ -193,7 +193,14 @@ def _sku_thumbnail_url(
     # Source images without a public storage URL keep the existing placeholder.
     if image.approval_status != "APPROVED" or not storefront_slug:
         return None
-    return f"/api/store/{quote(storefront_slug, safe='')}/media/{image.id}"
+    media_url = f"/api/store/{quote(storefront_slug, safe='')}/media/{image.id}"
+    # The public proxy keeps a stable image row id when a product image is
+    # replaced.  Include the content hash in the URL so browsers and
+    # Cloudflare cannot continue serving the previous object from cache.
+    cache_key = str(getattr(image, "sha256", "") or "").strip()[:16]
+    if cache_key:
+        return f"{media_url}?v={quote(cache_key, safe='')}"
+    return media_url
 
 
 def _absolute_image_url(

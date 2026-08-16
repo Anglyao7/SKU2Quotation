@@ -54,7 +54,7 @@ PUBLIC_DETAIL_CACHE_HEADERS = {
 }
 _PUBLIC_QUOTE_MEDIA_PATTERN = re.compile(
     r"^/api/store/(?P<slug>[^/]+)/media/"
-    r"(?P<image_id>[0-9a-fA-F-]{36})$"
+    r"(?P<image_id>[0-9a-fA-F-]{36})(?:\?[^#]*)?$"
 )
 
 

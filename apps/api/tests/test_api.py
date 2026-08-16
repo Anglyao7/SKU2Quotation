@@ -8602,7 +8602,9 @@ def test_sku_first_listing_is_paginated_filterable_and_tenant_scoped() -> None:
     assert active["source_filename"] is None
     assert active["source_imported_at"] is None
     assert active["image_status"] == "APPROVED"
-    assert active["thumbnail_url"] == f"/api/store/demo/media/{product_image_id}"
+    assert active["thumbnail_url"].startswith(
+        f"/api/store/demo/media/{product_image_id}?v="
+    )
 
     product_page = client.get(
         "/api/v1/product-center/products",

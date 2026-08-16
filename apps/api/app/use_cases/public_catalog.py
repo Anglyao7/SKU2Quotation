@@ -370,7 +370,14 @@ def _public_image_url(image: object | None, *, slug: str) -> str | None:
     base = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
     if base:
         return f"{base}/{quote(object_key.lstrip('/'), safe='/')}"
-    return f"/api/store/{quote(slug, safe='')}/media/{image.id}"
+    media_url = f"/api/store/{quote(slug, safe='')}/media/{image.id}"
+    # Product image replacement reuses the database row id.  Version the
+    # proxy URL by content so the browser/CDN fetches the new bytes instead
+    # of serving a cached copy of the previous image.
+    cache_key = str(getattr(image, "sha256", "") or "").strip()[:16]
+    if cache_key:
+        return f"{media_url}?v={quote(cache_key, safe='')}"
+    return media_url
 
 
 def _category_path(category: object | None) -> str:

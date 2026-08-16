@@ -113,7 +113,14 @@ export function ImageEnhancementDialog({
     setBusy(true);
     setError("");
     try {
-      setTask(await reviewImageEnhancementTask(task.id, [itemId], decision));
+      const reviewed = await reviewImageEnhancementTask(task.id, [itemId], decision);
+      if (decision === "APPROVE") {
+        const applied = await confirmImageEnhancementTask(reviewed.id, [itemId]);
+        setTask(applied);
+        await onApplied?.();
+      } else {
+        setTask(reviewed);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("审核失败"));
     } finally {
@@ -125,7 +132,14 @@ export function ImageEnhancementDialog({
     setBusy(true);
     setError("");
     try {
-      setTask(await reviewImageEnhancementTask(task.id, reviewableIds, decision));
+      const reviewed = await reviewImageEnhancementTask(task.id, reviewableIds, decision);
+      if (decision === "APPROVE") {
+        const applied = await confirmImageEnhancementTask(reviewed.id, reviewableIds);
+        setTask(applied);
+        await onApplied?.();
+      } else {
+        setTask(reviewed);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("审核失败"));
     } finally {
@@ -183,10 +197,10 @@ export function ImageEnhancementDialog({
                 <Progress value={task.progressPercent} />
               </div>
               <div className="core-image-enhancement-toolbar">
-                <Text size="1" color="gray">{t("完成后请逐张审核，审核通过后再确认应用。")}</Text>
+                <Text size="1" color="gray">{t("完成后请逐张审核，审核通过后会自动替换商品主图。")}</Text>
                 <span>
-                  {reviewableIds.length ? <Button size="1" variant="soft" disabled={busy} onClick={() => void reviewAll("APPROVE")}><Check />{t("全部通过")}</Button> : null}
-                  {approvedIds.length ? <Button size="1" color="jade" disabled={busy} onClick={() => void confirm()}><CheckCircle />{t("确认应用 {count} 张", { count: approvedIds.length })}</Button> : null}
+                  {reviewableIds.length ? <Button size="1" variant="soft" disabled={busy} onClick={() => void reviewAll("APPROVE")}><Check />{t("全部审核通过")}</Button> : null}
+                  {approvedIds.length ? <Button size="1" color="jade" disabled={busy} onClick={() => void confirm()}><CheckCircle />{t("应用已审核 {count} 张", { count: approvedIds.length })}</Button> : null}
                   {["QUEUED", "RUNNING"].includes(task.status) ? <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => void cancelItem()}><XCircle />{t("取消剩余任务")}</Button> : null}
                 </span>
               </div>
@@ -223,7 +237,7 @@ export function ImageEnhancementDialog({
                       {item.errorMessage ? <Text size="1" color="red">{item.errorMessage}</Text> : null}
                     </div>
                     <div className="core-image-enhancement-item-actions">
-                      {item.status === "COMPLETED" && item.reviewStatus === "PENDING" ? <><Button size="1" variant="soft" color="red" disabled={busy} onClick={() => void reviewItem(item.id, "REJECT")}>{t("驳回")}</Button><Button size="1" color="jade" disabled={busy} onClick={() => void reviewItem(item.id, "APPROVE")}>{t("通过")}</Button></> : null}
+                      {item.status === "COMPLETED" && item.reviewStatus === "PENDING" ? <><Button size="1" variant="soft" color="red" disabled={busy} onClick={() => void reviewItem(item.id, "REJECT")}>{t("驳回")}</Button><Button size="1" color="jade" disabled={busy} onClick={() => void reviewItem(item.id, "APPROVE")}><Check />{t("审核通过")}</Button></> : null}
                       {item.status === "QUEUED" || item.status === "RUNNING" ? <Button size="1" variant="ghost" color="gray" disabled={busy} onClick={() => void cancelItem(item.id)}>{t("取消")}</Button> : null}
                     </div>
                   </article>
