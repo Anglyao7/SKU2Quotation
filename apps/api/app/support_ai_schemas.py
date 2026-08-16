@@ -297,6 +297,7 @@ class SupportAITrainingCaseWrite(BaseModel):
 class SupportAITrainingCaseResponse(BaseModel):
     id: UUID
     agent_id: UUID
+    knowledge_base_id: UUID | None = None
     external_id: str
     source_tenant_id: UUID | None = None
     title: str
@@ -342,6 +343,7 @@ class SupportAITrainingRuleWrite(BaseModel):
 class SupportAITrainingRuleResponse(BaseModel):
     id: UUID
     agent_id: UUID
+    knowledge_base_id: UUID | None = None
     rule_key: str
     title: str
     instruction: str
@@ -356,6 +358,7 @@ class SupportAITrainingRuleResponse(BaseModel):
 class SupportAITrainingVersionResponse(BaseModel):
     id: UUID
     agent_id: UUID
+    knowledge_base_id: UUID | None = None
     version_number: int = Field(ge=1)
     status: Literal["PUBLISHED", "RETIRED"]
     package_hash: str = Field(min_length=64, max_length=64)
@@ -370,6 +373,7 @@ class SupportAITrainingVersionResponse(BaseModel):
 
 class SupportAITrainingOverviewResponse(BaseModel):
     agent_id: UUID
+    knowledge_base_id: UUID | None = None
     cases: list[SupportAITrainingCaseResponse] = Field(default_factory=list)
     rules: list[SupportAITrainingRuleResponse] = Field(default_factory=list)
     versions: list[SupportAITrainingVersionResponse] = Field(default_factory=list)
@@ -401,6 +405,7 @@ class SupportAITrainingPublishRequest(BaseModel):
 
 class SupportAITrainingCopyRequest(BaseModel):
     target_agent_id: UUID
+    target_knowledge_base_id: UUID | None = None
     include_cases: bool = True
     include_rules: bool = True
 
@@ -493,23 +498,6 @@ class SupportAIKnowledgeSourceResponse(BaseModel):
     updated_at: datetime
 
 
-class SupportAIKnowledgeChunkResponse(BaseModel):
-    id: UUID
-    chunk_index: int = Field(ge=0)
-    section_path: str
-    content: str
-    token_count: int = Field(ge=0)
-    language: str
-    locator: dict[str, object] = Field(default_factory=dict)
-
-
-class SupportAIKnowledgeBaseSourceDetailResponse(BaseModel):
-    knowledge_base_id: UUID
-    knowledge_base_name: str
-    source: SupportAIKnowledgeSourceResponse
-    chunks: list[SupportAIKnowledgeChunkResponse]
-
-
 class SupportAIKnowledgeSourceUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     description: str | None = Field(default=None, max_length=4000)
@@ -560,6 +548,8 @@ class SupportAIKnowledgeBaseResponse(BaseModel):
     status: Literal["ACTIVE", "DISABLED"]
     source_count: int = Field(ge=0)
     approved_source_count: int = Field(ge=0)
+    training_case_count: int = Field(ge=0)
+    training_rule_count: int = Field(ge=0)
     created_at: datetime
     updated_at: datetime
 
@@ -613,6 +603,23 @@ class SupportAIKnowledgeBaseSourceResponse(BaseModel):
     knowledge_base_id: UUID
     knowledge_base_name: str
     source: SupportAIKnowledgeSourceResponse
+
+
+class SupportAIKnowledgeChunkResponse(BaseModel):
+    id: UUID
+    chunk_index: int = Field(ge=0)
+    section_path: str
+    content: str
+    token_count: int = Field(ge=0)
+    language: str
+    locator: dict[str, object] = Field(default_factory=dict)
+
+
+class SupportAIKnowledgeBaseSourceDetailResponse(BaseModel):
+    knowledge_base_id: UUID
+    knowledge_base_name: str
+    source: SupportAIKnowledgeSourceResponse
+    chunks: list[SupportAIKnowledgeChunkResponse]
 
 
 class SupportAIKnowledgeBaseUploadResponse(BaseModel):

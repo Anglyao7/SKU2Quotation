@@ -346,6 +346,7 @@ const router = createBrowserRouter([{
         { path: "support", element: <PermissionGate anyOf={["support.view"]}><SupportCenterPage /></PermissionGate> },
         { path: "agents", element: <PlatformAdminGate><SupportAIAgentsPage /></PlatformAdminGate> },
         { path: "agents/knowledge", element: <PlatformAdminGate><SupportAIKnowledgePage /></PlatformAdminGate> },
+        { path: "agents/knowledge/:knowledgeBaseId", element: <PlatformAdminGate><SupportAIKnowledgePage /></PlatformAdminGate> },
         { path: "agents/:agentId/training", element: <PlatformAdminGate><SupportAITrainingPage /></PlatformAdminGate> },
         { path: "agents/knowledge/:knowledgeBaseId", element: <PlatformAdminGate><SupportAIKnowledgePage /></PlatformAdminGate> },
         { path: "agents/:agentId", element: <PlatformAdminGate><SupportAIAgentDetailPage /></PlatformAdminGate> },

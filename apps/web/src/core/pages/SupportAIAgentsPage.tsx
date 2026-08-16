@@ -143,7 +143,7 @@ export function SupportAIAgentsPage() {
         <Card><Robot weight="duotone" /><span><small>{t("智能体")}</small><strong>{agents.length}</strong></span></Card>
         <Card><Brain weight="duotone" /><span><small>{t("运行中")}</small><strong>{enabledCount}</strong></span></Card>
         <Card><Storefront weight="duotone" /><span><small>{t("已绑定店铺")}</small><strong>{boundStoreCount}</strong></span></Card>
-        <Card><Database weight="duotone" /><span><small>{t("知识文件")}</small><strong>{knowledgeCount}</strong></span></Card>
+        <Card><Database weight="duotone" /><span><small>{t("知识库")}</small><strong>{knowledgeCount}</strong></span></Card>
       </section>
 
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}

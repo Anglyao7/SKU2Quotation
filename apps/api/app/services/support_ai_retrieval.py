@@ -400,12 +400,26 @@ def _file_evidence(
     query: str,
     embedding: QueryEmbeddingState,
 ) -> tuple[list[RetrievalEvidence], int]:
-    rows = session.execute(
-        select(
-            SupportAIKnowledgeChunkRow,
-            SupportAIKnowledgeSourceRow,
-            SupportAIKnowledgeBaseRow,
+    if agent_id is not None:
+        scope_filter = (
+            (
+                SupportAIKnowledgeBaseRow.id.is_not(None)
+                & (SupportAIKnowledgeBaseRow.agent_id == agent_id)
+                & (SupportAIKnowledgeBaseRow.status == "ACTIVE")
+            )
+            | (
+                SupportAIKnowledgeSourceRow.knowledge_base_id.is_(None)
+                & (SupportAIKnowledgeSourceRow.agent_id == agent_id)
+            )
         )
+    else:
+        scope_filter = (
+            SupportAIKnowledgeBaseRow.id.is_(None)
+            & SupportAIKnowledgeSourceRow.knowledge_base_id.is_(None)
+            & SupportAIKnowledgeSourceRow.agent_id.is_(None)
+        )
+    rows = session.execute(
+        select(SupportAIKnowledgeChunkRow, SupportAIKnowledgeSourceRow)
         .join(
             SupportAIKnowledgeSourceRow,
             (
@@ -417,23 +431,29 @@ def _file_evidence(
                 == SupportAIKnowledgeChunkRow.source_id
             ),
         )
-        .join(
+        .outerjoin(
             SupportAIKnowledgeBaseRow,
-            SupportAIKnowledgeBaseRow.id
-            == SupportAIKnowledgeSourceRow.knowledge_base_id,
+            (
+                SupportAIKnowledgeBaseRow.tenant_id
+                == SupportAIKnowledgeSourceRow.tenant_id
+            )
+            & (
+                SupportAIKnowledgeBaseRow.id
+                == SupportAIKnowledgeSourceRow.knowledge_base_id
+            ),
         )
         .where(
             SupportAIKnowledgeChunkRow.tenant_id == tenant_id,
             SupportAIKnowledgeChunkRow.status == "ACTIVE",
-            SupportAIKnowledgeBaseRow.tenant_id == tenant_id,
-            SupportAIKnowledgeBaseRow.status == "ACTIVE",
-            SupportAIKnowledgeBaseRow.agent_id == agent_id,
+            # Rows written before first-class knowledge bases were introduced
+            # remain readable while migrations/backfills complete.
+            scope_filter,
             (
-                SupportAIKnowledgeSourceRow.status == "APPROVED"
-            )
-            | (
-                (SupportAIKnowledgeSourceRow.status == "READY")
-                & ~SupportAIKnowledgeSourceRow.original_filename.ilike("%.json")
+                (SupportAIKnowledgeSourceRow.status == "APPROVED")
+                | (
+                    (SupportAIKnowledgeSourceRow.status == "READY")
+                    & ~SupportAIKnowledgeSourceRow.original_filename.ilike("%.json")
+                )
             ),
             SupportAIKnowledgeSourceRow.classification.in_(
                 ["PUBLIC", "CUSTOMER_APPROVED"]
@@ -446,7 +466,7 @@ def _file_evidence(
         .limit(10000)
     ).all()
     evidence: list[RetrievalEvidence] = []
-    for chunk, source, _knowledge_base in rows:
+    for chunk, source in rows:
         content_vector: list[float] | None = None
         if (
             embedding.embedder is not None

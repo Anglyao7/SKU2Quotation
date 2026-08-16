@@ -295,7 +295,7 @@ export function SupportAIKnowledgePage() {
           && "schema_version" in jsonPayload
           && jsonPayload.schema_version === "support-ai-training/v1"
         ) {
-          await importSupportAITraining(selectedAgentId, jsonPayload);
+          await importSupportAITraining(selectedAgentId, jsonPayload, base.id);
           setFile(undefined);
           setTitle("");
           const input = document.getElementById("support-knowledge-file") as HTMLInputElement | null;
@@ -418,7 +418,7 @@ export function SupportAIKnowledgePage() {
         title={detailView ? (selectedBase?.name || t("知识库详情")) : t("知识库管理")}
         actions={(
           <>
-            {selectedAgentId ? <Button asChild><Link to={`/console/agents/${selectedAgentId}/training`}><Brain />{t("AI 训练工作台")}</Link></Button> : null}
+            {selectedAgentId ? <Button asChild><Link to={`/console/agents/${selectedAgentId}/training${selectedBase ? `?knowledge_base_id=${encodeURIComponent(selectedBase.id)}` : ""}`}><Brain />{t("AI 训练工作台")}</Link></Button> : null}
             {detailView && selectedBase ? <Button onClick={() => setUploadOpen(true)}><FileArrowUp />{t("上传文件")}</Button> : null}
             {detailView ? <Button variant="soft" color="gray" onClick={() => navigate(`/console/agents/knowledge?agent_id=${encodeURIComponent(selectedAgentId)}`)}><ArrowLeft />{t("返回知识库列表")}</Button> : null}
             <Button variant="soft" color="gray" disabled={loading || !selectedAgentId} onClick={() => void loadKnowledgeBases()}>
@@ -461,7 +461,7 @@ export function SupportAIKnowledgePage() {
               {knowledgeBases.map((base) => (
                 <button type="button" key={base.id} className="support-agent-knowledge-base-row" onClick={() => selectKnowledgeBase(base.id)}>
                   <span><Database weight="duotone" /></span>
-                  <div><strong>{base.name}</strong><small>{base.tenantName} · {base.approvedSourceCount}/{base.sourceCount} {t("个已批准文件")}</small></div>
+                  <div><strong>{base.name}</strong><small>{base.tenantName} · {base.approvedSourceCount}/{base.sourceCount} {t("个已批准文件")} · {base.trainingCaseCount} {t("个训练案例")} · {base.trainingRuleCount} {t("个复用规则")}</small></div>
                   <Badge color={base.status === "ACTIVE" ? "jade" : "gray"}>{t(base.status === "ACTIVE" ? "启用" : "停用")}</Badge>
                   <CaretRight />
                 </button>
@@ -476,7 +476,7 @@ export function SupportAIKnowledgePage() {
           <Card className="support-agent-knowledge-detail-header">
             <span><Database weight="duotone" /></span>
             <div><Text size="1" color="gray">{t("所属智能体")}</Text><strong>{selectedAgent.name}</strong><small>{selectedBase.tenantName} · {selectedBase.description || t("文件和训练内容均独立归属于此知识库")}</small></div>
-            <div className="support-agent-knowledge-detail-stats"><span><strong>{selectedBase.sourceCount}</strong><small>{t("知识文件")}</small></span><span><strong>{selectedBase.approvedSourceCount}</strong><small>{t("已批准")}</small></span></div>
+            <div className="support-agent-knowledge-detail-stats"><span><strong>{selectedBase.sourceCount}</strong><small>{t("知识文件")}</small></span><span><strong>{selectedBase.approvedSourceCount}</strong><small>{t("已批准")}</small></span><span><strong>{selectedBase.trainingCaseCount}</strong><small>{t("训练案例")}</small></span><span><strong>{selectedBase.trainingRuleCount}</strong><small>{t("复用规则")}</small></span></div>
           </Card>
           <Card className="support-agent-rules-card">
             <div className="support-agent-section-heading"><div><Text size="1" color="gray">{t("复用规则")}</Text><Heading size="5">{t("训练规则")}</Heading></div><Robot weight="duotone" /></div>

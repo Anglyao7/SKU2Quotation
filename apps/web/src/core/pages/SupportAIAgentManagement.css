@@ -89,6 +89,7 @@
 .support-agent-knowledge-detail-stats > span { min-width: 54px; display: grid; gap: 3px; text-align: right; }
 .support-agent-knowledge-detail-stats strong { font-size: 19px; font-variant-numeric: tabular-nums; }
 .support-agent-knowledge-detail-stats small { color: var(--text-soft); font-size: 10px; }
+.support-agent-create-dialog { width: min(560px, calc(100vw - 28px)); }
 .support-agent-source-list > article { min-width: 0; padding: 13px 1px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; border-top: 1px solid var(--line); }
 .support-agent-source-list > article > span { width: 39px; height: 39px; display: grid; place-items: center; border-radius: 11px; color: var(--accent); background: var(--accent-soft); }
 .support-agent-source-list > article > div:nth-child(2) { min-width: 0; display: grid; gap: 5px; }

@@ -3638,6 +3638,7 @@ export async function updateSupportAIAgent(
 interface ApiSupportAITrainingCase {
   id: string;
   agent_id: string;
+  knowledge_base_id?: string | null;
   external_id: string;
   source_tenant_id?: string | null;
   title: string;
@@ -3660,6 +3661,7 @@ interface ApiSupportAITrainingCase {
 interface ApiSupportAITrainingRule {
   id: string;
   agent_id: string;
+  knowledge_base_id?: string | null;
   rule_key: string;
   title: string;
   instruction: string;
@@ -3674,6 +3676,7 @@ interface ApiSupportAITrainingRule {
 interface ApiSupportAITrainingVersion {
   id: string;
   agent_id: string;
+  knowledge_base_id?: string | null;
   version_number: number;
   status: "PUBLISHED" | "RETIRED";
   package_hash: string;
@@ -3688,6 +3691,7 @@ interface ApiSupportAITrainingVersion {
 
 interface ApiSupportAITrainingOverview {
   agent_id: string;
+  knowledge_base_id?: string | null;
   cases: ApiSupportAITrainingCase[];
   rules: ApiSupportAITrainingRule[];
   versions: ApiSupportAITrainingVersion[];
@@ -3702,6 +3706,7 @@ interface ApiSupportAITrainingOverview {
 const mapSupportAITrainingCase = (row: ApiSupportAITrainingCase): SupportAITrainingCase => ({
   id: row.id,
   agentId: row.agent_id,
+  knowledgeBaseId: defined(row.knowledge_base_id),
   externalId: row.external_id,
   sourceTenantId: defined(row.source_tenant_id),
   title: row.title,
@@ -3724,6 +3729,7 @@ const mapSupportAITrainingCase = (row: ApiSupportAITrainingCase): SupportAITrain
 const mapSupportAITrainingRule = (row: ApiSupportAITrainingRule): SupportAITrainingRule => ({
   id: row.id,
   agentId: row.agent_id,
+  knowledgeBaseId: defined(row.knowledge_base_id),
   ruleKey: row.rule_key,
   title: row.title,
   instruction: row.instruction,
@@ -3738,6 +3744,7 @@ const mapSupportAITrainingRule = (row: ApiSupportAITrainingRule): SupportAITrain
 const mapSupportAITrainingVersion = (row: ApiSupportAITrainingVersion): SupportAITrainingVersion => ({
   id: row.id,
   agentId: row.agent_id,
+  knowledgeBaseId: defined(row.knowledge_base_id),
   versionNumber: row.version_number,
   status: row.status,
   packageHash: row.package_hash,
@@ -3752,6 +3759,7 @@ const mapSupportAITrainingVersion = (row: ApiSupportAITrainingVersion): SupportA
 
 const mapSupportAITrainingOverview = (row: ApiSupportAITrainingOverview): SupportAITrainingOverview => ({
   agentId: row.agent_id,
+  knowledgeBaseId: defined(row.knowledge_base_id),
   cases: row.cases.map(mapSupportAITrainingCase),
   rules: row.rules.map(mapSupportAITrainingRule),
   versions: row.versions.map(mapSupportAITrainingVersion),
@@ -3819,65 +3827,70 @@ const trainingRuleBody = (input: SupportAITrainingRuleInput) => ({
   status: input.status,
 });
 
-export async function getSupportAITrainingOverview(agentId: string): Promise<SupportAITrainingOverview> {
+function supportAITrainingPath(path: string, knowledgeBaseId?: string): string {
+  if (!knowledgeBaseId) return path;
+  return `${path}?knowledge_base_id=${encodeURIComponent(knowledgeBaseId)}`;
+}
+
+export async function getSupportAITrainingOverview(agentId: string, knowledgeBaseId?: string): Promise<SupportAITrainingOverview> {
   return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training`, knowledgeBaseId),
     { cache: "no-store" },
   ));
 }
 
-export async function createSupportAITrainingCase(agentId: string, input: SupportAITrainingCaseInput): Promise<SupportAITrainingCase> {
+export async function createSupportAITrainingCase(agentId: string, input: SupportAITrainingCaseInput, knowledgeBaseId?: string): Promise<SupportAITrainingCase> {
   return mapSupportAITrainingCase(await request<ApiSupportAITrainingCase>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases`, knowledgeBaseId),
     { method: "POST", body: JSON.stringify(trainingCaseBody(input)) },
   ));
 }
 
-export async function updateSupportAITrainingCase(agentId: string, caseId: string, input: SupportAITrainingCaseInput): Promise<SupportAITrainingCase> {
+export async function updateSupportAITrainingCase(agentId: string, caseId: string, input: SupportAITrainingCaseInput, knowledgeBaseId?: string): Promise<SupportAITrainingCase> {
   return mapSupportAITrainingCase(await request<ApiSupportAITrainingCase>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases/${encodeURIComponent(caseId)}`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases/${encodeURIComponent(caseId)}`, knowledgeBaseId),
     { method: "PUT", body: JSON.stringify(trainingCaseBody(input)) },
   ));
 }
 
-export async function deleteSupportAITrainingCase(agentId: string, caseId: string): Promise<void> {
+export async function deleteSupportAITrainingCase(agentId: string, caseId: string, knowledgeBaseId?: string): Promise<void> {
   await request<void>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases/${encodeURIComponent(caseId)}`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/cases/${encodeURIComponent(caseId)}`, knowledgeBaseId),
     { method: "DELETE" },
   );
 }
 
-export async function createSupportAITrainingRule(agentId: string, input: SupportAITrainingRuleInput): Promise<SupportAITrainingRule> {
+export async function createSupportAITrainingRule(agentId: string, input: SupportAITrainingRuleInput, knowledgeBaseId?: string): Promise<SupportAITrainingRule> {
   return mapSupportAITrainingRule(await request<ApiSupportAITrainingRule>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules`, knowledgeBaseId),
     { method: "POST", body: JSON.stringify(trainingRuleBody(input)) },
   ));
 }
 
-export async function updateSupportAITrainingRule(agentId: string, ruleId: string, input: SupportAITrainingRuleInput): Promise<SupportAITrainingRule> {
+export async function updateSupportAITrainingRule(agentId: string, ruleId: string, input: SupportAITrainingRuleInput, knowledgeBaseId?: string): Promise<SupportAITrainingRule> {
   return mapSupportAITrainingRule(await request<ApiSupportAITrainingRule>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules/${encodeURIComponent(ruleId)}`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules/${encodeURIComponent(ruleId)}`, knowledgeBaseId),
     { method: "PUT", body: JSON.stringify(trainingRuleBody(input)) },
   ));
 }
 
-export async function deleteSupportAITrainingRule(agentId: string, ruleId: string): Promise<void> {
+export async function deleteSupportAITrainingRule(agentId: string, ruleId: string, knowledgeBaseId?: string): Promise<void> {
   await request<void>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules/${encodeURIComponent(ruleId)}`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/rules/${encodeURIComponent(ruleId)}`, knowledgeBaseId),
     { method: "DELETE" },
   );
 }
 
-export async function approveAllSupportAITraining(agentId: string): Promise<SupportAITrainingOverview> {
+export async function approveAllSupportAITraining(agentId: string, knowledgeBaseId?: string): Promise<SupportAITrainingOverview> {
   return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/approve-all`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/approve-all`, knowledgeBaseId),
     { method: "POST" },
   ));
 }
 
-export async function exportSupportAITraining(agentId: string, agentCode: string): Promise<void> {
+export async function exportSupportAITraining(agentId: string, agentCode: string, knowledgeBaseId?: string): Promise<void> {
   await downloadCoreRequest(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/export`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/export`, knowledgeBaseId),
     `support-ai-training-${agentCode}.json`,
     {},
     true,
@@ -3885,9 +3898,9 @@ export async function exportSupportAITraining(agentId: string, agentCode: string
   );
 }
 
-export async function importSupportAITraining(agentId: string, trainingPackage: unknown): Promise<SupportAITrainingOverview> {
+export async function importSupportAITraining(agentId: string, trainingPackage: unknown, knowledgeBaseId?: string): Promise<SupportAITrainingOverview> {
   return mapSupportAITrainingOverview(await request<ApiSupportAITrainingOverview>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/training/import`,
+    supportAITrainingPath(`/system/support-ai/agents/${encodeURIComponent(agentId)}/training/import`, knowledgeBaseId),
     { method: "POST", body: JSON.stringify(trainingPackage) },
   ));
 }
@@ -4063,58 +4076,6 @@ function mapSupportAIKnowledgeSource(
   };
 }
 
-interface ApiSupportAIIngestionJob {
-  id: string;
-  source_id: string;
-  status: SupportAIIngestionJob["status"];
-  progress: number;
-  parser_identifier?: string | null;
-  parser_version?: string | null;
-  chunks_written: number;
-  error_code?: string | null;
-  error_message?: string | null;
-  started_at?: string | null;
-  completed_at?: string | null;
-  created_at: string;
-}
-
-function mapSupportAIIngestionJob(
-  row: ApiSupportAIIngestionJob,
-): SupportAIIngestionJob {
-  return {
-    id: row.id,
-    sourceId: row.source_id,
-    status: row.status,
-    progress: row.progress,
-    parserIdentifier: defined(row.parser_identifier),
-    parserVersion: defined(row.parser_version),
-    chunksWritten: row.chunks_written,
-    errorCode: defined(row.error_code),
-    errorMessage: defined(row.error_message),
-    startedAt: defined(row.started_at),
-    completedAt: defined(row.completed_at),
-    createdAt: row.created_at,
-  };
-}
-
-export async function listSupportAIAgentKnowledgeSources(
-  agentId: string,
-): Promise<SupportAIAgentKnowledgeSource[]> {
-  const rows = await request<Array<{
-    tenant_id: string;
-    tenant_name: string;
-    source: ApiSupportAIKnowledgeSource;
-  }>>(
-    `/system/support-ai/agents/${encodeURIComponent(agentId)}/knowledge/sources`,
-    { cache: "no-store" },
-  );
-  return rows.map((row) => ({
-    tenantId: row.tenant_id,
-    tenantName: row.tenant_name,
-    source: mapSupportAIKnowledgeSource(row.source),
-  }));
-}
-
 interface ApiSupportAIKnowledgeBase {
   id: string;
   tenant_id: string;
@@ -4126,13 +4087,13 @@ interface ApiSupportAIKnowledgeBase {
   status: SupportAIKnowledgeBase["status"];
   source_count: number;
   approved_source_count: number;
+  training_case_count: number;
+  training_rule_count: number;
   created_at: string;
   updated_at: string;
 }
 
-function mapSupportAIKnowledgeBase(
-  row: ApiSupportAIKnowledgeBase,
-): SupportAIKnowledgeBase {
+function mapSupportAIKnowledgeBase(row: ApiSupportAIKnowledgeBase): SupportAIKnowledgeBase {
   return {
     id: row.id,
     tenantId: row.tenant_id,
@@ -4144,14 +4105,14 @@ function mapSupportAIKnowledgeBase(
     status: row.status,
     sourceCount: row.source_count,
     approvedSourceCount: row.approved_source_count,
+    trainingCaseCount: row.training_case_count,
+    trainingRuleCount: row.training_rule_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-export async function listSupportAIKnowledgeBases(
-  agentId: string,
-): Promise<SupportAIKnowledgeBase[]> {
+export async function listSupportAIKnowledgeBases(agentId: string): Promise<SupportAIKnowledgeBase[]> {
   const rows = await request<ApiSupportAIKnowledgeBase[]>(
     `/system/support-ai/agents/${encodeURIComponent(agentId)}/knowledge-bases`,
     { cache: "no-store" },
@@ -4190,9 +4151,10 @@ export async function updateSupportAIKnowledgeBase(input: {
   rulesContext?: string | null;
   status?: "ACTIVE" | "DISABLED";
 }): Promise<SupportAIKnowledgeBase> {
+  const query = `?tenant_id=${encodeURIComponent(input.tenantId)}`;
   return mapSupportAIKnowledgeBase(
     await request<ApiSupportAIKnowledgeBase>(
-      `/system/support-ai/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}?tenant_id=${encodeURIComponent(input.tenantId)}`,
+      `/system/support-ai/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}${query}`,
       {
         method: "PATCH",
         body: JSON.stringify({
@@ -4256,11 +4218,7 @@ export async function uploadSupportAIKnowledgeBaseSource(input: {
   classification: "PUBLIC" | "CUSTOMER_APPROVED";
   language: string;
   knowledgeType?: "QA_STRATEGY" | "MERCHANT_PROFILE";
-}): Promise<{
-  knowledgeBase: SupportAIKnowledgeBase;
-  source: SupportAIKnowledgeSource;
-  job: SupportAIIngestionJob;
-}> {
+}): Promise<{ knowledgeBase: SupportAIKnowledgeBase; source: SupportAIKnowledgeSource; job: SupportAIIngestionJob }> {
   const body = new FormData();
   body.append("file", input.file);
   body.append("title", input.title);
@@ -4281,6 +4239,58 @@ export async function uploadSupportAIKnowledgeBaseSource(input: {
     source: mapSupportAIKnowledgeSource(row.source),
     job: mapSupportAIIngestionJob(row.job),
   };
+}
+
+interface ApiSupportAIIngestionJob {
+  id: string;
+  source_id: string;
+  status: SupportAIIngestionJob["status"];
+  progress: number;
+  parser_identifier?: string | null;
+  parser_version?: string | null;
+  chunks_written: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+}
+
+function mapSupportAIIngestionJob(
+  row: ApiSupportAIIngestionJob,
+): SupportAIIngestionJob {
+  return {
+    id: row.id,
+    sourceId: row.source_id,
+    status: row.status,
+    progress: row.progress,
+    parserIdentifier: defined(row.parser_identifier),
+    parserVersion: defined(row.parser_version),
+    chunksWritten: row.chunks_written,
+    errorCode: defined(row.error_code),
+    errorMessage: defined(row.error_message),
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+    createdAt: row.created_at,
+  };
+}
+
+export async function listSupportAIAgentKnowledgeSources(
+  agentId: string,
+): Promise<SupportAIAgentKnowledgeSource[]> {
+  const rows = await request<Array<{
+    tenant_id: string;
+    tenant_name: string;
+    source: ApiSupportAIKnowledgeSource;
+  }>>(
+    `/system/support-ai/agents/${encodeURIComponent(agentId)}/knowledge/sources`,
+    { cache: "no-store" },
+  );
+  return rows.map((row) => ({
+    tenantId: row.tenant_id,
+    tenantName: row.tenant_name,
+    source: mapSupportAIKnowledgeSource(row.source),
+  }));
 }
 
 export async function approveSupportAIKnowledgeSource(

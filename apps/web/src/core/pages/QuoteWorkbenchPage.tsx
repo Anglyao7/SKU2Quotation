@@ -589,7 +589,7 @@ export function QuoteWorkbenchPage() {
       return <span className={`quote-preview-cell ${field === "product_name" || field === "description" || field === "specification" ? "quote-preview-cell--multiline" : ""}`} title={value}>{value}</span>;
     }
     const isNumeric = field === "quantity" || field === "unit_price";
-    const editField: QuoteItemEditField = field === "product_name" ? "name" : field === "unit_price" ? "unitPrice" : field === "quantity" ? "quantity" : field === "unit_code" ? "unitCode" : field;
+    const editField: QuoteItemEditField = field === "product_name" ? "name" : field === "unit_price" ? "unitPrice" : field === "quantity" ? "quantity" : field === "unit_code" ? "unitCode" : field === "description" ? "description" : field === "specification" ? "specification" : "category";
     const value = edit[editField] ?? (
       field === "product_name" ? item.name
         : field === "description" ? item.description ?? ""
@@ -664,7 +664,7 @@ export function QuoteWorkbenchPage() {
           <TextField.Root type="number" step="0.01" min="-100" max="10000" value={bulkPercentage} onChange={(event) => setBulkPercentage(event.target.value)} placeholder={t("例如 20 或 -10")} autoFocus><TextField.Slot side="right">%</TextField.Slot></TextField.Root>
           <div className="quote-bulk-price-presets"><Text size="1" color="gray">{t("快捷幅度")}</Text><div>{["20", "10", "-10", "-20"].map((value) => <Button key={value} size="1" variant="soft" color={value.startsWith("-") ? "red" : "green"} onClick={() => setBulkPercentage(value)}>{value.startsWith("-") ? value : `+${value}`}%</Button>)}</div></div>
         </div>
-        <div className="quote-sync-confirm-actions"><Dialog.Close asChild><Button variant="soft" color="gray" disabled={bulkSaving}>{t("取消")}</Button></Dialog.Close><Button color="green" disabled={!canEditPrices || !bulkPercentage.trim()} loading={bulkSaving} onClick={() => void applyBulkPriceAdjustment()}>{t("应用调价")}</Button></div>
+        <div className="quote-sync-confirm-actions"><Dialog.Close><Button variant="soft" color="gray" disabled={bulkSaving}>{t("取消")}</Button></Dialog.Close><Button color="green" disabled={!canEditPrices || !bulkPercentage.trim()} loading={bulkSaving} onClick={() => void applyBulkPriceAdjustment()}>{t("应用调价")}</Button></div>
       </Dialog.Content>
     </Dialog.Root>
 
@@ -680,7 +680,7 @@ export function QuoteWorkbenchPage() {
           </div>
           <div className="quote-items-drawer-header-actions">
             {selectedDrawerItem ? <IconButton variant="ghost" color="gray" onClick={() => setSelectedItemId(undefined)} aria-label={t("返回商品列表")}><ArrowLeft size={19} /></IconButton> : null}
-            <Dialog.Close asChild><IconButton variant="ghost" color="gray" aria-label={t("关闭订单商品")}><X size={19} /></IconButton></Dialog.Close>
+            <Dialog.Close><IconButton variant="ghost" color="gray" aria-label={t("关闭订单商品")}><X size={19} /></IconButton></Dialog.Close>
           </div>
         </div>
 
@@ -744,7 +744,7 @@ export function QuoteWorkbenchPage() {
       <AlertDialog.Content maxWidth="460px">
         <AlertDialog.Title>{t("同步商品库价格")}</AlertDialog.Title>
         <AlertDialog.Description size="2">{syncItem ? t("同步后，{name} 的商品库公开价格会改为 {price}。这会影响后续新报价和前台展示，确定继续吗？", { name: syncItem.name, price: money(Number(priceDrafts[syncItem.id] ?? syncItem.unitPrice), syncItem.currency) }) : ""}</AlertDialog.Description>
-        <div className="quote-sync-confirm-actions"><AlertDialog.Cancel asChild><Button variant="soft" color="gray" disabled={Boolean(syncingItemId)}>{t("取消")}</Button></AlertDialog.Cancel><AlertDialog.Action asChild><Button color="amber" disabled={!syncItem || Boolean(syncingItemId)} loading={Boolean(syncingItemId)} onClick={() => { if (syncItem) void saveItemPrice(syncItem, true); }}>{t("确认同步")}</Button></AlertDialog.Action></div>
+        <div className="quote-sync-confirm-actions"><AlertDialog.Cancel><Button variant="soft" color="gray" disabled={Boolean(syncingItemId)}>{t("取消")}</Button></AlertDialog.Cancel><AlertDialog.Action><Button color="amber" disabled={!syncItem || Boolean(syncingItemId)} loading={Boolean(syncingItemId)} onClick={() => { if (syncItem) void saveItemPrice(syncItem, true); }}>{t("确认同步")}</Button></AlertDialog.Action></div>
       </AlertDialog.Content>
     </AlertDialog.Root>
 

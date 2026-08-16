@@ -29,8 +29,8 @@ from ..support_ai_schemas import (
     SupportAIIngestionJobResponse,
     SupportAIKnowledgeBaseCreate,
     SupportAIKnowledgeBaseResponse,
-    SupportAIKnowledgeBaseSourceResponse,
     SupportAIKnowledgeBaseSourceDetailResponse,
+    SupportAIKnowledgeBaseSourceResponse,
     SupportAIKnowledgeBaseUpdate,
     SupportAIKnowledgeBaseUploadResponse,
     SupportAIKnowledgeSourceResponse,
@@ -151,7 +151,7 @@ def update_support_ai_agent(
     "/api/v1/system/support-ai/agents/{agent_id}/knowledge-bases",
     response_model=list[SupportAIKnowledgeBaseResponse],
 )
-def list_support_ai_agent_knowledge_bases(
+def list_support_ai_knowledge_bases(
     agent_id: UUID,
     response: Response,
     session: Session = Depends(get_authenticated_session),
@@ -160,9 +160,7 @@ def list_support_ai_agent_knowledge_bases(
     context = current_context(session)
     try:
         return use_cases.list_agent_knowledge_bases(
-            session,
-            context=context,
-            agent_id=agent_id,
+            session, context=context, agent_id=agent_id
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -176,17 +174,12 @@ def list_support_ai_agent_knowledge_bases(
 def create_support_ai_knowledge_base(
     agent_id: UUID,
     payload: SupportAIKnowledgeBaseCreate,
-    response: Response,
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIKnowledgeBaseResponse:
-    response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
         return use_cases.create_agent_knowledge_base(
-            session,
-            context=context,
-            agent_id=agent_id,
-            request=payload,
+            session, context=context, agent_id=agent_id, request=payload
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -199,19 +192,17 @@ def create_support_ai_knowledge_base(
 def update_support_ai_knowledge_base(
     knowledge_base_id: UUID,
     payload: SupportAIKnowledgeBaseUpdate,
-    response: Response,
     tenant_id: UUID = Query(...),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIKnowledgeBaseResponse:
-    response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
         return use_cases.update_knowledge_base(
             session,
             context=context,
             knowledge_base_id=knowledge_base_id,
-            request=payload,
             tenant_id=tenant_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -273,6 +264,7 @@ def get_support_ai_knowledge_base_source_detail(
 async def upload_support_ai_knowledge_base_source(
     knowledge_base_id: UUID,
     background_tasks: BackgroundTasks,
+    tenant_id: UUID = Query(...),
     title: str = Form(default="", max_length=300),
     description: str | None = Form(default=None, max_length=4000),
     classification: Literal["PUBLIC", "CUSTOMER_APPROVED"] = Form(
@@ -283,7 +275,6 @@ async def upload_support_ai_knowledge_base_source(
         default="MERCHANT_PROFILE"
     ),
     file: UploadFile = File(...),
-    tenant_id: UUID = Query(...),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAIKnowledgeBaseUploadResponse:
     context = current_context(session)
@@ -390,13 +381,17 @@ async def upload_support_ai_agent_knowledge_source(
 def get_support_ai_agent_training(
     agent_id: UUID,
     response: Response,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingOverviewResponse:
     response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
         return training_use_cases.get_training_overview(
-            session, context=context, agent_id=agent_id
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -410,12 +405,17 @@ def get_support_ai_agent_training(
 def create_support_ai_training_case(
     agent_id: UUID,
     payload: SupportAITrainingCaseWrite,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingCaseResponse:
     context = current_context(session)
     try:
         return training_use_cases.create_training_case(
-            session, context=context, agent_id=agent_id, request=payload
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -429,6 +429,7 @@ def update_support_ai_training_case(
     agent_id: UUID,
     case_id: UUID,
     payload: SupportAITrainingCaseWrite,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingCaseResponse:
     context = current_context(session)
@@ -438,6 +439,7 @@ def update_support_ai_training_case(
             context=context,
             agent_id=agent_id,
             case_id=case_id,
+            knowledge_base_id=knowledge_base_id,
             request=payload,
         )
     except ApplicationError as exc:
@@ -451,12 +453,17 @@ def update_support_ai_training_case(
 def delete_support_ai_training_case(
     agent_id: UUID,
     case_id: UUID,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> Response:
     context = current_context(session)
     try:
         training_use_cases.delete_training_case(
-            session, context=context, agent_id=agent_id, case_id=case_id
+            session,
+            context=context,
+            agent_id=agent_id,
+            case_id=case_id,
+            knowledge_base_id=knowledge_base_id,
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ApplicationError as exc:
@@ -471,12 +478,17 @@ def delete_support_ai_training_case(
 def create_support_ai_training_rule(
     agent_id: UUID,
     payload: SupportAITrainingRuleWrite,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingRuleResponse:
     context = current_context(session)
     try:
         return training_use_cases.create_training_rule(
-            session, context=context, agent_id=agent_id, request=payload
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -490,6 +502,7 @@ def update_support_ai_training_rule(
     agent_id: UUID,
     rule_id: UUID,
     payload: SupportAITrainingRuleWrite,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingRuleResponse:
     context = current_context(session)
@@ -499,6 +512,7 @@ def update_support_ai_training_rule(
             context=context,
             agent_id=agent_id,
             rule_id=rule_id,
+            knowledge_base_id=knowledge_base_id,
             request=payload,
         )
     except ApplicationError as exc:
@@ -512,12 +526,17 @@ def update_support_ai_training_rule(
 def delete_support_ai_training_rule(
     agent_id: UUID,
     rule_id: UUID,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> Response:
     context = current_context(session)
     try:
         training_use_cases.delete_training_rule(
-            session, context=context, agent_id=agent_id, rule_id=rule_id
+            session,
+            context=context,
+            agent_id=agent_id,
+            rule_id=rule_id,
+            knowledge_base_id=knowledge_base_id,
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ApplicationError as exc:
@@ -530,12 +549,16 @@ def delete_support_ai_training_rule(
 )
 def approve_all_support_ai_training(
     agent_id: UUID,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingOverviewResponse:
     context = current_context(session)
     try:
         return training_use_cases.approve_and_publish_training(
-            session, context=context, agent_id=agent_id
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -548,13 +571,17 @@ def approve_all_support_ai_training(
 def preview_support_ai_training(
     agent_id: UUID,
     response: Response,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingPreviewResponse:
     response.headers.update(NO_STORE_HEADERS)
     context = current_context(session)
     try:
         return training_use_cases.preview_training_package(
-            session, context=context, agent_id=agent_id
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -567,12 +594,17 @@ def preview_support_ai_training(
 def publish_support_ai_training(
     agent_id: UUID,
     payload: SupportAITrainingPublishRequest,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingVersionResponse:
     context = current_context(session)
     try:
         return training_use_cases.publish_training_package(
-            session, context=context, agent_id=agent_id, request=payload
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -585,6 +617,7 @@ def publish_support_ai_training(
 def activate_support_ai_training_version(
     agent_id: UUID,
     version_id: UUID,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingVersionResponse:
     context = current_context(session)
@@ -594,6 +627,7 @@ def activate_support_ai_training_version(
             context=context,
             agent_id=agent_id,
             version_id=version_id,
+            knowledge_base_id=knowledge_base_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -606,6 +640,7 @@ def activate_support_ai_training_version(
 def export_support_ai_training(
     agent_id: UUID,
     response: Response,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> dict[str, Any]:
     response.headers.update(NO_STORE_HEADERS)
@@ -615,7 +650,10 @@ def export_support_ai_training(
     context = current_context(session)
     try:
         return training_use_cases.export_training_package(
-            session, context=context, agent_id=agent_id
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -628,12 +666,17 @@ def export_support_ai_training(
 def import_support_ai_training(
     agent_id: UUID,
     payload: SupportAITrainingPackage,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingOverviewResponse:
     context = current_context(session)
     try:
         return training_use_cases.import_training_package(
-            session, context=context, agent_id=agent_id, request=payload
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -646,12 +689,17 @@ def import_support_ai_training(
 def copy_support_ai_training(
     agent_id: UUID,
     payload: SupportAITrainingCopyRequest,
+    knowledge_base_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> SupportAITrainingOverviewResponse:
     context = current_context(session)
     try:
         return training_use_cases.copy_training_drafts(
-            session, context=context, agent_id=agent_id, request=payload
+            session,
+            context=context,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
