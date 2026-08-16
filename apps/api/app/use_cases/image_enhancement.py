@@ -127,6 +127,7 @@ def _task_response(session: Session, task: ImageEnhancementTaskRow) -> ImageEnha
         id=task.id,
         status=task.status,
         prompt=task.prompt,
+        ratio=task.ratio,
         size=task.size,
         output_format="url",
         total_items=total,
@@ -189,6 +190,7 @@ def start_task(
         requested_by_user_id=context.user_id,
         requested_by_membership_id=context.membership_id,
         prompt=request.prompt or _DEFAULT_PROMPT,
+        ratio=request.ratio,
         size=request.size,
         output_format="url",
         status="QUEUED",
@@ -395,6 +397,7 @@ def _run_task(task_id: UUID, organization_id: UUID, tenant_id: UUID, user_id: UU
                         session,
                         prompt=_prompt_for_item(task.prompt, item.product_name),
                         images=[item.source_image_url],
+                        ratio=task.ratio,
                         size=task.size,
                         output_format="url",
                     )

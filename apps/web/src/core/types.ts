@@ -470,6 +470,8 @@ export interface ProductDetail extends CoreProduct {
 export type ImageEnhancementTaskStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "PARTIAL" | "FAILED" | "CANCELLED";
 export type ImageEnhancementItemStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 export type ImageEnhancementReviewStatus = "PENDING" | "APPROVED" | "REJECTED" | "APPLIED";
+export type ImageEnhancementRatio = "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
+export type ImageEnhancementSize = "1K" | "2K" | "4K";
 
 export interface ImageEnhancementItem {
   id: string;
@@ -493,6 +495,7 @@ export interface ImageEnhancementTask {
   id: string;
   status: ImageEnhancementTaskStatus;
   prompt: string;
+  ratio: ImageEnhancementRatio;
   size: string;
   outputFormat: "url";
   totalItems: number;

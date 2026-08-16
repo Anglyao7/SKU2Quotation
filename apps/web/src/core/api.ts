@@ -18,6 +18,8 @@ import type {
   EmbeddingSettings,
   ImageGenerationSettings,
   ImageEnhancementItem,
+  ImageEnhancementRatio,
+  ImageEnhancementSize,
   ImageEnhancementTask,
   FileDetection,
   HybridSearchResponse,
@@ -1371,6 +1373,7 @@ interface ApiImageEnhancementTask {
   id: string;
   status: ImageEnhancementTask["status"];
   prompt: string;
+  ratio?: ImageEnhancementRatio;
   size: string;
   output_format: "url";
   total_items: number;
@@ -1411,6 +1414,7 @@ function mapImageEnhancementTask(row: ApiImageEnhancementTask): ImageEnhancement
     id: row.id,
     status: row.status,
     prompt: row.prompt,
+    ratio: row.ratio ?? "1:1",
     size: row.size,
     outputFormat: row.output_format,
     totalItems: row.total_items,
@@ -1668,13 +1672,15 @@ export async function downloadProductMainImage(
 export async function startImageEnhancement(
   targets: Array<{ productId: string; skuIds?: string[] }>,
   prompt?: string,
-  size: "1024x1024" | "1024x768" | "768x1024" = "1024x1024",
+  ratio: ImageEnhancementRatio = "1:1",
+  size: ImageEnhancementSize = "1K",
 ): Promise<ImageEnhancementTask> {
   const row = await request<ApiImageEnhancementTask>("/product-center/image-enhancements", {
     method: "POST",
     body: JSON.stringify({
       targets: targets.map((target) => ({ product_id: target.productId, sku_ids: target.skuIds ?? [] })),
       ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+      ratio,
       size,
     }),
   });

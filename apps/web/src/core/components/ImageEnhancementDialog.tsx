@@ -1,6 +1,6 @@
-import { Badge, Button, Dialog, Progress, Text } from "@radix-ui/themes";
+import { Badge, Button, Dialog, Progress, Text, TextArea } from "@radix-ui/themes";
 import { Check, CheckCircle, ImageSquare, Sparkle, X, XCircle } from "@phosphor-icons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   cancelImageEnhancementTask,
   confirmImageEnhancementTask,
@@ -9,13 +9,23 @@ import {
   startImageEnhancement,
 } from "../api";
 import { useLocale } from "../LocaleContext";
-import type { ImageEnhancementTask } from "../types";
+import type { ImageEnhancementRatio, ImageEnhancementSize, ImageEnhancementTask } from "../types";
 import "./ImageEnhancementDialog.css";
 
 export interface ImageEnhancementTarget {
   productId: string;
   skuIds: string[];
 }
+
+const DEFAULT_IMAGE_ENHANCEMENT_PROMPT =
+  "Enhance only the provided product image: make it sharper, clearer, and less noisy. " +
+  "The input image is the source of truth. Preserve the exact product, colors, materials, " +
+  "shape, proportions, existing text, markings, existing logos, background, lighting, and composition. " +
+  "Do not add, remove, redraw, or invent any logo, text, label, accessory, decoration, prop, or other object. " +
+  "Do not change the background or create a new design.";
+
+const IMAGE_ENHANCEMENT_RATIOS: ImageEnhancementRatio[] = ["1:1", "4:3", "3:4", "16:9", "9:16"];
+const IMAGE_ENHANCEMENT_SIZES: ImageEnhancementSize[] = ["1K", "2K", "4K"];
 
 function statusLabel(status: ImageEnhancementTask["items"][number]["status"], t: (key: string) => string) {
   if (status === "QUEUED") return t("排队中");
@@ -48,7 +58,9 @@ export function ImageEnhancementDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string>();
-  const startedKey = useRef("");
+  const [prompt, setPrompt] = useState(DEFAULT_IMAGE_ENHANCEMENT_PROMPT);
+  const [ratio, setRatio] = useState<ImageEnhancementRatio>("1:1");
+  const [size, setSize] = useState<ImageEnhancementSize>("1K");
   const targetKey = useMemo(
     () => targets.map((target) => `${target.productId}:${[...target.skuIds].sort().join(",")}`).sort().join("|")
     , [targets],
@@ -56,24 +68,20 @@ export function ImageEnhancementDialog({
 
   useEffect(() => {
     if (!open || !targetKey) {
-      // Closing the dialog ends this run. Allow the same selection to start a
-      // fresh task when the operator opens it again (including after a failure).
-      startedKey.current = "";
+      setTask(undefined);
+      setError("");
+      setBusy(false);
       return;
     }
-    if (startedKey.current === targetKey) return;
-    startedKey.current = targetKey;
+    // A new selection starts with a fresh editable configuration. The task is
+    // intentionally not created until the operator confirms the prompt.
     setTask(undefined);
     setError("");
-    setBusy(true);
-    void startImageEnhancement(targets)
-      .then(setTask)
-      .catch((reason) => {
-        startedKey.current = "";
-        setError(reason instanceof Error ? reason.message : t("图片清晰化任务创建失败"));
-      })
-      .finally(() => setBusy(false));
-  }, [open, t, targetKey, targets]);
+    setBusy(false);
+    setPrompt(DEFAULT_IMAGE_ENHANCEMENT_PROMPT);
+    setRatio("1:1");
+    setSize("1K");
+  }, [open, targetKey]);
 
   useEffect(() => {
     if (!open || !task || !["QUEUED", "RUNNING"].includes(task.status)) return;
@@ -108,6 +116,22 @@ export function ImageEnhancementDialog({
   const approvedIds = task?.items
     .filter((item) => item.status === "COMPLETED" && item.reviewStatus === "APPROVED")
     .map((item) => item.id) ?? [];
+  const start = async () => {
+    if (!targetKey || busy || task) return;
+    if (!prompt.trim()) {
+      setError(t("请输入清晰化提示词"));
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      setTask(await startImageEnhancement(targets, prompt, ratio, size));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("图片清晰化任务创建失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
   const reviewItem = async (itemId: string, decision: "APPROVE" | "REJECT") => {
     if (!task || busy) return;
     setBusy(true);
@@ -184,10 +208,45 @@ export function ImageEnhancementDialog({
             </div>
             <Button variant="ghost" color="gray" onClick={() => onOpenChange(false)} aria-label={t("关闭")}><X /></Button>
           </div>
-          {busy && !task ? <div className="core-image-enhancement-starting"><Sparkle className="is-spinning" /><Text>{t("正在创建清晰化任务…")}</Text></div> : null}
           {error ? <div className="core-form-error" role="alert">{error}</div> : null}
-          {task ? (
+          {!task ? (
+            <div className="core-image-enhancement-settings">
+              <label>
+                <Text size="2" weight="medium">{t("清晰化提示词")}</Text>
+                <TextArea
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  maxLength={2000}
+                  rows={6}
+                  disabled={busy}
+                  placeholder={t("描述希望如何改善图片，同时说明需要保持不变的内容")}
+                />
+              </label>
+              <div className="core-image-enhancement-settings-grid">
+                <label>
+                  <Text size="2" weight="medium">{t("图片比例")}</Text>
+                  <select value={ratio} onChange={(event) => setRatio(event.target.value as ImageEnhancementRatio)} disabled={busy}>
+                    {IMAGE_ENHANCEMENT_RATIOS.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("输出尺寸")}</Text>
+                  <select value={size} onChange={(event) => setSize(event.target.value as ImageEnhancementSize)} disabled={busy}>
+                    {IMAGE_ENHANCEMENT_SIZES.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="core-image-enhancement-settings-actions">
+                {busy ? <Text size="1" color="gray"><Sparkle className="is-spinning" />{t("正在创建清晰化任务…")}</Text> : null}
+                <Button disabled={busy || !targets.length} onClick={() => void start()}><Sparkle />{t("开始生成")}</Button>
+              </div>
+            </div>
+          ) : (
             <div className="core-image-enhancement-body">
+              <div className="core-image-enhancement-summary">
+                <Text size="1" color="gray">{t("本次设置")}</Text>
+                <span>{task.ratio} · {task.size}</span>
+              </div>
               <div className="core-image-enhancement-progress">
                 <div>
                   <Text weight="bold">{task.status === "COMPLETED" || task.status === "PARTIAL" ? t("任务已完成") : t("正在生成清晰图片")}</Text>
@@ -244,7 +303,7 @@ export function ImageEnhancementDialog({
                 ))}
               </div>
             </div>
-          ) : null}
+          )}
         </Dialog.Content>
       </Dialog.Root>
       <Dialog.Root open={Boolean(previewUrl)} onOpenChange={(next) => { if (!next) setPreviewUrl(undefined); }}>

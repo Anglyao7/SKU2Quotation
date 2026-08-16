@@ -14,6 +14,12 @@ ImageEnhancementItemStatus = Literal[
     "QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"
 ]
 ImageEnhancementReviewStatus = Literal["PENDING", "APPROVED", "REJECTED", "APPLIED"]
+ImageEnhancementRatio = Literal["1:1", "4:3", "3:4", "16:9", "9:16"]
+# Pixel dimensions are retained as accepted legacy values so tasks created by
+# older clients can still be resumed and inspected after this migration.
+ImageEnhancementSize = Literal[
+    "1K", "2K", "4K", "1024x1024", "1024x768", "768x1024"
+]
 
 
 class ImageEnhancementTarget(BaseModel):
@@ -39,7 +45,8 @@ class ImageEnhancementStartRequest(BaseModel):
         min_length=1,
         max_length=2000,
     )
-    size: Literal["1024x1024", "1024x768", "768x1024"] = "1024x1024"
+    ratio: ImageEnhancementRatio = "1:1"
+    size: ImageEnhancementSize = "1K"
 
     @model_validator(mode="after")
     def unique_products(self) -> "ImageEnhancementStartRequest":
@@ -81,6 +88,7 @@ class ImageEnhancementTaskResponse(BaseModel):
     id: UUID
     status: ImageEnhancementTaskStatus
     prompt: str
+    ratio: ImageEnhancementRatio
     size: str
     output_format: Literal["url"]
     total_items: int = Field(ge=0)

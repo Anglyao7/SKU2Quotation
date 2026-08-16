@@ -15,6 +15,13 @@ const STORAGE_KEY = "zhimaoyun.console.locale";
 
 const english: Record<string, string> = {
   "图片变清晰": "Enhance images",
+  "清晰化提示词": "Enhancement prompt",
+  "图片比例": "Image ratio",
+  "输出尺寸": "Output size",
+  "请输入清晰化提示词": "Enter an enhancement prompt",
+  "描述希望如何改善图片，同时说明需要保持不变的内容": "Describe how to improve the image and what must remain unchanged",
+  "开始生成": "Start generation",
+  "本次设置": "Current settings",
   "生成结果会先进入审核，确认后才会替换商品主图。": "Results are reviewed first and only replace the main image after confirmation.",
   "正在创建清晰化任务…": "Creating enhancement task…",
   "图片清晰化任务创建失败": "Could not create the enhancement task",
