@@ -5,8 +5,8 @@ own many knowledge bases; uploaded files and training material are attached to
 one knowledge base.  Legacy rows are re-parented to one generated default base
 per bound store and agent.
 
-Revision ID: 20260815_0086
-Revises: 20260814_0085
+Revision ID: 20260816_0098
+Revises: 20260816_0097
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "20260815_0086"
-down_revision = "20260814_0085"
+revision = "20260816_0098"
+down_revision = "20260816_0097"
 branch_labels = None
 depends_on = None
 
@@ -126,7 +126,7 @@ def _replace_training_unique_constraints(*, offline: bool = False) -> None:
 def upgrade() -> None:
     if op.get_context().as_sql:
         # Offline PostgreSQL generation has no inspector.  Emit the canonical
-        # 0085 -> 0086 DDL directly; online mode below additionally performs
+        # Emit the canonical DDL directly; online mode below additionally performs
         # idempotent checks and legacy backfill.
         op.create_table(
             "support_ai_knowledge_bases",
