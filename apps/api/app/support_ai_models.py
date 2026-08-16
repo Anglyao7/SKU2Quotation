@@ -149,46 +149,6 @@ class SupportAIAgentRow(AuditTimestampMixin, Base):
     )
 
 
-class SupportAIKnowledgeBaseRow(AuditTimestampMixin, Base):
-    """A tenant-scoped knowledge base owned by exactly one AI agent."""
-
-    __tablename__ = "support_ai_knowledge_bases"
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('ACTIVE', 'DISABLED')",
-            name="status_allowed",
-        ),
-        UniqueConstraint(
-            "tenant_id", "id", name="uq_support_ai_knowledge_bases_tenant_identity"
-        ),
-        UniqueConstraint(
-            "tenant_id", "agent_id", "name",
-            name="uq_support_ai_knowledge_bases_tenant_agent_name",
-        ),
-        Index(
-            "ix_support_ai_knowledge_bases_tenant_agent_status",
-            "tenant_id", "agent_id", "status", "updated_at",
-        ),
-    )
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    tenant_id: Mapped[UUID] = mapped_column(
-        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
-    )
-    agent_id: Mapped[UUID] = mapped_column(
-        ForeignKey("support_ai_agents.id", ondelete="RESTRICT"), nullable=False
-    )
-    name: Mapped[str] = mapped_column(String(160), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", nullable=False)
-    created_by_user_id: Mapped[UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
-    )
-    updated_by_user_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-
-
 class SupportAITrainingCaseRow(AuditTimestampMixin, Base):
     """Human-reviewed example that teaches behavior, never merchant facts."""
 
