@@ -22,6 +22,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link } from "react-router-dom";
+import { BRAND_FULL_NAME, BRAND_NAME_ZH } from "../../brand";
 import { Brand } from "../../components/Brand";
 import styles from "./LandingPage.module.css";
 
@@ -181,7 +182,7 @@ export function LandingPage() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = "智贸云 | 万千货品，自成脉络";
+    document.title = `${BRAND_FULL_NAME} | 万千货品，自成脉络`;
     return () => {
       document.title = previousTitle;
     };
@@ -305,12 +306,12 @@ export function LandingPage() {
             <Reveal>
               <figure className={`${styles.productProof} ${styles.goldTraceCard}`}>
                 <figcaption>
-                  <span>智贸云商品前台</span>
+                  <span>{BRAND_NAME_ZH}商品前台</span>
                   <strong>{window.location.host}/{primaryStorefrontSlug}</strong>
                 </figcaption>
                 <img
                   src="/assets/marketing/storefront-preview.png"
-                  alt="智贸云商品前台，包含 SKU 搜索、标签筛选和商品卡片"
+                  alt={`${BRAND_NAME_ZH}商品前台，包含 SKU 搜索、标签筛选和商品卡片`}
                   width="863"
                   height="875"
                   loading="lazy"
@@ -336,7 +337,7 @@ export function LandingPage() {
 
           <Reveal className={`${styles.painCopy} ${styles.goldTraceCard}`}>
             <h2>好商品，不该失落在表格之间。</h2>
-            <p>当规格、图片、价格与供应商各自散落，每一次寻找都在重复昨天。智贸云把它们重新编入同一条脉络。</p>
+            <p>当规格、图片、价格与供应商各自散落，每一次寻找都在重复昨天。{BRAND_NAME_ZH}把它们重新编入同一条脉络。</p>
             <dl className={styles.painList}>
               <div>
                 <dt>资料有归处</dt>
@@ -541,7 +542,7 @@ export function LandingPage() {
             <Link to="/privacy">隐私政策</Link>
             <a href="/licenses/Noto-CJK-OFL.txt">字体许可</a>
           </nav>
-          <small>© {new Date().getFullYear()} 智贸云</small>
+          <small>© {new Date().getFullYear()} {BRAND_FULL_NAME}</small>
         </div>
       </footer>
     </div>

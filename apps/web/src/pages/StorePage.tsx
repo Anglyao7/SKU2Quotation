@@ -23,6 +23,7 @@ import { ThinkingOrb } from "thinking-orbs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useLoaderData, useLocation, useParams } from "react-router-dom";
+import { BRAND_NAME_ZH } from "../brand";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
@@ -373,7 +374,7 @@ export function StorePage() {
     const previousDirection = document.documentElement.dir;
     document.documentElement.lang = locale;
     document.documentElement.dir = storefrontDirection(locale);
-    document.title = `${loadedStore.name} | 智贸云`;
+    document.title = `${loadedStore.name} | ${BRAND_NAME_ZH}`;
     return () => {
       document.title = previousTitle;
       document.documentElement.lang = previousLanguage;
