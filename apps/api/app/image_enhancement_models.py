@@ -31,6 +31,14 @@ class ImageEnhancementTaskRow(AuditTimestampMixin, Base):
             "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED')",
             name="status_allowed",
         ),
+        CheckConstraint(
+            "ratio IN ('1:1', '4:3', '3:4', '16:9', '9:16')",
+            name="ratio_allowed",
+        ),
+        CheckConstraint(
+            "size IN ('1K', '2K', '4K', '1024x1024', '1024x768', '768x1024')",
+            name="size_allowed",
+        ),
         CheckConstraint("output_format = 'url'", name="output_format_allowed"),
         CheckConstraint("total_items >= 0", name="total_items_nonnegative"),
         CheckConstraint("completed_items >= 0", name="completed_items_nonnegative"),
@@ -50,13 +58,16 @@ class ImageEnhancementTaskRow(AuditTimestampMixin, Base):
     prompt: Mapped[str] = mapped_column(
         Text,
         default=(
-            "Enhance this product image to be sharper and clearer. "
-            "Preserve the exact product, colors, shape, text, and composition. "
-            "Do not add, remove, or redesign any object."
+            "Enhance only the provided product image: make it sharper, clearer, and less noisy. "
+            "The input image is the source of truth. Preserve the exact product, colors, materials, "
+            "shape, proportions, existing text, markings, existing logos, background, lighting, and composition. "
+            "Do not add, remove, redraw, or invent any logo, text, label, accessory, decoration, prop, or other object. "
+            "Do not change the background or create a new design."
         ),
         nullable=False,
     )
-    size: Mapped[str] = mapped_column(String(32), default="1024x1024", nullable=False)
+    ratio: Mapped[str] = mapped_column(String(8), default="1:1", nullable=False)
+    size: Mapped[str] = mapped_column(String(32), default="1K", nullable=False)
     output_format: Mapped[str] = mapped_column(String(20), default="url", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="QUEUED", nullable=False)
     total_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

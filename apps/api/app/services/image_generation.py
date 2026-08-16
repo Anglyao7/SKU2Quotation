@@ -15,10 +15,47 @@ from .image_generation_rate_limit import image_generation_request_slot
 
 
 ImageGenerationOutputFormat = Literal["url", "b64_json"]
+IMAGE_ENHANCEMENT_RATIOS = {"1:1", "4:3", "3:4", "16:9", "9:16"}
+IMAGE_ENHANCEMENT_SIZES = {"1K", "2K", "4K", "1024x1024", "1024x768", "768x1024"}
+_RATIO_PARTS = {
+    "1:1": (1, 1),
+    "4:3": (4, 3),
+    "3:4": (3, 4),
+    "16:9": (16, 9),
+    "9:16": (9, 16),
+}
+_SIZE_BASE_PIXELS = {"1K": 1024, "2K": 2048, "4K": 4096}
 
 
 class ImageGenerationError(ValueError):
     """A safe error raised by the image-to-image provider."""
+
+
+def _provider_size(*, ratio: str, size: str) -> str:
+    """Convert the public ratio/resolution controls to provider pixels.
+
+    The managed API keeps the human-friendly ``1K``/``2K``/``4K`` values and
+    the selected ratio in the durable task. The upstream image endpoint still
+    receives a pixel dimension, which keeps compatibility with older provider
+    configurations and avoids sending unsupported extension fields upstream.
+    Legacy pixel values are passed through unchanged for old tasks.
+    """
+
+    if size in {"1024x1024", "1024x768", "768x1024"}:
+        return size
+    if ratio not in IMAGE_ENHANCEMENT_RATIOS:
+        raise ImageGenerationError("unsupported image ratio")
+    if size not in _SIZE_BASE_PIXELS:
+        raise ImageGenerationError("unsupported image size")
+    width_ratio, height_ratio = _RATIO_PARTS[ratio]
+    base = _SIZE_BASE_PIXELS[size]
+    if width_ratio >= height_ratio:
+        width = base
+        height = max(1, round(base * height_ratio / width_ratio))
+    else:
+        height = base
+        width = max(1, round(base * width_ratio / height_ratio))
+    return f"{width}x{height}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +79,8 @@ def edit_image(
     *,
     prompt: str,
     images: Sequence[str],
-    size: str = "1024x1024",
+    ratio: str = "1:1",
+    size: str = "1K",
     output_format: ImageGenerationOutputFormat = "url",
 ) -> ImageEditResult:
     """Run Agnes image-to-image editing with URL or Base64 output.
@@ -62,6 +100,10 @@ def edit_image(
         raise ImageGenerationError("no more than 8 input images are supported")
     if output_format not in {"url", "b64_json"}:
         raise ImageGenerationError("unsupported image output format")
+    if ratio not in IMAGE_ENHANCEMENT_RATIOS:
+        raise ImageGenerationError("unsupported image ratio")
+    if size not in IMAGE_ENHANCEMENT_SIZES:
+        raise ImageGenerationError("unsupported image size")
 
     settings = get_managed_image_generation_settings(session)
     if settings is None:
@@ -77,7 +119,7 @@ def edit_image(
     payload = {
         "model": settings.model_name,
         "prompt": normalized_prompt,
-        "size": size,
+        "size": _provider_size(ratio=ratio, size=size),
         "extra_body": {
             "image": normalized_images,
             "response_format": output_format,

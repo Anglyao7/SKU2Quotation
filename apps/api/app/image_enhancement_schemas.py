@@ -14,6 +14,12 @@ ImageEnhancementItemStatus = Literal[
     "QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"
 ]
 ImageEnhancementReviewStatus = Literal["PENDING", "APPROVED", "REJECTED", "APPLIED"]
+ImageEnhancementRatio = Literal["1:1", "4:3", "3:4", "16:9", "9:16"]
+# Pixel dimensions are retained as accepted legacy values so tasks created by
+# older clients can still be resumed and inspected after this migration.
+ImageEnhancementSize = Literal[
+    "1K", "2K", "4K", "1024x1024", "1024x768", "768x1024"
+]
 
 
 class ImageEnhancementTarget(BaseModel):
@@ -30,14 +36,17 @@ class ImageEnhancementStartRequest(BaseModel):
     targets: list[ImageEnhancementTarget] = Field(min_length=1, max_length=500)
     prompt: str = Field(
         default=(
-            "Enhance this product image to be sharper and clearer. "
-            "Preserve the exact product, colors, shape, text, and composition. "
-            "Do not add, remove, or redesign any object."
+            "Enhance only the provided product image: make it sharper, clearer, and less noisy. "
+            "The input image is the source of truth. Preserve the exact product, colors, materials, "
+            "shape, proportions, existing text, markings, existing logos, background, lighting, and composition. "
+            "Do not add, remove, redraw, or invent any logo, text, label, accessory, decoration, prop, or other object. "
+            "Do not change the background or create a new design."
         ),
         min_length=1,
         max_length=2000,
     )
-    size: Literal["1024x1024", "1024x768", "768x1024"] = "1024x1024"
+    ratio: ImageEnhancementRatio = "1:1"
+    size: ImageEnhancementSize = "1K"
 
     @model_validator(mode="after")
     def unique_products(self) -> "ImageEnhancementStartRequest":
@@ -79,6 +88,7 @@ class ImageEnhancementTaskResponse(BaseModel):
     id: UUID
     status: ImageEnhancementTaskStatus
     prompt: str
+    ratio: ImageEnhancementRatio
     size: str
     output_format: Literal["url"]
     total_items: int = Field(ge=0)

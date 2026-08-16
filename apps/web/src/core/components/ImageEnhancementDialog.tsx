@@ -1,6 +1,6 @@
-import { Badge, Button, Dialog, Progress, Text } from "@radix-ui/themes";
+import { Badge, Button, Dialog, Progress, Text, TextArea } from "@radix-ui/themes";
 import { Check, CheckCircle, ImageSquare, Sparkle, X, XCircle } from "@phosphor-icons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   cancelImageEnhancementTask,
   confirmImageEnhancementTask,
@@ -9,12 +9,32 @@ import {
   startImageEnhancement,
 } from "../api";
 import { useLocale } from "../LocaleContext";
-import type { ImageEnhancementTask } from "../types";
+import type { ImageEnhancementRatio, ImageEnhancementSize, ImageEnhancementTask } from "../types";
 import "./ImageEnhancementDialog.css";
 
 export interface ImageEnhancementTarget {
   productId: string;
   skuIds: string[];
+}
+
+const DEFAULT_IMAGE_ENHANCEMENT_PROMPT =
+  "Enhance only the provided product image: make it sharper, clearer, and less noisy. " +
+  "The input image is the source of truth. Preserve the exact product, colors, materials, " +
+  "shape, proportions, existing text, markings, existing logos, background, lighting, and composition. " +
+  "Do not add, remove, redraw, or invent any logo, text, label, accessory, decoration, prop, or other object. " +
+  "Do not change the background or create a new design.";
+
+const IMAGE_ENHANCEMENT_RATIOS: ImageEnhancementRatio[] = ["1:1", "4:3", "3:4", "16:9", "9:16"];
+const IMAGE_ENHANCEMENT_SIZES: ImageEnhancementSize[] = ["1K", "2K", "4K"];
+
+type ImageEnhancementRetryDraft = {
+  prompt: string;
+  ratio: ImageEnhancementRatio;
+  size: ImageEnhancementSize;
+};
+
+function defaultRetryDraft(): ImageEnhancementRetryDraft {
+  return { prompt: DEFAULT_IMAGE_ENHANCEMENT_PROMPT, ratio: "1:1", size: "1K" };
 }
 
 function statusLabel(status: ImageEnhancementTask["items"][number]["status"], t: (key: string) => string) {
@@ -48,7 +68,10 @@ export function ImageEnhancementDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string>();
-  const startedKey = useRef("");
+  const [prompt, setPrompt] = useState(DEFAULT_IMAGE_ENHANCEMENT_PROMPT);
+  const [ratio, setRatio] = useState<ImageEnhancementRatio>("1:1");
+  const [size, setSize] = useState<ImageEnhancementSize>("1K");
+  const [retryDrafts, setRetryDrafts] = useState<Record<string, ImageEnhancementRetryDraft>>({});
   const targetKey = useMemo(
     () => targets.map((target) => `${target.productId}:${[...target.skuIds].sort().join(",")}`).sort().join("|")
     , [targets],
@@ -56,24 +79,21 @@ export function ImageEnhancementDialog({
 
   useEffect(() => {
     if (!open || !targetKey) {
-      // Closing the dialog ends this run. Allow the same selection to start a
-      // fresh task when the operator opens it again (including after a failure).
-      startedKey.current = "";
+      setTask(undefined);
+      setError("");
+      setBusy(false);
       return;
     }
-    if (startedKey.current === targetKey) return;
-    startedKey.current = targetKey;
+    // A new selection starts with a fresh editable configuration. The task is
+    // intentionally not created until the operator confirms the prompt.
     setTask(undefined);
     setError("");
-    setBusy(true);
-    void startImageEnhancement(targets)
-      .then(setTask)
-      .catch((reason) => {
-        startedKey.current = "";
-        setError(reason instanceof Error ? reason.message : t("图片清晰化任务创建失败"));
-      })
-      .finally(() => setBusy(false));
-  }, [open, t, targetKey, targets]);
+    setBusy(false);
+    setPrompt(DEFAULT_IMAGE_ENHANCEMENT_PROMPT);
+    setRatio("1:1");
+    setSize("1K");
+    setRetryDrafts({});
+  }, [open, targetKey]);
 
   useEffect(() => {
     if (!open || !task || !["QUEUED", "RUNNING"].includes(task.status)) return;
@@ -108,19 +128,58 @@ export function ImageEnhancementDialog({
   const approvedIds = task?.items
     .filter((item) => item.status === "COMPLETED" && item.reviewStatus === "APPROVED")
     .map((item) => item.id) ?? [];
+  const start = async () => {
+    if (!targetKey || busy || task) return;
+    if (!prompt.trim()) {
+      setError(t("请输入清晰化提示词"));
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      setTask(await startImageEnhancement(targets, prompt, ratio, size));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("图片清晰化任务创建失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const updateRetryDraft = (itemId: string, patch: Partial<ImageEnhancementRetryDraft>) => {
+    setRetryDrafts((current) => ({
+      ...current,
+      [itemId]: { ...defaultRetryDraft(), ...current[itemId], ...patch },
+    }));
+  };
+  const retryItem = async (item: ImageEnhancementTask["items"][number]) => {
+    if (busy) return;
+    const draft = { ...defaultRetryDraft(), ...retryDrafts[item.id] };
+    if (!draft.prompt.trim()) {
+      setError(t("请输入清晰化提示词"));
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      setTask(await startImageEnhancement(
+        [{ productId: item.productId, skuIds: item.skuIds }],
+        draft.prompt,
+        draft.ratio,
+        draft.size,
+      ));
+      setRetryDrafts({});
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("图片清晰化任务创建失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
   const reviewItem = async (itemId: string, decision: "APPROVE" | "REJECT") => {
     if (!task || busy) return;
     setBusy(true);
     setError("");
     try {
       const reviewed = await reviewImageEnhancementTask(task.id, [itemId], decision);
-      if (decision === "APPROVE") {
-        const applied = await confirmImageEnhancementTask(reviewed.id, [itemId]);
-        setTask(applied);
-        await onApplied?.();
-      } else {
-        setTask(reviewed);
-      }
+      setTask(reviewed);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("审核失败"));
     } finally {
@@ -133,13 +192,7 @@ export function ImageEnhancementDialog({
     setError("");
     try {
       const reviewed = await reviewImageEnhancementTask(task.id, reviewableIds, decision);
-      if (decision === "APPROVE") {
-        const applied = await confirmImageEnhancementTask(reviewed.id, reviewableIds);
-        setTask(applied);
-        await onApplied?.();
-      } else {
-        setTask(reviewed);
-      }
+      setTask(reviewed);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("审核失败"));
     } finally {
@@ -184,10 +237,45 @@ export function ImageEnhancementDialog({
             </div>
             <Button variant="ghost" color="gray" onClick={() => onOpenChange(false)} aria-label={t("关闭")}><X /></Button>
           </div>
-          {busy && !task ? <div className="core-image-enhancement-starting"><Sparkle className="is-spinning" /><Text>{t("正在创建清晰化任务…")}</Text></div> : null}
           {error ? <div className="core-form-error" role="alert">{error}</div> : null}
-          {task ? (
+          {!task ? (
+            <div className="core-image-enhancement-settings">
+              <label>
+                <Text size="2" weight="medium">{t("清晰化提示词")}</Text>
+                <TextArea
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  maxLength={2000}
+                  rows={6}
+                  disabled={busy}
+                  placeholder={t("描述希望如何改善图片，同时说明需要保持不变的内容")}
+                />
+              </label>
+              <div className="core-image-enhancement-settings-grid">
+                <label>
+                  <Text size="2" weight="medium">{t("图片比例")}</Text>
+                  <select value={ratio} onChange={(event) => setRatio(event.target.value as ImageEnhancementRatio)} disabled={busy}>
+                    {IMAGE_ENHANCEMENT_RATIOS.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <Text size="2" weight="medium">{t("输出尺寸")}</Text>
+                  <select value={size} onChange={(event) => setSize(event.target.value as ImageEnhancementSize)} disabled={busy}>
+                    {IMAGE_ENHANCEMENT_SIZES.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="core-image-enhancement-settings-actions">
+                {busy ? <Text size="1" color="gray"><Sparkle className="is-spinning" />{t("正在创建清晰化任务…")}</Text> : null}
+                <Button disabled={busy || !targets.length} onClick={() => void start()}><Sparkle />{t("开始生成")}</Button>
+              </div>
+            </div>
+          ) : (
             <div className="core-image-enhancement-body">
+              <div className="core-image-enhancement-summary">
+                <Text size="1" color="gray">{t("本次设置")}</Text>
+                <span>{task.ratio} · {task.size}</span>
+              </div>
               <div className="core-image-enhancement-progress">
                 <div>
                   <Text weight="bold">{task.status === "COMPLETED" || task.status === "PARTIAL" ? t("任务已完成") : t("正在生成清晰图片")}</Text>
@@ -197,11 +285,11 @@ export function ImageEnhancementDialog({
                 <Progress value={task.progressPercent} />
               </div>
               <div className="core-image-enhancement-toolbar">
-                <Text size="1" color="gray">{t("完成后请逐张审核，审核通过后会自动替换商品主图。")}</Text>
+                <Text size="1" color="gray">{t("完成后请逐张审核，通过后点击确定应用图片。")}</Text>
                 <span>
-                  {reviewableIds.length ? <Button size="1" variant="soft" disabled={busy} onClick={() => void reviewAll("APPROVE")}><Check />{t("全部审核通过")}</Button> : null}
-                  {approvedIds.length ? <Button size="1" color="jade" disabled={busy} onClick={() => void confirm()}><CheckCircle />{t("应用已审核 {count} 张", { count: approvedIds.length })}</Button> : null}
-                  {["QUEUED", "RUNNING"].includes(task.status) ? <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => void cancelItem()}><XCircle />{t("取消剩余任务")}</Button> : null}
+                  {reviewableIds.length ? <Button size="2" variant="soft" disabled={busy} onClick={() => void reviewAll("APPROVE")}><Check />{t("全部审核通过")}</Button> : null}
+                  {approvedIds.length ? <Button size="2" color="jade" disabled={busy} onClick={() => void confirm()}><CheckCircle />{t("确定应用 {count} 张", { count: approvedIds.length })}</Button> : null}
+                  {["QUEUED", "RUNNING"].includes(task.status) ? <Button size="2" variant="soft" color="gray" disabled={busy} onClick={() => void cancelItem()}><XCircle />{t("取消剩余任务")}</Button> : null}
                 </span>
               </div>
               <div className="core-image-enhancement-items">
@@ -235,16 +323,44 @@ export function ImageEnhancementDialog({
                       <div className="core-image-enhancement-item-title"><strong>{item.productName}</strong><Badge color={item.status === "COMPLETED" ? "jade" : item.status === "FAILED" ? "red" : item.status === "CANCELLED" ? "gray" : "blue"}>{statusLabel(item.status, t)}</Badge><Badge color={item.reviewStatus === "APPROVED" ? "jade" : item.reviewStatus === "REJECTED" ? "red" : item.reviewStatus === "APPLIED" ? "purple" : "amber"}>{reviewLabel(item.reviewStatus, t)}</Badge></div>
                       <Text size="1" color="gray">{item.skuSnapshot.length ? item.skuSnapshot.map((sku) => sku.skuCode || sku.name).filter(Boolean).join("、") : t("全部 SKU")}</Text>
                       {item.errorMessage ? <Text size="1" color="red">{item.errorMessage}</Text> : null}
+                      {item.status === "COMPLETED" && item.reviewStatus === "REJECTED" ? (() => {
+                        const draft = { ...defaultRetryDraft(), ...retryDrafts[item.id] };
+                        return (
+                          <div className="core-image-enhancement-retry">
+                            <div className="core-image-enhancement-retry-heading">
+                              <Text weight="bold">{t("重新处理这张图片")}</Text>
+                              <Text size="1" color="gray">{t("已载入系统默认提示词，可按需修改后再次提交。")}</Text>
+                            </div>
+                            <TextArea
+                              value={draft.prompt}
+                              onChange={(event) => updateRetryDraft(item.id, { prompt: event.target.value })}
+                              maxLength={2000}
+                              rows={4}
+                              disabled={busy}
+                              aria-label={t("重新处理提示词")}
+                            />
+                            <div className="core-image-enhancement-retry-options">
+                              <select value={draft.ratio} onChange={(event) => updateRetryDraft(item.id, { ratio: event.target.value as ImageEnhancementRatio })} disabled={busy} aria-label={t("图片比例")}>
+                                {IMAGE_ENHANCEMENT_RATIOS.map((option) => <option key={option} value={option}>{t("比例")}: {option}</option>)}
+                              </select>
+                              <select value={draft.size} onChange={(event) => updateRetryDraft(item.id, { size: event.target.value as ImageEnhancementSize })} disabled={busy} aria-label={t("输出尺寸")}>
+                                {IMAGE_ENHANCEMENT_SIZES.map((option) => <option key={option} value={option}>{t("尺寸")}: {option}</option>)}
+                              </select>
+                              <Button size="2" color="blue" disabled={busy} onClick={() => void retryItem(item)}><Sparkle />{t("修改提示词并重新生成")}</Button>
+                            </div>
+                          </div>
+                        );
+                      })() : null}
                     </div>
                     <div className="core-image-enhancement-item-actions">
-                      {item.status === "COMPLETED" && item.reviewStatus === "PENDING" ? <><Button size="1" variant="soft" color="red" disabled={busy} onClick={() => void reviewItem(item.id, "REJECT")}>{t("驳回")}</Button><Button size="1" color="jade" disabled={busy} onClick={() => void reviewItem(item.id, "APPROVE")}><Check />{t("审核通过")}</Button></> : null}
-                      {item.status === "QUEUED" || item.status === "RUNNING" ? <Button size="1" variant="ghost" color="gray" disabled={busy} onClick={() => void cancelItem(item.id)}>{t("取消")}</Button> : null}
+                      {item.status === "COMPLETED" && item.reviewStatus === "PENDING" ? <><Button size="2" variant="soft" color="red" disabled={busy} onClick={() => void reviewItem(item.id, "REJECT")}>{t("驳回")}</Button><Button size="2" color="jade" disabled={busy} onClick={() => void reviewItem(item.id, "APPROVE")}><Check />{t("审核通过")}</Button></> : null}
+                      {item.status === "QUEUED" || item.status === "RUNNING" ? <Button size="2" variant="ghost" color="gray" disabled={busy} onClick={() => void cancelItem(item.id)}>{t("取消")}</Button> : null}
                     </div>
                   </article>
                 ))}
               </div>
             </div>
-          ) : null}
+          )}
         </Dialog.Content>
       </Dialog.Root>
       <Dialog.Root open={Boolean(previewUrl)} onOpenChange={(next) => { if (!next) setPreviewUrl(undefined); }}>
