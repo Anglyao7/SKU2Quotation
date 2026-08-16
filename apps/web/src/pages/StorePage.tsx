@@ -739,9 +739,10 @@ export function StorePage() {
     },
     [store.ai_search_questions, t],
   );
+  const categoryShowcaseEnabled = store.category_showcase_enabled !== false;
   const showCategoryShowcase = Boolean(
     !shareToken
-    && store.category_showcase_enabled !== false
+    && categoryShowcaseEnabled
     && !search.trim()
     && !secondaryCategory
     && categoryShowcaseOptions.length,
@@ -1034,7 +1035,7 @@ export function StorePage() {
                       ))}
                     </CategoryScrollTrack>
                   </div>
-                  {visibleSecondaryOptions.length ? (
+                  {visibleSecondaryOptions.length && (!categoryShowcaseEnabled || secondaryCategory) ? (
                     <div className="category-browser-row">
                       <span className="category-browser-label">{t("二级分类")}</span>
                       <CategoryScrollTrack
@@ -1097,17 +1098,19 @@ export function StorePage() {
                           type="button"
                           className={`category-sidebar-item is-primary${primaryCategory === item.node.path ? " is-active" : ""}`}
                           title={item.node.name}
-                          aria-expanded={item.node.children.length ? expandedCategories.has(item.node.path) : undefined}
+                          aria-expanded={!categoryShowcaseEnabled && item.node.children.length ? expandedCategories.has(item.node.path) : undefined}
                           onClick={() => {
                             setPrimaryCategory(item.node.path);
                             setSecondaryCategory("");
-                            if (item.node.children.length) toggleCategoryExpansion(item.node.path);
+                            if (!categoryShowcaseEnabled && item.node.children.length) {
+                              toggleCategoryExpansion(item.node.path);
+                            }
                           }}
                         >
                           <span>{item.node.name}</span>
-                          {item.node.children.length ? <CaretDown className={expandedCategories.has(item.node.path) ? "is-expanded" : undefined} size={14} /> : null}
+                          {!categoryShowcaseEnabled && item.node.children.length ? <CaretDown className={expandedCategories.has(item.node.path) ? "is-expanded" : undefined} size={14} /> : null}
                         </button>
-                        {item.node.children.length && expandedCategories.has(item.node.path) ? (
+                        {!categoryShowcaseEnabled && item.node.children.length && expandedCategories.has(item.node.path) ? (
                           <div className="category-sidebar-children">
                             {item.node.children.map((child) => (
                               <button
@@ -1144,7 +1147,7 @@ export function StorePage() {
                     aria-pressed={!secondaryCategory}
                     onClick={() => setSecondaryCategory("")}
                   >
-                    {store.category_showcase_enabled !== false ? t("返回分类门面") : t("全部商品")}
+                    {categoryShowcaseEnabled ? t("返回分类门面") : t("全部商品")}
                   </button>
                   {secondaryOptions.map((item) => (
                     <button
