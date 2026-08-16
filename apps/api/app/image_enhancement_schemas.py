@@ -30,9 +30,11 @@ class ImageEnhancementStartRequest(BaseModel):
     targets: list[ImageEnhancementTarget] = Field(min_length=1, max_length=500)
     prompt: str = Field(
         default=(
-            "Enhance this product image to be sharper and clearer. "
-            "Preserve the exact product, colors, shape, text, and composition. "
-            "Do not add, remove, or redesign any object."
+            "Enhance only the provided product image: make it sharper, clearer, and less noisy. "
+            "The input image is the source of truth. Preserve the exact product, colors, materials, "
+            "shape, proportions, existing text, markings, existing logos, background, lighting, and composition. "
+            "Do not add, remove, redraw, or invent any logo, text, label, accessory, decoration, prop, or other object. "
+            "Do not change the background or create a new design."
         ),
         min_length=1,
         max_length=2000,
