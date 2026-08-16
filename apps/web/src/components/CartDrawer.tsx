@@ -31,7 +31,13 @@ import { api } from "../lib/api";
 import { money, quoteNumber } from "../lib/format";
 import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
 import { notifyStorefrontQuotesChanged } from "../lib/storefrontVisitor";
-import type { CreateQuoteInput, Quote, Sku, StorefrontLocale } from "../types";
+import type {
+  CreateQuoteInput,
+  Quote,
+  Sku,
+  StorefrontLocale,
+  StorefrontSupportAction,
+} from "../types";
 
 export interface CartLine {
   sku: Sku;
@@ -42,10 +48,59 @@ interface CartDrawerProps {
   slug: string;
   storeName: string;
   contactEmail?: string | null;
+  contactImages?: Array<Pick<StorefrontSupportAction, "image_url" | "label">>;
   lines: CartLine[];
   onQuantity: (skuId: string, quantity: number) => void;
   onClear: () => void;
   locale: StorefrontLocale;
+}
+
+function QuoteContactMethods({
+  contactEmail,
+  contactImages,
+  locale,
+}: {
+  contactEmail?: string | null;
+  contactImages?: Array<Pick<StorefrontSupportAction, "image_url" | "label">>;
+  locale: StorefrontLocale;
+}) {
+  const t = (source: string, values?: Record<string, string | number>) => storefrontText(locale, source, values);
+  const images = Array.from(new Map(
+    (contactImages || [])
+      .map((item) => ({
+        src: item.image_url?.trim() || "",
+        label: item.label?.trim() || t("商家联系方式"),
+      }))
+      .filter((item) => item.src)
+      .map((item) => [item.src, item]),
+  ).values());
+  const email = contactEmail?.trim();
+
+  return (
+    <div className="quote-contact-panel">
+      <div className="quote-contact-heading">
+        <Text as="div" size="2" weight="medium">{t("需要帮助？可以直接联系我们")}</Text>
+        <Text as="div" size="1" color="gray">{t("商家确认报价或需要补充信息时，会通过以下方式与您沟通。")}</Text>
+      </div>
+      {email ? (
+        <a className="quote-contact-email" href={`mailto:${email}`}>
+          <span>{t("联系邮箱")}</span>
+          <strong>{email}</strong>
+        </a>
+      ) : null}
+      {images.length ? (
+        <div className="quote-contact-images" aria-label={t("商家联系方式图片")}>
+          {images.map((item) => (
+            <div className="quote-contact-image" key={item.src}>
+              <img src={item.src} alt={item.label} loading="lazy" decoding="async" />
+              <span>{item.label}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {!email && !images.length ? <Text size="1" color="gray">{t("商家暂未提供公开联系方式，请留意个人中心中的报价进度。")}</Text> : null}
+    </div>
+  );
 }
 
 function CartLineImage({ sku }: { sku: Sku }) {
@@ -68,7 +123,7 @@ function CartLineImage({ sku }: { sku: Sku }) {
   );
 }
 
-export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, onClear, locale }: CartDrawerProps) {
+export function CartDrawer({ slug, storeName, contactEmail, contactImages, lines, onQuantity, onClear, locale }: CartDrawerProps) {
   const [open, setOpen] = useState(false);
   const [reviewReminderOpen, setReviewReminderOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -86,6 +141,38 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
+  const quoteApproved = quote?.status === "CONFIRMED" || quote?.status === "COMPLETED";
+
+  useEffect(() => {
+    if (!quote || quote.status !== "PENDING_CONFIRMATION") return;
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const rows = await api.listStorefrontVisitorQuotes(slug);
+        if (disposed) return;
+        const current = rows.find((row) => row.id === quote.id);
+        if (!current || current.status === "PENDING_CONFIRMATION") return;
+        setQuote((previous) => previous ? {
+          ...previous,
+          status: current.status,
+          total_amount: current.total_amount,
+          total: current.total_amount,
+          updated_at: current.updated_at,
+        } : previous);
+        if (current.status === "CONFIRMED" || current.status === "COMPLETED") {
+          setReviewReminderOpen(true);
+        }
+      } catch {
+        // The quote can still be viewed while a background status refresh fails.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [quote?.id, quote?.status, slug]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -122,6 +209,10 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
 
   const handleDownload = async (type: "pdf" | "xlsx") => {
     if (!quote) return;
+    if (!quoteApproved) {
+      setError(t("商家确认报价后才可以下载文件。"));
+      return;
+    }
     setDownloading(type);
     setError("");
     try {
@@ -184,18 +275,21 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
             <span className="success-icon"><CheckCircle size={38} weight="duotone" /></span>
             <div>
               <Text as="div" size="5" weight="bold">{t("报价单已生成")}</Text>
-              <Text as="div" size="2" color="gray">{t("可以下载 Excel 或 PDF 文件。")}</Text>
+              <Text as="div" size="2" color="gray">{quoteApproved ? t("商家已确认报价，现在可以下载 PDF 或 Excel。") : t("报价已提交，商家确认后才可以下载 PDF 或 Excel。")}</Text>
               <Text as="div" size="2" color="gray" className="mono-text">{quoteNumber(quote)}</Text>
             </div>
             {error && <Callout.Root color="red"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error}</Callout.Text></Callout.Root>}
-            <div className="download-actions">
-              <Button size="3" onClick={() => void handleDownload("pdf")} loading={downloading === "pdf"}>
-                <FilePdf size={19} />{t("下载 PDF")}
-              </Button>
-              <Button size="3" variant="soft" onClick={() => void handleDownload("xlsx")} loading={downloading === "xlsx"}>
-                <FileXls size={19} />{t("下载 Excel")}
-              </Button>
-            </div>
+            <QuoteContactMethods contactEmail={contactEmail} contactImages={contactImages} locale={locale} />
+            {quoteApproved ? (
+              <div className="download-actions">
+                <Button size="3" onClick={() => void handleDownload("pdf")} loading={downloading === "pdf"}>
+                  <FilePdf size={19} />{t("下载 PDF")}
+                </Button>
+                <Button size="3" variant="soft" onClick={() => void handleDownload("xlsx")} loading={downloading === "xlsx"}>
+                  <FileXls size={19} />{t("下载 Excel")}
+                </Button>
+              </div>
+            ) : null}
             <Button asChild size="3" variant="soft">
               <Link to={visitorCenterHref}>{t("前往个人中心")}</Link>
             </Button>
@@ -315,10 +409,19 @@ export function CartDrawer({ slug, storeName, contactEmail, lines, onQuantity, o
     </Dialog.Root>
     <AlertDialog.Root open={reviewReminderOpen} onOpenChange={setReviewReminderOpen}>
       <AlertDialog.Content maxWidth="460px">
-        <AlertDialog.Title>{t("报价确认提醒")}</AlertDialog.Title>
+        <AlertDialog.Title>{quoteApproved ? t("报价已通过") : t("报价已提交")}</AlertDialog.Title>
         <AlertDialog.Description>
-          {t("本次报价需由商家确认后生效，请以商家后续确认的最终版本为准。")}
+          {quoteApproved
+            ? t("商家已经审核通过这份报价，您现在可以下载 PDF 或 Excel 文件。")
+            : t("本次报价需由商家确认后生效，请以商家后续确认的最终版本为准。")}
         </AlertDialog.Description>
+        <QuoteContactMethods contactEmail={contactEmail} contactImages={contactImages} locale={locale} />
+        {quoteApproved ? (
+          <div className="download-actions quote-review-dialog-downloads">
+            <Button size="2" onClick={() => void handleDownload("pdf")} loading={downloading === "pdf"}><FilePdf />{t("下载 PDF")}</Button>
+            <Button size="2" variant="soft" onClick={() => void handleDownload("xlsx")} loading={downloading === "xlsx"}><FileXls />{t("下载 Excel")}</Button>
+          </div>
+        ) : null}
         <div className="core-dialog-actions quote-review-dialog-actions">
           <AlertDialog.Action>
             <Button onClick={() => setReviewReminderOpen(false)}>{t("知道了")}</Button>

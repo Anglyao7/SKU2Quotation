@@ -16,6 +16,9 @@ from ..public_catalog_schemas import (
     PublicProductDetail,
     PublicProductPage,
     PublicQuoteDraftCreate,
+    PublicQuoteDraftItemsUpdate,
+    PublicQuoteDraftPriceAdjustment,
+    PublicQuoteDraftItemPriceUpdate,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSettingsUpdate,
     PublicQuoteDraftStatusUpdate,
@@ -462,6 +465,76 @@ def list_storefront_visitor_quote_drafts(
         raise application_http_error(exc) from exc
 
 
+@router.get("/api/store/{tenant_slug}/visitor/quotes/{quote_draft_id}/pdf")
+def download_storefront_visitor_quote_pdf(
+    tenant_slug: str,
+    quote_draft_id: UUID,
+    request: Request,
+    x_storefront_visitor_token: str = Header(..., max_length=500),
+    session: Session = Depends(get_session),
+) -> Response:
+    enforce_rate_limit(
+        request,
+        scope="storefront-visitor-quote-download-pdf",
+        limit=configured_limit("RATE_LIMIT_QUOTE_DOWNLOAD_REQUESTS", 60),
+        window_seconds=configured_limit(
+            "RATE_LIMIT_QUOTE_DOWNLOAD_WINDOW_SECONDS", 60, maximum=86_400
+        ),
+        token=x_storefront_visitor_token,
+    )
+    try:
+        document = use_cases.get_storefront_visitor_quote_document(
+            session,
+            slug=tenant_slug,
+            quote_draft_id=quote_draft_id,
+            visitor_token=x_storefront_visitor_token,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=render_public_quote_draft_pdf(document),
+        media_type="application/pdf",
+        headers=_document_headers(
+            quote_number=document.quote.quote_number, extension="pdf"
+        ),
+    )
+
+
+@router.get("/api/store/{tenant_slug}/visitor/quotes/{quote_draft_id}/xlsx")
+def download_storefront_visitor_quote_xlsx(
+    tenant_slug: str,
+    quote_draft_id: UUID,
+    request: Request,
+    x_storefront_visitor_token: str = Header(..., max_length=500),
+    session: Session = Depends(get_session),
+) -> Response:
+    enforce_rate_limit(
+        request,
+        scope="storefront-visitor-quote-download-xlsx",
+        limit=configured_limit("RATE_LIMIT_QUOTE_DOWNLOAD_REQUESTS", 60),
+        window_seconds=configured_limit(
+            "RATE_LIMIT_QUOTE_DOWNLOAD_WINDOW_SECONDS", 60, maximum=86_400
+        ),
+        token=x_storefront_visitor_token,
+    )
+    try:
+        document = use_cases.get_storefront_visitor_quote_document(
+            session,
+            slug=tenant_slug,
+            quote_draft_id=quote_draft_id,
+            visitor_token=x_storefront_visitor_token,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=_render_quote_xlsx(document, session=session),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=_document_headers(
+            quote_number=document.quote.quote_number, extension="xlsx"
+        ),
+    )
+
+
 @router.get(
     "/api/v1/public-quote-drafts", response_model=list[PublicQuoteDraftSummary]
 )
@@ -549,6 +622,110 @@ def update_tenant_public_quote_draft_settings(
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
             request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/items",
+    response_model=PublicQuoteDraftResponse,
+)
+def update_tenant_public_quote_draft_items(
+    quote_draft_id: UUID,
+    payload: PublicQuoteDraftItemsUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_tenant_quote_draft_items(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/items/price-adjustment",
+    response_model=PublicQuoteDraftResponse,
+)
+def adjust_tenant_public_quote_draft_prices(
+    quote_draft_id: UUID,
+    payload: PublicQuoteDraftPriceAdjustment,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.adjust_tenant_quote_draft_prices(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/items/{item_id}/price",
+    response_model=PublicQuoteDraftResponse,
+)
+def update_tenant_public_quote_draft_item_price(
+    quote_draft_id: UUID,
+    item_id: UUID,
+    payload: PublicQuoteDraftItemPriceUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_tenant_quote_draft_item_price(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            item_id=item_id,
+            request=payload,
+            sync_to_catalog=False,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/items/{item_id}/sync-price",
+    response_model=PublicQuoteDraftResponse,
+)
+def sync_tenant_public_quote_draft_item_price(
+    quote_draft_id: UUID,
+    item_id: UUID,
+    payload: PublicQuoteDraftItemPriceUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_tenant_quote_draft_item_price(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            item_id=item_id,
+            request=payload,
+            sync_to_catalog=True,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

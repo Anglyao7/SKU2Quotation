@@ -267,6 +267,7 @@ export function ProductDetailPage() {
                 slug={store.slug}
                 storeName={store.name}
                 contactEmail={store.contact_email}
+                contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
                 lines={cartLines}
                 onQuantity={updateQuantity}
                 onClear={() => setCart({})}

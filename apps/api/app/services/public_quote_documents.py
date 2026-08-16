@@ -24,7 +24,7 @@ from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.cell_range import CellRange
 from PIL import Image as PillowImage
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -787,6 +787,159 @@ def _pdf_localized_text(value: object | None, locale: str) -> str:
     return escape(text)
 
 
+_PUBLIC_QUOTE_TABLE_FIELDS = frozenset(
+    {
+        "serial_number",
+        "product_name",
+        "description",
+        "specification",
+        "category",
+        "tags",
+        "product_image",
+        "quantity",
+        "unit_code",
+        "packing_quantity",
+        "carton_dimensions",
+        "gross_weight",
+        "carton_volume",
+        "unit_price",
+        "line_total",
+        "total_volume",
+        "total_gross_weight",
+        "currency",
+    }
+)
+_PUBLIC_QUOTE_DEFAULT_FIELDS = (
+    "serial_number",
+    "product_name",
+    "quantity",
+    "unit_code",
+    "unit_price",
+    "line_total",
+)
+_PUBLIC_QUOTE_COLUMN_WIDTHS_MM = {
+    "serial_number": 10,
+    "product_name": 42,
+    "description": 38,
+    "specification": 32,
+    "category": 26,
+    "tags": 28,
+    "product_image": 20,
+    "quantity": 18,
+    "unit_code": 18,
+    "packing_quantity": 22,
+    "carton_dimensions": 30,
+    "gross_weight": 22,
+    "carton_volume": 22,
+    "unit_price": 25,
+    "line_total": 28,
+    "total_volume": 24,
+    "total_gross_weight": 26,
+    "currency": 18,
+}
+_PUBLIC_QUOTE_TEXT_LIMITS = {
+    "product_name": 120,
+    "description": 180,
+    "specification": 100,
+    "category": 80,
+    "tags": 100,
+    "carton_dimensions": 80,
+}
+
+
+def _clip_quote_table_text(value: object | None, field: str) -> str:
+    text = " ".join(str(value if value is not None else "").split())
+    limit = _PUBLIC_QUOTE_TEXT_LIMITS.get(field, 64)
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"
+
+
+def _public_quote_table_fields(document: PublicQuoteDocument) -> list[str]:
+    quote = document.quote
+    configured = [
+        str(field).strip()
+        for field in (getattr(quote, "visible_columns", None) or [])
+        if str(field).strip()
+    ]
+    template_fields: list[str] = []
+    if document.excel_template is not None:
+        for column in document.excel_template.columns:
+            field = document.excel_template.column_mappings.get(column.key)
+            if field:
+                template_fields.append(str(field))
+    candidates = configured or template_fields or list(_PUBLIC_QUOTE_DEFAULT_FIELDS)
+    # Customer-facing PDFs never expose internal SKU codes or other metadata.
+    fields: list[str] = []
+    for field in candidates:
+        if field not in _PUBLIC_QUOTE_TABLE_FIELDS or field == "sku_code":
+            continue
+        if field not in fields:
+            fields.append(field)
+    return fields or list(_PUBLIC_QUOTE_DEFAULT_FIELDS)
+
+
+def _public_quote_table_headers(
+    document: PublicQuoteDocument,
+    fields: list[str],
+    locale: str,
+) -> list[str]:
+    custom_headers: dict[str, str] = {}
+    if document.excel_template is not None:
+        for column in document.excel_template.columns:
+            field = document.excel_template.column_mappings.get(column.key)
+            header = str(column.header or "").strip()
+            if field and header and field not in custom_headers:
+                custom_headers[str(field)] = header
+    return [
+        custom_headers.get(field) or quote_field_label(locale, field)
+        for field in fields
+    ]
+
+
+def _quote_table_value(field: str, document: PublicQuoteDocument, item: object) -> str:
+    value = _template_item_value(field, document, item)
+    if value in (None, ""):
+        return ""
+    if field in {"quantity", "packing_quantity"}:
+        try:
+            return f"{Decimal(str(value)):f}".rstrip("0").rstrip(".")
+        except (InvalidOperation, ValueError):
+            return _clip_quote_table_text(value, field)
+    if field in {
+        "unit_price",
+        "line_total",
+        "gross_weight",
+        "carton_volume",
+        "total_volume",
+        "total_gross_weight",
+    }:
+        try:
+            return f"{Decimal(str(value)):,.2f}"
+        except (InvalidOperation, ValueError):
+            return _clip_quote_table_text(value, field)
+    return _clip_quote_table_text(value, field)
+
+
+def _quote_table_widths(fields: list[str]) -> list[float]:
+    available = 178.0  # A4 width minus the 16 mm margins used below.
+    widths = [float(_PUBLIC_QUOTE_COLUMN_WIDTHS_MM.get(field, 24)) for field in fields]
+    total = sum(widths)
+    if total <= available:
+        return [width * mm for width in widths]
+    scale = available / total
+    scaled = [max(8.0, width * scale) for width in widths]
+    overflow = sum(scaled) - available
+    if overflow > 0:
+        shrinkable = sum(max(width - 8.0, 0.0) for width in scaled)
+        if shrinkable:
+            scaled = [
+                width - overflow * max(width - 8.0, 0.0) / shrinkable
+                for width in scaled
+            ]
+    return [width * mm for width in scaled]
+
+
 def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
     quote = document.quote
     locale = quote_locale(quote.locale)
@@ -855,32 +1008,68 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
     meta_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.extend([meta_table, Spacer(1, 7 * mm)])
 
+    table_fields = _public_quote_table_fields(document)
+    table_body_style = ParagraphStyle(
+        "DraftTableBody",
+        parent=body_style,
+        fontSize=7.8,
+        leading=10,
+        wordWrap="CJK",
+        splitLongWords=1,
+    )
+    table_header_style = ParagraphStyle(
+        "DraftTableHeader",
+        parent=table_body_style,
+        textColor=colors.white,
+        fontName=font_name,
+        fontSize=7.8,
+        leading=9,
+        alignment=TA_CENTER,
+    )
+    table_headers = _public_quote_table_headers(document, table_fields, locale)
     rows: list[list[object]] = [[
-        _pdf_localized_text(quote_text(locale, "serial_number"), locale),
-        "SKU",
-        _pdf_localized_text(quote_text(locale, "product_name"), locale),
-        _pdf_localized_text(quote_text(locale, "quantity"), locale),
-        _pdf_localized_text(quote_text(locale, "unit"), locale),
-        _pdf_localized_text(quote_text(locale, "unit_price"), locale),
-        _pdf_localized_text(quote_text(locale, "line_total"), locale),
+        Paragraph(_pdf_localized_text(header, locale), table_header_style)
+        for header in table_headers
     ]]
     for item in quote.items:
-        rows.append(
-            [
-                str(item.position),
-                Paragraph(_pdf_localized_text(item.sku_code_snapshot, locale), body_style),
-                Paragraph(_pdf_localized_text(item.name_snapshot, locale), body_style),
-                f"{item.quantity:f}",
-                Paragraph(_pdf_localized_text(localize_quote_unit(locale, item.unit_code_snapshot), locale), body_style),
-                f"{item.unit_price_snapshot:,.2f}",
-                f"{item.line_total:,.2f}",
-            ]
-        )
-    rows.append(["", "", "", "", "", _pdf_localized_text(quote_text(locale, "total"), locale), f"{quote.currency} {quote.total:,.2f}"])
+        rows.append([
+            Paragraph(_pdf_localized_text(_quote_table_value(field, document, item), locale), table_body_style)
+            for field in table_fields
+        ])
+    total_row = [""] * len(table_fields)
+    total_row[max(0, len(table_fields) - 2)] = Paragraph(
+        _pdf_localized_text(quote_text(locale, "total"), locale),
+        table_body_style,
+    )
+    total_row[-1] = Paragraph(
+        _pdf_localized_text(f"{quote.currency} {quote.total:,.2f}", locale),
+        table_body_style,
+    )
+    rows.append(total_row)
+    numeric_indexes = {
+        index for index, field in enumerate(table_fields)
+        if field in {
+            "quantity",
+            "packing_quantity",
+            "gross_weight",
+            "carton_volume",
+            "unit_price",
+            "line_total",
+            "total_volume",
+            "total_gross_weight",
+        }
+    }
+    numeric_commands = [
+        ("ALIGN", (index, 1), (index, -1), "RIGHT")
+        for index in sorted(numeric_indexes)
+    ]
+    serial_index = table_fields.index("serial_number") if "serial_number" in table_fields else None
+    if serial_index is not None:
+        numeric_commands.append(("ALIGN", (serial_index, 1), (serial_index, -1), "CENTER"))
     table = Table(
         rows,
         repeatRows=1,
-        colWidths=[9 * mm, 25 * mm, 52 * mm, 18 * mm, 18 * mm, 23 * mm, 27 * mm],
+        colWidths=_quote_table_widths(table_fields),
     )
     table.setStyle(
         TableStyle(
@@ -891,12 +1080,10 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                 ("GRID", (0, 0), (-1, -2), 0.35, colors.HexColor(palette["border"])),
                 ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor(palette["soft"])),
-                ("ALIGN", (0, 0), (0, -1), "CENTER"),
-                ("ALIGN", (3, 1), (3, -1), "RIGHT"),
-                ("ALIGN", (5, 1), (-1, -1), "RIGHT"),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("TOPPADDING", (0, 0), (-1, -1), 6),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                *numeric_commands,
             ]
         )
     )

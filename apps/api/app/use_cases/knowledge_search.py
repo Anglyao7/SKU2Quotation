@@ -16,7 +16,11 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal, set_request_context
 from ..domain.errors import ApplicationError
 from ..embedding_management_models import KnowledgeIndexJobRow
+from ..identity_models import TenantRow
 from ..knowledge_embedding_schemas import (
+    AISearchRecommendedQuestionsResponse,
+    AISearchRecommendedQuestionsUpdate,
+    DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS,
     HybridSearchRequest,
     HybridSearchResponse,
     KnowledgeIndexJobResponse,
@@ -26,6 +30,7 @@ from ..knowledge_embedding_schemas import (
     KnowledgeProjectionResponse,
 )
 from ..model_mixins import utcnow
+from ..public_catalog_models import TenantPublicProfileRow
 from ..services.auth.dependencies import RequestContext
 from ..services.embedding import EmbeddingProviderError
 from ..services.embedding_configuration import resolved_text_embedding_provider
@@ -48,6 +53,27 @@ _index_executor = ThreadPoolExecutor(
 _stale_job_after = timedelta(minutes=10)
 logger = logging.getLogger(__name__)
 _ZERO_IDENTITY = UUID(int=0)
+
+
+def _normalized_recommended_questions(value: object) -> list[str]:
+    """Return exactly three safe questions for the public storefront."""
+
+    if not isinstance(value, list):
+        return list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        question = str(item).strip()[:200]
+        key = question.casefold()
+        if not question or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(question)
+    return (
+        normalized[:3]
+        if len(normalized) >= 3
+        else list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
+    )
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -159,6 +185,61 @@ def search_products(
         raise ApplicationError("SEARCH_QUERY_INVALID", str(exc)) from exc
     result["degraded"] = bool(result.get("degraded_channels"))
     return HybridSearchResponse.model_validate(result)
+
+
+def get_recommended_questions(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+) -> AISearchRecommendedQuestionsResponse:
+    _require(permissions, "product.view")
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id,
+        )
+    )
+    questions = _normalized_recommended_questions(
+        profile.ai_search_questions if profile is not None else None,
+    )
+    return AISearchRecommendedQuestionsResponse(questions=questions)
+
+
+def update_recommended_questions(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    request: AISearchRecommendedQuestionsUpdate,
+) -> AISearchRecommendedQuestionsResponse:
+    _require(permissions, "product.edit")
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id,
+        )
+    )
+    if profile is None:
+        tenant = session.get(TenantRow, tenant_id)
+        if tenant is None:
+            raise ApplicationError(
+                "TENANT_NOT_FOUND",
+                "Merchant workspace was not found.",
+                kind="not_found",
+            )
+        profile = TenantPublicProfileRow(
+            tenant_id=tenant_id,
+            slug=tenant.slug,
+            publication_status=(
+                "PUBLISHED" if tenant.status == "active" else "SUSPENDED"
+            ),
+        )
+        session.add(profile)
+        session.flush()
+    profile.ai_search_questions = list(request.questions)
+    session.commit()
+    return AISearchRecommendedQuestionsResponse(
+        questions=_normalized_recommended_questions(profile.ai_search_questions),
+    )
 
 
 def _remaining_product_ids(job: KnowledgeIndexJobRow) -> list[UUID]:

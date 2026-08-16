@@ -21,6 +21,7 @@ from ..adapters.object_storage import get_object_storage
 from ..database import set_public_tenant_context, set_request_context
 from ..domain.errors import ApplicationError
 from ..identity_models import CustomerAccountAccessEventRow, MembershipRow
+from ..knowledge_embedding_schemas import DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS
 from ..model_mixins import utcnow
 from ..public_catalog_models import (
     PublicQuoteDownloadTokenRow,
@@ -34,7 +35,11 @@ from ..public_catalog_schemas import (
     PUBLIC_PRIVACY_NOTICE_VERSION,
     PublicQuoteDocument,
     PublicQuoteDraftCreate,
+    PublicQuoteDraftItemPatch,
     PublicQuoteDraftItemResponse,
+    PublicQuoteDraftItemPriceUpdate,
+    PublicQuoteDraftItemsUpdate,
+    PublicQuoteDraftPriceAdjustment,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSettingsUpdate,
     PublicQuoteDraftStatusUpdate,
@@ -127,6 +132,27 @@ _PUBLIC_OPTION_METADATA_KEYS = frozenset(
         "是否是新品",
     }
 )
+
+
+def _public_ai_search_questions(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        question = str(item).strip()[:200]
+        key = question.casefold()
+        if not question or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(question)
+    return (
+        normalized[:3]
+        if len(normalized) >= 3
+        else list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
+    )
+
+
 _NONLINGUISTIC_ENGLISH_FRAGMENTS = frozenset(
     {
         "cm",
@@ -698,6 +724,9 @@ def get_store(
         all_products_position=max(0, int(profile.all_products_position or 0)),
         hot_products_enabled=bool(profile.hot_products_enabled),
         category_showcase_enabled=bool(profile.category_showcase_enabled),
+        ai_search_questions=_public_ai_search_questions(
+            getattr(profile, "ai_search_questions", None),
+        ),
         announcements=announcement_use_cases.public_announcements(
             session,
             tenant_id=tenant.id,
@@ -2729,6 +2758,7 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
     return PublicQuoteDraftItemResponse(
         id=row.id,
         sku_id=row.sku_id,
+        product_id=row.product_id_snapshot,
         position=row.position,
         quantity=row.quantity,
         sku_code_snapshot=row.sku_code_snapshot,
@@ -3084,6 +3114,11 @@ def _draft_response(
         ),
         document_style=(getattr(draft, "document_style", None) or "indigo"),
         quote_template_id=getattr(draft, "quote_template_id", None),
+        visible_columns=[
+            str(field)
+            for field in (getattr(draft, "quote_visible_columns", None) or [])
+            if str(field).strip()
+        ],
         currency=draft.currency,
         subtotal=draft.subtotal_amount,
         total=draft.estimated_total,
@@ -3150,6 +3185,12 @@ def _localized_quote_response(
         )
         return response
     localized_items = []
+    snapshot_items = (draft.snapshot or {}).get("items", []) if isinstance(draft.snapshot, dict) else []
+    snapshot_by_position = {
+        int(entry.get("position")): entry
+        for entry in snapshot_items
+        if isinstance(entry, dict) and str(entry.get("position", "")).isdigit()
+    }
     for item in response.items:
         row = row_by_sku.get(item.sku_id)
         if row is None:
@@ -3158,6 +3199,23 @@ def _localized_quote_response(
         offer, sku, product, category = row
         sku_translation = sku_translations.get(sku.id)
         product_translation = product_translations.get(product.id)
+        original_snapshot = snapshot_by_position.get(item.position, {})
+        name_overridden = (
+            "name" in original_snapshot
+            and original_snapshot.get("name") != item.name_snapshot
+        )
+        description_overridden = (
+            "description" in original_snapshot
+            and original_snapshot.get("description") != item.description_snapshot
+        )
+        specification_overridden = (
+            "specification" in original_snapshot
+            and original_snapshot.get("specification") != item.specification_snapshot
+        )
+        category_overridden = (
+            "category" in original_snapshot
+            and original_snapshot.get("category") != item.category_snapshot
+        )
         source_name = str(sku.name or product.name or item.name_snapshot).strip()
         translated_name = _quote_translation_value(sku_translation, "name")
         if translated_name is None:
@@ -3197,24 +3255,42 @@ def _localized_quote_response(
         localized_items.append(
             item.model_copy(
                 update={
-                    "name_snapshot": str(translated_name or source_name).strip(),
-                    "description_snapshot": (
-                        str(translated_description).strip()
-                        if translated_description not in (None, "")
-                        else source_description
+                    "name_snapshot": (
+                        item.name_snapshot
+                        if name_overridden
+                        else str(translated_name or source_name).strip()
                     ),
-                    "category_snapshot": str(translated_category or source_category).strip()
-                    if translated_category or source_category
-                    else None,
+                    "description_snapshot": (
+                        item.description_snapshot
+                        if description_overridden
+                        else (
+                            str(translated_description).strip()
+                            if translated_description not in (None, "")
+                            else source_description
+                        )
+                    ),
+                    "category_snapshot": (
+                        item.category_snapshot
+                        if category_overridden
+                        else (
+                            str(translated_category or source_category).strip()
+                            if translated_category or source_category
+                            else None
+                        )
+                    ),
                     "tags_snapshot": [
                         str(tag).strip()
                         for tag in (translated_tags or source_tags)
                         if str(tag).strip()
                     ],
                     "specification_snapshot": (
-                        str(translated_specification).strip()
-                        if translated_specification not in (None, "")
-                        else item.specification_snapshot
+                        item.specification_snapshot
+                        if specification_overridden
+                        else (
+                            str(translated_specification).strip()
+                            if translated_specification not in (None, "")
+                            else item.specification_snapshot
+                        )
                     ),
                     "option_values_snapshot": localized_options or item.option_values_snapshot,
                 }
@@ -3577,6 +3653,10 @@ def get_quote_document(
     draft = repository.get_quote_draft(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
     )
+    # Keep the original signed download URL usable for existing customers who
+    # already received it at submission time.  New visitor-centre downloads
+    # below are status-gated, and the storefront UI only reveals these actions
+    # after confirmation.
     if draft is None or draft.status not in {
         "PENDING_CONFIRMATION",
         "CONFIRMED",
@@ -3601,6 +3681,69 @@ def get_quote_document(
         excel_template=quote_template_use_cases.render_spec_for_template(
             session,
             tenant_id=tenant_id,
+            template_id=getattr(draft, "quote_template_id", None),
+        ),
+        style=(getattr(draft, "document_style", None) or "indigo"),
+    )
+
+
+def get_storefront_visitor_quote_document(
+    session: Session,
+    *,
+    slug: str,
+    quote_draft_id: UUID,
+    visitor_token: str,
+) -> PublicQuoteDocument:
+    """Return a confirmed quote document to the visitor who submitted it.
+
+    The browser's visitor token is deliberately kept separate from the
+    one-time download token returned at submission.  This lets a customer
+    return to the visitor centre after a page refresh and download an approved
+    quote without exposing a new long-lived document token in the quote list.
+    """
+    tenant, profile = _resolve_store(session, slug=slug)
+    visitor_hash = _storefront_visitor_token_hash(visitor_token)
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant.id,
+        quote_draft_id=quote_draft_id,
+    )
+    if (
+        draft is None
+        or draft.deleted_at is not None
+        or draft.visitor_token_hash != visitor_hash
+        or draft.visitor_token_expires_at is None
+        or _as_utc(draft.visitor_token_expires_at) <= utcnow()
+    ):
+        raise ApplicationError(
+            "DOWNLOAD_NOT_FOUND",
+            "Download was not found.",
+            kind="not_found",
+        )
+    if draft.status not in {"CONFIRMED", "COMPLETED"}:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_NOT_CONFIRMED",
+            "商家确认报价后才可以下载报价文件。",
+            kind="conflict",
+        )
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant.id,
+        quote_draft_id=quote_draft_id,
+    )
+    return PublicQuoteDocument(
+        tenant_name=tenant.name,
+        contact_email=profile.contact_email,
+        contact_phone=profile.contact_phone,
+        quote=_localized_quote_response(
+            session,
+            draft=draft,
+            items=items,
+            tenant=tenant,
+        ),
+        excel_template=quote_template_use_cases.render_spec_for_template(
+            session,
+            tenant_id=tenant.id,
             template_id=getattr(draft, "quote_template_id", None),
         ),
         style=(getattr(draft, "document_style", None) or "indigo"),
@@ -4084,11 +4227,26 @@ def update_tenant_quote_draft_settings(
                 "所选 Excel 模板不存在或尚未完成字段映射。",
                 kind="conflict",
             )
+    quote_number = (request.quote_number or "").strip()
+    if not quote_number:
+        quote_number = getattr(draft, "quotation_number", None) or draft.request_number
+    occupied = repository.get_quote_draft_by_quotation_number(
+        session,
+        tenant_id=tenant_id,
+        quotation_number=quote_number,
+    )
+    if occupied is not None and occupied.id != draft.id:
+        raise ApplicationError(
+            "QUOTE_NUMBER_CONFLICT",
+            "报价单编号已被当前商家使用，请更换一个编号。",
+            kind="conflict",
+        )
     draft.document_locale = requested_locale
     draft.document_style = request.style
     draft.quote_template_id = request.template_id
-    if not getattr(draft, "quotation_number", None):
-        draft.quotation_number = f"QT-{utcnow():%Y%m%d}-{uuid4().hex[:8].upper()}"
+    draft.quotation_number = quote_number
+    if request.visible_columns is not None:
+        draft.quote_visible_columns = list(dict.fromkeys(request.visible_columns)) or None
     draft.updated_at = utcnow()
     session.commit()
     session.refresh(draft)
@@ -4102,6 +4260,273 @@ def update_tenant_quote_draft_settings(
         draft=draft,
         items=updated_items,
         tenant=tenant,
+    )
+
+
+def _recalculate_quote_draft_totals(
+    draft: PublicQuoteDraftRow,
+    items: list[PublicQuoteDraftItemRow],
+) -> None:
+    for item in items:
+        item.line_total = _money(
+            Decimal(item.unit_price_snapshot) * Decimal(item.quantity)
+        )
+    subtotal = _money(
+        sum((Decimal(item.line_total) for item in items), Decimal("0"))
+    )
+    draft.subtotal_amount = subtotal
+    draft.estimated_total = subtotal
+    draft.updated_at = utcnow()
+
+
+def _quote_draft_item_edit_response(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    draft: PublicQuoteDraftRow,
+) -> PublicQuoteDraftResponse:
+    session.refresh(draft)
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=draft.id,
+    )
+    tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
+    return (
+        _localized_quote_response(session, draft=draft, items=items, tenant=tenant)
+        if tenant is not None
+        else _draft_response(draft, items)
+    )
+
+
+def update_tenant_quote_draft_items(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    request: PublicQuoteDraftItemsUpdate,
+) -> PublicQuoteDraftResponse:
+    """Persist customer-facing edits made directly in the quote preview."""
+
+    _require(permissions, "quotation.create")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    if draft.status != "PENDING_CONFIRMATION":
+        raise ApplicationError(
+            "PUBLIC_QUOTE_EDIT_NOT_ALLOWED",
+            "只有待确认状态的报价单可以编辑商品信息。",
+            kind="conflict",
+        )
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    items_by_id = {item.id: item for item in items}
+    for patch in request.items:
+        item = items_by_id.get(patch.item_id)
+        if item is None or item.deleted_at is not None:
+            raise ApplicationError(
+                "PUBLIC_QUOTE_ITEM_NOT_FOUND",
+                "报价单商品明细不存在。",
+                kind="not_found",
+            )
+        fields = patch.model_fields_set
+        if "unit_price" in fields:
+            item.unit_price_snapshot = _money(patch.unit_price or Decimal("0"))
+        if "quantity" in fields:
+            item.quantity = patch.quantity or Decimal("0.000001")
+        if "name" in fields:
+            item.name_snapshot = patch.name or ""
+        if "description" in fields:
+            item.description_snapshot = patch.description
+        if "specification" in fields:
+            item.specification_snapshot = patch.specification
+        if "category" in fields:
+            item.category_snapshot = patch.category
+        if "unit_code" in fields:
+            item.unit_code_snapshot = patch.unit_code or "piece"
+
+    _recalculate_quote_draft_totals(draft, items)
+    session.commit()
+    return _quote_draft_item_edit_response(
+        session,
+        tenant_id=tenant_id,
+        draft=draft,
+    )
+
+
+def adjust_tenant_quote_draft_prices(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    request: PublicQuoteDraftPriceAdjustment,
+) -> PublicQuoteDraftResponse:
+    """Apply one signed percentage to every quote-line unit price."""
+
+    _require(permissions, "quotation.create")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    if draft.status != "PENDING_CONFIRMATION":
+        raise ApplicationError(
+            "PUBLIC_QUOTE_EDIT_NOT_ALLOWED",
+            "只有待确认状态的报价单可以调整商品价格。",
+            kind="conflict",
+        )
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    multiplier = (Decimal("100") + request.percentage) / Decimal("100")
+    for item in items:
+        item.unit_price_snapshot = _money(
+            Decimal(item.unit_price_snapshot) * multiplier
+        )
+    _recalculate_quote_draft_totals(draft, items)
+    session.commit()
+    return _quote_draft_item_edit_response(
+        session,
+        tenant_id=tenant_id,
+        draft=draft,
+    )
+
+
+def update_tenant_quote_draft_item_price(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    item_id: UUID,
+    request: PublicQuoteDraftItemPriceUpdate,
+    sync_to_catalog: bool = False,
+) -> PublicQuoteDraftResponse:
+    """Update a quote-line price, optionally publishing the same price to the SKU.
+
+    A quote override is deliberately kept on the draft item and never changes
+    the immutable storefront submission snapshot.  The catalog write is a
+    separate, explicitly requested action and therefore requires the stronger
+    ``catalog.publish`` permission.
+    """
+
+    _require(permissions, "quotation.create")
+    if sync_to_catalog:
+        _require(permissions, "catalog.publish")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    if draft.status != "PENDING_CONFIRMATION":
+        raise ApplicationError(
+            "PUBLIC_QUOTE_PRICE_EDIT_NOT_ALLOWED",
+            "只有待确认状态的报价单可以修改商品价格。",
+            kind="conflict",
+        )
+    item = repository.get_quote_draft_item(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        item_id=item_id,
+        for_update=True,
+    )
+    if item is None or item.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_ITEM_NOT_FOUND",
+            "报价单商品明细不存在。",
+            kind="not_found",
+        )
+
+    unit_price = _money(request.unit_price)
+    item.unit_price_snapshot = unit_price
+    item.line_total = _money(unit_price * Decimal(item.quantity))
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    draft.subtotal_amount = _money(sum((Decimal(row.line_total) for row in items), Decimal("0")))
+    draft.estimated_total = draft.subtotal_amount
+    draft.updated_at = utcnow()
+
+    if sync_to_catalog:
+        # Reuse the canonical public-offer writer so tags, publication state,
+        # audit events, search invalidation and optimistic catalog locks stay
+        # identical to the product-management screen.  Preserve every field
+        # except the explicitly changed price.
+        from ..product_center_schemas import PublicCatalogOfferUpsertRequest
+        from ..repositories import product_center_repository
+        from . import product_center as product_center_use_cases
+
+        offer = product_center_repository.get_public_offer(
+            session,
+            tenant_id=tenant_id,
+            sku_id=item.sku_id,
+        )
+        offer_request = PublicCatalogOfferUpsertRequest(
+            unit_price=unit_price,
+            currency=(offer.currency if offer is not None else item.currency_snapshot),
+            tags=list(offer.tags or []) if offer is not None else [],
+            display_tag=offer.display_tag if offer is not None else None,
+            tag_color=offer.tag_color if offer is not None else None,
+            publication_status=(offer.publication_status if offer is not None else "DRAFT"),
+            valid_from=offer.valid_from if offer is not None else None,
+            valid_to=offer.valid_to if offer is not None else None,
+        )
+        product_center_use_cases.upsert_public_offer(
+            session,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            permissions=permissions,
+            sku_id=item.sku_id,
+            request=offer_request,
+        )
+    else:
+        session.commit()
+
+    session.refresh(draft)
+    updated_items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
+    return (
+        _localized_quote_response(session, draft=draft, items=updated_items, tenant=tenant)
+        if tenant is not None
+        else _draft_response(draft, updated_items)
     )
 
 

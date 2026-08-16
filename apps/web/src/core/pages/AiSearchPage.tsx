@@ -2,12 +2,12 @@ import { Badge, Button, Card, Heading, Progress, Text, TextArea } from "@radix-u
 import { ArrowRight, CaretDown, CaretUp, MagnifyingGlass, ShieldCheck, Sparkle, WarningCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { searchProducts } from "../api";
+import { getAISearchRecommendedQuestions, searchProducts } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, percent } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type { HybridSearchResponse } from "../types";
 
-const examples = [
+const defaultExamples = [
   "适合巴西市场的小型防水狗玩具",
   "食品级硅胶水瓶，目标价低于 20 元",
   "适合欧洲市场的环保旅行收纳包",
@@ -23,6 +23,17 @@ export function AiSearchPage() {
   const [expanded, setExpanded] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [examples, setExamples] = useState(defaultExamples);
+
+  useEffect(() => {
+    let active = true;
+    void getAISearchRecommendedQuestions()
+      .then((result) => {
+        if (active && result.questions.length === 3) setExamples(result.questions);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   const runSearch = async (requested = query) => {
     const normalized = requested.trim();

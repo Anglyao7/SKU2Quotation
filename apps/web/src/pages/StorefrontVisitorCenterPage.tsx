@@ -10,6 +10,8 @@ import {
 import {
   ArrowLeft,
   ClockCounterClockwise,
+  FilePdf,
+  FileXls,
   Heart,
   Package,
   ShoppingCartSimple,
@@ -75,12 +77,25 @@ function ProductRows({
   ))}</div>;
 }
 
-function QuoteRows({ quotes, locale }: { quotes: StorefrontVisitorQuote[]; locale: StorefrontLocale }) {
+function QuoteRows({ quotes, locale, slug }: { quotes: StorefrontVisitorQuote[]; locale: StorefrontLocale; slug: string }) {
   const t = (source: string, values?: Record<string, string | number>) => storefrontText(locale, source, values);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState("");
+  const download = async (quote: StorefrontVisitorQuote, type: "pdf" | "xlsx") => {
+    setDownloading(`${quote.id}:${type}`);
+    setDownloadError("");
+    try {
+      await api.downloadStorefrontVisitorQuote(slug, quote.id, type);
+    } catch (reason) {
+      setDownloadError(reason instanceof Error ? reason.message : t("文件下载失败，请稍后重试。"));
+    } finally {
+      setDownloading(null);
+    }
+  };
   if (!quotes.length) {
     return <div className="visitor-center-empty"><ShoppingCartSimple weight="duotone" /><strong>{t("暂无相关记录")}</strong><span>{t("提交询价后，处理进度会显示在这里。")}</span></div>;
   }
-  return <div className="visitor-quote-list">{quotes.map((quote) => (
+  return <div className="visitor-quote-list">{downloadError ? <Text size="1" color="red">{downloadError}</Text> : null}{quotes.map((quote) => (
     <Card className="visitor-quote-row" key={quote.id}>
       <div className="visitor-quote-heading">
         <div><Text size="1" color="gray">{quote.quote_number}</Text><strong>{quote.customer_company || quote.customer_name}</strong></div>
@@ -90,6 +105,12 @@ function QuoteRows({ quotes, locale }: { quotes: StorefrontVisitorQuote[]; local
       </div>
       <Heading size="4">{quote.currency} {Number(quote.total_amount).toFixed(2)}</Heading>
       <Text size="1" color="gray">{t("提交时间")} · {new Date(quote.created_at).toLocaleString(locale)}</Text>
+      {quote.status === "CONFIRMED" || quote.status === "COMPLETED" ? (
+        <div className="download-actions visitor-quote-download-actions">
+          <Button size="2" onClick={() => void download(quote, "pdf")} loading={downloading === `${quote.id}:pdf`}><FilePdf />{t("下载 PDF")}</Button>
+          <Button size="2" variant="soft" onClick={() => void download(quote, "xlsx")} loading={downloading === `${quote.id}:xlsx`}><FileXls />{t("下载 Excel")}</Button>
+        </div>
+      ) : null}
     </Card>
   ))}</div>;
 }
@@ -171,7 +192,7 @@ export function StorefrontVisitorCenterPage() {
         <div className="header-actions">
           <StorefrontLanguageSwitch locale={locale} availableLocales={store.available_locales} />
           <ThemeToggle labels={{ toDark: t("切换深色模式"), toLight: t("切换浅色模式") }} />
-          <CartDrawer slug={store.slug} storeName={store.name} contactEmail={store.contact_email} lines={cartLines} onQuantity={updateQuantity} onClear={() => setCart({})} locale={locale} />
+          <CartDrawer slug={store.slug} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} lines={cartLines} onQuantity={updateQuantity} onClear={() => setCart({})} locale={locale} />
         </div>
       </div></Container>
     </header>
@@ -194,10 +215,10 @@ export function StorefrontVisitorCenterPage() {
         <div className="visitor-center-panel">
           <Tabs.Content value="history"><div className="visitor-panel-heading"><Heading size="5">{t("浏览记录")}</Heading>{history.length ? <Button size="2" variant="ghost" color="gray" onClick={() => clearStorefrontHistory(store.slug)}><Trash />{t("清空")}</Button> : null}</div><ProductRows items={history} store={store} locale={locale} /></Tabs.Content>
           <Tabs.Content value="favorites"><div className="visitor-panel-heading"><Heading size="5">{t("我的收藏")}</Heading></div><ProductRows items={favorites} store={store} locale={locale} removable onRemove={(item) => { toggleStorefrontFavorite(store.slug, { id: item.id, name: item.name, image_url: item.imageUrl, price_from: item.priceFrom, price_to: item.priceTo, currency: item.currency, category: item.category, tags: [], unit_code: "piece", sku_count: 0, product_version: 1 }); }} /></Tabs.Content>
-          <Tabs.Content value="pending"><div className="visitor-panel-heading"><Heading size="5">{t("待确认询价单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={pending} locale={locale} />}</Tabs.Content>
-          <Tabs.Content value="confirmed"><div className="visitor-panel-heading"><Heading size="5">{t("已确认询价单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={confirmed} locale={locale} />}</Tabs.Content>
-          <Tabs.Content value="completed"><div className="visitor-panel-heading"><Heading size="5">{t("已成交订单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={completed} locale={locale} />}</Tabs.Content>
-          <Tabs.Content value="closed"><div className="visitor-panel-heading"><Heading size="5">{t("已关闭")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={closed} locale={locale} />}</Tabs.Content>
+          <Tabs.Content value="pending"><div className="visitor-panel-heading"><Heading size="5">{t("待确认询价单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={pending} locale={locale} slug={store.slug} />}</Tabs.Content>
+          <Tabs.Content value="confirmed"><div className="visitor-panel-heading"><Heading size="5">{t("已确认询价单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={confirmed} locale={locale} slug={store.slug} />}</Tabs.Content>
+          <Tabs.Content value="completed"><div className="visitor-panel-heading"><Heading size="5">{t("已成交订单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={completed} locale={locale} slug={store.slug} />}</Tabs.Content>
+          <Tabs.Content value="closed"><div className="visitor-panel-heading"><Heading size="5">{t("已关闭")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={closed} locale={locale} slug={store.slug} />}</Tabs.Content>
         </div>
       </Tabs.Root>
     </Container></main>

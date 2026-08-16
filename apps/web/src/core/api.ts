@@ -1,5 +1,6 @@
 import type {
   AttributeDefinition,
+  AISearchRecommendedQuestions,
   AnnouncementContentBlock,
   AnnouncementPayload,
   AuthTokenData,
@@ -4823,6 +4824,32 @@ export async function searchProducts(query: string, limit = 10): Promise<HybridS
   return { query: row.query, degraded: row.degraded, results };
 }
 
+interface ApiAISearchRecommendedQuestions {
+  questions: string[];
+}
+
+export async function getAISearchRecommendedQuestions(): Promise<AISearchRecommendedQuestions> {
+  const row = await request<ApiAISearchRecommendedQuestions>(
+    "/ai/search/recommended-questions",
+    { cache: "no-store" },
+  );
+  return { questions: row.questions };
+}
+
+export async function updateAISearchRecommendedQuestions(
+  questions: string[],
+): Promise<AISearchRecommendedQuestions> {
+  const row = await request<ApiAISearchRecommendedQuestions>(
+    "/ai/search/recommended-questions",
+    {
+      method: "PUT",
+      body: JSON.stringify({ questions }),
+    },
+  );
+  bumpPublicCatalogRevision();
+  return { questions: row.questions };
+}
+
 interface ApiInquiryItem { id: string; line_number: number; raw_requirement: string; normalized_requirement: Record<string, unknown>; quantity?: number | null; unit_code?: string | null; image_search_id?: string | null; status: string; version: number }
 interface ApiInquiry { id: string; inquiry_number: string; customer_id?: string | null; temporary_customer_name?: string | null; currency: string; language: string; status: string; version: number; items: ApiInquiryItem[] }
 interface ApiMatch { id: string; inquiry_item_id: string; product_id: string; sku_id?: string | null; supplier_product_id?: string | null; product_version: number; rank: number; total_score: number; score_breakdown: Record<string, unknown>; reasons: string[]; gaps: string[]; evidence: Array<Record<string, unknown>>; ranking_version: string; status: string }
@@ -4882,8 +4909,8 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
   return rows.map((row) => ({ id: row.id, quotationNumber: row.quotation_number, customerName: row.customer_name, currency: row.currency, status: row.status, currentVersion: row.current_version, totalAmount: Number(row.total_amount), updatedAt: row.updated_at }));
 }
 
-interface ApiPublicQuoteDraftItem { id: string; sku_id: string; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
+interface ApiPublicQuoteDraftItem { id: string; sku_id: string; product_id?: string | null; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
 interface ApiStorefrontOrderPeriodStatistics { start_at: string; end_at: string; order_count: number; completed_order_count: number; cancelled_order_count: number; amounts: Array<{ currency: string; total_amount: number | string; completed_amount: number | string; order_count: number }> }
 interface ApiStorefrontOrderStatistics { timezone: string; current_month: ApiStorefrontOrderPeriodStatistics; current_year: ApiStorefrontOrderPeriodStatistics }
@@ -4903,6 +4930,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     locale: row.locale,
     documentStyle: row.document_style ?? "indigo",
     quoteTemplateId: defined(row.quote_template_id),
+    visibleColumns: row.visible_columns ?? [],
     currency: row.currency,
     subtotal: Number(row.subtotal),
     total: Number(row.total),
@@ -4912,7 +4940,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     contentHash: row.content_hash,
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
-    items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, position: item.position, quantity: Number(item.quantity), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
+    items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, productId: item.product_id ?? item.sku_id, position: item.position, quantity: Number(item.quantity), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
   };
 }
 
@@ -4931,6 +4959,8 @@ export async function updatePublicQuoteDraftSettings(
     locale: StorefrontLocale;
     style: PublicQuoteDraft["documentStyle"];
     templateId?: string | null;
+    quoteNumber?: string;
+    visibleColumns?: QuoteTemplateField[];
   },
 ): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
@@ -4941,6 +4971,8 @@ export async function updatePublicQuoteDraftSettings(
         locale: input.locale,
         style: input.style,
         template_id: input.templateId ?? null,
+        quote_number: input.quoteNumber?.trim() || undefined,
+        visible_columns: input.visibleColumns ?? [],
       }),
     },
   ));
@@ -4953,6 +4985,80 @@ export async function updatePublicQuoteDraftStatus(
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
     `/public-quote-drafts/${encodeURIComponent(draftId)}/status`,
     { method: "PATCH", body: JSON.stringify({ status }) },
+  ));
+}
+
+export async function updatePublicQuoteDraftItemPrice(
+  draftId: string,
+  itemId: string,
+  unitPrice: number,
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/items/${encodeURIComponent(itemId)}/price`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ unit_price: unitPrice }),
+    },
+  ));
+}
+
+export async function syncPublicQuoteDraftItemPrice(
+  draftId: string,
+  itemId: string,
+  unitPrice: number,
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/items/${encodeURIComponent(itemId)}/sync-price`,
+    {
+      method: "POST",
+      body: JSON.stringify({ unit_price: unitPrice }),
+    },
+  ));
+}
+
+export async function updatePublicQuoteDraftItems(
+  draftId: string,
+  items: Array<{
+    itemId: string;
+    unitPrice?: number;
+    quantity?: number;
+    name?: string;
+    description?: string | null;
+    specification?: string | null;
+    category?: string | null;
+    unitCode?: string;
+  }>,
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/items`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        items: items.map((item) => ({
+          item_id: item.itemId,
+          ...(item.unitPrice !== undefined ? { unit_price: item.unitPrice } : {}),
+          ...(item.quantity !== undefined ? { quantity: item.quantity } : {}),
+          ...(item.name !== undefined ? { name: item.name } : {}),
+          ...(item.description !== undefined ? { description: item.description } : {}),
+          ...(item.specification !== undefined ? { specification: item.specification } : {}),
+          ...(item.category !== undefined ? { category: item.category } : {}),
+          ...(item.unitCode !== undefined ? { unit_code: item.unitCode } : {}),
+        })),
+      }),
+    },
+  ));
+}
+
+export async function adjustPublicQuoteDraftPrices(
+  draftId: string,
+  percentage: number,
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/items/price-adjustment`,
+    {
+      method: "POST",
+      body: JSON.stringify({ percentage }),
+    },
   ));
 }
 

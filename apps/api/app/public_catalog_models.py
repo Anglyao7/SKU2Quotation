@@ -85,6 +85,11 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         default=True,
         nullable=False,
     )
+    ai_search_questions: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=list,
+        nullable=False,
+    )
     support_widget_config: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT,
         default=dict,
@@ -281,6 +286,10 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
     )
     quote_template_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("quote_excel_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    quote_visible_columns: Mapped[list[str] | None] = mapped_column(
+        JSON_DOCUMENT,
         nullable=True,
     )
     currency: Mapped[str] = mapped_column(String(3), nullable=False)

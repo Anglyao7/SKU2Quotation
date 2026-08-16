@@ -577,6 +577,51 @@ img { display: block; max-width: 100%; }
   gap: 8px;
   flex-wrap: wrap;
 }
+.category-layout-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+.category-layout-toggle .rt-Button { margin: 0 !important; }
+.store-recommended-questions {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+}
+.store-recommended-questions > .rt-Text { padding-inline: 4px; }
+.store-recommended-question-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.store-recommended-question {
+  min-width: 0;
+  min-height: 42px;
+  padding: 9px 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
+  border-radius: 11px;
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease, transform 120ms ease;
+}
+.store-recommended-question span { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.store-recommended-question svg { flex: 0 0 auto; color: var(--accent); }
+.store-recommended-question:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.store-recommended-question:active { transform: translateY(1px); }
+.store-recommended-question:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .filter-panel-actions .filter-reset-button { margin: 0 !important; }
 .search-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
 .store-search {
@@ -1437,6 +1482,7 @@ img { display: block; max-width: 100%; }
 .visitor-quote-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .visitor-quote-heading > div { min-width: 0; display: grid; gap: 3px; }
 .visitor-quote-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.visitor-quote-download-actions { margin-top: 0; }
 .visitor-center-empty {
   min-height: 240px;
   display: grid;
@@ -1556,6 +1602,16 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .drawer-empty-title { color: var(--text); line-height: 1.35; }
 .drawer-empty-copy { max-width: 320px; line-height: 1.75; text-wrap: balance; }
 .download-actions { display: flex; gap: var(--control-gap); margin-top: 8px; }
+.quote-contact-panel { width: 100%; display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-muted); text-align: left; }
+.quote-contact-heading { display: grid; gap: 3px; }
+.quote-contact-email { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 9px 11px; border-radius: 9px; background: var(--surface-strong); color: var(--text); text-decoration: none; }
+.quote-contact-email:hover { color: var(--accent-strong); }
+.quote-contact-email span { color: var(--text-soft); font-size: 11px; }
+.quote-contact-email strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.quote-contact-images { display: flex; flex-wrap: wrap; gap: 10px; }
+.quote-contact-image { min-width: 70px; display: grid; justify-items: center; gap: 4px; color: var(--text-soft); font-size: 10px; text-align: center; }
+.quote-contact-image img { width: 64px; height: 64px; object-fit: cover; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-strong); }
+.quote-review-dialog-downloads { margin-top: 14px; }
 .quote-review-dialog-actions { margin-top: 20px; }
 
 /* Login */
@@ -2035,6 +2091,9 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .filter-panel { position: static; padding: 13px; border-radius: 16px; }
   .filter-panel-heading { padding-bottom: 10px; }
   .filter-panel-heading > div > .rt-Text:last-child { display: none; }
+  .category-layout-toggle .rt-Button { padding-inline: 8px !important; }
+  .store-recommended-question-list { grid-template-columns: 1fr; gap: 6px; }
+  .store-recommended-question { min-height: 38px; }
   .store-search { --text-field-height: 46px; height: 46px; }
   .store-search-feedback { min-height: 180px; gap: 12px; }
   .category-browser { margin-inline: -13px; }
