@@ -8818,6 +8818,78 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
     assert empty_listing.json()["total"] == 0
 
 
+def test_batch_delete_products_archives_selected_products_including_empty() -> None:
+    suffix = uuid4().hex[:8].upper()
+    product_id = uuid4()
+    empty_product_id = uuid4()
+    sku_id = uuid4()
+    missing_product_id = uuid4()
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"BATCH-PRODUCT-CARD-{suffix}",
+                    name=f"Batch product card {suffix}",
+                    status="ACTIVE",
+                ),
+                ProductRow(
+                    id=empty_product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"BATCH-EMPTY-CARD-{suffix}",
+                    name=f"Batch empty product card {suffix}",
+                    status="ACTIVE",
+                ),
+                SkuRow(
+                    id=sku_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    sku_code=f"BATCH-CARD-SKU-{suffix}",
+                    name=f"Batch card SKU {suffix}",
+                    option_values={},
+                    status="ACTIVE",
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/product-center/products/batch-delete",
+        json={"product_ids": [str(product_id), str(empty_product_id), str(missing_product_id)]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["success_count"] == 2
+    assert response.json()["failed_count"] == 1
+    assert response.json()["deleted_product_count"] == 2
+    assert response.json()["deleted_sku_count"] == 1
+    assert response.json()["failed_items"] == [
+        {
+            "product_id": str(missing_product_id),
+            "reason": "商品不存在、已经删除或已经归档",
+        }
+    ]
+
+    with SessionLocal() as session:
+        product = session.get(ProductRow, product_id)
+        empty_product = session.get(ProductRow, empty_product_id)
+        sku = session.scalar(
+            select(SkuRow)
+            .where(SkuRow.tenant_id == DEFAULT_TENANT_ID, SkuRow.id == sku_id)
+            .execution_options(include_deleted=True)
+        )
+        assert product is not None and product.status == "ARCHIVED"
+        assert empty_product is not None and empty_product.status == "ARCHIVED"
+        assert sku is not None and sku.status == "ARCHIVED" and sku.deleted_at is not None
+
+    listing = client.get(
+        "/api/v1/product-center/products",
+        params={"q": suffix},
+    )
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["total"] == 0
+
+
 def test_import_batch_rollback_only_deletes_owned_skus_and_preserves_images() -> None:
     suffix = uuid4().hex[:10].upper()
     created = client.post(

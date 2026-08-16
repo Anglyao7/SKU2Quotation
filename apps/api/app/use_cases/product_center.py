@@ -3339,6 +3339,154 @@ def batch_delete_skus(
     }
 
 
+def batch_delete_products(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_ids: list[UUID],
+) -> dict[str, Any]:
+    """Soft-delete selected product cards, including products without SKUs."""
+
+    _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
+
+    requested_ids = list(dict.fromkeys(product_ids))
+    products = session.scalars(
+        select(ProductRow)
+        .where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.id.in_(requested_ids),
+        )
+        .execution_options(include_deleted=True)
+        .with_for_update()
+    ).all()
+    products_by_id = {product.id: product for product in products}
+    selected_products: list[ProductRow] = []
+    failed_items: list[dict[str, Any]] = []
+    for product_id in requested_ids:
+        product = products_by_id.get(product_id)
+        if product is None or product.deleted_at is not None or product.status == "ARCHIVED":
+            failed_items.append(
+                {
+                    "product_id": str(product_id),
+                    "reason": "商品不存在、已经删除或已经归档",
+                }
+            )
+            continue
+        selected_products.append(product)
+
+    if not selected_products:
+        return {
+            "success_count": 0,
+            "failed_count": len(failed_items),
+            "total_count": len(requested_ids),
+            "failed_items": failed_items,
+            "deleted_product_count": 0,
+            "deleted_sku_count": 0,
+        }
+
+    selected_product_ids = [product.id for product in selected_products]
+    sku_rows = session.scalars(
+        select(SkuRow)
+        .where(
+            SkuRow.tenant_id == tenant_id,
+            SkuRow.product_id.in_(selected_product_ids),
+            SkuRow.deleted_at.is_(None),
+            SkuRow.status != "ARCHIVED",
+        )
+        .execution_options(include_deleted=True)
+        .with_for_update()
+    ).all()
+    sku_product_ids = {sku.product_id for sku in sku_rows}
+    product_before = {
+        product.id: {
+            "status": product.status,
+            "version": product.current_version,
+        }
+        for product in selected_products
+    }
+
+    if sku_rows:
+        batch_delete_skus(
+            session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            membership_id=membership_id,
+            permissions=permissions,
+            sku_ids=[sku.id for sku in sku_rows],
+            commit=False,
+            cleanup_images=False,
+        )
+
+    now = utcnow()
+    for product in selected_products:
+        # ``batch_delete_skus`` archives products that lose their final SKU.
+        # This explicit branch covers product rows that never had a SKU, which
+        # are valid first-class catalog records in the product-centric view.
+        if product.id not in sku_product_ids:
+            product.status = "ARCHIVED"
+            product.archived_at = now
+            product.search_document_version = 0
+            product.current_version += 1
+            product.updated_by = user_id
+            product.updated_at = now
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                entity_type="PRODUCT",
+                entity_id=str(product.id),
+                action="product.deleted",
+                before=product_before[product.id],
+                after={
+                    "status": "ARCHIVED",
+                    "version": product.current_version,
+                    "deleted_sku_count": sum(1 for sku in sku_rows if sku.product_id == product.id),
+                    "deleted_at": now.isoformat(),
+                },
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            )
+        )
+
+    _commit(
+        session,
+        conflict_code="BATCH_DELETE_PRODUCTS_FAILED",
+        conflict_message="批量删除商品失败，请刷新商品库后重试。",
+    )
+
+    try:
+        cleanup = cleanup_product_images(
+            session,
+            tenant_id=tenant_id,
+            product_ids=selected_product_ids,
+            at=now,
+        )
+        if cleanup.removed_image_count:
+            session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception(
+            "product image cleanup failed after product batch deletion",
+            extra={
+                "tenant_id": str(tenant_id),
+                "product_ids": [str(product_id) for product_id in selected_product_ids],
+            },
+        )
+
+    return {
+        "success_count": len(selected_products),
+        "failed_count": len(failed_items),
+        "total_count": len(requested_ids),
+        "failed_items": failed_items,
+        "deleted_product_count": len(selected_products),
+        "deleted_sku_count": len(sku_rows),
+    }
+
+
 def _load_batch_sku_selection(
     session: Session,
     *,

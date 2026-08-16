@@ -33,6 +33,8 @@ from ..product_center_schemas import (
     CategoryUpdateRequest,
     ManualProductCreateRequest,
     ProductCard,
+    ProductBatchDeleteRequest,
+    ProductBatchOperationResponse,
     ProductDeleteAllJobResponse,
     ProductDeleteAllRequest,
     ProductDetail,
@@ -744,6 +746,32 @@ def batch_delete_skus(
             sku_ids=request.sku_ids,
         )
         return SkuBatchOperationResponse(**result)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/product-center/products/batch-delete",
+    response_model=ProductBatchOperationResponse,
+    status_code=status.HTTP_200_OK,
+)
+def batch_delete_products(
+    request: ProductBatchDeleteRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> ProductBatchOperationResponse:
+    """Soft-delete selected product cards and all of their SKU rows."""
+
+    context = _context(session)
+    try:
+        result = use_cases.batch_delete_products(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_ids=request.product_ids,
+        )
+        return ProductBatchOperationResponse(**result)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

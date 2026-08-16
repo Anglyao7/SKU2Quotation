@@ -651,6 +651,19 @@ class SkuBatchDeleteRequest(BaseModel):
     sku_ids: list[UUID] = Field(min_length=1, max_length=500)
 
 
+class ProductBatchDeleteRequest(BaseModel):
+    product_ids: list[UUID] = Field(min_length=1, max_length=500)
+
+
+class ProductBatchOperationResponse(BaseModel):
+    success_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    total_count: int = Field(ge=0)
+    failed_items: list[dict[str, Any]] = Field(default_factory=list)
+    deleted_product_count: int = Field(ge=0)
+    deleted_sku_count: int = Field(ge=0)
+
+
 class ProductDeleteAllRequest(BaseModel):
     password: SecretStr
 

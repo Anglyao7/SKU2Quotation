@@ -790,6 +790,9 @@ const english: Record<string, string> = {
   "归入热门失败": "Could not add products to Popular",
   "选择本页商品": "Select products on this page",
   "选择商品 {name}": "Select {name}",
+  "取消选择本页全部商品": "Deselect all products on this page",
+  "选择本页全部商品": "Select all products on this page",
+  "取消选择商品 {name}": "Deselect {name}",
   "排名": "Rank",
   "当前分类": "Current category",
   "访问量": "Views",
@@ -1339,6 +1342,17 @@ const english: Record<string, string> = {
   "第 {page} 页": "Page {page}",
   "批量删除": "Bulk delete",
   "批量删除 SKU": "Bulk delete SKUs",
+  "批量删除商品": "Bulk delete products",
+  "已选 {count} 个商品": "{count} products selected",
+  "删除已选商品": "Delete selected products",
+  "确认删除 {count} 个商品？": "Delete {count} products?",
+  "删除后将不再展示这些商品及其 SKU。":
+    "These products and their SKUs will no longer be shown.",
+  "已删除 {products} 个商品（包含 {skus} 个 SKU），{failed} 个商品未能删除。":
+    "Deleted {products} products ({skus} SKUs); {failed} products could not be deleted.",
+  "已删除 {products} 个商品（包含 {skus} 个 SKU）。":
+    "Deleted {products} products ({skus} SKUs).",
+  "批量删除商品失败，请稍后重试。": "Could not delete products in bulk. Try again shortly.",
   "删除 SKU": "Delete SKU",
   "确认删除此 SKU？": "Delete this SKU?",
   "删除 SKU {code}": "Delete SKU {code}",

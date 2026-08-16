@@ -1623,6 +1623,43 @@ export async function batchDeleteSkus(skuIds: string[]): Promise<SkuBatchOperati
   return mapSkuBatchOperationResult(row);
 }
 
+export interface ProductBatchDeleteResult {
+  successCount: number;
+  failedCount: number;
+  totalCount: number;
+  failedItems: Array<{ productId: string; reason: string }>;
+  deletedProductCount: number;
+  deletedSkuCount: number;
+}
+
+interface ApiProductBatchDeleteResult {
+  success_count: number;
+  failed_count: number;
+  total_count: number;
+  failed_items: Array<{ product_id: string; reason: string }>;
+  deleted_product_count: number;
+  deleted_sku_count: number;
+}
+
+export async function batchDeleteProducts(productIds: string[]): Promise<ProductBatchDeleteResult> {
+  const row = await request<ApiProductBatchDeleteResult>("/product-center/products/batch-delete", {
+    method: "POST",
+    body: JSON.stringify({ product_ids: productIds }),
+  });
+  bumpPublicCatalogRevision();
+  return {
+    successCount: row.success_count,
+    failedCount: row.failed_count,
+    totalCount: row.total_count,
+    failedItems: row.failed_items.map((item) => ({
+      productId: item.product_id,
+      reason: item.reason,
+    })),
+    deletedProductCount: row.deleted_product_count,
+    deletedSkuCount: row.deleted_sku_count,
+  };
+}
+
 export async function batchUpdateSkuStatus(
   skuIds: string[],
   status: "ACTIVE" | "INACTIVE",

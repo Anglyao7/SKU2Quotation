@@ -1,8 +1,9 @@
 import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowDown, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, ShareNetwork, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
+  batchDeleteProducts,
   batchDeleteSkus,
   batchUpdateSkuCategory,
   batchUpdateSkuPinned,
@@ -294,7 +295,6 @@ export function ProductsPage() {
     && hasPermission("product.edit")
     && hasPermission("catalog.publish");
   const canCreate = canEdit && hasPermission("catalog.publish");
-  const canShare = canEdit && hasPermission("catalog.publish");
   const [params, setParams] = useSearchParams();
   const importInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -332,7 +332,7 @@ export function ProductsPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [importError, setImportError] = useState("");
   const [importPollingError, setImportPollingError] = useState("");
-  const [selectedSkuIds, setSelectedSkuIds] = useState<Set<string>>(
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -410,7 +410,7 @@ export function ProductsPage() {
   }, [query]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    setSelectedSkuIds(new Set());
+    setSelectedProductIds(new Set());
     setDeleteDialogOpen(false);
     setBulkAction(undefined);
     setBulkError("");
@@ -851,49 +851,49 @@ export function ProductsPage() {
     }, { replace: true });
     void load();
   };
-  const currentPageSkuIds = result.items.map((sku) => sku.id);
-  const currentPageSelected = currentPageSkuIds.filter((id) => selectedSkuIds.has(id));
-  const allCurrentPageSelected = currentPageSkuIds.length > 0
-    && currentPageSelected.length === currentPageSkuIds.length;
-  const toggleSkuSelection = (skuId: string) => {
+  const currentPageProductIds = result.items.map((product) => product.id);
+  const currentPageSelected = currentPageProductIds.filter((id) => selectedProductIds.has(id));
+  const allCurrentPageSelected = currentPageProductIds.length > 0
+    && currentPageSelected.length === currentPageProductIds.length;
+  const toggleProductSelection = (productId: string) => {
     setBulkNotice("");
     setBulkError("");
-    setSelectedSkuIds((current) => {
+    setSelectedProductIds((current) => {
       const next = new Set(current);
-      if (next.has(skuId)) next.delete(skuId);
-      else if (next.size < 500) next.add(skuId);
+      if (next.has(productId)) next.delete(productId);
+      else if (next.size < 500) next.add(productId);
       return next;
     });
   };
   const toggleCurrentPageSelection = () => {
     setBulkNotice("");
     setBulkError("");
-    setSelectedSkuIds((current) => {
+    setSelectedProductIds((current) => {
       const next = new Set(current);
       if (allCurrentPageSelected) {
-        currentPageSkuIds.forEach((id) => next.delete(id));
+        currentPageProductIds.forEach((id) => next.delete(id));
         return next;
       }
-      currentPageSkuIds.forEach((id) => {
+      currentPageProductIds.forEach((id) => {
         if (next.size < 500) next.add(id);
       });
       return next;
     });
   };
-  const clearSkuSelection = () => {
-    setSelectedSkuIds(new Set());
+  const clearProductSelection = () => {
+    setSelectedProductIds(new Set());
     setDeleteDialogOpen(false);
     setBulkAction(undefined);
     setBulkError("");
   };
   const openBulkAction = (action: BulkSkuAction) => {
-    if (!canEdit || !selectedSkuIds.size) return;
+    if (!canEdit || !selectedProductIds.size) return;
     setBulkError("");
     if (action === "category") setBulkCategoryId("");
     setBulkAction(action);
   };
   const applyBulkAction = async () => {
-    if (!canEdit || !selectedSkuIds.size || !bulkAction) return;
+    if (!canEdit || !selectedProductIds.size || !bulkAction) return;
     if (bulkAction === "category" && !bulkCategoryId) {
       setBulkError(t("请选择要移动到的分类。"));
       return;
@@ -901,7 +901,7 @@ export function ProductsPage() {
     setBulkBusy(true);
     setBulkError("");
     try {
-      const selectedIds = [...selectedSkuIds];
+      const selectedIds = [...selectedProductIds];
       const response = bulkAction === "category"
         ? await batchUpdateSkuCategory(
             selectedIds,
@@ -931,7 +931,7 @@ export function ProductsPage() {
         : bulkAction === "activate"
         ? t("已上架 {count} 个 SKU。", { count: response.successCount })
         : t("已下架 {count} 个 SKU。", { count: response.successCount });
-      setSelectedSkuIds(failedIds);
+      setSelectedProductIds(failedIds);
       setBulkNotice(
         response.failedCount
           ? t("{message} {failed} 个项目未能更新。", {
@@ -950,22 +950,26 @@ export function ProductsPage() {
       setBulkBusy(false);
     }
   };
-  const deleteSelectedSkus = async () => {
-    if (!canDelete || !selectedSkuIds.size) return;
+  const deleteSelectedProducts = async () => {
+    if (!canDelete || !selectedProductIds.size) return;
     setDeleteBusy(true);
     setBulkError("");
     try {
-      const selectedIds = [...selectedSkuIds];
-      const response = await batchDeleteSkus(selectedIds);
-      const failedIds = new Set(response.failedItems.map((item) => item.skuId));
-      setSelectedSkuIds(failedIds);
+      const selectedIds = [...selectedProductIds];
+      const response = await batchDeleteProducts(selectedIds);
+      const failedIds = new Set(response.failedItems.map((item) => item.productId));
+      setSelectedProductIds(failedIds);
       setBulkNotice(
         response.failedCount
-          ? t("已删除 {success} 个 SKU，{failed} 个未能删除。", {
-              success: response.successCount,
+          ? t("已删除 {products} 个商品（包含 {skus} 个 SKU），{failed} 个商品未能删除。", {
+              products: response.deletedProductCount,
+              skus: response.deletedSkuCount,
               failed: response.failedCount,
             })
-          : t("已删除 {count} 个 SKU。", { count: response.successCount }),
+          : t("已删除 {products} 个商品（包含 {skus} 个 SKU）。", {
+              products: response.deletedProductCount,
+              skus: response.deletedSkuCount,
+            }),
       );
       setDeleteDialogOpen(false);
       const remainingTotal = Math.max(0, result.total - response.successCount);
@@ -976,9 +980,7 @@ export function ProductsPage() {
         await load();
       }
     } catch (reason) {
-      setBulkError(
-        reason instanceof Error ? reason.message : t("批量删除失败，请稍后重试。"),
-      );
+      setBulkError(reason instanceof Error ? reason.message : t("批量删除商品失败，请稍后重试。"));
     } finally {
       setDeleteBusy(false);
     }
@@ -998,7 +1000,7 @@ export function ProductsPage() {
       if (response.failedCount || response.successCount !== 1) {
         throw new Error(response.failedItems[0]?.reason || t("单个 SKU 删除失败，请稍后重试。"));
       }
-      setSelectedSkuIds((current) => {
+      setSelectedProductIds((current) => {
         const next = new Set(current);
         next.delete(target.id);
         return next;
@@ -1057,7 +1059,7 @@ export function ProductsPage() {
       if (response.status === "FAILED") {
         throw new Error(response.errorMessage || t("全部商品删除失败，数据未被完整提交，请稍后重试。"));
       }
-      setSelectedSkuIds(new Set());
+      setSelectedProductIds(new Set());
       setDeleteDialogOpen(false);
       setDeleteAllDialogOpen(false);
       setDeleteAllPassword("");
@@ -1097,19 +1099,13 @@ export function ProductsPage() {
     setExportBusy(true);
     setError("");
     try {
-      const selectedIds = [...selectedSkuIds];
       await exportSkuCatalog({
-        q: selectedIds.length ? undefined : debouncedQuery.trim() || undefined,
-        categoryId: selectedIds.length ? undefined : categoryId || undefined,
+        q: debouncedQuery.trim() || undefined,
+        categoryId: categoryId || undefined,
         statuses: undefined,
-        missingImagesOnly: selectedIds.length ? false : missingImagesOnly,
-        skuIds: selectedIds.length ? selectedIds : undefined,
+        missingImagesOnly,
       });
-      setBulkNotice(
-        selectedIds.length
-          ? t("已导出所选 {count} 个 SKU。", { count: selectedIds.length })
-          : t("已导出当前筛选条件下的 SKU 数据；无 SKU 商品仍保留在商品列表中。"),
-      );
+      setBulkNotice(t("已导出当前筛选条件下的 SKU 数据；无 SKU 商品仍保留在商品列表中。"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("SKU 商品库导出失败"));
     } finally {
@@ -1171,7 +1167,7 @@ export function ProductsPage() {
     ? t("将所选商品移到目标分类。")
     : bulkAction === "pin" || bulkAction === "unpin"
     ? t("置顶状态会应用到商品。")
-    : t("将更新 {count} 个 SKU。", { count: selectedSkuIds.size });
+    : t("将更新 {count} 个商品。", { count: selectedProductIds.size });
   return (
     <div className="core-workspace">
       <CorePageHeading
@@ -1224,35 +1220,14 @@ export function ProductsPage() {
           <Button size="1" variant="ghost" color="gray" onClick={() => setBulkNotice("")} aria-label={t("关闭")}><X /></Button>
         </Card>
       ) : null}
-      {canEdit && selectedSkuIds.size > 0 ? (
+      {canDelete && selectedProductIds.size > 0 ? (
         <Card className="core-sku-bulk-bar">
           <div>
-            <Text size="2" weight="bold">{t("已选 {count} 项", { count: selectedSkuIds.size })}</Text>
+            <Text size="2" weight="bold">{t("已选 {count} 个商品", { count: selectedProductIds.size })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
-            {canShare ? (
-              <Button
-                size="2"
-                onClick={() => setShareTarget({ type: "PRODUCTS", skuIds: [...selectedSkuIds] })}
-              >
-                <ShareNetwork />{t("分享")}
-              </Button>
-            ) : null}
-            <Button size="2" variant="soft" color="gray" onClick={() => openBulkAction("category")}><Folders />{t("修改分类")}</Button>
-            <Button size="2" variant="soft" color="jade" onClick={() => openBulkAction("activate")}><ArrowUp />{t("上架")}</Button>
-            <Button size="2" variant="soft" color="amber" onClick={() => openBulkAction("deactivate")}><ArrowDown />{t("下架")}</Button>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger>
-                <Button size="2" variant="soft" color="gray"><DotsThree />{t("更多")}</Button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content align="end">
-                <DropdownMenu.Item onSelect={() => openBulkAction("pin")}><PushPin />{t("置顶")}</DropdownMenu.Item>
-                <DropdownMenu.Item onSelect={() => openBulkAction("unpin")}><PushPinSlash />{t("取消置顶")}</DropdownMenu.Item>
-                <DropdownMenu.Separator />
-                <DropdownMenu.Item color="red" disabled={!selectedSkuIds.size || deleteBusy} onSelect={() => setDeleteDialogOpen(true)}><Trash />{t("删除")}</DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-            <Button size="2" variant="ghost" color="gray" onClick={clearSkuSelection}><X />{t("取消选择")}</Button>
+            <Button size="2" color="red" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(true)}><Trash />{t("删除已选商品")}</Button>
+            <Button size="2" variant="ghost" color="gray" onClick={clearProductSelection}><X />{t("取消选择")}</Button>
           </div>
         </Card>
       ) : null}
@@ -1283,6 +1258,15 @@ export function ProductsPage() {
             <table className="core-sku-data-table">
               <thead>
                 <tr>
+                  {canDelete ? (
+                    <th className="core-sku-select-column" scope="col">
+                      <Checkbox
+                        checked={allCurrentPageSelected ? true : currentPageSelected.length ? "indeterminate" : false}
+                        onCheckedChange={toggleCurrentPageSelection}
+                        aria-label={t(allCurrentPageSelected ? "取消选择本页全部商品" : "选择本页全部商品")}
+                      />
+                    </th>
+                  ) : null}
                   <th className="core-sku-image-column" scope="col">{t("图片")}</th>
                   <th className="core-sku-product-column" scope="col">{t("商品")}</th>
                   <th className="core-sku-category-column" scope="col">{t("分类")}</th>
@@ -1298,6 +1282,7 @@ export function ProductsPage() {
                 {result.items.map((product) => (
                   <tr
                     key={product.id}
+                    data-selected={selectedProductIds.has(product.id) || undefined}
                     tabIndex={0}
                     onClick={() => void openProduct(product.id)}
                     onKeyDown={(event) => {
@@ -1305,6 +1290,19 @@ export function ProductsPage() {
                     }}
                     aria-label={t("打开商品 {name} 的详情", { name: product.name })}
                   >
+                    {canDelete ? (
+                      <td
+                        className="core-sku-select-column"
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <Checkbox
+                          checked={selectedProductIds.has(product.id)}
+                          onCheckedChange={() => toggleProductSelection(product.id)}
+                          aria-label={t(selectedProductIds.has(product.id) ? "取消选择商品 {name}" : "选择商品 {name}", { name: product.name })}
+                        />
+                      </td>
+                    ) : null}
                     <td className="core-sku-image-column">
                       <ProductThumbnail
                         product={product}
@@ -1450,7 +1448,7 @@ export function ProductsPage() {
             <Button variant="soft" color="gray" disabled={bulkBusy} onClick={() => { setBulkAction(undefined); setBulkError(""); }}>{t("取消")}</Button>
             <Button
               color={bulkAction === "deactivate" ? "amber" : bulkAction === "activate" ? "jade" : undefined}
-              disabled={bulkBusy || !selectedSkuIds.size || (bulkAction === "category" && !bulkCategoryId)}
+              disabled={bulkBusy || !selectedProductIds.size || (bulkAction === "category" && !bulkCategoryId)}
               onClick={() => void applyBulkAction()}
             >
               {bulkAction === "category" ? <Folders /> : bulkAction === "pin" ? <PushPin /> : bulkAction === "unpin" ? <PushPinSlash /> : bulkAction === "activate" ? <ArrowUp /> : <ArrowDown />}
@@ -1464,16 +1462,16 @@ export function ProductsPage() {
         <Dialog.Content className="core-sku-delete-dialog">
           <div className="core-dialog-heading">
             <div>
-              <Text size="1" color="gray">{t("批量删除 SKU")}</Text>
-              <Dialog.Title>{t("确认删除 {count} 个 SKU？", { count: selectedSkuIds.size })}</Dialog.Title>
-              <Dialog.Description>{t("删除后将不再展示这些 SKU。")}</Dialog.Description>
+              <Text size="1" color="gray">{t("批量删除商品")}</Text>
+              <Dialog.Title>{t("确认删除 {count} 个商品？", { count: selectedProductIds.size })}</Dialog.Title>
+              <Dialog.Description>{t("删除后将不再展示这些商品及其 SKU。")}</Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(false)} aria-label={t("关闭")}><X /></Button>
           </div>
           {bulkError ? <div className="core-form-error" role="alert">{bulkError}</div> : null}
           <div className="core-dialog-actions">
             <Button variant="soft" color="gray" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(false)}>{t("取消")}</Button>
-            <Button color="red" disabled={deleteBusy || !selectedSkuIds.size} onClick={() => void deleteSelectedSkus()}>
+            <Button color="red" disabled={deleteBusy || !selectedProductIds.size} onClick={() => void deleteSelectedProducts()}>
               <Trash />{t(deleteBusy ? "正在删除…" : "确认删除")}
             </Button>
           </div>
