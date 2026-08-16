@@ -834,6 +834,10 @@ export interface HybridSearchResponse {
   results: HybridSearchResult[];
 }
 
+export interface AISearchRecommendedQuestions {
+  questions: string[];
+}
+
 export interface KnowledgeIndexStatus {
   totalProducts: number;
   indexedProducts: number;
@@ -1386,6 +1390,7 @@ export interface QuotationSummary {
 export interface PublicQuoteDraftItem {
   id: string;
   skuId: string;
+  productId: string;
   position: number;
   quantity: number;
   skuCode: string;
@@ -1418,6 +1423,7 @@ export interface PublicQuoteDraft {
   locale: StorefrontLocale;
   documentStyle: "indigo" | "emerald" | "gold" | "slate" | "rose";
   quoteTemplateId?: string;
+  visibleColumns: QuoteTemplateField[];
   currency: string;
   subtotal: number;
   total: number;

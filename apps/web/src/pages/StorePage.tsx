@@ -10,11 +10,14 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowCounterClockwise,
+  CaretDown,
   CaretLeft,
   CaretRight,
+  Columns,
   Fire,
   FolderOpen,
   MagnifyingGlass,
+  Rows,
   ShareNetwork,
   Storefront as StoreIcon,
   X,
@@ -50,6 +53,12 @@ import {
 import type { CatalogSharePublic, StoreProduct, Storefront, StorefrontCategoryOption, StorefrontLocale } from "../types";
 
 type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
+
+const DEFAULT_RECOMMENDED_QUESTIONS = [
+  "适合巴西市场的小型防水狗玩具有哪些？",
+  "请推荐一款适合户外使用、容易收纳的商品。",
+  "有哪些商品支持定制，并且 MOQ 比较友好？",
+];
 
 function importProductDetailModule() {
   return import("./ProductDetailPage");
@@ -239,9 +248,11 @@ export function StorePage() {
     initialCatalogSnapshot?.view
       ?? (shareToken ? undefined : readStorefrontViewState(loadedStore.slug))
   ));
-  const [store, setStore] = useState<Storefront>(
-    initialCatalogSnapshot?.store ?? loadedStore,
-  );
+  const [store, setStore] = useState<Storefront>(() => ({
+    ...(initialCatalogSnapshot?.store ?? loadedStore),
+    ai_search_questions: loadedStore.ai_search_questions
+      ?? initialCatalogSnapshot?.store.ai_search_questions,
+  }));
   const [products, setProducts] = useState<StoreProduct[]>(
     initialCatalogSnapshot?.products ?? [],
   );
@@ -260,6 +271,12 @@ export function StorePage() {
   const [deferredSearch, setDeferredSearch] = useState(initialView?.search.trim() ?? "");
   const [primaryCategory, setPrimaryCategory] = useState(initialView?.primaryCategory ?? "");
   const [secondaryCategory, setSecondaryCategory] = useState(initialView?.secondaryCategory ?? "");
+  const [categoryLayout, setCategoryLayout] = useState<"horizontal" | "vertical">(
+    initialView?.categoryLayout ?? "horizontal",
+  );
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
+    () => new Set(initialView?.expandedCategories ?? []),
+  );
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(loadedStore.slug),
   );
@@ -311,11 +328,17 @@ export function StorePage() {
       ? null
       : readStorefrontCatalogSnapshot(loadedStore.slug, locale);
     const restoredView = nextSnapshot?.view ?? nextView;
-    setStore(nextSnapshot?.store ?? loadedStore);
+    setStore(nextSnapshot ? {
+      ...nextSnapshot.store,
+      ai_search_questions: loadedStore.ai_search_questions
+        ?? nextSnapshot.store.ai_search_questions,
+    } : loadedStore);
     setSearch(restoredView?.search ?? "");
     setDeferredSearch(restoredView?.search.trim() ?? "");
     setPrimaryCategory(restoredView?.primaryCategory ?? "");
     setSecondaryCategory(restoredView?.secondaryCategory ?? "");
+    setCategoryLayout(restoredView?.categoryLayout ?? "horizontal");
+    setExpandedCategories(new Set(restoredView?.expandedCategories ?? []));
     if (tenantChanged) {
       setCart(readStoreCart(loadedStore.slug));
       setCartTenant(loadedStore.slug);
@@ -439,6 +462,8 @@ export function StorePage() {
         category_showcase_enabled: data.category_showcase_enabled
           ?? current.category_showcase_enabled
           ?? true,
+        ai_search_questions: loadedStore.ai_search_questions
+          ?? current.ai_search_questions,
       } : current);
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
@@ -686,6 +711,33 @@ export function StorePage() {
     () => secondaryOptions.find((item) => item.path === secondaryCategory),
     [secondaryCategory, secondaryOptions],
   );
+  const visibleSecondaryOptions = useMemo(() => {
+    if (primaryCategory) {
+      return secondaryOptions.map((item) => ({
+        ...item,
+        parentName: selectedPrimary?.name ?? "",
+        parentPath: primaryCategory,
+      }));
+    }
+    return categoryTree.flatMap((node) => node.children.map((item) => ({
+      ...item,
+      parentName: node.name,
+      parentPath: node.path,
+    })));
+  }, [categoryTree, primaryCategory, secondaryOptions, selectedPrimary?.name]);
+  const recommendedQuestions = useMemo(
+    () => {
+      const configured = (store.ai_search_questions ?? [])
+        .map((question) => question.trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      const values = configured.length === 3
+        ? configured
+        : DEFAULT_RECOMMENDED_QUESTIONS;
+      return values.map((question) => t(question));
+    },
+    [store.ai_search_questions, t],
+  );
   const showCategoryShowcase = Boolean(
     !shareToken
     && store.category_showcase_enabled !== false
@@ -718,6 +770,14 @@ export function StorePage() {
     setPrimaryCategory("");
     setSecondaryCategory("");
   };
+  const toggleCategoryExpansion = (path: string) => {
+    setExpandedCategories((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
   const updateQuantity = (skuId: string, quantity: number) => {
     setCart((current) => {
       const next = { ...current };
@@ -734,8 +794,8 @@ export function StorePage() {
       search,
       primaryCategory,
       secondaryCategory,
-      categoryLayout: "vertical" as const,
-      expandedCategories: [],
+      categoryLayout,
+      expandedCategories: Array.from(expandedCategories),
     };
     writeStorefrontViewState(tenantSlug, viewState);
     if (!loading && !error && products.length > 0) {
@@ -808,6 +868,7 @@ export function StorePage() {
                 slug={tenantSlug}
                 storeName={store.name}
                 contactEmail={store.contact_email}
+                contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
                 lines={cartLines}
                 onQuantity={updateQuantity}
                 onClear={() => setCart({})}
@@ -854,6 +915,32 @@ export function StorePage() {
                   <Text size="1" color="gray">{t("输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找")}</Text>
                 </div>
                 <div className="filter-panel-actions">
+                  {!shareToken ? (
+                    <div className="category-layout-toggle" role="group" aria-label={t("分类展示方式")}>
+                      <Button
+                        type="button"
+                        size="1"
+                        variant={categoryLayout === "horizontal" ? "soft" : "ghost"}
+                        color={categoryLayout === "horizontal" ? "jade" : "gray"}
+                        aria-pressed={categoryLayout === "horizontal"}
+                        onClick={() => setCategoryLayout("horizontal")}
+                      >
+                        <Rows size={15} weight="duotone" />
+                        {t("横向展示")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="1"
+                        variant={categoryLayout === "vertical" ? "soft" : "ghost"}
+                        color={categoryLayout === "vertical" ? "jade" : "gray"}
+                        aria-pressed={categoryLayout === "vertical"}
+                        onClick={() => setCategoryLayout("vertical")}
+                      >
+                        <Columns size={15} weight="duotone" />
+                        {t("竖向展示")}
+                      </Button>
+                    </div>
+                  ) : null}
                   {hasFilters && (
                     <Button className="filter-reset-button" size="1" variant="ghost" color="gray" onClick={resetFilters}>
                       <ArrowCounterClockwise size={15} />{t("清除筛选")}
@@ -887,10 +974,106 @@ export function StorePage() {
                   )}
                 </TextField.Root>
               </div>
+              {!shareToken && !search.trim() && recommendedQuestions.length ? (
+                <div className="store-recommended-questions" aria-label={t("推荐问题")}>
+                  <Text size="1" color="gray">{t("推荐问题")}</Text>
+                  <div className="store-recommended-question-list">
+                    {recommendedQuestions.map((question) => (
+                      <button
+                        type="button"
+                        className="store-recommended-question"
+                        key={question}
+                        onClick={() => {
+                          setPrimaryCategory("");
+                          setSecondaryCategory("");
+                          setSearch(question);
+                        }}
+                      >
+                        <span>{question}</span>
+                        <CaretRight size={14} weight="bold" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {!shareToken && categoryLayout === "horizontal" ? (
+                <nav className="category-browser" aria-label={t("商品分类")}>
+                  <div className="category-browser-row">
+                    <span className="category-browser-label">{t("一级分类")}</span>
+                    <CategoryScrollTrack
+                      ariaLabel={t("一级分类")}
+                      contentKey={`primary|${primaryNavigationItems.map((item) => item.key).join("|")}`}
+                      locale={locale}
+                    >
+                      {primaryNavigationItems.map((item) => item.kind === "all" ? (
+                        <button
+                          type="button"
+                          className={`category-browser-option${!primaryCategory && !secondaryCategory ? " is-active" : ""}`}
+                          aria-pressed={!primaryCategory && !secondaryCategory}
+                          onClick={() => {
+                            setPrimaryCategory("");
+                            setSecondaryCategory("");
+                          }}
+                          key={item.key}
+                        >
+                          {t("全部商品")}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`category-browser-option${primaryCategory === item.node.path ? " is-active" : ""}`}
+                          aria-pressed={primaryCategory === item.node.path}
+                          onClick={() => {
+                            setPrimaryCategory(item.node.path);
+                            setSecondaryCategory("");
+                          }}
+                          key={item.key}
+                        >
+                          {item.node.name}
+                        </button>
+                      ))}
+                    </CategoryScrollTrack>
+                  </div>
+                  {visibleSecondaryOptions.length ? (
+                    <div className="category-browser-row">
+                      <span className="category-browser-label">{t("二级分类")}</span>
+                      <CategoryScrollTrack
+                        ariaLabel={t("二级分类")}
+                        contentKey={`secondary|${primaryCategory}|${visibleSecondaryOptions.map((item) => item.path).join("|")}`}
+                        locale={locale}
+                      >
+                        <button
+                          type="button"
+                          className={`category-browser-option${!secondaryCategory ? " is-active" : ""}`}
+                          aria-pressed={!secondaryCategory}
+                          onClick={() => setSecondaryCategory("")}
+                        >
+                          {primaryCategory ? t("全部分类") : t("全部商品")}
+                        </button>
+                        {visibleSecondaryOptions.map((item) => (
+                          <button
+                            type="button"
+                            className={`category-browser-option${secondaryCategory === item.path ? " is-active" : ""}`}
+                            aria-pressed={secondaryCategory === item.path}
+                            title={primaryCategory ? undefined : item.parentName}
+                            onClick={() => {
+                              setPrimaryCategory(item.parentPath);
+                              setSecondaryCategory(item.path);
+                            }}
+                            key={`${item.parentPath}:${item.path}`}
+                          >
+                            {primaryCategory ? item.name : `${item.parentName} / ${item.name}`}
+                          </button>
+                        ))}
+                      </CategoryScrollTrack>
+                    </div>
+                  ) : null}
+                </nav>
+              ) : null}
             </div>
 
-            <div className={`results-container${!shareToken ? " has-sidebar" : ""}`}>
-              {!shareToken && (
+            <div className={`results-container${!shareToken && categoryLayout === "vertical" ? " has-sidebar" : ""}`}>
+              {!shareToken && categoryLayout === "vertical" && (
                 <aside className="category-sidebar">
                   <div className="category-sidebar-header">
                     <Text size="2" weight="medium">{t("商品分类")}</Text>
@@ -909,24 +1092,46 @@ export function StorePage() {
                         <span>{t("全部商品")}</span>
                       </button>
                     ) : (
-                      <button
-                        type="button"
-                        className={`category-sidebar-item is-primary${primaryCategory === item.node.path ? " is-active" : ""}`}
-                        title={item.node.name}
-                        onClick={() => {
-                          setPrimaryCategory(item.node.path);
-                          setSecondaryCategory("");
-                        }}
-                        key={item.key}
-                      >
-                        <span>{item.node.name}</span>
-                      </button>
+                      <div className="category-sidebar-group" key={item.key}>
+                        <button
+                          type="button"
+                          className={`category-sidebar-item is-primary${primaryCategory === item.node.path ? " is-active" : ""}`}
+                          title={item.node.name}
+                          aria-expanded={item.node.children.length ? expandedCategories.has(item.node.path) : undefined}
+                          onClick={() => {
+                            setPrimaryCategory(item.node.path);
+                            setSecondaryCategory("");
+                            if (item.node.children.length) toggleCategoryExpansion(item.node.path);
+                          }}
+                        >
+                          <span>{item.node.name}</span>
+                          {item.node.children.length ? <CaretDown className={expandedCategories.has(item.node.path) ? "is-expanded" : undefined} size={14} /> : null}
+                        </button>
+                        {item.node.children.length && expandedCategories.has(item.node.path) ? (
+                          <div className="category-sidebar-children">
+                            {item.node.children.map((child) => (
+                              <button
+                                type="button"
+                                className={`category-sidebar-item is-secondary${secondaryCategory === child.path ? " is-active" : ""}`}
+                                title={child.name}
+                                onClick={() => {
+                                  setPrimaryCategory(item.node.path);
+                                  setSecondaryCategory(child.path);
+                                }}
+                                key={child.path}
+                              >
+                                <span>{child.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                     ))}
                   </nav>
                 </aside>
               )}
               <div className="results-main">
-            {!shareToken && selectedPrimary && secondaryOptions.length > 0 && !showCategoryShowcase ? (
+            {!shareToken && categoryLayout === "vertical" && selectedPrimary && secondaryOptions.length > 0 && !showCategoryShowcase ? (
               <nav className="category-secondary-nav" aria-label={t("二级分类")}>
                 <CategoryScrollTrack
                   ariaLabel={t("二级分类")}

@@ -2,7 +2,14 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
+
+
+DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS = [
+    "适合巴西市场的小型防水狗玩具有哪些？",
+    "请推荐一款适合户外使用、容易收纳的商品。",
+    "有哪些商品支持定制，并且 MOQ 比较友好？",
+]
 
 
 class KnowledgeProjectionResponse(BaseModel):
@@ -87,6 +94,30 @@ class EmbeddingSettingsUpdateRequest(BaseModel):
 class HybridSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=10, ge=1, le=50)
+
+
+class AISearchRecommendedQuestionsResponse(BaseModel):
+    questions: list[str] = Field(min_length=3, max_length=3)
+
+
+class AISearchRecommendedQuestionsUpdate(BaseModel):
+    questions: list[str] = Field(min_length=3, max_length=3)
+
+    @field_validator("questions")
+    @classmethod
+    def normalize_questions(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            question = str(item).strip()[:200]
+            key = question.casefold()
+            if not question:
+                raise ValueError("推荐问题不能为空")
+            if key in seen:
+                raise ValueError("推荐问题不能重复")
+            seen.add(key)
+            normalized.append(question)
+        return normalized
 
 
 class SearchScoreBreakdown(BaseModel):

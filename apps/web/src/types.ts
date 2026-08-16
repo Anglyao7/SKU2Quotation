@@ -81,6 +81,7 @@ export interface Storefront {
   all_products_position?: number;
   hot_products_enabled?: boolean;
   category_showcase_enabled?: boolean;
+  ai_search_questions?: string[];
   announcements?: PublicAnnouncement[];
   support_widget?: PublicSupportWidget;
 }

@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from ..domain.errors import ApplicationError
 from ..knowledge_embedding_schemas import (
+    AISearchRecommendedQuestionsResponse,
+    AISearchRecommendedQuestionsUpdate,
     EmbeddingSettingsResponse,
     EmbeddingSettingsUpdateRequest,
     HybridSearchRequest,
@@ -297,6 +299,48 @@ def search_products(
     )
     try:
         return use_cases.search_products(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/search/recommended-questions",
+    response_model=AISearchRecommendedQuestionsResponse,
+)
+def get_recommended_questions(
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> AISearchRecommendedQuestionsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.get_recommended_questions(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/search/recommended-questions",
+    response_model=AISearchRecommendedQuestionsResponse,
+)
+def update_recommended_questions(
+    payload: AISearchRecommendedQuestionsUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> AISearchRecommendedQuestionsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_recommended_questions(
             session,
             tenant_id=context.tenant_id,
             permissions=context.permissions,

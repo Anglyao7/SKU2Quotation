@@ -954,6 +954,21 @@ def get_quote_draft(
     return session.scalar(statement)
 
 
+def get_quote_draft_by_quotation_number(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    quotation_number: str,
+) -> PublicQuoteDraftRow | None:
+    return session.scalar(
+        select(PublicQuoteDraftRow).where(
+            PublicQuoteDraftRow.tenant_id == tenant_id,
+            PublicQuoteDraftRow.quotation_number == quotation_number,
+            PublicQuoteDraftRow.deleted_at.is_(None),
+        )
+    )
+
+
 def get_storefront_order_record_by_quote(
     session: Session,
     *,
@@ -1085,3 +1100,21 @@ def list_quote_draft_items(
             .order_by(PublicQuoteDraftItemRow.position)
         ).all()
     )
+
+
+def get_quote_draft_item(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    quote_draft_id: UUID,
+    item_id: UUID,
+    for_update: bool = False,
+) -> PublicQuoteDraftItemRow | None:
+    statement = select(PublicQuoteDraftItemRow).where(
+        PublicQuoteDraftItemRow.tenant_id == tenant_id,
+        PublicQuoteDraftItemRow.quote_draft_id == quote_draft_id,
+        PublicQuoteDraftItemRow.id == item_id,
+    )
+    if for_update:
+        statement = statement.with_for_update(of=PublicQuoteDraftItemRow)
+    return session.scalar(statement)

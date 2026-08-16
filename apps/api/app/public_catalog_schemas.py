@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .announcement_schemas import PublicAnnouncementResponse
-from .quote_template_schemas import QuoteExcelTemplateRenderSpec
+from .quote_template_schemas import QuoteExcelTemplateRenderSpec, QuoteTemplateField
 from .storefront_locales import StorefrontLocale
 from .support_schemas import PublicSupportWidgetResponse
 
@@ -37,6 +37,7 @@ class PublicStoreResponse(BaseModel):
     all_products_position: int = Field(default=0, ge=0)
     hot_products_enabled: bool = False
     category_showcase_enabled: bool = True
+    ai_search_questions: list[str] = Field(default_factory=list)
     announcements: list[PublicAnnouncementResponse] = Field(default_factory=list)
     support_widget: PublicSupportWidgetResponse
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
@@ -175,6 +176,7 @@ class PublicQuoteDraftCreate(BaseModel):
 class PublicQuoteDraftItemResponse(BaseModel):
     id: UUID
     sku_id: UUID
+    product_id: UUID | None = None
     position: int
     quantity: Decimal
     sku_code_snapshot: str
@@ -207,6 +209,7 @@ class PublicQuoteDraftResponse(BaseModel):
     locale: StorefrontLocale = "zh-CN"
     document_style: QuoteDocumentStyle = "indigo"
     quote_template_id: UUID | None = None
+    visible_columns: list[QuoteTemplateField] = Field(default_factory=list)
     currency: str
     subtotal: Decimal
     total: Decimal
@@ -230,6 +233,92 @@ class PublicQuoteDraftSettingsUpdate(BaseModel):
     locale: StorefrontLocale = "zh-CN"
     style: QuoteDocumentStyle = "indigo"
     template_id: UUID | None = None
+    quote_number: str | None = Field(default=None, max_length=80)
+    visible_columns: list[QuoteTemplateField] | None = Field(default=None, max_length=32)
+
+    @field_validator("quote_number", mode="before")
+    @classmethod
+    def normalize_quote_number(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("quote number cannot be empty")
+        if any(ord(character) < 32 for character in normalized):
+            raise ValueError("quote number cannot contain control characters")
+        return normalized
+
+    @field_validator("visible_columns")
+    @classmethod
+    def unique_visible_columns(
+        cls,
+        value: list[QuoteTemplateField] | None,
+    ) -> list[QuoteTemplateField] | None:
+        return list(dict.fromkeys(value)) if value is not None else None
+
+
+class PublicQuoteDraftItemPriceUpdate(BaseModel):
+    """A merchant's price override for one line in a pending quotation."""
+
+    unit_price: Decimal = Field(
+        ge=0,
+        max_digits=20,
+    )
+
+
+class PublicQuoteDraftItemPatch(BaseModel):
+    """Editable customer-facing fields for one quote line."""
+
+    item_id: UUID
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=20)
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=20)
+    name: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=10000)
+    specification: str | None = Field(default=None, max_length=10000)
+    category: str | None = Field(default=None, max_length=200)
+    unit_code: str | None = Field(default=None, max_length=32)
+
+    @field_validator(
+        "name",
+        "description",
+        "specification",
+        "category",
+        "unit_code",
+        mode="before",
+    )
+    @classmethod
+    def normalize_editable_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        return str(value).strip()
+
+    @model_validator(mode="after")
+    def require_a_change(self) -> "PublicQuoteDraftItemPatch":
+        if not self.model_fields_set - {"item_id"}:
+            raise ValueError("at least one quote item field must be provided")
+        for field in ("name", "unit_code"):
+            if field in self.model_fields_set and not getattr(self, field):
+                raise ValueError(f"{field} cannot be empty")
+        return self
+
+
+class PublicQuoteDraftItemsUpdate(BaseModel):
+    items: list[PublicQuoteDraftItemPatch] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def unique_item_ids(self) -> "PublicQuoteDraftItemsUpdate":
+        ids = [item.item_id for item in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate quote item id")
+        return self
+
+
+class PublicQuoteDraftPriceAdjustment(BaseModel):
+    """Signed percentage applied to every current quote-line price."""
+
+    percentage: Decimal = Field(ge=-100, le=10000, max_digits=8)
 
 
 class PublicQuoteDraftSummary(BaseModel):

@@ -705,6 +705,19 @@ export const api = {
       `quotation-${quoteId}.${type}`,
       token ? { headers: { "X-Quote-Download-Token": token } } : {},
     ),
+  downloadStorefrontVisitorQuote: (
+    slug: string,
+    quoteId: string,
+    type: "pdf" | "xlsx",
+  ) => download(
+    `/api/store/${encodeURIComponent(slug)}/visitor/quotes/${encodeURIComponent(quoteId)}/${type}`,
+    `quotation-${quoteId}.${type}`,
+    {
+      headers: {
+        "X-Storefront-Visitor-Token": ensureStorefrontVisitorToken(slug),
+      },
+    },
+  ),
   createSupportConversation: (
     slug: string,
     payload: {

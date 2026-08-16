@@ -6,11 +6,13 @@ import {
   Heading,
   Progress,
   Text,
+  TextField,
 } from "@radix-ui/themes";
 import {
   ArrowClockwise,
   ArrowsClockwise,
   Database,
+  FloppyDisk,
   MagnifyingGlass,
   Pause,
   Play,
@@ -27,9 +29,11 @@ import {
   getKnowledgeIndexJob,
   getKnowledgeIndexStatus,
   getLatestKnowledgeIndexJob,
+  getAISearchRecommendedQuestions,
   pauseKnowledgeIndexJob,
   resumeKnowledgeIndexJob,
   startKnowledgeIndexJob,
+  updateAISearchRecommendedQuestions,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
@@ -62,17 +66,21 @@ export function AiSearchManagementPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [rebuildOpen, setRebuildOpen] = useState(false);
+  const [recommendedQuestions, setRecommendedQuestions] = useState(["", "", ""]);
+  const [savingQuestions, setSavingQuestions] = useState(false);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [nextStatus, latestJob] = await Promise.all([
+      const [nextStatus, latestJob, questions] = await Promise.all([
         getKnowledgeIndexStatus(),
         getLatestKnowledgeIndexJob(),
+        getAISearchRecommendedQuestions().catch(() => undefined),
       ]);
       setStatus(nextStatus);
       setJob(latestJob);
+      if (questions?.questions.length === 3) setRecommendedQuestions(questions.questions);
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -190,6 +198,31 @@ export function AiSearchManagementPage() {
         : t(action === "pause" ? "暂停向量化失败。" : "继续向量化失败。"));
     } finally {
       setControlling(false);
+    }
+  };
+
+  const saveRecommendedQuestions = async () => {
+    if (!canManageIndex || savingQuestions) return;
+    const questions = recommendedQuestions.map((question) => question.trim());
+    if (questions.some((question) => !question)) {
+      setError(t("请填写三个推荐问题。"));
+      return;
+    }
+    if (new Set(questions.map((question) => question.toLocaleLowerCase())).size !== 3) {
+      setError(t("三个推荐问题不能重复。"));
+      return;
+    }
+    setSavingQuestions(true);
+    setError("");
+    setMessage("");
+    try {
+      const saved = await updateAISearchRecommendedQuestions(questions);
+      setRecommendedQuestions(saved.questions);
+      setMessage(t("前台推荐问题已保存。"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("推荐问题保存失败。"));
+    } finally {
+      setSavingQuestions(false);
     }
   };
 
@@ -426,6 +459,45 @@ export function AiSearchManagementPage() {
                 {error}
               </Text>
             ) : null}
+          </Card>
+
+          <Card className="core-ai-recommended-questions">
+            <div className="core-ai-recommended-heading">
+              <div>
+                <Text size="1" color="gray">{t("前台商品查找")}</Text>
+                <Heading size="4">{t("推荐问题")}</Heading>
+                <Text size="2" color="gray">
+                  {t("设置三个常用问题，它们会显示在公开商品目录的“查找商品”下面。")}
+                </Text>
+              </div>
+              <Badge color="gray">{t("商家自定义")}</Badge>
+            </div>
+            <div className="core-ai-recommended-list">
+              {recommendedQuestions.map((question, index) => (
+                <label key={index}>
+                  <Text size="1" color="gray">{t("推荐问题 {index}", { index: index + 1 })}</Text>
+                  <TextField.Root
+                    value={question}
+                    maxLength={200}
+                    disabled={!canManageIndex || savingQuestions}
+                    placeholder={t("例如：适合户外使用的轻便商品有哪些？")}
+                    onChange={(event) => setRecommendedQuestions((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}
+                  />
+                </label>
+              ))}
+            </div>
+            {canManageIndex ? (
+              <Button
+                variant="soft"
+                disabled={savingQuestions}
+                onClick={() => void saveRecommendedQuestions()}
+              >
+                <FloppyDisk />
+                {t(savingQuestions ? "保存中…" : "保存推荐问题")}
+              </Button>
+            ) : (
+              <Text size="1" color="gray">{t("当前账号没有商品编辑权限，无法修改推荐问题。")}</Text>
+            )}
           </Card>
 
           <div className="core-ai-index-details is-single">
