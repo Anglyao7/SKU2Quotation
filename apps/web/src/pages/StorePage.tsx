@@ -725,6 +725,7 @@ export function StorePage() {
       parentPath: node.path,
     })));
   }, [categoryTree, primaryCategory, secondaryOptions, selectedPrimary?.name]);
+  const categoryShowcaseOptions = visibleSecondaryOptions;
   const recommendedQuestions = useMemo(
     () => {
       const configured = (store.ai_search_questions ?? [])
@@ -742,9 +743,8 @@ export function StorePage() {
     !shareToken
     && store.category_showcase_enabled !== false
     && !search.trim()
-    && selectedPrimary
     && !secondaryCategory
-    && secondaryOptions.length,
+    && categoryShowcaseOptions.length,
   );
   const hasFilters = Boolean(search || category);
   const shareDisplayTitle = useMemo(() => {
@@ -1188,7 +1188,7 @@ export function StorePage() {
               </div>
               <Badge color={hasFilters ? "jade" : "gray"} variant="soft" aria-live="polite">
                 {showCategoryShowcase
-                  ? t("{count} 个分类", { count: secondaryOptions.length.toLocaleString(locale) })
+                  ? t("{count} 个分类", { count: categoryShowcaseOptions.length.toLocaleString(locale) })
                   : searchPending
                   ? t("搜索中……")
                   : loading
@@ -1203,12 +1203,15 @@ export function StorePage() {
             <div className="results-body">
               {showCategoryShowcase ? (
                 <div className="category-showcase-grid">
-                  {secondaryOptions.map((item) => (
+                  {categoryShowcaseOptions.map((item) => (
                     <button
                       type="button"
                       className="category-showcase-card"
-                      onClick={() => setSecondaryCategory(item.path)}
-                      key={item.path}
+                      onClick={() => {
+                        setPrimaryCategory(item.parentPath);
+                        setSecondaryCategory(item.path);
+                      }}
+                      key={`${item.parentPath}:${item.path}`}
                     >
                       <span className="category-showcase-image">
                         {item.coverImageUrl ? (
@@ -1217,7 +1220,7 @@ export function StorePage() {
                           <span><FolderOpen weight="duotone" /></span>
                         )}
                       </span>
-                      <strong>{item.name}</strong>
+                      <strong>{primaryCategory ? item.name : `${item.parentName} / ${item.name}`}</strong>
                       <span>{t("查看商品")}<CaretRight weight="bold" /></span>
                     </button>
                   ))}
