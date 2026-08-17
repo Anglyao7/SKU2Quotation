@@ -1115,6 +1115,61 @@ def test_sequential_image_columns_can_extend_beyond_ten(
     )
 
 
+def test_product_sku_image_columns_can_extend_beyond_ten(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "双表扩展图片列.xlsx"
+    image_path = tmp_path / "dual-extended-product.png"
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0"
+        b"\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00"
+        b"\x00IEND\xaeB`\x82"
+    )
+    image_path.write_bytes(image_bytes)
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS[:8] + tuple(
+        f"商品图片{index}" for index in range(1, 19)
+    )
+    product_sheet.append(list(product_headers))
+    product_sheet.append([
+        "DUAL-EXTENDED-PRODUCT",
+        "双表扩展图片商品",
+        "测试分类",
+        None,
+        10,
+        None,
+        None,
+        None,
+        *([None] * 17),
+        "https://img.example.com/image-18.jpg",
+    ])
+    embedded = OpenpyxlImage(image_path)
+    embedded.anchor = "Z2"  # Product column 26 = 商品图片18
+    product_sheet.add_image(embedded)
+    sku_sheet = workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS))
+    sku_sheet.append([
+        "DUAL-EXTENDED-PRODUCT",
+        "DUAL-EXTENDED-SKU",
+        "双表扩展图片 SKU",
+        *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 3)),
+    ])
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert result.rows[0].image_urls == (
+        "https://img.example.com/image-18.jpg",
+    )
+    assert result.rows[0].image_url_columns == (18,)
+    assert [image.image_column for image in result.rows[0].embedded_images] == [18]
+
+
 def test_duplicate_sku_is_case_and_whitespace_insensitive(tmp_path: Path) -> None:
     path = tmp_path / "商品模版.xlsx"
     _write_workbook(

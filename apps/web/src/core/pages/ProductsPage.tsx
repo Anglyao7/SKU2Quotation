@@ -1632,7 +1632,7 @@ export function ProductsPage() {
             <Tabs.Content value="upload" className="core-import-tab-content">
 
           <div className="core-import-template-row">
-            <Text size="2" color="gray">{t("支持新版双表、历史模板和单元格内嵌图片")}</Text>
+            <Text size="2" color="gray">{t("支持新版双表、历史模板和单元格内嵌图片；商品图片最多支持50张")}</Text>
             <Button asChild size="1" variant="soft" color="gray">
               <a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a>
             </Button>

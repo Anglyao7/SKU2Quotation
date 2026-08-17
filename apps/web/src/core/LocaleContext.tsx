@@ -57,6 +57,8 @@ const english: Record<string, string> = {
   "任务状态刷新失败": "Could not refresh task status",
   "支持新版双表、历史模板和单元格内嵌图片":
     "Supports Product + SKU workbooks, legacy templates, and images embedded in cells",
+  "支持新版双表、历史模板和单元格内嵌图片；商品图片最多支持50张":
+    "Supports Product + SKU workbooks, legacy templates, and images embedded in cells; up to 50 product images",
   "工作": "Workspace",
   "概览": "Overview",
   "AI 搜索": "AI Search",
@@ -1656,7 +1658,7 @@ const english: Record<string, string> = {
   "每个规格 5 个候选值": "Up to five values per option",
   "候选值自动组合 SKU": "Automatically combine option values into SKUs",
   "供应商、价格与包装": "Supplier, price, and packing fields",
-  "标签与图片1–10": "Tags and images 1–10",
+  "标签与图片1–50": "Tags and images 1–50",
   "商品名称": "Product name",
   "商品分类": "Product category",
   "商品型号": "Product model",
@@ -1664,7 +1666,7 @@ const english: Record<string, string> = {
   "商品描述": "Product description",
   "备注": "Notes",
   "标签": "Tags",
-  "商品图片1–10": "Product images 1–10",
+  "商品图片1–50": "Product images 1–50",
   "下载模板": "Download template",
   "每次导入都会增量合并": "Every import is an incremental merge",
   "相同 SKU 更新，新 SKU 新增；本次文件未包含的旧商品继续保留。文件会先完整校验，存在错误时不会写入部分商品。":
