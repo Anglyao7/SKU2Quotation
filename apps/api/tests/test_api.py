@@ -13372,8 +13372,8 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
     assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in exported.headers["content-type"]
     workbook = load_workbook(BytesIO(exported.content))
     try:
-        assert workbook.sheetnames == ["商品", "SKU"]
-        product_sheet = workbook["商品"]
+        assert workbook.sheetnames == [PRODUCT_MASTER_TEMPLATE_SHEET, SKU_DETAIL_TEMPLATE_SHEET]
+        product_sheet = workbook[PRODUCT_MASTER_TEMPLATE_SHEET]
         sku_sheet = workbook["SKU"]
         product_headers = [cell.value for cell in product_sheet[1]]
         sku_headers = [cell.value for cell in sku_sheet[1]]
@@ -13385,20 +13385,19 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
             sku_headers[column - 1]: sku_sheet.cell(2, column).value
             for column in range(1, len(sku_headers) + 1)
         }
-        assert product_values["商品ID"] == str(product_id)
+        assert product_values["商品编码"] == detail["product_code"]
         assert product_values["商品名称"] == detail["name"]
-        assert product_values["图片地址1"] == uploaded_payload["url"]
+        assert product_values["商品图片1"] == uploaded_payload["url"]
         image_url_cell = product_sheet.cell(
             2,
-            product_headers.index("图片地址1") + 1,
+            product_headers.index("商品图片1") + 1,
         )
         assert image_url_cell.hyperlink is not None
         assert image_url_cell.hyperlink.target == uploaded_payload["url"]
         assert len(product_sheet._images) == 0
-        assert sku_values["SKU ID"] == sku_id
-        assert sku_values["商品ID"] == str(product_id)
-        assert sku_values["SKU编号"] == detail["skus"][0]["sku_code"]
-        assert sku_values["来源SKU编号"] == f"IMG-SKU-{suffix}"
+        assert sku_values["商品编码"] == detail["product_code"]
+        assert sku_values["SKU编号"] == f"IMG-SKU-{suffix}"
+        assert sku_values["SKU名称"] == detail["skus"][0]["name"]
     finally:
         workbook.close()
 

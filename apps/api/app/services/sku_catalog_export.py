@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
 from io import BytesIO
 from typing import Any
 from uuid import UUID
@@ -13,50 +12,13 @@ from openpyxl.utils import get_column_letter
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY
 from ..product_supplier_models import ProductImageRow
 from ..repositories.product_center_repository import SkuListRow
-from .product_template_import import MAX_PRODUCT_IMAGE_COLUMN_COUNT
-
-
-PRODUCT_HEADERS = (
-    "商品ID",
-    "商品编码",
-    "商品名称",
-    "商品分类",
-    "商品描述",
-    "默认单位",
-    "状态",
-    *(f"图片地址{index}" for index in range(1, MAX_PRODUCT_IMAGE_COLUMN_COUNT + 1)),
-    "更新时间",
+from .product_template_import import (
+    MAX_PRODUCT_IMAGE_COLUMN_COUNT,
+    PRODUCT_MASTER_TEMPLATE_HEADERS,
+    PRODUCT_MASTER_TEMPLATE_SHEET,
+    SKU_DETAIL_TEMPLATE_HEADERS,
+    SKU_DETAIL_TEMPLATE_SHEET,
 )
-
-SKU_HEADERS = (
-    "SKU ID",
-    "商品ID",
-    "商品编码",
-    "SKU编号",
-    "来源SKU编号",
-    "SKU名称",
-    "规格",
-    "条码",
-    "供应商",
-    "公开价",
-    "币种",
-    "标签",
-    "起定数",
-    "起定单位",
-    "毛重",
-    "重量单位",
-    "装箱数",
-    "状态",
-    "源文件",
-    "导入时间",
-    "更新时间",
-)
-
-
-def _excel_datetime(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
 def _category_name(row: SkuListRow) -> str:
@@ -69,13 +31,58 @@ def _category_name(row: SkuListRow) -> str:
     return category.name
 
 
-def _display_option_values(values: Mapping[str, Any]) -> str:
-    visible: list[str] = []
-    for key, value in values.items():
-        if key == SKU_TEMPLATE_SOURCE_OPTION_KEY or value in (None, "", [], {}):
-            continue
-        visible.append(f"{key}: {value}")
-    return "；".join(visible)
+def _option_text(value: Any) -> str:
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return "、".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, Mapping):
+        return "；".join(
+            f"{key}: {item}"
+            for key, item in value.items()
+            if item not in (None, "", [], {})
+        )
+    return str(value).strip()
+
+
+def _variant_options(values: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Return the concrete option selected by one SKU in template order."""
+
+    marker = values.get(SKU_TEMPLATE_SOURCE_OPTION_KEY)
+    keys: list[str] = []
+    if isinstance(marker, Mapping):
+        keys = [
+            key
+            for key in marker.get("variant_option_keys", [])
+            if isinstance(key, str) and key.strip()
+        ]
+    if not keys:
+        reserved = {
+            SKU_TEMPLATE_SOURCE_OPTION_KEY,
+            "商品型号",
+            "规格名称",
+            "备注",
+            "一箱个数",
+            "装箱数",
+            "毛重",
+            "起定数",
+            "是否是新品",
+        }
+        keys = [
+            str(key)
+            for key, value in values.items()
+            if str(key) not in reserved and value not in (None, "", [], {})
+        ]
+    options = [
+        (key, _option_text(values.get(key)))
+        for key in keys
+        if _option_text(values.get(key))
+    ]
+    if not options:
+        legacy_specification = _option_text(values.get("规格名称"))
+        if legacy_specification:
+            options.append(("规格", legacy_specification))
+    return options[:3]
 
 
 def _units_per_carton(values: Mapping[str, Any]) -> Any:
@@ -84,6 +91,45 @@ def _units_per_carton(values: Mapping[str, Any]) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def _product_tags(rows: Sequence[SkuListRow], product_id: UUID) -> str:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if row.product.id != product_id or row.public_offer is None:
+            continue
+        for tag in row.public_offer.tags or []:
+            normalized = str(tag).strip()
+            if normalized and normalized.casefold() not in seen:
+                seen.add(normalized.casefold())
+                tags.append(normalized)
+    return "，".join(tags)
+
+
+def _product_default_price(rows: Sequence[SkuListRow], product_id: UUID) -> float:
+    prices = [
+        float(row.public_offer.unit_price)
+        for row in rows
+        if row.product.id == product_id
+        and row.public_offer is not None
+        and row.public_offer.unit_price is not None
+    ]
+    return min(prices) if prices else 0
+
+
+def _product_model(rows: Sequence[SkuListRow], product_id: UUID) -> str:
+    for row in rows:
+        if row.product.id != product_id:
+            continue
+        value = _option_text(row.sku.option_values.get("商品型号"))
+        if value:
+            return value
+    return ""
+
+
+def _source_sku_identity(sku: Any) -> str:
+    return str(sku.source_sku_code or sku.sku_code or "").strip()
 
 
 def _style_sheet(sheet: object, *, headers: Sequence[str], widths: Sequence[int]) -> None:
@@ -113,30 +159,45 @@ def build_sku_catalog_workbook(
 
     workbook = Workbook()
     product_sheet = workbook.active
-    product_sheet.title = "商品"
-    sku_sheet = workbook.create_sheet("SKU")
-    product_sheet.append(list(PRODUCT_HEADERS))
-    sku_sheet.append(list(SKU_HEADERS))
+    product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    sku_sheet = workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
+    product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS))
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS))
 
     _style_sheet(
         product_sheet,
-        headers=PRODUCT_HEADERS,
+        headers=PRODUCT_MASTER_TEMPLATE_HEADERS,
         widths=(
-            38,
             18,
-            30,
-            24,
-            46,
-            12,
-            12,
-            *([34] * MAX_PRODUCT_IMAGE_COLUMN_COUNT),
+            28,
+            22,
             20,
+            14,
+            44,
+            28,
+            26,
+            *([38] * MAX_PRODUCT_IMAGE_COLUMN_COUNT),
         ),
     )
     _style_sheet(
         sku_sheet,
-        headers=SKU_HEADERS,
-        widths=(38, 38, 18, 24, 22, 30, 42, 20, 24, 14, 10, 28, 12, 12, 12, 12, 12, 12, 28, 20, 20),
+        headers=SKU_DETAIL_TEMPLATE_HEADERS,
+        widths=(
+            18,
+            22,
+            30,
+            18,
+            *([16] * 5),
+            18,
+            *([16] * 5),
+            18,
+            *([16] * 5),
+            18,
+            16,
+            16,
+            16,
+            16,
+        ),
     )
     product_sheet.sheet_properties.tabColor = "D4AF37"
     sku_sheet.sheet_properties.tabColor = "42A58B"
@@ -152,19 +213,19 @@ def build_sku_catalog_workbook(
         urls = [image_urls.get(image.id, "") for image in images]
         product_sheet.append(
             [
-                str(product.id),
                 product.product_code or "",
                 product.name,
                 _category_name(row),
+                _product_model(rows, product.id),
+                _product_default_price(rows, product.id),
                 product.description or "",
-                product.default_unit or "",
-                product.status,
+                "",
+                _product_tags(rows, product.id),
                 *urls,
                 *("" for _ in range(MAX_PRODUCT_IMAGE_COLUMN_COUNT - len(urls))),
-                _excel_datetime(product.updated_at),
             ]
         )
-        for offset, url in enumerate(urls, start=8):
+        for offset, url in enumerate(urls, start=9):
             cell = product_sheet.cell(row=row_number, column=offset)
             if url.startswith(("https://", "http://")):
                 cell.hyperlink = url
@@ -173,57 +234,52 @@ def build_sku_catalog_workbook(
     for row in rows:
         sku = row.sku
         offer = row.public_offer
+        options = _variant_options(sku.option_values)
+        option_cells: list[str] = []
+        for option_index in range(3):
+            if option_index < len(options):
+                name, value = options[option_index]
+                option_cells.extend([name, value, "", "", "", ""])
+            else:
+                option_cells.extend(["", "", "", "", "", ""])
         sku_sheet.append(
             [
-                str(sku.id),
-                str(row.product.id),
                 row.product.product_code or "",
-                sku.sku_code,
-                sku.source_sku_code or "",
+                _source_sku_identity(sku),
                 sku.name or row.product.name,
-                _display_option_values(sku.option_values),
-                sku.barcode or "",
+                *option_cells,
                 supplier_names.get(sku.supplier_id or "", ""),
                 float(offer.unit_price) if offer is not None else 0,
-                offer.currency if offer is not None else "",
-                "，".join(offer.tags) if offer is not None else "",
-                float(sku.default_moq) if sku.default_moq is not None else None,
-                sku.moq_unit or "",
                 float(sku.weight) if sku.weight is not None else None,
-                sku.weight_unit or "",
+                float(sku.default_moq) if sku.default_moq is not None else None,
                 _units_per_carton(sku.option_values),
-                sku.status,
-                row.source_filename or "",
-                _excel_datetime(row.source_imported_at),
-                _excel_datetime(sku.updated_at),
             ]
         )
 
     if product_sheet.max_row >= 2:
-        product_sheet.auto_filter.ref = f"A1:{get_column_letter(len(PRODUCT_HEADERS))}{product_sheet.max_row}"
-        product_sheet.column_dimensions["A"].hidden = True
-        for cell in product_sheet["R"][1:]:
-            cell.number_format = "yyyy-mm-dd hh:mm"
-            cell.alignment = Alignment(vertical="center")
-        for row in product_sheet.iter_rows(min_row=2, max_col=len(PRODUCT_HEADERS)):
+        product_sheet.auto_filter.ref = f"A1:{get_column_letter(len(PRODUCT_MASTER_TEMPLATE_HEADERS))}{product_sheet.max_row}"
+        for cell in product_sheet["E"][1:]:
+            cell.number_format = "0.00"
+        for row in product_sheet.iter_rows(min_row=2, max_col=len(PRODUCT_MASTER_TEMPLATE_HEADERS)):
             for cell in row:
-                cell.alignment = Alignment(vertical="center", wrap_text=cell.column in {3, 4, 5})
+                cell.alignment = Alignment(
+                    vertical="center",
+                    wrap_text=cell.column in {2, 3, 6, 7, 8},
+                )
 
     if sku_sheet.max_row >= 2:
-        sku_sheet.auto_filter.ref = f"A1:{get_column_letter(len(SKU_HEADERS))}{sku_sheet.max_row}"
-        sku_sheet.column_dimensions["A"].hidden = True
-        sku_sheet.column_dimensions["B"].hidden = True
-        for cell in sku_sheet["J"][1:]:
+        sku_sheet.auto_filter.ref = f"A1:{get_column_letter(len(SKU_DETAIL_TEMPLATE_HEADERS))}{sku_sheet.max_row}"
+        for cell in sku_sheet["W"][1:]:
             cell.number_format = "0.00"
-        for column in ("M", "O", "Q"):
+        for column in ("X", "Y", "Z"):
             for cell in sku_sheet[column][1:]:
                 cell.number_format = "0.######"
-        for column in ("T", "U"):
-            for cell in sku_sheet[column][1:]:
-                cell.number_format = "yyyy-mm-dd hh:mm"
-        for row in sku_sheet.iter_rows(min_row=2, max_col=len(SKU_HEADERS)):
+        for row in sku_sheet.iter_rows(min_row=2, max_col=len(SKU_DETAIL_TEMPLATE_HEADERS)):
             for cell in row:
-                cell.alignment = Alignment(vertical="center", wrap_text=cell.column in {6, 7, 12})
+                cell.alignment = Alignment(
+                    vertical="center",
+                    wrap_text=cell.column in {3, 4, 10, 16, 22},
+                )
 
     workbook.calculation.fullCalcOnLoad = True
     output = BytesIO()
