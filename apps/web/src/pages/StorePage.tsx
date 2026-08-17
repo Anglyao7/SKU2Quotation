@@ -712,19 +712,13 @@ export function StorePage() {
     [secondaryCategory, secondaryOptions],
   );
   const visibleSecondaryOptions = useMemo(() => {
-    if (primaryCategory) {
-      return secondaryOptions.map((item) => ({
-        ...item,
-        parentName: selectedPrimary?.name ?? "",
-        parentPath: primaryCategory,
-      }));
-    }
-    return categoryTree.flatMap((node) => node.children.map((item) => ({
+    if (!primaryCategory) return [];
+    return secondaryOptions.map((item) => ({
       ...item,
-      parentName: node.name,
-      parentPath: node.path,
-    })));
-  }, [categoryTree, primaryCategory, secondaryOptions, selectedPrimary?.name]);
+      parentName: selectedPrimary?.name ?? "",
+      parentPath: primaryCategory,
+    }));
+  }, [primaryCategory, secondaryOptions, selectedPrimary?.name]);
   const categoryShowcaseOptions = visibleSecondaryOptions;
   const recommendedQuestions = useMemo(
     () => {
@@ -742,6 +736,7 @@ export function StorePage() {
   const showCategoryShowcase = Boolean(
     !shareToken
     && store.category_showcase_enabled !== false
+    && Boolean(primaryCategory)
     && !search.trim()
     && !secondaryCategory
     && categoryShowcaseOptions.length,

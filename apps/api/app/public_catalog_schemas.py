@@ -119,6 +119,7 @@ class PublicProductSummary(BaseModel):
 
 
 class PublicProductDetail(PublicProductSummary):
+    image_urls: list[str] = Field(default_factory=list)
     skus: list[PublicSkuResponse]
 
 

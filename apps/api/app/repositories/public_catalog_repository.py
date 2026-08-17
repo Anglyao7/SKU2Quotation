@@ -891,6 +891,33 @@ def approved_image_for_product(
     )
 
 
+def approved_images_for_product(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_id: UUID,
+) -> list[ProductImageRow]:
+    """Return the complete public gallery in its storefront display order."""
+
+    return list(
+        session.scalars(
+            select(ProductImageRow)
+            .where(
+                ProductImageRow.tenant_id == tenant_id,
+                ProductImageRow.product_id == product_id,
+                ProductImageRow.approval_status == "APPROVED",
+                ProductImageRow.content_type.like("image/%"),
+                ProductImageRow.deleted_at.is_(None),
+            )
+            .order_by(
+                case((ProductImageRow.image_role == "MAIN", 0), else_=1),
+                ProductImageRow.sort_order,
+                ProductImageRow.id,
+            )
+        ).all()
+    )
+
+
 def get_approved_public_image(
     session: Session, *, tenant_id: UUID, image_id: UUID
 ) -> ProductImageRow | None:

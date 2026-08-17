@@ -354,6 +354,7 @@ export interface StoreProduct {
 }
 
 export interface StoreProductDetail extends StoreProduct {
+  image_urls?: string[];
   skus: Sku[];
 }
 
