@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY
 from ..product_supplier_models import ProductImageRow
 from ..repositories.product_center_repository import SkuListRow
+from .product_template_import import MAX_PRODUCT_IMAGE_COLUMN_COUNT
 
 
 PRODUCT_HEADERS = (
@@ -23,7 +24,7 @@ PRODUCT_HEADERS = (
     "商品描述",
     "默认单位",
     "状态",
-    *(f"图片地址{index}" for index in range(1, 11)),
+    *(f"图片地址{index}" for index in range(1, MAX_PRODUCT_IMAGE_COLUMN_COUNT + 1)),
     "更新时间",
 )
 
@@ -120,7 +121,17 @@ def build_sku_catalog_workbook(
     _style_sheet(
         product_sheet,
         headers=PRODUCT_HEADERS,
-        widths=(38, 18, 30, 24, 46, 12, 12, *([34] * 10), 20),
+        widths=(
+            38,
+            18,
+            30,
+            24,
+            46,
+            12,
+            12,
+            *([34] * MAX_PRODUCT_IMAGE_COLUMN_COUNT),
+            20,
+        ),
     )
     _style_sheet(
         sku_sheet,
@@ -137,7 +148,7 @@ def build_sku_catalog_workbook(
 
     for row_number, row in enumerate(product_rows.values(), start=2):
         product = row.product
-        images = list(images_by_product.get(product.id, ()))[:10]
+        images = list(images_by_product.get(product.id, ()))[:MAX_PRODUCT_IMAGE_COLUMN_COUNT]
         urls = [image_urls.get(image.id, "") for image in images]
         product_sheet.append(
             [
@@ -149,7 +160,7 @@ def build_sku_catalog_workbook(
                 product.default_unit or "",
                 product.status,
                 *urls,
-                *([""] * (10 - len(urls))),
+                *("" for _ in range(MAX_PRODUCT_IMAGE_COLUMN_COUNT - len(urls))),
                 _excel_datetime(product.updated_at),
             ]
         )

@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from PIL import Image
 from sqlalchemy import MetaData, create_engine, delete, func, inspect, or_, select
 from sqlalchemy.dialects import postgresql
@@ -10230,7 +10231,9 @@ def test_product_template_download_matches_the_strict_import_contract() -> None:
         ) == SKU_DETAIL_TEMPLATE_HEADERS
         assert product_sheet.freeze_panes == "A2"
         assert sku_sheet.freeze_panes == "D2"
-        assert product_sheet.auto_filter.ref == "A1:R1"
+        assert product_sheet.auto_filter.ref == (
+            f"A1:{get_column_letter(len(PRODUCT_MASTER_TEMPLATE_HEADERS))}1"
+        )
         assert sku_sheet.auto_filter.ref == "A1:Z1"
         assert product_sheet["A1"].fill.fgColor.rgb == "002D1B69"
         assert sku_sheet["A1"].fill.fgColor.rgb == "0023453B"

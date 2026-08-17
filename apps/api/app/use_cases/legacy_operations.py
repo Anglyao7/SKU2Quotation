@@ -591,7 +591,8 @@ def build_product_template_workbook() -> bytes:
     image_instruction = (
         "选填。可把真实图片直接插入对应单元格位置，"
         "也可填写可公开访问的 HTTP(S) 商品图片地址。图片属于 Product，"
-        "会供该商品下全部 SKU 共用。"
+        "会供该商品下全部 SKU 共用。商品主表预留商品图片1-50列，"
+        "旧版10列模板也继续兼容。"
     )
 
     def style_sheet(
@@ -632,7 +633,17 @@ def build_product_template_workbook() -> bytes:
     style_sheet(
         product_sheet,
         headers=PRODUCT_MASTER_TEMPLATE_HEADERS,
-        widths=(18, 28, 22, 20, 14, 44, 28, 26, *([38] * 10)),
+        widths=(
+            18,
+            28,
+            22,
+            20,
+            14,
+            44,
+            28,
+            26,
+            *([38] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 8)),
+        ),
         instructions=product_instructions,
         header_color="2D1B69",
         tab_color="D4AF37",

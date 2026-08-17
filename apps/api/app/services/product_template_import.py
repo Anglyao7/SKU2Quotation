@@ -76,6 +76,7 @@ PRODUCT_VARIANT_TEMPLATE_HEADERS = (
 )
 PRODUCT_MASTER_TEMPLATE_SHEET = "Product"
 SKU_DETAIL_TEMPLATE_SHEET = "SKU"
+PRODUCT_MASTER_IMAGE_COLUMN_COUNT = 50
 PRODUCT_MASTER_TEMPLATE_HEADERS_V3 = (
     "商品编码",
     "商品名称",
@@ -112,9 +113,22 @@ PRODUCT_MASTER_TEMPLATE_HEADERS = (
     "商品描述",
     "备注",
     "标签",
+    *(f"商品图片{index}" for index in range(1, PRODUCT_MASTER_IMAGE_COLUMN_COUNT + 1)),
+)
+PRODUCT_MASTER_TEMPLATE_BASE_HEADERS = PRODUCT_MASTER_TEMPLATE_HEADERS[:8]
+# Version 4 was the previous five-dimension workbook. Keep its ten image
+# columns as a historical contract so existing files continue to import.
+PRODUCT_MASTER_TEMPLATE_HEADERS_V4 = (
+    "商品编码",
+    "商品名称",
+    "商品分类",
+    "商品型号",
+    "商品价格",
+    "商品描述",
+    "备注",
+    "标签",
     *(f"商品图片{index}" for index in range(1, 11)),
 )
-PRODUCT_MASTER_TEMPLATE_HEADERS_V4 = PRODUCT_MASTER_TEMPLATE_HEADERS
 SKU_DETAIL_TEMPLATE_HEADERS_V4 = (
     "商品编码",
     "SKU编号",
@@ -181,7 +195,7 @@ TEMPLATE_IMAGE_BUCKET = "product-template"
 UNCATEGORIZED_CATEGORY_NAME = "未分类"
 PRODUCT_IMAGE_COLUMN_OFFSET = 8
 PRODUCT_IMAGE_COLUMN_COUNT = 10
-MAX_PRODUCT_IMAGE_COLUMN_COUNT = 50
+MAX_PRODUCT_IMAGE_COLUMN_COUNT = PRODUCT_MASTER_IMAGE_COLUMN_COUNT
 OOXML_WORKBOOK_PART = "xl/workbook.xml"
 
 
@@ -930,6 +944,53 @@ def _product_image_column_count(sheet: object) -> int | None:
     if effective_headers != expected_headers:
         return None
     return image_column_count
+
+
+def _product_master_image_column_count(sheet: object) -> int | None:
+    """Return the number of sequential image columns on a Product sheet.
+
+    The current template exposes 50 columns, while older Product + SKU
+    workbooks expose 10. Users may also add intermediate columns (for example
+    商品图片11–18) without having to download a new template. Keep the
+    sequence strict so a misspelled header is still reported as a template
+    error instead of silently dropping an image.
+    """
+
+    headers = _effective_sheet_headers(sheet)
+    if len(headers) < (
+        len(PRODUCT_MASTER_TEMPLATE_BASE_HEADERS) + PRODUCT_IMAGE_COLUMN_COUNT
+    ):
+        return None
+    if (
+        headers[: len(PRODUCT_MASTER_TEMPLATE_BASE_HEADERS)]
+        != PRODUCT_MASTER_TEMPLATE_BASE_HEADERS
+    ):
+        return None
+    image_headers = headers[len(PRODUCT_MASTER_TEMPLATE_BASE_HEADERS) :]
+    if not (
+        PRODUCT_IMAGE_COLUMN_COUNT
+        <= len(image_headers)
+        <= MAX_PRODUCT_IMAGE_COLUMN_COUNT
+    ):
+        return None
+    expected = tuple(
+        f"商品图片{index}" for index in range(1, len(image_headers) + 1)
+    )
+    if image_headers != expected:
+        return None
+    return len(image_headers)
+
+
+def _product_master_headers(image_column_count: int) -> tuple[str, ...]:
+    if not (
+        PRODUCT_IMAGE_COLUMN_COUNT
+        <= image_column_count
+        <= MAX_PRODUCT_IMAGE_COLUMN_COUNT
+    ):
+        raise ValueError("invalid Product image column count")
+    return PRODUCT_MASTER_TEMPLATE_BASE_HEADERS + tuple(
+        f"商品图片{index}" for index in range(1, image_column_count + 1)
+    )
 
 
 def _product_template_layout(sheet: object | None) -> ProductTemplateLayout | None:
@@ -1786,6 +1847,35 @@ def _select_product_sku_sheets(
                 (schema_version, product_candidates[0], sku_candidates[0])
             )
 
+    # The Product sheet is intentionally extensible: callers may append
+    # 商品图片11, 商品图片12, ... without rebuilding the whole workbook. The
+    # exact-contract checks above cover the downloadable 50-column template
+    # and historical ten-column files; this branch recognises any valid
+    # sequential count in between (and also keeps a five-dimension SKU sheet
+    # paired with a newer Product sheet).
+    if not matches:
+        for schema_version, sku_headers in (
+            (5, SKU_DETAIL_TEMPLATE_HEADERS),
+            (4, SKU_DETAIL_TEMPLATE_HEADERS_V4),
+        ):
+            sku_candidates = [
+                sheet
+                for sheet in workbook.worksheets
+                if _effective_sheet_headers(sheet) == sku_headers
+            ]
+            product_candidates = [
+                sheet
+                for sheet in workbook.worksheets
+                if _product_master_image_column_count(sheet) is not None
+            ]
+            if len(product_candidates) == 1 and len(sku_candidates) == 1:
+                matches.append(
+                    (schema_version, product_candidates[0], sku_candidates[0])
+                )
+                all_product_candidates.extend(product_candidates)
+                all_sku_candidates.extend(sku_candidates)
+                break
+
     if len(matches) > 1:
         names = "、".join(
             f"“{sheet.title}”"
@@ -1927,10 +2017,20 @@ def _parse_product_sku_rows(
     progress_callback: Callable[[int, int], None] | None,
 ) -> ProductTemplateParseResult:
     if schema_version >= 5:
-        product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS
+        product_image_column_count = _product_master_image_column_count(product_sheet)
+        if product_image_column_count is None:
+            product_image_column_count = len(PRODUCT_MASTER_TEMPLATE_HEADERS) - len(
+                PRODUCT_MASTER_TEMPLATE_BASE_HEADERS
+            )
+        product_headers = _product_master_headers(product_image_column_count)
         sku_headers = SKU_DETAIL_TEMPLATE_HEADERS
     elif schema_version == 4:
-        product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS_V4
+        product_image_column_count = _product_master_image_column_count(product_sheet)
+        if product_image_column_count is None:
+            product_image_column_count = len(PRODUCT_MASTER_TEMPLATE_HEADERS_V4) - len(
+                PRODUCT_MASTER_TEMPLATE_BASE_HEADERS
+            )
+        product_headers = _product_master_headers(product_image_column_count)
         sku_headers = SKU_DETAIL_TEMPLATE_HEADERS_V4
     else:
         product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS_V3
@@ -1944,7 +2044,7 @@ def _parse_product_sku_rows(
             path,
             sheet_name=product_sheet.title,
             image_column_offset=product_image_offset,
-            image_column_count=PRODUCT_IMAGE_COLUMN_COUNT,
+            image_column_count=len(product_headers) - product_image_offset,
         )
     )
     products: dict[str, ProductMasterTemplateCandidate] = {}
