@@ -2306,11 +2306,12 @@ def get_public_product(
         if category is not None and category.parent_id is not None
         else category
     )
-    image = repository.approved_image_for_product(
+    images = repository.approved_images_for_product(
         session,
         tenant_id=tenant.id,
         product_id=product_id,
     )
+    image = images[0] if images else None
     sku_translations, product_translations = _quote_translation_maps(
         session,
         tenant_id=tenant.id,
@@ -2471,6 +2472,11 @@ def get_public_product(
         skus.append(response)
     return PublicProductDetail(
         **summary.model_dump(),
+        image_urls=[
+            image_url
+            for image_row in images
+            if (image_url := _public_image_url(image_row, slug=tenant.slug))
+        ],
         skus=skus,
     )
 

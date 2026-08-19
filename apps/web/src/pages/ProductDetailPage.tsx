@@ -300,9 +300,12 @@ export function ProductDetailPage() {
               {selectedImageUrl && !imageFailed ? (
                 <ProductImagePreview
                   src={selectedImageUrl}
+                  images={product.image_urls}
                   alt={`${product.name} · ${selectedLabel}`}
                   openLabel={t("点击查看大图")}
                   closeLabel={t("关闭图片预览")}
+                  previousLabel={t("查看上一张图片")}
+                  nextLabel={t("查看下一张图片")}
                   onError={() => setImageFailed(true)}
                 />
               ) : (

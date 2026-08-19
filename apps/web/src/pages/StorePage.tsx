@@ -24,7 +24,7 @@ import {
 } from "@phosphor-icons/react";
 import { ThinkingOrb } from "thinking-orbs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { Link, useLoaderData, useLocation, useParams } from "react-router-dom";
 import { BRAND_NAME_ZH } from "../brand";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
@@ -712,19 +712,13 @@ export function StorePage() {
     [secondaryCategory, secondaryOptions],
   );
   const visibleSecondaryOptions = useMemo(() => {
-    if (primaryCategory) {
-      return secondaryOptions.map((item) => ({
-        ...item,
-        parentName: selectedPrimary?.name ?? "",
-        parentPath: primaryCategory,
-      }));
-    }
-    return categoryTree.flatMap((node) => node.children.map((item) => ({
+    if (!primaryCategory) return [];
+    return secondaryOptions.map((item) => ({
       ...item,
-      parentName: node.name,
-      parentPath: node.path,
-    })));
-  }, [categoryTree, primaryCategory, secondaryOptions, selectedPrimary?.name]);
+      parentName: selectedPrimary?.name ?? "",
+      parentPath: primaryCategory,
+    }));
+  }, [primaryCategory, secondaryOptions, selectedPrimary?.name]);
   const categoryShowcaseOptions = visibleSecondaryOptions;
   const recommendedQuestions = useMemo(
     () => {
@@ -743,6 +737,7 @@ export function StorePage() {
   const showCategoryShowcase = Boolean(
     !shareToken
     && categoryShowcaseEnabled
+    && Boolean(primaryCategory)
     && !search.trim()
     && !secondaryCategory
     && categoryShowcaseOptions.length,
@@ -765,6 +760,11 @@ export function StorePage() {
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const cartSkuCount = cartLines.length;
   const visiblePaginationItems = useMemo(() => paginationItems(page, pages), [page, pages]);
+  const [pageJumpInput, setPageJumpInput] = useState(String(page));
+
+  useEffect(() => {
+    setPageJumpInput(String(page));
+  }, [page]);
 
   const resetFilters = () => {
     setSearch("");
@@ -824,6 +824,17 @@ export function StorePage() {
       block: "start",
     });
     void loadProducts(targetPage, { keepCurrentResults: true });
+  };
+  const submitPageJump = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const parsedPage = Number.parseInt(pageJumpInput, 10);
+    if (!Number.isFinite(parsedPage)) {
+      setPageJumpInput(String(page));
+      return;
+    }
+    const targetPage = Math.min(Math.max(parsedPage, 1), pages);
+    setPageJumpInput(String(targetPage));
+    goToPage(targetPage);
   };
 
   return (
@@ -1293,49 +1304,69 @@ export function StorePage() {
                   aria-label={t("商品分页")}
                   ref={paginationRef}
                 >
-                  <Button
-                    type="button"
-                    size="2"
-                    variant="soft"
-                    color="gray"
-                    disabled={page <= 1 || pageTransitioning}
-                    aria-label={t("上一页")}
-                    onClick={() => goToPage(page - 1)}
-                  >
-                    <CaretLeft weight="bold" />
-                    <span className="store-pagination-button-label">{t("上一页")}</span>
-                  </Button>
-                  <div className="store-pagination-pages">
-                    {visiblePaginationItems.map((item, index) => (
-                      typeof item === "number" ? (
-                        <button
-                          type="button"
-                          className={`store-pagination-page${item === page ? " is-active" : ""}${hidePaginationItemOnMobile(index, page, pages) ? " is-mobile-hidden" : ""}`}
-                          aria-label={t("第 {page} 页", { page: item })}
-                          aria-current={item === page ? "page" : undefined}
-                          disabled={loading || pageTransitioning}
-                          onClick={() => goToPage(item)}
-                          key={item}
-                        >
-                          {item}
-                        </button>
-                      ) : (
-                        <span className="store-pagination-ellipsis" aria-hidden="true" key={item}>…</span>
-                      )
-                    ))}
+                  <div className="store-pagination-controls">
+                    <Button
+                      type="button"
+                      size="2"
+                      variant="soft"
+                      color="gray"
+                      disabled={page <= 1 || pageTransitioning}
+                      aria-label={t("上一页")}
+                      onClick={() => goToPage(page - 1)}
+                    >
+                      <CaretLeft weight="bold" />
+                      <span className="store-pagination-button-label">{t("上一页")}</span>
+                    </Button>
+                    <div className="store-pagination-pages">
+                      {visiblePaginationItems.map((item, index) => (
+                        typeof item === "number" ? (
+                          <button
+                            type="button"
+                            className={`store-pagination-page${item === page ? " is-active" : ""}${hidePaginationItemOnMobile(index, page, pages) ? " is-mobile-hidden" : ""}`}
+                            aria-label={t("第 {page} 页", { page: item })}
+                            aria-current={item === page ? "page" : undefined}
+                            disabled={loading || pageTransitioning}
+                            onClick={() => goToPage(item)}
+                            key={item}
+                          >
+                            {item}
+                          </button>
+                        ) : (
+                          <span className="store-pagination-ellipsis" aria-hidden="true" key={item}>…</span>
+                        )
+                      ))}
+                    </div>
+                    <Button
+                      type="button"
+                      size="2"
+                      variant="soft"
+                      color="gray"
+                      disabled={page >= pages || pageTransitioning}
+                      aria-label={t("下一页")}
+                      onClick={() => goToPage(page + 1)}
+                    >
+                      <span className="store-pagination-button-label">{t("下一页")}</span>
+                      <CaretRight weight="bold" />
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    size="2"
-                    variant="soft"
-                    color="gray"
-                    disabled={page >= pages || pageTransitioning}
-                    aria-label={t("下一页")}
-                    onClick={() => goToPage(page + 1)}
-                  >
-                    <span className="store-pagination-button-label">{t("下一页")}</span>
-                    <CaretRight weight="bold" />
-                  </Button>
+                  <form className="store-pagination-jump" onSubmit={submitPageJump}>
+                    <label htmlFor="store-page-jump">{t("跳转到")}</label>
+                    <TextField.Root
+                      id="store-page-jump"
+                      type="number"
+                      min={1}
+                      max={pages}
+                      inputMode="numeric"
+                      size="2"
+                      value={pageJumpInput}
+                      onChange={(event) => setPageJumpInput(event.target.value)}
+                      aria-label={t("页码")}
+                      disabled={pageTransitioning}
+                    />
+                    <Button type="submit" size="2" variant="soft" disabled={pageTransitioning}>
+                      {t("跳转")}
+                    </Button>
+                  </form>
                   <Text className="store-pagination-status" size="1" color="gray" aria-live="polite">
                     {t("第 {page} / {pages} 页", {
                       page: page.toLocaleString(locale),
