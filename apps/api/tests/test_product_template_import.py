@@ -1,15 +1,11 @@
-from decimal import Decimal
 import hashlib
-from pathlib import Path
 import re
-from uuid import UUID
+from decimal import Decimal
+from pathlib import Path
+from uuid import UUID, uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
-from openpyxl import Workbook, load_workbook
-from openpyxl.drawing.image import Image as OpenpyxlImage
-from openpyxl.styles import PatternFill
-
 from app.services import product_template_import as product_template_import_service
 from app.services.product_template_import import (
     PRODUCT_MASTER_TEMPLATE_HEADERS,
@@ -18,6 +14,8 @@ from app.services.product_template_import import (
     PRODUCT_TEMPLATE_HEADERS,
     PRODUCT_TEMPLATE_SHEET,
     PRODUCT_VARIANT_TEMPLATE_HEADERS,
+    SKU_CATALOG_EXPORT_PRODUCT_HEADERS,
+    SKU_CATALOG_EXPORT_SKU_HEADERS,
     SKU_DETAIL_TEMPLATE_HEADERS,
     SKU_DETAIL_TEMPLATE_HEADERS_V3,
     SKU_DETAIL_TEMPLATE_HEADERS_V4,
@@ -25,6 +23,9 @@ from app.services.product_template_import import (
     ProductTemplateValidationError,
     parse_product_template,
 )
+from openpyxl import Workbook, load_workbook
+from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.styles import PatternFill
 
 
 def _write_workbook(path: Path, rows: list[list[object]], *, headers=None) -> None:
@@ -216,12 +217,12 @@ def test_product_sku_template_groups_multiple_skus_under_one_product(
     }
     assert {row.sku_name for row in result.rows} == {
         f"宠物碗 · {specification}"
-        for specification in {
+        for specification in (
             "小号 / 红色 / 不锈钢",
             "小号 / 绿色 / 不锈钢",
             "中号 / 红色 / 不锈钢",
             "中号 / 绿色 / 不锈钢",
-        }
+        )
     }
     assert {
         row.variant_options for row in result.rows
@@ -1510,3 +1511,71 @@ def test_current_root_template_matches_contract() -> None:
     assert sum(row.unit_price == Decimal("0.00") for row in result.rows) == 103
     assert len(result.warnings) == 8
     assert sum("重复" in warning for warning in result.warnings) == 8
+
+
+def test_catalog_export_can_be_imported_without_creating_new_identity(
+    tmp_path: Path,
+) -> None:
+    product_id = uuid4()
+    sku_id = uuid4()
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = "商品"
+    sku_sheet = workbook.create_sheet("SKU")
+    product_sheet.append(list(SKU_CATALOG_EXPORT_PRODUCT_HEADERS))
+    sku_sheet.append(list(SKU_CATALOG_EXPORT_SKU_HEADERS))
+    product_row = [
+        str(product_id),
+        "P-EXPORT-1",
+        "可回导商品",
+        "家纺/床品",
+        "导出描述",
+        "piece",
+        "ACTIVE",
+        *([None] * 50),
+        None,
+    ]
+    product_sheet.append(product_row)
+    sku_sheet.append(
+        [
+            str(sku_id),
+            str(product_id),
+            "P-EXPORT-1",
+            "SYSTEM-1",
+            "SOURCE-1",
+            "可回导 SKU",
+            "商品型号: MODEL-1；颜色: 红；规格名称: 红",
+            "",
+            "供应商A",
+            12.5,
+            "CNY",
+            "新品，热卖",
+            2,
+            "piece",
+            1.2,
+            "kg",
+            10,
+            "ACTIVE",
+            "catalog.xlsx",
+            None,
+            None,
+        ]
+    )
+    path = tmp_path / "catalog-export.xlsx"
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    row = result.rows[0]
+    assert row.existing_product_id == product_id
+    assert row.existing_sku_id == sku_id
+    assert row.direct_product_code == "P-EXPORT-1"
+    assert row.sku_code == "SOURCE-1"
+    assert row.variant_options == (("颜色", "红"),)
+    assert row.product_model == "MODEL-1"
+    assert row.specification == "红"
+    assert row.default_unit == "piece"
+    assert row.default_moq == Decimal("2.000000")
+    assert row.gross_weight == Decimal("1.200000")

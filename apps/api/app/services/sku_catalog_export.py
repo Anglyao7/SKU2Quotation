@@ -13,44 +13,16 @@ from openpyxl.utils import get_column_letter
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY
 from ..product_supplier_models import ProductImageRow
 from ..repositories.product_center_repository import SkuListRow
-from .product_template_import import MAX_PRODUCT_IMAGE_COLUMN_COUNT
-
-
-PRODUCT_HEADERS = (
-    "商品ID",
-    "商品编码",
-    "商品名称",
-    "商品分类",
-    "商品描述",
-    "默认单位",
-    "状态",
-    *(f"图片地址{index}" for index in range(1, MAX_PRODUCT_IMAGE_COLUMN_COUNT + 1)),
-    "更新时间",
+from .product_template_import import (
+    MAX_PRODUCT_IMAGE_COLUMN_COUNT,
+    SKU_CATALOG_EXPORT_PRODUCT_HEADERS,
+    SKU_CATALOG_EXPORT_SKU_HEADERS,
 )
 
-SKU_HEADERS = (
-    "SKU ID",
-    "商品ID",
-    "商品编码",
-    "SKU编号",
-    "来源SKU编号",
-    "SKU名称",
-    "规格",
-    "条码",
-    "供应商",
-    "公开价",
-    "币种",
-    "标签",
-    "起定数",
-    "起定单位",
-    "毛重",
-    "重量单位",
-    "装箱数",
-    "状态",
-    "源文件",
-    "导入时间",
-    "更新时间",
-)
+# Keep these names as the public export contract used by existing callers and
+# tests, while sharing the exact header definitions with the importer.
+PRODUCT_HEADERS = SKU_CATALOG_EXPORT_PRODUCT_HEADERS
+SKU_HEADERS = SKU_CATALOG_EXPORT_SKU_HEADERS
 
 
 def _excel_datetime(value: datetime | None) -> datetime | None:
@@ -140,7 +112,7 @@ def build_sku_catalog_workbook(
     )
     product_sheet.sheet_properties.tabColor = "D4AF37"
     sku_sheet.sheet_properties.tabColor = "42A58B"
-    sku_sheet.freeze_panes = "D2"
+    sku_sheet.freeze_panes = "A2"
 
     product_rows: dict[UUID, SkuListRow] = {}
     for row in rows:
@@ -201,8 +173,8 @@ def build_sku_catalog_workbook(
 
     if product_sheet.max_row >= 2:
         product_sheet.auto_filter.ref = f"A1:{get_column_letter(len(PRODUCT_HEADERS))}{product_sheet.max_row}"
-        product_sheet.column_dimensions["A"].hidden = True
-        for cell in product_sheet["R"][1:]:
+        updated_column = get_column_letter(len(PRODUCT_HEADERS))
+        for cell in product_sheet[updated_column][1:]:
             cell.number_format = "yyyy-mm-dd hh:mm"
             cell.alignment = Alignment(vertical="center")
         for row in product_sheet.iter_rows(min_row=2, max_col=len(PRODUCT_HEADERS)):
@@ -211,8 +183,6 @@ def build_sku_catalog_workbook(
 
     if sku_sheet.max_row >= 2:
         sku_sheet.auto_filter.ref = f"A1:{get_column_letter(len(SKU_HEADERS))}{sku_sheet.max_row}"
-        sku_sheet.column_dimensions["A"].hidden = True
-        sku_sheet.column_dimensions["B"].hidden = True
         for cell in sku_sheet["J"][1:]:
             cell.number_format = "0.00"
         for column in ("M", "O", "Q"):

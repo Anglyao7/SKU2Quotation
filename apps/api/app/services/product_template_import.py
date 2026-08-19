@@ -38,7 +38,6 @@ from .sku_codes import CatalogSkuCodeAllocator
 from .sku_quotas import sku_quota_snapshot
 from .tag_service import get_or_create_tags
 
-
 PRODUCT_TEMPLATE_SHEET = "商品列表"
 PRODUCT_TEMPLATE_HEADERS = (
     "商品名称",
@@ -166,6 +165,46 @@ SKU_DETAIL_TEMPLATE_HEADERS = (
     "起定数",
     "装箱数",
 )
+# The SKU catalog export predates the Product + SKU import template.  Keep its
+# column contract here as well so the importer can recognise an exported
+# workbook without importing the exporter module (which would create a
+# circular import).  Export files carry the stable database identifiers that
+# let an edited workbook update existing rows instead of creating duplicates.
+SKU_CATALOG_EXPORT_PRODUCT_HEADERS = (
+    "商品ID",
+    "商品编码",
+    "商品名称",
+    "商品分类",
+    "商品描述",
+    "默认单位",
+    "状态",
+    *(f"图片地址{index}" for index in range(1, PRODUCT_MASTER_IMAGE_COLUMN_COUNT + 1)),
+    "更新时间",
+)
+SKU_CATALOG_EXPORT_SKU_HEADERS = (
+    "SKU ID",
+    "商品ID",
+    "商品编码",
+    "SKU编号",
+    "来源SKU编号",
+    "SKU名称",
+    "规格",
+    "条码",
+    "供应商",
+    "公开价",
+    "币种",
+    "标签",
+    "起定数",
+    "起定单位",
+    "毛重",
+    "重量单位",
+    "装箱数",
+    "状态",
+    "源文件",
+    "导入时间",
+    "更新时间",
+)
+SKU_CATALOG_EXPORT_SCHEMA_VERSION = 100
 TEMPLATE_LAYOUT_SKU_ROWS = "SKU_ROWS"
 TEMPLATE_LAYOUT_PRODUCT_VARIANTS = "PRODUCT_VARIANTS"
 TEMPLATE_LAYOUT_PRODUCT_SKUS = "PRODUCT_SKUS"
@@ -311,6 +350,13 @@ class ProductTemplateRow:
     image_url_columns: tuple[int, ...]
     embedded_images: tuple[EmbeddedTemplateImage, ...]
     product_only: bool = False
+    # Export workbooks include database identifiers.  They are optional so
+    # historical/manual templates keep the exact same parse contract.
+    existing_product_id: UUID | None = None
+    existing_sku_id: UUID | None = None
+    direct_product_code: str | None = None
+    default_unit: str | None = None
+    currency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1804,6 +1850,42 @@ def _select_product_sku_sheets(
 ) -> tuple[object, object, tuple[str, ...], int] | None:
     """Select a Product + SKU pair by structure while retaining v3 support."""
 
+    export_product_candidates = [
+        sheet
+        for sheet in workbook.worksheets
+        if _effective_sheet_headers(sheet) == SKU_CATALOG_EXPORT_PRODUCT_HEADERS
+    ]
+    export_sku_candidates = [
+        sheet
+        for sheet in workbook.worksheets
+        if _effective_sheet_headers(sheet) == SKU_CATALOG_EXPORT_SKU_HEADERS
+    ]
+    if len(export_product_candidates) > 1 or len(export_sku_candidates) > 1:
+        names = "、".join(
+            f"“{sheet.title}”"
+            for sheet in (*export_product_candidates, *export_sku_candidates)
+        )
+        issue = _issue(
+            row_number=None,
+            column="工作表",
+            code="SHEET_AMBIGUOUS",
+            message=f"发现重复的 SKU 导出数据页：{names}。",
+            suggestion="请只保留一张商品和一张 SKU 导出数据页。",
+        )
+        raise ProductTemplateValidationError(issue.message, issues=(issue,))
+    if len(export_product_candidates) == 1 and len(export_sku_candidates) == 1:
+        product_sheet = export_product_candidates[0]
+        sku_sheet = export_sku_candidates[0]
+        warnings = (
+            "已识别为 SKU 商品库导出文件，将按商品编码和稳定 ID 覆盖更新，不会重复创建商品或 SKU。",
+        )
+        return (
+            product_sheet,
+            sku_sheet,
+            warnings,
+            SKU_CATALOG_EXPORT_SCHEMA_VERSION,
+        )
+
     contracts = (
         (5, PRODUCT_MASTER_TEMPLATE_HEADERS, SKU_DETAIL_TEMPLATE_HEADERS),
         (
@@ -2007,6 +2089,614 @@ def _select_product_sku_sheets(
     )
 
 
+def _export_uuid(value: object) -> UUID | None:
+    text = _cell_text(value)
+    if not text:
+        return None
+    try:
+        return UUID(text)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _parse_export_option_text(
+    value: object,
+    *,
+    row_number: int,
+) -> tuple[
+    tuple[tuple[str, str], ...],
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    Decimal | None,
+    Decimal | None,
+]:
+    """Decode the human-readable option text written by the catalog export.
+
+    Exported option values are intentionally compact (``名称: 值；...``),
+    while the Product + SKU import template stores variant dimensions in
+    dedicated columns.  Reserved catalog fields are restored to their
+    corresponding template fields; all other pairs remain variant options.
+    """
+
+    text = _cell_text(value)
+    if not text:
+        return (), None, None, None, None, None, None
+    reserved = {
+        TEMPLATE_SOURCE_KEY.casefold(),
+        "商品编码",
+        "商品型号",
+        "规格名称",
+        "备注",
+        "装箱数",
+        "一箱个数",
+        "packing_quantity",
+        "units_per_carton",
+        "毛重",
+        "起定数",
+        "是否是新品",
+    }
+    variant_options: list[tuple[str, str]] = []
+    product_model: str | None = None
+    specification: str | None = None
+    note: str | None = None
+    units_per_carton: str | None = None
+    gross_weight: Decimal | None = None
+    default_moq: Decimal | None = None
+    issues: list[ProductTemplateIssue] = []
+    for segment in re.split(r"[；;]+", text):
+        segment = segment.strip()
+        if not segment:
+            continue
+        key, separator, raw_value = segment.partition(":")
+        if not separator:
+            key, separator, raw_value = segment.partition("：")
+        if not separator:
+            key, raw_value = "规格", segment
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if not key or not raw_value:
+            continue
+        normalized_key = key.casefold()
+        if normalized_key == "商品型号".casefold():
+            product_model = raw_value
+        elif normalized_key == "规格名称".casefold():
+            specification = raw_value
+        elif normalized_key == "备注".casefold():
+            note = raw_value
+        elif normalized_key in {
+            "装箱数".casefold(),
+            "一箱个数".casefold(),
+            "packing_quantity".casefold(),
+            "units_per_carton".casefold(),
+        }:
+            try:
+                units_per_carton = _decimal_option_text(
+                    _sku_quantity_decimal(
+                        raw_value,
+                        field="装箱数",
+                        row_number=row_number,
+                    )
+                )
+            except ProductTemplateValidationError as exc:
+                issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="装箱数",
+                        code="QUANTITY_INVALID",
+                        message=str(exc),
+                        value=raw_value,
+                        suggestion="装箱数可以留空，或填写大于等于 0 的数字。",
+                    )
+                )
+        elif normalized_key in {"毛重".casefold(), "起定数".casefold()}:
+            field = "毛重" if normalized_key == "毛重".casefold() else "起定数"
+            try:
+                parsed = _sku_quantity_decimal(
+                    raw_value,
+                    field=field,
+                    row_number=row_number,
+                )
+                if field == "毛重":
+                    gross_weight = parsed
+                else:
+                    default_moq = parsed
+            except ProductTemplateValidationError as exc:
+                issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column=field,
+                        code="QUANTITY_INVALID",
+                        message=str(exc),
+                        value=raw_value,
+                        suggestion=f"{field}可以留空，或填写大于等于 0 的数字。",
+                    )
+                )
+        elif normalized_key in reserved:
+            continue
+        else:
+            if len(key) > 100 or len(raw_value) > 500:
+                issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="规格",
+                        code="VALUE_TOO_LONG",
+                        message="导出文件中的规格名称或规格值过长。",
+                        value=segment,
+                        suggestion="请缩短规格名称或规格值。",
+                    )
+                )
+                continue
+            if normalized_key not in {name.casefold() for name, _ in variant_options}:
+                variant_options.append((key, raw_value))
+    if issues:
+        raise ProductTemplateValidationError(
+            _validation_summary(issues),
+            issues=tuple(issues),
+        )
+    return (
+        tuple(variant_options),
+        product_model,
+        specification,
+        note,
+        units_per_carton,
+        gross_weight,
+        default_moq,
+    )
+
+
+def _parse_sku_catalog_export_rows(
+    path: Path,
+    *,
+    product_sheet: object,
+    sku_sheet: object,
+    sheet_warnings: tuple[str, ...],
+    progress_callback: Callable[[int, int], None] | None,
+) -> ProductTemplateParseResult:
+    """Parse the existing catalog export as an importable workbook.
+
+    The export is deliberately kept as a report-shaped file for backwards
+    compatibility.  The stable Product/SKU IDs embedded in its first columns
+    are retained on each parsed row and used during the apply phase to find
+    the original records even when a user edits the visible codes.
+    """
+
+    product_headers = SKU_CATALOG_EXPORT_PRODUCT_HEADERS
+    sku_headers = SKU_CATALOG_EXPORT_SKU_HEADERS
+    product_image_offset = 7
+    product_image_count = PRODUCT_MASTER_IMAGE_COLUMN_COUNT
+    sku_rows_total = max(0, (sku_sheet.max_row or 1) - 1)
+    embedded_images_by_row, embedded_image_warnings = (
+        _extract_embedded_template_images(
+            path,
+            sheet_name=product_sheet.title,
+            image_column_offset=product_image_offset,
+            image_column_count=product_image_count,
+        )
+    )
+    products: dict[str, ProductMasterTemplateCandidate] = {}
+    product_ids: dict[UUID, str] = {}
+    product_row_ids: dict[str, UUID | None] = {}
+    product_default_units: dict[str, str | None] = {}
+    issues: list[ProductTemplateIssue] = []
+    visited_product_rows: set[int] = set()
+    effective_product_rows = 0
+    for row_number, raw_values in enumerate(
+        product_sheet.iter_rows(
+            min_row=2,
+            max_col=len(product_headers),
+            values_only=True,
+        ),
+        start=2,
+    ):
+        values = tuple(raw_values)
+        embedded_images = embedded_images_by_row.get(row_number, ())
+        if not any(_cell_text(value) for value in values) and not embedded_images:
+            continue
+        visited_product_rows.add(row_number)
+        effective_product_rows += 1
+        if effective_product_rows > MAX_TEMPLATE_ROWS:
+            raise _effective_row_limit_error(
+                sheet_label="商品导出工作表",
+                record_label="商品",
+            )
+        formula_indexes = {
+            index
+            for index, value in enumerate(values)
+            if isinstance(value, str) and value.lstrip().startswith("=")
+        }
+        row_issues: list[ProductTemplateIssue] = [
+            _issue(
+                row_number=row_number,
+                column=product_headers[index],
+                code="FORMULA_NOT_ALLOWED",
+                message=f"商品导出第 {row_number} 行的{product_headers[index]}包含公式。",
+                value=values[index],
+                suggestion="请复制计算结果并粘贴为固定值后重新导入。",
+            )
+            for index in sorted(formula_indexes)
+        ]
+        product_code = _normalize_sku_code(values[1])
+        name = _cell_text(values[2])
+        if not product_code and 1 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"商品导出第 {row_number} 行缺少商品编码。",
+                    suggestion="请保留导出文件中的商品编码。",
+                )
+            )
+        if not name and 2 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品名称",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"商品导出第 {row_number} 行缺少商品名称。",
+                    suggestion="请填写商品名称。",
+                )
+            )
+        category = UNCATEGORIZED_CATEGORY_NAME
+        if _cell_text(values[3]) and 3 not in formula_indexes:
+            try:
+                category = "/".join(
+                    _normalize_category_path(values[3], row_number=row_number)
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="商品分类",
+                        code="CATEGORY_INVALID",
+                        message=str(exc),
+                        value=values[3],
+                        suggestion="请填写“一级分类”或“一级分类/二级分类”。",
+                    )
+                )
+        image_urls: list[str] = []
+        image_url_columns: list[int] = []
+        for image_index, value in enumerate(
+            values[product_image_offset : product_image_offset + product_image_count],
+            start=1,
+        ):
+            value_index = image_index + product_image_offset - 1
+            if not _cell_text(value) or value_index in formula_indexes:
+                continue
+            image_url = _valid_image_url(value)
+            if image_url is None:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column=f"图片地址{image_index}",
+                        code="IMAGE_URL_INVALID",
+                        message=f"商品导出第 {row_number} 行图片地址{image_index}不是有效的 HTTP(S) 链接。",
+                        value=value,
+                        suggestion="图片地址可以留空或填写可访问的 HTTP(S) 链接。",
+                    )
+                )
+            elif image_url not in image_urls:
+                image_urls.append(image_url)
+                image_url_columns.append(image_index)
+        if product_code in products:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="PRODUCT_CODE_DUPLICATE",
+                    message=f"商品导出第 {row_number} 行商品编码“{product_code}”重复。",
+                    value=values[1],
+                    suggestion="每个商品编码只能出现一次。",
+                )
+            )
+        if row_issues:
+            issues.extend(row_issues)
+            continue
+        product_id = _export_uuid(values[0])
+        if product_id is not None:
+            product_ids[product_id] = product_code
+        product_row_ids[product_code] = product_id
+        product_default_units[product_code] = _cell_text(values[5]) or None
+        products[product_code] = ProductMasterTemplateCandidate(
+            row_number=row_number,
+            product_code=product_code,
+            name=name,
+            category=category,
+            product_model=None,
+            product_price=Decimal("0.00"),
+            description=_cell_text(values[4]) or None,
+            note=None,
+            tags=(),
+            is_new=False,
+            image_urls=tuple(image_urls),
+            image_url_columns=tuple(image_url_columns),
+            embedded_images=embedded_images,
+        )
+
+    rows: list[ProductTemplateRow] = []
+    referenced_product_codes: set[str] = set()
+    first_row_by_sku: dict[str, int] = {}
+    effective_sku_rows = 0
+    progress_interval = max(100, sku_rows_total // 100) if sku_rows_total else 100
+    for row_number, raw_values in enumerate(
+        sku_sheet.iter_rows(
+            min_row=2,
+            max_col=len(sku_headers),
+            values_only=True,
+        ),
+        start=2,
+    ):
+        values = tuple(raw_values)
+        processed_rows = row_number - 1
+        if progress_callback is not None and (
+            processed_rows == 1
+            or processed_rows % progress_interval == 0
+            or processed_rows == sku_rows_total
+        ):
+            progress_callback(processed_rows, sku_rows_total)
+        if not any(_cell_text(value) for value in values):
+            continue
+        effective_sku_rows += 1
+        if effective_sku_rows > MAX_TEMPLATE_ROWS:
+            raise _effective_row_limit_error(
+                sheet_label="SKU 导出工作表",
+                record_label="SKU",
+            )
+        formula_indexes = {
+            index
+            for index, value in enumerate(values)
+            if isinstance(value, str) and value.lstrip().startswith("=")
+        }
+        row_issues: list[ProductTemplateIssue] = [
+            _issue(
+                row_number=row_number,
+                column=sku_headers[index],
+                code="FORMULA_NOT_ALLOWED",
+                message=f"SKU 导出第 {row_number} 行的{sku_headers[index]}包含公式。",
+                value=values[index],
+                suggestion="请复制计算结果并粘贴为固定值后重新导入。",
+            )
+            for index in sorted(formula_indexes)
+        ]
+        product_id = _export_uuid(values[1])
+        product_code = (
+            product_ids.get(product_id, "")
+            if product_id is not None and product_id in product_ids
+            else _normalize_sku_code(values[2])
+        )
+        product = products.get(product_code)
+        if not product_code:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"SKU 导出第 {row_number} 行缺少商品编码。",
+                    suggestion="请保留导出文件中的商品编码。",
+                )
+            )
+        elif product is None:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="商品编码",
+                    code="PRODUCT_REFERENCE_MISSING",
+                    message=f"SKU 导出第 {row_number} 行引用的商品编码“{product_code}”不存在。",
+                    value=values[2],
+                    suggestion="请勿删除对应的商品行。",
+                )
+            )
+        sku_code = _normalize_sku_code(values[4] or values[3])
+        if not sku_code and 3 not in formula_indexes and 4 not in formula_indexes:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="SKU编号",
+                    code="REQUIRED_VALUE_MISSING",
+                    message=f"SKU 导出第 {row_number} 行缺少 SKU 编号。",
+                    suggestion="请保留导出文件中的 SKU 编号。",
+                )
+            )
+        if sku_code and sku_code in first_row_by_sku:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="SKU编号",
+                    code="SKU_IDENTITY_DUPLICATE",
+                    message=f"SKU 导出第 {row_number} 行编号“{sku_code}”与第 {first_row_by_sku[sku_code]} 行重复。",
+                    value=values[4] or values[3],
+                    suggestion="每个 SKU 编号只能出现一次。",
+                )
+            )
+        if sku_code:
+            first_row_by_sku[sku_code] = row_number
+        (
+            variant_options,
+            product_model,
+            specification,
+            note,
+            option_carton,
+            option_weight,
+            option_moq,
+        ) = _parse_export_option_text(values[6], row_number=row_number)
+        supplier_name = _normalize_supplier_name(values[8], row_number=row_number)
+        unit_price = Decimal("0.00")
+        if _cell_text(values[9]) and 9 not in formula_indexes:
+            try:
+                unit_price = _decimal(values[9], field="公开价", row_number=row_number)
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="公开价",
+                        code="PRICE_INVALID",
+                        message=str(exc),
+                        value=values[9],
+                        suggestion="公开价可以留空，或填写大于等于 0 的数字。",
+                    )
+                )
+        default_moq = option_moq
+        if _cell_text(values[12]) and 12 not in formula_indexes:
+            try:
+                default_moq = _sku_quantity_decimal(
+                    values[12], field="起定数", row_number=row_number
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="起定数",
+                        code="QUANTITY_INVALID",
+                        message=str(exc),
+                        value=values[12],
+                        suggestion="起定数可以留空，或填写大于等于 0 的数字。",
+                    )
+                )
+        gross_weight = option_weight
+        if _cell_text(values[14]) and 14 not in formula_indexes:
+            try:
+                gross_weight = _sku_quantity_decimal(
+                    values[14], field="毛重", row_number=row_number
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="毛重",
+                        code="QUANTITY_INVALID",
+                        message=str(exc),
+                        value=values[14],
+                        suggestion="毛重可以留空，或填写大于等于 0 的数字。",
+                    )
+                )
+        units_per_carton = option_carton
+        if _cell_text(values[16]) and 16 not in formula_indexes:
+            try:
+                units_per_carton = _decimal_option_text(
+                    _sku_quantity_decimal(
+                        values[16], field="装箱数", row_number=row_number
+                    )
+                )
+            except ProductTemplateValidationError as exc:
+                row_issues.append(
+                    _issue(
+                        row_number=row_number,
+                        column="装箱数",
+                        code="QUANTITY_INVALID",
+                        message=str(exc),
+                        value=values[16],
+                        suggestion="装箱数可以留空，或填写大于等于 0 的数字。",
+                    )
+                )
+        try:
+            tags = _normalize_tags(values[11], row_number=row_number)
+        except ProductTemplateValidationError as exc:
+            row_issues.append(
+                _issue(
+                    row_number=row_number,
+                    column="标签",
+                    code="TAGS_INVALID",
+                    message=str(exc),
+                    value=values[11],
+                    suggestion=f"最多填写 {MAX_TAGS} 个标签，使用逗号分隔。",
+                )
+            )
+            tags = ()
+        if row_issues:
+            issues.extend(row_issues)
+            continue
+        assert product is not None
+        referenced_product_codes.add(product_code)
+        rows.append(
+            ProductTemplateRow(
+                row_number=row_number,
+                name=product.name,
+                category=product.category,
+                product_key=f"PRODUCT:{product.product_code}",
+                product_model=product_model,
+                sku_code=sku_code,
+                sku_name=_cell_text(values[5]) or product.name,
+                specification=specification,
+                units_per_carton=units_per_carton,
+                is_new=False,
+                schema_version=SKU_CATALOG_EXPORT_SCHEMA_VERSION,
+                supplier_name=supplier_name,
+                unit_price=unit_price,
+                description=product.description,
+                note=note,
+                tags=tags,
+                variant_options=variant_options,
+                default_moq=default_moq,
+                gross_weight=gross_weight,
+                image_urls=product.image_urls,
+                image_url_columns=product.image_url_columns,
+                embedded_images=product.embedded_images,
+                existing_product_id=product_row_ids.get(product_code),
+                existing_sku_id=_export_uuid(values[0]),
+                direct_product_code=product.product_code,
+                default_unit=product_default_units.get(product_code),
+                currency=_cell_text(values[10]).upper() or None,
+            )
+        )
+
+    if issues:
+        raise ProductTemplateValidationError(
+            _validation_summary(issues),
+            issues=tuple(issues),
+        )
+    if not products:
+        raise ProductTemplateValidationError("导出文件中没有可导入的有效商品。")
+
+    for product_code, product in products.items():
+        if product_code in referenced_product_codes:
+            continue
+        rows.append(
+            ProductTemplateRow(
+                row_number=product.row_number,
+                name=product.name,
+                category=product.category,
+                product_key=f"PRODUCT:{product.product_code}",
+                product_model=None,
+                sku_code=product.product_code,
+                sku_name=product.name,
+                specification=None,
+                units_per_carton=None,
+                is_new=False,
+                schema_version=SKU_CATALOG_EXPORT_SCHEMA_VERSION,
+                supplier_name=None,
+                unit_price=product.product_price,
+                description=product.description,
+                note=product.note,
+                tags=product.tags,
+                variant_options=(),
+                default_moq=None,
+                gross_weight=None,
+                image_urls=product.image_urls,
+                image_url_columns=product.image_url_columns,
+                embedded_images=product.embedded_images,
+                product_only=True,
+                existing_product_id=product_row_ids.get(product_code),
+                direct_product_code=product.product_code,
+                default_unit=product_default_units.get(product_code),
+                currency=None,
+            )
+        )
+    warnings = [
+        *sheet_warnings,
+        *embedded_image_warnings,
+        f"已识别商品导出文件：{len(products)} 个商品，{len(rows)} 个 SKU 行。",
+    ]
+    if any(row.product_only for row in rows):
+        warnings.append("有商品未包含 SKU 行，将按无规格商品处理。")
+    return ProductTemplateParseResult(
+        rows=tuple(rows),
+        warnings=tuple(warnings),
+        skipped_rows=0,
+    )
+
+
 def _parse_product_sku_rows(
     path: Path,
     *,
@@ -2036,7 +2726,6 @@ def _parse_product_sku_rows(
         product_headers = PRODUCT_MASTER_TEMPLATE_HEADERS_V3
         sku_headers = SKU_DETAIL_TEMPLATE_HEADERS_V3
     product_image_offset = 8 if schema_version >= 4 else 9
-    product_rows_total = max(0, (product_sheet.max_row or 1) - 1)
     sku_rows_total = max(0, (sku_sheet.max_row or 1) - 1)
 
     embedded_images_by_row, embedded_image_warnings = (
@@ -2983,6 +3672,14 @@ def parse_product_template(
             product_sheet, sku_sheet, sheet_warnings, schema_version = (
                 product_sku_sheets
             )
+            if schema_version == SKU_CATALOG_EXPORT_SCHEMA_VERSION:
+                return _parse_sku_catalog_export_rows(
+                    path,
+                    product_sheet=product_sheet,
+                    sku_sheet=sku_sheet,
+                    sheet_warnings=sheet_warnings,
+                    progress_callback=progress_callback,
+                )
             return _parse_product_sku_rows(
                 path,
                 product_sheet=product_sheet,
@@ -3372,7 +4069,7 @@ def _product_code(product_key: str) -> str:
 
 def _alternate_product_code(product_key: str) -> str:
     digest = hashlib.sha256(
-        f"PRODUCT_TEMPLATE:{product_key}".encode("utf-8")
+        f"PRODUCT_TEMPLATE:{product_key}".encode()
     ).hexdigest()
     return f"TPLX-{digest[:48].upper()}"
 
@@ -4056,6 +4753,59 @@ def process_product_template_import(
             for code, rows in sku_groups.items()
             if len(rows) == 1
         }
+        products_by_id = {row.id: row for row in product_rows}
+        skus_by_id = {row.id: row for row in sku_rows}
+        products_by_normalized_code = {
+            _normalize_sku_code(row.product_code): row
+            for row in product_rows
+            if row.product_code
+        }
+
+        def product_for_code(code: str) -> ProductRow | None:
+            return products.get(code) or products_by_normalized_code.get(
+                _normalize_sku_code(code)
+            )
+
+        def product_candidate_codes(
+            template_row: ProductTemplateRow,
+        ) -> tuple[str, ...]:
+            candidates: list[str] = []
+            identified_product = (
+                products_by_id.get(template_row.existing_product_id)
+                if template_row.existing_product_id is not None
+                else None
+            )
+            if identified_product is not None and identified_product.product_code:
+                candidates.append(_normalize_sku_code(identified_product.product_code))
+            if template_row.direct_product_code:
+                candidates.append(_normalize_sku_code(template_row.direct_product_code))
+            candidates.extend(
+                (
+                    _product_code(template_row.product_key),
+                    _alternate_product_code(template_row.product_key),
+                )
+            )
+            return tuple(dict.fromkeys(code for code in candidates if code))
+
+        def existing_sku_for_row(
+            template_row: ProductTemplateRow,
+        ) -> SkuRow | None:
+            if template_row.existing_sku_id is not None:
+                identified = skus_by_id.get(template_row.existing_sku_id)
+                if identified is not None:
+                    return identified
+            return skus.get(_normalize_sku_code(template_row.sku_code))
+
+        def row_is_product_only(template_row: ProductTemplateRow) -> bool:
+            if template_row.product_only:
+                return True
+            # The catalog export intentionally omits the internal template
+            # marker from its human-readable option column. Recover that
+            # marker through the stable SKU ID so a no-spec base SKU remains a
+            # base SKU after an export → import round trip.
+            existing = existing_sku_for_row(template_row)
+            return existing is not None and _is_base_product_sku(existing)
+
         current_sku_count = sum(1 for row in sku_rows if row.deleted_at is None)
 
         def product_only_consumes_capacity(template_row: ProductTemplateRow) -> bool:
@@ -4063,12 +4813,9 @@ def process_product_template_import(
 
             candidate_product = next(
                 (
-                    products.get(candidate_code)
-                    for candidate_code in (
-                        _product_code(template_row.product_key),
-                        _alternate_product_code(template_row.product_key),
-                    )
-                    if products.get(candidate_code) is not None
+                    product_for_code(candidate_code)
+                    for candidate_code in product_candidate_codes(template_row)
+                    if product_for_code(candidate_code) is not None
                 ),
                 None,
             )
@@ -4084,9 +4831,9 @@ def process_product_template_import(
             for row in parsed.rows
             if (
                 product_only_consumes_capacity(row)
-                if row.product_only
+                if row_is_product_only(row)
                 else (
-                    (existing := skus.get(_normalize_sku_code(row.sku_code))) is None
+                    (existing := existing_sku_for_row(row)) is None
                     or existing.deleted_at is not None
                 )
             )
@@ -4102,10 +4849,10 @@ def process_product_template_import(
         import_rows: list[ProductTemplateRow] = []
         quota_skipped_rows: list[ProductTemplateRow] = []
         for template_row in parsed.rows:
-            if template_row.product_only:
+            if row_is_product_only(template_row):
                 consumes_capacity = product_only_consumes_capacity(template_row)
             else:
-                existing = skus.get(_normalize_sku_code(template_row.sku_code))
+                existing = existing_sku_for_row(template_row)
                 consumes_capacity = existing is None or existing.deleted_at is not None
             if (
                 consumes_capacity
@@ -4156,12 +4903,27 @@ def process_product_template_import(
             )
 
         incoming_sku_codes = {
-            row.sku_code for row in accepted_rows if not row.product_only
+            _normalize_sku_code(row.sku_code)
+            for row in accepted_rows
+            if not row_is_product_only(row)
         }
+        incoming_rows_by_code: dict[str, list[ProductTemplateRow]] = defaultdict(list)
+        for row in accepted_rows:
+            if not row_is_product_only(row):
+                incoming_rows_by_code[_normalize_sku_code(row.sku_code)].append(row)
         conflicting_codes = sorted(
             code
-            for code in incoming_sku_codes
+            for code, rows_for_code in incoming_rows_by_code.items()
             if len(sku_groups.get(code, ())) > 1
+            or any(
+                existing.id
+                not in {
+                    matched.id
+                    for row in rows_for_code
+                    if (matched := existing_sku_for_row(row)) is not None
+                }
+                for existing in sku_groups.get(code, ())
+            )
         )
         if conflicting_codes:
             return _fail_import(
@@ -4349,27 +5111,32 @@ def process_product_template_import(
         planned_product_by_key: dict[str, ProductRow | None] = {}
         planned_product_code_by_key: dict[str, str | None] = {}
         for product_key, template_rows in template_rows_by_product_key.items():
-            product_only = any(row.product_only for row in template_rows)
+            product_only = any(row_is_product_only(row) for row in template_rows)
             incoming_codes = {
-                row.sku_code for row in template_rows if not row.product_only
+                row.sku_code
+                for row in template_rows
+                if not row_is_product_only(row)
             }
             current_products = list(
                 dict.fromkeys(
                     products_by_id[sku.product_id]
                     for row in template_rows
-                    if not row.product_only
-                    if (sku := skus.get(row.sku_code)) is not None
+                    if not row_is_product_only(row)
+                    if (sku := existing_sku_for_row(row)) is not None
                     and sku.product_id in products_by_id
                 )
             )
             selected_product: ProductRow | None = None
             selected_code: str | None = None
-            candidate_codes = (
-                _product_code(product_key),
-                _alternate_product_code(product_key),
+            candidate_codes = tuple(
+                dict.fromkeys(
+                    candidate
+                    for row in template_rows
+                    for candidate in product_candidate_codes(row)
+                )
             )
             for candidate_code in candidate_codes:
-                candidate = products.get(candidate_code)
+                candidate = product_for_code(candidate_code)
                 candidate_skus = (
                     sku_rows_by_product.get(candidate.id, ())
                     if candidate is not None
@@ -4630,14 +5397,14 @@ def process_product_template_import(
 
             sku = (
                 None
-                if template_row.product_only
-                else skus.get(template_row.sku_code)
+                if row_is_product_only(template_row)
+                else existing_sku_for_row(template_row)
             )
             if sku is not None and sku.supplier_id is not None:
                 touched_supplier_ids.add(sku.supplier_id)
             product = planned_product_by_key[template_row.product_key]
             product_code = planned_product_code_by_key[template_row.product_key]
-            is_new = product is None if template_row.product_only else sku is None
+            is_new = product is None if row_is_product_only(template_row) else sku is None
             if product is None:
                 assert product_code is not None
                 product = ProductRow(
@@ -4648,13 +5415,14 @@ def process_product_template_import(
                     description=template_row.description,
                     category_id=category.id,
                     status="ACTIVE",
-                    default_unit="piece",
+                    default_unit=template_row.default_unit or "piece",
                     created_by=user_id,
                     updated_by=user_id,
                 )
                 session.add(product)
                 sku_code_allocator.ensure_product(product)
                 products[product_code] = product
+                products_by_normalized_code[_normalize_sku_code(product_code)] = product
                 products_by_id[product.id] = product
                 planned_product_by_key[template_row.product_key] = product
                 # Product and category must exist before the composite SKU
@@ -4667,7 +5435,9 @@ def process_product_template_import(
                     "description": template_row.description,
                     "category_id": category.id,
                     "status": "ACTIVE",
-                    "default_unit": product.default_unit or "piece",
+                    "default_unit": template_row.default_unit
+                    or product.default_unit
+                    or "piece",
                     "archived_at": None,
                     "deleted_at": None,
                 }
@@ -4678,7 +5448,7 @@ def process_product_template_import(
                     product.updated_by = user_id
                     changed = True
 
-            if template_row.product_only:
+            if row_is_product_only(template_row):
                 # A Product row without any explicit SKU is still a concrete
                 # catalog SKU: one generated, no-specification base SKU. Reuse
                 # the marked row on subsequent imports so this operation is
@@ -4791,7 +5561,7 @@ def process_product_template_import(
                         session.flush()
                     continue
 
-            if not template_row.product_only:
+            if not row_is_product_only(template_row):
                 # A generated base SKU is synthetic and should be retired when
                 # real variant rows arrive for the same product. It remains in
                 # history (soft-deleted) but no longer appears as an extra
@@ -4835,14 +5605,15 @@ def process_product_template_import(
                     updated_by_user_id=user_id,
                 )
                 session.add(sku)
-                skus[template_row.sku_code] = sku
+                skus[_normalize_sku_code(template_row.sku_code)] = sku
+                skus_by_id[sku.id] = sku
                 sku_rows.append(sku)
                 sku_rows_by_product[product.id].append(sku)
                 # Public offers reference the SKU through a composite tenant
                 # foreign key, so establish the SKU before staging its offer.
                 session.flush()
                 changed = True
-            elif not template_row.product_only:
+            elif not row_is_product_only(template_row):
                 old_product_id = sku.product_id
                 sku_values = {
                     "product_id": product.id,
@@ -4897,7 +5668,7 @@ def process_product_template_import(
                     tenant_id=tenant_id,
                     sku_id=sku.id,
                     unit_price=template_row.unit_price,
-                    currency=currency,
+                    currency=template_row.currency or currency,
                     tags=offer_tags,
                     display_tag=offer_tags[0] if offer_tags else None,
                     publication_status="PUBLISHED",
@@ -4909,7 +5680,7 @@ def process_product_template_import(
             else:
                 offer_values = {
                     "unit_price": template_row.unit_price,
-                    "currency": currency,
+                    "currency": template_row.currency or currency,
                     "tags": offer_tags,
                     "display_tag": (
                         offer.display_tag

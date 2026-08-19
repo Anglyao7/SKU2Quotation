@@ -13403,6 +13403,86 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
         workbook.close()
 
 
+def test_sku_catalog_export_round_trip_updates_existing_rows(
+    request: pytest.FixtureRequest,
+) -> None:
+    suffix = uuid4().hex[:10].upper()
+    product_name = f"Export round trip {suffix}"
+    source_sku_code = f"EXPORT-SOURCE-{suffix}"
+    import_job_ids: list[str] = []
+
+    def cleanup() -> None:
+        _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[source_sku_code],
+            category_names=[],
+            product_names=[product_name],
+        )
+
+    cleanup()
+    request.addfinalizer(cleanup)
+    category_id = client.get(
+        "/api/v1/products/71000000-0000-0000-0000-000000000002"
+    ).json()["category"]["id"]
+    created = client.post(
+        "/api/v1/products",
+        json={
+            "name": product_name,
+            "product_code": f"EXPORT-{suffix}",
+            "category_id": category_id,
+            "sku_code": source_sku_code,
+            "sku_name": f"Export SKU {suffix}",
+            "unit_price": "18.80",
+            "currency": "CNY",
+            "publish_to_storefront": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    detail = created.json()
+    product_id = UUID(detail["id"])
+    sku_id = UUID(detail["skus"][0]["id"])
+
+    exported = client.post(
+        "/api/v1/product-center/skus/export",
+        json={"sku_ids": [str(sku_id)]},
+    )
+    assert exported.status_code == 200, exported.text
+    imported = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "catalog-export-round-trip.xlsx",
+                exported.content,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert imported.status_code == 201, imported.text
+    import_job_ids.append(imported.json()["id"])
+    assert imported.json()["status"] == "published"
+
+    with SessionLocal() as session:
+        products = session.scalars(
+            select(ProductRow)
+            .where(
+                ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductRow.id == product_id,
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+        skus = session.scalars(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.id == sku_id,
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+        assert len(products) == 1
+        assert len(skus) == 1
+
+
 def test_image_enhancement_replaces_the_existing_storage_object_without_adding_an_image(
     tmp_path: Path,
 ) -> None:
