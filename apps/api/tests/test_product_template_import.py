@@ -1579,3 +1579,65 @@ def test_catalog_export_can_be_imported_without_creating_new_identity(
     assert row.default_unit == "piece"
     assert row.default_moq == Decimal("2.000000")
     assert row.gross_weight == Decimal("1.200000")
+
+
+def test_catalog_export_ignores_malformed_logistics_annotation_when_column_empty(
+    tmp_path: Path,
+) -> None:
+    """Free-form export text must not replace an empty logistics column."""
+
+    product_id = uuid4()
+    sku_id = uuid4()
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = "商品"
+    sku_sheet = workbook.create_sheet("SKU")
+    product_sheet.append(list(SKU_CATALOG_EXPORT_PRODUCT_HEADERS))
+    sku_sheet.append(list(SKU_CATALOG_EXPORT_SKU_HEADERS))
+    product_sheet.append(
+        [
+            str(product_id),
+            "P-EXPORT-ANNOTATION",
+            "带物流描述的导出商品",
+            "家纺",
+            None,
+            "piece",
+            "ACTIVE",
+            *([None] * 50),
+            None,
+        ]
+    )
+    sku_sheet.append(
+        [
+            str(sku_id),
+            str(product_id),
+            "P-EXPORT-ANNOTATION",
+            "SYSTEM-ANNOTATION",
+            "SOURCE-ANNOTATION",
+            "带物流描述的 SKU",
+            "装箱数：24.单个含包装重量：0.283kg",
+            None,
+            None,
+            10,
+            "CNY",
+            None,
+            None,
+            "piece",
+            None,
+            "kg",
+            None,
+            "ACTIVE",
+            "现货产品报价单.xlsx",
+            None,
+            None,
+        ]
+    )
+    path = tmp_path / "现货产品报价单.xlsx"
+    workbook.save(path)
+    workbook.close()
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert result.rows[0].units_per_carton is None
+    assert result.rows[0].gross_weight is None

@@ -2179,17 +2179,17 @@ def _parse_export_option_text(
                         row_number=row_number,
                     )
                 )
-            except ProductTemplateValidationError as exc:
-                issues.append(
-                    _issue(
-                        row_number=row_number,
-                        column="装箱数",
-                        code="QUANTITY_INVALID",
-                        message=str(exc),
-                        value=raw_value,
-                        suggestion="装箱数可以留空，或填写大于等于 0 的数字。",
-                    )
-                )
+            except ProductTemplateValidationError:
+                # The catalog export's 规格 column is a human-readable
+                # report field, not the canonical logistics input.  Older
+                # source files occasionally concatenate a carton count with
+                # another description, for example
+                # ``装箱数：24.单个含包装重量：0.283kg``.  The dedicated
+                # 装箱数 column is empty in that case, so the annotation must
+                # not make an otherwise valid export fail to import.  Keep
+                # strict validation for the dedicated column below; this
+                # compatibility path only ignores malformed display text.
+                continue
         elif normalized_key in {"毛重".casefold(), "起定数".casefold()}:
             field = "毛重" if normalized_key == "毛重".casefold() else "起定数"
             try:
