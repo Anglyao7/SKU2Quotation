@@ -4596,6 +4596,8 @@ interface ApiSupportConversationSummary {
   reference_number: string;
   visitor_name?: string | null;
   visitor_email?: string | null;
+  visitor_country_code?: string | null;
+  visitor_timezone?: string | null;
   locale: string;
   status: SupportConversationStatus;
   last_message_preview: string;
@@ -4694,6 +4696,8 @@ function mapSupportSummary(
     referenceNumber: row.reference_number,
     visitorName: defined(row.visitor_name),
     visitorEmail: defined(row.visitor_email),
+    visitorCountryCode: defined(row.visitor_country_code),
+    visitorTimezone: defined(row.visitor_timezone),
     locale: row.locale,
     status: row.status,
     lastMessagePreview: row.last_message_preview,

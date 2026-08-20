@@ -52,3 +52,23 @@ def test_private_ip_does_not_call_external_geo_service(monkeypatch) -> None:
 
     monkeypatch.setattr(service.httpx, "get", fail_get)
     assert service.lookup_country_code("192.168.1.20") == "ZZ"
+
+
+def test_public_ip_location_includes_timezone_for_support_clock(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "success": True,
+                "country_code": "US",
+                "timezone": {"id": "America/New_York"},
+            }
+
+    monkeypatch.setattr(service.httpx, "get", lambda *_args, **_kwargs: Response())
+    service._geo_cache.clear()
+
+    location = service.lookup_country_location("1.1.1.1")
+    assert location.country_code == "US"
+    assert location.timezone == "America/New_York"

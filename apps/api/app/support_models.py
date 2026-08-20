@@ -68,6 +68,9 @@ class StorefrontChatConversationRow(AuditTimestampMixin, Base):
     visitor_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     visitor_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     visitor_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    visitor_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    visitor_country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    visitor_timezone: Mapped[str | None] = mapped_column(String(80), nullable=True)
     locale: Mapped[str] = mapped_column(String(20), default="zh-CN", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="OPEN", nullable=False)
     merchant_last_read_at: Mapped[datetime | None] = mapped_column(

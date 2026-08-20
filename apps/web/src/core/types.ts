@@ -789,6 +789,8 @@ export interface SupportConversationSummary {
   referenceNumber: string;
   visitorName?: string;
   visitorEmail?: string;
+  visitorCountryCode?: string;
+  visitorTimezone?: string;
   locale: string;
   status: SupportConversationStatus;
   lastMessagePreview: string;

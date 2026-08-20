@@ -4,10 +4,12 @@ import ipaddress
 import logging
 import os
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import timedelta
 from threading import Lock
 from time import monotonic
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import Request
@@ -21,9 +23,15 @@ logger = logging.getLogger(__name__)
 _cleanup_lock = Lock()
 _cleanup_scheduled_at: dict[UUID, float] = {}
 _geo_cache_lock = Lock()
-_geo_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
+_geo_cache: OrderedDict[str, tuple[float, "VisitorLocation"]] = OrderedDict()
 
 DEFAULT_GEOLOCATION_URL = "https://ipwho.is/{ip}"
+
+
+@dataclass(frozen=True, slots=True)
+class VisitorLocation:
+    country_code: str = "ZZ"
+    timezone: str | None = None
 
 
 def raw_ip_retention_days() -> int:
@@ -90,29 +98,40 @@ def _geolocation_url(ip_address: str) -> str:
     return f"{configured.rstrip('/')}/{ip_address}"
 
 
-def _cache_country_code(ip_address: str, country_code: str) -> None:
+def _valid_timezone(value: object) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    try:
+        ZoneInfo(normalized)
+    except ZoneInfoNotFoundError:
+        return None
+    return normalized
+
+
+def _cache_country_location(ip_address: str, location: VisitorLocation) -> None:
     with _geo_cache_lock:
-        _geo_cache[ip_address] = (monotonic(), country_code)
+        _geo_cache[ip_address] = (monotonic(), location)
         _geo_cache.move_to_end(ip_address)
         while len(_geo_cache) > _geo_cache_max_entries():
             _geo_cache.popitem(last=False)
 
 
-def _cached_country_code(ip_address: str) -> str | None:
+def _cached_country_location(ip_address: str) -> VisitorLocation | None:
     with _geo_cache_lock:
         entry = _geo_cache.get(ip_address)
         if entry is None:
             return None
-        cached_at, country_code = entry
+        cached_at, location = entry
         if monotonic() - cached_at >= _geo_cache_seconds():
             _geo_cache.pop(ip_address, None)
             return None
         _geo_cache.move_to_end(ip_address)
-        return country_code
+        return location
 
 
-def lookup_country_code(ip_address: str) -> str:
-    """Resolve a public IP to an ISO country code with a bounded best-effort lookup.
+def lookup_country_location(ip_address: str) -> VisitorLocation:
+    """Resolve a public IP to country and IANA timezone with a bounded lookup.
 
     Cloudflare's edge header remains the preferred source when trusted. This
     fallback fixes direct-origin, local-network, and non-Cloudflare requests
@@ -121,19 +140,20 @@ def lookup_country_code(ip_address: str) -> str:
 
     normalized_ip = normalize_ip_address(ip_address)
     if normalized_ip == "0.0.0.0":
-        return "ZZ"
+        return VisitorLocation()
     try:
         parsed = ipaddress.ip_address(normalized_ip)
     except ValueError:
-        return "ZZ"
+        return VisitorLocation()
     if not parsed.is_global:
-        return "ZZ"
+        return VisitorLocation()
 
-    cached = _cached_country_code(normalized_ip)
+    cached = _cached_country_location(normalized_ip)
     if cached is not None:
         return cached
 
     country_code = "ZZ"
+    timezone = None
     try:
         response = httpx.get(
             _geolocation_url(normalized_ip),
@@ -150,6 +170,12 @@ def lookup_country_code(ip_address: str) -> str:
                 country_code = _valid_country_code(
                     payload.get("country_code") or payload.get("countryCode")
                 ) or "ZZ"
+                timezone_payload = payload.get("timezone")
+                timezone = _valid_timezone(
+                    timezone_payload.get("id")
+                    if isinstance(timezone_payload, dict)
+                    else timezone_payload
+                )
     except Exception as exc:  # pragma: no cover - provider/network dependent
         logger.info(
             "IP country provider unavailable: %s",
@@ -158,24 +184,52 @@ def lookup_country_code(ip_address: str) -> str:
 
     # Cache negative results briefly as well, otherwise a provider outage could
     # turn every view from one visitor into a new outbound request.
-    _cache_country_code(normalized_ip, country_code)
-    return country_code
+    location = VisitorLocation(country_code=country_code, timezone=timezone)
+    _cache_country_location(normalized_ip, location)
+    return location
+
+
+def lookup_country_code(ip_address: str) -> str:
+    return lookup_country_location(ip_address).country_code
 
 
 def request_visitor_ip(request: Request) -> str:
     return normalize_ip_address(request.client.host if request.client else None)
 
 
-def request_country_code(request: Request, *, visitor_ip: str) -> str:
+def _trusted_cloudflare_country(request: Request, *, visitor_ip: str) -> str | None:
     trust_cloudflare = os.getenv(
         "TRUST_CLOUDFLARE_VISITOR_HEADERS", "false"
     ).strip().casefold() in {"1", "true", "yes"}
-    if trust_cloudflare:
-        connecting_ip = normalize_ip_address(request.headers.get("CF-Connecting-IP"))
-        if connecting_ip != "0.0.0.0" and connecting_ip == visitor_ip:
-            country_code = _valid_country_code(request.headers.get("CF-IPCountry"))
-            if country_code:
-                return country_code
+    if not trust_cloudflare:
+        return None
+    connecting_ip = normalize_ip_address(request.headers.get("CF-Connecting-IP"))
+    if connecting_ip == "0.0.0.0" or connecting_ip != visitor_ip:
+        return None
+    return _valid_country_code(request.headers.get("CF-IPCountry"))
+
+
+def request_visitor_location(request: Request, *, visitor_ip: str) -> VisitorLocation:
+    country_from_cloudflare = _trusted_cloudflare_country(
+        request,
+        visitor_ip=visitor_ip,
+    )
+    resolved = lookup_country_location(visitor_ip)
+    if country_from_cloudflare:
+        return VisitorLocation(
+            country_code=country_from_cloudflare,
+            timezone=resolved.timezone,
+        )
+    return resolved
+
+
+def request_country_code(request: Request, *, visitor_ip: str) -> str:
+    country_from_cloudflare = _trusted_cloudflare_country(
+        request,
+        visitor_ip=visitor_ip,
+    )
+    if country_from_cloudflare:
+        return country_from_cloudflare
     return lookup_country_code(visitor_ip)
 
 

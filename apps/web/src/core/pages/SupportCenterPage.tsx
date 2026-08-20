@@ -45,6 +45,41 @@ function dateTime(value: string, locale: string) {
   }).format(new Date(value));
 }
 
+function countryFlag(countryCode?: string) {
+  const normalized = countryCode?.trim().toUpperCase();
+  if (!normalized || normalized.length !== 2 || !/^[A-Z]{2}$/.test(normalized)) {
+    return "🌐";
+  }
+  return Array.from(normalized)
+    .map((character) => String.fromCodePoint(127397 + character.charCodeAt(0)))
+    .join("");
+}
+
+function countryName(countryCode: string | undefined, locale: string) {
+  const normalized = countryCode?.trim().toUpperCase();
+  if (!normalized || normalized === "ZZ" || normalized === "T1") return "";
+  try {
+    return new Intl.DisplayNames([locale, "en"], { type: "region" }).of(normalized) || normalized;
+  } catch {
+    return normalized;
+  }
+}
+
+function visitorLocalTime(timestamp: number, timezone: string | undefined, locale: string) {
+  if (!timezone) return "";
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date(timestamp));
+  } catch {
+    return "";
+  }
+}
+
 export function SupportCenterPage() {
   const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
@@ -66,6 +101,7 @@ export function SupportCenterPage() {
   const [translationError, setTranslationError] = useState("");
   const [translatedReply, setTranslatedReply] = useState("");
   const [replyTargetLocale, setReplyTargetLocale] = useState<StorefrontLocale>("en-US");
+  const [clockNow, setClockNow] = useState(() => Date.now());
   const messagesRef = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef("");
   const detailRequestSequenceRef = useRef(0);
@@ -182,6 +218,11 @@ export function SupportCenterPage() {
     }, 5_000);
     return () => window.clearInterval(interval);
   }, [loadDetail, loadList, selectedId]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
@@ -333,6 +374,14 @@ export function SupportCenterPage() {
     () => items.find((item) => item.id === selectedId),
     [items, selectedId],
   );
+  const visitorCountry = useMemo(() => {
+    if (!detail?.visitorCountryCode && !detail?.visitorTimezone) return "";
+    return `${countryFlag(detail?.visitorCountryCode)} ${countryName(detail?.visitorCountryCode, locale) || t("未知国家")}`;
+  }, [detail?.visitorCountryCode, detail?.visitorTimezone, locale, t]);
+  const visitorTime = useMemo(
+    () => visitorLocalTime(clockNow, detail?.visitorTimezone, locale),
+    [clockNow, detail?.visitorTimezone, locale],
+  );
 
   return (
     <div className="core-page support-center-page">
@@ -394,6 +443,14 @@ export function SupportCenterPage() {
                   <div>
                     <strong>{detail.visitorName || t("网站访客")}</strong>
                     <span>{detail.visitorEmail || detail.referenceNumber} · {detail.locale}</span>
+                    {visitorCountry ? (
+                      <span className="support-visitor-location" title={detail.visitorTimezone || undefined}>
+                        {visitorCountry}
+                        {visitorTime
+                          ? ` · ${t("当地时间")} ${visitorTime}`
+                          : ` · ${t("当地时间不可用")}`}
+                      </span>
+                    ) : null}
                   </div>
                   <div>
                     <Badge color={detail.automationState === "AI_ACTIVE" ? "blue" : "amber"}>

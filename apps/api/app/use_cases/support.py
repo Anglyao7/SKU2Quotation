@@ -23,6 +23,7 @@ from ..public_catalog_models import TenantPublicProfileRow
 from ..repositories import public_catalog_repository
 from ..repositories import support_repository as repository
 from ..services.auth.tokens import hash_secret, new_secret
+from ..services.storefront_analytics import VisitorLocation
 from ..services.translation import (
     TranslationProviderError,
     catalog_translation_is_configured,
@@ -674,6 +675,8 @@ def create_public_conversation(
     *,
     slug: str,
     request: PublicChatConversationCreate,
+    visitor_ip: str | None = None,
+    visitor_location: VisitorLocation | None = None,
 ) -> PublicChatConversationResponse:
     tenant, _ = _resolve_public_store(session, slug=slug)
     now = utcnow()
@@ -686,6 +689,13 @@ def create_public_conversation(
         visitor_token_hash=hash_secret(token),
         visitor_name=request.visitor_name,
         visitor_email=request.visitor_email,
+        visitor_ip=visitor_ip,
+        visitor_country_code=(
+            visitor_location.country_code if visitor_location else None
+        ),
+        visitor_timezone=(
+            visitor_location.timezone if visitor_location else None
+        ),
         locale=request.locale.strip() or "zh-CN",
         status="OPEN",
         last_message_at=now,
@@ -760,8 +770,21 @@ def send_public_message(
     slug: str,
     token: str,
     request: PublicChatMessageWrite,
+    visitor_ip: str | None = None,
+    visitor_location: VisitorLocation | None = None,
 ) -> PublicChatConversationResponse:
     row = _public_conversation(session, slug=slug, token=token)
+    location_changed = False
+    if visitor_ip and visitor_location:
+        if not row.visitor_ip:
+            row.visitor_ip = visitor_ip
+            location_changed = True
+        if row.visitor_country_code != visitor_location.country_code:
+            row.visitor_country_code = visitor_location.country_code
+            location_changed = True
+        if row.visitor_timezone != visitor_location.timezone:
+            row.visitor_timezone = visitor_location.timezone
+            location_changed = True
     if row.status != "OPEN":
         raise ApplicationError(
             "SUPPORT_CONVERSATION_CLOSED",
@@ -798,6 +821,11 @@ def send_public_message(
         from ..services.support_ai_orchestrator import enqueue_chat_run
 
         enqueue_chat_run(session, conversation=row, message=existing)
+        session.commit()
+        session.refresh(row)
+    elif location_changed:
+        # A retried client message is idempotent, but a newly resolved visitor
+        # location still needs to be persisted for the operator view.
         session.commit()
         session.refresh(row)
     return _public_conversation_response(session, row)
@@ -877,6 +905,8 @@ def _summary(
         reference_number=row.reference_number,
         visitor_name=row.visitor_name,
         visitor_email=row.visitor_email,
+        visitor_country_code=row.visitor_country_code,
+        visitor_timezone=row.visitor_timezone,
         locale=row.locale,
         status=row.status,
         last_message_preview=preview[:160],

@@ -27,6 +27,7 @@ from ..database import SessionLocal, get_session
 from ..domain.errors import ApplicationError
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..services.rate_limit import configured_limit, enforce_rate_limit
+from ..services.storefront_analytics import request_visitor_ip, request_visitor_location
 from ..support_schemas import (
     PublicChatConversationCreate,
     PublicChatConversationResponse,
@@ -460,10 +461,17 @@ def create_public_support_conversation(
         ),
     )
     try:
+        visitor_ip = request_visitor_ip(request)
+        visitor_location = request_visitor_location(
+            request,
+            visitor_ip=visitor_ip,
+        )
         result = use_cases.create_public_conversation(
             session,
             slug=tenant_slug,
             request=payload,
+            visitor_ip=visitor_ip,
+            visitor_location=visitor_location,
         )
         if result.ai_processing and support_ai_inline_processing_enabled():
             background_tasks.add_task(
@@ -552,11 +560,18 @@ def send_public_support_message(
         token=x_support_token,
     )
     try:
+        visitor_ip = request_visitor_ip(request)
+        visitor_location = request_visitor_location(
+            request,
+            visitor_ip=visitor_ip,
+        )
         result = use_cases.send_public_message(
             session,
             slug=tenant_slug,
             token=x_support_token,
             request=payload,
+            visitor_ip=visitor_ip,
+            visitor_location=visitor_location,
         )
         if result.ai_processing and support_ai_inline_processing_enabled():
             background_tasks.add_task(

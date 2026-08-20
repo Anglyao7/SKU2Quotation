@@ -184,6 +184,8 @@ class SupportConversationSummaryResponse(BaseModel):
     reference_number: str
     visitor_name: str | None
     visitor_email: str | None
+    visitor_country_code: str | None = None
+    visitor_timezone: str | None = None
     locale: str
     status: SupportConversationStatus
     last_message_preview: str

@@ -2791,6 +2791,9 @@ const english: Record<string, string> = {
   "新的人工客服请求": "New human support request",
   "另有 {count} 条新请求": "{count} more new requests",
   "关闭提醒": "Dismiss notification",
+  "未知国家": "Unknown country",
+  "当地时间": "Local time",
+  "当地时间不可用": "Local time unavailable",
   "查看商品前台的客户咨询，并在一个工作区内处理回复与会话状态。":
     "Review storefront inquiries and handle replies and conversation status in one workspace.",
   "个人中心": "Personal center",
