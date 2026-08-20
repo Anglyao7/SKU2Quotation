@@ -187,7 +187,14 @@ def _sku_thumbnail_url(
 
     media_base_url = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
     if media_base_url:
-        return f"{media_base_url}/{quote(object_key.lstrip('/'), safe='/')}"
+        media_url = f"{media_base_url}/{quote(object_key.lstrip('/'), safe='/')}"
+        # Version direct CDN/R2 URLs too.  A custom Cloudflare domain may
+        # cache an old object for a while after an in-place migration or
+        # replacement; the content hash makes the browser fetch fresh bytes.
+        cache_key = str(getattr(image, "sha256", "") or "").strip()[:16]
+        if cache_key:
+            return f"{media_url}?v={quote(cache_key, safe='')}"
+        return media_url
 
     # The public media endpoint deliberately serves approved images only.
     # Source images without a public storage URL keep the existing placeholder.
