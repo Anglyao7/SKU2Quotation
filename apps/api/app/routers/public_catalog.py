@@ -16,6 +16,7 @@ from ..public_catalog_schemas import (
     PublicProductDetail,
     PublicProductPage,
     PublicQuoteDraftCreate,
+    PublicQuoteDraftCurrencyConversion,
     PublicQuoteDraftItemsUpdate,
     PublicQuoteDraftPriceAdjustment,
     PublicQuoteDraftItemPriceUpdate,
@@ -617,6 +618,30 @@ def update_tenant_public_quote_draft_settings(
     context = current_context(session)
     try:
         return use_cases.update_tenant_quote_draft_settings(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/currency-conversion",
+    response_model=PublicQuoteDraftResponse,
+)
+def convert_tenant_public_quote_draft_currency(
+    quote_draft_id: UUID,
+    payload: PublicQuoteDraftCurrencyConversion,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.convert_tenant_quote_draft_currency(
             session,
             tenant_id=context.tenant_id,
             permissions=context.permissions,

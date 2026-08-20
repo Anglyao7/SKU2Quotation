@@ -260,6 +260,21 @@ class PublicQuoteDraftSettingsUpdate(BaseModel):
         return list(dict.fromkeys(value)) if value is not None else None
 
 
+class PublicQuoteDraftCurrencyConversion(BaseModel):
+    """Convert the current quote draft into a selected settlement currency."""
+
+    target_currency: str = Field(
+        min_length=3,
+        max_length=3,
+        pattern=r"^[A-Za-z]{3}$",
+    )
+
+    @field_validator("target_currency")
+    @classmethod
+    def normalize_target_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+
 class PublicQuoteDraftItemPriceUpdate(BaseModel):
     """A merchant's price override for one line in a pending quotation."""
 

@@ -35,6 +35,7 @@ from ..public_catalog_schemas import (
     PUBLIC_PRIVACY_NOTICE_VERSION,
     PublicQuoteDocument,
     PublicQuoteDraftCreate,
+    PublicQuoteDraftCurrencyConversion,
     PublicQuoteDraftItemPatch,
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftItemPriceUpdate,
@@ -94,6 +95,7 @@ from ..services.translation_configuration import (
     resolved_catalog_translator,
     translation_provider_is_configured,
 )
+from ..services.world_market import get_dashboard_market_snapshot
 from ..storefront_locales import (
     effective_storefront_locales,
     normalize_storefront_locale,
@@ -4304,9 +4306,104 @@ def update_tenant_quote_draft_settings(
     )
 
 
+def convert_tenant_quote_draft_currency(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    request: PublicQuoteDraftCurrencyConversion,
+) -> PublicQuoteDraftResponse:
+    """Convert all current quote-line prices using the cached market rate."""
+
+    _require(permissions, "quotation.create")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    if draft.status != "PENDING_CONFIRMATION":
+        raise ApplicationError(
+            "PUBLIC_QUOTE_CURRENCY_EDIT_NOT_ALLOWED",
+            "只有待确认状态的报价单可以进行币种换算。",
+            kind="conflict",
+        )
+
+    source_currency = str(draft.currency or "CNY").strip().upper()
+    target_currency = str(request.target_currency or "").strip().upper()
+    if source_currency == target_currency:
+        return _quote_draft_item_edit_response(
+            session,
+            tenant_id=tenant_id,
+            draft=draft,
+        )
+
+    market = get_dashboard_market_snapshot()
+    factor = _currency_conversion_factor(
+        market,
+        source_currency=source_currency,
+        target_currency=target_currency,
+    )
+    if factor is None:
+        raise ApplicationError(
+            "QUOTE_CURRENCY_RATE_UNAVAILABLE",
+            f"当前暂未取得 {source_currency} 到 {target_currency} 的汇率，请稍后重试。",
+            kind="conflict",
+        )
+
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    for item in items:
+        item.unit_price_snapshot = _money(
+            Decimal(item.unit_price_snapshot) * factor
+        )
+        item.currency_snapshot = target_currency
+    draft.currency = target_currency
+    rate_date = next(
+        (
+            str(getattr(item, "rate_date", "")).strip()
+            for item in getattr(market, "exchange_rates", ())
+            if str(getattr(item, "currency", "")).upper()
+            in {source_currency, target_currency}
+            and getattr(item, "rate_date", None)
+        ),
+        "",
+    )
+    _recalculate_quote_draft_totals(
+        draft,
+        items,
+        conversion={
+            "from": source_currency,
+            "to": target_currency,
+            "factor": str(factor),
+            "rate_date": rate_date,
+            "source": str(getattr(market, "rate_source", "market")),
+            "converted_at": utcnow().isoformat(),
+        },
+    )
+    session.commit()
+    return _quote_draft_item_edit_response(
+        session,
+        tenant_id=tenant_id,
+        draft=draft,
+    )
+
+
 def _recalculate_quote_draft_totals(
     draft: PublicQuoteDraftRow,
     items: list[PublicQuoteDraftItemRow],
+    *,
+    conversion: dict[str, str] | None = None,
 ) -> None:
     for item in items:
         item.line_total = _money(
@@ -4318,6 +4415,92 @@ def _recalculate_quote_draft_totals(
     draft.subtotal_amount = subtotal
     draft.estimated_total = subtotal
     draft.updated_at = utcnow()
+    _refresh_quote_draft_snapshot(draft, items, conversion=conversion)
+
+
+def _refresh_quote_draft_snapshot(
+    draft: PublicQuoteDraftRow,
+    items: list[PublicQuoteDraftItemRow],
+    *,
+    conversion: dict[str, str] | None = None,
+) -> None:
+    """Keep the audit snapshot aligned with editable quote-line values."""
+
+    source = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+    snapshot = dict(source)
+    existing_items = snapshot.get("items")
+    by_position = {
+        int(entry.get("position")): dict(entry)
+        for entry in existing_items
+        if isinstance(entry, dict) and str(entry.get("position", "")).isdigit()
+    } if isinstance(existing_items, list) else {}
+    snapshot_items: list[dict[str, object]] = []
+    for item in items:
+        entry = by_position.get(item.position, {})
+        entry.update(
+            {
+                "position": item.position,
+                "sku_id": str(item.sku_id),
+                "product_id": str(item.product_id_snapshot),
+                "product_version": item.product_version,
+                "sku_version": item.sku_version,
+                "sku_code": item.sku_code_snapshot,
+                "name": item.name_snapshot,
+                "description": item.description_snapshot,
+                "specification": item.specification_snapshot,
+                "option_values": item.option_values_snapshot,
+                "category": item.category_snapshot,
+                "tags": item.tags_snapshot,
+                "image_url": item.image_url_snapshot,
+                "quantity": str(item.quantity),
+                "unit_code": item.unit_code_snapshot,
+                "currency": item.currency_snapshot,
+                "unit_price": str(item.unit_price_snapshot),
+                "line_total": str(item.line_total),
+            }
+        )
+        snapshot_items.append(entry)
+    snapshot["items"] = snapshot_items
+    snapshot["currency"] = draft.currency
+    snapshot["subtotal_amount"] = str(draft.subtotal_amount)
+    snapshot["estimated_total"] = str(draft.estimated_total)
+    if conversion is not None:
+        snapshot["currency_conversion"] = conversion
+    draft.snapshot = snapshot
+    draft.content_hash = hashlib.sha256(
+        json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _market_currency_rate(snapshot: object, currency: str) -> Decimal | None:
+    for item in getattr(snapshot, "exchange_rates", ()):
+        if str(getattr(item, "currency", "")).upper() == currency:
+            value = getattr(item, "rate", None)
+            if value is not None and Decimal(value) > 0:
+                return Decimal(value)
+    return None
+
+
+def _currency_conversion_factor(
+    snapshot: object,
+    *,
+    source_currency: str,
+    target_currency: str,
+) -> Decimal | None:
+    source = "CNY" if source_currency == "RMB" else source_currency
+    target = "CNY" if target_currency == "RMB" else target_currency
+    if source == target:
+        return Decimal("1")
+    source_rate = Decimal("1") if source == "CNY" else _market_currency_rate(snapshot, source)
+    target_rate = Decimal("1") if target == "CNY" else _market_currency_rate(snapshot, target)
+    if source_rate is None or target_rate is None:
+        return None
+    return target_rate / source_rate
 
 
 def _quote_draft_item_edit_response(

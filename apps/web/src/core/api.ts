@@ -5246,6 +5246,19 @@ export async function updatePublicQuoteDraftSettings(
   ));
 }
 
+export async function convertPublicQuoteDraftCurrency(
+  draftId: string,
+  targetCurrency: string,
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/currency-conversion`,
+    {
+      method: "POST",
+      body: JSON.stringify({ target_currency: targetCurrency }),
+    },
+  ));
+}
+
 export async function updatePublicQuoteDraftStatus(
   draftId: string,
   status: "CONFIRMED" | "COMPLETED" | "CANCELLED",

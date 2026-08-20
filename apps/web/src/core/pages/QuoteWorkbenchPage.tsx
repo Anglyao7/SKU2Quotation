@@ -21,6 +21,7 @@ import {
   ClipboardText,
   Columns,
   Copy,
+  CurrencyDollar,
   DownloadSimple,
   FilePdf,
   FileText,
@@ -40,8 +41,10 @@ import { Link, useParams } from "react-router-dom";
 import {
   CoreApiError,
   adjustPublicQuoteDraftPrices,
+  convertPublicQuoteDraftCurrency,
   downloadPublicQuoteDraftDocument,
   getProduct,
+  getDashboard,
   getMerchantSettings,
   getPublicQuoteDraft,
   listQuoteExcelTemplates,
@@ -60,6 +63,7 @@ import type {
   PublicQuoteDraftItem,
   QuoteExcelTemplate,
   QuoteTemplateField,
+  DashboardSnapshot,
 } from "../types";
 import type { StorefrontLocale } from "../../types";
 import "./QuoteWorkbenchPage.css";
@@ -214,6 +218,9 @@ export function QuoteWorkbenchPage() {
   const [syncItem, setSyncItem] = useState<PublicQuoteDraftItem>();
   const [productDetails, setProductDetails] = useState<Record<string, ProductDetail | null>>({});
   const [detailLoadingId, setDetailLoadingId] = useState<string>();
+  const [market, setMarket] = useState<DashboardSnapshot["market"]>();
+  const [conversionOpen, setConversionOpen] = useState(false);
+  const [converting, setConverting] = useState(false);
 
   const enabledLocales = useMemo(() => {
     const allowed = settings?.storefrontLocales;
@@ -234,12 +241,27 @@ export function QuoteWorkbenchPage() {
   const previewGrid = useMemo(() => `repeat(${Math.max(activeColumns.length, 1)}, minmax(0, 1fr))`, [activeColumns.length]);
   const canEditPrices = draft?.status === "PENDING_CONFIRMATION";
   const hasPendingItemEdits = Object.values(itemEdits).some((edit) => Object.keys(edit).length > 0);
+  const conversionRate = useMemo(() => {
+    if (!draft || !market?.exchangeRates?.length) return undefined;
+    const source = draft.currency.toUpperCase() === "RMB" ? "CNY" : draft.currency.toUpperCase();
+    const sourceRate = source === "CNY"
+      ? 1
+      : market.exchangeRates.find((row) => row.currency.toUpperCase() === source)?.rate;
+    const targetRate = market.exchangeRates.find((row) => row.currency.toUpperCase() === "USD")?.rate;
+    if (!sourceRate || !targetRate || sourceRate <= 0 || targetRate <= 0) return undefined;
+    return targetRate / sourceRate;
+  }, [draft, market]);
+  const canConvertToUsd = Boolean(canEditPrices && draft?.currency.toUpperCase() !== "USD" && conversionRate);
+  const conversionRateLabel = conversionRate
+    ? conversionRate.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")
+    : "";
 
   const load = useCallback(async () => {
     if (!quoteDraftId) return;
     setLoading(true);
     setError("");
     setSuccessNotice("");
+    setMarket(undefined);
     try {
       const [nextDraft, nextTemplates, merchantSettings] = await Promise.all([
         getPublicQuoteDraft(quoteDraftId),
@@ -258,6 +280,7 @@ export function QuoteWorkbenchPage() {
       setTemplateId(nextDraft.quoteTemplateId ?? "");
       setQuoteNumber(nextDraft.quoteNumber);
       setVisibleColumns(nextVisible.length ? nextVisible : nextAvailable);
+      void getDashboard().then((dashboard) => setMarket(dashboard.market)).catch(() => undefined);
     } catch (reason) {
       if (reason instanceof CoreApiError && reason.status === 404) {
         setError(t("这条询价单不存在或已被删除。"));
@@ -564,6 +587,26 @@ export function QuoteWorkbenchPage() {
     }
   };
 
+  const convertToUsd = async () => {
+    if (!draft || !canConvertToUsd || hasPendingItemEdits || converting) return;
+    setConverting(true);
+    setError("");
+    try {
+      const next = await convertPublicQuoteDraftCurrency(draft.id, "USD");
+      setDraft(next);
+      setPriceDrafts(Object.fromEntries(next.items.map((item) => [item.id, item.unitPrice.toFixed(2)])));
+      setConversionOpen(false);
+      const rateText = conversionRate ? conversionRate.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") : "";
+      setSuccessNotice(rateText
+        ? t("已按 1 {source} = {rate} USD 换算本报价单。", { source: draft.currency, rate: rateText })
+        : t("报价单已换算为 USD。"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("报价币种换算失败"));
+    } finally {
+      setConverting(false);
+    }
+  };
+
   const selectedProductDetail = selectedDrawerItem
     ? productDetails[selectedDrawerItem.productId]
     : undefined;
@@ -644,6 +687,8 @@ export function QuoteWorkbenchPage() {
       <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
       <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
       <div className="quote-workbench-actions">
+        <Button variant="soft" color="blue" disabled={!canConvertToUsd || hasPendingItemEdits || converting} loading={converting} onClick={() => setConversionOpen(true)}><CurrencyDollar />{draft.currency === "USD" ? t("已是 USD") : t("换算为 USD")}</Button>
+        {conversionRateLabel && draft.currency.toUpperCase() !== "USD" ? <Text size="1" color="gray" className="quote-fx-rate">1 {draft.currency} = {conversionRateLabel} USD</Text> : null}
         <Button variant="soft" disabled={!canEditPrices || bulkSaving} onClick={() => setBulkPriceOpen(true)}><SlidersHorizontal />{t("一键调价")}</Button>
         <Button variant="soft" disabled={!canEditPrices || !hasPendingItemEdits || savingItems} loading={savingItems} onClick={() => void saveAllItemEdits()}><FloppyDisk />{t("保存商品修改")}</Button>
         <Button variant="soft" onClick={() => { setItemsDrawerOpen(true); setSelectedItemId(undefined); }}><Package />{t("订单商品")}<Badge color="gray">{draft.items.length}</Badge></Button>
@@ -655,6 +700,24 @@ export function QuoteWorkbenchPage() {
         {draft.status === "PENDING_CONFIRMATION" ? <Button color="green" loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
       </div>
     </Card>
+
+    <AlertDialog.Root open={conversionOpen} onOpenChange={(open) => { if (!converting) setConversionOpen(open); }}>
+      <AlertDialog.Content maxWidth="500px">
+        <AlertDialog.Title>{t("按汇率换算为 USD")}</AlertDialog.Title>
+        <AlertDialog.Description size="2">
+          {conversionRate
+            ? t("当前汇率为 1 {source} = {rate} USD。将换算本报价单的单价、总价和报价合计，不会修改商品库价格。", {
+              source: draft.currency,
+              rate: conversionRate.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""),
+            })
+            : t("暂时无法取得当前汇率，请稍后重试。")}
+        </AlertDialog.Description>
+        <div className="quote-sync-confirm-actions">
+          <AlertDialog.Cancel><Button variant="soft" color="gray" disabled={converting}>{t("取消")}</Button></AlertDialog.Cancel>
+          <AlertDialog.Action><Button color="blue" disabled={!canConvertToUsd || hasPendingItemEdits || converting} loading={converting} onClick={() => void convertToUsd()}>{t("确认换算")}</Button></AlertDialog.Action>
+        </div>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
 
     <Dialog.Root open={bulkPriceOpen} onOpenChange={(open) => { if (!bulkSaving) setBulkPriceOpen(open); }}>
       <Dialog.Content className="quote-bulk-price-dialog" maxWidth="460px">

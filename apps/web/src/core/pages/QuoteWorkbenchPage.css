@@ -95,6 +95,12 @@
   justify-content: flex-end;
 }
 
+.quote-fx-rate {
+  align-self: center;
+  white-space: nowrap;
+  padding: 0 2px;
+}
+
 .quote-items-drawer {
   position: fixed !important;
   inset: 0 0 0 auto !important;
