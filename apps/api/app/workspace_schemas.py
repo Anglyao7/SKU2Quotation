@@ -37,12 +37,47 @@ class DashboardDataHealth(BaseModel):
     valid_price_coverage: float = Field(ge=0, le=1)
 
 
+class DashboardWorldTime(BaseModel):
+    key: str
+    label: str
+    city: str
+    country_code: str
+    flag: str
+    language: str
+    timezone: str
+    currency: str
+    local_time: str
+    utc_offset: str
+    is_dst: bool = False
+    source: str = "system"
+
+
+class DashboardExchangeRate(BaseModel):
+    currency: str
+    name: str
+    symbol: str
+    rate: Decimal | None = None
+    base_currency: str = "CNY"
+    rate_date: str | None = None
+    source: str = "Frankfurter"
+
+
+class DashboardMarketSnapshot(BaseModel):
+    observed_at: datetime
+    world_times: list[DashboardWorldTime] = Field(default_factory=list)
+    exchange_rates: list[DashboardExchangeRate] = Field(default_factory=list)
+    rate_date: str | None = None
+    time_source: str = "system"
+    rate_source: str = "Frankfurter"
+
+
 class DashboardResponse(BaseModel):
     generated_at: datetime
     data_scope: str
     metrics: list[DashboardMetric]
     recent_imports: list[DashboardImport]
     data_health: DashboardDataHealth | None
+    market: DashboardMarketSnapshot | None = None
 
 
 class SupplierScoreSummary(BaseModel):

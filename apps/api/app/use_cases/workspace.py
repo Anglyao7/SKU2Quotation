@@ -12,6 +12,7 @@ from ..domain.errors import ApplicationError
 from ..model_mixins import mark_deleted
 from ..repositories import workspace_repository as repository
 from ..services import query_cache
+from ..services.world_market import get_dashboard_market_snapshot
 from ..workspace_schemas import (
     DashboardDataHealth,
     DashboardMetric,
@@ -125,6 +126,7 @@ def get_dashboard(
         # remains on the product/SKU records and import-job detail screens.
         recent_imports=[],
         data_health=data_health,
+        market=get_dashboard_market_snapshot(now),
     )
     query_cache.store(
         cache_slot,

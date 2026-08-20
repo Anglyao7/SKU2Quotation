@@ -250,6 +250,35 @@ export interface DashboardSnapshot {
     supplierSourceCoverage: number;
     validPriceCoverage: number;
   };
+  market?: {
+    observedAt: string;
+    worldTimes: Array<{
+      key: string;
+      label: string;
+      city: string;
+      countryCode: string;
+      flag: string;
+      language: string;
+      timezone: string;
+      currency: string;
+      localTime: string;
+      utcOffset: string;
+      isDst: boolean;
+      source: string;
+    }>;
+    exchangeRates: Array<{
+      currency: string;
+      name: string;
+      symbol: string;
+      rate?: number;
+      baseCurrency: string;
+      rateDate?: string;
+      source: string;
+    }>;
+    rateDate?: string;
+    timeSource: string;
+    rateSource: string;
+  };
 }
 
 export type SupplyChainStatus = "ACTIVE" | "INACTIVE" | "BLOCKED" | "ARCHIVED";

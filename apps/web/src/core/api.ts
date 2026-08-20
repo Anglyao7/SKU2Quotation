@@ -4912,11 +4912,39 @@ export async function createAttributeDefinition(input: Omit<AttributeDefinition,
   return { ...input, id: row.id, status: row.status, version: row.version };
 }
 
-interface ApiDashboard { generated_at: string; data_scope: "TENANT" | "SELF"; metrics: Array<{ key: string; label: string; value: number; unit?: string | null; status: string; destination: string }>; recent_imports: Array<{ id: string; filename: string; supplier_name: string; source_type: string; status: string; progress: number; products_count: number; warnings_count: number; created_at: string }>; data_health?: { score: number; active_products: number; approved_image_coverage: number; supplier_source_coverage: number; valid_price_coverage: number } | null }
+interface ApiDashboard {
+  generated_at: string;
+  data_scope: "TENANT" | "SELF";
+  metrics: Array<{ key: string; label: string; value: number; unit?: string | null; status: string; destination: string }>;
+  recent_imports: Array<{ id: string; filename: string; supplier_name: string; source_type: string; status: string; progress: number; products_count: number; warnings_count: number; created_at: string }>;
+  data_health?: { score: number; active_products: number; approved_image_coverage: number; supplier_source_coverage: number; valid_price_coverage: number } | null;
+  market?: {
+    observed_at: string;
+    world_times: Array<{ key: string; label: string; city: string; country_code: string; flag: string; language: string; timezone: string; currency: string; local_time: string; utc_offset: string; is_dst: boolean; source: string }>;
+    exchange_rates: Array<{ currency: string; name: string; symbol: string; rate?: number | string | null; base_currency: string; rate_date?: string | null; source: string }>;
+    rate_date?: string | null;
+    time_source: string;
+    rate_source: string;
+  } | null;
+}
 
 export async function getDashboard(): Promise<DashboardSnapshot> {
   const row = await request<ApiDashboard>("/dashboard");
-  return { generatedAt: row.generated_at, dataScope: row.data_scope, metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })), recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, sourceType: item.source_type, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })), dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined };
+  return {
+    generatedAt: row.generated_at,
+    dataScope: row.data_scope,
+    metrics: row.metrics.map((metric) => ({ ...metric, unit: defined(metric.unit) })),
+    recentImports: row.recent_imports.map((item) => ({ id: item.id, filename: item.filename, supplierName: item.supplier_name, sourceType: item.source_type, status: item.status, progress: item.progress, productsCount: item.products_count, warningsCount: item.warnings_count, createdAt: item.created_at })),
+    dataHealth: row.data_health ? { score: row.data_health.score, activeProducts: row.data_health.active_products, approvedImageCoverage: row.data_health.approved_image_coverage, supplierSourceCoverage: row.data_health.supplier_source_coverage, validPriceCoverage: row.data_health.valid_price_coverage } : undefined,
+    market: row.market ? {
+      observedAt: row.market.observed_at,
+      worldTimes: row.market.world_times.map((item) => ({ key: item.key, label: item.label, city: item.city, countryCode: item.country_code, flag: item.flag, language: item.language, timezone: item.timezone, currency: item.currency, localTime: item.local_time, utcOffset: item.utc_offset, isDst: item.is_dst, source: item.source })),
+      exchangeRates: row.market.exchange_rates.map((item) => ({ currency: item.currency, name: item.name, symbol: item.symbol, rate: item.rate == null ? undefined : Number(item.rate), baseCurrency: item.base_currency, rateDate: defined(item.rate_date), source: item.source })),
+      rateDate: defined(row.market.rate_date),
+      timeSource: row.market.time_source,
+      rateSource: row.market.rate_source,
+    } : undefined,
+  };
 }
 
 interface ApiSupplyChainPartner {

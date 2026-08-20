@@ -2,8 +2,11 @@ import { Button, Card, Text } from "@radix-ui/themes";
 import {
   ArrowRight,
   ChatCircleDots,
+  Clock,
   Cube,
+  CurrencyDollar,
   FileText,
+  GlobeHemisphereWest,
   Sparkle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -59,6 +62,7 @@ export function CoreDashboardPage() {
       .filter((metric) => metric.key !== "pending_product_reviews"),
     [data],
   );
+  const market = data?.market;
   if (loading && !data) return <div className="core-workspace"><CoreLoading label={t("正在读取实时经营数据")} /></div>;
 
   return (
@@ -85,7 +89,99 @@ export function CoreDashboardPage() {
           </Card>
         ))}
       </section>
+      {market ? <DashboardMarketPanel market={market} locale={locale} t={t} /> : null}
     </div>
+  );
+}
+
+function DashboardMarketPanel({
+  market,
+  locale,
+  t,
+}: {
+  market: NonNullable<DashboardSnapshot["market"]>;
+  locale: string;
+  t: (value: string, variables?: Record<string, string | number>) => string;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const formatLocalTime = (timezone: string, fallback: string) => {
+    try {
+      return new Intl.DateTimeFormat(locale, {
+        timeZone: timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(new Date(now));
+    } catch {
+      return fallback.slice(11, 19) || fallback;
+    }
+  };
+
+  return (
+    <section className="core-market-section" aria-label={t("全球时间与汇率")}>
+      <div className="core-market-heading">
+        <div>
+          <Text size="2" color="gray">{t("全球时间与汇率")}</Text>
+          <h2>{t("主要市场时间")}</h2>
+        </div>
+        <span className="core-market-source">
+          <GlobeHemisphereWest size={16} weight="duotone" />
+          {t("实时参考")}
+        </span>
+      </div>
+      <div className="core-market-layout">
+        <div className="core-world-time-grid">
+          {market.worldTimes.map((item) => (
+            <Card key={item.key} className="core-world-time-card">
+              <div className="core-world-time-top">
+                <span className="core-market-flag" aria-hidden="true">{item.flag}</span>
+                <span>
+                  <strong>{t(item.label)}</strong>
+                  <small>{item.city} · {item.language}</small>
+                </span>
+              </div>
+              <div className="core-world-time-value">
+                <Clock size={16} weight="duotone" />
+                <strong>{formatLocalTime(item.timezone, item.localTime)}</strong>
+              </div>
+              <small className="core-world-time-meta">UTC{item.utcOffset} · {item.currency}</small>
+            </Card>
+          ))}
+        </div>
+        <Card className="core-exchange-rate-card">
+          <div className="core-panel-heading">
+            <div>
+              <Text size="2" color="gray">{t("人民币参考汇率")}</Text>
+              <h3>{t("1 CNY 对应")}</h3>
+            </div>
+            <CurrencyDollar size={25} weight="duotone" />
+          </div>
+          <div className="core-exchange-rate-list">
+            {market.exchangeRates.map((item) => (
+              <div className="core-exchange-rate-row" key={item.currency}>
+                <span className="core-exchange-rate-name">
+                  <strong>{item.currency}</strong>
+                  <small>{t(item.name)}</small>
+                </span>
+                <strong className="core-exchange-rate-value">
+                  {item.rate == null ? "—" : item.rate.toLocaleString(locale, { maximumFractionDigits: 4 })}
+                </strong>
+              </div>
+            ))}
+          </div>
+          <small className="core-market-footnote">
+            {market.rateDate ? t("参考日期：{date}", { date: market.rateDate }) : t("暂未取得最新汇率")}
+            {" · "}{market.rateSource}
+          </small>
+        </Card>
+      </div>
+    </section>
   );
 }
 
