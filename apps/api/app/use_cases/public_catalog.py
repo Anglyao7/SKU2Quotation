@@ -68,6 +68,11 @@ from ..services.catalog_language_packages import (
     load_language_pack_payload,
 )
 from ..services.language_package_storage import configured_language_package_storage
+from ..services.public_catalog_privacy import (
+    is_private_sku_option_key,
+    public_sku_option_values,
+    public_specification,
+)
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
 from ..services.embedding import EmbeddingProviderError
@@ -1201,7 +1206,11 @@ def _public_variant_option_keys(rows: list[object]) -> tuple[str, ...]:
         )
         for key in marker_keys:
             normalized = str(key).strip() if isinstance(key, str) else ""
-            if normalized and normalized not in explicit:
+            if (
+                normalized
+                and not is_private_sku_option_key(normalized)
+                and normalized not in explicit
+            ):
                 explicit.append(normalized)
     if explicit:
         return tuple(explicit)
@@ -1213,6 +1222,7 @@ def _public_variant_option_keys(rows: list[object]) -> tuple[str, ...]:
             if (
                 normalized
                 and normalized not in _PUBLIC_OPTION_METADATA_KEYS
+                and not is_private_sku_option_key(normalized)
                 and not normalized.startswith("_")
                 and _public_option_text(value) is not None
                 and normalized not in discovered
@@ -1226,7 +1236,9 @@ def _localized_public_option_values(
     *,
     translation: PublicProductTranslation | None,
 ) -> dict[str, object]:
-    localized = dict(option_values)
+    # SKU notes are operator-only data.  Sanitize before applying translation
+    # so the source locale and every translated storefront use the same rule.
+    localized = public_sku_option_values(option_values)
     if translation is None or not translation.option_labels:
         return localized
 
@@ -1236,7 +1248,11 @@ def _localized_public_option_values(
         [
             str(key).strip()
             for key in localized_marker.get("variant_option_keys", [])
-            if isinstance(key, str) and str(key).strip()
+            if (
+                isinstance(key, str)
+                and str(key).strip()
+                and not is_private_sku_option_key(key)
+            )
         ]
         if localized_marker is not None
         else []
@@ -2777,8 +2793,10 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
         sku_code_snapshot=row.sku_code_snapshot,
         name_snapshot=row.name_snapshot,
         description_snapshot=row.description_snapshot,
-        specification_snapshot=row.specification_snapshot,
-        option_values_snapshot=row.option_values_snapshot or {},
+        specification_snapshot=public_specification(row.specification_snapshot),
+        option_values_snapshot=public_sku_option_values(
+            row.option_values_snapshot or {}
+        ),
         category_snapshot=row.category_snapshot,
         tags_snapshot=row.tags_snapshot,
         image_url_snapshot=row.image_url_snapshot,
@@ -2795,7 +2813,12 @@ def _quote_specification(option_values: dict[str, object]) -> str | None:
     parts: list[str] = []
     for key, value in option_values.items():
         label = str(key).strip()
-        if not label or label.startswith("_") or value in (None, "", [], {}):
+        if (
+            not label
+            or label.startswith("_")
+            or is_private_sku_option_key(label)
+            or value in (None, "", [], {})
+        ):
             continue
         if isinstance(value, list):
             text = ", ".join(str(item).strip() for item in value if str(item).strip())
@@ -3247,9 +3270,10 @@ def _localized_quote_response(
         translated_tags = _quote_translation_value(sku_translation, "tags")
         if translated_tags is None:
             translated_tags = _quote_translation_value(product_translation, "tags")
+        source_options = public_sku_option_values(sku.option_values or {})
         source_options = {
             str(key): value
-            for key, value in (sku.option_values or {}).items()
+            for key, value in source_options.items()
             if str(key).strip() and not str(key).startswith("_")
         }
         localized_options = _localized_public_option_values(
@@ -3296,16 +3320,20 @@ def _localized_quote_response(
                         for tag in (translated_tags or source_tags)
                         if str(tag).strip()
                     ],
-                    "specification_snapshot": (
+                    "specification_snapshot": public_specification(
                         item.specification_snapshot
-                        if specification_overridden
-                        else (
+                    )
+                    if specification_overridden
+                    else public_specification(
+                        (
                             str(translated_specification).strip()
                             if translated_specification not in (None, "")
                             else item.specification_snapshot
                         )
                     ),
-                    "option_values_snapshot": localized_options or item.option_values_snapshot,
+                    "option_values_snapshot": public_sku_option_values(
+                        localized_options or item.option_values_snapshot
+                    ),
                 }
             )
         )
@@ -3390,11 +3418,7 @@ def create_public_quote_draft(
         source_tags = [
             str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()
         ]
-        source_option_values = {
-            str(key): value
-            for key, value in (sku.option_values or {}).items()
-            if str(key).strip()
-        }
+        source_option_values = public_sku_option_values(sku.option_values or {})
         sku_translation = sku_translations.get(sku.id)
         product_translation = product_translations.get(product.id)
         localized_options = _localized_public_option_values(
@@ -3403,12 +3427,12 @@ def create_public_quote_draft(
         )
         option_values = {
             str(key): value
-            for key, value in localized_options.items()
+            for key, value in public_sku_option_values(localized_options).items()
             if str(key).strip() and not str(key).startswith("_")
         }
         source_public_options = {
             str(key): value
-            for key, value in source_option_values.items()
+            for key, value in public_sku_option_values(source_option_values).items()
             if str(key).strip() and not str(key).startswith("_")
         }
         internal_marker = localized_options.get(_PUBLIC_OPTION_INTERNAL_KEY)
@@ -3474,8 +3498,8 @@ def create_public_quote_draft(
                 if translated_description not in (None, "")
                 else product.description
             ),
-            specification_snapshot=specification,
-            option_values_snapshot=option_values,
+            specification_snapshot=public_specification(specification),
+            option_values_snapshot=public_sku_option_values(option_values),
             category_snapshot=(
                 str(translated_category).strip()
                 if translated_category not in (None, "")
@@ -3500,8 +3524,8 @@ def create_public_quote_draft(
                 "sku_code": sku.sku_code,
                 "name": item_row.name_snapshot,
                 "description": item_row.description_snapshot,
-                "specification": specification,
-                "option_values": option_values,
+                "specification": public_specification(specification),
+                "option_values": public_sku_option_values(option_values),
                 "category": item_row.category_snapshot,
                 "tags": item_row.tags_snapshot,
                 "image_url": image_url,

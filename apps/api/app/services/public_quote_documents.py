@@ -34,6 +34,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from ..public_catalog_schemas import PublicQuoteDocument
+from .public_catalog_privacy import public_specification
 from .quote_localization import (
     localize_known_quote_template_label,
     localize_quote_unit,
@@ -376,7 +377,7 @@ def _template_item_value(field: str, document: PublicQuoteDocument, item) -> obj
         "sku_code": item.sku_code_snapshot,
         "product_name": item.name_snapshot,
         "description": item.description_snapshot,
-        "specification": item.specification_snapshot,
+        "specification": public_specification(item.specification_snapshot),
         "category": item.category_snapshot,
         "tags": quote_text(locale, "separator").join(item.tags_snapshot or []),
         "product_image": None,
