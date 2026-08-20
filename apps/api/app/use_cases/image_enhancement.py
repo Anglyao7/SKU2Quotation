@@ -538,12 +538,23 @@ def review_task(
     if len(matched) != len(item_ids):
         raise ApplicationError("IMAGE_ENHANCEMENT_ITEM_NOT_FOUND", "部分图片任务不存在。", kind="not_found")
     for item in matched:
-        if item.status != "COMPLETED":
-            raise ApplicationError("IMAGE_ENHANCEMENT_ITEM_NOT_READY", "只有已完成的图片可以审核。")
+        if item.status != "COMPLETED" or item.review_status != "PENDING":
+            raise ApplicationError("IMAGE_ENHANCEMENT_ITEM_NOT_READY", "只有待审核的已完成图片可以审核。")
         item.review_status = "APPROVED" if request.decision == "APPROVE" else "REJECTED"
         item.reviewed_at = utcnow()
         item.reviewed_by_user_id = context.user_id
     session.commit()
+    # Approval is the operator's confirmation. Apply the generated image in
+    # the same request so there is no second "Apply" step in the UI. The
+    # legacy confirm endpoint remains available for retrying an item whose
+    # upload failed.
+    if request.decision == "APPROVE":
+        return confirm_task(
+            session,
+            context=context,
+            task_id=task_id,
+            request=ImageEnhancementConfirmRequest(item_ids=list(item_ids)),
+        )
     return _task_response(session, task)
 
 
@@ -581,7 +592,9 @@ def confirm_task(
         raise ApplicationError("IMAGE_ENHANCEMENT_NOT_APPROVED", "请先审核通过至少一张图片。")
     for item in candidates:
         if not item.result_url:
+            item.review_status = "PENDING"
             item.error_message = "生成图片地址不存在。"
+            session.commit()
             continue
         try:
             content, content_type = _download_result(item.result_url)
@@ -612,12 +625,16 @@ def confirm_task(
             session.rollback()
             item = session.get(ImageEnhancementItemRow, item.id)
             if item is not None:
+                # A failed upload must be retryable from the same approval
+                # action instead of leaving the item looking applied.
+                item.review_status = "PENDING"
                 item.error_message = exc.safe_message[:300]
                 session.commit()
         except Exception:
             session.rollback()
             item = session.get(ImageEnhancementItemRow, item.id)
             if item is not None:
+                item.review_status = "PENDING"
                 item.error_message = "生成图片应用失败，请稍后重试。"
                 session.commit()
     return _task_response(session, _get_task(session, tenant_id=context.tenant_id, task_id=task.id))

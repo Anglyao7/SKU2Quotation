@@ -1,9 +1,8 @@
 import { Badge, Button, Dialog, Progress, Text, TextArea } from "@radix-ui/themes";
-import { Check, CheckCircle, ImageSquare, Sparkle, X, XCircle } from "@phosphor-icons/react";
+import { Check, ImageSquare, Sparkle, X, XCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
 import {
   cancelImageEnhancementTask,
-  confirmImageEnhancementTask,
   getImageEnhancementTask,
   reviewImageEnhancementTask,
   startImageEnhancement,
@@ -125,9 +124,6 @@ export function ImageEnhancementDialog({
   const reviewableIds = task?.items
     .filter((item) => item.status === "COMPLETED" && item.reviewStatus === "PENDING")
     .map((item) => item.id) ?? [];
-  const approvedIds = task?.items
-    .filter((item) => item.status === "COMPLETED" && item.reviewStatus === "APPROVED")
-    .map((item) => item.id) ?? [];
   const start = async () => {
     if (!targetKey || busy || task) return;
     if (!prompt.trim()) {
@@ -180,6 +176,9 @@ export function ImageEnhancementDialog({
     try {
       const reviewed = await reviewImageEnhancementTask(task.id, [itemId], decision);
       setTask(reviewed);
+      if (decision === "APPROVE" && reviewed.items.some((item) => item.id === itemId && item.reviewStatus === "APPLIED")) {
+        await onApplied?.();
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("审核失败"));
     } finally {
@@ -193,6 +192,9 @@ export function ImageEnhancementDialog({
     try {
       const reviewed = await reviewImageEnhancementTask(task.id, reviewableIds, decision);
       setTask(reviewed);
+      if (decision === "APPROVE" && reviewed.items.some((item) => item.reviewStatus === "APPLIED")) {
+        await onApplied?.();
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("审核失败"));
     } finally {
@@ -211,20 +213,6 @@ export function ImageEnhancementDialog({
       setBusy(false);
     }
   };
-  const confirm = async () => {
-    if (!task || busy || !approvedIds.length) return;
-    setBusy(true);
-    setError("");
-    try {
-      setTask(await confirmImageEnhancementTask(task.id, approvedIds));
-      await onApplied?.();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("应用图片失败"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <>
       <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -233,7 +221,7 @@ export function ImageEnhancementDialog({
             <div>
               <Text size="1" color="gray">{t("商品图片")}</Text>
               <Dialog.Title><Sparkle />{t("图片变清晰")}</Dialog.Title>
-              <Dialog.Description>{t("生成结果会先进入审核，确认后才会替换商品主图。")}</Dialog.Description>
+              <Dialog.Description>{t("生成结果会先进入审核，审核通过后立即替换商品主图。")}</Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" onClick={() => onOpenChange(false)} aria-label={t("关闭")}><X /></Button>
           </div>
@@ -285,10 +273,9 @@ export function ImageEnhancementDialog({
                 <Progress value={task.progressPercent} />
               </div>
               <div className="core-image-enhancement-toolbar">
-                <Text size="1" color="gray">{t("完成后请逐张审核，通过后点击确定应用图片。")}</Text>
+                <Text size="1" color="gray">{t("审核通过后会立即替换商品主图。")}</Text>
                 <span>
                   {reviewableIds.length ? <Button size="2" variant="soft" disabled={busy} onClick={() => void reviewAll("APPROVE")}><Check />{t("全部审核通过")}</Button> : null}
-                  {approvedIds.length ? <Button size="2" color="jade" disabled={busy} onClick={() => void confirm()}><CheckCircle />{t("确定应用 {count} 张", { count: approvedIds.length })}</Button> : null}
                   {["QUEUED", "RUNNING"].includes(task.status) ? <Button size="2" variant="soft" color="gray" disabled={busy} onClick={() => void cancelItem()}><XCircle />{t("取消剩余任务")}</Button> : null}
                 </span>
               </div>

@@ -71,9 +71,16 @@ def _support_snapshot_signature(payload: dict[str, object]) -> str:
 
 
 def _support_answer_chunks(body: str, size: int | None = None) -> list[str]:
-    # Keep short answers smooth while capping long answers at 80 events, so the
-    # presentation layer never adds more than roughly one second of delay.
-    chunk_size = size or max(8, (len(body) + 79) // 80)
+    """Split an answer into the smallest useful SSE deltas.
+
+    The model response is currently validated as a complete JSON document before
+    it can be persisted as a customer-safe message.  Once that message is ready,
+    the public endpoint still needs to expose it incrementally instead of sending
+    an 8+ character block at a time.  A Python string slice is Unicode-aware, so
+    the default one-code-point chunks work for Chinese and other non-ASCII text;
+    callers can still request larger chunks when they need to.
+    """
+    chunk_size = max(1, size or 1)
     return [
         body[index : index + chunk_size]
         for index in range(0, len(body), chunk_size)
@@ -154,9 +161,10 @@ async def _public_support_event_stream(
                         "message_delta",
                         {"message_id": str(message.id), "delta": delta},
                     )
-                    # Keep incremental rendering perceptible without adding a
-                    # second-scale artificial typing delay.
-                    await asyncio.sleep(0.012)
+                    # Keep each character visible on the client.  The browser
+                    # also has a small local queue so several network chunks
+                    # received in one read cannot collapse into one render.
+                    await asyncio.sleep(0.018)
                 yield _support_sse_event(
                     "message_end",
                     {"message": message_payload, "conversation": next_payload},

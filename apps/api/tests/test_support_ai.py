@@ -1287,7 +1287,8 @@ def test_public_support_event_stream_pushes_validated_answer(
     ]
     assert "".join(deltas) == ai_message.body
     long_chunks = support_router._support_answer_chunks("x" * 4_000)
-    assert len(long_chunks) <= 80
+    assert len(long_chunks) == 4_000
+    assert all(len(chunk) == 1 for chunk in long_chunks)
     assert "".join(long_chunks) == "x" * 4_000
 
 

@@ -155,6 +155,12 @@ export function StorefrontSupportWidget({
   const widgetRef = useRef<HTMLElement>(null);
   const requestedProductIdsRef = useRef(new Set<string>());
   const productScopeRef = useRef("");
+  const streamingMessageIdRef = useRef<string | undefined>(undefined);
+  const streamingQueueRef = useRef<string[]>([]);
+  const streamingFlushTimerRef = useRef<number | undefined>(undefined);
+  const streamingEndRef = useRef<
+    Extract<PublicSupportStreamEvent, { type: "message_end" }> | undefined
+  >(undefined);
   const widget = config ?? {
     enabled: true,
     title: "AI 智能客服",
@@ -168,14 +174,65 @@ export function StorefrontSupportWidget({
   );
   const supportProductCount = Object.keys(supportProducts).length;
 
+  const resetStreamingPlayback = useCallback(() => {
+    if (streamingFlushTimerRef.current !== undefined) {
+      window.clearTimeout(streamingFlushTimerRef.current);
+      streamingFlushTimerRef.current = undefined;
+    }
+    streamingMessageIdRef.current = undefined;
+    streamingQueueRef.current = [];
+    streamingEndRef.current = undefined;
+  }, []);
+
+  const settleStreamingEnd = useCallback(() => {
+    if (streamingQueueRef.current.length > 0) return;
+    const pending = streamingEndRef.current;
+    if (!pending) return;
+    streamingEndRef.current = undefined;
+    streamingMessageIdRef.current = undefined;
+    setConversation(pending.conversation);
+    setStreamingMessage(undefined);
+  }, []);
+
+  const flushStreamingCharacter = useCallback(() => {
+    streamingFlushTimerRef.current = undefined;
+    const character = streamingQueueRef.current.shift();
+    if (character !== undefined) {
+      setStreamingMessage((current) => (
+        current
+          ? { ...current, body: `${current.body}${character}` }
+          : current
+      ));
+    }
+    if (streamingQueueRef.current.length > 0) {
+      streamingFlushTimerRef.current = window.setTimeout(
+        flushStreamingCharacter,
+        18,
+      );
+    } else {
+      settleStreamingEnd();
+    }
+  }, [settleStreamingEnd]);
+
+  const enqueueStreamingDelta = useCallback((delta: string) => {
+    streamingQueueRef.current.push(...Array.from(delta));
+    if (streamingFlushTimerRef.current === undefined) {
+      streamingFlushTimerRef.current = window.setTimeout(
+        flushStreamingCharacter,
+        18,
+      );
+    }
+  }, [flushStreamingCharacter]);
+
   useEffect(() => {
     const next = storedToken(tenantSlug);
     setToken(next);
     setConversation(undefined);
     setStreamingMessage(undefined);
+    resetStreamingPlayback();
     setActiveActionSlot(null);
     setHoveredActionSlot(null);
-  }, [tenantSlug]);
+  }, [resetStreamingPlayback, tenantSlug]);
 
   useEffect(() => {
     productScopeRef.current = `${tenantSlug}:${locale}`;
@@ -239,22 +296,30 @@ export function StorefrontSupportWidget({
     const handleStreamEvent = (event: PublicSupportStreamEvent) => {
       if (event.type === "conversation") {
         setConversation(event.conversation);
-        setStreamingMessage((current) => (
-          current && event.conversation.messages.some((item) => item.id === current.id)
-            ? undefined
-            : current
-        ));
+        if (
+          streamingMessageIdRef.current
+          && event.conversation.messages.some(
+            (item) => item.id === streamingMessageIdRef.current,
+          )
+        ) {
+          resetStreamingPlayback();
+          setStreamingMessage(undefined);
+        }
       } else if (event.type === "message_start") {
+        resetStreamingPlayback();
+        streamingMessageIdRef.current = event.message.id;
         setStreamingMessage(event.message);
       } else if (event.type === "message_delta") {
-        setStreamingMessage((current) => (
-          current?.id === event.message_id
-            ? { ...current, body: `${current.body}${event.delta}` }
-            : current
-        ));
+        if (streamingMessageIdRef.current === event.message_id) {
+          enqueueStreamingDelta(event.delta);
+        }
       } else if (event.type === "message_end") {
-        setConversation(event.conversation);
-        setStreamingMessage(undefined);
+        if (streamingMessageIdRef.current !== event.message.id) {
+          setConversation(event.conversation);
+          return;
+        }
+        streamingEndRef.current = event;
+        settleStreamingEnd();
       }
     };
 
@@ -288,8 +353,17 @@ export function StorefrontSupportWidget({
       stopped = true;
       controller.abort();
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      resetStreamingPlayback();
     };
-  }, [open, refreshConversation, tenantSlug, token]);
+  }, [
+    enqueueStreamingDelta,
+    open,
+    refreshConversation,
+    resetStreamingPlayback,
+    settleStreamingEnd,
+    tenantSlug,
+    token,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -386,6 +460,7 @@ export function StorefrontSupportWidget({
     setToken("");
     setConversation(undefined);
     setStreamingMessage(undefined);
+    resetStreamingPlayback();
     setError("");
     window.setTimeout(() => textAreaRef.current?.focus(), 0);
   };
