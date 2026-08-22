@@ -1,7 +1,9 @@
-"""Cached world clock and CNY reference-rate data for the console overview.
+"""Cached world clock and currency-to-CNY reference-rate data.
 
 The dashboard only needs informational market context, not settlement-grade FX
 pricing.  Rates come from Frankfurter's public daily reference endpoint and
+are exposed as the amount of CNY represented by one unit of each currency
+(for example, ``1 USD = 7.2 CNY``).
 times come from TimeAPI's IANA timezone endpoint.  Both calls are best-effort:
 the local IANA timezone database and the last successful rates are used when a
 provider is unavailable, so an external outage cannot make the dashboard fail.
@@ -221,14 +223,17 @@ def _fetch_exchange_rates(previous: DashboardMarketSnapshot | None) -> tuple[lis
             rate_data = rates.get(currency)
             if rate_data is None:
                 continue
-            rate, item_date = rate_data
+            cny_per_currency, item_date = rate_data
             name, symbol = _CURRENCY_META[currency]
             values.append(
                 DashboardExchangeRate(
                     currency=currency,
                     name=name,
                     symbol=symbol,
-                    rate=rate,
+                    # Frankfurter returns 1 CNY in the quoted currency. The
+                    # console and quote workbench use the inverse convention:
+                    # one unit of the quoted currency expressed in CNY.
+                    rate=Decimal("1") / cny_per_currency,
                     rate_date=item_date or rate_date,
                     source="Frankfurter",
                 )

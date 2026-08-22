@@ -249,7 +249,9 @@ export function QuoteWorkbenchPage() {
       : market.exchangeRates.find((row) => row.currency.toUpperCase() === source)?.rate;
     const targetRate = market.exchangeRates.find((row) => row.currency.toUpperCase() === "USD")?.rate;
     if (!sourceRate || !targetRate || sourceRate <= 0 || targetRate <= 0) return undefined;
-    return targetRate / sourceRate;
+    // Market rates are CNY per unit of currency, so source/target gives the
+    // amount of target currency represented by one source unit.
+    return sourceRate / targetRate;
   }, [draft, market]);
   const canConvertToUsd = Boolean(canEditPrices && draft?.currency.toUpperCase() !== "USD" && conversionRate);
   const conversionRateLabel = conversionRate

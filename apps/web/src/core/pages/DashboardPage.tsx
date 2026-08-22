@@ -158,7 +158,7 @@ function DashboardMarketPanel({
           <div className="core-panel-heading">
             <div>
               <Text size="2" color="gray">{t("人民币参考汇率")}</Text>
-              <h3>{t("1 CNY 对应")}</h3>
+              <h3>{t("1 单位货币对应人民币")}</h3>
             </div>
             <CurrencyDollar size={25} weight="duotone" />
           </div>
@@ -166,11 +166,11 @@ function DashboardMarketPanel({
             {market.exchangeRates.map((item) => (
               <div className="core-exchange-rate-row" key={item.currency}>
                 <span className="core-exchange-rate-name">
-                  <strong>{item.currency}</strong>
-                  <small>{t(item.name)}</small>
+                  <strong>1 {item.currency}</strong>
+                  <small>{t(item.name)} · CNY</small>
                 </span>
                 <strong className="core-exchange-rate-value">
-                  {item.rate == null ? "—" : item.rate.toLocaleString(locale, { maximumFractionDigits: 4 })}
+                  {item.rate == null ? "—" : `¥ ${item.rate.toLocaleString(locale, { maximumFractionDigits: 4 })}`}
                 </strong>
               </div>
             ))}

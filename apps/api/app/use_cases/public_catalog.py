@@ -4496,11 +4496,14 @@ def _currency_conversion_factor(
     target = "CNY" if target_currency == "RMB" else target_currency
     if source == target:
         return Decimal("1")
+    # Market rates are expressed as CNY per unit of currency. To convert an
+    # amount from source currency to target currency, multiply by source CNY
+    # value and divide by target CNY value.
     source_rate = Decimal("1") if source == "CNY" else _market_currency_rate(snapshot, source)
     target_rate = Decimal("1") if target == "CNY" else _market_currency_rate(snapshot, target)
     if source_rate is None or target_rate is None:
         return None
-    return target_rate / source_rate
+    return source_rate / target_rate
 
 
 def _quote_draft_item_edit_response(

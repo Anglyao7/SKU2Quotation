@@ -1109,6 +1109,7 @@ const english: Record<string, string> = {
   "主要市场时间": "Major market times",
   "实时参考": "Live reference",
   "人民币参考汇率": "CNY reference rates",
+  "1 单位货币对应人民币": "CNY value of one currency unit",
   "1 CNY 对应": "1 CNY equals",
   "参考日期：{date}": "Reference date: {date}",
   "暂未取得最新汇率": "Latest rates are temporarily unavailable",

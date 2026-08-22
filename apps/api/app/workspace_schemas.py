@@ -56,7 +56,10 @@ class DashboardExchangeRate(BaseModel):
     currency: str
     name: str
     symbol: str
-    rate: Decimal | None = None
+    rate: Decimal | None = Field(
+        default=None,
+        description="CNY value of one unit of this currency, e.g. 1 USD = 7.2 CNY.",
+    )
     base_currency: str = "CNY"
     rate_date: str | None = None
     source: str = "Frankfurter"
