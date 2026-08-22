@@ -74,11 +74,14 @@ def test_production_release_contract_tracks_the_only_alembic_head() -> None:
     assert compose["x-api-environment"]["ATC_MIGRATION_HEAD"] == head
     for path in (
         REPOSITORY_ROOT / "apps" / "api" / "Dockerfile",
-        REPOSITORY_ROOT / "infra" / "production" / "deploy.sh",
         REPOSITORY_ROOT / "infra" / "local" / "compose.yaml",
         REPOSITORY_ROOT / "docker-compose.yml",
     ):
         assert head in path.read_text(encoding="utf-8"), path
+    deploy_script = (REPOSITORY_ROOT / "infra" / "production" / "deploy.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "migration_head_for_commit" in deploy_script
 
 
 def test_python_image_enforces_current_security_dependency_floors() -> None:
