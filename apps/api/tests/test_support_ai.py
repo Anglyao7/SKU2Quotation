@@ -14,6 +14,7 @@ import pytest
 
 from app.services.chat_generation import (
     ChatGenerationError,
+    IncrementalJSONTextField,
     OpenAICompatibleChatGeneration,
     chat_completions_endpoint,
 )
@@ -50,6 +51,7 @@ from app.services.support_ai_orchestrator import (
     detect_support_interaction_goal,
 )
 from app.services.support_ai_retrieval import _public_product_excerpt
+from app.use_cases.support import _ai_processing_state
 
 
 class _NoAutoflushConversationLockSession:
@@ -76,6 +78,43 @@ class _NoAutoflushConversationLockSession:
     def get(self, _model, _identity):
         assert self.inside_no_autoflush
         return self.input_message
+
+
+class _ProcessingStateResult:
+    def __init__(self, row: tuple[str, int] | None) -> None:
+        self.row = row
+
+    def first(self) -> tuple[str, int] | None:
+        return self.row
+
+
+class _ProcessingStateSession:
+    def __init__(self, row: tuple[str, int] | None) -> None:
+        self.row = row
+
+    def execute(self, _statement: object) -> _ProcessingStateResult:
+        return _ProcessingStateResult(self.row)
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    (
+        (None, (False, None)),
+        (("QUEUED", 0), (True, "USING_TOOLS")),
+        (("RUNNING", 10), (True, "USING_TOOLS")),
+        (("RUNNING", 30), (True, "RAG_SEARCH")),
+        (("RUNNING", 55), (True, "COMPOSING")),
+    ),
+)
+def test_public_support_processing_stage_follows_real_task_progress(
+    row: tuple[str, int] | None,
+    expected: tuple[bool, str | None],
+) -> None:
+    assert _ai_processing_state(
+        _ProcessingStateSession(row),  # type: ignore[arg-type]
+        tenant_id=uuid4(),
+        conversation_id=uuid4(),
+    ) == expected
 
 
 def test_parse_structured_json_knowledge_file(tmp_path) -> None:
@@ -1064,6 +1103,18 @@ def test_generation_endpoint_normalization_and_credential_rejection() -> None:
         chat_completions_endpoint("https://user:secret@api.example.test/v1")
 
 
+def test_incremental_json_answer_stream_decodes_chunked_escapes() -> None:
+    extractor = IncrementalJSONTextField("answer")
+    chunks = [
+        '{"detected_language":"zh-CN","note":"answer: not a key",',
+        '"answer":"你\\n好 ',
+        "\\uD83D",
+        '\\uDE80","confidence":0.9}',
+    ]
+
+    assert "".join(extractor.feed(chunk) for chunk in chunks) == "你\n好 🚀"
+
+
 def test_generation_provider_retries_one_transient_response() -> None:
     calls = 0
 
@@ -1157,6 +1208,7 @@ def test_generation_provider_repairs_gateway_plain_text_output() -> None:
 
 def test_generation_provider_receives_structured_output_as_sse() -> None:
     request_payload: dict[str, object] = {}
+    answer_deltas: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         request_payload.update(json.loads(request.content))
@@ -1179,14 +1231,52 @@ def test_generation_provider_receives_structured_output_as_sse() -> None:
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
     result = provider.generate_json_stream(
-        messages=[{"role": "user", "content": "hi"}]
+        messages=[{"role": "user", "content": "hi"}],
+        on_answer_delta=answer_deltas.append,
     )
     assert request_payload["stream"] is True
     assert result.data == {"answer": "ok"}
     assert result.transport_mode == "STREAM"
     assert result.first_delta_ms is not None
     assert result.duration_ms is not None
+    assert result.attempt_count == 1
     assert result.usage == {"total_tokens": 4}
+    assert "".join(answer_deltas) == "ok"
+
+
+def test_generation_stream_retries_before_publishing_answer() -> None:
+    calls = 0
+    answer_deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("cold upstream connection", request=request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=(
+                'data: {"choices":[{"delta":{"content":"{\\"answer\\":\\"ok\\"}"},'
+                '"finish_reason":"stop"}]}\n\n'
+            ).encode(),
+        )
+
+    provider = OpenAICompatibleChatGeneration(
+        api_key="test-key",
+        base_url="https://generation.example/v1",
+        model_name="test-model",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    result = provider.generate_json_stream(
+        messages=[{"role": "user", "content": "hi"}],
+        on_answer_delta=answer_deltas.append,
+    )
+
+    assert calls == 2
+    assert result.attempt_count == 2
+    assert result.data == {"answer": "ok"}
+    assert "".join(answer_deltas) == "ok"
 
 
 def test_chinese_retrieval_query_skips_serial_translation(
@@ -1214,7 +1304,7 @@ def test_chinese_retrieval_query_skips_serial_translation(
     ) == "我想了解你们的珐琅铁锅 SKU-88\nIdentifiers: SKU-88"
 
 
-def test_public_support_event_stream_pushes_validated_answer(
+def test_public_support_event_stream_relays_draft_and_resets_for_validated_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.routers import support as support_router
@@ -1224,6 +1314,7 @@ def test_public_support_event_stream_pushes_validated_answer(
     )
 
     conversation_id = uuid4()
+    run_id = uuid4()
     visitor_message = PublicSupportChatMessageResponse(
         id=uuid4(),
         sender_type="VISITOR",
@@ -1236,7 +1327,7 @@ def test_public_support_event_stream_pushes_validated_answer(
         body="可以，先告诉我您的使用场景。",
         created_at=datetime.now(UTC),
     )
-    initial = PublicChatConversationResponse(
+    initial_conversation = PublicChatConversationResponse(
         id=conversation_id,
         reference_number="CS-STREAM-1",
         status="OPEN",
@@ -1250,10 +1341,41 @@ def test_public_support_event_stream_pushes_validated_answer(
         messages=[visitor_message, ai_message],
         ai_processing=False,
     )
+    initial = support_router._PublicSupportStreamState(
+        conversation=initial_conversation,
+        run=support_router._SupportRunStreamSnapshot(
+            id=run_id,
+            status="RUNNING",
+            answer="错误草稿",
+            created_at=datetime.now(UTC),
+            output_message_id=None,
+        ),
+    )
+    repaired = support_router._PublicSupportStreamState(
+        conversation=initial_conversation,
+        run=support_router._SupportRunStreamSnapshot(
+            id=run_id,
+            status="RUNNING",
+            answer="可以，先",
+            created_at=datetime.now(UTC),
+            output_message_id=None,
+        ),
+    )
+    finished = support_router._PublicSupportStreamState(
+        conversation=completed,
+        run=support_router._SupportRunStreamSnapshot(
+            id=run_id,
+            status="SUCCEEDED",
+            answer="",
+            created_at=datetime.now(UTC),
+            output_message_id=ai_message.id,
+        ),
+    )
+    states = iter((repaired, finished))
     monkeypatch.setattr(
         support_router,
-        "_load_public_support_snapshot",
-        lambda **_kwargs: completed,
+        "_load_public_support_stream_state",
+        lambda **_kwargs: next(states),
     )
 
     class ConnectedRequest:
@@ -1279,17 +1401,25 @@ def test_public_support_event_stream_pushes_validated_answer(
     event_names = [event.split("\n", 1)[0] for event in events]
     assert event_names[0] == "event: conversation"
     assert "event: message_start" in event_names
+    assert "event: message_reset" in event_names
     assert event_names[-1] == "event: message_end"
-    deltas = [
-        json.loads(event.split("data: ", 1)[1])["delta"]
-        for event in events
-        if event.startswith("event: message_delta")
-    ]
-    assert "".join(deltas) == ai_message.body
-    long_chunks = support_router._support_answer_chunks("x" * 4_000)
-    assert len(long_chunks) == 4_000
-    assert all(len(chunk) == 1 for chunk in long_chunks)
-    assert "".join(long_chunks) == "x" * 4_000
+    rendered = ""
+    end_payload: dict[str, object] | None = None
+    for event in events:
+        if "data: " not in event:
+            continue
+        payload = json.loads(event.split("data: ", 1)[1])
+        if event.startswith("event: message_start"):
+            rendered = payload["message"]["body"]
+        elif event.startswith("event: message_reset"):
+            rendered = payload["body"]
+        elif event.startswith("event: message_delta"):
+            rendered += payload["delta"]
+        elif event.startswith("event: message_end"):
+            end_payload = payload
+    assert rendered == ai_message.body
+    assert end_payload is not None
+    assert end_payload["stream_id"] == str(run_id)
 
 
 def test_support_ai_api_key_encryption_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:

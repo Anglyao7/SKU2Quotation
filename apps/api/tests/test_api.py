@@ -2240,6 +2240,7 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
             },
         )
         assert greeting_chat.status_code == 201, greeting_chat.text
+        assert greeting_chat.json()["ai_processing"] is False
         greeting_conversation_id = UUID(greeting_chat.json()["id"])
         conversation_ids.add(greeting_conversation_id)
         greeting_public = client.get(
@@ -2262,7 +2263,13 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
             assert greeting_run.status == "SUCCEEDED"
             assert greeting_run.retrieval_count == 0
             assert greeting_run.decision_trace["intent"] == "GREETING"
-            assert greeting_run.decision_trace["generation_mode"] == "MODEL"
+            assert greeting_run.decision_trace["generation_mode"] == (
+                "LOCAL_TEMPLATE"
+            )
+            assert greeting_run.decision_trace["model_called"] is False
+            assert greeting_run.decision_trace["template_slots"] == {
+                "store_name": "Local Demo Company"
+            }
 
         class FailingSupportGenerationProvider(FakeSupportGenerationProvider):
             def generate_json(
@@ -2393,9 +2400,14 @@ def test_support_ai_configuration_and_file_knowledge_lifecycle(
                 )
             )
             assert limited_greeting_run is not None
-            assert limited_greeting_run.status == "SKIPPED"
+            assert limited_greeting_run.status == "SUCCEEDED"
             assert limited_greeting_run.decision_trace["intent"] == "GREETING"
-            assert limited_greeting_run.decision_trace["publish_decision"] == "AUTO_REPLY"
+            assert limited_greeting_run.decision_trace["publish_decision"] == (
+                "AUTO_REPLY"
+            )
+            assert limited_greeting_run.decision_trace["generation_mode"] == (
+                "LOCAL_TEMPLATE"
+            )
 
         explicit_handoff = client.post(
             "/api/store/demo/support/conversations",

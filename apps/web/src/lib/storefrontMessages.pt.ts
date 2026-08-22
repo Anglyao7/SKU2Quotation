@@ -190,6 +190,9 @@ export const portugueseStorefrontMessages: Record<string, string> = {
   "AI 客服": "Apoio com IA",
   "系统": "Sistema",
   "正在查找可信资料并生成回答…": "A procurar fontes fiáveis e a preparar uma resposta…",
+  "正在使用工具…": "A utilizar ferramentas…",
+  "正在进行 RAG 搜索…": "A pesquisar conhecimento aprovado com RAG…",
+  "正在组织可信回复…": "A preparar uma resposta fiável…",
   "我": "Eu",
   "商家快捷入口": "Atalho do comerciante",
 };

@@ -4,6 +4,8 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -20,6 +22,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
@@ -28,6 +31,7 @@ from ..domain.errors import ApplicationError
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.storefront_analytics import request_visitor_ip, request_visitor_location
+from ..support_ai_models import SupportAIRunRow
 from ..support_schemas import (
     PublicChatConversationCreate,
     PublicChatConversationResponse,
@@ -61,6 +65,21 @@ SUPPORT_STREAM_HEADERS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class _SupportRunStreamSnapshot:
+    id: UUID
+    status: str
+    answer: str
+    created_at: datetime
+    output_message_id: UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicSupportStreamState:
+    conversation: PublicChatConversationResponse
+    run: _SupportRunStreamSnapshot | None
+
+
 def _support_sse_event(event: str, payload: object) -> str:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event}\ndata: {data}\n\n"
@@ -70,34 +89,50 @@ def _support_snapshot_signature(payload: dict[str, object]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _support_answer_chunks(body: str, size: int | None = None) -> list[str]:
-    """Split an answer into the smallest useful SSE deltas.
-
-    The model response is currently validated as a complete JSON document before
-    it can be persisted as a customer-safe message.  Once that message is ready,
-    the public endpoint still needs to expose it incrementally instead of sending
-    an 8+ character block at a time.  A Python string slice is Unicode-aware, so
-    the default one-code-point chunks work for Chinese and other non-ASCII text;
-    callers can still request larger chunks when they need to.
-    """
-    chunk_size = max(1, size or 1)
-    return [
-        body[index : index + chunk_size]
-        for index in range(0, len(body), chunk_size)
-    ]
-
-
-def _load_public_support_snapshot(
+def _load_public_support_stream_state(
     *,
     tenant_slug: str,
     token: str,
-) -> PublicChatConversationResponse:
+) -> _PublicSupportStreamState:
     with SessionLocal() as session:
-        return use_cases.get_public_conversation(
+        conversation = use_cases.get_public_conversation(
             session,
             slug=tenant_slug,
             token=token,
         )
+        run = session.scalar(
+            select(SupportAIRunRow)
+            .where(
+                SupportAIRunRow.conversation_id == conversation.id,
+                SupportAIRunRow.trigger_type == "CHAT",
+            )
+            .order_by(SupportAIRunRow.created_at.desc())
+            .limit(1)
+        )
+        return _PublicSupportStreamState(
+            conversation=conversation,
+            run=(
+                _SupportRunStreamSnapshot(
+                    id=run.id,
+                    status=run.status,
+                    answer=(run.answer or "") if run.status == "RUNNING" else "",
+                    created_at=run.created_at,
+                    output_message_id=run.output_message_id,
+                )
+                if run is not None
+                else None
+            ),
+        )
+
+
+def _support_draft_message(run: _SupportRunStreamSnapshot) -> dict[str, object]:
+    return {
+        "id": str(run.id),
+        "sender_type": "AI",
+        "body": "",
+        "created_at": run.created_at.isoformat(),
+        "citations": [],
+    }
 
 
 async def _public_support_event_stream(
@@ -105,23 +140,43 @@ async def _public_support_event_stream(
     request: Request,
     tenant_slug: str,
     token: str,
-    initial: PublicChatConversationResponse,
+    initial: _PublicSupportStreamState,
 ) -> AsyncIterator[str]:
-    current = initial
+    current = initial.conversation
     initial_payload = current.model_dump(mode="json")
     signature = _support_snapshot_signature(initial_payload)
     known_message_ids = {str(message.id) for message in current.messages}
+    active_run_id: str | None = None
+    streamed_answer = ""
     last_event_at = time.monotonic()
     reconnect_at = last_event_at + 50
     yield _support_sse_event("conversation", {"conversation": initial_payload})
+
+    initial_run = initial.run
+    if (
+        initial_run is not None
+        and initial_run.status == "RUNNING"
+        and initial_run.answer
+    ):
+        active_run_id = str(initial_run.id)
+        streamed_answer = initial_run.answer
+        yield _support_sse_event(
+            "message_start",
+            {"message": _support_draft_message(initial_run)},
+        )
+        yield _support_sse_event(
+            "message_delta",
+            {"message_id": active_run_id, "delta": streamed_answer},
+        )
+        last_event_at = time.monotonic()
 
     while time.monotonic() < reconnect_at:
         if await request.is_disconnected():
             return
         await asyncio.sleep(0.25 if current.ai_processing else 0.5)
         try:
-            next_snapshot = await asyncio.to_thread(
-                _load_public_support_snapshot,
+            next_state = await asyncio.to_thread(
+                _load_public_support_stream_state,
                 tenant_slug=tenant_slug,
                 token=token,
             )
@@ -132,6 +187,43 @@ async def _public_support_event_stream(
             )
             return
 
+        next_snapshot = next_state.conversation
+        run = next_state.run
+        if run is not None and run.status == "RUNNING":
+            run_id = str(run.id)
+            if active_run_id is not None and active_run_id != run_id:
+                yield _support_sse_event(
+                    "message_abort",
+                    {
+                        "message_id": active_run_id,
+                        "conversation": next_snapshot.model_dump(mode="json"),
+                    },
+                )
+                active_run_id = None
+                streamed_answer = ""
+            if active_run_id is None and run.answer:
+                active_run_id = run_id
+                streamed_answer = ""
+                yield _support_sse_event(
+                    "message_start",
+                    {"message": _support_draft_message(run)},
+                )
+            if active_run_id == run_id and run.answer != streamed_answer:
+                if not run.answer.startswith(streamed_answer):
+                    yield _support_sse_event(
+                        "message_reset",
+                        {"message_id": run_id, "body": ""},
+                    )
+                    streamed_answer = ""
+                delta = run.answer[len(streamed_answer) :]
+                if delta:
+                    yield _support_sse_event(
+                        "message_delta",
+                        {"message_id": run_id, "delta": delta},
+                    )
+                streamed_answer = run.answer
+                last_event_at = time.monotonic()
+
         next_payload = next_snapshot.model_dump(mode="json")
         next_signature = _support_snapshot_signature(next_payload)
         if next_signature != signature:
@@ -141,7 +233,61 @@ async def _public_support_event_stream(
                 if str(message.id) not in known_message_ids
                 and message.sender_type == "AI"
             ]
-            if len(new_ai_messages) == 1:
+            completed_message = None
+            if active_run_id is not None:
+                output_message_id = (
+                    str(run.output_message_id)
+                    if run and run.output_message_id
+                    else None
+                )
+                completed_message = next(
+                    (
+                        message
+                        for message in new_ai_messages
+                        if output_message_id == str(message.id)
+                    ),
+                    new_ai_messages[0] if len(new_ai_messages) == 1 else None,
+                )
+            if completed_message is not None and active_run_id is not None:
+                message = completed_message
+                message_payload = message.model_dump(mode="json")
+                if message.body.startswith(streamed_answer):
+                    remaining = message.body[len(streamed_answer) :]
+                    if remaining:
+                        yield _support_sse_event(
+                            "message_delta",
+                            {
+                                "message_id": active_run_id,
+                                "delta": remaining,
+                            },
+                        )
+                else:
+                    # Validation or a repair changed the provisional text. Drop
+                    # any queued draft characters and play only the final approved
+                    # answer instead of briefly exposing stale content.
+                    yield _support_sse_event(
+                        "message_reset",
+                        {"message_id": active_run_id, "body": ""},
+                    )
+                    if message.body:
+                        yield _support_sse_event(
+                            "message_delta",
+                            {
+                                "message_id": active_run_id,
+                                "delta": message.body,
+                            },
+                        )
+                yield _support_sse_event(
+                    "message_end",
+                    {
+                        "stream_id": active_run_id,
+                        "message": message_payload,
+                        "conversation": next_payload,
+                    },
+                )
+                active_run_id = None
+                streamed_answer = ""
+            elif len(new_ai_messages) == 1:
                 message = new_ai_messages[0]
                 message_payload = message.model_dump(mode="json")
                 yield _support_sse_event(
@@ -154,22 +300,28 @@ async def _public_support_event_stream(
                         }
                     },
                 )
-                for delta in _support_answer_chunks(message.body):
-                    if await request.is_disconnected():
-                        return
+                if message.body:
                     yield _support_sse_event(
                         "message_delta",
-                        {"message_id": str(message.id), "delta": delta},
+                        {"message_id": str(message.id), "delta": message.body},
                     )
-                    # Keep each character visible on the client.  The browser
-                    # also has a small local queue so several network chunks
-                    # received in one read cannot collapse into one render.
-                    await asyncio.sleep(0.018)
                 yield _support_sse_event(
                     "message_end",
                     {"message": message_payload, "conversation": next_payload},
                 )
             else:
+                if active_run_id is not None and (
+                    run is None or run.status not in {"QUEUED", "RUNNING"}
+                ):
+                    yield _support_sse_event(
+                        "message_abort",
+                        {
+                            "message_id": active_run_id,
+                            "conversation": next_payload,
+                        },
+                    )
+                    active_run_id = None
+                    streamed_answer = ""
                 yield _support_sse_event(
                     "conversation",
                     {"conversation": next_payload},
@@ -179,6 +331,19 @@ async def _public_support_event_stream(
             known_message_ids = {
                 str(message.id) for message in next_snapshot.messages
             }
+            last_event_at = time.monotonic()
+        elif active_run_id is not None and (
+            run is None or run.status not in {"QUEUED", "RUNNING"}
+        ):
+            yield _support_sse_event(
+                "message_abort",
+                {
+                    "message_id": active_run_id,
+                    "conversation": next_payload,
+                },
+            )
+            active_run_id = None
+            streamed_answer = ""
             last_event_at = time.monotonic()
         elif time.monotonic() - last_event_at >= 12:
             yield ": keep-alive\n\n"
@@ -528,7 +693,7 @@ async def stream_public_support_conversation(
     )
     try:
         initial = await asyncio.to_thread(
-            _load_public_support_snapshot,
+            _load_public_support_stream_state,
             tenant_slug=tenant_slug,
             token=x_support_token,
         )

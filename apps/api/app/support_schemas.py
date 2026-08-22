@@ -14,6 +14,7 @@ SupportConversationStatus = Literal["OPEN", "CLOSED"]
 SupportSenderType = Literal["VISITOR", "MERCHANT", "SYSTEM", "AI"]
 SupportAutomationState = Literal["AI_ACTIVE", "HUMAN_TAKEOVER"]
 SupportHumanAssistanceState = Literal["NONE", "OFFERED", "REQUESTED", "RESOLVED"]
+SupportAIProcessingStage = Literal["USING_TOOLS", "RAG_SEARCH", "COMPOSING"]
 
 
 def _safe_image_url(value: str | None) -> str | None:
@@ -175,6 +176,7 @@ class PublicChatConversationResponse(BaseModel):
     access_token: str | None = None
     automation_state: SupportAutomationState = "AI_ACTIVE"
     ai_processing: bool = False
+    ai_processing_stage: SupportAIProcessingStage | None = None
     human_assistance_state: SupportHumanAssistanceState = "NONE"
     human_assistance_requested_at: datetime | None = None
 

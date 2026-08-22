@@ -173,6 +173,15 @@ export function StorefrontSupportWidget({
     [widget.custom_actions],
   );
   const supportProductCount = Object.keys(supportProducts).length;
+  const processingLabel = useMemo(() => {
+    if (conversation?.ai_processing_stage === "USING_TOOLS") {
+      return t("正在使用工具…");
+    }
+    if (conversation?.ai_processing_stage === "RAG_SEARCH") {
+      return t("正在进行 RAG 搜索…");
+    }
+    return t("正在组织可信回复…");
+  }, [conversation?.ai_processing_stage, t]);
 
   const resetStreamingPlayback = useCallback(() => {
     if (streamingFlushTimerRef.current !== undefined) {
@@ -313,13 +322,28 @@ export function StorefrontSupportWidget({
         if (streamingMessageIdRef.current === event.message_id) {
           enqueueStreamingDelta(event.delta);
         }
+      } else if (event.type === "message_reset") {
+        if (streamingMessageIdRef.current === event.message_id) {
+          resetStreamingPlayback();
+          streamingMessageIdRef.current = event.message_id;
+          setStreamingMessage((current) => (
+            current ? { ...current, body: event.body } : current
+          ));
+        }
       } else if (event.type === "message_end") {
-        if (streamingMessageIdRef.current !== event.message.id) {
+        const endingStreamId = event.stream_id || event.message.id;
+        if (streamingMessageIdRef.current !== endingStreamId) {
           setConversation(event.conversation);
           return;
         }
         streamingEndRef.current = event;
         settleStreamingEnd();
+      } else if (event.type === "message_abort") {
+        if (streamingMessageIdRef.current === event.message_id) {
+          resetStreamingPlayback();
+          setStreamingMessage(undefined);
+        }
+        setConversation(event.conversation);
       }
     };
 
@@ -622,7 +646,7 @@ export function StorefrontSupportWidget({
           {conversation?.ai_processing && !streamingMessage ? (
             <div className="support-ai-processing" role="status">
               <div className="support-message-loading"><i /><i /><i /></div>
-              <small>{t("正在查找可信资料并生成回答…")}</small>
+              <small>{processingLabel}</small>
             </div>
           ) : null}
           {conversation?.status === "OPEN"

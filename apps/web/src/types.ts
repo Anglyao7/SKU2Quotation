@@ -151,6 +151,7 @@ export interface PublicSupportConversation {
   access_token?: string | null;
   automation_state?: "AI_ACTIVE" | "HUMAN_TAKEOVER";
   ai_processing?: boolean;
+  ai_processing_stage?: "USING_TOOLS" | "RAG_SEARCH" | "COMPOSING" | null;
   human_assistance_state?: "NONE" | "OFFERED" | "REQUESTED" | "RESOLVED";
   human_assistance_requested_at?: string | null;
 }
@@ -159,9 +160,16 @@ export type PublicSupportStreamEvent =
   | { type: "conversation"; conversation: PublicSupportConversation }
   | { type: "message_start"; message: PublicSupportMessage }
   | { type: "message_delta"; message_id: string; delta: string }
+  | { type: "message_reset"; message_id: string; body: string }
   | {
       type: "message_end";
+      stream_id?: string;
       message: PublicSupportMessage;
+      conversation: PublicSupportConversation;
+    }
+  | {
+      type: "message_abort";
+      message_id: string;
       conversation: PublicSupportConversation;
     }
   | { type: "stream_error"; code: string };

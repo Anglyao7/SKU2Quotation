@@ -836,13 +836,34 @@ export const api = {
           delta: data.delta,
         });
       } else if (
+        eventName === "message_reset"
+        && typeof data.message_id === "string"
+        && typeof data.body === "string"
+      ) {
+        onEvent({
+          type: "message_reset",
+          message_id: data.message_id,
+          body: data.body,
+        });
+      } else if (
         eventName === "message_end"
         && data.message
         && data.conversation
       ) {
         onEvent({
           type: "message_end",
+          stream_id: typeof data.stream_id === "string" ? data.stream_id : undefined,
           message: data.message as PublicSupportMessage,
+          conversation: data.conversation as PublicSupportConversation,
+        });
+      } else if (
+        eventName === "message_abort"
+        && typeof data.message_id === "string"
+        && data.conversation
+      ) {
+        onEvent({
+          type: "message_abort",
+          message_id: data.message_id,
           conversation: data.conversation as PublicSupportConversation,
         });
       } else if (eventName === "stream_error" && typeof data.code === "string") {

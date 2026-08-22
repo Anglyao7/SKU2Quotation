@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -60,6 +61,7 @@ class ChatGenerationResult:
     transport_mode: str = "BUFFERED"
     first_delta_ms: int | None = None
     duration_ms: int | None = None
+    attempt_count: int = 1
 
 
 class ChatGenerationProvider(Protocol):
@@ -71,6 +73,15 @@ class ChatGenerationProvider(Protocol):
         messages: list[dict[str, str]],
         temperature: float | None = None,
         max_output_tokens: int | None = None,
+    ) -> ChatGenerationResult: ...
+
+    def generate_json_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        on_answer_delta: Callable[[str], None] | None = None,
     ) -> ChatGenerationResult: ...
 
 
@@ -131,6 +142,156 @@ def _content_text(value: Any) -> str:
             if isinstance(block, dict)
         )
     return ""
+
+
+def _json_string_end(value: str, start: int) -> int | None:
+    """Return the closing quote for one JSON string, or None if incomplete."""
+
+    escaped = False
+    for index in range(start + 1, len(value)):
+        character = value[index]
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if character == '"':
+            return index
+    return None
+
+
+def _json_string_field_start(value: str, field_name: str) -> int | None:
+    """Find the first character of a top-level-compatible JSON string value.
+
+    The generation contract is a single JSON object. Scanning complete JSON string
+    tokens prevents an `answer` substring inside another value from being mistaken
+    for the field name while still supporting chunks split at any byte boundary.
+    """
+
+    index = 0
+    while index < len(value):
+        if value[index] != '"':
+            index += 1
+            continue
+        end = _json_string_end(value, index)
+        if end is None:
+            return None
+        try:
+            token = json.loads(value[index : end + 1])
+        except json.JSONDecodeError:
+            index = end + 1
+            continue
+        cursor = end + 1
+        while cursor < len(value) and value[cursor].isspace():
+            cursor += 1
+        if cursor >= len(value):
+            return None
+        if value[cursor] != ":":
+            index = end + 1
+            continue
+        cursor += 1
+        while cursor < len(value) and value[cursor].isspace():
+            cursor += 1
+        if token != field_name:
+            index = end + 1
+            continue
+        if cursor >= len(value):
+            return None
+        return cursor + 1 if value[cursor] == '"' else None
+    return None
+
+
+def _decode_json_string_prefix(value: str) -> tuple[str, bool]:
+    """Decode the complete portion of a JSON string body without its first quote."""
+
+    decoded: list[str] = []
+    index = 0
+    simple_escapes = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    while index < len(value):
+        character = value[index]
+        if character == '"':
+            return "".join(decoded), True
+        if character != "\\":
+            decoded.append(character)
+            index += 1
+            continue
+        if index + 1 >= len(value):
+            break
+        escape = value[index + 1]
+        if escape in simple_escapes:
+            decoded.append(simple_escapes[escape])
+            index += 2
+            continue
+        if escape != "u" or index + 6 > len(value):
+            break
+        raw_codepoint = value[index + 2 : index + 6]
+        try:
+            codepoint = int(raw_codepoint, 16)
+        except ValueError:
+            break
+        if 0xD800 <= codepoint <= 0xDBFF:
+            if (
+                index + 12 > len(value)
+                or value[index + 6 : index + 8] != "\\u"
+            ):
+                break
+            try:
+                low = int(value[index + 8 : index + 12], 16)
+            except ValueError:
+                break
+            if not 0xDC00 <= low <= 0xDFFF:
+                break
+            decoded.append(
+                chr(0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00))
+            )
+            index += 12
+            continue
+        if 0xDC00 <= codepoint <= 0xDFFF:
+            break
+        decoded.append(chr(codepoint))
+        index += 6
+    return "".join(decoded), False
+
+
+class IncrementalJSONTextField:
+    """Extract newly decoded characters from one streamed JSON string field."""
+
+    def __init__(self, field_name: str) -> None:
+        self._field_name = field_name
+        self._raw = ""
+        self._value_start: int | None = None
+        self._emitted_length = 0
+        self._complete = False
+
+    def feed(self, delta: str) -> str:
+        if self._complete or not delta:
+            return ""
+        self._raw += delta
+        if self._value_start is None:
+            self._value_start = _json_string_field_start(
+                self._raw,
+                self._field_name,
+            )
+            if self._value_start is None:
+                return ""
+        decoded, self._complete = _decode_json_string_prefix(
+            self._raw[self._value_start :]
+        )
+        if len(decoded) <= self._emitted_length:
+            return ""
+        fresh = decoded[self._emitted_length :]
+        self._emitted_length = len(decoded)
+        return fresh
 
 
 def _response_json(response: httpx.Response) -> Any:
@@ -259,8 +420,29 @@ class OpenAICompatibleChatGeneration:
     def _stream_request(
         self,
         payload: dict[str, Any],
+        *,
+        on_answer_delta: Callable[[str], None] | None = None,
+        read_timeout_seconds: float | None = None,
+        total_timeout_seconds: float | None = None,
+        first_answer_timeout_seconds: float | None = None,
     ) -> tuple[int, ChatGenerationResult | None]:
         started_at = time.perf_counter()
+        answer_delta_seen = False
+        answer_stream = (
+            IncrementalJSONTextField("answer")
+            if on_answer_delta is not None
+            else None
+        )
+
+        def publish_answer_delta(raw_delta: str) -> None:
+            nonlocal answer_delta_seen
+            if answer_stream is None or on_answer_delta is None:
+                return
+            answer_delta = answer_stream.feed(raw_delta)
+            if answer_delta:
+                answer_delta_seen = True
+                on_answer_delta(answer_delta)
+
         try:
             with self._client.stream(
                 "POST",
@@ -271,7 +453,11 @@ class OpenAICompatibleChatGeneration:
                     "Accept": "text/event-stream",
                 },
                 json=payload,
-                timeout=self._timeout_seconds,
+                timeout=(
+                    self._timeout_seconds
+                    if read_timeout_seconds is None
+                    else read_timeout_seconds
+                ),
             ) as response:
                 if response.status_code < 200 or response.status_code >= 300:
                     response.read()
@@ -282,13 +468,15 @@ class OpenAICompatibleChatGeneration:
                 content_type = response.headers.get("content-type", "").casefold()
                 if "text/event-stream" not in content_type:
                     response.read()
-                    return response.status_code, _result_from_body(
+                    result = _result_from_body(
                         _response_json(response),
                         duration_ms=max(
                             0,
                             round((time.perf_counter() - started_at) * 1000),
                         ),
                     )
+                    publish_answer_delta(result.content)
+                    return response.status_code, result
 
                 content_parts: list[str] = []
                 event_data: list[str] = []
@@ -343,6 +531,7 @@ class OpenAICompatibleChatGeneration:
                                 round((time.perf_counter() - started_at) * 1000),
                             )
                         content_parts.append(text_delta)
+                        publish_answer_delta(text_delta)
                     if choice.get("finish_reason") is not None:
                         finish_reason = str(choice["finish_reason"])
                         return True
@@ -360,6 +549,22 @@ class OpenAICompatibleChatGeneration:
                     return False
 
                 for line in response.iter_lines():
+                    elapsed_seconds = time.perf_counter() - started_at
+                    if (
+                        total_timeout_seconds is not None
+                        and elapsed_seconds > total_timeout_seconds
+                    ):
+                        raise _ChatGenerationTransportError(
+                            "generation provider request timed out"
+                        )
+                    if (
+                        first_answer_timeout_seconds is not None
+                        and not answer_delta_seen
+                        and elapsed_seconds > first_answer_timeout_seconds
+                    ):
+                        raise _ChatGenerationTransportError(
+                            "generation provider first answer timed out"
+                        )
                     if line == "":
                         if consume_event():
                             break
@@ -393,20 +598,81 @@ class OpenAICompatibleChatGeneration:
     def _stream_request_with_transient_retry(
         self,
         payload: dict[str, Any],
+        *,
+        on_answer_delta: Callable[[str], None] | None = None,
     ) -> tuple[int, ChatGenerationResult | None]:
-        """Retry one safe stream attempt before any answer is published."""
+        """Retry one transient stream only when no answer has been published."""
 
         last_error: _ChatGenerationTransportError | None = None
+        started_at = time.perf_counter()
         for attempt in range(2):
+            attempt_started_at = time.perf_counter()
+            elapsed_seconds = attempt_started_at - started_at
+            remaining_seconds = self._timeout_seconds - elapsed_seconds
+            if remaining_seconds <= 0:
+                if last_error is not None:
+                    raise last_error
+                raise _ChatGenerationTransportError(
+                    "generation provider request timed out"
+                )
+            answer_published = False
+
+            def publish(delta: str) -> None:
+                nonlocal answer_published
+                answer_published = True
+                if on_answer_delta is not None:
+                    on_answer_delta(delta)
+
             try:
-                status_code, result = self._stream_request(payload)
+                status_code, result = self._stream_request(
+                    payload,
+                    on_answer_delta=(publish if on_answer_delta is not None else None),
+                    # A dead first connection previously consumed the complete
+                    # 45-second model timeout before the safe retry even began.
+                    # Cap the first attempt's no-data read window. Explicit
+                    # first-answer and total deadlines below also stop gateways
+                    # extending the request with heartbeats or hidden reasoning.
+                    read_timeout_seconds=(
+                        min(remaining_seconds, 12.0)
+                        if attempt == 0
+                        else remaining_seconds
+                    ),
+                    total_timeout_seconds=remaining_seconds,
+                    first_answer_timeout_seconds=(
+                        min(remaining_seconds, 12.0)
+                        if on_answer_delta is not None and attempt == 0
+                        else (
+                            remaining_seconds
+                            if on_answer_delta is not None
+                            else None
+                        )
+                    ),
+                )
             except _ChatGenerationTransportError as exc:
                 last_error = exc
-                if attempt == 0:
+                if attempt == 0 and not answer_published:
                     continue
                 raise
             if attempt == 0 and (status_code == 429 or status_code >= 500):
                 continue
+            if result is not None:
+                elapsed_before_attempt_ms = max(
+                    0,
+                    round((attempt_started_at - started_at) * 1000),
+                )
+                result = replace(
+                    result,
+                    first_delta_ms=(
+                        elapsed_before_attempt_ms + result.first_delta_ms
+                        if result.first_delta_ms is not None
+                        else None
+                    ),
+                    duration_ms=max(
+                        0,
+                        round((time.perf_counter() - started_at) * 1000),
+                    ),
+                    attempt_count=attempt + 1,
+                )
             return status_code, result
         assert last_error is not None
         raise last_error
@@ -510,6 +776,7 @@ class OpenAICompatibleChatGeneration:
         messages: list[dict[str, str]],
         temperature: float | None = None,
         max_output_tokens: int | None = None,
+        on_answer_delta: Callable[[str], None] | None = None,
     ) -> ChatGenerationResult:
         if not messages:
             raise ChatGenerationError("generation messages are required")
@@ -530,7 +797,8 @@ class OpenAICompatibleChatGeneration:
         }
         try:
             status_code, result = self._stream_request_with_transient_retry(
-                payload
+                payload,
+                on_answer_delta=on_answer_delta,
             )
         except _InvalidStructuredOutputError as invalid:
             return self._repair_invalid_structured_output(
@@ -544,7 +812,8 @@ class OpenAICompatibleChatGeneration:
             payload.pop("response_format", None)
             try:
                 status_code, result = self._stream_request_with_transient_retry(
-                    payload
+                    payload,
+                    on_answer_delta=on_answer_delta,
                 )
             except _InvalidStructuredOutputError as invalid:
                 return self._repair_invalid_structured_output(
@@ -557,11 +826,18 @@ class OpenAICompatibleChatGeneration:
         if result is None and status_code in {400, 404, 422}:
             # Preserve availability for older OpenAI-compatible gateways while
             # making the transport downgrade visible in the returned trace.
-            return self.generate_json(
+            buffered = self.generate_json(
                 messages=request_messages,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
             )
+            if on_answer_delta is not None:
+                extracted = IncrementalJSONTextField("answer").feed(
+                    buffered.content
+                )
+                if extracted:
+                    on_answer_delta(extracted)
+            return buffered
         if result is None:
             raise ChatGenerationError(
                 f"generation provider returned HTTP {status_code}"

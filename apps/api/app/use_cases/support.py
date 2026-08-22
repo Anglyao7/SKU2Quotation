@@ -10,10 +10,11 @@ from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import exists, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..adapters.object_storage import get_object_storage
+from ..ai_data_models import AITaskRow
 from ..database import set_public_tenant_context
 from ..domain.errors import ApplicationError
 from ..file_security_models import MediaObjectRow
@@ -513,17 +514,43 @@ def _ai_processing(
     tenant_id: UUID,
     conversation_id: UUID,
 ) -> bool:
-    return bool(
-        session.scalar(
-            select(
-                exists().where(
-                    SupportAIRunRow.tenant_id == tenant_id,
-                    SupportAIRunRow.conversation_id == conversation_id,
-                    SupportAIRunRow.status.in_(["QUEUED", "RUNNING"]),
-                )
-            )
-        )
+    processing, _stage = _ai_processing_state(
+        session,
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
     )
+    return processing
+
+
+def _ai_processing_state(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    conversation_id: UUID,
+) -> tuple[bool, str | None]:
+    row = session.execute(
+        select(SupportAIRunRow.status, AITaskRow.progress)
+        .join(
+            AITaskRow,
+            (AITaskRow.tenant_id == SupportAIRunRow.tenant_id)
+            & (AITaskRow.id == SupportAIRunRow.ai_task_id),
+        )
+        .where(
+            SupportAIRunRow.tenant_id == tenant_id,
+            SupportAIRunRow.conversation_id == conversation_id,
+            SupportAIRunRow.status.in_(["QUEUED", "RUNNING"]),
+        )
+        .order_by(SupportAIRunRow.created_at.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return False, None
+    status, progress = row
+    if status == "QUEUED" or int(progress or 0) <= 10:
+        return True, "USING_TOOLS"
+    if int(progress or 0) < 55:
+        return True, "RAG_SEARCH"
+    return True, "COMPOSING"
 
 
 def _merchant_reading_locale(
@@ -646,6 +673,11 @@ def _public_conversation_response(
     *,
     access_token: str | None = None,
 ) -> PublicChatConversationResponse:
+    ai_processing, ai_processing_stage = _ai_processing_state(
+        session,
+        tenant_id=row.tenant_id,
+        conversation_id=row.id,
+    )
     return PublicChatConversationResponse(
         id=row.id,
         reference_number=row.reference_number,
@@ -660,11 +692,8 @@ def _public_conversation_response(
         ],
         access_token=access_token,
         automation_state=row.automation_state,
-        ai_processing=_ai_processing(
-            session,
-            tenant_id=row.tenant_id,
-            conversation_id=row.id,
-        ),
+        ai_processing=ai_processing,
+        ai_processing_stage=ai_processing_stage,
         human_assistance_state=_human_assistance_state(row),
         human_assistance_requested_at=row.human_requested_at,
     )

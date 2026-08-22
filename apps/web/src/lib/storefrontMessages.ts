@@ -199,6 +199,9 @@ const localizedStorefrontMessagesBase: Record<
   "AI 客服": { es: "Soporte con IA", tr: "Yapay zekâ desteği", ar: "دعم الذكاء الاصطناعي", ja: "AIサポート", ko: "AI 고객 지원" },
   "系统": { es: "Sistema", tr: "Sistem", ar: "النظام", ja: "システム", ko: "시스템" },
   "正在查找可信资料并生成回答…": { es: "Buscando fuentes fiables y preparando una respuesta…", tr: "Güvenilir kaynaklar aranıyor ve yanıt hazırlanıyor…", ar: "جارٍ البحث عن مصادر موثوقة وإعداد الإجابة…", ja: "信頼できる資料を検索して回答を作成しています…", ko: "신뢰할 수 있는 자료를 찾아 답변을 작성하고 있습니다…" },
+  "正在使用工具…": { es: "Usando herramientas…", tr: "Araçlar kullanılıyor…", ar: "جارٍ استخدام الأدوات…", ja: "ツールを使用しています…", ko: "도구를 사용하고 있습니다…" },
+  "正在进行 RAG 搜索…": { es: "Buscando en el conocimiento aprobado con RAG…", tr: "RAG ile onaylı bilgiler aranıyor…", ar: "جارٍ البحث في المعرفة المعتمدة باستخدام RAG…", ja: "RAGで承認済みナレッジを検索しています…", ko: "RAG로 승인된 지식을 검색하고 있습니다…" },
+  "正在组织可信回复…": { es: "Preparando una respuesta fiable…", tr: "Güvenilir bir yanıt hazırlanıyor…", ar: "جارٍ إعداد رد موثوق…", ja: "信頼できる回答をまとめています…", ko: "신뢰할 수 있는 답변을 구성하고 있습니다…" },
   "我": { es: "Yo", tr: "Ben", ar: "أنا", ja: "自分", ko: "나" },
   "商家快捷入口": { es: "Acceso rápido del comerciante", tr: "Satıcı kısayolu", ar: "اختصار التاجر", ja: "販売者ショートカット", ko: "판매자 바로가기" },
 };
