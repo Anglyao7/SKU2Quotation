@@ -279,6 +279,7 @@ def resolved_support_ai_provider(
     *,
     tenant_id: UUID | None = None,
     profile_id: str | None = None,
+    first_answer_timeout_seconds: float | None = None,
 ) -> ChatGenerationProvider:
     settings, explicit = _assigned_database_profile(
         session,
@@ -295,6 +296,14 @@ def resolved_support_ai_provider(
             timeout_seconds=float(settings.timeout_seconds),
             max_output_tokens=settings.max_output_tokens,
             temperature=float(settings.temperature),
+            first_answer_timeout_seconds=min(
+                float(settings.timeout_seconds),
+                (
+                    12.0
+                    if first_answer_timeout_seconds is None
+                    else max(1.0, float(first_answer_timeout_seconds))
+                ),
+            ),
         )
     if explicit:
         raise ChatGenerationError("assigned support AI generation profile is unavailable")
@@ -310,6 +319,14 @@ def resolved_support_ai_provider(
         timeout_seconds=float(timeout),
         max_output_tokens=max_tokens,
         temperature=temperature,
+        first_answer_timeout_seconds=min(
+            float(timeout),
+            (
+                12.0
+                if first_answer_timeout_seconds is None
+                else max(1.0, float(first_answer_timeout_seconds))
+            ),
+        ),
     )
 
 

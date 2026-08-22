@@ -19,6 +19,8 @@ from ..knowledge_embedding_schemas import (
     KnowledgeIndexStatusResponse,
     KnowledgeIndexUpdateResponse,
     KnowledgeProjectionResponse,
+    RerankSettingsResponse,
+    RerankSettingsUpdateRequest,
 )
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..services.rate_limit import configured_limit, enforce_rate_limit
@@ -60,6 +62,43 @@ def update_embedding_settings(
     context = current_context(session)
     try:
         return embedding_management.update_settings(
+            session,
+            context=context,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/rerank/settings",
+    response_model=RerankSettingsResponse,
+)
+def get_rerank_settings(
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> RerankSettingsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return embedding_management.get_rerank_settings(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/rerank/settings",
+    response_model=RerankSettingsResponse,
+)
+def update_rerank_settings(
+    payload: RerankSettingsUpdateRequest,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> RerankSettingsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return embedding_management.update_rerank_settings(
             session,
             context=context,
             request=payload,

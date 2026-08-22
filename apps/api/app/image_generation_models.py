@@ -39,6 +39,7 @@ class ImageGenerationProviderSettingsRow(AuditTimestampMixin, Base):
     )
     base_url: Mapped[str] = mapped_column(String(1000), nullable=False)
     model_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     timeout_seconds: Mapped[int] = mapped_column(
         Integer, default=180, nullable=False
     )

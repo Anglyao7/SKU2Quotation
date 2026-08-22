@@ -2,7 +2,6 @@ import {
   AlertDialog,
   Badge,
   Button,
-  Callout,
   Dialog,
   Heading,
   IconButton,
@@ -22,6 +21,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { EmptyState, ErrorState, TableSkeleton } from "../../components/States";
 import { useCoreAuth } from "../../core/AuthContext";
+import { ToastNotice } from "../../core/ToastContext";
 import { api } from "../../lib/api";
 import type { ProductTag } from "../../types";
 import type { ConsoleOutletContext } from "./ConsoleLayout";
@@ -142,12 +142,7 @@ export function TagManagementPage() {
   if (isPlatformAdmin && !activeTenantId) {
     return (
       <div className="console-page">
-        <Callout.Root color="gray">
-          <Callout.Icon>
-            <WarningCircle weight="fill" />
-          </Callout.Icon>
-          <Callout.Text>请先从侧边栏选择一个租户，再管理标签。</Callout.Text>
-        </Callout.Root>
+        <ToastNotice message="请先从侧边栏选择一个租户，再管理标签。" />
       </div>
     );
   }
@@ -180,14 +175,7 @@ export function TagManagementPage() {
         </Badge>
       </div>
 
-      {error && (
-        <Callout.Root color="red" style={{ marginBottom: "16px" }}>
-          <Callout.Icon>
-            <WarningCircle weight="fill" />
-          </Callout.Icon>
-          <Callout.Text>{error}</Callout.Text>
-        </Callout.Root>
-      )}
+      {error ? <ToastNotice kind="error" message={error} /> : null}
 
       {loading ? (
         <TableSkeleton rows={8} />

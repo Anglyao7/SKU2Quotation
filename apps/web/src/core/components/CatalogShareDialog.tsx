@@ -1,11 +1,10 @@
-import { Button, Callout, Dialog, Spinner, Text } from "@radix-ui/themes";
+import { Button, Dialog, Spinner, Text } from "@radix-ui/themes";
 import {
   ArrowSquareOut,
   Check,
   Copy,
   DownloadSimple,
   LinkSimple,
-  ShareNetwork,
   X,
 } from "@phosphor-icons/react";
 import QRCode from "qrcode";
@@ -13,6 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { createCatalogShare } from "../api";
 import { useLocale } from "../LocaleContext";
+import { ToastNotice } from "../ToastContext";
 import type { CatalogShare, CatalogShareLogoPosition } from "../types";
 
 export type CatalogShareTarget =
@@ -272,12 +272,7 @@ export function CatalogShareDialog({
           </div>
         ) : null}
 
-        {error ? (
-          <Callout.Root color="red" role="alert">
-            <Callout.Icon><ShareNetwork /></Callout.Icon>
-            <Callout.Text>{error}</Callout.Text>
-          </Callout.Root>
-        ) : null}
+        {error ? <ToastNotice kind="error" message={error} /> : null}
 
         {share || availableLogoUrl ? (
         <section className="core-catalog-share-branding" aria-labelledby="catalog-share-branding-title">

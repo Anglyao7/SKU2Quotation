@@ -2,7 +2,6 @@ import {
   AlertDialog,
   Badge,
   Button,
-  Callout,
   Card,
   Heading,
   Progress,
@@ -23,6 +22,7 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
 import { useCoreAuth } from "../AuthContext";
+import { ToastNotice } from "../ToastContext";
 import {
   CoreApiError,
   getCatalogTranslationJob,
@@ -295,18 +295,8 @@ export function LanguagePackagesPage() {
         </div>
       </div>
 
-      {error ? (
-        <Callout.Root color="red" role="alert">
-          <Callout.Icon><WarningCircle /></Callout.Icon>
-          <Callout.Text>{error}</Callout.Text>
-        </Callout.Root>
-      ) : null}
-      {success ? (
-        <Callout.Root color="green" role="status">
-          <Callout.Icon><CheckCircle /></Callout.Icon>
-          <Callout.Text>{success}</Callout.Text>
-        </Callout.Root>
-      ) : null}
+      {error ? <ToastNotice kind="error" message={error} /> : null}
+      {success ? <ToastNotice kind="success" message={success} /> : null}
 
       <Card className="language-selection-card">
         <div className="language-card-heading language-selection-heading">

@@ -1,4 +1,4 @@
-import { Avatar, Badge, Button, Callout, Card, Heading, Switch, Text, TextField } from "@radix-ui/themes";
+import { Avatar, Badge, Button, Card, Heading, Switch, Text, TextField } from "@radix-ui/themes";
 import {
   CheckCircle,
   Circle,
@@ -16,6 +16,7 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useCoreAuth } from "../AuthContext";
+import { ToastNotice } from "../ToastContext";
 import {
   changePassword,
   CoreApiError,
@@ -452,18 +453,8 @@ export function AccountSettingsPage() {
                 </div>
               ) : null}
 
-              {merchantError ? (
-                <Callout.Root color="red" role="alert">
-                  <Callout.Icon><WarningCircle /></Callout.Icon>
-                  <Callout.Text>{merchantError}</Callout.Text>
-                </Callout.Root>
-              ) : null}
-              {merchantSuccess ? (
-                <Callout.Root color="green" role="status">
-                  <Callout.Icon><CheckCircle /></Callout.Icon>
-                  <Callout.Text>{merchantSuccess}</Callout.Text>
-                </Callout.Root>
-              ) : null}
+              {merchantError ? <ToastNotice kind="error" message={merchantError} /> : null}
+              {merchantSuccess ? <ToastNotice kind="success" message={merchantSuccess} /> : null}
 
               <div className="account-merchant-actions">
                 {!canManageMerchant ? (
@@ -620,19 +611,8 @@ export function AccountSettingsPage() {
               {fieldErrors.confirmation ? <Text id="account-confirm-password-error" size="1" color="red" role="alert">{t(fieldErrors.confirmation)}</Text> : null}
             </div>
 
-            {requestError ? (
-              <Callout.Root color="red" role="alert">
-                <Callout.Icon><WarningCircle /></Callout.Icon>
-                <Callout.Text>{requestError}</Callout.Text>
-              </Callout.Root>
-            ) : null}
-
-            {success ? (
-              <Callout.Root color="green" role="status" aria-live="polite">
-                <Callout.Icon><CheckCircle /></Callout.Icon>
-                <Callout.Text>{success}</Callout.Text>
-              </Callout.Root>
-            ) : null}
+            {requestError ? <ToastNotice kind="error" message={requestError} /> : null}
+            {success ? <ToastNotice kind="success" message={success} /> : null}
 
             <div className="account-password-actions">
               <div className="account-session-note">

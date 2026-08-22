@@ -1,5 +1,5 @@
 .configuration-center-page { align-content: start; }
-.configuration-tabs { width: 100%; display: grid !important; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.configuration-tabs { width: 100%; display: grid !important; grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .configuration-tabs .rt-TabsTrigger { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .configuration-tabs svg { width: 18px; height: 18px; }
 .configuration-tab-panel { padding-top: 18px; }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 import unicodedata
@@ -60,6 +61,33 @@ logger = logging.getLogger(__name__)
 SUPPORT_AI_ORCHESTRATOR_VERSION = 5
 SUPPORT_AI_BASE_PROMPT_VERSION = 4
 SUPPORT_AI_RECOMMENDATION_POLICY_VERSION = 2
+
+
+def _customer_visible_result_budget_seconds() -> float:
+    raw = os.getenv("SUPPORT_AI_VISIBLE_RESULT_BUDGET_SECONDS", "8.5").strip()
+    try:
+        return max(5.0, min(15.0, float(raw)))
+    except ValueError:
+        return 8.5
+
+
+def _remaining_first_answer_budget(
+    *,
+    run: SupportAIRunRow,
+    pipeline_started_perf: float,
+) -> float | None:
+    """Reserve enough time to publish a grounded fallback before ten seconds."""
+
+    if run.trigger_type != "CHAT" or run.conversation_id is None:
+        return None
+    elapsed = max(0.0, time.perf_counter() - pipeline_started_perf)
+    return max(
+        1.0,
+        round(
+            _customer_visible_result_budget_seconds() - elapsed - 0.5,
+            2,
+        ),
+    )
 
 
 def _generate_model_json(
@@ -614,10 +642,11 @@ GENERIC_RECOMMENDATION_FOLLOWUP_PATTERN = re.compile(
 )
 _RECOMMENDATION_FILLERS = (
     "我不知道", "不知道", "不清楚", "没想好", "沒想好", "随便", "隨便",
-    "都可以", "你决定", "你決定", "你看着办", "你看著辦", "请", "請", "帮我",
+    "都可以", "你决定", "你決定", "你看着办", "你看著辦", "你们", "你們",
+    "有什么", "有什麼", "什么", "什麼", "可以", "请", "請", "帮我",
     "幫我", "替我", "给我", "給我", "推荐", "推薦", "选择", "選擇", "挑选",
     "挑選", "一款", "一个", "一個", "哪一款", "哪款", "哪个", "哪個", "产品",
-    "產品", "商品", "一下", "一个吧", "吧", "呢",
+    "產品", "商品", "一下", "一个吧", "的", "吗", "嗎", "吧", "呢",
     "おすすめを選んで", "一つ選んで", "どれがおすすめ", "わからない",
     "하나 추천", "하나 골라", "잘 모르겠어요", "잘 모르겠", "선택해 주세요",
     "посоветуй один", "выбери один", "не знаю", "اختر لي واحد", "اقترح واحد",
@@ -2626,6 +2655,7 @@ def _process_social_run(
     settings: SupportAISettingsRow,
     intent: str,
     detected_language: str,
+    pipeline_started_perf: float,
 ) -> None:
     profile = _approved_company_profile(session, run=run, settings=settings)
     training_prompt, training_examples, training_package_hash = (
@@ -2670,6 +2700,10 @@ def _process_social_run(
             session,
             tenant_id=run.tenant_id,
             profile_id=run.provider_setting_id,
+            first_answer_timeout_seconds=_remaining_first_answer_budget(
+                run=run,
+                pipeline_started_perf=pipeline_started_perf,
+            ),
         )
         run.provider = provider.identity.provider
         run.model_name = provider.identity.model_name
@@ -2795,12 +2829,21 @@ def _finalize_assistance_run(
 ) -> None:
     run.detected_language = language
     run.answer = answer[:8000]
+    final_inline_citations = list(
+        dict.fromkeys(
+            int(value) for value in CITATION_PATTERN.findall(run.answer)
+        )
+    )
     run.confidence = Decimal(str(max(0.0, min(1.0, confidence))))
     run.handoff_reason = None
     run.error_code = None
     run.error_message = None
     run.decision_trace = {
         **decision_trace,
+        # The rendered answer is the source of truth. Keeping this derived
+        # value on every completion path lets the public API attach the exact
+        # cited products, including deterministic latency fallbacks.
+        "inline_citations": final_inline_citations,
         "training_version_id": (
             str(run.training_version_id) if run.training_version_id else None
         ),
@@ -2949,6 +2992,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
             settings=settings,
             intent=social_intent,
             detected_language=detected,
+            pipeline_started_perf=pipeline_started_perf,
         )
         return
     if detect_explicit_human_request(run.question):
@@ -3015,17 +3059,27 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
         history,
         interaction_goal=interaction_goal,
     )
-    normalized_query = _normalized_retrieval_query(
-        session,
-        question=contextual_question,
-        detected_language=detected,
-        multilingual_enabled=settings.multilingual_enabled,
+    generic_recommendation = (
+        interaction_goal == "PRODUCT_RECOMMENDATION"
+        and not _recommendation_has_specific_subject(contextual_question)
+    )
+    normalized_query = (
+        contextual_question
+        if generic_recommendation
+        else _normalized_retrieval_query(
+            session,
+            question=contextual_question,
+            detected_language=detected,
+            multilingual_enabled=settings.multilingual_enabled,
+        )
     )
     retrieval = retrieve_customer_evidence_with_trace(
         session,
         tenant_id=run.tenant_id,
         query=normalized_query,
         settings=settings,
+        interaction_goal=interaction_goal,
+        generic_recommendation=generic_recommendation,
     )
     retrieval_duration_ms = max(
         0,
@@ -3036,6 +3090,7 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
         **retrieval.diagnostics,
         "interaction_goal": interaction_goal,
         "contextual_query_used": contextual_query_used,
+        "generic_recommendation": generic_recommendation,
     }
     run.detected_language = detected
     run.normalized_query = normalized_query
@@ -3093,6 +3148,10 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
             session,
             tenant_id=run.tenant_id,
             profile_id=run.provider_setting_id,
+            first_answer_timeout_seconds=_remaining_first_answer_budget(
+                run=run,
+                pipeline_started_perf=pipeline_started_perf,
+            ),
         )
         run.provider = provider.identity.provider
         run.model_name = provider.identity.model_name
@@ -3163,10 +3222,17 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
     )
     generation_mode = "MODEL"
     recommendation_repair_trace: dict[str, Any] | None = None
-    if requires_safe_fallback and _recommendation_output_can_be_repaired(
-        validation_trace,
-        evidence=evidence,
-    ):
+    recommendation_repair_eligible = (
+        requires_safe_fallback
+        and _recommendation_output_can_be_repaired(
+            validation_trace,
+            evidence=evidence,
+        )
+    )
+    # A second serial model call creates minute-long customer-visible tails.
+    # Chat uses the deterministic grounded fallback; the test lab may still run
+    # the repair so merchants can inspect prompt quality before publishing it.
+    if recommendation_repair_eligible and run.trigger_type != "CHAT":
         recommended_citation = int(validation_trace["recommended_citation"])
         repair_messages, allowed_citations = _recommendation_repair_messages(
             settings=settings,
@@ -3295,6 +3361,9 @@ def _process_run(session: Session, *, run: SupportAIRunRow) -> None:
             {"recommendation_repair": recommendation_repair_trace}
             if recommendation_repair_trace is not None
             else {}
+        ),
+        "recommendation_repair_skipped_for_latency": bool(
+            recommendation_repair_eligible and run.trigger_type == "CHAT"
         ),
     }
     if task is not None:

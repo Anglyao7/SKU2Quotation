@@ -26,6 +26,14 @@ DEFAULT_IMAGE_GENERATION_BASE_URL = (
     "https://apihub.agnes-ai.com/v1/images/generations"
 )
 DEFAULT_IMAGE_GENERATION_MODEL = "agnes-image-2.0-flash"
+DEFAULT_IMAGE_ENHANCEMENT_SYSTEM_PROMPT = (
+    "Enhance only the provided product image: make it sharper, clearer, and less noisy. "
+    "The input image is the source of truth. Preserve the exact product, colors, materials, "
+    "shape, proportions, existing text, markings, existing logos, background, lighting, and composition. "
+    "Do not add, remove, redraw, or invent any logo, text, label, accessory, decoration, prop, or other object. "
+    "Do not change the background or create a new design."
+)
+IMAGE_ENHANCEMENT_SYSTEM_PROMPT_MAX_LENGTH = 12000
 
 
 class ImageGenerationConfigurationError(ValueError):
@@ -39,6 +47,7 @@ class ImageGenerationConfigurationSnapshot:
     enabled: bool
     base_url: str | None
     model_name: str | None
+    system_prompt: str
     timeout_seconds: int
     requests_per_minute: int
     concurrency_limit: int
@@ -119,6 +128,22 @@ def image_generation_endpoint(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
+def _environment_system_prompt() -> str:
+    return (
+        os.getenv("AGNES_IMAGE_ENHANCEMENT_SYSTEM_PROMPT", "").strip()
+        or DEFAULT_IMAGE_ENHANCEMENT_SYSTEM_PROMPT
+    )
+
+
+def image_enhancement_system_prompt(session: Session) -> str:
+    """Return the single platform-managed prompt used for first attempts."""
+
+    settings = get_managed_image_generation_settings(session)
+    if settings is not None and settings.system_prompt.strip():
+        return settings.system_prompt.strip()
+    return _environment_system_prompt()
+
+
 def _environment_values() -> tuple[str, str, str, int, int, int, bool]:
     base_url = (
         os.getenv("AGNES_IMAGE_GENERATION_BASE_URL", "").strip()
@@ -178,6 +203,7 @@ def image_generation_configuration_snapshot(
             enabled=settings.is_active,
             base_url=settings.base_url,
             model_name=settings.model_name,
+            system_prompt=(settings.system_prompt.strip() or DEFAULT_IMAGE_ENHANCEMENT_SYSTEM_PROMPT),
             timeout_seconds=settings.timeout_seconds,
             requests_per_minute=settings.requests_per_minute,
             concurrency_limit=settings.concurrency_limit,
@@ -206,6 +232,7 @@ def image_generation_configuration_snapshot(
             enabled=enabled,
             base_url=image_generation_endpoint(base_url),
             model_name=model_name,
+            system_prompt=_environment_system_prompt(),
             timeout_seconds=timeout_seconds,
             requests_per_minute=requests_per_minute,
             concurrency_limit=concurrency_limit,
@@ -219,6 +246,7 @@ def image_generation_configuration_snapshot(
         enabled=False,
         base_url=base_url or DEFAULT_IMAGE_GENERATION_BASE_URL,
         model_name=model_name or DEFAULT_IMAGE_GENERATION_MODEL,
+        system_prompt=_environment_system_prompt(),
         timeout_seconds=timeout_seconds,
         requests_per_minute=requests_per_minute,
         concurrency_limit=concurrency_limit,
@@ -237,6 +265,7 @@ def save_managed_image_generation_settings(
     timeout_seconds: int,
     api_key: str | None,
     updated_by_user_id,
+    system_prompt: str | None = None,
     requests_per_minute: int = DEFAULT_IMAGE_GENERATION_REQUESTS_PER_MINUTE,
     concurrency_limit: int = DEFAULT_IMAGE_GENERATION_CONCURRENCY,
 ) -> ImageGenerationProviderSettingsRow:
@@ -244,6 +273,11 @@ def save_managed_image_generation_settings(
     normalized_model_name = model_name.strip()
     if not normalized_model_name:
         raise ImageGenerationConfigurationError("image generation model is required")
+    normalized_system_prompt = (system_prompt or "").strip() or _environment_system_prompt()
+    if len(normalized_system_prompt) > IMAGE_ENHANCEMENT_SYSTEM_PROMPT_MAX_LENGTH:
+        raise ImageGenerationConfigurationError(
+            "image enhancement system prompt is too long"
+        )
     if timeout_seconds < 60 or timeout_seconds > 360:
         raise ImageGenerationConfigurationError(
             "image generation timeout must be between 60 and 360 seconds"
@@ -274,6 +308,7 @@ def save_managed_image_generation_settings(
             provider="agnes-ai",
             base_url=normalized_base_url,
             model_name=normalized_model_name,
+            system_prompt=normalized_system_prompt,
             timeout_seconds=timeout_seconds,
             requests_per_minute=normalized_rpm,
             concurrency_limit=normalized_concurrency,
@@ -287,6 +322,7 @@ def save_managed_image_generation_settings(
     else:
         settings.base_url = normalized_base_url
         settings.model_name = normalized_model_name
+        settings.system_prompt = normalized_system_prompt
         settings.timeout_seconds = timeout_seconds
         settings.requests_per_minute = normalized_rpm
         settings.concurrency_limit = normalized_concurrency

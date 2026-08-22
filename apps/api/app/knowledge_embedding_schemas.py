@@ -91,6 +91,28 @@ class EmbeddingSettingsUpdateRequest(BaseModel):
     max_retry_count: int = Field(default=3, ge=0, le=10)
 
 
+class RerankSettingsResponse(BaseModel):
+    source: Literal["database", "environment", "disabled"]
+    provider: str
+    enabled: bool
+    base_url: str | None = None
+    model_name: str | None = None
+    timeout_ms: int = Field(default=800, ge=100, le=800)
+    max_documents: int = Field(default=30, ge=5, le=30)
+    api_key_configured: bool
+    api_key_hint: str | None = None
+    updated_at: datetime | None = None
+
+
+class RerankSettingsUpdateRequest(BaseModel):
+    enabled: bool = True
+    base_url: str = Field(min_length=1, max_length=1000)
+    api_key: SecretStr | None = Field(default=None, max_length=4096)
+    model_name: str = Field(min_length=1, max_length=300)
+    timeout_ms: int = Field(default=800, ge=100, le=800)
+    max_documents: int = Field(default=30, ge=5, le=30)
+
+
 class HybridSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=10, ge=1, le=50)

@@ -14,6 +14,8 @@ from ..knowledge_embedding_models import EmbeddingRow
 from ..knowledge_embedding_schemas import (
     EmbeddingSettingsResponse,
     EmbeddingSettingsUpdateRequest,
+    RerankSettingsResponse,
+    RerankSettingsUpdateRequest,
 )
 from ..model_mixins import utcnow
 from ..product_supplier_models import ProductRow
@@ -22,6 +24,11 @@ from ..services.embedding import EmbeddingProviderError
 from ..services.embedding_configuration import (
     embedding_configuration_snapshot,
     save_managed_embedding_settings,
+)
+from ..services.reranking import (
+    RerankProviderError,
+    rerank_configuration_snapshot,
+    save_managed_rerank_settings,
 )
 from ..support_ai_models import (
     SupportAIIngestionJobRow,
@@ -216,6 +223,63 @@ def get_settings(
             str(exc),
         ) from exc
     return EmbeddingSettingsResponse(**asdict(snapshot))
+
+
+def get_rerank_settings(
+    session: Session,
+    *,
+    context: RequestContext,
+) -> RerankSettingsResponse:
+    _require_platform_admin(context)
+    try:
+        snapshot = rerank_configuration_snapshot(session)
+    except (ValueError, RerankProviderError) as exc:
+        raise ApplicationError(
+            "RERANK_CONFIGURATION_INVALID",
+            str(exc),
+        ) from exc
+    return RerankSettingsResponse(**asdict(snapshot))
+
+
+def update_rerank_settings(
+    session: Session,
+    *,
+    context: RequestContext,
+    request: RerankSettingsUpdateRequest,
+) -> RerankSettingsResponse:
+    _require_platform_admin(context)
+    try:
+        save_managed_rerank_settings(
+            session,
+            enabled=request.enabled,
+            base_url=request.base_url,
+            model_name=request.model_name,
+            timeout_ms=request.timeout_ms,
+            max_documents=request.max_documents,
+            api_key=(
+                request.api_key.get_secret_value()
+                if request.api_key is not None
+                else None
+            ),
+            updated_by_user_id=context.user_id,
+        )
+        session.commit()
+        return RerankSettingsResponse(
+            **asdict(rerank_configuration_snapshot(session))
+        )
+    except (ValueError, RerankProviderError) as exc:
+        session.rollback()
+        raise ApplicationError(
+            "RERANK_CONFIGURATION_INVALID",
+            str(exc),
+        ) from exc
+    except DBAPIError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "RERANK_CONFIGURATION_SAVE_UNAVAILABLE",
+            "Rerank 配置暂时无法保存，请稍后重试。",
+            kind="unavailable",
+        ) from exc
 
 
 def update_settings(

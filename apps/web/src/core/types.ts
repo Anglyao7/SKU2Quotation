@@ -523,7 +523,7 @@ export interface ImageEnhancementItem {
 export interface ImageEnhancementTask {
   id: string;
   status: ImageEnhancementTaskStatus;
-  prompt: string;
+  prompt?: string;
   ratio: ImageEnhancementRatio;
   size: string;
   outputFormat: "url";
@@ -924,12 +924,26 @@ export interface EmbeddingSettings {
   invalidatedProducts: number;
 }
 
+export interface RerankSettings {
+  source: "database" | "environment" | "disabled";
+  provider: string;
+  enabled: boolean;
+  baseUrl?: string;
+  modelName?: string;
+  timeoutMs: number;
+  maxDocuments: number;
+  apiKeyConfigured: boolean;
+  apiKeyHint?: string;
+  updatedAt?: string;
+}
+
 export interface ImageGenerationSettings {
   source: "database" | "environment" | "disabled";
   provider: string;
   enabled: boolean;
   baseUrl?: string;
   modelName?: string;
+  systemPrompt: string;
   timeoutSeconds: number;
   requestsPerMinute: number;
   concurrencyLimit: number;

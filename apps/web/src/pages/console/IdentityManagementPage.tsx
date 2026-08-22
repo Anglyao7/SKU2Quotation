@@ -2,7 +2,6 @@ import {
   AlertDialog,
   Badge,
   Button,
-  Callout,
   Card,
   Checkbox,
   Dialog,
@@ -21,6 +20,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState, TableSkeleton } from "../../components/States";
 import { useLocale } from "../../core/LocaleContext";
+import { ToastNotice } from "../../core/ToastContext";
 import { api } from "../../lib/api";
 import type {
   MerchantIdentityProfile,
@@ -207,7 +207,7 @@ function IdentityEditor({
           <Text size="2" weight="medium">{t(module.label)}</Text>
         </label>)}
       </div>
-      {error ? <Callout.Root color="red"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error}</Callout.Text></Callout.Root> : null}
+      {error ? <ToastNotice kind="error" message={error} /> : null}
       <div className="dialog-actions"><Button variant="soft" color="gray" onClick={onClose}>{t("取消")}</Button><Button loading={saving} disabled={!name.trim()} onClick={() => void save()}>{t("保存身份")}</Button></div>
     </Dialog.Content>
   </Dialog.Root>;

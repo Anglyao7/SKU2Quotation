@@ -1,4 +1,4 @@
-import { Button, Callout, Card, Heading, Text, TextField } from "@radix-ui/themes";
+import { Button, Card, Heading, Text, TextField } from "@radix-ui/themes";
 import {
   ArrowRight,
   Buildings,
@@ -15,6 +15,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { useCoreAuth } from "../core/AuthContext";
 import { authLoginMessageKey } from "../core/authLoginError";
 import { useLocale } from "../core/LocaleContext";
+import { ToastNotice } from "../core/ToastContext";
 
 export function LoginPage() {
   const { locale, setLocale, t } = useLocale();
@@ -169,12 +170,7 @@ export function LoginPage() {
             </form>
           )}
 
-          {visibleError ? (
-            <Callout.Root id="login-error" color="red" mt="4" role="alert">
-              <Callout.Icon><WarningCircle /></Callout.Icon>
-              <Callout.Text>{visibleError}</Callout.Text>
-            </Callout.Root>
-          ) : null}
+          {visibleError ? <ToastNotice kind="error" message={visibleError} /> : null}
         </Card>
       </div>
       <Link to="/" className="login-back-link">{t("返回官网")}</Link>

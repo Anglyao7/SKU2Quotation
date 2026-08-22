@@ -15,6 +15,7 @@ class ImageGenerationSettingsResponse(BaseModel):
     enabled: bool
     base_url: str | None = None
     model_name: str | None = None
+    system_prompt: str
     timeout_seconds: int = Field(ge=60, le=360)
     requests_per_minute: int = Field(default=6, ge=1, le=10_000)
     concurrency_limit: int = Field(default=3, ge=1, le=32)
@@ -33,6 +34,7 @@ class ImageGenerationSettingsUpdateRequest(BaseModel):
     enabled: bool = True
     base_url: str = Field(min_length=1, max_length=1000)
     model_name: str = Field(min_length=1, max_length=300)
+    system_prompt: str | None = Field(default=None, max_length=12000)
     api_key: SecretStr | None = Field(default=None, max_length=4096)
     timeout_seconds: int = Field(default=180, ge=60, le=360)
     requests_per_minute: int = Field(default=6, ge=1, le=10_000)

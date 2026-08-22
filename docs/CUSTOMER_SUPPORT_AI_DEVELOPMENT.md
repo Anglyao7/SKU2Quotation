@@ -9,7 +9,7 @@
 
 本次已完成运行契约的首个可上线闭环（知识与证据基础、店铺级 SKU/文件 RAG、
 启用/关闭、多语言、引用、人工接管与版本化行为训练），
-数据库版本为 `20260820_0102`。当前实现入口如下：
+数据库版本为 `20260822_0103`。当前实现入口如下：
 
 - 平台配置中心：`/console/system/configuration`，集中配置翻译与 Embedding API。智能客服
   模型密钥不再出现在公共配置页，统一在对应智能体详情中维护。
@@ -766,11 +766,18 @@ SUPPORT_AI_MAX_OUTPUT_TOKENS
 SUPPORT_AI_TEMPERATURE
 SUPPORT_AI_WORKER_INLINE
 SUPPORT_AI_STALE_JOB_SECONDS
+RERANK_SETTINGS_MASTER_KEY
+SUPPORT_AI_RERANK_API_KEY
+SUPPORT_AI_RERANK_BASE_URL
+SUPPORT_AI_RERANK_MODEL
+SUPPORT_AI_RERANK_TIMEOUT_MS
+SUPPORT_AI_RERANK_MAX_DOCUMENTS
 ```
 
 标准生产 compose 将 `SUPPORT_AI_WORKER_INLINE=false`，由 `scripts.run_tenant_workers`
 处理队列；compact 和开发环境默认为 `true`。文件对象沿用现有 `OBJECT_STORAGE_*` R2/S3
-变量，向量模型沿用配置中心或 `TEXT_EMBEDDING_*`。
+变量，向量模型沿用配置中心或 `TEXT_EMBEDDING_*`。可选 Rerank 在初次混合召回后仅重排
+最多 30 条候选，客服运行时最多等待 800ms；模型失败或超时时保留原排序继续回答。
 
 ### 11.5 公共消息引用
 

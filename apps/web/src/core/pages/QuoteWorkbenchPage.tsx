@@ -2,7 +2,6 @@ import {
   AlertDialog,
   Badge,
   Button,
-  Callout,
   Card,
   Dialog,
   DropdownMenu,
@@ -36,7 +35,7 @@ import {
   SlidersHorizontal,
   X,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   CoreApiError,
@@ -56,6 +55,7 @@ import {
 } from "../api";
 import { CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import { ToastNotice, useToast } from "../ToastContext";
 import type {
   MerchantSettings,
   ProductDetail,
@@ -71,6 +71,23 @@ import "./QuoteWorkbenchPage.css";
 type QuoteDocumentStyle = PublicQuoteDraft["documentStyle"];
 type QuoteItemEditField = "unitPrice" | "quantity" | "name" | "description" | "specification" | "category" | "unitCode";
 type QuoteItemEdit = Partial<Record<QuoteItemEditField, string>>;
+type QuoteSettingsPayload = {
+  locale: StorefrontLocale;
+  style: QuoteDocumentStyle;
+  templateId: string | null;
+  quoteNumber: string;
+  visibleColumns: QuoteTemplateField[];
+};
+
+function quoteSettingsEqual(left: QuoteSettingsPayload | undefined, right: QuoteSettingsPayload) {
+  return Boolean(left
+    && left.locale === right.locale
+    && left.style === right.style
+    && left.templateId === right.templateId
+    && left.quoteNumber === right.quoteNumber
+    && left.visibleColumns.length === right.visibleColumns.length
+    && left.visibleColumns.every((field, index) => field === right.visibleColumns[index]));
+}
 
 const locales: Array<{ value: StorefrontLocale; label: string; flag: string }> = [
   { value: "zh-CN", label: "简体中文", flag: "🇨🇳" },
@@ -190,6 +207,7 @@ function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField) {
 export function QuoteWorkbenchPage() {
   const { quoteDraftId } = useParams<{ quoteDraftId: string }>();
   const { t } = useLocale();
+  const { notify } = useToast();
   const [draft, setDraft] = useState<PublicQuoteDraft>();
   const [templates, setTemplates] = useState<QuoteExcelTemplate[]>([]);
   const [settings, setSettings] = useState<MerchantSettings>();
@@ -204,7 +222,6 @@ export function QuoteWorkbenchPage() {
   const [confirming, setConfirming] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
-  const [successNotice, setSuccessNotice] = useState("");
   const [itemEdits, setItemEdits] = useState<Record<string, QuoteItemEdit>>({});
   const [savingItems, setSavingItems] = useState(false);
   const [bulkPriceOpen, setBulkPriceOpen] = useState(false);
@@ -221,6 +238,10 @@ export function QuoteWorkbenchPage() {
   const [market, setMarket] = useState<DashboardSnapshot["market"]>();
   const [conversionOpen, setConversionOpen] = useState(false);
   const [converting, setConverting] = useState(false);
+  const autoSettingsTimer = useRef<number | undefined>(undefined);
+  const autoItemsTimer = useRef<number | undefined>(undefined);
+  const savedSettingsRef = useRef<QuoteSettingsPayload | undefined>(undefined);
+  const loadedDraftIdRef = useRef<string | undefined>(undefined);
 
   const enabledLocales = useMemo(() => {
     const allowed = settings?.storefrontLocales;
@@ -238,6 +259,13 @@ export function QuoteWorkbenchPage() {
     const filtered = visibleColumns.filter((field) => availableColumns.includes(field));
     return filtered.length ? filtered : availableColumns;
   }, [availableColumns, visibleColumns]);
+  const currentSettings = useMemo<QuoteSettingsPayload>(() => ({
+    locale,
+    style,
+    templateId: templateId || null,
+    quoteNumber: quoteNumber.trim(),
+    visibleColumns: [...activeColumns],
+  }), [activeColumns, locale, quoteNumber, style, templateId]);
   const previewGrid = useMemo(() => `repeat(${Math.max(activeColumns.length, 1)}, minmax(0, 1fr))`, [activeColumns.length]);
   const canEditPrices = draft?.status === "PENDING_CONFIRMATION";
   const hasPendingItemEdits = Object.values(itemEdits).some((edit) => Object.keys(edit).length > 0);
@@ -262,7 +290,6 @@ export function QuoteWorkbenchPage() {
     if (!quoteDraftId) return;
     setLoading(true);
     setError("");
-    setSuccessNotice("");
     setMarket(undefined);
     try {
       const [nextDraft, nextTemplates, merchantSettings] = await Promise.all([
@@ -274,6 +301,7 @@ export function QuoteWorkbenchPage() {
       const nextTemplate = nextReadyTemplates.find((template) => template.id === (nextDraft.quoteTemplateId ?? "")) ?? nextReadyTemplates.find((template) => template.isDefault);
       const nextAvailable = templateTableFields(nextTemplate);
       const nextVisible = (nextDraft.visibleColumns ?? []).filter((field) => nextAvailable.includes(field));
+      const nextActiveColumns = nextVisible.length ? nextVisible : nextAvailable;
       setDraft(nextDraft);
       setTemplates(nextTemplates);
       setSettings(merchantSettings);
@@ -281,7 +309,15 @@ export function QuoteWorkbenchPage() {
       setStyle(nextDraft.documentStyle);
       setTemplateId(nextDraft.quoteTemplateId ?? "");
       setQuoteNumber(nextDraft.quoteNumber);
-      setVisibleColumns(nextVisible.length ? nextVisible : nextAvailable);
+      setVisibleColumns(nextActiveColumns);
+      savedSettingsRef.current = {
+        locale: nextDraft.locale,
+        style: nextDraft.documentStyle,
+        templateId: nextDraft.quoteTemplateId ?? null,
+        quoteNumber: nextDraft.quoteNumber.trim(),
+        visibleColumns: [...nextActiveColumns],
+      };
+      loadedDraftIdRef.current = nextDraft.id;
       void getDashboard().then((dashboard) => setMarket(dashboard.market)).catch(() => undefined);
     } catch (reason) {
       if (reason instanceof CoreApiError && reason.status === 404) {
@@ -380,36 +416,74 @@ export function QuoteWorkbenchPage() {
     }
   }, [canEditPrices, draft, itemEdits, t]);
 
-  const save = useCallback(async () => {
-    if (!draft) return draft;
-    const normalizedNumber = quoteNumber.trim();
-    if (!normalizedNumber) {
-      setError(t("报价单编号不能为空。"));
+  const persistSettings = useCallback(async (target: PublicQuoteDraft, payload: QuoteSettingsPayload, quiet = false) => {
+    if (!payload.quoteNumber) {
+      if (!quiet) setError(t("报价单编号不能为空。"));
       return undefined;
     }
-    setSaving(true);
-    setError("");
+    const previous = savedSettingsRef.current;
+    savedSettingsRef.current = payload;
+    if (!quiet) {
+      setSaving(true);
+      setError("");
+    }
     try {
-      const edited = await saveAllItemEdits();
-      if (!edited) return undefined;
-      const next = await updatePublicQuoteDraftSettings(edited.id, {
-        locale,
-        style,
-        templateId: templateId || null,
-        quoteNumber: normalizedNumber,
-        visibleColumns: activeColumns,
+      const next = await updatePublicQuoteDraftSettings(target.id, {
+        locale: payload.locale,
+        style: payload.style,
+        templateId: payload.templateId,
+        quoteNumber: payload.quoteNumber,
+        visibleColumns: payload.visibleColumns,
       });
       setDraft(next);
       setQuoteNumber(next.quoteNumber);
-      setVisibleColumns(next.visibleColumns.length ? next.visibleColumns : activeColumns);
+      setVisibleColumns(next.visibleColumns.length ? next.visibleColumns : payload.visibleColumns);
+      savedSettingsRef.current = {
+        ...payload,
+        quoteNumber: next.quoteNumber.trim(),
+        visibleColumns: next.visibleColumns.length ? [...next.visibleColumns] : [...payload.visibleColumns],
+      };
       return next;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("报价单设置保存失败"));
+      savedSettingsRef.current = previous;
+      const message = reason instanceof Error ? reason.message : t("报价单设置保存失败");
+      if (quiet) notify(message, { kind: "error" });
+      else setError(message);
       return undefined;
     } finally {
-      setSaving(false);
+      if (!quiet) setSaving(false);
     }
-  }, [activeColumns, draft, locale, quoteNumber, saveAllItemEdits, style, t, templateId]);
+  }, [notify, t]);
+
+  const save = useCallback(async () => {
+    if (!draft) return draft;
+    const edited = await saveAllItemEdits();
+    if (!edited) return undefined;
+    return persistSettings(edited, currentSettings);
+  }, [currentSettings, draft, persistSettings, saveAllItemEdits]);
+
+  useEffect(() => {
+    if (!draft || !canEditPrices || loadedDraftIdRef.current !== draft.id) return;
+    if (quoteSettingsEqual(savedSettingsRef.current, currentSettings)) return;
+    if (autoSettingsTimer.current) window.clearTimeout(autoSettingsTimer.current);
+    autoSettingsTimer.current = window.setTimeout(() => {
+      void persistSettings(draft, currentSettings, true);
+    }, 650);
+    return () => {
+      if (autoSettingsTimer.current) window.clearTimeout(autoSettingsTimer.current);
+    };
+  }, [canEditPrices, currentSettings, draft, persistSettings]);
+
+  useEffect(() => {
+    if (!draft || !canEditPrices || !hasPendingItemEdits) return;
+    if (autoItemsTimer.current) window.clearTimeout(autoItemsTimer.current);
+    autoItemsTimer.current = window.setTimeout(() => {
+      void saveAllItemEdits();
+    }, 850);
+    return () => {
+      if (autoItemsTimer.current) window.clearTimeout(autoItemsTimer.current);
+    };
+  }, [canEditPrices, draft, hasPendingItemEdits, saveAllItemEdits]);
 
   const download = async (type: "pdf" | "xlsx") => {
     if (!draft) return;
@@ -435,7 +509,7 @@ export function QuoteWorkbenchPage() {
       if (!saved) return;
       const confirmed = await updatePublicQuoteDraftStatus(saved.id, "CONFIRMED");
       setDraft(confirmed);
-      setSuccessNotice(t("报价已通过，客户现在可以下载 PDF 和 Excel。"));
+      notify(t("报价已通过，客户现在可以下载 PDF 和 Excel。"), { kind: "success" });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("报价单确认失败"));
     } finally {
@@ -599,9 +673,9 @@ export function QuoteWorkbenchPage() {
       setPriceDrafts(Object.fromEntries(next.items.map((item) => [item.id, item.unitPrice.toFixed(2)])));
       setConversionOpen(false);
       const rateText = conversionRate ? conversionRate.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") : "";
-      setSuccessNotice(rateText
+      notify(rateText
         ? t("已按 1 {source} = {rate} USD 换算本报价单。", { source: draft.currency, rate: rateText })
-        : t("报价单已换算为 USD。"));
+        : t("报价单已换算为 USD。"), { kind: "success" });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("报价币种换算失败"));
     } finally {
@@ -660,8 +734,7 @@ export function QuoteWorkbenchPage() {
       description={t("报价单会按照商家模板生成，客户只会看到你选择的公开字段。")}
       actions={<Button asChild variant="soft" color="gray"><Link to="/console/quotes"><ArrowLeft />{t("返回询价列表")}</Link></Button>}
     />
-    {error ? <CoreError message={error} /> : null}
-    {successNotice ? <Callout.Root color="green"><Callout.Icon><Check /></Callout.Icon><Callout.Text>{successNotice}</Callout.Text></Callout.Root> : null}
+    {error ? <ToastNotice kind="error" message={error} /> : null}
 
     <Card className="quote-status-card">
       <div className="quote-status-main"><Text size="1" color="gray">{t("当前订单状态")}</Text><Badge color={draft.status === "CONFIRMED" || draft.status === "COMPLETED" ? "jade" : draft.status === "CANCELLED" ? "gray" : "amber"}>{t(draft.status)}</Badge></div>
@@ -669,37 +742,39 @@ export function QuoteWorkbenchPage() {
     </Card>
 
     <Card className="quote-workbench-toolbar">
-      <div className="quote-workbench-number">
+      <div className="quote-workbench-fields">
+       <div className="quote-workbench-number">
         <Text size="1" color="gray">{t("报价单 ID / 编号")}</Text>
         <div className="quote-number-control"><TextField.Root value={quoteNumber} onChange={(event) => setQuoteNumber(event.target.value)} maxLength={80} /><Button size="1" variant="soft" color="gray" onClick={() => void copyNumber()}><Copy />{copied ? t("已复制") : t("复制")}</Button></div>
+       </div>
+       <label className="quote-workbench-select"><Text size="1" color="gray">{t("商家报价模板")}</Text><Select.Root value={templateId || "default"} onValueChange={changeTemplate}><Select.Trigger /><Select.Content position="popper"><Select.Item value="default">{t("系统默认模板")}</Select.Item>{readyTemplates.filter((template) => !template.isDefault).map((template) => <Select.Item key={template.id} value={template.id}>{template.name}</Select.Item>)}</Select.Content></Select.Root></label>
+       <div className="quote-workbench-select">
+         <Text size="1" color="gray"><Columns />{t("商品表格列")}</Text>
+         <DropdownMenu.Root>
+           <DropdownMenu.Trigger>
+             <Button variant="soft" color="gray" className="quote-column-trigger"><Columns />{t("已选 {count} 列", { count: activeColumns.length })}<CaretDown /></Button>
+           </DropdownMenu.Trigger>
+           <DropdownMenu.Content align="start" className="quote-column-menu">
+             <DropdownMenu.Label>{t("选择客户可见列")}</DropdownMenu.Label>
+             {availableColumns.map((field) => <DropdownMenu.CheckboxItem key={field} checked={visibleColumns.includes(field)} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate)}</span>{visibleColumns.includes(field) ? <Check /> : null}</DropdownMenu.CheckboxItem>)}
+           </DropdownMenu.Content>
+         </DropdownMenu.Root>
+       </div>
+       <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
+       <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
       </div>
-      <label className="quote-workbench-select"><Text size="1" color="gray">{t("商家报价模板")}</Text><Select.Root value={templateId || "default"} onValueChange={changeTemplate}><Select.Trigger /><Select.Content position="popper"><Select.Item value="default">{t("系统默认模板")}</Select.Item>{readyTemplates.filter((template) => !template.isDefault).map((template) => <Select.Item key={template.id} value={template.id}>{template.name}</Select.Item>)}</Select.Content></Select.Root></label>
-      <div className="quote-workbench-select">
-        <Text size="1" color="gray"><Columns />{t("商品表格列")}</Text>
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger>
-            <Button variant="soft" color="gray" className="quote-column-trigger"><Columns />{t("已选 {count} 列", { count: activeColumns.length })}<CaretDown /></Button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Content align="start" className="quote-column-menu">
-            <DropdownMenu.Label>{t("选择客户可见列")}</DropdownMenu.Label>
-            {availableColumns.map((field) => <DropdownMenu.CheckboxItem key={field} checked={visibleColumns.includes(field)} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate)}</span>{visibleColumns.includes(field) ? <Check /> : null}</DropdownMenu.CheckboxItem>)}
-          </DropdownMenu.Content>
-        </DropdownMenu.Root>
-      </div>
-      <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
-      <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
       <div className="quote-workbench-actions">
         <Button variant="soft" color="blue" disabled={!canConvertToUsd || hasPendingItemEdits || converting} loading={converting} onClick={() => setConversionOpen(true)}><CurrencyDollar />{draft.currency === "USD" ? t("已是 USD") : t("换算为 USD")}</Button>
         {conversionRateLabel && draft.currency.toUpperCase() !== "USD" ? <Text size="1" color="gray" className="quote-fx-rate">1 {draft.currency} = {conversionRateLabel} USD</Text> : null}
         <Button variant="soft" disabled={!canEditPrices || bulkSaving} onClick={() => setBulkPriceOpen(true)}><SlidersHorizontal />{t("一键调价")}</Button>
-        <Button variant="soft" disabled={!canEditPrices || !hasPendingItemEdits || savingItems} loading={savingItems} onClick={() => void saveAllItemEdits()}><FloppyDisk />{t("保存商品修改")}</Button>
         <Button variant="soft" onClick={() => { setItemsDrawerOpen(true); setSelectedItemId(undefined); }}><Package />{t("订单商品")}<Badge color="gray">{draft.items.length}</Badge></Button>
-        <Button variant="soft" disabled={saving || savingItems} onClick={() => void save()}><FloppyDisk />{t("保存设置")}</Button>
+        <Text size="1" color="gray" className="quote-autosave-status" aria-live="polite">{saving || savingItems ? t("正在自动保存…") : t("已自动保存")}</Text>
+        <Button color="blue" disabled={saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{t("保存报价单")}</Button>
         <DropdownMenu.Root>
           <DropdownMenu.Trigger><Button variant="soft" loading={Boolean(downloading)}><DownloadSimple />{t("导出")}{downloading ? ` ${downloading.toUpperCase()}` : ""}<CaretDown /></Button></DropdownMenu.Trigger>
           <DropdownMenu.Content align="end"><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("pdf")}><FilePdf />{t("导出为 PDF")}</DropdownMenu.Item><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("xlsx")}><FileXls />{t("导出为 Excel")}</DropdownMenu.Item></DropdownMenu.Content>
         </DropdownMenu.Root>
-        {draft.status === "PENDING_CONFIRMATION" ? <Button color="green" loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
+        {draft.status === "PENDING_CONFIRMATION" ? <Button color="green" disabled={confirming || saving || savingItems} loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
       </div>
     </Card>
 
@@ -766,7 +841,6 @@ export function QuoteWorkbenchPage() {
                 <Text size="1" color="gray">× {selectedDrawerItem.quantity} {selectedDrawerItem.unitCode}</Text>
               </div>
               <div className="quote-item-price-actions">
-                <Button size="2" variant="soft" disabled={!canEditPrices || savingItemId === selectedDrawerItem.id || syncingItemId === selectedDrawerItem.id} loading={savingItemId === selectedDrawerItem.id} onClick={() => void saveItemPrice(selectedDrawerItem, false)}>{t("仅保存本次报价")}</Button>
                 <Button size="2" color="amber" disabled={!canEditPrices || savingItemId === selectedDrawerItem.id || syncingItemId === selectedDrawerItem.id} loading={syncingItemId === selectedDrawerItem.id} onClick={() => requestItemPriceSync(selectedDrawerItem)}>{t("同步到商品库")}</Button>
               </div>
               {!canEditPrices ? <Text size="1" color="gray">{t("订单已进入 {status}，价格不可再修改。", { status: t(draft.status) })}</Text> : null}
@@ -796,7 +870,7 @@ export function QuoteWorkbenchPage() {
                     <div className="quote-item-row-copy"><div className="quote-item-row-title"><Text size="2" weight="medium">{item.name}</Text><Badge color="gray">#{item.position}</Badge></div><Text size="1" color="gray" className="mono-text">{item.skuCode}</Text>{item.category ? <Text size="1" color="gray">{item.category}</Text> : null}<Text size="1" color="gray">{t("数量")}: {item.quantity} {item.unitCode}</Text></div>
                     <ArrowRight className="quote-item-row-arrow" size={18} />
                   </div>
-                  <div className="quote-item-row-price"><Text size="1" color="gray">{t("本次报价单价")}</Text><div className="quote-item-row-price-control"><TextField.Root type="number" min="0" step="0.01" value={priceDrafts[item.id] ?? item.unitPrice.toFixed(2)} disabled={!canEditPrices} onClick={(event) => event.stopPropagation()} onChange={(event) => updateItemEdit(item.id, "unitPrice", event.target.value)}><TextField.Slot side="left">{item.currency}</TextField.Slot></TextField.Root><Button size="1" variant="soft" disabled={!canEditPrices || savingItemId === item.id || syncingItemId === item.id} loading={savingItemId === item.id} onClick={(event) => { event.stopPropagation(); void saveItemPrice(item, false); }}>{t("保存")}</Button><Button size="1" variant="soft" color="amber" disabled={!canEditPrices || savingItemId === item.id || syncingItemId === item.id} loading={syncingItemId === item.id} onClick={(event) => { event.stopPropagation(); requestItemPriceSync(item); }}>{t("同步商品库")}</Button></div><Text size="1" color="gray">{t("小计")}: {money(item.lineTotal, item.currency)}</Text></div>
+                  <div className="quote-item-row-price"><Text size="1" color="gray">{t("本次报价单价")}</Text><div className="quote-item-row-price-control"><TextField.Root type="number" min="0" step="0.01" value={priceDrafts[item.id] ?? item.unitPrice.toFixed(2)} disabled={!canEditPrices} onClick={(event) => event.stopPropagation()} onChange={(event) => updateItemEdit(item.id, "unitPrice", event.target.value)}><TextField.Slot side="left">{item.currency}</TextField.Slot></TextField.Root><Button size="1" variant="soft" color="amber" disabled={!canEditPrices || savingItemId === item.id || syncingItemId === item.id} loading={syncingItemId === item.id} onClick={(event) => { event.stopPropagation(); requestItemPriceSync(item); }}>{t("同步商品库")}</Button></div><Text size="1" color="gray">{t("小计")}: {money(item.lineTotal, item.currency)}</Text></div>
                 </Card>;
               })}
             </div>
@@ -825,7 +899,7 @@ export function QuoteWorkbenchPage() {
         <Card className="quote-preview-card" style={{ "--quote-accent": selectedStyle.color } as React.CSSProperties}>
           <div className="quote-preview-header"><div><Text size="1" color="gray">{localeLabel(locale)}</Text><Heading size="7">{t("报价单")}</Heading><Text size="2" color="gray">{quoteNumber} · {coreDate(draft.createdAt)}</Text></div><Badge style={{ background: selectedStyle.color, color: "white" }}>{t(selectedStyle.label)}</Badge></div>
           <div className="quote-preview-meta"><div><span>{t("客户")}</span><strong>{draft.customerCompany || draft.customerName}</strong></div><div><span>{t("联系人")}</span><strong>{draft.customerName}</strong></div><div><span>{t("有效期")}</span><strong>{coreDate(draft.validUntil)}</strong></div><div><span>{t("币种")}</span><strong>{draft.currency}</strong></div></div>
-          <div className="quote-preview-editor-toolbar"><div><Text size="2" weight="medium">{t("客户 PDF 预览")}</Text><Text size="1" color="gray">{canEditPrices ? t("直接编辑表格中的价格、数量、名称等字段，保存后才会写入本次报价。") : t("报价已确认，当前预览为只读。")}</Text></div><div className="quote-preview-editor-actions">{hasPendingItemEdits ? <Badge color="amber">{t("有 {count} 项待保存", { count: Object.keys(itemEdits).length })}</Badge> : null}<Button size="2" variant="soft" disabled={!canEditPrices || !hasPendingItemEdits || savingItems} loading={savingItems} onClick={() => void saveAllItemEdits()}><FloppyDisk />{t("保存商品修改")}</Button></div></div>
+          <div className="quote-preview-editor-toolbar"><div><Text size="2" weight="medium">{t("客户 PDF 预览")}</Text><Text size="1" color="gray">{canEditPrices ? t("直接编辑表格中的价格、数量、名称等字段，系统会自动保存。") : t("报价已确认，当前预览为只读。")}</Text></div><div className="quote-preview-editor-actions">{hasPendingItemEdits ? <Badge color="amber">{savingItems ? t("正在自动保存…") : t("等待自动保存")}</Badge> : null}</div></div>
           <div className="quote-preview-table">
             <div className="quote-preview-row quote-preview-head" style={{ gridTemplateColumns: previewGrid }}>{activeColumns.map((field) => <span className="quote-preview-cell" key={field}>{fieldLabel(field, t, selectedTemplate)}</span>)}</div>
             {draft.items.map((item) => <div className="quote-preview-row" style={{ gridTemplateColumns: previewGrid }} key={item.id}>{activeColumns.map((field) => <span className="quote-preview-cell" key={`${item.id}-${field}`}>{renderPreviewCell(item, field)}</span>)}</div>)}

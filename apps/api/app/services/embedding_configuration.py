@@ -98,18 +98,38 @@ def get_managed_embedding_settings(
     return session.get(EmbeddingProviderSettingsRow, SETTINGS_ID)
 
 
-def resolved_text_embedding_provider(session: Session) -> EmbeddingProvider:
+def resolved_text_embedding_provider(
+    session: Session,
+    *,
+    timeout_seconds: float | None = None,
+    max_retry_count: int | None = None,
+) -> EmbeddingProvider:
     settings = get_managed_embedding_settings(session)
     if settings is None or not settings.is_active:
-        return configured_text_embedding_provider()
+        if timeout_seconds is None and max_retry_count is None:
+            return configured_text_embedding_provider()
+        values = dict(os.environ)
+        if timeout_seconds is not None:
+            values["TEXT_EMBEDDING_TIMEOUT_SECONDS"] = str(timeout_seconds)
+        if max_retry_count is not None:
+            values["TEXT_EMBEDDING_PROVIDER_RETRIES"] = str(max_retry_count)
+        return configured_text_embedding_provider(values)
     return openai_compatible_embedding_provider(
         api_key=decrypt_api_key(settings.api_key_ciphertext),
         base_url=settings.base_url,
         model_name=settings.model_name,
         dimensions=settings.dimensions,
         model_version=settings.model_version,
-        timeout_seconds=float(settings.timeout_seconds),
-        max_retry_count=settings.max_retry_count,
+        timeout_seconds=(
+            min(float(settings.timeout_seconds), timeout_seconds)
+            if timeout_seconds is not None
+            else float(settings.timeout_seconds)
+        ),
+        max_retry_count=(
+            min(settings.max_retry_count, max_retry_count)
+            if max_retry_count is not None
+            else settings.max_retry_count
+        ),
         retry_base_seconds=configured_embedding_retry_base_seconds(),
     )
 

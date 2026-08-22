@@ -57,6 +57,7 @@ import type {
   QuoteTemplateField,
   QuotationRecord,
   QuotationSummary,
+  RerankSettings,
   SalesOrder,
   SalesOrderSummary,
   SkuListItem,
@@ -1372,7 +1373,7 @@ interface ApiImageEnhancementItem {
 interface ApiImageEnhancementTask {
   id: string;
   status: ImageEnhancementTask["status"];
-  prompt: string;
+  prompt?: string | null;
   ratio?: ImageEnhancementRatio;
   size: string;
   output_format: "url";
@@ -1413,7 +1414,7 @@ function mapImageEnhancementTask(row: ApiImageEnhancementTask): ImageEnhancement
   return {
     id: row.id,
     status: row.status,
-    prompt: row.prompt,
+    prompt: defined(row.prompt),
     ratio: row.ratio ?? "1:1",
     size: row.size,
     outputFormat: row.output_format,
@@ -1674,12 +1675,14 @@ export async function startImageEnhancement(
   prompt?: string,
   ratio: ImageEnhancementRatio = "1:1",
   size: ImageEnhancementSize = "1K",
+  retryItemId?: string,
 ): Promise<ImageEnhancementTask> {
   const row = await request<ApiImageEnhancementTask>("/product-center/image-enhancements", {
     method: "POST",
     body: JSON.stringify({
       targets: targets.map((target) => ({ product_id: target.productId, sku_ids: target.skuIds ?? [] })),
       ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+      ...(retryItemId ? { retry_item_id: retryItemId } : {}),
       ratio,
       size,
     }),
@@ -2089,6 +2092,7 @@ interface ApiImageGenerationSettings {
   enabled: boolean;
   base_url?: string | null;
   model_name?: string | null;
+  system_prompt: string;
   timeout_seconds: number;
   requests_per_minute?: number;
   concurrency_limit?: number;
@@ -2108,6 +2112,7 @@ function mapImageGenerationSettings(
     enabled: row.enabled,
     baseUrl: defined(row.base_url),
     modelName: defined(row.model_name),
+    systemPrompt: row.system_prompt,
     timeoutSeconds: row.timeout_seconds,
     requestsPerMinute: row.requests_per_minute ?? 6,
     concurrencyLimit: row.concurrency_limit ?? 3,
@@ -2131,6 +2136,7 @@ export async function updateImageGenerationSettings(input: {
   enabled: boolean;
   baseUrl: string;
   modelName: string;
+  systemPrompt: string;
   apiKey?: string;
   timeoutSeconds: number;
   requestsPerMinute: number;
@@ -2143,6 +2149,7 @@ export async function updateImageGenerationSettings(input: {
         enabled: input.enabled,
         base_url: input.baseUrl,
         model_name: input.modelName,
+        system_prompt: input.systemPrompt,
         api_key: input.apiKey || undefined,
         timeout_seconds: input.timeoutSeconds,
         requests_per_minute: input.requestsPerMinute,
@@ -2193,6 +2200,65 @@ export async function updateEmbeddingSettings(input: {
     }
   }
   throw lastError;
+}
+
+interface ApiRerankSettings {
+  source: "database" | "environment" | "disabled";
+  provider: string;
+  enabled: boolean;
+  base_url?: string | null;
+  model_name?: string | null;
+  timeout_ms: number;
+  max_documents: number;
+  api_key_configured: boolean;
+  api_key_hint?: string | null;
+  updated_at?: string | null;
+}
+
+function mapRerankSettings(row: ApiRerankSettings): RerankSettings {
+  return {
+    source: row.source,
+    provider: row.provider,
+    enabled: row.enabled,
+    baseUrl: defined(row.base_url),
+    modelName: defined(row.model_name),
+    timeoutMs: row.timeout_ms,
+    maxDocuments: row.max_documents,
+    apiKeyConfigured: row.api_key_configured,
+    apiKeyHint: defined(row.api_key_hint),
+    updatedAt: defined(row.updated_at),
+  };
+}
+
+export async function getRerankSettings(): Promise<RerankSettings> {
+  return mapRerankSettings(
+    await request<ApiRerankSettings>("/ai/rerank/settings", {
+      cache: "no-store",
+    }),
+  );
+}
+
+export async function updateRerankSettings(input: {
+  enabled: boolean;
+  baseUrl: string;
+  modelName: string;
+  apiKey?: string;
+  timeoutMs: number;
+  maxDocuments: number;
+}): Promise<RerankSettings> {
+  return mapRerankSettings(
+    await request<ApiRerankSettings>("/ai/rerank/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: input.enabled,
+        base_url: input.baseUrl,
+        model_name: input.modelName,
+        api_key: input.apiKey || undefined,
+        timeout_ms: input.timeoutMs,
+        max_documents: input.maxDocuments,
+      }),
+    }),
+  );
 }
 
 interface ApiTranslationSettings {

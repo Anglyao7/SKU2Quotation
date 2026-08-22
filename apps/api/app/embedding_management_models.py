@@ -69,6 +69,43 @@ class EmbeddingProviderSettingsRow(AuditTimestampMixin, Base):
     )
 
 
+class RerankProviderSettingsRow(AuditTimestampMixin, Base):
+    """Platform-wide Cohere-compatible rerank provider configuration."""
+
+    __tablename__ = "rerank_provider_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "provider = 'cohere-compatible'",
+            name="provider_supported",
+        ),
+        CheckConstraint(
+            "timeout_ms >= 100 AND timeout_ms <= 800",
+            name="timeout_ms_supported",
+        ),
+        CheckConstraint(
+            "max_documents >= 5 AND max_documents <= 30",
+            name="max_documents_supported",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    provider: Mapped[str] = mapped_column(
+        String(40), default="cohere-compatible", nullable=False
+    )
+    base_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    timeout_ms: Mapped[int] = mapped_column(Integer, default=800, nullable=False)
+    max_documents: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    api_key_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_last_four: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class KnowledgeIndexJobRow(AuditTimestampMixin, Base):
     """Tenant-scoped, observable execution record for an embedding index update."""
 

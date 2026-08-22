@@ -16,13 +16,6 @@ export interface ImageEnhancementTarget {
   skuIds: string[];
 }
 
-const DEFAULT_IMAGE_ENHANCEMENT_PROMPT =
-  "Enhance only the provided product image: make it sharper, clearer, and less noisy. " +
-  "The input image is the source of truth. Preserve the exact product, colors, materials, " +
-  "shape, proportions, existing text, markings, existing logos, background, lighting, and composition. " +
-  "Do not add, remove, redraw, or invent any logo, text, label, accessory, decoration, prop, or other object. " +
-  "Do not change the background or create a new design.";
-
 const IMAGE_ENHANCEMENT_RATIOS: ImageEnhancementRatio[] = ["1:1", "4:3", "3:4", "16:9", "9:16"];
 const IMAGE_ENHANCEMENT_SIZES: ImageEnhancementSize[] = ["1K", "2K", "4K"];
 
@@ -33,7 +26,7 @@ type ImageEnhancementRetryDraft = {
 };
 
 function defaultRetryDraft(): ImageEnhancementRetryDraft {
-  return { prompt: DEFAULT_IMAGE_ENHANCEMENT_PROMPT, ratio: "1:1", size: "1K" };
+  return { prompt: "", ratio: "1:1", size: "1K" };
 }
 
 function statusLabel(status: ImageEnhancementTask["items"][number]["status"], t: (key: string) => string) {
@@ -67,7 +60,6 @@ export function ImageEnhancementDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string>();
-  const [prompt, setPrompt] = useState(DEFAULT_IMAGE_ENHANCEMENT_PROMPT);
   const [ratio, setRatio] = useState<ImageEnhancementRatio>("1:1");
   const [size, setSize] = useState<ImageEnhancementSize>("1K");
   const [retryDrafts, setRetryDrafts] = useState<Record<string, ImageEnhancementRetryDraft>>({});
@@ -83,12 +75,11 @@ export function ImageEnhancementDialog({
       setBusy(false);
       return;
     }
-    // A new selection starts with a fresh editable configuration. The task is
-    // intentionally not created until the operator confirms the prompt.
+    // A new selection starts with a fresh generation configuration. The system
+    // prompt is managed centrally and is intentionally not exposed here.
     setTask(undefined);
     setError("");
     setBusy(false);
-    setPrompt(DEFAULT_IMAGE_ENHANCEMENT_PROMPT);
     setRatio("1:1");
     setSize("1K");
     setRetryDrafts({});
@@ -126,14 +117,10 @@ export function ImageEnhancementDialog({
     .map((item) => item.id) ?? [];
   const start = async () => {
     if (!targetKey || busy || task) return;
-    if (!prompt.trim()) {
-      setError(t("请输入清晰化提示词"));
-      return;
-    }
     setBusy(true);
     setError("");
     try {
-      setTask(await startImageEnhancement(targets, prompt, ratio, size));
+      setTask(await startImageEnhancement(targets, undefined, ratio, size));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("图片清晰化任务创建失败"));
     } finally {
@@ -150,7 +137,7 @@ export function ImageEnhancementDialog({
     if (busy) return;
     const draft = { ...defaultRetryDraft(), ...retryDrafts[item.id] };
     if (!draft.prompt.trim()) {
-      setError(t("请输入清晰化提示词"));
+      setError(t("请输入重试提示词"));
       return;
     }
     setBusy(true);
@@ -161,6 +148,7 @@ export function ImageEnhancementDialog({
         draft.prompt,
         draft.ratio,
         draft.size,
+        item.id,
       ));
       setRetryDrafts({});
     } catch (reason) {
@@ -229,15 +217,8 @@ export function ImageEnhancementDialog({
           {!task ? (
             <div className="core-image-enhancement-settings">
               <label>
-                <Text size="2" weight="medium">{t("清晰化提示词")}</Text>
-                <TextArea
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  maxLength={2000}
-                  rows={6}
-                  disabled={busy}
-                  placeholder={t("描述希望如何改善图片，同时说明需要保持不变的内容")}
-                />
+                <Text size="2" weight="medium">{t("系统提示词")}</Text>
+                <Text size="1" color="gray">{t("首次生成使用配置中心统一管理的系统提示词，审核界面不会展示提示词内容。商品名、SKU 编码和 SKU 名称会自动作为识别参考随请求传递。生成完成后请直接审核图片；驳回后才可以输入自定义重试提示词。")}</Text>
               </label>
               <div className="core-image-enhancement-settings-grid">
                 <label>
@@ -316,7 +297,7 @@ export function ImageEnhancementDialog({
                           <div className="core-image-enhancement-retry">
                             <div className="core-image-enhancement-retry-heading">
                               <Text weight="bold">{t("重新处理这张图片")}</Text>
-                              <Text size="1" color="gray">{t("已载入系统默认提示词，可按需修改后再次提交。")}</Text>
+                              <Text size="1" color="gray">{t("系统提示词仍由配置中心统一管理；这里仅填写本次驳回重试的补充要求。")}</Text>
                             </div>
                             <TextArea
                               value={draft.prompt}
@@ -324,6 +305,7 @@ export function ImageEnhancementDialog({
                               maxLength={2000}
                               rows={4}
                               disabled={busy}
+                              placeholder={t("驳回后输入本次重试的补充要求，例如保留某个细节或改善某处清晰度")}
                               aria-label={t("重新处理提示词")}
                             />
                             <div className="core-image-enhancement-retry-options">

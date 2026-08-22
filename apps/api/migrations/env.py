@@ -28,6 +28,7 @@ target_metadata = Base.metadata
 POSTGRESQL_MIGRATION_MANAGED_INDEXES = {
     "ix_embeddings_phase3b_hnsw_384",
     "ix_image_embeddings_hnsw_384",
+    "ix_embeddings_hnsw_1024",
     "ix_knowledge_chunks_content_fts",
 }
 POSTGRESQL_MIGRATION_MANAGED_FOREIGN_KEYS = {

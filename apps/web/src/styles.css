@@ -1726,7 +1726,6 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .quote-form { min-height: 0; flex: 1; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .quote-form-scroll { min-height: 0; display: grid; align-content: start; gap: 17px; padding: 18px 4px 18px 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
 .quote-form-actions { display: grid; grid-template-columns: auto minmax(210px, 1fr); align-items: center; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); background: var(--surface); }
-.quote-form-actions > .rt-CalloutRoot { grid-column: 1 / -1; }
 .quote-action-summary { min-width: 0; display: grid; gap: 2px; }
 .quote-action-summary span { color: var(--text-soft); font-size: 11px; white-space: nowrap; }
 .quote-action-summary strong { color: var(--text); font-size: 17px; font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
@@ -2774,6 +2773,57 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .customer-portal-order-list article strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .customer-portal-order-list article time { text-align: right; white-space: nowrap; }
 .customer-portal-loading { min-height: 100dvh; display: grid; place-items: center; background: var(--page); }
+
+/* Application-wide top notifications replace inline callouts. They stay
+   compact, stack safely below the browser chrome, and animate in/out without
+   shifting page layout. */
+.core-toast-viewport {
+  position: fixed;
+  z-index: 1200;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
+  width: min(460px, calc(100vw - 32px));
+  display: grid;
+  gap: 9px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.core-toast {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--text);
+  box-shadow: 0 16px 34px rgba(19, 26, 45, .16), 0 2px 8px rgba(19, 26, 45, .08);
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  pointer-events: auto;
+  animation: core-toast-in 220ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.core-toast[data-state="closing"] { animation: core-toast-out 180ms ease both; }
+.core-toast[data-kind="success"] .core-toast-icon { color: #159570; }
+.core-toast[data-kind="error"] .core-toast-icon { color: #d14343; }
+.core-toast[data-kind="info"] .core-toast-icon { color: var(--accent); }
+.core-toast-message { min-width: 0; font-size: 13px; line-height: 1.45; }
+.core-toast-close { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer; }
+.core-toast-close:hover { background: color-mix(in srgb, var(--line) 40%, transparent); color: var(--text); }
+
+@keyframes core-toast-in {
+  from { opacity: 0; transform: translateY(-12px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes core-toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-8px) scale(.98); }
+}
 
 @media (max-width: 980px) {
   .customer-account-grid { grid-template-columns: 1fr; }

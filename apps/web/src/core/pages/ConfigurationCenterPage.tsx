@@ -6,10 +6,12 @@ import {
   Switch,
   Tabs,
   Text,
+  TextArea,
   TextField,
 } from "@radix-ui/themes";
 import {
   ArrowClockwise,
+  ArrowsDownUp,
   Brain,
   CheckCircle,
   Copy,
@@ -26,9 +28,11 @@ import {
   createSupportAIProviderProfile,
   getEmbeddingSettings,
   getImageGenerationSettings,
+  getRerankSettings,
   listSupportAIProviderProfiles,
   updateEmbeddingSettings,
   updateImageGenerationSettings,
+  updateRerankSettings,
   updateSupportAIProviderProfile,
 } from "../api";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
@@ -36,17 +40,19 @@ import { useLocale } from "../LocaleContext";
 import type {
   EmbeddingSettings,
   ImageGenerationSettings,
+  RerankSettings,
   SupportAIProviderSettings,
 } from "../types";
 import { TranslationApiSettingsPage } from "./TranslationApiSettingsPage";
 import "./ConfigurationCenterPage.css";
 
-type ConfigurationSection = "support-ai" | "translation" | "embedding" | "image-generation";
+type ConfigurationSection = "support-ai" | "translation" | "embedding" | "rerank" | "image-generation";
 
 const SECTIONS = new Set<ConfigurationSection>([
   "support-ai",
   "translation",
   "embedding",
+  "rerank",
   "image-generation",
 ]);
 
@@ -435,6 +441,134 @@ function EmbeddingSettingsPanel() {
   );
 }
 
+function RerankSettingsPanel() {
+  const { t } = useLocale();
+  const [settings, setSettings] = useState<RerankSettings>();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [enabled, setEnabled] = useState(false);
+  const [baseUrl, setBaseUrl] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [timeoutMs, setTimeoutMs] = useState("800");
+  const [maxDocuments, setMaxDocuments] = useState("30");
+
+  const apply = useCallback((next: RerankSettings) => {
+    setSettings(next);
+    setEnabled(next.enabled);
+    setBaseUrl(next.baseUrl ?? "");
+    setModelName(next.modelName ?? "");
+    setTimeoutMs(String(next.timeoutMs));
+    setMaxDocuments(String(next.maxDocuments));
+    setApiKey("");
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      apply(await getRerankSettings());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("Rerank 配置读取失败"));
+    } finally {
+      setLoading(false);
+    }
+  }, [apply, t]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const valid = Boolean(
+    baseUrl.trim()
+    && modelName.trim()
+    && (apiKey.trim() || settings?.apiKeyConfigured)
+    && Number.isInteger(Number(timeoutMs))
+    && Number(timeoutMs) >= 100
+    && Number(timeoutMs) <= 800
+    && Number.isInteger(Number(maxDocuments))
+    && Number(maxDocuments) >= 5
+    && Number(maxDocuments) <= 30,
+  );
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!valid || saving) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      apply(await updateRerankSettings({
+        enabled,
+        baseUrl: baseUrl.trim(),
+        modelName: modelName.trim(),
+        apiKey: apiKey.trim() || undefined,
+        timeoutMs: Number(timeoutMs),
+        maxDocuments: Number(maxDocuments),
+      }));
+      setMessage(t("Rerank 配置已保存。仅重排已召回的少量证据，超时时自动保留原排序。"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("Rerank 配置保存失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading && !settings) return <CoreLoading label={t("正在读取 Rerank 配置")} />;
+  if (error && !settings) return <CoreError message={error} onRetry={() => void load()} />;
+
+  return (
+    <Card className="configuration-provider-card">
+      <div className="configuration-card-heading">
+        <span><ArrowsDownUp weight="duotone" /></span>
+        <div>
+          <Text size="1" color="gray">{t("检索结果精排")}</Text>
+          <Heading size="5">Rerank API</Heading>
+          <Text size="2" color="gray">{t("在快速召回后重排少量候选，提升商品推荐与证据的相关性。客服调用最多等待 800ms；多语言店铺应选择多语言 Rerank 模型。")}</Text>
+        </div>
+        <div className="configuration-statuses">
+          <Badge color={settings?.enabled ? "jade" : "gray"}>{t(settings?.enabled ? "已启用" : "已关闭")}</Badge>
+        </div>
+      </div>
+
+      <form className="configuration-form" onSubmit={(event) => void save(event)}>
+        <label className="configuration-switch configuration-wide">
+          <span><Text weight="medium">{t("启用 Rerank")}</Text><Text size="1" color="gray">{t("失败或超时不会阻断 AI 回答。")}</Text></span>
+          <Switch checked={enabled} onCheckedChange={setEnabled} />
+        </label>
+        <label className="configuration-wide">
+          <Text size="1" color="gray">Base URL</Text>
+          <TextField.Root type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" required />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("模型名称")}</Text>
+          <TextField.Root value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="Qwen/Qwen3-Reranker-0.6B" required />
+        </label>
+        <label>
+          <Text size="1" color="gray">API Key</Text>
+          <TextField.Root type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={settings?.apiKeyConfigured ? t("已配置 {hint}，留空保持不变", { hint: settings.apiKeyHint ?? "" }) : t("请输入 API Key")} required={!settings?.apiKeyConfigured} />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("超时时间（毫秒）")}</Text>
+          <TextField.Root type="number" min="100" max="800" value={timeoutMs} onChange={(event) => setTimeoutMs(event.target.value)} required />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("最多重排候选数")}</Text>
+          <TextField.Root type="number" min="5" max="30" value={maxDocuments} onChange={(event) => setMaxDocuments(event.target.value)} required />
+        </label>
+        <div className="configuration-actions configuration-wide">
+          <Button type="submit" size="3" disabled={!valid || saving}><FloppyDisk />{t(saving ? "保存中…" : "保存配置")}</Button>
+          <Text size="1" color="gray">{t("保存时不会发起网络连通性测试。")}</Text>
+        </div>
+      </form>
+      {message ? <p className="configuration-message"><CheckCircle weight="fill" />{message}</p> : null}
+      {error ? <p className="configuration-error">{error}</p> : null}
+    </Card>
+  );
+}
+
 function ImageGenerationSettingsPanel() {
   const { t } = useLocale();
   const [settings, setSettings] = useState<ImageGenerationSettings>();
@@ -445,6 +579,7 @@ function ImageGenerationSettingsPanel() {
   const [enabled, setEnabled] = useState(true);
   const [baseUrl, setBaseUrl] = useState("https://apihub.agnes-ai.com/v1/images/generations");
   const [modelName, setModelName] = useState("agnes-image-2.0-flash");
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [timeoutSeconds, setTimeoutSeconds] = useState("180");
   const [requestsPerMinute, setRequestsPerMinute] = useState("6");
@@ -455,6 +590,7 @@ function ImageGenerationSettingsPanel() {
     setEnabled(next.enabled);
     setBaseUrl(next.baseUrl ?? "https://apihub.agnes-ai.com/v1/images/generations");
     setModelName(next.modelName ?? "agnes-image-2.0-flash");
+    setSystemPrompt(next.systemPrompt ?? "");
     setTimeoutSeconds(String(next.timeoutSeconds || 180));
     setRequestsPerMinute(String(next.requestsPerMinute || 6));
     setConcurrencyLimit(String(next.concurrencyLimit || 3));
@@ -480,6 +616,7 @@ function ImageGenerationSettingsPanel() {
   const valid = Boolean(
     baseUrl.trim()
     && modelName.trim()
+    && systemPrompt.trim()
     && (apiKey.trim() || settings?.apiKeyConfigured)
     && Number.isInteger(Number(timeoutSeconds))
     && Number(timeoutSeconds) >= 60
@@ -503,6 +640,7 @@ function ImageGenerationSettingsPanel() {
         enabled,
         baseUrl: baseUrl.trim(),
         modelName: modelName.trim(),
+        systemPrompt: systemPrompt.trim(),
         apiKey: apiKey.trim() || undefined,
         timeoutSeconds: Number(timeoutSeconds),
         requestsPerMinute: Number(requestsPerMinute),
@@ -552,6 +690,19 @@ function ImageGenerationSettingsPanel() {
         <label>
           <Text size="1" color="gray">{t("模型名称")}</Text>
           <TextField.Root value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="agnes-image-2.0-flash" required />
+        </label>
+        <label className="configuration-wide">
+          <Text size="1" color="gray">{t("首次图生图系统提示词")}</Text>
+          <TextArea
+            value={systemPrompt}
+            onChange={(event) => setSystemPrompt(event.target.value)}
+            minLength={1}
+            maxLength={12000}
+            rows={9}
+            placeholder={t("仅平台管理员可见；首次生成时自动使用，图片审核界面不会展示。")}
+            required
+          />
+          <Text size="1" color="gray">{t("首次生成统一使用此提示词；驳回后，操作者才可额外填写重试提示词。")}</Text>
         </label>
         <label>
           <Text size="1" color="gray">API Key</Text>
@@ -623,11 +774,13 @@ export function ConfigurationCenterPage() {
           <Tabs.Trigger value="support-ai"><Brain />{t("智能体 API")}</Tabs.Trigger>
           <Tabs.Trigger value="translation"><Translate />{t("翻译 API")}</Tabs.Trigger>
           <Tabs.Trigger value="embedding"><Database />Embedding</Tabs.Trigger>
+          <Tabs.Trigger value="rerank"><ArrowsDownUp />Rerank</Tabs.Trigger>
           <Tabs.Trigger value="image-generation"><ImageSquare />{t("图生图 API")}</Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="support-ai" className="configuration-tab-panel"><GenerationSettingsPanel /></Tabs.Content>
         <Tabs.Content value="translation" className="configuration-tab-panel"><TranslationApiSettingsPage embedded /></Tabs.Content>
         <Tabs.Content value="embedding" className="configuration-tab-panel"><EmbeddingSettingsPanel /></Tabs.Content>
+        <Tabs.Content value="rerank" className="configuration-tab-panel"><RerankSettingsPanel /></Tabs.Content>
         <Tabs.Content value="image-generation" className="configuration-tab-panel"><ImageGenerationSettingsPanel /></Tabs.Content>
       </Tabs.Root>
     </div>

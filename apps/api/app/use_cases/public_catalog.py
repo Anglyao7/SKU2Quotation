@@ -1979,9 +1979,27 @@ def _vector_semantic_rows(
     now: datetime,
     category: str | None,
 ) -> list[object]:
-    # Text matches are sourced directly from the published catalog, so a product
-    # remains searchable even when its knowledge index is missing or stale.
-    # Semantic retrieval only supplements this ordered lexical result set.
+    # A copied title or SKU is a deterministic catalog lookup, not a semantic
+    # question.  Resolve it before the bounded n-gram pool so a large catalog
+    # cannot evict the exact row before in-memory relevance scoring begins.
+    exact_rows = repository.list_public_catalog_exact_candidates(
+        session,
+        tenant_id=tenant_id,
+        now=now,
+        query=query,
+        category=category,
+        limit=_positive_int_environment(
+            "PUBLIC_EXACT_SEARCH_RESULT_LIMIT",
+            200,
+            maximum=500,
+        ),
+    )
+    if exact_rows:
+        return _lexical_semantic_rows(exact_rows, query=query)
+
+    # Other text matches are still sourced directly from the published catalog,
+    # so a product remains searchable when its knowledge index is missing or
+    # stale. Semantic retrieval only runs when catalog text cannot answer.
     lexical_rows = _bounded_public_lexical_rows(
         session,
         tenant_id=tenant_id,

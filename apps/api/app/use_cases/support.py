@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -68,6 +69,7 @@ from ..support_schemas import (
 DEFAULT_WELCOME_MESSAGE = "您好，请告诉我们您正在寻找什么商品，我们会尽快回复。"
 MAX_ACTION_IMAGE_BYTES = 5 * 1024 * 1024
 TRANSLATION_RETRY_DELAY = timedelta(minutes=2)
+INLINE_CITATION_PATTERN = re.compile(r"\[(\d{1,2})\]")
 
 HUMAN_REQUEST_CONFIRMATIONS = {
     "zh": "已通知人工客服，请稍候。",
@@ -450,6 +452,13 @@ def _message_citations(
         if isinstance(value, int)
         or (isinstance(value, str) and value.isdigit())
     }
+    if not cited_numbers:
+        # Compatibility for completed runs written before every finalization
+        # path persisted inline_citations. Evidence rows remain immutable, so
+        # parsing the already-published answer safely restores product cards.
+        cited_numbers = {
+            int(value) for value in INLINE_CITATION_PATTERN.findall(row.body)
+        }
     if not cited_numbers:
         return []
     evidence = session.scalars(

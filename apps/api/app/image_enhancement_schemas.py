@@ -34,17 +34,10 @@ class ImageEnhancementTarget(BaseModel):
 
 class ImageEnhancementStartRequest(BaseModel):
     targets: list[ImageEnhancementTarget] = Field(min_length=1, max_length=500)
-    prompt: str = Field(
-        default=(
-            "Enhance only the provided product image: make it sharper, clearer, and less noisy. "
-            "The input image is the source of truth. Preserve the exact product, colors, materials, "
-            "shape, proportions, existing text, markings, existing logos, background, lighting, and composition. "
-            "Do not add, remove, redraw, or invent any logo, text, label, accessory, decoration, prop, or other object. "
-            "Do not change the background or create a new design."
-        ),
-        min_length=1,
-        max_length=2000,
-    )
+    # The first attempt always uses the platform-managed prompt. A custom
+    # prompt is accepted only when retry_item_id points at a rejected result.
+    prompt: str | None = Field(default=None, max_length=2000)
+    retry_item_id: UUID | None = None
     ratio: ImageEnhancementRatio = "1:1"
     size: ImageEnhancementSize = "1K"
 
@@ -62,7 +55,7 @@ class ImageEnhancementStartRequest(BaseModel):
             )
             existing.sku_ids = list(dict.fromkeys(existing.sku_ids + target.sku_ids))
         self.targets = normalized
-        self.prompt = self.prompt.strip()
+        self.prompt = self.prompt.strip() if self.prompt else None
         return self
 
 
@@ -87,7 +80,8 @@ class ImageEnhancementItemResponse(BaseModel):
 class ImageEnhancementTaskResponse(BaseModel):
     id: UUID
     status: ImageEnhancementTaskStatus
-    prompt: str
+    # Never expose the stored system/custom prompt through task polling.
+    prompt: str | None = None
     ratio: ImageEnhancementRatio
     size: str
     output_format: Literal["url"]

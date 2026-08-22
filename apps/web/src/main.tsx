@@ -6,6 +6,7 @@ import "./core/core.css";
 import { App } from "./App";
 import { CoreAuthProvider } from "./core/AuthContext";
 import { LocaleProvider } from "./core/LocaleContext";
+import { ToastProvider } from "./core/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { installChunkRecovery } from "./lib/chunkRecovery";
 
@@ -15,7 +16,9 @@ createRoot(document.getElementById("root")!).render(
     <ThemeProvider>
       <CoreAuthProvider>
         <LocaleProvider>
-          <App />
+          <ToastProvider>
+            <App />
+          </ToastProvider>
         </LocaleProvider>
       </CoreAuthProvider>
     </ThemeProvider>

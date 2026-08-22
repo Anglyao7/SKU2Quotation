@@ -347,6 +347,7 @@ class OpenAICompatibleChatGeneration:
         base_url: str,
         model_name: str,
         timeout_seconds: float = 45,
+        first_answer_timeout_seconds: float = 12,
         max_output_tokens: int = 2048,
         temperature: float = 0.1,
         client: httpx.Client | None = None,
@@ -357,6 +358,13 @@ class OpenAICompatibleChatGeneration:
             raise ChatGenerationError("generation model is required")
         if timeout_seconds < 1 or timeout_seconds > 180:
             raise ChatGenerationError("generation timeout must be between 1 and 180 seconds")
+        if (
+            first_answer_timeout_seconds < 1
+            or first_answer_timeout_seconds > 180
+        ):
+            raise ChatGenerationError(
+                "generation first answer timeout must be between 1 and 180 seconds"
+            )
         if max_output_tokens < 128 or max_output_tokens > 32768:
             raise ChatGenerationError(
                 "generation max output tokens must be between 128 and 32768"
@@ -366,6 +374,10 @@ class OpenAICompatibleChatGeneration:
         self._api_key = api_key.strip()
         self._endpoint = chat_completions_endpoint(base_url)
         self._timeout_seconds = timeout_seconds
+        self._first_answer_timeout_seconds = min(
+            timeout_seconds,
+            first_answer_timeout_seconds,
+        )
         self._max_output_tokens = max_output_tokens
         self._temperature = temperature
         self._client = client or httpx.Client()
@@ -615,6 +627,18 @@ class OpenAICompatibleChatGeneration:
                 raise _ChatGenerationTransportError(
                     "generation provider request timed out"
                 )
+            first_answer_remaining_seconds = (
+                self._first_answer_timeout_seconds - elapsed_seconds
+            )
+            if (
+                on_answer_delta is not None
+                and first_answer_remaining_seconds <= 0
+            ):
+                if last_error is not None:
+                    raise last_error
+                raise _ChatGenerationTransportError(
+                    "generation provider first answer timed out"
+                )
             answer_published = False
 
             def publish(delta: str) -> None:
@@ -633,19 +657,21 @@ class OpenAICompatibleChatGeneration:
                     # first-answer and total deadlines below also stop gateways
                     # extending the request with heartbeats or hidden reasoning.
                     read_timeout_seconds=(
-                        min(remaining_seconds, 12.0)
-                        if attempt == 0
+                        min(
+                            remaining_seconds,
+                            first_answer_remaining_seconds,
+                        )
+                        if on_answer_delta is not None
                         else remaining_seconds
                     ),
                     total_timeout_seconds=remaining_seconds,
                     first_answer_timeout_seconds=(
-                        min(remaining_seconds, 12.0)
-                        if on_answer_delta is not None and attempt == 0
-                        else (
-                            remaining_seconds
-                            if on_answer_delta is not None
-                            else None
+                        min(
+                            remaining_seconds,
+                            first_answer_remaining_seconds,
                         )
+                        if on_answer_delta is not None
+                        else None
                     ),
                 )
             except _ChatGenerationTransportError as exc:
@@ -854,12 +880,14 @@ def openai_compatible_chat_provider(
     timeout_seconds: float,
     max_output_tokens: int,
     temperature: float,
+    first_answer_timeout_seconds: float = 12,
 ) -> OpenAICompatibleChatGeneration:
     return OpenAICompatibleChatGeneration(
         api_key=api_key,
         base_url=base_url,
         model_name=model_name,
         timeout_seconds=timeout_seconds,
+        first_answer_timeout_seconds=first_answer_timeout_seconds,
         max_output_tokens=max_output_tokens,
         temperature=temperature,
     )

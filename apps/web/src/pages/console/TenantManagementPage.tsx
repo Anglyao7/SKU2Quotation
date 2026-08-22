@@ -2,7 +2,6 @@ import {
   AlertDialog,
   Badge,
   Button,
-  Callout,
   Checkbox,
   Dialog,
   Heading,
@@ -30,6 +29,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import { EmptyState, ErrorState, TableSkeleton } from "../../components/States";
 import { useLocale } from "../../core/LocaleContext";
+import { ToastNotice } from "../../core/ToastContext";
 import { api, ApiError } from "../../lib/api";
 import { dateTime } from "../../lib/format";
 import {
@@ -929,21 +929,11 @@ function TenantSubscriptionDialog({
           {!unlimitedSkus
           && Number.isFinite(Number(skuLimit))
           && Number(skuLimit) < (tenant?.sku_count ?? 0) ? (
-            <Callout.Root color="amber" size="1">
-              <Callout.Icon><WarningCircle /></Callout.Icon>
-              <Callout.Text>
-                {t("新的上限低于当前 SKU 数量；现有 SKU 不会被删除，但将无法继续新增。")}
-              </Callout.Text>
-            </Callout.Root>
+            <ToastNotice kind="info" message={t("新的上限低于当前 SKU 数量；现有 SKU 不会被删除，但将无法继续新增。")} />
           ) : null}
         </div>
 
-        {error ? (
-          <Callout.Root color="red">
-            <Callout.Icon><WarningCircle /></Callout.Icon>
-            <Callout.Text>{error}</Callout.Text>
-          </Callout.Root>
-        ) : null}
+        {error ? <ToastNotice kind="error" message={error} /> : null}
 
         <div className="dialog-actions">
           <Dialog.Close>
@@ -1128,12 +1118,7 @@ function TenantModuleDialog({
           })}
         </div>
 
-        {error ? (
-          <Callout.Root color="red">
-            <Callout.Icon><WarningCircle /></Callout.Icon>
-            <Callout.Text>{error}</Callout.Text>
-          </Callout.Root>
-        ) : null}
+        {error ? <ToastNotice kind="error" message={error} /> : null}
 
         <div className="dialog-actions">
           <Dialog.Close>
@@ -1208,10 +1193,7 @@ function MerchantOwnerDialog({
         </Dialog.Description>
         {result ? (
           <div className="dialog-form">
-            <Callout.Root color="green">
-              <Callout.Icon><CheckCircle /></Callout.Icon>
-              <Callout.Text>{t("登录账号已开通，可以立即使用。")}</Callout.Text>
-            </Callout.Root>
+            <ToastNotice kind="success" message={t("登录账号已开通，可以立即使用。")} />
             <Text size="2" color="gray">
               {t("登录邮箱：{email}", { email: result.email || result.login_identifier || "—" })}
             </Text>
@@ -1237,12 +1219,7 @@ function MerchantOwnerDialog({
               <Text size="2" weight="medium">{t("初始密码")} *</Text>
               <InitialPasswordField />
             </label>
-            {error ? (
-              <Callout.Root color="red">
-                <Callout.Icon><WarningCircle /></Callout.Icon>
-                <Callout.Text>{error}</Callout.Text>
-              </Callout.Root>
-            ) : null}
+            {error ? <ToastNotice kind="error" message={error} /> : null}
             <div className="dialog-actions">
               <Dialog.Close>
                 <Button type="button" variant="soft" color="gray">{t("取消")}</Button>
@@ -1318,16 +1295,8 @@ function MerchantOwnerPasswordResetDialog({
         </Dialog.Description>
         {result ? (
           <div className="dialog-form">
-            <Callout.Root color="green">
-              <Callout.Icon><CheckCircle /></Callout.Icon>
-              <Callout.Text>{t("密码已重置")}</Callout.Text>
-            </Callout.Root>
-            <Callout.Root color="amber">
-              <Callout.Icon><Key /></Callout.Icon>
-              <Callout.Text>
-                {t("新密码仅显示一次，请立即保存并通过安全渠道发送给商家。")}
-              </Callout.Text>
-            </Callout.Root>
+            <ToastNotice kind="success" message={t("密码已重置")} />
+            <ToastNotice kind="info" message={t("新密码仅显示一次，请立即保存并通过安全渠道发送给商家。")} />
             <div className="password-reset-result">
               <Text size="2" color="gray">
                 {t("登录邮箱：{email}", {
@@ -1345,12 +1314,7 @@ function MerchantOwnerPasswordResetDialog({
           </div>
         ) : (
           <form className="dialog-form" onSubmit={submit} key={tenant?.id}>
-            <Callout.Root color="gray">
-              <Callout.Icon><Key /></Callout.Icon>
-              <Callout.Text>
-                {t("当前密码无法直接读取，系统只保存加密后的密码摘要。需要查看时，请重置后显示一次新密码。")}
-              </Callout.Text>
-            </Callout.Root>
+            <ToastNotice kind="info" message={t("当前密码无法直接读取，系统只保存加密后的密码摘要。需要查看时，请重置后显示一次新密码。")} />
             <label className="field-group">
               <Text size="2" weight="medium">{t("新密码")} *</Text>
               <TextField.Root
@@ -1379,12 +1343,7 @@ function MerchantOwnerPasswordResetDialog({
                 </TextField.Slot>
               </TextField.Root>
             </label>
-            {error ? (
-              <Callout.Root color="red">
-                <Callout.Icon><WarningCircle /></Callout.Icon>
-                <Callout.Text>{error}</Callout.Text>
-              </Callout.Root>
-            ) : null}
+            {error ? <ToastNotice kind="error" message={error} /> : null}
             <div className="dialog-actions">
               <Dialog.Close>
                 <Button type="button" variant="soft" color="gray">{t("取消")}</Button>
@@ -1519,10 +1478,7 @@ function TenantFormDialog({
 
         {createdOwner ? (
           <div className="dialog-form">
-            <Callout.Root color="green">
-              <Callout.Icon><CheckCircle /></Callout.Icon>
-              <Callout.Text>{t("商家已创建，可以立即登录。")}</Callout.Text>
-            </Callout.Root>
+            <ToastNotice kind="success" message={t("商家已创建，可以立即登录。")} />
             <Text size="2" color="gray">
               {t("登录邮箱：{email}", {
                 email: createdOwner.email || createdOwner.login_identifier || "—",
@@ -1594,12 +1550,7 @@ function TenantFormDialog({
               </>
             )}
 
-            {error ? (
-              <Callout.Root color="red">
-                <Callout.Icon><WarningCircle /></Callout.Icon>
-                <Callout.Text>{error}</Callout.Text>
-              </Callout.Root>
-            ) : null}
+            {error ? <ToastNotice kind="error" message={error} /> : null}
             <div className="dialog-actions">
               <Dialog.Close>
                 <Button type="button" variant="soft" color="gray">{t("取消")}</Button>

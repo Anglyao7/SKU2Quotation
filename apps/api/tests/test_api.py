@@ -69,6 +69,7 @@ from app.knowledge_embedding_models import EmbeddingRow, KnowledgeChunkRow, Know
 from app.embedding_management_models import (
     EmbeddingProviderSettingsRow,
     KnowledgeIndexJobRow,
+    RerankProviderSettingsRow,
 )
 from app.translation_management_models import TranslationProviderSettingsRow
 from app.catalog_translation_models import (
@@ -126,6 +127,7 @@ from app.services.embedding import (
     validate_vectors,
 )
 from app.services.embedding_configuration import decrypt_api_key
+from app.services.reranking import decrypt_api_key as decrypt_rerank_api_key
 from app.services.translation_configuration import (
     decrypt_translation_api_key,
     resolved_catalog_translation_batch_limits,
@@ -7219,6 +7221,67 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
             session.commit()
 
 
+def test_platform_admin_manages_optional_rerank_configuration() -> None:
+    raw_api_key = "sk-rerank-test-only-2468"
+    with SessionLocal() as session:
+        session.execute(delete(RerankProviderSettingsRow))
+        session.commit()
+
+    try:
+        initial = client.get("/api/v1/ai/rerank/settings")
+        assert initial.status_code == 200, initial.text
+        assert initial.headers["cache-control"] == "no-store"
+        assert initial.json()["enabled"] is False
+
+        saved = client.put(
+            "/api/v1/ai/rerank/settings",
+            json={
+                "enabled": True,
+                "base_url": "https://rerank.example.test/v1",
+                "api_key": raw_api_key,
+                "model_name": "Qwen/Qwen3-Reranker-0.6B",
+                "timeout_ms": 800,
+                "max_documents": 30,
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        payload = saved.json()
+        assert payload["source"] == "database"
+        assert payload["enabled"] is True
+        assert payload["timeout_ms"] == 800
+        assert payload["max_documents"] == 30
+        assert payload["api_key_hint"] == "••••2468"
+        assert raw_api_key not in saved.text
+
+        with SessionLocal() as session:
+            row = session.get(RerankProviderSettingsRow, "SUPPORT_AI_RERANK")
+            assert row is not None
+            assert raw_api_key not in row.api_key_ciphertext
+            assert decrypt_rerank_api_key(row.api_key_ciphertext) == raw_api_key
+            ciphertext = row.api_key_ciphertext
+
+        disabled = client.put(
+            "/api/v1/ai/rerank/settings",
+            json={
+                "enabled": False,
+                "base_url": "https://rerank.example.test/v1",
+                "model_name": "Qwen/Qwen3-Reranker-0.6B",
+                "timeout_ms": 600,
+                "max_documents": 20,
+            },
+        )
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["enabled"] is False
+        with SessionLocal() as session:
+            row = session.get(RerankProviderSettingsRow, "SUPPORT_AI_RERANK")
+            assert row is not None
+            assert row.api_key_ciphertext == ciphertext
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(RerankProviderSettingsRow))
+            session.commit()
+
+
 def test_embedding_model_change_clears_vectors_but_key_change_keeps_them() -> None:
     category_id = uuid4()
     product_id = uuid4()
@@ -14141,6 +14204,14 @@ def test_public_catalog_lists_only_published_active_facts_and_approved_images(
     assert product_summary["sku_count"] == 1
     assert Decimal(str(product_summary["price_from"])) == Decimal("229.00")
     assert Decimal(str(product_summary["price_to"])) == Decimal("229.00")
+    exact_title_search = client.get(
+        "/api/store/demo/products",
+        params={"q": "八片带门宠物围栏", "semantic": "true"},
+    )
+    assert exact_title_search.status_code == 200, exact_title_search.text
+    assert [
+        item["name"] for item in exact_title_search.json()["items"]
+    ] == ["八片带门宠物围栏"]
     product_detail_response = client.get(
         f"/api/store/demo/products/{product_summary['id']}"
     )
@@ -16171,6 +16242,11 @@ def test_public_hybrid_search_returns_catalog_text_matches_before_calling_semant
         lambda *_args, **_kwargs: [lexical_row],
     )
     monkeypatch.setattr(
+        public_catalog_repository,
+        "list_public_catalog_exact_candidates",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
         public_catalog_use_cases,
         "hybrid_product_search",
         lambda *_args, **_kwargs: pytest.fail(
@@ -16187,6 +16263,57 @@ def test_public_hybrid_search_returns_catalog_text_matches_before_calling_semant
     )
 
     assert [row[1].id for row in rows] == [lexical_sku_id]
+
+
+def test_public_search_resolves_an_exact_product_title_before_bounded_rag_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact_sku_id = uuid4()
+    exact_product_id = uuid4()
+    exact_row = (
+        SimpleNamespace(tags=[]),
+        SimpleNamespace(
+            id=exact_sku_id,
+            sku_code="PET-BIKE-001",
+            source_sku_code=None,
+            name="大型宠物自行车拖挂推车",
+        ),
+        SimpleNamespace(
+            id=exact_product_id,
+            name="大型宠物自行车拖挂推车",
+            description="",
+        ),
+        None,
+    )
+    monkeypatch.setattr(
+        public_catalog_repository,
+        "list_public_catalog_exact_candidates",
+        lambda *_args, **_kwargs: [exact_row],
+    )
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "_bounded_public_lexical_rows",
+        lambda *_args, **_kwargs: pytest.fail(
+            "bounded lexical/RAG candidates must not replace an exact title"
+        ),
+    )
+    monkeypatch.setattr(
+        public_catalog_use_cases,
+        "hybrid_product_search",
+        lambda *_args, **_kwargs: pytest.fail(
+            "semantic search must not run for an exact product title"
+        ),
+    )
+
+    rows = public_catalog_use_cases._vector_semantic_rows(
+        SimpleNamespace(),
+        tenant_id=uuid4(),
+        query="大型宠物自行车拖挂推车",
+        now=datetime.now(UTC),
+        category=None,
+    )
+
+    assert [row[2].id for row in rows] == [exact_product_id]
 
 
 def test_category_template_download_and_incremental_import_are_idempotent() -> None:
@@ -18180,7 +18307,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260820_0102"
+        ).scalar() == "20260823_0104"
     upgraded_engine.dispose()
     command.check(config)
 

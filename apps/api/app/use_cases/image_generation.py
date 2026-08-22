@@ -59,6 +59,7 @@ def update_settings(
             enabled=request.enabled,
             base_url=request.base_url,
             model_name=request.model_name,
+            system_prompt=request.system_prompt,
             timeout_seconds=request.timeout_seconds,
             requests_per_minute=request.requests_per_minute,
             concurrency_limit=request.concurrency_limit,

@@ -2,7 +2,6 @@ import {
   AlertDialog,
   Badge,
   Button,
-  Callout,
   Dialog,
   IconButton,
   Separator,
@@ -31,6 +30,7 @@ import { api } from "../lib/api";
 import { money, quoteNumber } from "../lib/format";
 import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
 import { notifyStorefrontQuotesChanged } from "../lib/storefrontVisitor";
+import { ToastNotice } from "../core/ToastContext";
 import type {
   CreateQuoteInput,
   Quote,
@@ -278,7 +278,7 @@ export function CartDrawer({ slug, storeName, contactEmail, contactImages, lines
               <Text as="div" size="2" color="gray">{quoteApproved ? t("商家已确认报价，现在可以下载 PDF 或 Excel。") : t("报价已提交，商家确认后才可以下载 PDF 或 Excel。")}</Text>
               <Text as="div" size="2" color="gray" className="mono-text">{quoteNumber(quote)}</Text>
             </div>
-            {error && <Callout.Root color="red"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error}</Callout.Text></Callout.Root>}
+            {error && <ToastNotice kind="error" message={error} />}
             <QuoteContactMethods contactEmail={contactEmail} contactImages={contactImages} locale={locale} />
             {quoteApproved ? (
               <div className="download-actions">
@@ -394,7 +394,7 @@ export function CartDrawer({ slug, storeName, contactEmail, contactImages, lines
               </label>
             </div>
             <div className="quote-form-actions">
-              {error && <Callout.Root color="red"><Callout.Icon><WarningCircle /></Callout.Icon><Callout.Text>{error}</Callout.Text></Callout.Root>}
+              {error && <ToastNotice kind="error" message={error} />}
               <div className="quote-action-summary">
                 <span>{t("{skus} 个 SKU · {items} 件", { skus: lines.length, items: itemCount })}</span>
                 <strong>{money(knownTotal, currency)}</strong>

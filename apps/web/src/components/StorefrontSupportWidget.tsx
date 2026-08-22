@@ -161,6 +161,8 @@ export function StorefrontSupportWidget({
   const streamingEndRef = useRef<
     Extract<PublicSupportStreamEvent, { type: "message_end" }> | undefined
   >(undefined);
+  const knownMessageIdsRef = useRef(new Set<string>());
+  const awaitingAIResponseRef = useRef(false);
   const widget = config ?? {
     enabled: true,
     title: "AI 智能客服",
@@ -199,6 +201,10 @@ export function StorefrontSupportWidget({
     if (!pending) return;
     streamingEndRef.current = undefined;
     streamingMessageIdRef.current = undefined;
+    pending.conversation.messages.forEach((message) => {
+      knownMessageIdsRef.current.add(message.id);
+    });
+    awaitingAIResponseRef.current = false;
     setConversation(pending.conversation);
     setStreamingMessage(undefined);
   }, []);
@@ -233,12 +239,54 @@ export function StorefrontSupportWidget({
     }
   }, [flushStreamingCharacter]);
 
+  const applyConversationSnapshot = useCallback((next: PublicSupportConversation) => {
+    if (next.ai_processing) {
+      awaitingAIResponseRef.current = true;
+      next.messages.forEach((message) => knownMessageIdsRef.current.add(message.id));
+      setConversation(next);
+      return;
+    }
+    const completedAI = next.messages
+      .slice()
+      .reverse()
+      .find((message) => (
+        message.sender_type === "AI"
+        && !knownMessageIdsRef.current.has(message.id)
+      ));
+    if (
+      awaitingAIResponseRef.current
+      && completedAI
+      && !streamingMessageIdRef.current
+    ) {
+      const stagedConversation = {
+        ...next,
+        messages: next.messages.filter((message) => message.id !== completedAI.id),
+      };
+      resetStreamingPlayback();
+      streamingMessageIdRef.current = completedAI.id;
+      streamingEndRef.current = {
+        type: "message_end",
+        message: completedAI,
+        conversation: next,
+      };
+      setConversation(stagedConversation);
+      setStreamingMessage({ ...completedAI, body: "", citations: [] });
+      enqueueStreamingDelta(completedAI.body);
+      return;
+    }
+    next.messages.forEach((message) => knownMessageIdsRef.current.add(message.id));
+    awaitingAIResponseRef.current = false;
+    setConversation(next);
+  }, [enqueueStreamingDelta, resetStreamingPlayback]);
+
   useEffect(() => {
     const next = storedToken(tenantSlug);
     setToken(next);
     setConversation(undefined);
     setStreamingMessage(undefined);
     resetStreamingPlayback();
+    knownMessageIdsRef.current.clear();
+    awaitingAIResponseRef.current = false;
     setActiveActionSlot(null);
     setHoveredActionSlot(null);
   }, [resetStreamingPlayback, tenantSlug]);
@@ -281,7 +329,7 @@ export function StorefrontSupportWidget({
     if (!quiet) setLoading(true);
     try {
       const next = await api.getSupportConversation(tenantSlug, token);
-      setConversation(next);
+      applyConversationSnapshot(next);
       setError("");
     } catch (caught) {
       if (caught instanceof ApiError && [401, 404].includes(caught.status)) {
@@ -294,7 +342,7 @@ export function StorefrontSupportWidget({
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [tenantSlug, t, token]);
+  }, [applyConversationSnapshot, tenantSlug, t, token]);
 
   useEffect(() => {
     if (!open || !token) return;
@@ -304,18 +352,10 @@ export function StorefrontSupportWidget({
 
     const handleStreamEvent = (event: PublicSupportStreamEvent) => {
       if (event.type === "conversation") {
-        setConversation(event.conversation);
-        if (
-          streamingMessageIdRef.current
-          && event.conversation.messages.some(
-            (item) => item.id === streamingMessageIdRef.current,
-          )
-        ) {
-          resetStreamingPlayback();
-          setStreamingMessage(undefined);
-        }
+        applyConversationSnapshot(event.conversation);
       } else if (event.type === "message_start") {
         resetStreamingPlayback();
+        awaitingAIResponseRef.current = true;
         streamingMessageIdRef.current = event.message.id;
         setStreamingMessage(event.message);
       } else if (event.type === "message_delta") {
@@ -333,7 +373,7 @@ export function StorefrontSupportWidget({
       } else if (event.type === "message_end") {
         const endingStreamId = event.stream_id || event.message.id;
         if (streamingMessageIdRef.current !== endingStreamId) {
-          setConversation(event.conversation);
+          applyConversationSnapshot(event.conversation);
           return;
         }
         streamingEndRef.current = event;
@@ -343,6 +383,7 @@ export function StorefrontSupportWidget({
           resetStreamingPlayback();
           setStreamingMessage(undefined);
         }
+        awaitingAIResponseRef.current = Boolean(event.conversation.ai_processing);
         setConversation(event.conversation);
       }
     };
@@ -381,6 +422,7 @@ export function StorefrontSupportWidget({
     };
   }, [
     enqueueStreamingDelta,
+    applyConversationSnapshot,
     open,
     refreshConversation,
     resetStreamingPlayback,
@@ -452,6 +494,8 @@ export function StorefrontSupportWidget({
         saveToken(tenantSlug, nextToken);
       }
       setConversation(next);
+      awaitingAIResponseRef.current = Boolean(next.ai_processing);
+      next.messages.forEach((item) => knownMessageIdsRef.current.add(item.id));
       setDraft("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("消息发送失败，请稍后重试。"));
@@ -485,6 +529,8 @@ export function StorefrontSupportWidget({
     setConversation(undefined);
     setStreamingMessage(undefined);
     resetStreamingPlayback();
+    knownMessageIdsRef.current.clear();
+    awaitingAIResponseRef.current = false;
     setError("");
     window.setTimeout(() => textAreaRef.current?.focus(), 0);
   };

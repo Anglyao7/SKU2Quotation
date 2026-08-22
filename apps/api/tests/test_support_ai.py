@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -39,9 +40,11 @@ from app.services.support_ai_orchestrator import (
     _handoff_message,
     _normalized_retrieval_query,
     _prompt_messages,
+    _recommendation_has_specific_subject,
     _recommendation_fallback_answer,
     _recommendation_output_can_be_repaired,
     _recommendation_repair_messages,
+    _finalize_assistance_run,
     _social_prompt_messages,
     _validated_social_output,
     _validated_model_output,
@@ -50,8 +53,17 @@ from app.services.support_ai_orchestrator import (
     detect_safe_social_intent,
     detect_support_interaction_goal,
 )
-from app.services.support_ai_retrieval import _public_product_excerpt
-from app.use_cases.support import _ai_processing_state
+from app.services.support_ai_retrieval import (
+    _bounded_retrieval_terms,
+    _public_product_excerpt,
+)
+from app.services.reranking import (
+    CohereCompatibleReranker,
+    RerankProviderError,
+    RerankResult,
+    rerank_endpoint,
+)
+from app.use_cases.support import _ai_processing_state, _message_citations
 
 
 class _NoAutoflushConversationLockSession:
@@ -363,6 +375,35 @@ def test_specific_recommendation_does_not_mix_in_an_old_topic() -> None:
     assert question == "请推荐一款适合大型犬的玩具"
 
 
+@pytest.mark.parametrize(
+    ("message", "specific"),
+    (
+        ("你们有什么推荐的产品", False),
+        ("Can you recommend something?", False),
+        ("请推荐适合大型犬的玩具", True),
+        ("Recommend a waterproof tent", True),
+    ),
+)
+def test_recommendation_subject_detection_enables_fast_generic_pool(
+    message: str,
+    specific: bool,
+) -> None:
+    assert _recommendation_has_specific_subject(message) is specific
+
+
+def test_sqlite_candidate_terms_keep_subjects_and_drop_request_noise() -> None:
+    assert _bounded_retrieval_terms("你们这里有没有适合大型犬的玩具") == [
+        "大型犬",
+        "型犬",
+        "大型",
+        "玩具",
+    ]
+    assert _bounded_retrieval_terms("Can you recommend a waterproof tent?") == [
+        "waterproof",
+        "tent",
+    ]
+
+
 def test_recommendation_constraint_inherits_goal_and_keeps_new_preference() -> None:
     history = [
         {"role": "user", "content": "你好，有什么是骑行比较适合的装备？"},
@@ -665,6 +706,81 @@ def test_retrieval_fallback_still_makes_a_grounded_recommendation() -> None:
     assert "首选「珐琅锅 A」[1]" in answer
     assert "备选是「珐琅锅 B」[2]" in answer
     assert citations == [1, 2]
+
+
+def test_finalized_fallback_persists_citations_from_the_published_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import support_ai_orchestrator as orchestrator
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_publish_ai_message",
+        lambda *_args, **_kwargs: True,
+    )
+    run = SimpleNamespace(
+        trigger_type="CHAT",
+        training_version_id=None,
+        training_case_ids=[],
+        status="RUNNING",
+    )
+
+    _finalize_assistance_run(
+        object(),  # type: ignore[arg-type]
+        run=run,  # type: ignore[arg-type]
+        task=None,
+        answer="首选商品 A。[1] 备选商品 B。[2] 再次说明首选。[1]",
+        language="zh-CN",
+        confidence=0.7,
+        decision_trace={"generation_mode": "RETRIEVAL_FALLBACK"},
+    )
+
+    assert run.status == "SUCCEEDED"
+    assert run.decision_trace["inline_citations"] == [1, 2]
+
+
+def test_public_message_recovers_legacy_fallback_product_citations() -> None:
+    tenant_id = uuid4()
+    message_id = uuid4()
+    product_id = uuid4()
+    row = SimpleNamespace(
+        sender_type="AI",
+        tenant_id=tenant_id,
+        id=message_id,
+        body="我推荐这款商品。[1]",
+    )
+    run = SimpleNamespace(id=uuid4(), decision_trace={})
+    evidence = SimpleNamespace(
+        citation_number=1,
+        source_type="SKU",
+        source_entity_id=str(product_id),
+        source_title="商品 A",
+        source_version=1,
+        classification="PUBLIC",
+        locator={"type": "public_product", "product_id": str(product_id)},
+        excerpt="商品 A 的公开资料",
+        score=Decimal("0.91"),
+    )
+
+    class _EvidenceRows:
+        def all(self) -> list[object]:
+            return [evidence]
+
+    class _CitationSession:
+        def scalar(self, _statement: object) -> object:
+            return run
+
+        def scalars(self, _statement: object) -> _EvidenceRows:
+            return _EvidenceRows()
+
+    citations = _message_citations(
+        _CitationSession(),  # type: ignore[arg-type]
+        row,  # type: ignore[arg-type]
+    )
+
+    assert len(citations) == 1
+    assert citations[0].source_type == "SKU"
+    assert citations[0].source_entity_id == str(product_id)
 
 
 def test_no_evidence_general_guidance_is_publishable_without_citations() -> None:
@@ -1103,6 +1219,114 @@ def test_generation_endpoint_normalization_and_credential_rejection() -> None:
         chat_completions_endpoint("https://user:secret@api.example.test/v1")
 
 
+def test_rerank_endpoint_and_provider_contract() -> None:
+    assert rerank_endpoint("https://api.example.test") == (
+        "https://api.example.test/v1/rerank"
+    )
+    assert rerank_endpoint("https://api.example.test/v1") == (
+        "https://api.example.test/v1/rerank"
+    )
+    assert rerank_endpoint("https://api.example.test/v2") == (
+        "https://api.example.test/v2/rerank"
+    )
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"index": 1, "relevance_score": 0.93},
+                    {"index": 0, "relevance_score": 0.41},
+                ]
+            },
+        )
+
+    provider = CohereCompatibleReranker(
+        api_key="rerank-test-key",
+        base_url="https://api.example.test/v1",
+        model_name="rerank-test",
+        timeout_ms=800,
+        max_documents=30,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    results = provider.rerank(
+        query="large dog toy",
+        documents=["small dog toy", "durable large dog toy"],
+        top_n=2,
+    )
+    assert [item.index for item in results] == [1, 0]
+    assert "return_documents" not in requests[0]
+    assert requests[0]["top_n"] == 2
+
+
+def test_rerank_provider_fails_closed_on_invalid_payload() -> None:
+    provider = CohereCompatibleReranker(
+        api_key="rerank-test-key",
+        base_url="https://api.example.test/v1",
+        model_name="rerank-test",
+        timeout_ms=800,
+        max_documents=30,
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json={"results": []})
+            )
+        ),
+    )
+    with pytest.raises(RerankProviderError, match="invalid response"):
+        provider.rerank(query="query", documents=["one"], top_n=1)
+
+
+def test_retrieval_rerank_reorders_a_bounded_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import support_ai_retrieval as retrieval_service
+
+    class _FakeReranker:
+        max_documents = 30
+
+        def rerank(
+            self,
+            *,
+            query: str,
+            documents: list[str],
+            top_n: int,
+        ) -> list[RerankResult]:
+            assert query == "large dog toy"
+            assert top_n == len(documents) == 3
+            return [
+                RerankResult(index=2, relevance_score=0.98),
+                RerankResult(index=1, relevance_score=0.70),
+                RerankResult(index=0, relevance_score=0.10),
+            ]
+
+    monkeypatch.setattr(
+        retrieval_service,
+        "resolved_reranker",
+        lambda _session, **_kwargs: _FakeReranker(),
+    )
+    candidates = [
+        replace(
+            _evidence(score=str(score)),
+            source_entity_id=str(index),
+            content_hash=str(index) * 64,
+            excerpt=f"candidate {index}",
+        )
+        for index, score in enumerate((0.9, 0.8, 0.7), start=1)
+    ]
+
+    reordered, trace = retrieval_service._rerank_candidates(
+        object(),  # type: ignore[arg-type]
+        query="large dog toy",
+        candidates=candidates,
+    )
+
+    assert reordered[0].source_entity_id == "3"
+    assert trace["applied"] is True
+    assert trace["reranked_count"] == 3
+
+
 def test_incremental_json_answer_stream_decodes_chunked_escapes() -> None:
     extractor = IncrementalJSONTextField("answer")
     chunks = [
@@ -1277,6 +1501,32 @@ def test_generation_stream_retries_before_publishing_answer() -> None:
     assert result.attempt_count == 2
     assert result.data == {"answer": "ok"}
     assert "".join(answer_deltas) == "ok"
+
+
+def test_generation_stream_does_not_retry_after_first_answer_budget() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        time.sleep(1.05)
+        raise httpx.ReadTimeout("silent upstream", request=request)
+
+    provider = OpenAICompatibleChatGeneration(
+        api_key="test-key",
+        base_url="https://generation.example/v1",
+        model_name="test-model",
+        timeout_seconds=10,
+        first_answer_timeout_seconds=1,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(ChatGenerationError, match="timed out"):
+        provider.generate_json_stream(
+            messages=[{"role": "user", "content": "hi"}],
+            on_answer_delta=lambda _delta: None,
+        )
+    assert calls == 1
 
 
 def test_chinese_retrieval_query_skips_serial_translation(

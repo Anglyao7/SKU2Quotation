@@ -342,6 +342,55 @@ def list_public_catalog_lexical_candidates(
     return list(session.execute(statement.limit(limit)).all())
 
 
+def list_public_catalog_exact_candidates(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    query: str,
+    category: str | None,
+    limit: int,
+):
+    """Return published rows whose customer-visible name or SKU exactly matches.
+
+    Exact catalog lookup is deliberately independent from the embedding index and
+    from the bounded n-gram candidate pool.  A copied product title must remain
+    discoverable even when a large catalog fills that broader candidate window.
+    """
+
+    normalized = query.casefold().strip()
+    if not normalized:
+        return []
+    sku_code = func.lower(SkuRow.sku_code)
+    source_sku_code = func.lower(func.coalesce(SkuRow.source_sku_code, ""))
+    sku_name = func.lower(func.coalesce(SkuRow.name, ""))
+    product_name = func.lower(ProductRow.name)
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query="",
+        category=category,
+    ).where(
+        or_(
+            sku_code == normalized,
+            source_sku_code == normalized,
+            sku_name == normalized,
+            product_name == normalized,
+        )
+    )
+    statement = statement.order_by(
+        case(
+            (or_(sku_code == normalized, source_sku_code == normalized), 0),
+            (product_name == normalized, 1),
+            else_=2,
+        ),
+        ProductRow.name,
+        SkuRow.sku_code,
+        SkuRow.id,
+    )
+    return list(session.execute(statement.limit(max(1, limit))).all())
+
+
 def list_public_catalog_page(
     session: Session,
     *,
