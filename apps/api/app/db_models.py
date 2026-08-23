@@ -326,6 +326,8 @@ from .catalog_translation_models import (  # noqa: E402,F401
     CatalogLanguagePackRow,
     CatalogSkuTranslationRow,
     CatalogTextTranslationRow,
+    CatalogTranslationBatchAttemptRow,
+    CatalogTranslationBatchRow,
     CatalogTranslationJobRow,
 )
 

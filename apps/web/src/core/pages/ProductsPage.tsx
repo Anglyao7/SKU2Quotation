@@ -1,5 +1,5 @@
 import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ArrowDown, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Warning, X } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Translate, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -17,6 +17,7 @@ import {
   downloadProductMainImage,
   exportSkuCatalog,
   getDeleteAllProductsJob,
+  getMerchantSettings,
   getImport,
   getProduct,
   listCatalogImportBatches,
@@ -25,6 +26,7 @@ import {
   listPublicCatalogOffers,
   PRODUCT_TEMPLATE_DOWNLOAD_URL,
   rollbackCatalogImportBatch,
+  retryCatalogTranslationProduct,
   updateSku,
   uploadProductMainImage,
   upsertPublicCatalogOffer,
@@ -37,9 +39,11 @@ import { useLocale } from "../LocaleContext";
 import { CatalogShareDialog, type CatalogShareTarget } from "../components/CatalogShareDialog";
 import { ImageEnhancementDialog, type ImageEnhancementTarget } from "../components/ImageEnhancementDialog";
 import { primaryCategoryLabel } from "../../lib/format";
+import { storefrontLanguage } from "../../lib/storefrontLocale";
 import { api } from "../../lib/api";
-import type { ProductTag } from "../../types";
+import type { ProductTag, StorefrontLocale } from "../../types";
 import type { CatalogImportBatch, CatalogImportRollbackResult, CoreProduct, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductListPage, ProductSku, PublicCatalogOffer, SkuListItem } from "../types";
+import { useToast } from "../ToastContext";
 
 const emptyProductPage: ProductListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
 const SKU_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
@@ -290,6 +294,7 @@ function skuPaginationItems(page: number, pages: number): PaginationItem[] {
 export function ProductsPage() {
   const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
+  const { notify } = useToast();
   const canEdit = hasPermission("product.edit");
   const canDelete = canEdit;
   const canImport = hasPermission("product.import")
@@ -353,6 +358,8 @@ export function ProductsPage() {
   const [bulkError, setBulkError] = useState("");
   const [bulkNotice, setBulkNotice] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
+  const [translationLocale, setTranslationLocale] = useState<StorefrontLocale>("en-US");
+  const [translatingProductId, setTranslatingProductId] = useState<string>();
   const [shareTarget, setShareTarget] = useState<CatalogShareTarget>();
   const [imageEnhancementTargets, setImageEnhancementTargets] = useState<ImageEnhancementTarget[]>([]);
   const loadSequence = useRef(0);
@@ -401,6 +408,14 @@ export function ProductsPage() {
     }
   }, [t]);
   useEffect(() => { void loadCategories().catch(() => setCategories([])); }, [loadCategories]);
+  useEffect(() => {
+    void getMerchantSettings().then((settings) => {
+      const preferred = settings.storefrontDefaultLocale !== "zh-CN"
+        ? settings.storefrontDefaultLocale
+        : settings.storefrontLocales.find((value) => value !== "zh-CN") ?? "en-US";
+      setTranslationLocale(preferred);
+    }).catch(() => undefined);
+  }, []);
   useEffect(() => {
     void api.getProductTags("", 200)
       .then((response) => setManagedTags(response.tags))
@@ -808,6 +823,26 @@ export function ProductsPage() {
     catch (reason) { setError(reason instanceof Error ? reason.message : t("产品详情加载失败")); }
     finally { setDetailLoading(false); }
   }, [setParams]);
+
+  const translateProduct = async (product: CoreProduct) => {
+    if (!canEdit || translatingProductId) return;
+    setTranslatingProductId(product.id);
+    try {
+      const job = await retryCatalogTranslationProduct(product.id, translationLocale);
+      notify(
+        t("已提交商品“{name}”的 {language} 重译任务，共 {count} 个 SKU。", {
+          name: product.name,
+          language: storefrontLanguage(translationLocale).label,
+          count: job.totalSkus,
+        }),
+        { kind: "success" },
+      );
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : t("商品翻译任务启动失败"), { kind: "error" });
+    } finally {
+      setTranslatingProductId(undefined);
+    }
+  };
 
   useEffect(() => {
     const productId = params.get("product");
@@ -1374,6 +1409,19 @@ export function ProductsPage() {
                       >
                         {t("商品详情")}
                       </Button>
+                      {canEdit ? (
+                        <Button
+                          size="1"
+                          variant="soft"
+                          color="blue"
+                          loading={translatingProductId === product.id}
+                          disabled={Boolean(translatingProductId)}
+                          onClick={() => void translateProduct(product)}
+                          aria-label={t("重新翻译商品 {name}", { name: product.name })}
+                        >
+                          <Translate />{t("翻译")}
+                        </Button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -2018,7 +2066,7 @@ export function ProductsPage() {
 
       <Dialog.Root open={Boolean(selected || detailLoading)} onOpenChange={(open) => { if (!open) close(); }}>
         <Dialog.Content className="core-detail-dialog">
-          {detailLoading || !selected ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} selectedSkuId={selectedSkuId} managedTags={managedTags} onEnhanceProduct={openImageEnhancementForProduct} onEnhanceSkus={openImageEnhancementForSkus} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
+          {detailLoading || !selected ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} selectedSkuId={selectedSkuId} managedTags={managedTags} onEnhanceProduct={openImageEnhancementForProduct} onEnhanceSkus={openImageEnhancementForSkus} onTranslateProduct={translateProduct} translatingProductId={translatingProductId} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
         </Dialog.Content>
       </Dialog.Root>
 
@@ -2301,12 +2349,14 @@ function ManagedTagPicker({ tags, selected, onChange, disabled = false }: {
   );
 }
 
-function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProduct, onEnhanceSkus, onChanged, onClose }: {
+function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProduct, onEnhanceSkus, onTranslateProduct, translatingProductId, onChanged, onClose }: {
   product: ProductDetail;
   selectedSkuId?: string;
   managedTags: ProductTag[];
   onEnhanceProduct: (productId: string) => void;
   onEnhanceSkus: (productId: string, skuIds: string[]) => void;
+  onTranslateProduct: (product: CoreProduct) => void;
+  translatingProductId?: string;
   onChanged: () => Promise<void>;
   onClose: () => void;
 }) {
@@ -2407,7 +2457,21 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProd
           <Dialog.Title>{product.name}</Dialog.Title>
           <Dialog.Description>{product.productCode ?? t("未设置商品编码")} · {primaryCategoryLabel(product.category) || t("未分类")}</Dialog.Description>
         </div>
-        <Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}><X /></Button>
+        <span className="core-product-detail-heading-actions">
+          {canEdit ? (
+            <Button
+              size="2"
+              variant="soft"
+              color="blue"
+              loading={translatingProductId === product.id}
+              disabled={Boolean(translatingProductId)}
+              onClick={() => onTranslateProduct(product)}
+            >
+              <Translate />{t("翻译")}
+            </Button>
+          ) : null}
+          <Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}><X /></Button>
+        </span>
       </div>
       <div className="core-product-detail-summary">
         <Badge color={product.status === "ACTIVE" ? "jade" : product.status === "DRAFT" || product.status === "IN_REVIEW" ? "amber" : "gray"}>{t(productStatusLabel[product.status as ProductStatus] ?? product.status)}</Badge>

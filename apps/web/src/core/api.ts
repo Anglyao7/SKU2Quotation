@@ -110,6 +110,8 @@ import type {
   CatalogShare,
   CatalogShareLogoPosition,
   CatalogShareTargetType,
+  CatalogTranslationBatch,
+  CatalogTranslationBatchAttempt,
   CatalogTranslationJob,
   CatalogTranslationStatus,
   UiLocale,
@@ -2274,6 +2276,7 @@ interface ApiTranslationSettings {
   max_retry_count: number;
   catalog_batch_size: number;
   catalog_batch_characters: number;
+  catalog_concurrency: number;
   reasoning_effort: TranslationReasoningEffort;
   api_key_configured: boolean;
   api_key_hint?: string | null;
@@ -2306,6 +2309,7 @@ function mapTranslationSettings(
     maxRetryCount: row.max_retry_count,
     catalogBatchSize: row.catalog_batch_size,
     catalogBatchCharacters: row.catalog_batch_characters,
+    catalogConcurrency: row.catalog_concurrency,
     reasoningEffort: row.reasoning_effort,
     apiKeyConfigured: row.api_key_configured,
     apiKeyHint: defined(row.api_key_hint),
@@ -2328,6 +2332,7 @@ export interface TranslationSettingsWriteInput {
   maxRetryCount: number;
   catalogBatchSize: number;
   catalogBatchCharacters: number;
+  catalogConcurrency: number;
   reasoningEffort: TranslationReasoningEffort;
 }
 
@@ -2345,6 +2350,7 @@ function translationSettingsBody(input: TranslationSettingsWriteInput) {
     max_retry_count: input.maxRetryCount,
     catalog_batch_size: input.catalogBatchSize,
     catalog_batch_characters: input.catalogBatchCharacters,
+    catalog_concurrency: input.catalogConcurrency,
     reasoning_effort: input.reasoningEffort,
   };
 }
@@ -2437,6 +2443,43 @@ interface ApiCatalogTranslationJob {
   created_at: string;
   started_at?: string | null;
   completed_at?: string | null;
+  batch_count: number;
+  completed_batch_count: number;
+  failed_batch_count: number;
+}
+
+interface ApiCatalogTranslationBatchAttempt {
+  id: string;
+  attempt_no: number;
+  status: "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  sku_ids: string[];
+  sku_refs: Array<{ id: string; code: string; name: string }>;
+  request_started_at: string;
+  first_byte_at?: string | null;
+  completed_at?: string | null;
+  first_byte_latency_ms?: number | null;
+  response_time_ms?: number | null;
+  processed_skus: number;
+  failed_skus: number;
+  error_message?: string | null;
+}
+
+interface ApiCatalogTranslationBatch {
+  id: string;
+  sequence_no: number;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  sku_ids: string[];
+  sku_refs: Array<{ id: string; code: string; name: string }>;
+  attempt_count: number;
+  total_skus: number;
+  processed_skus: number;
+  failed_skus: number;
+  request_started_at?: string | null;
+  first_byte_at?: string | null;
+  completed_at?: string | null;
+  response_time_ms?: number | null;
+  error_message?: string | null;
+  attempts: ApiCatalogTranslationBatchAttempt[];
 }
 
 interface ApiCatalogTranslationStatus {
@@ -2505,6 +2548,51 @@ function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTransla
     createdAt: row.created_at,
     startedAt: defined(row.started_at),
     completedAt: defined(row.completed_at),
+    batchCount: row.batch_count ?? 0,
+    completedBatchCount: row.completed_batch_count ?? 0,
+    failedBatchCount: row.failed_batch_count ?? 0,
+  };
+}
+
+function mapCatalogTranslationBatchAttempt(
+  row: ApiCatalogTranslationBatchAttempt,
+): CatalogTranslationBatchAttempt {
+  return {
+    id: row.id,
+    attemptNo: row.attempt_no,
+    status: row.status,
+    skuIds: row.sku_ids,
+    skuRefs: row.sku_refs,
+    requestStartedAt: row.request_started_at,
+    firstByteAt: defined(row.first_byte_at),
+    completedAt: defined(row.completed_at),
+    firstByteLatencyMs: row.first_byte_latency_ms ?? undefined,
+    responseTimeMs: row.response_time_ms ?? undefined,
+    processedSkus: row.processed_skus,
+    failedSkus: row.failed_skus,
+    errorMessage: defined(row.error_message),
+  };
+}
+
+function mapCatalogTranslationBatch(
+  row: ApiCatalogTranslationBatch,
+): CatalogTranslationBatch {
+  return {
+    id: row.id,
+    sequenceNo: row.sequence_no,
+    status: row.status,
+    skuIds: row.sku_ids,
+    skuRefs: row.sku_refs,
+    attemptCount: row.attempt_count,
+    totalSkus: row.total_skus,
+    processedSkus: row.processed_skus,
+    failedSkus: row.failed_skus,
+    requestStartedAt: defined(row.request_started_at),
+    firstByteAt: defined(row.first_byte_at),
+    completedAt: defined(row.completed_at),
+    responseTimeMs: row.response_time_ms ?? undefined,
+    errorMessage: defined(row.error_message),
+    attempts: row.attempts.map(mapCatalogTranslationBatchAttempt),
   };
 }
 
@@ -2583,6 +2671,45 @@ export async function resumeCatalogTranslationJob(
     await request<ApiCatalogTranslationJob>(
       `/catalog/translations/jobs/${encodeURIComponent(jobId)}/resume`,
       { method: "POST" },
+    ),
+  );
+}
+
+export async function getCatalogTranslationBatches(
+  jobId: string,
+  options: { includeSkus?: boolean } = {},
+): Promise<CatalogTranslationBatch[]> {
+  const query = options.includeSkus === false ? "?include_skus=false" : "";
+  const rows = await request<ApiCatalogTranslationBatch[]>(
+    `/catalog/translations/jobs/${encodeURIComponent(jobId)}/batches${query}`,
+    { cache: "no-store" },
+  );
+  return rows.map(mapCatalogTranslationBatch);
+}
+
+export async function retryCatalogTranslationBatch(
+  jobId: string,
+  batchId: string,
+): Promise<CatalogTranslationJob> {
+  return mapCatalogTranslationJob(
+    await request<ApiCatalogTranslationJob>(
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/batches/${encodeURIComponent(batchId)}/retry`,
+      { method: "POST" },
+    ),
+  );
+}
+
+export async function retryCatalogTranslationProduct(
+  productId: string,
+  targetLocale: StorefrontLocale,
+): Promise<CatalogTranslationJob> {
+  return mapCatalogTranslationJob(
+    await request<ApiCatalogTranslationJob>(
+      `/catalog/translations/products/${encodeURIComponent(productId)}/retry`,
+      {
+        method: "POST",
+        body: JSON.stringify({ target_locale: targetLocale }),
+      },
     ),
   );
 }
@@ -5278,8 +5405,8 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
   };
 }
 
-export async function listPublicQuoteDrafts(): Promise<PublicQuoteDraftSummary[]> {
-  const rows = await request<ApiPublicQuoteDraftSummary[]>("/public-quote-drafts");
+export async function listPublicQuoteDrafts(limit = 500): Promise<PublicQuoteDraftSummary[]> {
+  const rows = await request<ApiPublicQuoteDraftSummary[]>(`/public-quote-drafts?limit=${Math.min(Math.max(limit, 1), 500)}`);
   return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), locale: row.locale, currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at, updatedAt: row.updated_at }));
 }
 

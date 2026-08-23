@@ -18307,7 +18307,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260823_0104"
+        ).scalar() == "20260823_0105"
     upgraded_engine.dispose()
     command.check(config)
 

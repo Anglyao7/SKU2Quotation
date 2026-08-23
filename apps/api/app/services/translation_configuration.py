@@ -39,6 +39,8 @@ DEFAULT_MAX_TOKENS = 16_384
 DEFAULT_MAX_RETRY_COUNT = 3
 DEFAULT_CATALOG_BATCH_SIZE = 50
 DEFAULT_CATALOG_BATCH_CHARACTERS = 10_000
+DEFAULT_CATALOG_CONCURRENCY = 3
+MAX_CATALOG_CONCURRENCY = 10
 MAX_CATALOG_BATCH_SIZE = 200
 MIN_CATALOG_BATCH_CHARACTERS = 1_000
 MAX_CATALOG_BATCH_CHARACTERS = 100_000
@@ -63,6 +65,7 @@ class TranslationConfigurationSnapshot:
     max_retry_count: int
     catalog_batch_size: int
     catalog_batch_characters: int
+    catalog_concurrency: int
     reasoning_effort: str
     api_key_configured: bool
     api_key_hint: str | None
@@ -158,6 +161,29 @@ def normalized_catalog_translation_batch_limits(
             "catalog translation batch characters must be between 1000 and 100000"
         )
     return batch_size, batch_characters
+
+
+def normalized_catalog_translation_concurrency(value: int) -> int:
+    if value < 1 or value > MAX_CATALOG_CONCURRENCY:
+        raise TranslationProviderError(
+            "catalog translation concurrency must be between 1 and 10"
+        )
+    return value
+
+
+def _environment_catalog_translation_concurrency() -> int:
+    try:
+        value = int(
+            os.getenv(
+                "CATALOG_TRANSLATION_CONCURRENCY",
+                str(DEFAULT_CATALOG_CONCURRENCY),
+            )
+        )
+    except ValueError as exc:
+        raise TranslationProviderError(
+            "CATALOG_TRANSLATION_CONCURRENCY must be an integer"
+        ) from exc
+    return normalized_catalog_translation_concurrency(value)
 
 
 def _environment_catalog_translation_batch_limits() -> tuple[int, int]:
@@ -314,6 +340,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             max_retry_count=_environment_catalog_translation_retry_count(),
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
+            catalog_concurrency=_environment_catalog_translation_concurrency(),
             reasoning_effort=DEFAULT_REASONING_EFFORT,
             api_key_configured=False,
             api_key_hint=None,
@@ -343,6 +370,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             max_retry_count=_environment_catalog_translation_retry_count(),
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
+            catalog_concurrency=_environment_catalog_translation_concurrency(),
             reasoning_effort="none",
             api_key_configured=configured,
             api_key_hint=None,
@@ -380,6 +408,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             max_retry_count=_environment_catalog_translation_retry_count(),
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
+            catalog_concurrency=_environment_catalog_translation_concurrency(),
             reasoning_effort="none",
             api_key_configured=bool(raw_api_key),
             api_key_hint=f"••••{raw_api_key[-4:]}" if raw_api_key else None,
@@ -420,6 +449,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
         max_retry_count=_environment_catalog_translation_retry_count(),
         catalog_batch_size=catalog_batch_size,
         catalog_batch_characters=catalog_batch_characters,
+        catalog_concurrency=_environment_catalog_translation_concurrency(),
         reasoning_effort=_normalized_reasoning_effort(
             os.getenv(
                 "OPENAI_TRANSLATION_REASONING_EFFORT",
@@ -454,6 +484,7 @@ def translation_configuration_snapshot(
         max_retry_count=settings.max_retry_count,
         catalog_batch_size=settings.catalog_batch_size,
         catalog_batch_characters=settings.catalog_batch_characters,
+        catalog_concurrency=settings.catalog_concurrency,
         reasoning_effort=settings.reasoning_effort,
         api_key_configured=bool(settings.api_key_ciphertext),
         api_key_hint=(
@@ -492,6 +523,13 @@ def resolved_catalog_translation_retry_count(session: Session) -> int:
     if settings is None:
         return _environment_catalog_translation_retry_count()
     return normalized_catalog_translation_retry_count(settings.max_retry_count)
+
+
+def resolved_catalog_translation_concurrency(session: Session) -> int:
+    settings = get_managed_translation_settings(session)
+    if settings is None:
+        return _environment_catalog_translation_concurrency()
+    return normalized_catalog_translation_concurrency(settings.catalog_concurrency)
 
 
 def translation_provider_is_configured(
@@ -647,6 +685,7 @@ def save_managed_translation_settings(
     max_retry_count: int,
     catalog_batch_size: int,
     catalog_batch_characters: int,
+    catalog_concurrency: int,
     reasoning_effort: str,
     api_key: str | None,
     access_key_id: str | None,
@@ -665,6 +704,9 @@ def save_managed_translation_settings(
             catalog_batch_size,
             catalog_batch_characters,
         )
+    )
+    normalized_concurrency = normalized_catalog_translation_concurrency(
+        catalog_concurrency
     )
     settings = get_managed_translation_settings(session)
     provider_changed = bool(
@@ -778,6 +820,7 @@ def save_managed_translation_settings(
             max_retry_count=normalized_retry_count,
             catalog_batch_size=normalized_batch_size,
             catalog_batch_characters=normalized_batch_characters,
+            catalog_concurrency=normalized_concurrency,
             reasoning_effort=normalized_reasoning,
             api_key_ciphertext=(
                 encrypt_translation_api_key(resolved_key)
@@ -820,6 +863,7 @@ def save_managed_translation_settings(
         settings.max_retry_count = normalized_retry_count
         settings.catalog_batch_size = normalized_batch_size
         settings.catalog_batch_characters = normalized_batch_characters
+        settings.catalog_concurrency = normalized_concurrency
         settings.reasoning_effort = normalized_reasoning
         settings.is_active = enabled
         settings.version += 1

@@ -3818,6 +3818,15 @@ def _require(permissions: frozenset[str], code: str) -> None:
         )
 
 
+def _require_any(permissions: frozenset[str], *codes: str) -> None:
+    if not any(code in permissions for code in codes):
+        raise ApplicationError(
+            "PERMISSION_DENIED",
+            f"One of these permissions is required: {', '.join(codes)}",
+            kind="forbidden",
+        )
+
+
 def list_tenant_quote_drafts(
     session: Session,
     *,
@@ -3825,7 +3834,10 @@ def list_tenant_quote_drafts(
     permissions: frozenset[str],
     limit: int,
 ) -> list[PublicQuoteDraftSummary]:
-    _require(permissions, "quotation.view")
+    # Incoming storefront quote requests are part of the sales inbox. A
+    # member who can view inquiries may see the pending customer requests even
+    # when they do not have access to the separate formal quotation ledger.
+    _require_any(permissions, "quotation.view", "inquiry.view")
     return [
         PublicQuoteDraftSummary(
             id=row.id,

@@ -88,7 +88,9 @@ export function QuotesPage() {
     if (!publicDetail) return;
     setSaving(true); setError("");
     try {
-      setPublicDetail(await updatePublicQuoteDraftStatus(publicDetail.id, status));
+      const updated = await updatePublicQuoteDraftStatus(publicDetail.id, status);
+      setPublicDetail(updated);
+      window.dispatchEvent(new Event("atc:public-quote-changed"));
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("询价单状态更新失败"));

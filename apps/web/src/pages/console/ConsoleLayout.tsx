@@ -31,12 +31,12 @@ import {
   Warehouse,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Brand } from "../../components/Brand";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { SupportNotificationBell } from "../../core/components/SupportNotificationBell";
 import { useCoreAuth } from "../../core/AuthContext";
-import { updateMerchantSettings } from "../../core/api";
+import { listPublicQuoteDrafts, updateMerchantSettings } from "../../core/api";
 import { preloadConsoleRoute } from "../../core/routePreload";
 import { useLocale } from "../../core/LocaleContext";
 import { initials } from "../../lib/format";
@@ -169,12 +169,15 @@ export function ConsoleLayout() {
   } = useCoreAuth();
   const { locale, setLocale, t } = useLocale();
   const location = useLocation();
+  const navigate = useNavigate();
   const [tenantError, setTenantError] = useState("");
   const [modeDialogOpen, setModeDialogOpen] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
   const [currencyPreset, setCurrencyPreset] = useState("CNY");
   const [customCurrency, setCustomCurrency] = useState("");
   const [toolbarError, setToolbarError] = useState("");
+  const [pendingInquiryCount, setPendingInquiryCount] = useState(0);
+  const [newInquiryNotice, setNewInquiryNotice] = useState<{ count: number; customers: string[] }>();
   const [greetingKey, setGreetingKey] = useState<GreetingKey>(() => (
     greetingKeyForHour(new Date().getHours())
   ));
@@ -190,6 +193,7 @@ export function ConsoleLayout() {
   const subscriptionTier: TenantSubscriptionTier = profile?.context.subscriptionTier ?? "TRIAL";
   const subscriptionPresentation = SUBSCRIPTION_TIER_PRESENTATION[subscriptionTier];
   const canManageSettings = hasPermission("system.settings_manage");
+  const canViewSalesInbox = hasAnyPermission("inquiry.view", "quotation.view");
   const visibleGroups = navigationGroups
     .map((group) => ({
       ...group,
@@ -226,6 +230,72 @@ export function ConsoleLayout() {
     }, 60_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    if (!activeTenantId || !canViewSalesInbox) {
+      setPendingInquiryCount(0);
+      setNewInquiryNotice(undefined);
+      return undefined;
+    }
+
+    const noticeOwner = profile?.user.id ?? "member";
+    const storageKey = `zhimaoyun.console.pending-quote-notices.${activeTenantId}.${noticeOwner}`;
+    // Keep a memory fallback for private browsing modes where localStorage is
+    // unavailable. This prevents the same reminder from reopening on every
+    // polling cycle while still allowing a new tab/session to be notified.
+    const memorySeenIds = new Set<string>();
+    const readSeenIds = () => {
+      const seen = new Set(memorySeenIds);
+      try {
+        const value = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]");
+        if (Array.isArray(value)) {
+          value.forEach((entry) => {
+            if (typeof entry === "string") seen.add(entry);
+          });
+        }
+      } catch {
+        // Private browsing may deny localStorage; the in-memory set remains.
+      }
+      return seen;
+    };
+    const refreshPendingQuotes = async () => {
+      try {
+        const rows = await listPublicQuoteDrafts();
+        if (disposed) return;
+        const pending = rows.filter((row) => ["PENDING_CONFIRMATION", "SUBMITTED", "PENDING_REVIEW"].includes(row.status));
+        setPendingInquiryCount(pending.length);
+        const seen = readSeenIds();
+        const unseen = pending.filter((row) => !seen.has(row.id));
+        if (unseen.length) {
+          setNewInquiryNotice({
+            count: unseen.length,
+            customers: unseen.slice(0, 3).map((row) => row.customerCompany || row.customerName),
+          });
+          pending.forEach((row) => seen.add(row.id));
+          pending.forEach((row) => memorySeenIds.add(row.id));
+          try {
+            window.localStorage.setItem(storageKey, JSON.stringify([...seen].slice(-200)));
+          } catch {
+            // Private browsing may deny localStorage; the memory fallback still works.
+          }
+        }
+      } catch {
+        // Notification polling must never block the console or show a noisy
+        // error when the member does not have access to the sales inbox.
+      }
+    };
+
+    void refreshPendingQuotes();
+    const timer = window.setInterval(() => void refreshPendingQuotes(), 20_000);
+    const handleQuoteChanged = () => void refreshPendingQuotes();
+    window.addEventListener("atc:public-quote-changed", handleQuoteChanged);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener("atc:public-quote-changed", handleQuoteChanged);
+    };
+  }, [activeTenantId, canViewSalesInbox, profile?.user.id]);
 
   useEffect(() => {
     if (!activeNavigationGroup) return;
@@ -329,34 +399,42 @@ export function ConsoleLayout() {
             >
               <GroupIcon className="nav-group-icon" size={20} weight="duotone" />
               <span>{t(group.label)}</span>
+              {group.key === "sales" && pendingInquiryCount > 0 ? <span className="nav-unread-dot" aria-label={t("有 {count} 条待处理询价", { count: pendingInquiryCount })}>{pendingInquiryCount > 9 ? "9+" : pendingInquiryCount}</span> : null}
               <CaretDown className="nav-group-caret" size={15} weight="bold" aria-hidden="true" />
             </button>
             {isExpanded ? <div className="nav-group-items" id={panelId}>
-              {group.items.map(({ to, label, icon: Icon, end }) => <NavLink
-                key={to}
-                to={to}
-                end={end}
-                title={t(label)}
-                onPointerEnter={() => preloadConsoleRoute(to)}
-                onPointerDown={() => preloadConsoleRoute(to)}
-                onFocus={() => preloadConsoleRoute(to)}
-                className={({ isActive }) => `nav-item nav-subitem ${isActive ? "active" : ""}`}
-              >
-                <Icon size={18} weight="duotone" />
-                <span>{t(label)}</span>
-              </NavLink>)}
+              {group.items.map(({ to, label, icon: Icon, end }) => {
+                const hasPending = pendingInquiryCount > 0 && (to === "/console/inquiries" || to === "/console/quotes");
+                return <NavLink
+                  key={to}
+                  to={to}
+                  end={end}
+                  title={t(label)}
+                  onPointerEnter={() => preloadConsoleRoute(to)}
+                  onPointerDown={() => preloadConsoleRoute(to)}
+                  onFocus={() => preloadConsoleRoute(to)}
+                  className={({ isActive }) => `nav-item nav-subitem ${isActive ? "active" : ""}`}
+                >
+                  <Icon size={18} weight="duotone" />
+                  <span>{t(label)}</span>
+                  {hasPending ? <span className="nav-unread-dot" aria-label={t("有 {count} 条待处理询价", { count: pendingInquiryCount })}>{pendingInquiryCount > 9 ? "9+" : pendingInquiryCount}</span> : null}
+                </NavLink>;
+              })}
             </div> : null}
           </section>;
         })}
       </nav>
       <nav className="mobile-console-nav" aria-label={t("移动端控制台导航")}>
-        {mobilePrimary.map(({ to, mobileLabel, icon: Icon, end }) => <NavLink key={to} to={to} end={end} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Icon size={20} weight="duotone" /><span>{t(mobileLabel)}</span></NavLink>)}
+        {mobilePrimary.map(({ to, mobileLabel, icon: Icon, end }) => {
+          const hasPending = pendingInquiryCount > 0 && (to === "/console/inquiries" || to === "/console/quotes");
+          return <NavLink key={to} to={to} end={end} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Icon size={20} weight="duotone" /><span>{t(mobileLabel)}</span>{hasPending ? <span className="nav-unread-dot" aria-label={t("有 {count} 条待处理询价", { count: pendingInquiryCount })}>{pendingInquiryCount > 9 ? "9+" : pendingInquiryCount}</span> : null}</NavLink>;
+        })}
         <DropdownMenu.Root>
           <DropdownMenu.Trigger>
             <button type="button" className={`nav-item mobile-more-trigger ${mobileMoreActive ? "active" : ""}`}><DotsThreeOutline size={20} weight="duotone" /><span>{t("更多")}</span></button>
           </DropdownMenu.Trigger>
           <DropdownMenu.Content align="end" sideOffset={10} className="mobile-more-content">
-            {mobileMore.map(({ to, label, icon: Icon }) => <DropdownMenu.Item asChild key={to}><Link to={to} onPointerEnter={() => preloadConsoleRoute(to)} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)}><Icon size={17} />{t(label)}</Link></DropdownMenu.Item>)}
+            {mobileMore.map(({ to, label, icon: Icon }) => <DropdownMenu.Item asChild key={to}><Link to={to} onPointerEnter={() => preloadConsoleRoute(to)} onPointerDown={() => preloadConsoleRoute(to)} onFocus={() => preloadConsoleRoute(to)}><Icon size={17} />{t(label)}{pendingInquiryCount > 0 && (to === "/console/inquiries" || to === "/console/quotes") ? <span className="nav-unread-dot" aria-hidden="true">{pendingInquiryCount > 9 ? "9+" : pendingInquiryCount}</span> : null}</Link></DropdownMenu.Item>)}
             <DropdownMenu.Separator />
             <DropdownMenu.Item asChild><Link to="/console/account"><UserGear size={17} />{t("账户与安全")}</Link></DropdownMenu.Item>
             <DropdownMenu.Item asChild><Link to={storefrontPath} target="_blank" rel="noopener noreferrer"><StoreIcon size={17} />{t("查看商品前台")}</Link></DropdownMenu.Item>
@@ -509,6 +587,38 @@ export function ConsoleLayout() {
           <Button onClick={() => void saveDefaultCurrency()} loading={modeBusy}>
             {t(modeBusy ? "正在保存" : "保存币种")}
           </Button>
+        </div>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
+    <AlertDialog.Root
+      open={Boolean(newInquiryNotice)}
+      onOpenChange={(open) => {
+        if (!open) setNewInquiryNotice(undefined);
+      }}
+    >
+      <AlertDialog.Content className="console-inquiry-notice-dialog">
+        <AlertDialog.Title>{t("收到新的客户询价")}</AlertDialog.Title>
+        <AlertDialog.Description size="2">
+          {newInquiryNotice
+            ? t("收到 {count} 条待处理询价，请及时处理。", { count: newInquiryNotice.count })
+            : ""}
+        </AlertDialog.Description>
+        {newInquiryNotice?.customers.length ? (
+          <div className="console-inquiry-notice-customers" aria-label={t("待处理客户")}>
+            {newInquiryNotice.customers.map((customer, index) => (
+              <span key={`${customer}-${index}`}>{customer}</span>
+            ))}
+          </div>
+        ) : null}
+        <div className="console-inquiry-notice-actions">
+          <AlertDialog.Cancel>
+            <Button variant="soft" color="gray">{t("稍后处理")}</Button>
+          </AlertDialog.Cancel>
+          <AlertDialog.Action>
+            <Button color="blue" onClick={() => { setNewInquiryNotice(undefined); navigate("/console/quotes"); }}>
+              {t("查看报价")}
+            </Button>
+          </AlertDialog.Action>
         </div>
       </AlertDialog.Content>
     </AlertDialog.Root>

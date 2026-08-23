@@ -26,16 +26,19 @@ import { ToastNotice } from "../ToastContext";
 import {
   CoreApiError,
   getCatalogTranslationJob,
+  getCatalogTranslationBatches,
   getCatalogTranslationStatus,
   getMerchantSettings,
   pauseCatalogTranslationJob,
   resumeCatalogTranslationJob,
+  retryCatalogTranslationBatch,
   startCatalogTranslationJob,
   updateMerchantSettings,
 } from "../api";
 import type {
   CatalogTranslationJob,
   CatalogTranslationJobStage,
+  CatalogTranslationBatch,
   CatalogTranslationStatus,
 } from "../types";
 import { useLocale } from "../LocaleContext";
@@ -91,6 +94,8 @@ export function LanguagePackagesPage() {
   const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>("en-US");
   const [status, setStatus] = useState<CatalogTranslationStatus>();
   const [job, setJob] = useState<CatalogTranslationJob>();
+  const [batches, setBatches] = useState<CatalogTranslationBatch[]>([]);
+  const [retryingBatchId, setRetryingBatchId] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [savingLanguages, setSavingLanguages] = useState(false);
   const [startingJob, setStartingJob] = useState(false);
@@ -115,7 +120,20 @@ export function LanguagePackagesPage() {
     const next = await getCatalogTranslationStatus(locale);
     setStatus(next);
     setJob(next.latestJob);
+    if (next.latestJob) {
+      setBatches(await getCatalogTranslationBatches(next.latestJob.id, { includeSkus: false }));
+    } else {
+      setBatches([]);
+    }
     return next;
+  };
+
+  const refreshBatches = async (jobId = job?.id) => {
+    if (!jobId) {
+      setBatches([]);
+      return;
+    }
+    setBatches(await getCatalogTranslationBatches(jobId, { includeSkus: false }));
   };
 
   useEffect(() => {
@@ -135,6 +153,11 @@ export function LanguagePackagesPage() {
         setSavedDefaultLocale(nextDefault);
         setStatus(translationStatus);
         setJob(translationStatus.latestJob);
+        if (translationStatus.latestJob) {
+          void getCatalogTranslationBatches(translationStatus.latestJob.id, { includeSkus: false })
+            .then(setBatches)
+            .catch(() => undefined);
+        }
       })
       .catch((caught) => {
         if (active) {
@@ -169,6 +192,7 @@ export function LanguagePackagesPage() {
         .then((next) => {
           if (cancelled) return;
           setJob(next);
+          void refreshBatches(next.id).catch(() => undefined);
           if (!["QUEUED", "RUNNING"].includes(next.status)) {
             window.clearInterval(timer);
             if (next.status === "PAUSED") {
@@ -190,6 +214,11 @@ export function LanguagePackagesPage() {
       window.clearInterval(timer);
     };
   }, [pollableJob?.id, pollableJob?.pauseRequested]);
+
+  useEffect(() => {
+    if (!job?.id || pollableJob) return;
+    void refreshBatches(job.id).catch(() => undefined);
+  }, [job?.id, pollableJob]);
 
   const toggleLanguage = (locale: StorefrontLocale, checked: boolean) => {
     setEnabledLocales((current) => {
@@ -262,6 +291,7 @@ export function LanguagePackagesPage() {
         ? await pauseCatalogTranslationJob(controllableJob.id)
         : await resumeCatalogTranslationJob(controllableJob.id);
       setJob(next);
+      void refreshBatches(next.id).catch(() => undefined);
       if (action === "pause") {
         setSuccess(next.status === "PAUSED"
           ? t("翻译已暂停，已完成的内容会保留。")
@@ -275,6 +305,23 @@ export function LanguagePackagesPage() {
         : t(action === "pause" ? "暂停翻译失败。" : "继续翻译失败。"));
     } finally {
       setControllingJob(false);
+    }
+  };
+
+  const retryBatch = async (batch: CatalogTranslationBatch) => {
+    if (!job || retryingBatchId) return;
+    setRetryingBatchId(batch.id);
+    setError("");
+    setSuccess("");
+    try {
+      const next = await retryCatalogTranslationBatch(job.id, batch.id);
+      setJob(next);
+      setBatches([]);
+      setSuccess(t("已重新提交第 {batch} 批，正在从该批次重新翻译。", { batch: batch.sequenceNo }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("批次重新请求失败。"));
+    } finally {
+      setRetryingBatchId(undefined);
     }
   };
 
@@ -543,6 +590,72 @@ export function LanguagePackagesPage() {
             {job.packagePublished ? <span>{t("已发布版本 v{version}", { version: job.packageVersion ?? "—" })}</span> : null}
           </div>
           {job.errorMessage ? <Text color="red" size="2">{job.errorMessage}</Text> : null}
+        </Card>
+      ) : null}
+
+      {job && batches.length ? (
+        <Card className="language-batch-history-card">
+          <div className="language-job-header">
+            <div>
+              <Text size="1" color="gray">{t("请求记录")}</Text>
+              <Heading size="4">{t("翻译批次")}</Heading>
+            </div>
+            <Badge color="gray">{t("{count} 批", { count: batches.length })}</Badge>
+          </div>
+          <div className="language-batch-list">
+            {batches.map((batch) => {
+              const latestAttempt = batch.attempts[batch.attempts.length - 1];
+              const preview = batch.skuRefs.slice(0, 3).map((ref) => ref.code || ref.name).join("、");
+              return (
+                <div className={`language-batch-row is-${batch.status.toLowerCase()}`} key={batch.id}>
+                  <div className="language-batch-main">
+                    <div className="language-batch-title">
+                      <strong>{t("第 {batch} 批", { batch: batch.sequenceNo })}</strong>
+                      <Badge color={batch.status === "SUCCEEDED" ? "green" : batch.status === "FAILED" ? "red" : batch.status === "RUNNING" ? "blue" : "gray"}>
+                        {t(batch.status === "SUCCEEDED" ? "已完成" : batch.status === "FAILED" ? "失败" : batch.status === "RUNNING" ? "请求中" : "等待中")}
+                      </Badge>
+                    </div>
+                    <Text size="1" color="gray">
+                      {t("{count} 个 SKU", { count: batch.totalSkus })}{preview ? ` · ${preview}${batch.skuRefs.length > 3 ? " …" : ""}` : ""}
+                    </Text>
+                    {latestAttempt ? (
+                      <Text size="1" color="gray">
+                        {t("第 {attempt} 次请求 · 首响 {first}", {
+                          attempt: latestAttempt.attemptNo,
+                          first: formatDate(latestAttempt.firstByteAt),
+                        })}
+                        {latestAttempt.firstByteLatencyMs != null
+                          ? ` (${latestAttempt.firstByteLatencyMs} ms)`
+                          : ""}
+                        {` · ${t("完成")} ${formatDate(latestAttempt.completedAt)}`}
+                        {latestAttempt.responseTimeMs != null
+                          ? ` (${latestAttempt.responseTimeMs} ms)`
+                          : ""}
+                      </Text>
+                    ) : null}
+                    {batch.errorMessage ? <Text size="1" color="red">{batch.errorMessage}</Text> : null}
+                  </div>
+                  <div className="language-batch-actions">
+                    <Text size="1" color="gray">
+                      {latestAttempt?.responseTimeMs != null ? `${latestAttempt.responseTimeMs} ms` : "—"}
+                    </Text>
+                    {batch.status === "FAILED" ? (
+                      <Button
+                        size="1"
+                        variant="soft"
+                        color="amber"
+                        loading={retryingBatchId === batch.id}
+                        disabled={Boolean(retryingBatchId) || Boolean(activeJob)}
+                        onClick={() => void retryBatch(batch)}
+                      >
+                        {t("重新请求")}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </Card>
       ) : null}
     </div>

@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from ..catalog_translation_schemas import (
+    CatalogTranslationBatchResponse,
     CatalogTranslationJobResponse,
+    CatalogTranslationProductRetryRequest,
     CatalogTranslationJobStartRequest,
     CatalogTranslationStatusResponse,
 )
@@ -107,6 +109,78 @@ def get_translation_job(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             job_id=job_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/jobs/{job_id}/batches",
+    response_model=list[CatalogTranslationBatchResponse],
+)
+def list_translation_batches(
+    job_id: UUID,
+    include_skus: bool = Query(
+        default=True,
+        description=(
+            "Include every SKU ID and reference. Set false for lightweight "
+            "polling; the response keeps a three-SKU preview."
+        ),
+    ),
+    session: Session = Depends(get_authenticated_session),
+) -> list[CatalogTranslationBatchResponse]:
+    context = current_context(session)
+    try:
+        return use_cases.list_translation_batches(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            job_id=job_id,
+            include_skus=include_skus,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/jobs/{job_id}/batches/{batch_id}/retry",
+    response_model=CatalogTranslationJobResponse,
+    status_code=202,
+)
+def retry_translation_batch(
+    job_id: UUID,
+    batch_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogTranslationJobResponse:
+    context = current_context(session)
+    try:
+        return use_cases.retry_translation_batch(
+            session,
+            context=context,
+            job_id=job_id,
+            batch_id=batch_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/products/{product_id}/retry",
+    response_model=CatalogTranslationJobResponse,
+    status_code=202,
+)
+def retry_translation_product(
+    product_id: UUID,
+    payload: CatalogTranslationProductRetryRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogTranslationJobResponse:
+    context = current_context(session)
+    try:
+        return use_cases.retry_translation_product(
+            session,
+            context=context,
+            product_id=product_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

@@ -50,6 +50,10 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
             name="catalog_batch_characters_supported",
         ),
         CheckConstraint(
+            "catalog_concurrency >= 1 AND catalog_concurrency <= 10",
+            name="catalog_concurrency_supported",
+        ),
+        CheckConstraint(
             "reasoning_effort IN ('none', 'minimal', 'low', 'medium', 'high')",
             name="reasoning_effort_supported",
         ),
@@ -90,6 +94,11 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
     catalog_batch_characters: Mapped[int] = mapped_column(
         Integer,
         default=10_000,
+        nullable=False,
+    )
+    catalog_concurrency: Mapped[int] = mapped_column(
+        Integer,
+        default=3,
         nullable=False,
     )
     reasoning_effort: Mapped[str] = mapped_column(

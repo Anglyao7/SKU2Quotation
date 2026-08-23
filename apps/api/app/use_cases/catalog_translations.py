@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from uuid import UUID
@@ -11,15 +12,20 @@ from uuid import UUID
 import psycopg
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from ..catalog_translation_models import (
     CatalogLanguagePackRow,
+    CatalogTranslationBatchAttemptRow,
+    CatalogTranslationBatchRow,
     CatalogTranslationJobRow,
 )
 from ..catalog_translation_schemas import (
+    CatalogTranslationBatchAttemptResponse,
+    CatalogTranslationBatchResponse,
     CatalogTranslationFailure,
     CatalogTranslationJobResponse,
+    CatalogTranslationProductRetryRequest,
     CatalogTranslationJobStartRequest,
     CatalogLanguagePackResponse,
     CatalogTranslationStatusResponse,
@@ -60,6 +66,7 @@ from ..services.translation import (
 )
 from ..services.translation_configuration import (
     resolved_catalog_translation_batch_limits,
+    resolved_catalog_translation_concurrency,
     resolved_catalog_translation_retry_count,
     resolved_catalog_translator,
     translation_provider_is_configured,
@@ -95,6 +102,25 @@ _TRANSIENT_TRANSLATION_ERRORS = (
     "http 503",
     "http 504",
 )
+
+
+@dataclass(frozen=True)
+class _BatchAttemptEvent:
+    attempt_no: int
+    request_started_at: datetime
+    first_byte_at: datetime | None
+    completed_at: datetime
+    status: str
+    processed_skus: int
+    failed_skus: int
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class _BatchTranslationOutcome:
+    results: list[CatalogTranslationResult] | None
+    error: TranslationProviderError | None
+    attempts: list[_BatchAttemptEvent]
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -188,6 +214,26 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
         # safely recomputes pending rows, so expose the truthful remaining
         # count instead of misleading users with zero.
         remaining_skus = job.total_skus - job.processed_skus
+    batch_count = 0
+    completed_batch_count = 0
+    failed_batch_count = 0
+    job_session = object_session(job)
+    if job_session is not None:
+        batch_statuses = list(
+            job_session.scalars(
+                select(CatalogTranslationBatchRow.status).where(
+                    CatalogTranslationBatchRow.tenant_id == job.tenant_id,
+                    CatalogTranslationBatchRow.job_id == job.id,
+                )
+            ).all()
+        )
+        batch_count = len(batch_statuses)
+        completed_batch_count = sum(
+            status == "SUCCEEDED" for status in batch_statuses
+        )
+        failed_batch_count = sum(
+            status == "FAILED" for status in batch_statuses
+        )
     return CatalogTranslationJobResponse(
         id=job.id,
         source_locale=job.source_locale,
@@ -223,6 +269,92 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
+        batch_count=batch_count,
+        completed_batch_count=completed_batch_count,
+        failed_batch_count=failed_batch_count,
+    )
+
+
+def _as_uuid_list(values: list[str] | None) -> list[UUID]:
+    result: list[UUID] = []
+    for value in values or []:
+        try:
+            result.append(UUID(str(value)))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _elapsed_ms(start: datetime | None, end: datetime | None) -> int | None:
+    if start is None or end is None:
+        return None
+    return max(0, round((_as_utc(end) - _as_utc(start)).total_seconds() * 1000))
+
+
+def _batch_attempt_response(
+    attempt: CatalogTranslationBatchAttemptRow,
+    *,
+    include_skus: bool = True,
+) -> CatalogTranslationBatchAttemptResponse:
+    return CatalogTranslationBatchAttemptResponse(
+        id=attempt.id,
+        attempt_no=attempt.attempt_no,
+        status=attempt.status,
+        sku_ids=_as_uuid_list(attempt.sku_ids) if include_skus else [],
+        sku_refs=(
+            list(attempt.sku_refs or [])
+            if include_skus
+            else list(attempt.sku_refs or [])[:3]
+        ),
+        request_started_at=attempt.request_started_at,
+        first_byte_at=attempt.first_byte_at,
+        completed_at=attempt.completed_at,
+        first_byte_latency_ms=_elapsed_ms(
+            attempt.request_started_at,
+            attempt.first_byte_at,
+        ),
+        response_time_ms=_elapsed_ms(
+            attempt.request_started_at,
+            attempt.completed_at,
+        ),
+        processed_skus=attempt.processed_skus,
+        failed_skus=attempt.failed_skus,
+        error_message=attempt.error_message,
+    )
+
+
+def _batch_response(
+    batch: CatalogTranslationBatchRow,
+    attempts: list[CatalogTranslationBatchAttemptRow] | None = None,
+    *,
+    include_skus: bool = True,
+) -> CatalogTranslationBatchResponse:
+    return CatalogTranslationBatchResponse(
+        id=batch.id,
+        sequence_no=batch.sequence_no,
+        status=batch.status,
+        sku_ids=_as_uuid_list(batch.sku_ids) if include_skus else [],
+        sku_refs=(
+            list(batch.sku_refs or [])
+            if include_skus
+            else list(batch.sku_refs or [])[:3]
+        ),
+        attempt_count=batch.attempt_count,
+        total_skus=batch.total_skus,
+        processed_skus=batch.processed_skus,
+        failed_skus=batch.failed_skus,
+        request_started_at=batch.request_started_at,
+        first_byte_at=batch.first_byte_at,
+        completed_at=batch.completed_at,
+        response_time_ms=_elapsed_ms(
+            batch.request_started_at,
+            batch.completed_at,
+        ),
+        error_message=batch.error_message,
+        attempts=[
+            _batch_attempt_response(attempt, include_skus=include_skus)
+            for attempt in (attempts or [])
+        ],
     )
 
 
@@ -242,6 +374,184 @@ def _active_job(
         .order_by(CatalogTranslationJobRow.created_at.desc())
         .limit(1)
     )
+
+
+def _batch_sku_refs(batch: list[CatalogTranslationSource]) -> list[dict[str, str]]:
+    return [
+        {
+            "id": str(source.sku_id),
+            "code": source.sku_code,
+            "name": source.name,
+        }
+        for source in batch
+    ]
+
+
+def _ensure_translation_batch_rows(
+    session: Session,
+    *,
+    job: CatalogTranslationJobRow,
+    batches: list[list[CatalogTranslationSource]],
+) -> list[CatalogTranslationBatchRow]:
+    """Create or reuse logical batch rows for a resumable job."""
+
+    existing = list(
+        session.scalars(
+            select(CatalogTranslationBatchRow).where(
+                CatalogTranslationBatchRow.tenant_id == job.tenant_id,
+                CatalogTranslationBatchRow.job_id == job.id,
+            )
+        ).all()
+    )
+    by_sku_ids = {
+        tuple(sorted(str(value) for value in row.sku_ids or [])): row
+        for row in existing
+        if row.status != "SUCCEEDED"
+    }
+    next_sequence = max((row.sequence_no for row in existing), default=0) + 1
+    rows: list[CatalogTranslationBatchRow] = []
+    for batch in batches:
+        sku_ids = [str(source.sku_id) for source in batch]
+        key = tuple(sorted(sku_ids))
+        row = by_sku_ids.get(key)
+        if row is None:
+            row = CatalogTranslationBatchRow(
+                tenant_id=job.tenant_id,
+                job_id=job.id,
+                sequence_no=next_sequence,
+                status="QUEUED",
+                sku_ids=sku_ids,
+                sku_refs=_batch_sku_refs(batch),
+                attempt_count=0,
+                total_skus=len(batch),
+                processed_skus=0,
+                failed_skus=0,
+            )
+            next_sequence += 1
+            session.add(row)
+        else:
+            row.status = "QUEUED"
+            row.sku_ids = sku_ids
+            row.sku_refs = _batch_sku_refs(batch)
+            row.total_skus = len(batch)
+            row.processed_skus = 0
+            row.failed_skus = 0
+            row.error_message = None
+            row.request_started_at = None
+            row.first_byte_at = None
+            row.completed_at = None
+        rows.append(row)
+    session.flush()
+    return rows
+
+
+def _persist_batch_attempts(
+    session: Session,
+    *,
+    job_batch: CatalogTranslationBatchRow,
+    batch: list[CatalogTranslationSource],
+    events: list[_BatchAttemptEvent],
+) -> None:
+    refs = _batch_sku_refs(batch)
+    for event in events:
+        session.add(
+            CatalogTranslationBatchAttemptRow(
+                tenant_id=job_batch.tenant_id,
+                batch_id=job_batch.id,
+                attempt_no=event.attempt_no,
+                status=event.status,
+                sku_ids=[str(source.sku_id) for source in batch],
+                sku_refs=refs,
+                request_started_at=event.request_started_at,
+                first_byte_at=event.first_byte_at,
+                completed_at=event.completed_at,
+                processed_skus=event.processed_skus,
+                failed_skus=event.failed_skus,
+                error_message=event.error_message,
+            )
+        )
+    if events:
+        last = events[-1]
+        job_batch.attempt_count += len(events)
+        job_batch.request_started_at = events[0].request_started_at
+        job_batch.first_byte_at = next(
+            (event.first_byte_at for event in events if event.first_byte_at),
+            None,
+        )
+        job_batch.completed_at = last.completed_at
+
+
+def _translate_batch_outcome(
+    translator: TranslationProvider,
+    batch: list[CatalogTranslationSource],
+    *,
+    source_locale: str,
+    target_locale: str,
+    max_retry_count: int,
+    attempt_offset: int = 0,
+) -> _BatchTranslationOutcome:
+    events: list[_BatchAttemptEvent] = []
+    base_delay = _positive_environment(
+        "CATALOG_TRANSLATION_RETRY_BASE_SECONDS",
+        2,
+        maximum=30,
+    )
+    for attempt in range(max_retry_count + 1):
+        started = utcnow()
+        try:
+            results = translate_catalog_sources(
+                translator,
+                batch,
+                source_locale=source_locale,
+                target_locale=target_locale,
+            )
+            # Providers currently expose a completed response rather than a
+            # streaming body. Recording this boundary still gives operators
+            # a stable first-byte/complete pair; streaming adapters can later
+            # supply a more precise first_byte_at without changing the schema.
+            first_byte = utcnow()
+            completed = utcnow()
+            events.append(
+                _BatchAttemptEvent(
+                    attempt_no=attempt_offset + attempt + 1,
+                    request_started_at=started,
+                    first_byte_at=first_byte,
+                    completed_at=completed,
+                    status="SUCCEEDED",
+                    processed_skus=len(results),
+                    failed_skus=max(0, len(batch) - len(results)),
+                )
+            )
+            return _BatchTranslationOutcome(results, None, events)
+        except TranslationProviderError as exc:
+            completed = utcnow()
+            events.append(
+                _BatchAttemptEvent(
+                    attempt_no=attempt_offset + attempt + 1,
+                    request_started_at=started,
+                    first_byte_at=completed,
+                    completed_at=completed,
+                    status="FAILED",
+                    processed_skus=0,
+                    failed_skus=len(batch),
+                    error_message=str(exc),
+                )
+            )
+            if (
+                attempt >= max_retry_count
+                or not _transient_translation_error(exc)
+            ):
+                return _BatchTranslationOutcome(None, exc, events)
+            delay = min(base_delay * (2**attempt), 30)
+            logger.warning(
+                "catalog translation provider retry %s/%s in %ss: %s",
+                attempt + 1,
+                max_retry_count,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    raise AssertionError("translation retry loop did not return")
 
 
 def _expire_stale_job(
@@ -376,6 +686,271 @@ def get_translation_job(
     )
     session.refresh(job)
     return _job_response(job)
+
+
+def list_translation_batches(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    job_id: UUID,
+    include_skus: bool = True,
+) -> list[CatalogTranslationBatchResponse]:
+    _require(permissions, "product.view")
+    job = session.scalar(
+        select(CatalogTranslationJobRow).where(
+            CatalogTranslationJobRow.tenant_id == tenant_id,
+            CatalogTranslationJobRow.id == job_id,
+        )
+    )
+    if job is None:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_JOB_NOT_FOUND",
+            "商品翻译任务不存在。",
+            kind="not_found",
+        )
+    batches = list(
+        session.scalars(
+            select(CatalogTranslationBatchRow)
+            .where(
+                CatalogTranslationBatchRow.tenant_id == tenant_id,
+                CatalogTranslationBatchRow.job_id == job_id,
+            )
+            .order_by(CatalogTranslationBatchRow.sequence_no.asc())
+        ).all()
+    )
+    if not batches:
+        return []
+    attempts = list(
+        session.scalars(
+            select(CatalogTranslationBatchAttemptRow)
+            .where(
+                CatalogTranslationBatchAttemptRow.tenant_id == tenant_id,
+                CatalogTranslationBatchAttemptRow.batch_id.in_(
+                    [batch.id for batch in batches]
+                ),
+            )
+            .order_by(
+                CatalogTranslationBatchAttemptRow.batch_id.asc(),
+                CatalogTranslationBatchAttemptRow.attempt_no.asc(),
+            )
+        ).all()
+    )
+    attempts_by_batch: dict[UUID, list[CatalogTranslationBatchAttemptRow]] = {}
+    for attempt in attempts:
+        attempts_by_batch.setdefault(attempt.batch_id, []).append(attempt)
+    return [
+        _batch_response(
+            batch,
+            attempts_by_batch.get(batch.id, []),
+            include_skus=include_skus,
+        )
+        for batch in batches
+    ]
+
+
+def _start_forced_translation_job(
+    session: Session,
+    *,
+    context: RequestContext,
+    target_locale: str,
+    source_ids: list[UUID],
+    reason: str,
+    source_locale: str = _SOURCE_LOCALE,
+) -> CatalogTranslationJobResponse:
+    """Start a translation job for an explicit, stable set of SKU IDs.
+
+    Product-level retranslation and failed-batch retry both use this path. The
+    worker receives the IDs in the same order that the UI selected them, while
+    each response is still persisted by ``sku_id`` so a provider returning
+    markers out of order can never move a translation to another SKU.
+    """
+
+    ordered_ids = list(dict.fromkeys(source_ids))
+    if not ordered_ids:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_PRODUCT_EMPTY",
+            "该商品没有可翻译的公开 SKU。",
+            kind="conflict",
+        )
+    _expire_stale_job(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=target_locale,
+    )
+    existing = _active_job(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=target_locale,
+    )
+    if existing is not None:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_JOB_CONFLICT",
+            "当前语言已有翻译任务正在执行，请等待完成后再试。",
+            kind="conflict",
+        )
+    try:
+        translator = resolved_catalog_translator(
+            session,
+            environment_factory=configured_catalog_translator,
+        )
+    except TranslationProviderError as exc:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_CONFIGURATION_INVALID",
+            str(exc),
+        ) from exc
+    if not language_package_storage_status().configured:
+        raise ApplicationError(
+            "CATALOG_LANGUAGE_PACKAGE_STORAGE_NOT_CONFIGURED",
+            "语言包存储尚未配置，请联系平台管理员。",
+        )
+
+    job = CatalogTranslationJobRow(
+        tenant_id=context.tenant_id,
+        requested_by_membership_id=context.membership_id,
+        requested_by_user_id=context.user_id,
+        source_locale=source_locale,
+        target_locale=target_locale,
+        mode="INCREMENTAL",
+        status="QUEUED",
+        stage="QUEUED",
+        total_skus=len(ordered_ids),
+        processed_skus=0,
+        failed_skus=0,
+        provider=translator.identity.provider,
+        provider_version=translator.identity.version,
+        failure_details=[],
+        remaining_sku_ids=[str(sku_id) for sku_id in ordered_ids],
+        forced_sku_ids=[str(sku_id) for sku_id in ordered_ids],
+        error_message=reason,
+    )
+    session.add(job)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_JOB_CONFLICT",
+            "当前语言已有翻译任务正在执行，请稍后再试。",
+            kind="conflict",
+        ) from exc
+    try:
+        _dispatch_translation_job(
+            job_id=job.id,
+            organization_id=context.organization_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+    except RuntimeError as exc:
+        job.status = "FAILED"
+        job.stage = "FAILED"
+        job.failed_skus = len(ordered_ids)
+        job.error_message = "翻译任务暂时无法启动，请稍后重试。"
+        job.completed_at = utcnow()
+        session.commit()
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_DISPATCH_FAILED",
+            job.error_message,
+        ) from exc
+    return _job_response(job)
+
+
+def retry_translation_batch(
+    session: Session,
+    *,
+    context: RequestContext,
+    job_id: UUID,
+    batch_id: UUID,
+) -> CatalogTranslationJobResponse:
+    _require(context.permissions, "product.edit")
+    batch = session.scalar(
+        select(CatalogTranslationBatchRow).where(
+            CatalogTranslationBatchRow.tenant_id == context.tenant_id,
+            CatalogTranslationBatchRow.id == batch_id,
+            CatalogTranslationBatchRow.job_id == job_id,
+        )
+    )
+    if batch is None:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_BATCH_NOT_FOUND",
+            "翻译批次不存在。",
+            kind="not_found",
+        )
+    if batch.status in {"QUEUED", "RUNNING"}:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_BATCH_BUSY",
+            "该批次仍在请求中，完成后才可以重新请求。",
+            kind="conflict",
+        )
+    source_ids = _as_uuid_list(batch.sku_ids)
+    if not source_ids:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_BATCH_EMPTY",
+            "该批次没有可重试的 SKU。",
+            kind="conflict",
+        )
+    original_job = session.get(CatalogTranslationJobRow, job_id)
+    if original_job is None:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_JOB_NOT_FOUND",
+            "商品翻译任务不存在。",
+            kind="not_found",
+        )
+    return _start_forced_translation_job(
+        session,
+        context=context,
+        target_locale=original_job.target_locale,
+        source_locale=original_job.source_locale,
+        source_ids=source_ids,
+        reason=f"重试翻译批次 #{batch.sequence_no}",
+    )
+
+
+def retry_translation_product(
+    session: Session,
+    *,
+    context: RequestContext,
+    product_id: UUID,
+    request: CatalogTranslationProductRetryRequest,
+) -> CatalogTranslationJobResponse:
+    """Retranslate all customer-visible SKUs belonging to one product."""
+
+    _require(context.permissions, "product.edit")
+    rows = _all_rows(session, tenant_id=context.tenant_id)
+    sources = [
+        catalog_translation_source(row)
+        for row in rows
+        if row[2].id == product_id
+    ]
+    # Keep a deterministic order for batch history and provider prompts. The
+    # actual save path remains keyed by SKU ID, so this is only an ordering
+    # guarantee and never the source of correspondence.
+    sources.sort(key=lambda source: (source.sku_code.casefold(), str(source.sku_id)))
+    if not sources:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_PRODUCT_EMPTY",
+            "该商品没有可翻译的公开 SKU。",
+            kind="conflict",
+        )
+    product_name = next(
+        (
+            str(row[2].name or "").strip()
+            for row in rows
+            if row[2].id == product_id
+        ),
+        "",
+    )
+    return _start_forced_translation_job(
+        session,
+        context=context,
+        target_locale=request.target_locale,
+        source_ids=[source.sku_id for source in sources],
+        reason=(
+            f"重新翻译商品：{product_name}"
+            if product_name
+            else "重新翻译指定商品"
+        ),
+    )
 
 
 def get_translation_status(
@@ -599,48 +1174,6 @@ def _transient_translation_error(exc: TranslationProviderError) -> bool:
     return any(token in message for token in _TRANSIENT_TRANSLATION_ERRORS)
 
 
-def _translate_batch_with_retry(
-    translator: TranslationProvider,
-    batch: list[CatalogTranslationSource],
-    *,
-    source_locale: str,
-    target_locale: str,
-    max_retry_count: int,
-) -> list[CatalogTranslationResult]:
-    """Retry only transient provider failures before yielding the checkpoint."""
-
-    base_delay = _positive_environment(
-        "CATALOG_TRANSLATION_RETRY_BASE_SECONDS",
-        2,
-        maximum=30,
-    )
-    attempt = 0
-    while True:
-        try:
-            return translate_catalog_sources(
-                translator,
-                batch,
-                source_locale=source_locale,
-                target_locale=target_locale,
-            )
-        except TranslationProviderError as exc:
-            if (
-                attempt >= max_retry_count
-                or not _transient_translation_error(exc)
-            ):
-                raise
-            delay = min(base_delay * (2**attempt), 30)
-            attempt += 1
-            logger.warning(
-                "catalog translation provider retry %s/%s in %ss: %s",
-                attempt,
-                max_retry_count,
-                delay,
-                exc,
-            )
-            time.sleep(delay)
-
-
 def _remaining_sku_ids(job: CatalogTranslationJobRow) -> list[UUID]:
     values: list[UUID] = []
     for raw in job.remaining_sku_ids or []:
@@ -649,6 +1182,10 @@ def _remaining_sku_ids(job: CatalogTranslationJobRow) -> list[UUID]:
         except (TypeError, ValueError):
             continue
     return values
+
+
+def _forced_sku_ids(job: CatalogTranslationJobRow) -> list[UUID]:
+    return _as_uuid_list(job.forced_sku_ids)
 
 
 def _pause_at_safe_checkpoint(
@@ -729,16 +1266,30 @@ def _run_translation_job(
                 translator.identity.version,
             )
             sources_by_id = {source.sku_id: source for source in sources}
+            forced_ids = _forced_sku_ids(job)
             stored_remaining = _remaining_sku_ids(job)
+            forced_resume = (
+                not first_run
+                and not provider_changed
+                and bool(forced_ids)
+                and bool(stored_remaining)
+            )
             preserve_progress = (
                 not first_run
                 and not provider_changed
+                and not forced_ids
                 and (
                     bool(stored_remaining)
                     or job.processed_skus >= job.total_skus
                 )
             )
-            if preserve_progress:
+            if forced_ids and not forced_resume:
+                candidates = [
+                    sources_by_id[sku_id]
+                    for sku_id in forced_ids
+                    if sku_id in sources_by_id
+                ]
+            elif forced_resume or preserve_progress:
                 candidates = [
                     sources_by_id[sku_id]
                     for sku_id in stored_remaining
@@ -747,7 +1298,7 @@ def _run_translation_job(
                 # A long-running checkpoint may span later imports or edits.
                 # Merge newly missing/stale rows into the same resume without
                 # redoing translations already committed by this job.
-                newly_pending, _stale = _pending_sources(
+                newly_pending = [] if forced_resume else _pending_sources(
                     session,
                     tenant_id=tenant_id,
                     target_locale=job.target_locale,
@@ -755,7 +1306,7 @@ def _run_translation_job(
                     provider=translator.identity.provider,
                     provider_version=translator.identity.version,
                     full_rebuild=False,
-                )
+                )[0]
                 candidate_ids = {source.sku_id for source in candidates}
                 candidates.extend(
                     source
@@ -781,7 +1332,7 @@ def _run_translation_job(
             previous_payload = load_language_pack_payload(storage, current_pack)
             job.provider = translator.identity.provider
             job.provider_version = translator.identity.version
-            if preserve_progress:
+            if preserve_progress or forced_resume:
                 job.total_skus = job.processed_skus + len(candidates)
             else:
                 job.total_skus = len(candidates)
@@ -807,78 +1358,169 @@ def _run_translation_job(
             processed = job.processed_skus
             failures: list[dict[str, str]] = list(job.failure_details or [])
             remaining_ids = [str(source.sku_id) for source in candidates]
+            batch_rows = _ensure_translation_batch_rows(
+                session,
+                job=job,
+                batches=batches,
+            )
+            session.commit()
+            pending_batches: list[tuple[list[CatalogTranslationSource], CatalogTranslationBatchRow]] = list(
+                zip(batches, batch_rows, strict=True)
+            )
+            concurrency = resolved_catalog_translation_concurrency(session)
+            # A one-SKU batch is already the smallest possible request. Keep
+            # those checkpoints deterministic and avoid creating a burst of
+            # tiny requests; normal 20–50 SKU batches still use the configured
+            # concurrent request window.
+            if batches and max(len(batch) for batch in batches) <= 1:
+                concurrency = 1
             batch_index = 0
-            while batch_index < len(batches):
-                batch = batches[batch_index]
-                if _pause_at_safe_checkpoint(session, job):
-                    return
-                job.current_sku_id = batch[0].sku_id
-                job.current_sku_name = batch[0].name
-                job.updated_at = utcnow()
-                session.commit()
-                try:
-                    results = _translate_batch_with_retry(
-                        translator,
-                        batch,
-                        source_locale=job.source_locale,
-                        target_locale=job.target_locale,
-                        max_retry_count=max_retry_count,
-                    )
-                except TranslationProviderError as exc:
-                    if (
-                        _transient_translation_error(exc)
-                        or not exc.recover_with_smaller_batches
-                    ):
-                        raise
-                    if len(batch) > 1:
-                        midpoint = max(1, len(batch) // 2)
-                        batches[batch_index : batch_index + 1] = [
-                            batch[:midpoint],
-                            batch[midpoint:],
-                        ]
-                        continue
-                    if len(failures) < _FAILURE_DETAIL_LIMIT:
-                        failures.append(_failure_detail(batch[0], str(exc)))
-                    job.failed_skus += 1
-                    job.failure_details = failures
+            with ThreadPoolExecutor(
+                max_workers=concurrency,
+                thread_name_prefix="catalog-translation-batch",
+            ) as batch_executor:
+                while batch_index < len(pending_batches):
+                    if _pause_at_safe_checkpoint(session, job):
+                        return
+                    window = pending_batches[batch_index : batch_index + concurrency]
+                    for batch, batch_row in window:
+                        batch_row.status = "RUNNING"
+                        batch_row.request_started_at = utcnow()
+                        job.current_sku_id = batch[0].sku_id
+                        job.current_sku_name = batch[0].name
                     job.updated_at = utcnow()
                     session.commit()
-                    batch_index += 1
-                    continue
 
-                source_by_id = {source.sku_id: source for source in batch}
-                translated_ids: set[UUID] = set()
-                for result in results:
-                    source = source_by_id[result.sku_id]
-                    translation_repository.save_translation(
-                        session,
-                        tenant_id=tenant_id,
-                        source_locale=job.source_locale,
-                        target_locale=job.target_locale,
-                        source=source,
-                        result=result,
-                        provider=translator.identity.provider,
-                        provider_version=translator.identity.version,
-                    )
-                    translated_ids.add(result.sku_id)
-                failed_in_batch = len(batch) - len(translated_ids)
-                processed += len(translated_ids)
-                translated_values = {str(sku_id) for sku_id in translated_ids}
-                remaining_ids = [
-                    sku_id
-                    for sku_id in remaining_ids
-                    if sku_id not in translated_values
-                ]
-                job.processed_skus = processed
-                job.failed_skus += failed_in_batch
-                job.failure_details = failures
-                job.remaining_sku_ids = remaining_ids
-                job.updated_at = utcnow()
-                session.commit()
-                batch_index += 1
+                    future_map: dict[
+                        Future[_BatchTranslationOutcome],
+                        tuple[list[CatalogTranslationSource], CatalogTranslationBatchRow],
+                    ] = {
+                        batch_executor.submit(
+                            _translate_batch_outcome,
+                            translator,
+                            batch,
+                            source_locale=job.source_locale,
+                            target_locale=job.target_locale,
+                            max_retry_count=max_retry_count,
+                            attempt_offset=batch_row.attempt_count,
+                        ): (batch, batch_row)
+                        for batch, batch_row in window
+                    }
+                    split_batches: list[list[CatalogTranslationSource]] = []
+                    stop_after_window = False
+                    for future in as_completed(future_map):
+                        batch, batch_row = future_map[future]
+                        try:
+                            outcome = future.result()
+                        except Exception as exc:  # pragma: no cover - defensive
+                            outcome = _BatchTranslationOutcome(
+                                results=None,
+                                error=TranslationProviderError(
+                                    "translation batch request failed"
+                                ),
+                                attempts=[
+                                    _BatchAttemptEvent(
+                                        attempt_no=batch_row.attempt_count + 1,
+                                        request_started_at=batch_row.request_started_at or utcnow(),
+                                        first_byte_at=utcnow(),
+                                        completed_at=utcnow(),
+                                        status="FAILED",
+                                        processed_skus=0,
+                                        failed_skus=len(batch),
+                                        error_message=type(exc).__name__,
+                                    )
+                                ],
+                            )
+                        _persist_batch_attempts(
+                            session,
+                            job_batch=batch_row,
+                            batch=batch,
+                            events=outcome.attempts,
+                        )
+                        if outcome.error is not None or outcome.results is None:
+                            error = outcome.error or TranslationProviderError(
+                                "translation batch request failed"
+                            )
+                            batch_row.status = "FAILED"
+                            batch_row.failed_skus = len(batch)
+                            batch_row.error_message = str(error)
+                            if error.recover_with_smaller_batches and len(batch) > 1:
+                                midpoint = max(1, len(batch) // 2)
+                                split_batches.extend(
+                                    [batch[:midpoint], batch[midpoint:]]
+                                )
+                            else:
+                                if len(failures) < _FAILURE_DETAIL_LIMIT:
+                                    failures.append(_failure_detail(batch[0], str(error)))
+                                job.failed_skus += len(batch)
+                                # A non-recoverable provider error should not
+                                # immediately hammer the upstream with all
+                                # remaining batches. Keep those batches queued
+                                # in the checkpoint so the operator can retry
+                                # after correcting the provider or only retry
+                                # the failed request from the history panel.
+                                stop_after_window = True
+                            job.failure_details = failures
+                            job.remaining_sku_ids = [
+                                str(source.sku_id)
+                                for source in candidates
+                                if str(source.sku_id) in remaining_ids
+                            ]
+                            job.updated_at = utcnow()
+                            session.commit()
+                            continue
 
-                if _pause_at_safe_checkpoint(session, job):
-                    return
+                        source_by_id = {source.sku_id: source for source in batch}
+                        translated_ids: set[UUID] = set()
+                        for result in outcome.results:
+                            source = source_by_id[result.sku_id]
+                            translation_repository.save_translation(
+                                session,
+                                tenant_id=tenant_id,
+                                source_locale=job.source_locale,
+                                target_locale=job.target_locale,
+                                source=source,
+                                result=result,
+                                provider=translator.identity.provider,
+                                provider_version=translator.identity.version,
+                            )
+                            translated_ids.add(result.sku_id)
+                        failed_in_batch = len(batch) - len(translated_ids)
+                        processed += len(translated_ids)
+                        translated_values = {str(sku_id) for sku_id in translated_ids}
+                        remaining_ids = [
+                            sku_id
+                            for sku_id in remaining_ids
+                            if sku_id not in translated_values
+                        ]
+                        batch_row.status = "SUCCEEDED" if failed_in_batch == 0 else "FAILED"
+                        batch_row.processed_skus = len(translated_ids)
+                        batch_row.failed_skus = failed_in_batch
+                        if failed_in_batch:
+                            job.failed_skus += failed_in_batch
+                        job.processed_skus = processed
+                        job.failure_details = failures
+                        job.remaining_sku_ids = remaining_ids
+                        job.updated_at = utcnow()
+                        session.commit()
+
+                    if split_batches:
+                        split_rows = _ensure_translation_batch_rows(
+                            session,
+                            job=job,
+                            batches=split_batches,
+                        )
+                        pending_batches.extend(
+                            list(zip(split_batches, split_rows, strict=True))
+                        )
+                        session.commit()
+                    batch_index += len(window)
+
+                    if stop_after_window:
+                        break
+
+                    if _pause_at_safe_checkpoint(session, job):
+                        return
 
             if job.failed_skus:
                 raise TranslationProviderError(
@@ -918,6 +1560,7 @@ def _run_translation_job(
                     and current_pack.provider_version == translator.identity.version
                 ),
                 full_rebuild=job.mode == "FULL_REBUILD",
+                force_rebuild_sku_ids=set(forced_ids),
             )
             object_key = language_pack_object_key(
                 tenant_id=tenant_id,
@@ -958,6 +1601,7 @@ def _run_translation_job(
             job.package_byte_size = stored.byte_size
             job.source_cutoff_at = build.source_cutoff_at
             job.remaining_sku_ids = []
+            job.forced_sku_ids = []
             job.pause_requested_at = None
             job.paused_at = None
             job.current_sku_id = None

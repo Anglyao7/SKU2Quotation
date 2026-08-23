@@ -493,6 +493,7 @@ def build_catalog_language_pack(
     previous_payload: dict[str, Any] | None,
     reuse_previous: bool = False,
     full_rebuild: bool,
+    force_rebuild_sku_ids: set[UUID] | None = None,
 ) -> CatalogLanguagePackBuild:
     groups = _group_rows(rows)
     product_sources = [_product_source(group) for group in groups]
@@ -514,6 +515,16 @@ def build_catalog_language_pack(
     previous_products = previous_products if isinstance(previous_products, dict) else None
     previous_skus = previous_skus if isinstance(previous_skus, dict) else None
 
+    # A manual product retranslation can have the same source hash as the
+    # currently published package. Do not reuse those entries, otherwise the
+    # newly saved translation rows would never make it into the next file.
+    forced_sku_ids = {str(value) for value in (force_rebuild_sku_ids or set())}
+    forced_product_ids = {
+        source["product_id"]
+        for source in sku_sources
+        if source["sku_id"] in forced_sku_ids
+    }
+
     changed_products = [
         source
         for source in product_sources
@@ -521,8 +532,8 @@ def build_catalog_language_pack(
             previous_products,
             entry_id=source["product_id"],
             source_hash=source["source_hash"],
-        )
-        is None
+        ) is None
+        or source["product_id"] in forced_product_ids
     ]
     changed_skus = [
         source
@@ -531,8 +542,8 @@ def build_catalog_language_pack(
             previous_skus,
             entry_id=source["sku_id"],
             source_hash=source["source_hash"],
-        )
-        is None
+        ) is None
+        or source["sku_id"] in forced_sku_ids
     ]
     rows_by_sku_id = {
         str(sku_id): translation
@@ -558,6 +569,8 @@ def build_catalog_language_pack(
             entry_id=source["product_id"],
             source_hash=source["source_hash"],
         )
+        if source["product_id"] in forced_product_ids:
+            reusable = None
         if reusable is not None:
             products[source["product_id"]] = reusable
             continue
@@ -594,6 +607,8 @@ def build_catalog_language_pack(
             entry_id=source["sku_id"],
             source_hash=source["source_hash"],
         )
+        if source["sku_id"] in forced_sku_ids:
+            reusable = None
         if reusable is not None:
             skus[source["sku_id"]] = reusable
             continue

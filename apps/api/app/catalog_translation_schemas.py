@@ -13,10 +13,52 @@ class CatalogTranslationFailure(BaseModel):
     message: str
 
 
+class CatalogTranslationBatchAttemptResponse(BaseModel):
+    id: UUID
+    attempt_no: int = Field(ge=1)
+    status: Literal["RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+    sku_ids: list[UUID] = Field(default_factory=list)
+    sku_refs: list[dict[str, str]] = Field(default_factory=list)
+    request_started_at: datetime
+    first_byte_at: datetime | None = None
+    completed_at: datetime | None = None
+    first_byte_latency_ms: int | None = Field(default=None, ge=0)
+    response_time_ms: int | None = Field(default=None, ge=0)
+    processed_skus: int = Field(default=0, ge=0)
+    failed_skus: int = Field(default=0, ge=0)
+    error_message: str | None = None
+
+
+class CatalogTranslationBatchResponse(BaseModel):
+    id: UUID
+    sequence_no: int = Field(ge=1)
+    status: Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+    sku_ids: list[UUID] = Field(default_factory=list)
+    sku_refs: list[dict[str, str]] = Field(default_factory=list)
+    attempt_count: int = Field(default=0, ge=0)
+    total_skus: int = Field(default=0, ge=0)
+    processed_skus: int = Field(default=0, ge=0)
+    failed_skus: int = Field(default=0, ge=0)
+    request_started_at: datetime | None = None
+    first_byte_at: datetime | None = None
+    completed_at: datetime | None = None
+    response_time_ms: int | None = Field(default=None, ge=0)
+    error_message: str | None = None
+    attempts: list[CatalogTranslationBatchAttemptResponse] = Field(
+        default_factory=list
+    )
+
+
 class CatalogTranslationJobStartRequest(BaseModel):
     target_locale: Literal["en-US", "es", "tr", "ar", "ja", "ko", "pt"] = "en-US"
     mode: Literal["INCREMENTAL", "FULL_REBUILD"] = "INCREMENTAL"
     confirm_full_rebuild: bool = False
+
+
+class CatalogTranslationProductRetryRequest(BaseModel):
+    """Request a fresh translation for every public SKU of one product."""
+
+    target_locale: Literal["en-US", "es", "tr", "ar", "ja", "ko", "pt"] = "en-US"
 
 
 class CatalogTranslationJobResponse(BaseModel):
@@ -56,6 +98,9 @@ class CatalogTranslationJobResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    batch_count: int = Field(default=0, ge=0)
+    completed_batch_count: int = Field(default=0, ge=0)
+    failed_batch_count: int = Field(default=0, ge=0)
 
 
 class CatalogLanguagePackResponse(BaseModel):

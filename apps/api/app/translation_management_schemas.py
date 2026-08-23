@@ -25,6 +25,7 @@ class TranslationSettingsResponse(BaseModel):
     max_retry_count: int = Field(ge=0, le=10)
     catalog_batch_size: int = Field(ge=1, le=200)
     catalog_batch_characters: int = Field(ge=1_000, le=100_000)
+    catalog_concurrency: int = Field(ge=1, le=10)
     reasoning_effort: ReasoningEffort
     api_key_configured: bool
     api_key_hint: str | None = None
@@ -50,6 +51,7 @@ class TranslationProviderParameters(BaseModel):
         ge=1_000,
         le=100_000,
     )
+    catalog_concurrency: int = Field(default=3, ge=1, le=10)
     reasoning_effort: ReasoningEffort = "low"
 
 

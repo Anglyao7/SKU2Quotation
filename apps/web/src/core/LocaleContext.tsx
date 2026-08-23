@@ -1105,6 +1105,11 @@ const english: Record<string, string> = {
   "导入商品": "Import products",
   "新建询盘": "New inquiry",
   "查看报价": "View quotations",
+  "收到新的客户询价": "New customer inquiry",
+  "收到 {count} 条待处理询价，请及时处理。": "{count} pending customer inquiries need your attention.",
+  "有 {count} 条待处理询价": "{count} pending customer inquiries",
+  "待处理客户": "Customers awaiting review",
+  "稍后处理": "Later",
   "商品资料完整度": "Product data health",
   "暂不可见": "Not available",
   "已批准图片": "Approved images",
@@ -1900,6 +1905,10 @@ const english: Record<string, string> = {
   "当前翻译内容已经是最新版本。": "Translations are already up to date.",
   "翻译任务启动失败。": "Could not start the translation job.",
   "翻译": "Translate",
+  "重新翻译商品 {name}": "Retranslate product {name}",
+  "已提交商品“{name}”的 {language} 重译任务，共 {count} 个 SKU。":
+    "Retranslation for {name} in {language} submitted ({count} SKUs).",
+  "商品翻译任务启动失败": "Could not start the product translation job",
   "商品翻译状态读取失败": "Could not load the product translation status",
   "翻译任务完成，{success} 个成功，{failed} 个需要重试。":
     "Translation completed: {success} succeeded and {failed} need retrying.",

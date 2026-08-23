@@ -68,6 +68,7 @@ def update_settings(
             max_retry_count=request.max_retry_count,
             catalog_batch_size=request.catalog_batch_size,
             catalog_batch_characters=request.catalog_batch_characters,
+            catalog_concurrency=request.catalog_concurrency,
             reasoning_effort=request.reasoning_effort,
             api_key=(
                 request.api_key.get_secret_value()

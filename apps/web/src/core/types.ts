@@ -1260,6 +1260,7 @@ export interface TranslationApiSettings {
   maxRetryCount: number;
   catalogBatchSize: number;
   catalogBatchCharacters: number;
+  catalogConcurrency: number;
   reasoningEffort: TranslationReasoningEffort;
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
@@ -1333,6 +1334,43 @@ export interface CatalogTranslationJob {
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  batchCount: number;
+  completedBatchCount: number;
+  failedBatchCount: number;
+}
+
+export interface CatalogTranslationBatchAttempt {
+  id: string;
+  attemptNo: number;
+  status: "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  skuIds: string[];
+  skuRefs: Array<{ id: string; code: string; name: string }>;
+  requestStartedAt: string;
+  firstByteAt?: string;
+  completedAt?: string;
+  firstByteLatencyMs?: number;
+  responseTimeMs?: number;
+  processedSkus: number;
+  failedSkus: number;
+  errorMessage?: string;
+}
+
+export interface CatalogTranslationBatch {
+  id: string;
+  sequenceNo: number;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  skuIds: string[];
+  skuRefs: Array<{ id: string; code: string; name: string }>;
+  attemptCount: number;
+  totalSkus: number;
+  processedSkus: number;
+  failedSkus: number;
+  requestStartedAt?: string;
+  firstByteAt?: string;
+  completedAt?: string;
+  responseTimeMs?: number;
+  errorMessage?: string;
+  attempts: CatalogTranslationBatchAttempt[];
 }
 
 export interface CatalogTranslationStatus {

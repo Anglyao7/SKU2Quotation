@@ -1847,6 +1847,9 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .nav-item:hover { background: var(--page-soft); color: var(--text); }
 .nav-item:active { transform: translateY(1px); }
 .nav-item.active { color: var(--accent-strong); background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.nav-unread-dot { min-width: 16px; height: 16px; padding: 0 4px; margin-left: auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; color: #fff; background: #d64045; box-shadow: 0 0 0 2px var(--surface); font-size: 10px; font-weight: 750; line-height: 1; font-variant-numeric: tabular-nums; }
+.nav-group-trigger .nav-unread-dot { margin-left: auto; margin-right: 1px; }
+.nav-group-trigger .nav-unread-dot + .nav-group-caret { margin-left: 0; }
 .nav-subitem { min-height: 36px; gap: 9px; padding: 0 10px; font-size: 13px; }
 .nav-subitem > svg { flex: 0 0 auto; }
 .mobile-console-nav { display: none; }
@@ -2024,6 +2027,12 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .business-mode-note { margin-top: 18px; padding: 13px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px; border-radius: 10px; color: var(--text-soft); background: var(--page-soft); }
 .business-mode-note svg { color: var(--accent); margin-top: 1px; }
 .business-mode-dialog .core-dialog-actions { margin-top: 18px; }
+.console-inquiry-notice-dialog { width: min(460px, calc(100vw - 28px)) !important; }
+.console-inquiry-notice-dialog .rt-AlertDialogDescription { line-height: 1.65; }
+.console-inquiry-notice-customers { margin-top: 16px; display: grid; gap: 7px; }
+.console-inquiry-notice-customers span { min-width: 0; overflow: hidden; padding: 9px 11px; border-radius: 10px; color: var(--text); background: var(--page-soft); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.console-inquiry-notice-actions { margin-top: 22px; display: flex; justify-content: flex-end; gap: 9px; }
+.console-inquiry-notice-actions .rt-Button { min-width: 92px; }
 .user-copy { min-width: 0; max-width: 230px; display: grid; justify-items: end; line-height: 1.2; }
 .user-copy > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-menu-trigger { min-width: 0; min-height: 52px !important; height: auto !important; padding: 5px 7px 5px 10px !important; gap: 9px !important; }
@@ -2208,6 +2217,8 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 @media (max-width: 1080px) {
   :root { --sidebar-width: 80px; }
   .sidebar-brand .brand-copy, .desktop-console-nav .nav-item span, .desktop-console-nav .nav-group-trigger span, .desktop-console-nav .nav-group-caret, .sidebar-footer .rt-Button, .sidebar-account-card > span, .sidebar-account-card > svg { display: none; }
+  .desktop-console-nav .nav-item, .desktop-console-nav .nav-group-trigger { position: relative; }
+  .desktop-console-nav .nav-unread-dot { display: inline-flex; position: absolute; top: 3px; right: 2px; margin: 0; }
   .sidebar-brand { padding-inline: 6px; }
   .console-sidebar { align-items: center; }
   .desktop-console-nav { gap: 4px; }
@@ -2485,6 +2496,8 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .mobile-console-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); height: 100%; gap: 4px; }
   .mobile-console-nav .nav-item { width: auto; height: 50px; min-height: 50px; padding: 0 4px; display: flex; flex-direction: column; gap: 2px; justify-content: center; font-size: 10px; }
   .mobile-console-nav .nav-item span { display: block; }
+  .mobile-console-nav .nav-item { position: relative; }
+  .mobile-console-nav .nav-unread-dot { display: inline-flex; position: absolute; top: 2px; right: 8px; margin: 0; }
   .mobile-console-nav .nav-item svg { width: 19px; height: 19px; }
   .mobile-console-nav .nav-item.active { box-shadow: inset 0 2px 0 var(--accent); }
   .mobile-more-trigger { border: 0; background: transparent; cursor: pointer; }

@@ -254,6 +254,57 @@ def test_incremental_package_detects_specification_changes_without_version_bump(
     assert any("加大款" in batch for batch in calls)
 
 
+def test_forced_sku_retranslation_replaces_reused_package_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id, first_id, second_id, rows = _catalog_rows()
+    monkeypatch.setattr(
+        packages,
+        "translate_values_with_memory",
+        _translation_stub([]),
+    )
+    initial = build_catalog_language_pack(
+        tenant_id=tenant_id,
+        rows=rows,
+        source_locale="zh-CN",
+        target_locale="en-US",
+        version=1,
+        translator=_PackageTranslator(),
+        sku_translations={},
+        previous_payload=None,
+        full_rebuild=True,
+    )
+
+    forced_source_hash = packages.catalog_translation_source(rows[1]).source_hash
+    forced_translation = SimpleNamespace(
+        provider="package-test",
+        provider_version="v1",
+        source_hash=forced_source_hash,
+        name="FORCED:蓝色水杯",
+        description="FORCED:便携可折叠\nFORCED:适合旅行",
+        category="FORCED:宠物用品/FORCED:饮水用品",
+        tags=["FORCED:便携", "FORCED:旅行"],
+        display_tag="FORCED:便携",
+    )
+    refreshed = build_catalog_language_pack(
+        tenant_id=tenant_id,
+        rows=rows,
+        source_locale="zh-CN",
+        target_locale="en-US",
+        version=2,
+        translator=_PackageTranslator(),
+        sku_translations={second_id: forced_translation},
+        previous_payload=initial.payload,
+        reuse_previous=True,
+        full_rebuild=False,
+        force_rebuild_sku_ids={second_id},
+    )
+
+    assert refreshed.payload["skus"][str(first_id)] == initial.payload["skus"][str(first_id)]
+    assert refreshed.payload["skus"][str(second_id)]["name"] == "FORCED:蓝色水杯"
+    assert str(rows[0][2].id) in refreshed.payload["products"]
+
+
 def test_local_language_package_storage_is_atomic_and_path_safe(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

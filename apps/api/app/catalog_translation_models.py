@@ -297,6 +297,11 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
         default=list,
         nullable=False,
     )
+    forced_sku_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=list,
+        nullable=False,
+    )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     package_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     package_published: Mapped[bool] = mapped_column(
@@ -318,3 +323,135 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class CatalogTranslationBatchRow(AuditTimestampMixin, Base):
+    """A logical translation request containing a bounded group of SKUs."""
+
+    __tablename__ = "catalog_translation_batches"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED')",
+            name="status_allowed",
+        ),
+        CheckConstraint("sequence_no >= 1", name="sequence_positive"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
+        CheckConstraint("total_skus >= 0", name="total_skus_nonnegative"),
+        CheckConstraint("processed_skus >= 0", name="processed_skus_nonnegative"),
+        CheckConstraint("failed_skus >= 0", name="failed_skus_nonnegative"),
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_catalog_translation_batches_tenant_identity",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "job_id",
+            "sequence_no",
+            name="uq_catalog_translation_batches_tenant_job_sequence",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "job_id"],
+            ["catalog_translation_jobs.tenant_id", "catalog_translation_jobs.id"],
+            name="fk_catalog_translation_batches_tenant_job",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_catalog_translation_batches_tenant_job_sequence",
+            "tenant_id",
+            "job_id",
+            "sequence_no",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[UUID] = mapped_column(nullable=False)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", nullable=False)
+    sku_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    sku_refs: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    request_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    first_byte_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CatalogTranslationBatchAttemptRow(AuditTimestampMixin, Base):
+    """One outbound provider request, including retries of the same batch."""
+
+    __tablename__ = "catalog_translation_batch_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED')",
+            name="status_allowed",
+        ),
+        CheckConstraint("attempt_no >= 1", name="attempt_positive"),
+        CheckConstraint("processed_skus >= 0", name="processed_skus_nonnegative"),
+        CheckConstraint("failed_skus >= 0", name="failed_skus_nonnegative"),
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_catalog_translation_batch_attempts_tenant_identity",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "batch_id",
+            "attempt_no",
+            name="uq_catalog_translation_batch_attempts_tenant_batch_attempt",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "batch_id"],
+            ["catalog_translation_batches.tenant_id", "catalog_translation_batches.id"],
+            name="fk_catalog_translation_batch_attempts_tenant_batch",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_catalog_translation_batch_attempts_tenant_batch_created",
+            "tenant_id",
+            "batch_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    batch_id: Mapped[UUID] = mapped_column(nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="RUNNING", nullable=False)
+    sku_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    sku_refs: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    request_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    first_byte_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    processed_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

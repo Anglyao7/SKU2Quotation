@@ -70,6 +70,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const [catalogBatchSize, setCatalogBatchSize] = useState("50");
   const [catalogBatchCharacters, setCatalogBatchCharacters] =
     useState("10000");
+  const [catalogConcurrency, setCatalogConcurrency] = useState("3");
   const [reasoningEffort, setReasoningEffort] =
     useState<TranslationReasoningEffort>("low");
 
@@ -86,6 +87,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     setMaxRetryCount(String(next.maxRetryCount));
     setCatalogBatchSize(String(next.catalogBatchSize));
     setCatalogBatchCharacters(String(next.catalogBatchCharacters));
+    setCatalogConcurrency(String(next.catalogConcurrency));
     setReasoningEffort(next.reasoningEffort);
     setApiKey("");
     setAccessKeyId("");
@@ -129,12 +131,14 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     maxRetryCount: Number(maxRetryCount),
     catalogBatchSize: Number(catalogBatchSize),
     catalogBatchCharacters: Number(catalogBatchCharacters),
+    catalogConcurrency: Number(catalogConcurrency),
     reasoningEffort,
   }), [
     accessKeyId,
     apiKey,
     baseUrl,
     catalogBatchCharacters,
+    catalogConcurrency,
     catalogBatchSize,
     maxRetryCount,
     maxTokens,
@@ -176,6 +180,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const validBatchCharacters = Number.isInteger(input.catalogBatchCharacters)
     && input.catalogBatchCharacters >= 1_000
     && input.catalogBatchCharacters <= 100_000;
+  const validConcurrency = Number.isInteger(input.catalogConcurrency)
+    && input.catalogConcurrency >= 1
+    && input.catalogConcurrency <= 10;
 
   const formValid = Boolean(
     (isDeepLX ? hasDeepLXEndpoint : input.baseUrl)
@@ -187,6 +194,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
       && validRetryCount
       && validBatchSize
       && validBatchCharacters
+      && validConcurrency
       && (!isOpenAICompatible || (
         Number.isInteger(input.maxTokens)
         && input.maxTokens >= 512
@@ -589,6 +597,25 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                     />
                     <Text size="1" color="gray">
                       {t("默认 10,000，超出后自动拆分，不会丢失断点。")}
+                    </Text>
+                  </label>
+                  <label>
+                    <Text size="1" color="gray">
+                      {t("同时请求数")}
+                    </Text>
+                    <TextField.Root
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={catalogConcurrency}
+                      onChange={(event) => {
+                        clearResult();
+                        setCatalogConcurrency(event.target.value);
+                      }}
+                      required
+                    />
+                    <Text size="1" color="gray">
+                      {t("默认 3；会同时发起多个批次，但仍受 RPM 限制。")}
                     </Text>
                   </label>
                   <label>
