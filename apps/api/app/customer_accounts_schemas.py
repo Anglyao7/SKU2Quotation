@@ -92,6 +92,9 @@ class CustomerSubaccountSummary(BaseModel):
     login_count_30d: int
     order_count: int
     last_order_at: datetime | None
+    order_amount: Decimal = Decimal("0")
+    markup_percent: Decimal = Decimal("0")
+    override_count: int = 0
 
 
 class CustomerSubaccountOrderSummary(BaseModel):
@@ -113,6 +116,47 @@ class CustomerSubaccountDashboard(BaseModel):
     active_count: int
     suspended_count: int
     order_count: int
+    order_amount: Decimal = Decimal("0")
+    currency: str = "CNY"
+
+
+class SubaccountPricingPolicyResponse(BaseModel):
+    membership_id: UUID
+    markup_percent: Decimal = Field(ge=0, le=100000)
+    override_count: int = Field(ge=0)
+    hidden_product_count: int = Field(ge=0)
+
+
+class SubaccountProductPricingItem(BaseModel):
+    product_id: UUID
+    product_code: str | None
+    product_name: str
+    sku_count: int = Field(ge=1)
+    base_price_from: Decimal = Field(ge=0)
+    base_price_to: Decimal = Field(ge=0)
+    effective_price_from: Decimal = Field(ge=0)
+    effective_price_to: Decimal = Field(ge=0)
+    currency: str
+    override_mode: Literal["MARKUP_PERCENT", "FIXED_PRICE"] | None = None
+    override_value: Decimal | None = Field(default=None, ge=0)
+    updated_at: datetime
+
+
+class SubaccountPricingPage(BaseModel):
+    policy: SubaccountPricingPolicyResponse
+    items: list[SubaccountProductPricingItem]
+    total: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+
+
+class SubaccountPricingPolicyUpdate(BaseModel):
+    markup_percent: Decimal = Field(ge=0, le=100000)
+
+
+class SubaccountProductPriceOverrideRequest(BaseModel):
+    pricing_mode: Literal["MARKUP_PERCENT", "FIXED_PRICE"]
+    value: Decimal = Field(ge=0, le=1000000000000)
 
 
 class CustomerSubaccountOrderPage(BaseModel):

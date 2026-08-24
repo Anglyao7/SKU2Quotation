@@ -35,8 +35,8 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const requestedDestination = (location.state as { from?: string } | null)?.from || "/console";
-  const destination = requestedDestination === "/console" && session?.context.defaultWorkspace === "customer_portal"
-    ? "/portal"
+  const destination = session?.context.defaultWorkspace === "customer_portal"
+    ? "/console"
     : requestedDestination;
   const visibleError = error || authError;
 

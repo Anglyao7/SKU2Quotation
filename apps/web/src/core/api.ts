@@ -13,9 +13,16 @@ import type {
   CustomerSubaccountDashboard,
   CustomerSubaccountOrder,
   CustomerSubaccountOrderPage,
+  SubaccountPricingMode,
+  SubaccountPricingPage,
+  SubaccountPricingPolicy,
+  SubaccountProductPricingItem,
   CurrentUser,
   DashboardSnapshot,
   EmbeddingSettings,
+  ImageEmbeddingSettings,
+  ImageIndexJob,
+  ImageIndexStatus,
   ImageGenerationSettings,
   ImageEnhancementItem,
   ImageEnhancementRatio,
@@ -55,6 +62,7 @@ import type {
   QuoteExcelTemplate,
   QuoteExcelTemplateUpdate,
   QuoteTemplateField,
+  QwenImageEmbeddingDimension,
   QuotationRecord,
   QuotationSummary,
   RerankSettings,
@@ -341,6 +349,11 @@ function acceptAuthData(row: ApiAuthTokenData) {
 
 export function getCoreAccessToken() {
   return accessToken;
+}
+
+/** A short-lived in-memory scope marker for public catalog cache isolation. */
+export function getCoreAuthGeneration() {
+  return authGeneration;
 }
 
 export function clearCoreAuthSession() {
@@ -739,6 +752,9 @@ interface ApiCustomerSubaccount {
   login_count_30d: number;
   order_count: number;
   last_order_at?: string | null;
+  order_amount?: number | string;
+  markup_percent?: number | string;
+  override_count?: number;
 }
 
 interface ApiCustomerSubaccountOrder {
@@ -770,6 +786,9 @@ function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
     loginCount30d: Number(row.login_count_30d || 0),
     orderCount: Number(row.order_count || 0),
     lastOrderAt: defined(row.last_order_at),
+    orderAmount: Number(row.order_amount || 0),
+    markupPercent: Number(row.markup_percent || 0),
+    overrideCount: Number(row.override_count || 0),
   };
 }
 
@@ -795,13 +814,119 @@ export async function getCustomerSubaccountDashboard(): Promise<CustomerSubaccou
     active_count: number;
     suspended_count: number;
     order_count: number;
+    order_amount?: number | string;
+    currency?: string;
   }>("/customer-accounts");
   return {
     accounts: row.accounts.map(mapCustomerSubaccount),
     activeCount: Number(row.active_count || 0),
     suspendedCount: Number(row.suspended_count || 0),
     orderCount: Number(row.order_count || 0),
+    orderAmount: Number(row.order_amount || 0),
+    currency: String(row.currency || "CNY").toUpperCase(),
   };
+}
+
+interface ApiSubaccountPricingItem {
+  product_id: string;
+  product_code?: string | null;
+  product_name: string;
+  sku_count: number;
+  base_price_from: number | string;
+  base_price_to: number | string;
+  effective_price_from: number | string;
+  effective_price_to: number | string;
+  currency: string;
+  override_mode?: SubaccountPricingMode | null;
+  override_value?: number | string | null;
+  updated_at: string;
+}
+
+function mapSubaccountPricingPolicy(row: {
+  membership_id: string;
+  markup_percent: number | string;
+  override_count: number;
+  hidden_product_count: number;
+}): SubaccountPricingPolicy {
+  return {
+    membershipId: row.membership_id,
+    markupPercent: Number(row.markup_percent || 0),
+    overrideCount: Number(row.override_count || 0),
+    hiddenProductCount: Number(row.hidden_product_count || 0),
+  };
+}
+
+function mapSubaccountPricingItem(row: ApiSubaccountPricingItem): SubaccountProductPricingItem {
+  return {
+    productId: row.product_id,
+    productCode: defined(row.product_code),
+    productName: row.product_name,
+    skuCount: Number(row.sku_count || 0),
+    basePriceFrom: Number(row.base_price_from || 0),
+    basePriceTo: Number(row.base_price_to || 0),
+    effectivePriceFrom: Number(row.effective_price_from || 0),
+    effectivePriceTo: Number(row.effective_price_to || 0),
+    currency: row.currency,
+    overrideMode: row.override_mode || undefined,
+    overrideValue: row.override_value == null ? undefined : Number(row.override_value),
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getCustomerSubaccountPricing(
+  membershipId: string,
+  query = "",
+  page = 1,
+  pageSize = 20,
+): Promise<SubaccountPricingPage> {
+  const row = await request<{
+    policy: { membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number };
+    items: ApiSubaccountPricingItem[];
+    total: number;
+    page: number;
+    page_size: number;
+  }>(`/customer-accounts/${encodeURIComponent(membershipId)}/pricing?query=${encodeURIComponent(query)}&page=${page}&page_size=${pageSize}`);
+  return {
+    policy: mapSubaccountPricingPolicy(row.policy),
+    items: row.items.map(mapSubaccountPricingItem),
+    total: Number(row.total || 0),
+    page: Number(row.page || page),
+    pageSize: Number(row.page_size || pageSize),
+  };
+}
+
+export async function updateCustomerSubaccountPricing(
+  membershipId: string,
+  markupPercent: number,
+): Promise<SubaccountPricingPolicy> {
+  const row = await request<{ membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number }>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/pricing`,
+    { method: "PATCH", body: JSON.stringify({ markup_percent: markupPercent }) },
+  );
+  return mapSubaccountPricingPolicy(row);
+}
+
+export async function updateCustomerSubaccountProductPricing(
+  membershipId: string,
+  productId: string,
+  pricingMode: SubaccountPricingMode,
+  value: number,
+): Promise<SubaccountProductPricingItem> {
+  const row = await request<ApiSubaccountPricingItem>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/pricing/products/${encodeURIComponent(productId)}`,
+    { method: "PUT", body: JSON.stringify({ pricing_mode: pricingMode, value }) },
+  );
+  return mapSubaccountPricingItem(row);
+}
+
+export async function clearCustomerSubaccountProductPricing(
+  membershipId: string,
+  productId: string,
+): Promise<void> {
+  await request<void>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/pricing/products/${encodeURIComponent(productId)}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function listCustomerSubaccountOrders(
@@ -2050,6 +2175,113 @@ export async function resumeKnowledgeIndexJob(
   );
 }
 
+interface ApiImageIndexStatus {
+  total_images: number;
+  indexed_images: number;
+  pending_images: number;
+  indexed_products: number;
+}
+
+interface ApiImageIndexJob {
+  id: string;
+  mode: "INCREMENTAL" | "FULL_REBUILD";
+  status: "QUEUED" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
+  total_images: number;
+  processed_images: number;
+  failed_images: number;
+  embeddings: number;
+  remaining_images: number;
+  progress_percent: number;
+  current_image_id?: string | null;
+  current_product_name?: string | null;
+  error_message?: string | null;
+  pause_requested: boolean;
+  pause_requested_at?: string | null;
+  paused_at?: string | null;
+  resumable: boolean;
+  checkpoint_at?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+function mapImageIndexJob(row: ApiImageIndexJob): ImageIndexJob {
+  return {
+    id: row.id,
+    mode: row.mode,
+    status: row.status,
+    totalImages: row.total_images,
+    processedImages: row.processed_images,
+    failedImages: row.failed_images,
+    embeddings: row.embeddings,
+    remainingImages: row.remaining_images,
+    progressPercent: row.progress_percent,
+    currentImageId: defined(row.current_image_id),
+    currentProductName: defined(row.current_product_name),
+    errorMessage: defined(row.error_message),
+    pauseRequested: row.pause_requested,
+    pauseRequestedAt: defined(row.pause_requested_at),
+    pausedAt: defined(row.paused_at),
+    resumable: row.resumable,
+    checkpointAt: defined(row.checkpoint_at),
+    createdAt: row.created_at,
+    startedAt: defined(row.started_at),
+    completedAt: defined(row.completed_at),
+  };
+}
+
+export async function getImageIndexStatus(): Promise<ImageIndexStatus> {
+  const row = await request<ApiImageIndexStatus>("/ai/image-search/index", {
+    cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
+  });
+  return {
+    totalImages: row.total_images,
+    indexedImages: row.indexed_images,
+    pendingImages: row.pending_images,
+    indexedProducts: row.indexed_products,
+  };
+}
+
+export async function startImageIndexJob(fullRebuild = false): Promise<ImageIndexJob> {
+  return mapImageIndexJob(await request<ApiImageIndexJob>("/ai/image-search/index/jobs", {
+    method: "POST",
+    body: JSON.stringify({
+      mode: fullRebuild ? "FULL_REBUILD" : "INCREMENTAL",
+      confirm_full_rebuild: fullRebuild,
+    }),
+  }));
+}
+
+export async function getLatestImageIndexJob(): Promise<ImageIndexJob | undefined> {
+  const row = await request<ApiImageIndexJob | null>("/ai/image-search/index/jobs/latest", {
+    cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
+  });
+  return row ? mapImageIndexJob(row) : undefined;
+}
+
+export async function getImageIndexJob(jobId: string): Promise<ImageIndexJob> {
+  return mapImageIndexJob(await request<ApiImageIndexJob>(
+    `/ai/image-search/index/jobs/${encodeURIComponent(jobId)}`,
+    { cache: "no-store", signal: AbortSignal.timeout(15_000) },
+  ));
+}
+
+export async function pauseImageIndexJob(jobId: string): Promise<ImageIndexJob> {
+  return mapImageIndexJob(await request<ApiImageIndexJob>(
+    `/ai/image-search/index/jobs/${encodeURIComponent(jobId)}/pause`,
+    { method: "POST" },
+  ));
+}
+
+export async function resumeImageIndexJob(jobId: string): Promise<ImageIndexJob> {
+  return mapImageIndexJob(await request<ApiImageIndexJob>(
+    `/ai/image-search/index/jobs/${encodeURIComponent(jobId)}/resume`,
+    { method: "POST" },
+  ));
+}
+
 interface ApiEmbeddingSettings {
   source: "database" | "environment" | "deterministic";
   provider: string;
@@ -2066,6 +2298,75 @@ interface ApiEmbeddingSettings {
   cleared_product_embeddings?: number;
   cleared_file_embeddings?: number;
   invalidated_products?: number;
+}
+
+interface ApiImageEmbeddingSettings {
+  source: "database" | "environment" | "deterministic" | "unconfigured";
+  provider: string;
+  enabled: boolean;
+  base_url?: string | null;
+  model_name: string;
+  model_version: string;
+  dimensions: number;
+  timeout_seconds: number;
+  max_retry_count: number;
+  api_key_configured: boolean;
+  api_key_hint?: string | null;
+  updated_at?: string | null;
+  model_changed?: boolean;
+  stale_embeddings?: number;
+}
+
+function mapImageEmbeddingSettings(row: ApiImageEmbeddingSettings): ImageEmbeddingSettings {
+  return {
+    source: row.source,
+    provider: row.provider,
+    enabled: row.enabled,
+    baseUrl: defined(row.base_url),
+    modelName: row.model_name,
+    modelVersion: row.model_version,
+    dimensions: row.dimensions,
+    timeoutSeconds: row.timeout_seconds,
+    maxRetryCount: row.max_retry_count,
+    apiKeyConfigured: row.api_key_configured,
+    apiKeyHint: defined(row.api_key_hint),
+    updatedAt: defined(row.updated_at),
+    modelChanged: row.model_changed ?? false,
+    staleEmbeddings: row.stale_embeddings ?? 0,
+  };
+}
+
+export async function getImageEmbeddingSettings(): Promise<ImageEmbeddingSettings> {
+  return mapImageEmbeddingSettings(await request<ApiImageEmbeddingSettings>(
+    "/ai/image-embedding/settings",
+    { cache: "no-store" },
+  ));
+}
+
+export async function updateImageEmbeddingSettings(input: {
+  enabled: boolean;
+  baseUrl: string;
+  apiKey?: string;
+  modelName: string;
+  dimensions: QwenImageEmbeddingDimension;
+  timeoutSeconds: number;
+  maxRetryCount: number;
+}): Promise<ImageEmbeddingSettings> {
+  return mapImageEmbeddingSettings(await request<ApiImageEmbeddingSettings>(
+    "/ai/image-embedding/settings",
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: input.enabled,
+        base_url: input.baseUrl,
+        api_key: input.apiKey || undefined,
+        model_name: input.modelName,
+        dimensions: input.dimensions,
+        timeout_seconds: input.timeoutSeconds,
+        max_retry_count: input.maxRetryCount,
+      }),
+    },
+  ));
 }
 
 function mapEmbeddingSettings(row: ApiEmbeddingSettings): EmbeddingSettings {
@@ -3503,6 +3804,7 @@ function mapSupportAIProviderSettings(
 }
 
 export interface SupportAIProviderSettingsWriteInput {
+  provider?: "openai-compatible" | "qwen";
   configurationName?: string;
   displayModelName?: string;
   enabled: boolean;
@@ -3532,6 +3834,7 @@ export async function updateSupportAIProviderSettings(
       {
         method: "PUT",
         body: JSON.stringify({
+          provider: input.provider || "openai-compatible",
           configuration_name: input.configurationName,
           display_model_name: input.displayModelName,
           enabled: input.enabled,
@@ -3554,6 +3857,7 @@ export interface SupportAIProviderProfileWriteInput extends SupportAIProviderSet
 
 function providerProfilePayload(input: SupportAIProviderProfileWriteInput) {
   return {
+    provider: input.provider || "openai-compatible",
     configuration_name: input.configurationName,
     display_model_name: input.displayModelName,
     enabled: input.enabled,

@@ -382,6 +382,21 @@ export interface StoreProductList {
   hot_sort_applied?: boolean;
 }
 
+export interface StoreImageSearchResult {
+  product: StoreProduct;
+  matched_image_id: string;
+  similarity: number;
+  match_percent: number;
+  confidence: "HIGH" | "MEDIUM" | "REFERENCE";
+}
+
+export interface StoreImageSearchResponse {
+  id: string;
+  status: "COMPLETED" | "INDEX_EMPTY";
+  results: StoreImageSearchResult[];
+  warnings: string[];
+}
+
 export interface ProductTag {
   id: string;
   name: string;

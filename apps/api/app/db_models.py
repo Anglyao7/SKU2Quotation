@@ -35,6 +35,7 @@ from .identity_models import (  # noqa: F401
 )
 from .image_intelligence_models import (  # noqa: F401
     ImageEmbeddingRow,
+    ImageIndexJobRow,
     ImageSearchRow,
     VisionObservationRow,
 )
@@ -251,6 +252,11 @@ from .product_center_models import (  # noqa: E402,F401
     SupplierPriceRow,
 )
 
+from .subaccount_pricing_models import (  # noqa: E402,F401
+    SubaccountPricingPolicyRow,
+    SubaccountProductPriceOverrideRow,
+)
+
 from .trade_flow_models import (  # noqa: E402,F401
     CustomerRow,
     InquiryItemRow,
@@ -290,6 +296,7 @@ from .tag_models import ProductTagRow  # noqa: E402,F401
 
 from .embedding_management_models import (  # noqa: E402,F401
     EmbeddingProviderSettingsRow,
+    ImageEmbeddingProviderSettingsRow,
     KnowledgeIndexJobRow,
     RerankProviderSettingsRow,
 )

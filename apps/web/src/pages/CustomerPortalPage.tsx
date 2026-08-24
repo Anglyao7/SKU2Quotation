@@ -43,7 +43,7 @@ export function CustomerPortalPage() {
   }, [canViewOrders, t]);
   useEffect(() => { void load(); }, [load]);
 
-  if (loading && !overview) return <main className="customer-portal-loading"><CoreLoading label={t("正在打开客户门户")} /></main>;
+  if (loading && !overview) return <main className="customer-portal-loading"><CoreLoading label={t("正在打开代理商门户")} /></main>;
   const catalogPath = overview ? `/${encodeURIComponent(overview.tenantSlug)}` : "/";
   const displayName = overview?.displayName || profile?.user.displayName || t("客户账号");
   return <div className="customer-portal-shell">
@@ -54,7 +54,7 @@ export function CustomerPortalPage() {
     <main className="customer-portal-main">
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
       <section className="customer-portal-hero">
-        <div><Text size="1" color="gray">{t("客户门户")}</Text><Heading size="8">{t("从商品目录开始选品")}</Heading><Text size="3" color="gray">{t("浏览当前商家的商品，加入报价清单后提交订单申请。你只能查看和管理自己提交的记录。")}</Text><Button asChild size="3"><Link to={catalogPath}><Storefront />{t("浏览商品") }<ArrowRight /></Link></Button></div>
+        <div><Text size="1" color="gray">{t("代理商门户")}</Text><Heading size="8">{t("从商品目录开始选品")}</Heading><Text size="3" color="gray">{t("浏览当前商家的商品，看到的是已生效的代理价格；加入报价清单后提交订单申请。")}</Text><Button asChild size="3"><Link to={catalogPath}><Storefront />{t("浏览商品") }<ArrowRight /></Link></Button></div>
         <Card className="customer-portal-count"><span><Cube size={23} /></span><Text size="1" color="gray">{t("我的订单申请")}</Text><strong>{overview?.orderCount ?? 0}</strong><Text size="1" color="gray">{overview?.lastOrderAt ? t("最近提交 {date}", { date: coreDate(overview.lastOrderAt) }) : t("尚未提交订单")}</Text></Card>
       </section>
       {canViewOrders ? <Card className="customer-portal-orders">

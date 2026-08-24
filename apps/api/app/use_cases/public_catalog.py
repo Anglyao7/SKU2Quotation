@@ -49,6 +49,8 @@ from ..public_catalog_schemas import (
     StorefrontOrderPeriodStatistics,
     StorefrontOrderStatistics,
     PublicCategoryOption,
+    PublicImageSearchResponse,
+    PublicImageSearchResult,
     PublicProductDetail,
     PublicProductPage,
     PublicProductSummary,
@@ -91,6 +93,10 @@ from ..services.translation import (
     configured_catalog_translator,
 )
 from ..services.translation_memory import translate_values_with_memory
+from ..services.subaccount_pricing import (
+    effective_subaccount_price,
+    subaccount_price_rules,
+)
 from ..services.translation_configuration import (
     resolved_catalog_translator,
     translation_provider_is_configured,
@@ -298,6 +304,42 @@ def optional_customer_quote_submitter(
 
     if not access_token:
         return None
+    member_context = optional_customer_subaccount_membership(
+        identity_session,
+        access_token=access_token,
+    )
+    if member_context is None:
+        return None
+    membership, user = member_context
+    if "customer_portal.order_create" not in list_permissions(
+        identity_session, tenant_id=membership.tenant_id, user_id=user.id
+    ):
+        raise ApplicationError(
+            "CUSTOMER_ORDER_CREATE_DENIED",
+            "This subaccount is not allowed to submit quotations.",
+            kind="forbidden",
+        )
+    return CustomerQuoteSubmitter(
+        membership_id=membership.id,
+        tenant_id=membership.tenant_id,
+        user_id=user.id,
+    )
+
+
+def optional_customer_subaccount_membership(
+    identity_session: Session,
+    *,
+    access_token: str | None,
+) -> tuple[MembershipRow, object] | None:
+    """Resolve a child-account bearer token for public catalog pricing.
+
+    Public visitors remain anonymous.  A valid child-account session enriches
+    the same storefront response with reseller pricing without exposing the
+    parent account's internal APIs or supplier data.
+    """
+
+    if not access_token:
+        return None
     try:
         auth_session, user, _claims = session_from_access_token(
             identity_session,
@@ -315,21 +357,13 @@ def optional_customer_quote_submitter(
         or membership.account_scope != "CUSTOMER_SUBACCOUNT"
     ):
         return None
-    if "customer_portal.order_create" not in list_permissions(
+    if "customer_portal.access" not in list_permissions(
         identity_session,
         tenant_id=membership.tenant_id,
         user_id=user.id,
     ):
-        raise ApplicationError(
-            "CUSTOMER_ORDER_CREATE_DENIED",
-            "This subaccount is not allowed to submit quotations.",
-            kind="forbidden",
-        )
-    return CustomerQuoteSubmitter(
-        membership_id=membership.id,
-        tenant_id=membership.tenant_id,
-        user_id=user.id,
-    )
+        return None
+    return membership, user
 
 
 def _money(value: Decimal) -> Decimal:
@@ -764,6 +798,8 @@ def _sku_response(
     display_currency: str,
     translation: object | None = None,
     product_translation: PublicProductTranslation | None = None,
+    pricing_markup_percent: Decimal = Decimal("0"),
+    pricing_overrides: dict[UUID, object] | None = None,
 ) -> PublicSkuResponse:
     offer, sku, product, category = row
     source = catalog_translation_source(row)
@@ -849,7 +885,11 @@ def _sku_response(
             else tags[0] if tags else None
         ),
         tag_color=offer.tag_color,
-        price=_money(Decimal(offer.unit_price)),
+        price=effective_subaccount_price(
+            _money(Decimal(offer.unit_price)),
+            markup_percent=pricing_markup_percent,
+            override=(pricing_overrides or {}).get(product.id),
+        ),
         currency=display_currency,
         unit_code=product.default_unit or "piece",
         image_url=_public_image_url(image, slug=slug),
@@ -1817,12 +1857,21 @@ def _product_summary_response(
     locale: str,
     display_currency: str,
     translation: PublicProductTranslation | None,
+    pricing_markup_percent: Decimal = Decimal("0"),
+    pricing_overrides: dict[UUID, object] | None = None,
 ) -> PublicProductSummary:
     _offer, first_sku, product, category = rows[0]
     tags = _product_group_tags(rows)
     display_tag = _product_group_display_tag(rows, tags=tags)
     translated = translation is not None and locale != source_locale
-    prices = [_money(Decimal(row[0].unit_price)) for row in rows]
+    prices = [
+        effective_subaccount_price(
+            _money(Decimal(row[0].unit_price)),
+            markup_percent=pricing_markup_percent,
+            override=(pricing_overrides or {}).get(product.id),
+        )
+        for row in rows
+    ]
     product_model = str(
         (first_sku.option_values or {}).get("商品型号") or ""
     ).strip()
@@ -2062,6 +2111,8 @@ def list_public_products(
     page_size: int,
     locale: str | None = None,
     share_token: str | None = None,
+    subaccount_membership_id: UUID | None = None,
+    ranked_product_ids: list[UUID] | None = None,
 ) -> PublicProductPage:
     tenant, profile = _resolve_store(session, slug=slug)
     shared_product_ids: set[UUID] | None = None
@@ -2092,6 +2143,7 @@ def list_public_products(
         and not wanted_tags
         and not semantic
         and not share_token
+        and ranked_product_ids is None
     )
     all_categories = (
         repository.list_catalog_categories(session, tenant_id=tenant.id)
@@ -2099,7 +2151,18 @@ def list_public_products(
         else []
     )
 
-    if semantic and query.strip():
+    if ranked_product_ids is not None:
+        matching_product_ids = list(dict.fromkeys(ranked_product_ids))
+        if shared_product_ids is not None:
+            matching_product_ids = [
+                product_id
+                for product_id in matching_product_ids
+                if product_id in shared_product_ids
+            ]
+        total = len(matching_product_ids)
+        start = (page - 1) * page_size
+        selected_product_ids = matching_product_ids[start : start + page_size]
+    elif semantic and query.strip():
         try:
             candidate_rows = _vector_semantic_rows(
                 session,
@@ -2168,6 +2231,12 @@ def list_public_products(
         product_ids=selected_product_ids,
         now=now,
         category=category,
+    )
+    pricing_markup_percent, pricing_overrides, _hidden_product_ids = subaccount_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        product_ids=set(selected_product_ids),
     )
     groups = _group_catalog_rows(
         selected_rows,
@@ -2251,6 +2320,8 @@ def list_public_products(
                 locale=requested_locale,
                 display_currency=tenant.default_currency.upper(),
                 translation=translations.get(rows[0][2].id),
+                pricing_markup_percent=pricing_markup_percent,
+                pricing_overrides=pricing_overrides,
             )
             for rows in groups
         ],
@@ -2288,6 +2359,85 @@ def list_public_products(
     )
 
 
+def search_public_products_by_image(
+    session: Session,
+    *,
+    slug: str,
+    content: bytes,
+    declared_content_type: str,
+    limit: int,
+    locale: str | None = None,
+    share_token: str | None = None,
+    subaccount_membership_id: UUID | None = None,
+) -> PublicImageSearchResponse:
+    """Run private-R2-backed visual search against published catalog offers."""
+
+    tenant, _profile = _resolve_store(session, slug=slug)
+    allowed_product_ids: set[UUID] | None = None
+    shared_category: str | None = None
+    if share_token:
+        from .catalog_shares import resolve_share_constraint
+
+        share_constraint = resolve_share_constraint(
+            session,
+            tenant_id=tenant.id,
+            token=share_token,
+        )
+        if share_constraint.target_type == "PRODUCTS":
+            allowed_product_ids = set(share_constraint.product_ids)
+        else:
+            shared_category = share_constraint.category_path
+
+    from .image_intelligence import search_public_image_matches
+
+    matches = search_public_image_matches(
+        session,
+        tenant_id=tenant.id,
+        declared_content_type=declared_content_type,
+        content=content,
+        limit=limit,
+        allowed_product_ids=allowed_product_ids,
+        category=shared_category,
+    )
+    page = list_public_products(
+        session,
+        slug=slug,
+        query="",
+        category=None,
+        tags=[],
+        semantic=False,
+        include_facets=False,
+        page=1,
+        page_size=max(1, limit),
+        locale=locale,
+        share_token=share_token,
+        subaccount_membership_id=subaccount_membership_id,
+        ranked_product_ids=[match.product_id for match in matches],
+    )
+    products_by_id = {product.id: product for product in page.items}
+    results = [
+        PublicImageSearchResult(
+            product=products_by_id[match.product_id],
+            matched_image_id=match.product_image_id,
+            similarity=match.similarity,
+            match_percent=match.match_percent,
+            confidence=match.confidence,
+        )
+        for match in matches
+        if match.product_id in products_by_id
+    ]
+    return PublicImageSearchResponse(
+        id=uuid4(),
+        status="COMPLETED" if results else "INDEX_EMPTY",
+        results=results,
+        warnings=(
+            ["匹配度用于视觉相似筛选，商品规格和价格请以详情页为准。"]
+            if results
+            else ["当前店铺还没有可搜索的图片向量，请联系商家更新图片索引。"]
+        ),
+    )
+
+
 def get_public_product(
     session: Session,
     *,
@@ -2295,6 +2445,7 @@ def get_public_product(
     product_id: UUID,
     locale: str | None = None,
     share_token: str | None = None,
+    subaccount_membership_id: UUID | None = None,
 ) -> PublicProductDetail:
     tenant, profile = _resolve_store(session, slug=slug)
     shared_category: str | None = None
@@ -2331,6 +2482,18 @@ def get_public_product(
         category=shared_category,
     )
     if not rows:
+        raise ApplicationError(
+            "PUBLIC_PRODUCT_NOT_FOUND",
+            "Public product was not found.",
+            kind="not_found",
+        )
+    pricing_markup_percent, pricing_overrides, hidden_product_ids = subaccount_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        product_ids={product_id},
+    )
+    if product_id in hidden_product_ids:
         raise ApplicationError(
             "PUBLIC_PRODUCT_NOT_FOUND",
             "Public product was not found.",
@@ -2375,6 +2538,8 @@ def get_public_product(
         locale=requested_locale,
         display_currency=tenant.default_currency.upper(),
         translation=product_translation,
+        pricing_markup_percent=pricing_markup_percent,
+        pricing_overrides=pricing_overrides,
     )
     source_group_tags = _product_group_tags(rows)
     translated_tag_by_source = (
@@ -2406,6 +2571,8 @@ def get_public_product(
             display_currency=tenant.default_currency.upper(),
             translation=sku_translations.get(row[1].id),
             product_translation=product_translation,
+            pricing_markup_percent=pricing_markup_percent,
+            pricing_overrides=pricing_overrides,
         )
         source_specification = str(
             (row[1].option_values or {}).get("规格名称") or ""
@@ -2533,6 +2700,7 @@ def list_public_skus(
     page: int,
     page_size: int,
     locale: str | None = None,
+    subaccount_membership_id: UUID | None = None,
 ) -> PublicSkuPage:
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
@@ -2640,6 +2808,13 @@ def list_public_skus(
         tenant_id=tenant.id,
         product_ids={row[2].id for row in selected},
     )
+    pricing_markup_percent, pricing_overrides, hidden_product_ids = subaccount_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        product_ids={row[2].id for row in selected},
+    )
+    selected = [row for row in selected if row[2].id not in hidden_product_ids]
     translations, product_translations = _quote_translation_maps(
         session,
         tenant_id=tenant.id,
@@ -2681,6 +2856,8 @@ def list_public_skus(
                 display_currency=tenant.default_currency.upper(),
                 translation=translations.get(row[1].id),
                 product_translation=product_translations.get(row[2].id),
+                pricing_markup_percent=pricing_markup_percent,
+                pricing_overrides=pricing_overrides,
             )
             for row in selected
         ],
@@ -2723,6 +2900,7 @@ def get_public_sku(
     sku_id: UUID,
     locale: str | None = None,
     share_token: str | None = None,
+    subaccount_membership_id: UUID | None = None,
 ) -> PublicSkuResponse:
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
@@ -2746,6 +2924,18 @@ def get_public_sku(
             kind="not_found",
         )
     row = rows[0]
+    pricing_markup_percent, pricing_overrides, hidden_product_ids = subaccount_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        product_ids={row[2].id},
+    )
+    if row[2].id in hidden_product_ids:
+        raise ApplicationError(
+            "PUBLIC_SKU_NOT_FOUND",
+            "Public SKU was not found.",
+            kind="not_found",
+        )
     if share_token:
         from .catalog_shares import resolve_share_constraint
 
@@ -2804,6 +2994,8 @@ def get_public_sku(
         display_currency=tenant.default_currency.upper(),
         translation=translations.get(sku_id),
         product_translation=product_translations.get(row[2].id),
+        pricing_markup_percent=pricing_markup_percent,
+        pricing_overrides=pricing_overrides,
     )
 
 
@@ -3415,6 +3607,22 @@ def create_public_quote_draft(
             "PUBLIC_SKU_NOT_FOUND",
             "One or more public SKUs were not found: " + ", ".join(missing),
         )
+    pricing_markup_percent, pricing_overrides, hidden_product_ids = subaccount_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=submitted_by_membership_id,
+        product_ids={row[2].id for row in rows},
+    )
+    if hidden_product_ids:
+        rows = [row for row in rows if row[2].id not in hidden_product_ids]
+        row_by_sku = {row[1].id: row for row in rows}
+        missing = [str(sku_id) for sku_id in sku_ids if sku_id not in row_by_sku]
+        if missing:
+            raise ApplicationError(
+                "PUBLIC_SKU_NOT_FOUND",
+                "One or more selected products are not available for this account.",
+                kind="not_found",
+            )
     # Prices are deliberately not converted. The merchant's selected currency
     # controls only the presentation/snapshot currency used for new documents.
     currency = str(tenant.default_currency or "CNY").strip().upper()
@@ -3436,7 +3644,11 @@ def create_public_quote_draft(
     for position, cart_item in enumerate(request.items, 1):
         offer, sku, product, category = row_by_sku[cart_item.sku_id]
         quantity = Decimal(cart_item.quantity)
-        unit_price = _money(Decimal(offer.unit_price))
+        unit_price = effective_subaccount_price(
+            _money(Decimal(offer.unit_price)),
+            markup_percent=pricing_markup_percent,
+            override=pricing_overrides.get(product.id),
+        )
         line_total = _money(unit_price * quantity)
         subtotal += line_total
         source_tags = [

@@ -33,7 +33,7 @@ class SupportAIProviderSettingsRow(AuditTimestampMixin, Base):
     __tablename__ = "support_ai_provider_settings"
     __table_args__ = (
         CheckConstraint(
-            "provider = 'openai-compatible'",
+            "provider IN ('openai-compatible', 'qwen')",
             name="provider_supported",
         ),
         CheckConstraint(

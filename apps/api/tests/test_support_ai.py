@@ -18,6 +18,7 @@ from app.services.chat_generation import (
     IncrementalJSONTextField,
     OpenAICompatibleChatGeneration,
     chat_completions_endpoint,
+    qwen_chat_completions_endpoint,
 )
 from app.services.hybrid_search import _filter_ranked_results
 from app.services.support_ai_configuration import decrypt_api_key, encrypt_api_key
@@ -1217,6 +1218,69 @@ def test_generation_endpoint_normalization_and_credential_rejection() -> None:
     )
     with pytest.raises(ChatGenerationError, match="must not contain credentials"):
         chat_completions_endpoint("https://user:secret@api.example.test/v1")
+
+
+def test_qwen_generation_endpoint_normalization() -> None:
+    assert qwen_chat_completions_endpoint("https://dashscope.aliyuncs.com") == (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    )
+    assert qwen_chat_completions_endpoint(
+        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    ) == "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    assert chat_completions_endpoint(
+        "https://dashscope.aliyuncs.com",
+        provider="qwen",
+    ) == "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+
+def test_qwen_generation_uses_standard_sse_and_usage_chunk() -> None:
+    request_payload: dict[str, object] = {}
+    answer_deltas: list[str] = []
+    request_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_urls.append(str(request.url))
+        request_payload.update(json.loads(request.content))
+        events = (
+            'data: {"choices":[{"delta":{"content":"{\\"answer\\":"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"\\"你好\\"}"},'
+            '"finish_reason":null}]}\n\n'
+            'data: {"choices":[{"delta":{"content":""},'
+            '"finish_reason":"stop"}]}\n\n'
+            'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,'
+            '"total_tokens":5}}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=events.encode(),
+        )
+
+    provider = OpenAICompatibleChatGeneration(
+        api_key="test-key",
+        base_url="https://dashscope.aliyuncs.com",
+        model_name="qwen-plus",
+        provider="qwen",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    result = provider.generate_json_stream(
+        messages=[{"role": "user", "content": "hi"}],
+        on_answer_delta=answer_deltas.append,
+    )
+
+    assert request_payload["stream"] is True
+    assert request_urls == [
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    ]
+    assert request_payload["stream_options"] == {"include_usage": True}
+    assert result.data == {"answer": "你好"}
+    assert result.usage == {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+    }
+    assert "".join(answer_deltas) == "你好"
 
 
 def test_rerank_endpoint_and_provider_contract() -> None:

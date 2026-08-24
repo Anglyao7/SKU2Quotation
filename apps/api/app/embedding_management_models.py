@@ -69,6 +69,46 @@ class EmbeddingProviderSettingsRow(AuditTimestampMixin, Base):
     )
 
 
+class ImageEmbeddingProviderSettingsRow(AuditTimestampMixin, Base):
+    """Platform-wide DashScope multimodal embedding configuration."""
+
+    __tablename__ = "image_embedding_provider_settings"
+    __table_args__ = (
+        CheckConstraint("provider = 'dashscope'", name="provider_supported"),
+        CheckConstraint(
+            "dimensions IN (256, 512, 768, 1024, 1536, 2048, 2560)",
+            name="dimensions_supported",
+        ),
+        CheckConstraint(
+            "timeout_seconds >= 1 AND timeout_seconds <= 120",
+            name="timeout_supported",
+        ),
+        CheckConstraint(
+            "max_retry_count >= 0 AND max_retry_count <= 5",
+            name="max_retry_count_supported",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    provider: Mapped[str] = mapped_column(
+        String(40), default="dashscope", nullable=False
+    )
+    base_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer, default=1024, nullable=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    max_retry_count: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    api_key_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_last_four: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class RerankProviderSettingsRow(AuditTimestampMixin, Base):
     """Platform-wide Cohere-compatible rerank provider configuration."""
 

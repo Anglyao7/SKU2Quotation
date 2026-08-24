@@ -174,6 +174,7 @@ def update_provider_settings(
     try:
         save_managed_support_ai_provider(
             session,
+            provider=request.provider,
             configuration_name=request.configuration_name,
             display_model_name=request.display_model_name,
             enabled=request.enabled,
@@ -260,6 +261,7 @@ def _save_profile(
         row = save_support_ai_provider_profile(
             session,
             profile_id=profile_id,
+            provider=request.provider,
             configuration_name=request.configuration_name,
             display_model_name=request.display_model_name,
             enabled=request.enabled,

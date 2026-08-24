@@ -85,6 +85,9 @@ export interface CustomerSubaccount {
   loginCount30d: number;
   orderCount: number;
   lastOrderAt?: string;
+  orderAmount: number;
+  markupPercent: number;
+  overrideCount: number;
 }
 
 export interface CustomerSubaccountOrder {
@@ -106,6 +109,40 @@ export interface CustomerSubaccountDashboard {
   activeCount: number;
   suspendedCount: number;
   orderCount: number;
+  orderAmount: number;
+  currency: string;
+}
+
+export type SubaccountPricingMode = "MARKUP_PERCENT" | "FIXED_PRICE";
+
+export interface SubaccountPricingPolicy {
+  membershipId: string;
+  markupPercent: number;
+  overrideCount: number;
+  hiddenProductCount: number;
+}
+
+export interface SubaccountProductPricingItem {
+  productId: string;
+  productCode?: string;
+  productName: string;
+  skuCount: number;
+  basePriceFrom: number;
+  basePriceTo: number;
+  effectivePriceFrom: number;
+  effectivePriceTo: number;
+  currency: string;
+  overrideMode?: SubaccountPricingMode;
+  overrideValue?: number;
+  updatedAt: string;
+}
+
+export interface SubaccountPricingPage {
+  policy: SubaccountPricingPolicy;
+  items: SubaccountProductPricingItem[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface CustomerSubaccountOrderPage {
@@ -922,6 +959,55 @@ export interface EmbeddingSettings {
   clearedProductEmbeddings: number;
   clearedFileEmbeddings: number;
   invalidatedProducts: number;
+}
+
+export type QwenImageEmbeddingDimension = 256 | 512 | 768 | 1024 | 1536 | 2048 | 2560;
+
+export interface ImageEmbeddingSettings {
+  source: "database" | "environment" | "deterministic" | "unconfigured";
+  provider: string;
+  enabled: boolean;
+  baseUrl?: string;
+  modelName: string;
+  modelVersion: string;
+  dimensions: number;
+  timeoutSeconds: number;
+  maxRetryCount: number;
+  apiKeyConfigured: boolean;
+  apiKeyHint?: string;
+  updatedAt?: string;
+  modelChanged: boolean;
+  staleEmbeddings: number;
+}
+
+export interface ImageIndexStatus {
+  totalImages: number;
+  indexedImages: number;
+  pendingImages: number;
+  indexedProducts: number;
+}
+
+export interface ImageIndexJob {
+  id: string;
+  mode: "INCREMENTAL" | "FULL_REBUILD";
+  status: KnowledgeIndexJobStatus;
+  totalImages: number;
+  processedImages: number;
+  failedImages: number;
+  embeddings: number;
+  remainingImages: number;
+  progressPercent: number;
+  currentImageId?: string;
+  currentProductName?: string;
+  errorMessage?: string;
+  pauseRequested: boolean;
+  pauseRequestedAt?: string;
+  pausedAt?: string;
+  resumable: boolean;
+  checkpointAt?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export interface RerankSettings {

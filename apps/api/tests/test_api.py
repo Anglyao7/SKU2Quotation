@@ -68,6 +68,7 @@ from app.ai_data_models import AIProviderRouteRow, AISourceEvidenceRow, AITaskRo
 from app.knowledge_embedding_models import EmbeddingRow, KnowledgeChunkRow, KnowledgeDocumentRow
 from app.embedding_management_models import (
     EmbeddingProviderSettingsRow,
+    ImageEmbeddingProviderSettingsRow,
     KnowledgeIndexJobRow,
     RerankProviderSettingsRow,
 )
@@ -83,7 +84,12 @@ from app.storefront_analytics_models import (
     StorefrontProductViewEventRow,
 )
 from app.announcement_models import StorefrontAnnouncementRow
-from app.image_intelligence_models import ImageEmbeddingRow, ImageSearchRow, VisionObservationRow
+from app.image_intelligence_models import (
+    ImageEmbeddingRow,
+    ImageIndexJobRow,
+    ImageSearchRow,
+    VisionObservationRow,
+)
 from app.db_models import ImportJobRow, ReviewItemRow, SourceFileRow, SupplierRow
 from app.catalog_operation_models import CatalogImportBatchRow
 from app.file_security_models import MediaObjectRow, WorkerJobRow
@@ -232,6 +238,7 @@ from app.product_center_schemas import PublicCatalogOfferUpsertRequest
 from app.use_cases.workspace import create_supplier as create_supplier_use_case
 from app.use_cases import catalog_translations as catalog_translation_use_cases
 from app.use_cases import knowledge_search as knowledge_search_use_cases
+from app.use_cases import image_intelligence as image_intelligence_use_cases
 from app.use_cases import public_catalog as public_catalog_use_cases
 from app.use_cases import storefront_analytics as storefront_analytics_use_cases
 from app.workspace_schemas import SupplierCreateRequest
@@ -7282,6 +7289,122 @@ def test_platform_admin_manages_optional_rerank_configuration() -> None:
             session.commit()
 
 
+def test_platform_admin_manages_encrypted_image_embedding_without_connection_test() -> None:
+    raw_api_key = "sk-image-test-only-never-return-this-1357"
+    with SessionLocal() as session:
+        session.execute(delete(ImageEmbeddingProviderSettingsRow))
+        session.commit()
+
+    try:
+        initial = client.get("/api/v1/ai/image-embedding/settings")
+        assert initial.status_code == 200, initial.text
+        assert initial.headers["cache-control"] == "no-store"
+        assert "api_key" not in initial.json()
+
+        # This test-only credential is intentionally unusable. A successful save
+        # proves that configuration persistence does not make a network probe.
+        saved = client.put(
+            "/api/v1/ai/image-embedding/settings",
+            json={
+                "enabled": True,
+                "base_url": "https://dashscope.aliyuncs.com",
+                "api_key": raw_api_key,
+                "model_name": "qwen3-vl-embedding",
+                "dimensions": 1024,
+                "timeout_seconds": 35,
+                "max_retry_count": 2,
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        payload = saved.json()
+        assert payload["source"] == "database"
+        assert payload["enabled"] is True
+        assert payload["api_key_configured"] is True
+        assert payload["api_key_hint"] == "••••1357"
+        assert payload["dimensions"] == 1024
+        assert raw_api_key not in saved.text
+        assert "api_key_ciphertext" not in payload
+
+        with SessionLocal() as session:
+            row = session.get(
+                ImageEmbeddingProviderSettingsRow,
+                "IMAGE_EMBEDDING",
+            )
+            assert row is not None
+            assert raw_api_key not in row.api_key_ciphertext
+            assert decrypt_api_key(row.api_key_ciphertext) == raw_api_key
+            ciphertext = row.api_key_ciphertext
+
+        disabled = client.put(
+            "/api/v1/ai/image-embedding/settings",
+            json={
+                "enabled": False,
+                "base_url": "https://dashscope.aliyuncs.com",
+                "model_name": "qwen3-vl-embedding",
+                "dimensions": 1024,
+                "timeout_seconds": 30,
+                "max_retry_count": 1,
+            },
+        )
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["enabled"] is False
+        with SessionLocal() as session:
+            row = session.get(
+                ImageEmbeddingProviderSettingsRow,
+                "IMAGE_EMBEDDING",
+            )
+            assert row is not None
+            assert row.api_key_ciphertext == ciphertext
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(ImageEmbeddingProviderSettingsRow))
+            session.commit()
+
+
+def test_interrupted_image_index_job_recovers_as_resumable_checkpoint() -> None:
+    image_id = uuid4()
+    with SessionLocal() as session:
+        provider = image_intelligence_use_cases._provider(session)
+        job = ImageIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="RUNNING",
+            total_images=1,
+            processed_images=0,
+            failed_images=0,
+            embeddings=0,
+            current_image_id=image_id,
+            current_product_name="Interrupted R2 image",
+            model_provider=provider.identity.provider,
+            model_name=provider.identity.model_name,
+            model_version=provider.identity.model_version,
+            dimensions=provider.identity.dimensions,
+            remaining_image_ids=[str(image_id)],
+            started_at=datetime.now(UTC),
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    try:
+        assert image_intelligence_use_cases.recover_interrupted_image_index_jobs() == 1
+        recovered = client.get(f"/api/v1/ai/image-search/index/jobs/{job_id}")
+        assert recovered.status_code == 200, recovered.text
+        payload = recovered.json()
+        assert payload["status"] == "PAUSED"
+        assert payload["remaining_images"] == 1
+        assert payload["resumable"] is True
+        assert "服务重启" in payload["error_message"]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id)
+            )
+            session.commit()
+
+
 def test_embedding_model_change_clears_vectors_but_key_change_keeps_them() -> None:
     category_id = uuid4()
     product_id = uuid4()
@@ -13906,6 +14029,133 @@ def test_image_intelligence_projection_search_and_media_gate(tmp_path: Path) -> 
         assert session.get(ProductImageRow, source_id).approval_status == "SOURCE"
 
 
+def test_public_image_search_is_ephemeral_and_published_catalog_only(
+    tmp_path: Path,
+) -> None:
+    product_id = UUID("71000000-0000-0000-0000-000000000002")
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    image_id = uuid4()
+    object_key = (
+        f"tenants/{DEFAULT_TENANT_ID}/source/product-images/{image_id}.png"
+    )
+    image_path = tmp_path / "public-visual-search.png"
+    image_path.write_bytes(image_bytes)
+    storage = get_object_storage()
+    storage.put_file(
+        image_path,
+        object_key=object_key,
+        content_type="image/png",
+    )
+    offer_statuses: dict[UUID, str] = {}
+    with SessionLocal() as session:
+        tenant = session.get(TenantRow, DEFAULT_TENANT_ID)
+        assert tenant is not None
+        tenant_slug = tenant.slug
+        session.add(
+            ProductImageRow(
+                id=image_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                storage_provider="local",
+                bucket="local",
+                object_key=object_key,
+                original_filename=image_path.name,
+                content_type="image/png",
+                byte_size=len(image_bytes),
+                sha256=hashlib.sha256(image_bytes).hexdigest(),
+                width=1,
+                height=1,
+                image_role="GALLERY",
+                sort_order=101,
+                approval_status="APPROVED",
+            )
+        )
+        session.commit()
+
+    try:
+        projection = client.post(
+            f"/api/v1/product-images/{image_id}/intelligence"
+        )
+        assert projection.status_code == 200, projection.text
+        with SessionLocal() as session:
+            persisted_searches = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(ImageSearchRow)
+                    .where(ImageSearchRow.tenant_id == DEFAULT_TENANT_ID)
+                )
+                or 0
+            )
+
+        result = client.post(
+            f"/api/store/{tenant_slug}/image-search?limit=5&locale=zh-CN",
+            files={"file": ("visitor.png", image_bytes, "image/png")},
+        )
+        assert result.status_code == 200, result.text
+        payload = result.json()
+        assert payload["status"] == "COMPLETED"
+        assert payload["results"][0]["product"]["id"] == str(product_id)
+        assert payload["results"][0]["match_percent"] == 100.0
+        assert payload["results"][0]["confidence"] == "HIGH"
+        assert "query_embedding" not in result.text
+        assert "query_object_key" not in result.text
+        with SessionLocal() as session:
+            assert int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(ImageSearchRow)
+                    .where(ImageSearchRow.tenant_id == DEFAULT_TENANT_ID)
+                )
+                or 0
+            ) == persisted_searches
+            offers = list(
+                session.scalars(
+                    select(PublicCatalogOfferRow)
+                    .join(SkuRow, SkuRow.id == PublicCatalogOfferRow.sku_id)
+                    .where(
+                        PublicCatalogOfferRow.tenant_id == DEFAULT_TENANT_ID,
+                        SkuRow.product_id == product_id,
+                    )
+                ).all()
+            )
+            assert offers
+            offer_statuses = {offer.id: offer.publication_status for offer in offers}
+            for offer in offers:
+                offer.publication_status = "DRAFT"
+            session.commit()
+
+        hidden = client.post(
+            f"/api/store/{tenant_slug}/image-search?limit=5&locale=zh-CN",
+            files={"file": ("visitor-hidden.png", image_bytes, "image/png")},
+        )
+        assert hidden.status_code == 200, hidden.text
+        assert hidden.json()["status"] == "INDEX_EMPTY"
+        assert hidden.json()["results"] == []
+    finally:
+        with SessionLocal() as session:
+            for offer_id, publication_status in offer_statuses.items():
+                offer = session.get(PublicCatalogOfferRow, offer_id)
+                if offer is not None:
+                    offer.publication_status = publication_status
+            session.execute(
+                delete(ImageEmbeddingRow).where(
+                    ImageEmbeddingRow.product_image_id == image_id
+                )
+            )
+            session.execute(
+                delete(VisionObservationRow).where(
+                    VisionObservationRow.product_image_id == image_id
+                )
+            )
+            session.execute(delete(ProductImageRow).where(ProductImageRow.id == image_id))
+            session.commit()
+        storage.delete(object_key)
+
+
 def test_development_image_provider_is_fail_closed_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("IMAGE_INTELLIGENCE_PROFILE", "deterministic")
@@ -18098,6 +18348,10 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "storefront_product_view_daily",
     }
     support_ai_tables = {"support_ai_agents"}
+    subaccount_pricing_tables = {
+        "subaccount_pricing_policies",
+        "subaccount_product_price_overrides",
+    }
 
     command.upgrade(config, "20260718_0019")
     before_engine = create_engine(migration_url)
@@ -18112,6 +18366,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert customer_account_tables.issubset(inspect(upgraded_engine).get_table_names())
     assert analytics_tables.issubset(inspect(upgraded_engine).get_table_names())
     assert support_ai_tables.issubset(inspect(upgraded_engine).get_table_names())
+    assert subaccount_pricing_tables.issubset(inspect(upgraded_engine).get_table_names())
     assert "submitted_by_membership_id" in {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
@@ -18307,7 +18562,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar() == "20260823_0105"
+            ).scalar() == "20260823_0106"
     upgraded_engine.dispose()
     command.check(config)
 

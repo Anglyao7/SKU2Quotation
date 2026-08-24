@@ -85,7 +85,54 @@ class ChatGenerationProvider(Protocol):
     ) -> ChatGenerationResult: ...
 
 
-def chat_completions_endpoint(base_url: str) -> str:
+SUPPORTED_CHAT_GENERATION_PROVIDERS = frozenset({"openai-compatible", "qwen"})
+
+
+def _normalized_generation_provider(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized not in SUPPORTED_CHAT_GENERATION_PROVIDERS:
+        raise ChatGenerationError(
+            "generation provider must be one of: openai-compatible, qwen"
+        )
+    return normalized
+
+
+def qwen_chat_completions_endpoint(base_url: str) -> str:
+    """Resolve a Qwen OpenAI-compatible base URL to Chat Completions.
+
+    Qwen's managed endpoint is rooted at ``/compatible-mode/v1`` rather than
+    the usual ``/v1``.  Accepting the host, the compatible-mode base URL, or a
+    complete endpoint keeps configuration portable across the China,
+    international, and workspace-specific DashScope hosts.
+    """
+
+    normalized = base_url.strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ChatGenerationError("generation Base URL must be an HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ChatGenerationError("generation Base URL must not contain credentials")
+    path = parsed.path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        return normalized
+    if path.endswith("/compatible-mode/v1"):
+        return f"{normalized}/chat/completions"
+    if path.endswith("/compatible-mode"):
+        return f"{normalized}/v1/chat/completions"
+    if path.endswith("/v1"):
+        # A workspace URL can already include /v1. Preserve it instead of
+        # unexpectedly changing the configured route.
+        return f"{normalized}/chat/completions"
+    return f"{normalized}/compatible-mode/v1/chat/completions"
+
+
+def chat_completions_endpoint(
+    base_url: str,
+    provider: str = "openai-compatible",
+) -> str:
+    normalized_provider = _normalized_generation_provider(provider)
+    if normalized_provider == "qwen":
+        return qwen_chat_completions_endpoint(base_url)
     normalized = base_url.strip().rstrip("/")
     parsed = urlsplit(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -351,6 +398,7 @@ class OpenAICompatibleChatGeneration:
         max_output_tokens: int = 2048,
         temperature: float = 0.1,
         client: httpx.Client | None = None,
+        provider: str = "openai-compatible",
     ) -> None:
         if not api_key.strip():
             raise ChatGenerationError("generation API key is required")
@@ -372,7 +420,11 @@ class OpenAICompatibleChatGeneration:
         if temperature < 0 or temperature > 2:
             raise ChatGenerationError("generation temperature must be between 0 and 2")
         self._api_key = api_key.strip()
-        self._endpoint = chat_completions_endpoint(base_url)
+        self._provider = _normalized_generation_provider(provider)
+        self._endpoint = chat_completions_endpoint(
+            base_url,
+            provider=self._provider,
+        )
         self._timeout_seconds = timeout_seconds
         self._first_answer_timeout_seconds = min(
             timeout_seconds,
@@ -382,7 +434,7 @@ class OpenAICompatibleChatGeneration:
         self._temperature = temperature
         self._client = client or httpx.Client()
         self.identity = ChatGenerationIdentity(
-            provider="openai-compatible",
+            provider=self._provider,
             model_name=model_name.strip(),
         )
 
@@ -493,11 +545,13 @@ class OpenAICompatibleChatGeneration:
                 content_parts: list[str] = []
                 event_data: list[str] = []
                 finish_reason: str | None = None
+                stream_finished = False
                 usage: dict[str, int] = {}
                 first_delta_ms: int | None = None
 
                 def consume_event() -> bool:
-                    nonlocal finish_reason, first_delta_ms, usage
+                    nonlocal answer_delta_seen, finish_reason, first_delta_ms
+                    nonlocal stream_finished, usage
                     if not event_data:
                         return False
                     raw_event = "\n".join(event_data).strip()
@@ -523,7 +577,10 @@ class OpenAICompatibleChatGeneration:
                         }
                     choices = event.get("choices") or []
                     if not isinstance(choices, list) or not choices:
-                        return False
+                        # Qwen sends a final usage-only chunk after the choice
+                        # carrying finish_reason. Preserve that usage before
+                        # ending the stream.
+                        return stream_finished
                     choice = choices[0]
                     if not isinstance(choice, dict):
                         return False
@@ -533,6 +590,17 @@ class OpenAICompatibleChatGeneration:
                         if isinstance(delta, dict)
                         else ""
                     )
+                    reasoning_delta = (
+                        _content_text(delta.get("reasoning_content"))
+                        if isinstance(delta, dict)
+                        else ""
+                    )
+                    # Qwen thinking models can emit reasoning_content for a
+                    # while before the user-visible answer. Treat that as
+                    # upstream progress so a healthy stream is not mistaken
+                    # for a dead connection, but never expose the reasoning.
+                    if text_delta or reasoning_delta:
+                        answer_delta_seen = True
                     # A few gateways send a full message in their final SSE event.
                     if not text_delta and isinstance(choice.get("message"), dict):
                         text_delta = _content_text(choice["message"].get("content"))
@@ -546,11 +614,11 @@ class OpenAICompatibleChatGeneration:
                         publish_answer_delta(text_delta)
                     if choice.get("finish_reason") is not None:
                         finish_reason = str(choice["finish_reason"])
-                        return True
+                        stream_finished = True
                     # Some gateways hold the SSE connection open long after their
                     # upstream has completed. A fully parseable JSON object is a
                     # deterministic terminal condition for this structured API.
-                    if text_delta and "}" in text_delta:
+                    if self._provider != "qwen" and text_delta and "}" in text_delta:
                         try:
                             _json_object("".join(content_parts))
                         except ChatGenerationError:
@@ -821,6 +889,10 @@ class OpenAICompatibleChatGeneration:
             "response_format": {"type": "json_object"},
             "stream": True,
         }
+        if self._provider == "qwen":
+            # Qwen emits a final usage-only SSE chunk when this is enabled.
+            # The parser already accepts an empty choices array and records it.
+            payload["stream_options"] = {"include_usage": True}
         try:
             status_code, result = self._stream_request_with_transient_retry(
                 payload,
@@ -881,6 +953,7 @@ def openai_compatible_chat_provider(
     max_output_tokens: int,
     temperature: float,
     first_answer_timeout_seconds: float = 12,
+    provider: str = "openai-compatible",
 ) -> OpenAICompatibleChatGeneration:
     return OpenAICompatibleChatGeneration(
         api_key=api_key,
@@ -890,4 +963,5 @@ def openai_compatible_chat_provider(
         first_answer_timeout_seconds=first_answer_timeout_seconds,
         max_output_tokens=max_output_tokens,
         temperature=temperature,
+        provider=provider,
     )

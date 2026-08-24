@@ -5,7 +5,7 @@ import re
 from uuid import UUID
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi import APIRouter, Depends, File, Header, Query, Request, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from ..adapters.object_storage import get_object_storage
 from ..domain.errors import ApplicationError
 from ..public_catalog_schemas import (
     PublicProductDetail,
+    PublicImageSearchResponse,
     PublicProductPage,
     PublicQuoteDraftCreate,
     PublicQuoteDraftCurrencyConversion,
@@ -52,6 +53,13 @@ logger = logging.getLogger(__name__)
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PUBLIC_DETAIL_CACHE_HEADERS = {
     "Cache-Control": "public, max-age=30, stale-while-revalidate=120",
+}
+PRIVATE_DETAIL_CACHE_HEADERS = {
+    # A child-account token changes the returned prices. Never let a shared
+    # proxy serve that personalized response to an anonymous visitor or a
+    # different reseller.
+    "Cache-Control": "private, no-store",
+    "Vary": "Authorization",
 }
 _PUBLIC_QUOTE_MEDIA_PATTERN = re.compile(
     r"^/api/store/(?P<slug>[^/]+)/media/"
@@ -138,6 +146,8 @@ def list_public_skus(
     page_size: int = Query(default=24, ge=1, le=100),
     locale: str | None = Query(default=None, max_length=20),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicSkuPage:
     response.headers.update(NO_STORE_HEADERS)
     if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
@@ -163,6 +173,14 @@ def list_public_skus(
             ),
         )
     try:
+        submitter = use_cases.optional_customer_subaccount_membership(
+            identity_session,
+            access_token=(
+                credentials.credentials
+                if credentials is not None and credentials.scheme.lower() == "bearer"
+                else None
+            ),
+        )
         return use_cases.list_public_skus(
             session,
             slug=tenant_slug,
@@ -174,6 +192,7 @@ def list_public_skus(
             page=page,
             page_size=page_size,
             locale=locale,
+            subaccount_membership_id=(submitter[0].id if submitter else None),
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -197,6 +216,8 @@ def list_public_products(
     locale: str | None = Query(default=None, max_length=20),
     share: str | None = Query(default=None, min_length=8, max_length=64),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicProductPage:
     response.headers.update(NO_STORE_HEADERS)
     if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
@@ -228,6 +249,14 @@ def list_public_products(
             ),
         )
     try:
+        submitter = use_cases.optional_customer_subaccount_membership(
+            identity_session,
+            access_token=(
+                credentials.credentials
+                if credentials is not None and credentials.scheme.lower() == "bearer"
+                else None
+            ),
+        )
         return use_cases.list_public_products(
             session,
             slug=tenant_slug,
@@ -240,6 +269,67 @@ def list_public_products(
             page_size=page_size,
             locale=locale,
             share_token=share,
+            subaccount_membership_id=(submitter[0].id if submitter else None),
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/store/{tenant_slug}/image-search",
+    response_model=PublicImageSearchResponse,
+)
+def search_public_products_by_image(
+    tenant_slug: str,
+    request: Request,
+    response: Response,
+    file: UploadFile = File(...),
+    limit: int = Query(default=12, ge=1, le=24),
+    locale: str | None = Query(default=None, max_length=20),
+    share: str | None = Query(default=None, min_length=8, max_length=64),
+    session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
+) -> PublicImageSearchResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    enforce_rate_limit(
+        request,
+        scope="public-image-product-search",
+        limit=configured_limit("RATE_LIMIT_PUBLIC_IMAGE_SEARCH_REQUESTS", 10),
+        window_seconds=configured_limit(
+            "RATE_LIMIT_PUBLIC_IMAGE_SEARCH_WINDOW_SECONDS",
+            60,
+            maximum=86_400,
+        ),
+    )
+    max_bytes = int(
+        __import__("os").getenv(
+            "IMAGE_SEARCH_MAX_BYTES",
+            str(20 * 1024 * 1024),
+        )
+    )
+    content = file.file.read(max_bytes + 1)
+    filename_content_type = file.content_type or "application/octet-stream"
+    file.file.close()
+    try:
+        submitter = use_cases.optional_customer_subaccount_membership(
+            identity_session,
+            access_token=(
+                credentials.credentials
+                if credentials is not None
+                and credentials.scheme.lower() == "bearer"
+                else None
+            ),
+        )
+        return use_cases.search_public_products_by_image(
+            session,
+            slug=tenant_slug,
+            content=content,
+            declared_content_type=filename_content_type,
+            limit=limit,
+            locale=locale,
+            share_token=share,
+            subaccount_membership_id=(submitter[0].id if submitter else None),
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -257,8 +347,14 @@ def get_public_product(
     locale: str | None = Query(default=None, max_length=20),
     share: str | None = Query(default=None, min_length=8, max_length=64),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicProductDetail:
-    response.headers.update(PUBLIC_DETAIL_CACHE_HEADERS)
+    response.headers.update(
+        PRIVATE_DETAIL_CACHE_HEADERS
+        if credentials is not None
+        else PUBLIC_DETAIL_CACHE_HEADERS
+    )
     if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
         enforce_rate_limit(
             request,
@@ -274,12 +370,21 @@ def get_public_product(
             ),
         )
     try:
+        submitter = use_cases.optional_customer_subaccount_membership(
+            identity_session,
+            access_token=(
+                credentials.credentials
+                if credentials is not None and credentials.scheme.lower() == "bearer"
+                else None
+            ),
+        )
         return use_cases.get_public_product(
             session,
             slug=tenant_slug,
             product_id=product_id,
             locale=locale,
             share_token=share,
+            subaccount_membership_id=(submitter[0].id if submitter else None),
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -297,6 +402,8 @@ def get_public_sku(
     locale: str | None = Query(default=None, max_length=20),
     share: str | None = Query(default=None, min_length=8, max_length=64),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicSkuResponse:
     response.headers.update(NO_STORE_HEADERS)
     if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
@@ -311,12 +418,21 @@ def get_public_sku(
             ),
         )
     try:
+        submitter = use_cases.optional_customer_subaccount_membership(
+            identity_session,
+            access_token=(
+                credentials.credentials
+                if credentials is not None and credentials.scheme.lower() == "bearer"
+                else None
+            ),
+        )
         return use_cases.get_public_sku(
             session,
             slug=tenant_slug,
             sku_id=sku_id,
             locale=locale,
             share_token=share,
+            subaccount_membership_id=(submitter[0].id if submitter else None),
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

@@ -20,6 +20,7 @@ import type {
   StoreProduct,
   StoreProductDetail,
   StoreProductList,
+  StoreImageSearchResponse,
   Storefront,
   StorefrontCategoryOption,
   StorefrontLocale,
@@ -34,6 +35,7 @@ import { ensureStorefrontVisitorToken } from "./storefrontVisitor";
 import {
   clearCoreAuthSession,
   ensureFreshCoreAccessToken,
+  getCoreAuthGeneration,
   getCoreAccessToken,
   refreshAuthSession,
 } from "../core/api";
@@ -260,6 +262,12 @@ function storeProductPath(slug: string, productId: string, locale?: StorefrontLo
   return `/api/store/${encodeURIComponent(slug)}/products/${encodeURIComponent(productId)}${query ? `?${query}` : ""}`;
 }
 
+function publicCatalogAuthScope() {
+  return getCoreAccessToken()
+    ? `#account-scope=${getCoreAuthGeneration()}`
+    : "#account-scope=anonymous";
+}
+
 function normalizeList<T>(payload: unknown): { items: T[]; total: number } {
   if (Array.isArray(payload)) return { items: payload as T[], total: payload.length };
   if (payload && typeof payload === "object") {
@@ -354,11 +362,11 @@ async function getCachedStoreSkus(
   params.sort();
   const query = params.toString();
   const path = `/api/store/${encodeURIComponent(slug)}/skus${query ? `?${query}` : ""}`;
-  const cachePath = languagePack
+  const cachePath = `${languagePack
     ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
-    : path;
+    : path}${publicCatalogAuthScope()}`;
   return cachedPublicRequest(publicCatalogCacheKey("catalog", cachePath), PUBLIC_CATALOG_CACHE_TTL_MS, async () => {
-    const raw = await request<unknown>(path);
+    const raw = await request<unknown>(path, {}, Boolean(getCoreAccessToken()));
     const list = normalizeList<Sku>(raw);
     const meta = raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
@@ -398,7 +406,7 @@ async function getCachedStoreSkus(
       if (!hasCompleteStorefrontTranslation(sku)) continue;
       const detailPath = storeSkuPath(slug, sku.id, filters.locale);
       primePublicRequestCache(
-        publicCatalogCacheKey("sku", detailPath),
+        publicCatalogCacheKey("sku", `${detailPath}${publicCatalogAuthScope()}`),
         PUBLIC_SKU_CACHE_TTL_MS,
         sku,
       );
@@ -411,9 +419,9 @@ async function getCachedStoreSkus(
       primePublicRequestCache(
         publicCatalogCacheKey(
           "catalog",
-          languagePack
+          `${languagePack
             ? `${compactPath}#language-pack=${languagePack.target_locale}:${languagePack.version}`
-            : compactPath,
+            : compactPath}${publicCatalogAuthScope()}`,
         ),
         PUBLIC_CATALOG_CACHE_TTL_MS,
         result,
@@ -441,14 +449,14 @@ async function getCachedStoreProducts(
   params.sort();
   const query = params.toString();
   const path = `/api/store/${encodeURIComponent(slug)}/products${query ? `?${query}` : ""}`;
-  const cachePath = languagePack
+  const cachePath = `${languagePack
     ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
-    : path;
+    : path}${publicCatalogAuthScope()}`;
   return cachedPublicRequest(
     publicCatalogCacheKey("products", cachePath),
     PUBLIC_CATALOG_CACHE_TTL_MS,
     async () => {
-      const raw = await request<unknown>(path);
+      const raw = await request<unknown>(path, {}, Boolean(getCoreAccessToken()));
       const list = normalizeList<StoreProduct>(raw);
       const meta = raw && typeof raw === "object" && !Array.isArray(raw)
         ? (raw as Record<string, unknown>)
@@ -502,9 +510,9 @@ async function getCachedStoreProducts(
         primePublicRequestCache(
           publicCatalogCacheKey(
             "products",
-            languagePack
+            `${languagePack
               ? `${compactPath}#language-pack=${languagePack.target_locale}:${languagePack.version}`
-              : compactPath,
+              : compactPath}${publicCatalogAuthScope()}`,
           ),
           PUBLIC_CATALOG_CACHE_TTL_MS,
           result,
@@ -559,14 +567,18 @@ export const api = {
     // live translations or source-text fallbacks while keeping the selected
     // locale and language menu intact.
     const path = storePath(slug, locale);
-    const cachePath = languagePack
+    const cachePath = `${languagePack
       ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
-      : path;
+      : path}${publicCatalogAuthScope()}`;
     return cachedPublicRequest(
       publicCatalogCacheKey("store", cachePath),
       PUBLIC_STORE_CACHE_TTL_MS,
       async () => {
-        const store = await request<Storefront>(path);
+        const store = await request<Storefront>(
+          path,
+          {},
+          Boolean(getCoreAccessToken()),
+        );
         if (!languagePack) return store;
         return {
           ...store,
@@ -602,14 +614,18 @@ export const api = {
     const path = shareToken
       ? `${sourcePath}${sourcePath.includes("?") ? "&" : "?"}share=${encodeURIComponent(shareToken)}`
       : sourcePath;
-    const cachePath = languagePack
+    const cachePath = `${languagePack
       ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
-      : path;
+      : path}${publicCatalogAuthScope()}`;
     return cachedPublicRequest(
       publicCatalogCacheKey("product", cachePath),
       PUBLIC_PRODUCT_CACHE_TTL_MS,
       async () => {
-        const product = await request<StoreProductDetail>(path);
+        const product = await request<StoreProductDetail>(
+          path,
+          {},
+          Boolean(getCoreAccessToken()),
+        );
         const normalized = {
           ...normalizeStoreProduct(product),
           skus: (product.skus || []).map(normalizeSku),
@@ -638,6 +654,39 @@ export const api = {
   ): Promise<StoreProductList> {
     return getCachedStoreProducts(slug, filters);
   },
+  async searchStoreProductsByImage(
+    slug: string,
+    file: File,
+    locale?: StorefrontLocale,
+    shareToken?: string,
+    limit = 12,
+  ): Promise<StoreImageSearchResponse> {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    if (locale) params.set("locale", locale);
+    if (shareToken) params.set("share", shareToken);
+    const form = new FormData();
+    form.append("file", file, file.name || "image-search.jpg");
+    const response = await request<StoreImageSearchResponse>(
+      `/api/store/${encodeURIComponent(slug)}/image-search?${params.toString()}`,
+      {
+        method: "POST",
+        body: form,
+        signal: AbortSignal.timeout(120_000),
+      },
+      Boolean(getCoreAccessToken()),
+    );
+    const languagePack = await storefrontLanguagePack(slug, locale);
+    return {
+      ...response,
+      results: response.results.map((result) => ({
+        ...result,
+        product: languagePack
+          ? localizeProduct(normalizeStoreProduct(result.product), languagePack)
+          : normalizeStoreProduct(result.product),
+      })),
+    };
+  },
   prefetchStoreProducts: async (
     slug: string,
     filters: StoreSkuFilters = {},
@@ -650,14 +699,16 @@ export const api = {
     const path = shareToken
       ? `${sourcePath}${sourcePath.includes("?") ? "&" : "?"}share=${encodeURIComponent(shareToken)}`
       : sourcePath;
-    const cachePath = languagePack
+    const cachePath = `${languagePack
       ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
-      : path;
+      : path}${publicCatalogAuthScope()}`;
     return cachedPublicRequest(
       publicCatalogCacheKey("sku", cachePath),
       PUBLIC_SKU_CACHE_TTL_MS,
       async () => {
-        const sku = normalizeSku(await request<Sku>(path));
+        const sku = normalizeSku(
+          await request<Sku>(path, {}, Boolean(getCoreAccessToken())),
+        );
         return languagePack ? localizeSku(sku, languagePack) : sku;
       },
       hasCompleteStorefrontTranslation,

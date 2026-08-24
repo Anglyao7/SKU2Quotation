@@ -757,6 +757,7 @@ POST   /api/v1/system/support-ai/agents/{agent_id}/training/copy
 ```text
 SUPPORT_AI_SETTINGS_MASTER_KEY
 SUPPORT_AI_ENABLED
+SUPPORT_AI_PROVIDER                 # openai-compatible 或 qwen
 SUPPORT_AI_BASE_URL
 SUPPORT_AI_API_KEY
 SUPPORT_AI_MODEL

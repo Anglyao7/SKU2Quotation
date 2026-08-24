@@ -140,6 +140,21 @@ class PublicProductPage(BaseModel):
     hot_sort_applied: bool = False
 
 
+class PublicImageSearchResult(BaseModel):
+    product: PublicProductSummary
+    matched_image_id: UUID
+    similarity: float = Field(ge=-1, le=1)
+    match_percent: float = Field(ge=0, le=100)
+    confidence: Literal["HIGH", "MEDIUM", "REFERENCE"]
+
+
+class PublicImageSearchResponse(BaseModel):
+    id: UUID
+    status: Literal["COMPLETED", "INDEX_EMPTY"]
+    results: list[PublicImageSearchResult]
+    warnings: list[str] = Field(default_factory=list)
+
+
 class PublicCartItem(BaseModel):
     sku_id: UUID
     quantity: Decimal = Field(gt=0, le=1_000_000, decimal_places=6)

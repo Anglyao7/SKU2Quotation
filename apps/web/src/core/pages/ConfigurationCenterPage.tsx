@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Heading,
+  Select,
   Switch,
   Tabs,
   Text,
@@ -28,10 +29,12 @@ import {
   createSupportAIProviderProfile,
   getEmbeddingSettings,
   getImageGenerationSettings,
+  getImageEmbeddingSettings,
   getRerankSettings,
   listSupportAIProviderProfiles,
   updateEmbeddingSettings,
   updateImageGenerationSettings,
+  updateImageEmbeddingSettings,
   updateRerankSettings,
   updateSupportAIProviderProfile,
 } from "../api";
@@ -40,18 +43,21 @@ import { useLocale } from "../LocaleContext";
 import type {
   EmbeddingSettings,
   ImageGenerationSettings,
+  ImageEmbeddingSettings,
   RerankSettings,
+  QwenImageEmbeddingDimension,
   SupportAIProviderSettings,
 } from "../types";
 import { TranslationApiSettingsPage } from "./TranslationApiSettingsPage";
 import "./ConfigurationCenterPage.css";
 
-type ConfigurationSection = "support-ai" | "translation" | "embedding" | "rerank" | "image-generation";
+type ConfigurationSection = "support-ai" | "translation" | "embedding" | "image-embedding" | "rerank" | "image-generation";
 
 const SECTIONS = new Set<ConfigurationSection>([
   "support-ai",
   "translation",
   "embedding",
+  "image-embedding",
   "rerank",
   "image-generation",
 ]);
@@ -64,6 +70,7 @@ function GenerationSettingsPanel() {
   const [busy, setBusy] = useState<"save" | "copy" | "">("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [provider, setProvider] = useState<"openai-compatible" | "qwen">("openai-compatible");
   const [configurationName, setConfigurationName] = useState("");
   const [displayModelName, setDisplayModelName] = useState("");
   const [enabled, setEnabled] = useState(true);
@@ -75,6 +82,7 @@ function GenerationSettingsPanel() {
   const [temperature, setTemperature] = useState("0.1");
 
   const applyProfile = useCallback((profile?: SupportAIProviderSettings) => {
+    setProvider(profile?.provider === "qwen" ? "qwen" : "openai-compatible");
     setConfigurationName(profile?.configurationName ?? "");
     setDisplayModelName(profile?.displayModelName ?? "");
     setEnabled(profile?.enabled ?? true);
@@ -153,6 +161,7 @@ function GenerationSettingsPanel() {
     setMessage("");
     try {
       const payload = {
+        provider,
         configurationName: configurationName.trim(),
         displayModelName: displayModelName.trim(),
         enabled,
@@ -225,7 +234,7 @@ function GenerationSettingsPanel() {
             >
               <span>
                 <strong>{profile.displayModelName || profile.configurationName}</strong>
-                <small>{profile.configurationName}</small>
+                <small>{profile.configurationName} · {profile.provider === "qwen" ? t("通义千问") : t("OpenAI 兼容")}</small>
               </span>
               <Badge color={profile.enabled ? "jade" : "gray"}>{t(profile.enabled ? "可分配" : "已停用")}</Badge>
             </button>
@@ -239,6 +248,25 @@ function GenerationSettingsPanel() {
             <TextField.Root value={configurationName} onChange={(event) => setConfigurationName(event.target.value)} placeholder={t("例如：主客服接口")} required />
           </label>
           <label>
+            <Text size="1" color="gray">{t("服务商")}</Text>
+            <Select.Root
+              value={provider}
+              onValueChange={(value) => {
+                const next = value === "qwen" ? "qwen" : "openai-compatible";
+                setProvider(next);
+                if (next === "qwen" && (!baseUrl.trim() || baseUrl.trim() === "https://api.example.com/v1")) {
+                  setBaseUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
+                }
+              }}
+            >
+              <Select.Trigger />
+              <Select.Content>
+                <Select.Item value="openai-compatible">{t("OpenAI 兼容接口")}</Select.Item>
+                <Select.Item value="qwen">{t("通义千问 Qwen")}</Select.Item>
+              </Select.Content>
+            </Select.Root>
+          </label>
+          <label>
             <Text size="1" color="gray">{t("展示模型名")}</Text>
             <TextField.Root value={displayModelName} onChange={(event) => setDisplayModelName(event.target.value)} placeholder={t("例如：专业客服模型")} required />
           </label>
@@ -248,8 +276,8 @@ function GenerationSettingsPanel() {
           </label>
           <label className="configuration-wide">
             <Text size="1" color="gray">Base URL</Text>
-            <TextField.Root type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" required />
-            <small>{t("可填写服务根地址、/v1，或完整的 /v1/chat/completions 地址。")}</small>
+            <TextField.Root type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder={provider === "qwen" ? "https://dashscope.aliyuncs.com/compatible-mode/v1" : "https://api.example.com/v1"} required />
+            <small>{provider === "qwen" ? t("千问会自动补全 /compatible-mode/v1/chat/completions，也可填写完整地址。") : t("可填写服务根地址、/v1，或完整的 /v1/chat/completions 地址。")}</small>
           </label>
           <label>
             <Text size="1" color="gray">{t("模型名称")}</Text>
@@ -433,6 +461,155 @@ function EmbeddingSettingsPanel() {
         <div className="configuration-actions configuration-wide">
           <Button type="submit" size="3" disabled={!valid || saving}><FloppyDisk />{t(saving ? "保存中…" : "保存配置")}</Button>
           <Text size="1" color="gray">{t("保存不会自动发起网络连通性测试，也不会自动重建现有索引。")}</Text>
+        </div>
+      </form>
+      {message ? <Text size="2" color="green"><CheckCircle weight="fill" /> {message}</Text> : null}
+      {error ? <Text size="2" color="red">{error}</Text> : null}
+    </Card>
+  );
+}
+
+function ImageEmbeddingSettingsPanel() {
+  const { t } = useLocale();
+  const [settings, setSettings] = useState<ImageEmbeddingSettings>();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [baseUrl, setBaseUrl] = useState("https://dashscope.aliyuncs.com");
+  const [modelName, setModelName] = useState("qwen3-vl-embedding");
+  const [apiKey, setApiKey] = useState("");
+  const [dimensions, setDimensions] = useState<QwenImageEmbeddingDimension>(1024);
+  const [timeoutSeconds, setTimeoutSeconds] = useState("30");
+  const [maxRetryCount, setMaxRetryCount] = useState("2");
+
+  const apply = useCallback((next: ImageEmbeddingSettings) => {
+    setSettings(next);
+    setEnabled(next.enabled);
+    setBaseUrl(next.baseUrl ?? "https://dashscope.aliyuncs.com");
+    setModelName(next.modelName || "qwen3-vl-embedding");
+    const supportedDimensions = new Set([256, 512, 768, 1024, 1536, 2048, 2560]);
+    setDimensions(supportedDimensions.has(next.dimensions) ? next.dimensions as QwenImageEmbeddingDimension : 1024);
+    setTimeoutSeconds(String(next.timeoutSeconds));
+    setMaxRetryCount(String(next.maxRetryCount));
+    setApiKey("");
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      apply(await getImageEmbeddingSettings());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("图片 Embedding 配置读取失败"));
+    } finally {
+      setLoading(false);
+    }
+  }, [apply, t]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const valid = Boolean(
+    baseUrl.trim()
+    && modelName.trim()
+    && (apiKey.trim() || settings?.apiKeyConfigured)
+    && Number.isInteger(Number(timeoutSeconds))
+    && Number(timeoutSeconds) >= 1
+    && Number(timeoutSeconds) <= 120
+    && Number.isInteger(Number(maxRetryCount))
+    && Number(maxRetryCount) >= 0
+    && Number(maxRetryCount) <= 5,
+  );
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!valid || saving) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const saved = await updateImageEmbeddingSettings({
+        enabled,
+        baseUrl: baseUrl.trim(),
+        modelName: modelName.trim(),
+        apiKey: apiKey.trim() || undefined,
+        dimensions,
+        timeoutSeconds: Number(timeoutSeconds),
+        maxRetryCount: Number(maxRetryCount),
+      });
+      apply(saved);
+      setMessage(saved.modelChanged
+        ? t("图片模型已更新，{count} 条旧向量已失效；请到“图片搜索管理”重新向量化。", { count: saved.staleEmbeddings })
+        : t("图片 Embedding 配置已保存。"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("图片 Embedding 配置保存失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading && !settings) return <CoreLoading label={t("正在读取图片 Embedding 配置")} />;
+  if (error && !settings) return <CoreError message={error} onRetry={() => void load()} />;
+
+  return (
+    <Card className="configuration-provider-card">
+      <div className="configuration-card-heading">
+        <span><ImageSquare weight="duotone" /></span>
+        <div>
+          <Text size="1" color="gray">{t("客户图搜")}</Text>
+          <Heading size="5">Qwen3-VL Embedding</Heading>
+          <Text size="2" color="gray">{t("平台统一管理图片向量模型，商家只负责更新自己的图片索引。")}</Text>
+        </div>
+        <Badge color={enabled && settings?.apiKeyConfigured ? "jade" : "amber"}>{t(enabled ? "已启用" : "已关闭")}</Badge>
+      </div>
+
+      <form className="configuration-form" onSubmit={(event) => void save(event)}>
+        <label className="configuration-switch configuration-wide">
+          <span><strong>{t("启用客户图搜")}</strong><small>{t("关闭后前台不会调用图片模型，已有向量仍保留。")}</small></span>
+          <Switch checked={enabled} onCheckedChange={setEnabled} />
+        </label>
+        <label className="configuration-wide">
+          <Text size="1" color="gray">Base URL</Text>
+          <TextField.Root type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://dashscope.aliyuncs.com" required />
+          <small>{t("可填写百炼服务域名、/api/v1，或完整 Multimodal-Embedding 接口地址。")}</small>
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("模型名称")}</Text>
+          <TextField.Root value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="qwen3-vl-embedding" required />
+        </label>
+        <label>
+          <Text size="1" color="gray">API Key</Text>
+          <TextField.Root
+            type="password"
+            autoComplete="new-password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder={settings?.apiKeyConfigured ? t("已配置 {hint}，留空保持不变", { hint: settings.apiKeyHint ?? "" }) : t("请输入百炼 API Key")}
+            required={!settings?.apiKeyConfigured}
+          />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("向量维度")}</Text>
+          <Select.Root value={String(dimensions)} onValueChange={(value) => setDimensions(Number(value) as QwenImageEmbeddingDimension)}>
+            <Select.Trigger />
+            <Select.Content>
+              {[256, 512, 768, 1024, 1536, 2048, 2560].map((value) => <Select.Item key={value} value={String(value)}>{value}</Select.Item>)}
+            </Select.Content>
+          </Select.Root>
+          <Text size="1" color="gray">{t("推荐 1024 维，兼顾检索质量、存储和速度。")}</Text>
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("请求超时（秒）")}</Text>
+          <TextField.Root type="number" min="1" max="120" value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(event.target.value)} required />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("失败后最多重试次数")}</Text>
+          <TextField.Root type="number" min="0" max="5" value={maxRetryCount} onChange={(event) => setMaxRetryCount(event.target.value)} required />
+        </label>
+        <div className="configuration-actions configuration-wide">
+          <Button type="submit" size="3" disabled={!valid || saving}><FloppyDisk />{t(saving ? "保存中…" : "保存配置")}</Button>
+          <Text size="1" color="gray">{t("保存不会测试连接，也不会自动消耗额度或重建图片索引。")}</Text>
         </div>
       </form>
       {message ? <Text size="2" color="green"><CheckCircle weight="fill" /> {message}</Text> : null}
@@ -774,12 +951,14 @@ export function ConfigurationCenterPage() {
           <Tabs.Trigger value="support-ai"><Brain />{t("智能体 API")}</Tabs.Trigger>
           <Tabs.Trigger value="translation"><Translate />{t("翻译 API")}</Tabs.Trigger>
           <Tabs.Trigger value="embedding"><Database />Embedding</Tabs.Trigger>
+          <Tabs.Trigger value="image-embedding"><ImageSquare />{t("图片 Embedding")}</Tabs.Trigger>
           <Tabs.Trigger value="rerank"><ArrowsDownUp />Rerank</Tabs.Trigger>
           <Tabs.Trigger value="image-generation"><ImageSquare />{t("图生图 API")}</Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="support-ai" className="configuration-tab-panel"><GenerationSettingsPanel /></Tabs.Content>
         <Tabs.Content value="translation" className="configuration-tab-panel"><TranslationApiSettingsPage embedded /></Tabs.Content>
         <Tabs.Content value="embedding" className="configuration-tab-panel"><EmbeddingSettingsPanel /></Tabs.Content>
+        <Tabs.Content value="image-embedding" className="configuration-tab-panel"><ImageEmbeddingSettingsPanel /></Tabs.Content>
         <Tabs.Content value="rerank" className="configuration-tab-panel"><RerankSettingsPanel /></Tabs.Content>
         <Tabs.Content value="image-generation" className="configuration-tab-panel"><ImageGenerationSettingsPanel /></Tabs.Content>
       </Tabs.Root>

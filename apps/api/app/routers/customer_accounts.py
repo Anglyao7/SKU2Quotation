@@ -14,6 +14,11 @@ from ..customer_accounts_schemas import (
     CustomerSubaccountOrderPage,
     CustomerSubaccountStatusUpdate,
     CustomerSubaccountSummary,
+    SubaccountPricingPage,
+    SubaccountPricingPolicyResponse,
+    SubaccountPricingPolicyUpdate,
+    SubaccountProductPriceOverrideRequest,
+    SubaccountProductPricingItem,
 )
 from ..database import get_auth_session
 from ..domain.errors import ApplicationError
@@ -132,6 +137,92 @@ def update_customer_account_access(
             context=current_context(session),
             membership_id=membership_id,
             request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/customer-accounts/{membership_id}/pricing",
+    response_model=SubaccountPricingPage,
+)
+def customer_account_pricing(
+    membership_id: UUID,
+    query: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_authenticated_session),
+) -> SubaccountPricingPage:
+    try:
+        return use_cases.get_subaccount_pricing(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/customer-accounts/{membership_id}/pricing",
+    response_model=SubaccountPricingPolicyResponse,
+)
+def update_customer_account_pricing(
+    membership_id: UUID,
+    request: SubaccountPricingPolicyUpdate,
+    session: Session = Depends(get_authenticated_session),
+) -> SubaccountPricingPolicyResponse:
+    try:
+        return use_cases.update_subaccount_pricing_policy(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/customer-accounts/{membership_id}/pricing/products/{product_id}",
+    response_model=SubaccountProductPricingItem,
+)
+def set_customer_account_product_pricing(
+    membership_id: UUID,
+    product_id: UUID,
+    request: SubaccountProductPriceOverrideRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SubaccountProductPricingItem:
+    try:
+        return use_cases.set_subaccount_product_price_override(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            product_id=product_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/customer-accounts/{membership_id}/pricing/products/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def clear_customer_account_product_pricing(
+    membership_id: UUID,
+    product_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> None:
+    try:
+        use_cases.clear_subaccount_product_price_override(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            product_id=product_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

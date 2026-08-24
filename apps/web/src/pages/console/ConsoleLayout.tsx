@@ -15,6 +15,7 @@ import {
   GlobeHemisphereWest,
   Headset,
   IdentificationCard,
+  ImageSquare,
   Megaphone,
   Pulse,
   Robot,
@@ -63,6 +64,16 @@ const navigationGroups = [
       { to: "/console/analytics", label: "网站监测", mobileLabel: "网站监测", icon: ChartLineUp, permissions: ["analytics.view"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/ai-search", label: "AI 搜索", mobileLabel: "AI 搜索", icon: Sparkle, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/ai-search/manage", label: "AI 搜索管理", mobileLabel: "搜索管理", icon: Database, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/image-search/manage", label: "图片搜索管理", mobileLabel: "图搜管理", icon: ImageSquare, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
+    ],
+  },
+  {
+    key: "reseller",
+    label: "代理商工作台",
+    icon: StoreIcon,
+    items: [
+      { to: "/console/products", label: "商品目录", mobileLabel: "商品", icon: Cube, end: true, permissions: ["customer_portal.access"], platformAdminOnly: false, mobilePrimary: true },
+      { to: "/console/quotes", label: "我的询价", mobileLabel: "询价", icon: FileText, permissions: ["customer_portal.order_view_self"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {
@@ -194,10 +205,23 @@ export function ConsoleLayout() {
   const subscriptionPresentation = SUBSCRIPTION_TIER_PRESENTATION[subscriptionTier];
   const canManageSettings = hasPermission("system.settings_manage");
   const canViewSalesInbox = hasAnyPermission("inquiry.view", "quotation.view");
+  const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
   const visibleGroups = navigationGroups
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => (!item.platformAdminOnly || profile?.user.isPlatformAdmin) && (item.permissions.length === 0 || hasAnyPermission(...item.permissions))),
+      items: group.items.filter((item) => (
+        // A child account uses the same console shell, but only receives the
+        // safe catalog/order workspace. Sensitive owner and platform modules
+        // remain absent from navigation and are also protected by API guards.
+        (!isCustomerSubaccount || group.key === "workspace" || group.key === "reseller")
+        && (!isCustomerSubaccount || group.key !== "workspace" || item.to === "/console")
+        && (!item.platformAdminOnly || profile?.user.isPlatformAdmin)
+        && (item.permissions.length === 0 || hasAnyPermission(...item.permissions))
+        // Supplier relationships are internal to the owner workspace. A
+        // reseller child account must not even receive this navigation item;
+        // the API applies the same permission boundary server-side.
+        && !(isCustomerSubaccount && item.to === "/console/supply-chain")
+      )),
     }))
     .filter((group) => group.items.length);
   const visibleNavigation = visibleGroups.flatMap((group) => group.items);

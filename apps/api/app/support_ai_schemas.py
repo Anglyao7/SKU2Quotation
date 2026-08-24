@@ -22,13 +22,15 @@ SupportAIRunStatus = Literal[
     "SKIPPED",
 ]
 
+SupportAIProvider = Literal["openai-compatible", "qwen"]
+
 
 class SupportAIProviderSettingsResponse(BaseModel):
     id: str | None = None
     configuration_name: str | None = None
     display_model_name: str | None = None
     source: Literal["database", "environment", "disabled"]
-    provider: str
+    provider: SupportAIProvider
     enabled: bool
     base_url: str | None = None
     model_name: str | None = None
@@ -41,6 +43,7 @@ class SupportAIProviderSettingsResponse(BaseModel):
 
 
 class SupportAIProviderSettingsUpdate(BaseModel):
+    provider: SupportAIProvider = "openai-compatible"
     configuration_name: str | None = Field(default=None, max_length=160)
     display_model_name: str | None = Field(default=None, max_length=160)
     enabled: bool = True
@@ -64,6 +67,7 @@ class SupportAIProviderSettingsUpdate(BaseModel):
 
 
 class SupportAIProviderProfileWrite(BaseModel):
+    provider: SupportAIProvider = "openai-compatible"
     configuration_name: str = Field(min_length=1, max_length=160)
     display_model_name: str = Field(min_length=1, max_length=160)
     enabled: bool = True

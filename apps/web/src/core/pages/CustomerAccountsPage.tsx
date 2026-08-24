@@ -15,6 +15,7 @@ import {
   Eye,
   EyeSlash,
   FileText,
+  CurrencyDollar,
   Plus,
   Power,
   SlidersHorizontal,
@@ -30,6 +31,10 @@ import {
   listCustomerSubaccountOrders,
   updateCustomerSubaccountStatus,
   updateCustomerSubaccountAccess,
+  getCustomerSubaccountPricing,
+  updateCustomerSubaccountPricing,
+  updateCustomerSubaccountProductPricing,
+  clearCustomerSubaccountProductPricing,
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
@@ -39,6 +44,8 @@ import type {
   CustomerSubaccountDashboard,
   CustomerSubaccountCapability,
   CustomerSubaccountOrderPage,
+  SubaccountPricingMode,
+  SubaccountPricingPage,
 } from "../types";
 
 const orderStatusLabel: Record<string, string> = {
@@ -70,6 +77,7 @@ export function CustomerAccountsPage() {
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
   const [accessEditor, setAccessEditor] = useState<CustomerSubaccount>();
+  const [pricingEditor, setPricingEditor] = useState<CustomerSubaccount>();
   const [updatingId, setUpdatingId] = useState<string>();
 
   const load = useCallback(async (page = 1) => {
@@ -132,9 +140,9 @@ export function CustomerAccountsPage() {
 
   return <div className="core-workspace customer-accounts-page">
     <CorePageHeading
-      eyebrow={t("客户门户")}
+      eyebrow={t("代理商门户")}
       title={t("子账号管理")}
-      description={t("为下游客户开通受限账号。子账号只能浏览商品、提交自己的订单申请；这里可以只读查看其访问和订单动态。")}
+      description={t("为下游代理商开通受限账号，统一管理代理价格、单品调价和订单数据。")}
       actions={<Button onClick={() => setEditorOpen(true)}><UserPlus />{t("开通子账号")}</Button>}
     />
     {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
@@ -143,19 +151,20 @@ export function CustomerAccountsPage() {
       <Metric icon={<UsersThree />} label={t("全部子账号")} value={(data?.accounts.length ?? 0).toString()} />
       <Metric icon={<CheckCircle />} label={t("当前已开通")} value={(data?.activeCount ?? 0).toString()} tone="jade" />
       <Metric icon={<Eye />} label={t("近期开单申请")} value={(data?.orderCount ?? 0).toString()} />
+      <Metric icon={<CurrencyDollar />} label={t("子账号订单金额")} value={money(data?.orderAmount ?? 0, data?.currency || "CNY")} tone="jade" />
     </section>
 
     <section className="customer-account-grid">
       <Card className="customer-account-panel">
         <div className="customer-account-panel-heading">
-          <div><Text size="1" color="gray">{t("访问范围")}</Text><Heading size="5">{t("已开通的客户账号")}</Heading></div>
-          <Text size="2" color="gray">{t("主账号可启停；订单内容仅供查看")}</Text>
+          <div><Text size="1" color="gray">{t("代理商列表")}</Text><Heading size="5">{t("已开通的子账号")}</Heading></div>
+          <Text size="2" color="gray">{t("主账号可管理价格、启停和订单数据")}</Text>
         </div>
         {data?.accounts.length ? <div className="customer-account-list">
           {data.accounts.map((account) => <article className="customer-account-row" key={account.id}>
             <div className="customer-account-identity">
               <span className="customer-account-avatar">{account.displayName.slice(0, 2).toUpperCase()}</span>
-              <span><strong>{account.displayName}</strong><small>{account.loginIdentifier}{account.email ? ` · ${account.email}` : ""}</small></span>
+              <span><strong>{account.displayName}</strong><small>{account.loginIdentifier}{account.email ? ` · ${account.email}` : ""}</small><small className="customer-account-pricing-summary">+{Number(account.markupPercent || 0).toLocaleString()}% · {t("{count} 个单品规则", { count: account.overrideCount })}</small></span>
             </div>
             <div className="customer-account-signal">
               <small>{t("最近访问")}</small><strong>{account.lastLoginAt ? coreDate(account.lastLoginAt) : t("尚未登录")}</strong>
@@ -163,33 +172,36 @@ export function CustomerAccountsPage() {
             </div>
             <div className="customer-account-signal">
               <small>{t("订单申请")}</small><strong>{t("{count} 笔", { count: account.orderCount })}</strong>
-              <span>{account.lastOrderAt ? t("最近 {date}", { date: coreDate(account.lastOrderAt) }) : t("尚无订单")}</span>
+              <span>{money(account.orderAmount, data?.currency || "CNY")}{account.lastOrderAt ? ` · ${t("最近 {date}", { date: coreDate(account.lastOrderAt) })}` : ""}</span>
             </div>
             <Badge color={account.status === "active" ? "jade" : "gray"}>{t(account.status === "active" ? "已开通" : "已停用")}</Badge>
-            <Button size="1" variant="soft" color="gray" onClick={() => setAccessEditor(account)}><SlidersHorizontal />{t("权限")}</Button>
-            <Button
-              size="1"
-              variant="soft"
-              color={account.status === "active" ? "gray" : "jade"}
-              loading={updatingId === account.id}
-              onClick={() => void updateStatus(account)}
-            ><Power />{t(account.status === "active" ? "停用" : "重新开通")}</Button>
+            <div className="customer-account-actions">
+              <Button size="1" variant="soft" color="gray" onClick={() => setAccessEditor(account)}><SlidersHorizontal />{t("权限")}</Button>
+              <Button size="1" variant="soft" color="gray" onClick={() => setPricingEditor(account)}><CurrencyDollar />{t("价格")}</Button>
+              <Button
+                size="1"
+                variant="soft"
+                color={account.status === "active" ? "gray" : "jade"}
+                loading={updatingId === account.id}
+                onClick={() => void updateStatus(account)}
+              ><Power />{t(account.status === "active" ? "停用" : "重新开通")}</Button>
+            </div>
           </article>)}
         </div> : <CoreEmpty
           title={t("还没有子账号")}
-          description={t("为需要自行选品的下游客户开通账号，他们只能看到商品前台与自己的订单记录。")}
+          description={t("为下游代理商开通受限后台，他们可以使用商品目录和自己的询价记录。")}
           action={<Button variant="soft" onClick={() => setEditorOpen(true)}><Plus />{t("开通第一个子账号")}</Button>}
         />}
       </Card>
 
       <Card className="customer-account-side-note">
         <span className="customer-account-side-icon"><Eye size={24} /></span>
-        <Text size="1" color="gray">{t("主账号只读范围")}</Text>
-        <Heading size="4">{t("看得到动态，但不替客户改单")}</Heading>
-        <Text size="2" color="gray">{t("子账号提交的商品、数量和报价申请会留在原始订单中。主账号可查看访问时间与订单记录，但不能改动其内容。")}</Text>
+        <Text size="1" color="gray">{t("主账号管理范围")}</Text>
+        <Heading size="4">{t("价格、商品和订单一处管理")}</Heading>
+        <Text size="2" color="gray">{t("主账号设置统一加价后，可对单个商品单独调价，并查看每个子账号的访问与订单数据。")}</Text>
         <ul>
-          <li>{t("子账号仅可浏览商品前台")}</li>
-          <li>{t("订单按照提交账号自动归属")}</li>
+          <li>{t("子账号使用受限后台，不显示原价格、供应商与供应链")}</li>
+          <li>{t("订单和金额按照提交账号自动归属")}</li>
           <li>{t("停用后立即失去门户访问")}</li>
         </ul>
       </Card>
@@ -235,6 +247,20 @@ export function CustomerAccountsPage() {
         setAccessEditor(undefined);
       }}
     /> : null}
+    {pricingEditor ? <SubaccountPricingDialog
+      account={pricingEditor}
+      onClose={() => setPricingEditor(undefined)}
+      onSaved={(policy) => {
+        setData((current) => current ? {
+          ...current,
+          accounts: current.accounts.map((row) => row.id === pricingEditor.id ? {
+            ...row,
+            markupPercent: policy.markupPercent,
+            overrideCount: policy.overrideCount,
+          } : row),
+        } : current);
+      }}
+    /> : null}
   </div>;
 }
 
@@ -276,10 +302,10 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Dialog.Content className="customer-account-dialog">
       <form onSubmit={(event) => void submit(event)}>
-        <Dialog.Title>{t("开通客户子账号")}</Dialog.Title>
-        <Dialog.Description>{t("创建后，对方使用账号密码登录客户门户，只能浏览商品并提交自己的订单申请。")}</Dialog.Description>
+        <Dialog.Title>{t("开通代理商子账号")}</Dialog.Title>
+        <Dialog.Description>{t("创建后，对方使用账号密码登录受限后台，可以浏览商品目录、提交询价并查看自己的记录。")}</Dialog.Description>
         <div className="customer-account-form-grid">
-          <label><Text size="2" weight="medium">{t("客户名称")}</Text><TextField.Root value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={t("例如 上海澄明贸易") } required maxLength={120} /></label>
+          <label><Text size="2" weight="medium">{t("代理商名称")}</Text><TextField.Root value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={t("例如 上海澄明贸易") } required maxLength={120} /></label>
           <label><Text size="2" weight="medium">{t("登录账号")}</Text><TextField.Root value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder={t("账号、邮箱或手机号") } required maxLength={320} autoCapitalize="none" /></label>
           <label><Text size="2" weight="medium">{t("联系邮箱（可选）")}</Text><TextField.Root value={email} onChange={(event) => setEmail(event.target.value)} placeholder={t("name@example.com") } type="email" maxLength={320} /></label>
           <label>
@@ -382,4 +408,159 @@ function CustomerAccountAccessDialog({
       <div className="core-dialog-actions"><Button variant="soft" color="gray" onClick={onClose}>{t("取消")}</Button><Button loading={saving} onClick={() => void save()}>{t("保存权限")}</Button></div>
     </Dialog.Content>
   </Dialog.Root>;
+}
+
+function SubaccountPricingDialog({
+  account,
+  onClose,
+  onSaved,
+}: {
+  account: CustomerSubaccount;
+  onClose: () => void;
+  onSaved: (policy: { markupPercent: number; overrideCount: number }) => void;
+}) {
+  const { t } = useLocale();
+  const [data, setData] = useState<SubaccountPricingPage>();
+  const [markup, setMarkup] = useState(String(account.markupPercent || 0));
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [editingProduct, setEditingProduct] = useState<string>();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const next = await getCustomerSubaccountPricing(account.id, query, page, 30);
+      setData(next);
+      setMarkup(String(next.policy.markupPercent));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("价格规则加载失败"));
+    } finally {
+      setLoading(false);
+    }
+  }, [account.id, page, query, t]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const saveMarkup = async () => {
+    const value = Number(markup);
+    if (!Number.isFinite(value) || value < 0 || value > 100000) {
+      setError(t("统一加价必须是 0 到 100000 之间的数字"));
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const policy = await updateCustomerSubaccountPricing(account.id, value);
+      setData((current) => current ? { ...current, policy } : current);
+      onSaved(policy);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("价格规则保存失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveProductRule = async (
+    productId: string,
+    mode: SubaccountPricingMode,
+    rawValue: string,
+  ) => {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value < 0) return;
+    setEditingProduct(productId);
+    setError("");
+    try {
+      const item = await updateCustomerSubaccountProductPricing(account.id, productId, mode, value);
+      setData((current) => current ? {
+        ...current,
+        items: current.items.map((row) => row.productId === item.productId ? item : row),
+        policy: { ...current.policy, overrideCount: current.items.some((row) => row.productId === item.productId && row.overrideMode) ? current.policy.overrideCount : current.policy.overrideCount + 1 },
+      } : current);
+      onSaved({ markupPercent: Number(markup) || 0, overrideCount: (data?.policy.overrideCount || 0) + (data?.items.find((row) => row.productId === productId)?.overrideMode ? 0 : 1) });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("单品价格保存失败"));
+    } finally {
+      setEditingProduct(undefined);
+    }
+  };
+
+  const clearProductRule = async (productId: string) => {
+    setEditingProduct(productId);
+    try {
+      await clearCustomerSubaccountProductPricing(account.id, productId);
+      setData((current) => current ? {
+        ...current,
+        items: current.items.map((row) => row.productId === productId
+          ? { ...row, overrideMode: undefined, overrideValue: undefined, effectivePriceFrom: Number((row.basePriceFrom * (1 + (current.policy.markupPercent / 100))).toFixed(2)), effectivePriceTo: Number((row.basePriceTo * (1 + (current.policy.markupPercent / 100))).toFixed(2)) }
+          : row),
+        policy: { ...current.policy, overrideCount: Math.max(0, current.policy.overrideCount - 1) },
+      } : current);
+      onSaved({ markupPercent: Number(markup) || 0, overrideCount: Math.max(0, (data?.policy.overrideCount || 1) - 1) });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("单品价格清除失败"));
+    } finally {
+      setEditingProduct(undefined);
+    }
+  };
+
+  return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
+    <Dialog.Content className="customer-account-dialog subaccount-pricing-dialog">
+      <Dialog.Title>{t("{name} 的代理价格", { name: account.displayName })}</Dialog.Title>
+      <Dialog.Description>{t("默认价格按统一加价计算；单品规则优先于统一加价。子账号只会看到最终价格。")}</Dialog.Description>
+      <section className="subaccount-pricing-policy">
+        <label><Text size="2" weight="medium">{t("统一加价（%）")}</Text><TextField.Root type="number" min="0" max="100000" step="0.1" value={markup} onChange={(event) => setMarkup(event.target.value)} /></label>
+        <Button loading={saving} onClick={() => void saveMarkup()}><CurrencyDollar />{t("应用到所有商品")}</Button>
+        <Text size="1" color="gray">{t("当前已有 {count} 个单品规则", { count: data?.policy.overrideCount ?? account.overrideCount })}</Text>
+      </section>
+      <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={t("搜索商品名称或编码") } />
+      {error ? <Text color="red" size="2">{error}</Text> : null}
+      {loading ? <CoreLoading label={t("正在读取商品价格")} /> : data?.items.length ? <div className="subaccount-pricing-table">
+        <div className="subaccount-pricing-table-head"><span>{t("商品")}</span><span>{t("主账号价格")}</span><span>{t("子账号价格")}</span><span>{t("单品规则")}</span></div>
+        {data.items.map((item) => <SubaccountPricingRow key={item.productId} item={item} busy={editingProduct === item.productId} onSave={saveProductRule} onClear={clearProductRule} />)}
+      </div> : <CoreEmpty title={t("没有匹配商品")} description={t("先确认商品已经发布到前台。")} />}
+      {data && data.total > data.pageSize ? <div className="subaccount-pricing-pagination">
+        <Text size="1" color="gray">{t("第 {page} / {pages} 页", { page: data.page, pages: Math.ceil(data.total / data.pageSize) })}</Text>
+        <div>
+          <Button size="1" variant="soft" color="gray" disabled={loading || data.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}><CaretLeft />{t("上一页")}</Button>
+          <Button size="1" variant="soft" color="gray" disabled={loading || data.page >= Math.ceil(data.total / data.pageSize)} onClick={() => setPage((current) => Math.min(Math.ceil(data.total / data.pageSize), current + 1))}>{t("下一页")}<CaretRight /></Button>
+        </div>
+      </div> : null}
+      <div className="core-dialog-actions"><Button variant="soft" color="gray" onClick={onClose}>{t("关闭")}</Button><Button onClick={() => { if (data) onSaved(data.policy); onClose(); }}>{t("完成")}</Button></div>
+    </Dialog.Content>
+  </Dialog.Root>;
+}
+
+function SubaccountPricingRow({
+  item,
+  busy,
+  onSave,
+  onClear,
+}: {
+  item: SubaccountPricingPage["items"][number];
+  busy: boolean;
+  onSave: (productId: string, mode: SubaccountPricingMode, value: string) => Promise<void>;
+  onClear: (productId: string) => Promise<void>;
+}) {
+  const { t } = useLocale();
+  const [mode, setMode] = useState<SubaccountPricingMode>(item.overrideMode || "MARKUP_PERCENT");
+  const [value, setValue] = useState(item.overrideValue == null ? "" : String(item.overrideValue));
+  useEffect(() => {
+    setMode(item.overrideMode || "MARKUP_PERCENT");
+    setValue(item.overrideValue == null ? "" : String(item.overrideValue));
+  }, [item.overrideMode, item.overrideValue]);
+  return <div className="subaccount-pricing-table-row">
+    <div><strong>{item.productName}</strong><small>{item.productCode || "—"} · {t("{count} 个 SKU", { count: item.skuCount })}</small></div>
+    <span>{item.basePriceFrom === item.basePriceTo ? `${item.currency} ${item.basePriceFrom}` : `${item.currency} ${item.basePriceFrom}–${item.basePriceTo}`}</span>
+    <strong>{item.effectivePriceFrom === item.effectivePriceTo ? `${item.currency} ${item.effectivePriceFrom}` : `${item.currency} ${item.effectivePriceFrom}–${item.effectivePriceTo}`}</strong>
+    <div className="subaccount-pricing-rule-editor">
+      <select value={mode} onChange={(event) => setMode(event.target.value as SubaccountPricingMode)} aria-label={t("单品价格方式")}><option value="MARKUP_PERCENT">{t("加价百分比")}</option><option value="FIXED_PRICE">{t("固定价格")}</option></select>
+      <TextField.Root size="1" type="number" min="0" step="0.1" value={value} onChange={(event) => setValue(event.target.value)} placeholder="—" aria-label={t("单品价格数值")} />
+      <Button size="1" loading={busy} onClick={() => void onSave(item.productId, mode, value)}>{t("应用")}</Button>
+      {item.overrideMode ? <Button size="1" variant="ghost" color="gray" disabled={busy} onClick={() => void onClear(item.productId)}>{t("恢复")}</Button> : null}
+    </div>
+  </div>;
 }

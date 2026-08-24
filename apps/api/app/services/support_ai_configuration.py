@@ -17,6 +17,7 @@ from ..support_ai_models import SupportAIProviderSettingsRow, SupportAISettingsR
 from .chat_generation import (
     ChatGenerationError,
     ChatGenerationProvider,
+    SUPPORTED_CHAT_GENERATION_PROVIDERS,
     chat_completions_endpoint,
     openai_compatible_chat_provider,
 )
@@ -121,7 +122,17 @@ def list_managed_support_ai_providers(
     )
 
 
-def _environment_values() -> tuple[str, str, str, int, int, float, bool]:
+def _normalize_provider(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized not in SUPPORTED_CHAT_GENERATION_PROVIDERS:
+        raise ChatGenerationError(
+            "generation provider must be one of: openai-compatible, qwen"
+        )
+    return normalized
+
+
+def _environment_values() -> tuple[str, str, str, str, int, int, float, bool]:
+    provider = _normalize_provider(os.getenv("SUPPORT_AI_PROVIDER", "openai-compatible"))
     base_url = os.getenv("SUPPORT_AI_BASE_URL", "").strip()
     api_key = os.getenv("SUPPORT_AI_API_KEY", "").strip()
     model = os.getenv("SUPPORT_AI_MODEL", "").strip()
@@ -136,7 +147,7 @@ def _environment_values() -> tuple[str, str, str, int, int, float, bool]:
         "true",
         "yes",
     }
-    return base_url, api_key, model, timeout, max_tokens, temperature, enabled
+    return provider, base_url, api_key, model, timeout, max_tokens, temperature, enabled
 
 
 def _assigned_database_profile(
@@ -181,7 +192,7 @@ def support_ai_provider_is_configured(
         )
     if explicit:
         return False
-    base_url, api_key, model, *_rest, enabled = _environment_values()
+    _provider, base_url, api_key, model, *_rest, enabled = _environment_values()
     return bool(enabled and base_url and api_key and model)
 
 
@@ -234,18 +245,18 @@ def support_ai_provider_snapshot(
             api_key_hint=None,
             updated_at=None,
         )
-    base_url, api_key, model, timeout, max_tokens, temperature, enabled = (
+    provider, base_url, api_key, model, timeout, max_tokens, temperature, enabled = (
         _environment_values()
     )
     if base_url and model and api_key:
-        chat_completions_endpoint(base_url)
+        chat_completions_endpoint(base_url, provider=provider)
         display_name = os.getenv("SUPPORT_AI_MODEL_DISPLAY_NAME", "").strip() or model
         return SupportAIProviderSnapshot(
             id=None,
             configuration_name="环境默认配置",
             display_model_name=display_name,
             source="environment",
-            provider="openai-compatible",
+            provider=provider,
             enabled=enabled,
             base_url=base_url,
             model_name=model,
@@ -293,6 +304,7 @@ def resolved_support_ai_provider(
             api_key=decrypt_api_key(settings.api_key_ciphertext),
             base_url=settings.base_url,
             model_name=settings.model_name,
+            provider=settings.provider,
             timeout_seconds=float(settings.timeout_seconds),
             max_output_tokens=settings.max_output_tokens,
             temperature=float(settings.temperature),
@@ -307,7 +319,7 @@ def resolved_support_ai_provider(
         )
     if explicit:
         raise ChatGenerationError("assigned support AI generation profile is unavailable")
-    base_url, api_key, model, timeout, max_tokens, temperature, enabled = (
+    provider, base_url, api_key, model, timeout, max_tokens, temperature, enabled = (
         _environment_values()
     )
     if not enabled or not (base_url and api_key and model):
@@ -316,6 +328,7 @@ def resolved_support_ai_provider(
         api_key=api_key,
         base_url=base_url,
         model_name=model,
+        provider=provider,
         timeout_seconds=float(timeout),
         max_output_tokens=max_tokens,
         temperature=temperature,
@@ -332,6 +345,7 @@ def resolved_support_ai_provider(
 
 def _validated_values(
     *,
+    provider: str,
     configuration_name: str,
     display_model_name: str,
     base_url: str,
@@ -339,12 +353,13 @@ def _validated_values(
     timeout_seconds: int,
     max_output_tokens: int,
     temperature: float,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str]:
+    normalized_provider = _normalize_provider(provider)
     normalized_configuration_name = configuration_name.strip()
     normalized_display_name = display_model_name.strip()
     normalized_base_url = base_url.strip().rstrip("/")
     normalized_model = model_name.strip()
-    chat_completions_endpoint(normalized_base_url)
+    chat_completions_endpoint(normalized_base_url, provider=normalized_provider)
     if not normalized_configuration_name:
         raise ChatGenerationError("configuration name is required")
     if not normalized_display_name:
@@ -360,6 +375,7 @@ def _validated_values(
     if temperature < 0 or temperature > 2:
         raise ChatGenerationError("generation temperature must be between 0 and 2")
     return (
+        normalized_provider,
         normalized_configuration_name,
         normalized_display_name,
         normalized_base_url,
@@ -371,6 +387,7 @@ def save_support_ai_provider_profile(
     session: Session,
     *,
     profile_id: str | None,
+    provider: str = "openai-compatible",
     configuration_name: str,
     display_model_name: str,
     enabled: bool,
@@ -383,11 +400,13 @@ def save_support_ai_provider_profile(
     updated_by_user_id: UUID,
 ) -> SupportAIProviderSettingsRow:
     (
+        normalized_provider,
         normalized_configuration_name,
         normalized_display_name,
         normalized_base_url,
         normalized_model,
     ) = _validated_values(
+        provider=provider,
         configuration_name=configuration_name,
         display_model_name=display_model_name,
         base_url=base_url,
@@ -413,7 +432,7 @@ def save_support_ai_provider_profile(
             id=profile_id or uuid4().hex,
             configuration_name=normalized_configuration_name,
             display_model_name=normalized_display_name,
-            provider="openai-compatible",
+            provider=normalized_provider,
             base_url=normalized_base_url,
             model_name=normalized_model,
             timeout_seconds=timeout_seconds,
@@ -430,6 +449,7 @@ def save_support_ai_provider_profile(
     else:
         settings.configuration_name = normalized_configuration_name
         settings.display_model_name = normalized_display_name
+        settings.provider = normalized_provider
         settings.base_url = normalized_base_url
         settings.model_name = normalized_model
         settings.timeout_seconds = timeout_seconds
@@ -489,6 +509,7 @@ def save_managed_support_ai_provider(
     temperature: float,
     api_key: str | None,
     updated_by_user_id: UUID,
+    provider: str = "openai-compatible",
     configuration_name: str | None = None,
     display_model_name: str | None = None,
 ) -> SupportAIProviderSettingsRow:
@@ -497,6 +518,7 @@ def save_managed_support_ai_provider(
     return save_support_ai_provider_profile(
         session,
         profile_id=SETTINGS_ID,
+        provider=provider,
         configuration_name=configuration_name or "平台默认 API",
         display_model_name=display_model_name or model_name,
         enabled=enabled,

@@ -88,7 +88,10 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
     ai_search_questions: Mapped[list[str]] = mapped_column(
         JSON_DOCUMENT,
         default=list,
-        nullable=False,
+        # The original migration intentionally kept this column nullable for
+        # existing stores.  Keep the ORM contract aligned until a future
+        # backfill migration can safely enforce NOT NULL in production.
+        nullable=True,
     )
     support_widget_config: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT,

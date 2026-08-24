@@ -34,6 +34,7 @@ import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
+import { StorefrontImageSearch } from "../components/StorefrontImageSearch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
@@ -985,6 +986,14 @@ export function StorePage() {
                     </TextField.Slot>
                   )}
                 </TextField.Root>
+                <StorefrontImageSearch
+                  tenantSlug={tenantSlug}
+                  locale={locale}
+                  shareToken={shareToken}
+                  sharedQuery={sharedQuery}
+                  t={t}
+                  onOpenDetails={rememberCatalogPosition}
+                />
               </div>
               {!shareToken && !search.trim() && recommendedQuestions.length ? (
                 <div className="store-recommended-questions" aria-label={t("推荐问题")}>

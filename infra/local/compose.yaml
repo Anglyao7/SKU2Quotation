@@ -6,7 +6,7 @@ x-image-build: &image-build
   args:
     ATC_RELEASE: local-compose
     ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:-local}
-    ATC_MIGRATION_HEAD: "20260823_0105"
+    ATC_MIGRATION_HEAD: "20260824_0108"
     ATC_CONFIG_VERSION: local-compose-v1
 
 x-runtime-environment: &runtime-environment
@@ -28,6 +28,7 @@ x-runtime-environment: &runtime-environment
   SUPPORT_AI_SETTINGS_MASTER_KEY: ${SUPPORT_AI_SETTINGS_MASTER_KEY:-atc-local-support-ai-settings-key-not-for-staging}
   RERANK_SETTINGS_MASTER_KEY: ${RERANK_SETTINGS_MASTER_KEY:-atc-local-rerank-settings-key-not-for-staging}
   SUPPORT_AI_ENABLED: ${SUPPORT_AI_ENABLED:-false}
+  SUPPORT_AI_PROVIDER: ${SUPPORT_AI_PROVIDER:-openai-compatible}
   SUPPORT_AI_BASE_URL: ${SUPPORT_AI_BASE_URL:-}
   SUPPORT_AI_API_KEY: ${SUPPORT_AI_API_KEY:-}
   SUPPORT_AI_MODEL: ${SUPPORT_AI_MODEL:-}

@@ -3,6 +3,7 @@ const preloads: Record<string, () => Promise<unknown>> = {
   "/console/analytics": () => import("./pages/StorefrontAnalyticsPage"),
   "/console/ai-search": () => import("./pages/AiSearchPage"),
   "/console/ai-search/manage": () => import("./pages/AiSearchManagementPage"),
+  "/console/image-search/manage": () => import("./pages/ImageSearchManagementPage"),
   "/console/products": () => import("./pages/ProductsPage"),
   "/console/products/categories": () => import("./pages/CategoriesPage"),
   "/console/products/tags": () => import("../pages/console/TagManagementPage"),

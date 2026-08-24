@@ -54,6 +54,7 @@ const IdentityManagementPage = recoverableLazy(() => import("./pages/console/Ide
 const NotFoundPage = recoverableLazy(() => import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })));
 const AiSearchPage = recoverableLazy(() => import("./core/pages/AiSearchPage").then((module) => ({ default: module.AiSearchPage })));
 const AiSearchManagementPage = recoverableLazy(() => import("./core/pages/AiSearchManagementPage").then((module) => ({ default: module.AiSearchManagementPage })));
+const ImageSearchManagementPage = recoverableLazy(() => import("./core/pages/ImageSearchManagementPage").then((module) => ({ default: module.ImageSearchManagementPage })));
 const AccountSettingsPage = recoverableLazy(() => import("./core/pages/AccountSettingsPage").then((module) => ({ default: module.AccountSettingsPage })));
 const CategoriesPage = recoverableLazy(() => import("./core/pages/CategoriesPage").then((module) => ({ default: module.CategoriesPage })));
 const CoreDashboardPage = recoverableLazy(() => import("./core/pages/DashboardPage").then((module) => ({ default: module.CoreDashboardPage })));
@@ -73,11 +74,13 @@ const SupportAIKnowledgePage = recoverableLazy(() => import("./core/pages/Suppor
 const PersonalCenterPage = recoverableLazy(() => import("./core/pages/PersonalCenterPage").then((module) => ({ default: module.PersonalCenterPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
+const ResellerDashboardPage = recoverableLazy(() => import("./core/pages/ResellerDashboardPage").then((module) => ({ default: module.ResellerDashboardPage })));
+const ResellerOrdersPage = recoverableLazy(() => import("./core/pages/ResellerOrdersPage").then((module) => ({ default: module.ResellerOrdersPage })));
+const ResellerProductsPage = recoverableLazy(() => import("./core/pages/ResellerProductsPage").then((module) => ({ default: module.ResellerProductsPage })));
 const QuoteWorkbenchPage = recoverableLazy(() => import("./core/pages/QuoteWorkbenchPage").then((module) => ({ default: module.QuoteWorkbenchPage })));
 const QuoteTemplatesPage = recoverableLazy(() => import("./core/pages/QuoteTemplatesPage").then((module) => ({ default: module.QuoteTemplatesPage })));
 const TagManagementPage = recoverableLazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
 const CustomerAccountsPage = recoverableLazy(() => import("./core/pages/CustomerAccountsPage").then((module) => ({ default: module.CustomerAccountsPage })));
-const CustomerPortalPage = recoverableLazy(() => import("./pages/CustomerPortalPage").then((module) => ({ default: module.CustomerPortalPage })));
 
 function ApplicationRouteError() {
   const error = useRouteError();
@@ -123,19 +126,34 @@ function ProtectedRoute() {
 }
 
 function StaffConsoleRoute() {
-  const { profile } = useCoreAuth();
-  if (profile?.context.accountScope === "CUSTOMER_SUBACCOUNT") {
-    return <Navigate to="/portal" replace />;
-  }
   return <Outlet />;
 }
 
 function CustomerPortalRoute() {
+  // Keep the legacy URL working, but use the same restricted console for
+  // subaccounts instead of sending them to a separate, reduced portal.
+  return <Navigate to="/console" replace />;
+}
+
+function ConsoleHomeRoute() {
   const { profile } = useCoreAuth();
-  if (profile?.context.accountScope !== "CUSTOMER_SUBACCOUNT") {
-    return <Navigate to="/console" replace />;
-  }
-  return <Outlet />;
+  return profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
+    ? <ResellerDashboardPage />
+    : <CoreDashboardPage />;
+}
+
+function ConsoleProductsRoute() {
+  const { profile } = useCoreAuth();
+  return profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
+    ? <PermissionGate anyOf={["customer_portal.access"]}><ResellerProductsPage /></PermissionGate>
+    : <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate>;
+}
+
+function ConsoleQuotesRoute() {
+  const { profile } = useCoreAuth();
+  return profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
+    ? <PermissionGate anyOf={["customer_portal.order_view_self"]}><ResellerOrdersPage /></PermissionGate>
+    : <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate>;
 }
 
 function PermissionGate({ anyOf, children }: { anyOf: string[]; children: ReactNode }) {
@@ -319,11 +337,12 @@ const router = createBrowserRouter([{
       path: "/console",
       element: <ConsoleLayout />,
       children: [
-        { index: true, element: <CoreDashboardPage /> },
+        { index: true, element: <ConsoleHomeRoute /> },
         { path: "dashboard", element: <Navigate to="/console" replace /> },
         { path: "ai-search", element: <PermissionGate anyOf={["product.view"]}><AiSearchPage /></PermissionGate> },
         { path: "ai-search/manage", element: <PermissionGate anyOf={["product.view"]}><AiSearchManagementPage /></PermissionGate> },
-        { path: "products", element: <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate> },
+        { path: "image-search/manage", element: <PermissionGate anyOf={["product.view"]}><ImageSearchManagementPage /></PermissionGate> },
+        { path: "products", element: <ConsoleProductsRoute /> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
         { path: "languages", element: <PermissionGate anyOf={["product.view"]}><LanguagePackagesPage /></PermissionGate> },
@@ -332,7 +351,7 @@ const router = createBrowserRouter([{
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
         { path: "suppliers", element: <Navigate to="/console/supply-chain" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
-        { path: "quotes", element: <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate> },
+        { path: "quotes", element: <ConsoleQuotesRoute /> },
         { path: "quotes/:quoteDraftId/workbench", element: <PermissionGate anyOf={["quotation.create"]}><QuoteWorkbenchPage /></PermissionGate> },
         { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
@@ -360,7 +379,7 @@ const router = createBrowserRouter([{
       }],
     }, {
       element: <CustomerPortalRoute />,
-      children: [{ path: "/portal", element: <CustomerPortalPage /> }],
+      children: [{ path: "/portal", element: <Navigate to="/console" replace /> }],
     }],
   },
   { path: "/dashboard", element: <Navigate to="/console" replace /> },
