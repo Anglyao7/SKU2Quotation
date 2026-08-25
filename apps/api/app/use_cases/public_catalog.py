@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -2369,10 +2370,14 @@ def search_public_products_by_image(
     locale: str | None = None,
     share_token: str | None = None,
     subaccount_membership_id: UUID | None = None,
+    timings: dict[str, float] | None = None,
 ) -> PublicImageSearchResponse:
     """Run private-R2-backed visual search against published catalog offers."""
 
+    started = time.perf_counter()
     tenant, _profile = _resolve_store(session, slug=slug)
+    if timings is not None:
+        timings["store"] = (time.perf_counter() - started) * 1000
     allowed_product_ids: set[UUID] | None = None
     shared_category: str | None = None
     if share_token:
@@ -2398,7 +2403,9 @@ def search_public_products_by_image(
         limit=limit,
         allowed_product_ids=allowed_product_ids,
         category=shared_category,
+        timings=timings,
     )
+    started = time.perf_counter()
     page = list_public_products(
         session,
         slug=slug,
@@ -2414,6 +2421,8 @@ def search_public_products_by_image(
         subaccount_membership_id=subaccount_membership_id,
         ranked_product_ids=[match.product_id for match in matches],
     )
+    if timings is not None:
+        timings["catalog"] = (time.perf_counter() - started) * 1000
     products_by_id = {product.id: product for product in page.items}
     results = [
         PublicImageSearchResult(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 
@@ -32,6 +33,16 @@ def _png_bytes(*, size: tuple[int, int] = (8, 6)) -> bytes:
         ),
         (
             "https://dashscope.aliyuncs.com/api/v1/",
+            "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
+            "multimodal-embedding/multimodal-embedding",
+        ),
+        (
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
+            "multimodal-embedding/multimodal-embedding",
+        ),
+        (
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
             "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
             "multimodal-embedding/multimodal-embedding",
         ),
@@ -100,9 +111,44 @@ def test_qwen_image_embedding_sends_independent_base64_image_vector() -> None:
     assert body["model"] == "qwen3-vl-embedding"
     assert body["parameters"] == {"dimension": 256, "output_type": "dense"}
     image_data = body["input"]["contents"][0]["image"]
-    assert image_data.startswith("data:image/jpeg;base64,")
+    assert image_data.startswith("data:image/png;base64,")
     assert result.embedding == vector
     assert 0.5 <= result.quality_score <= 1.0
+
+
+def test_qwen_image_embedding_uses_fast_png_compression_without_changing_pixels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_image = ""
+    vector = [0.0] * 255 + [1.0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_image
+        body = json.loads(request.content)
+        captured_image = body["input"]["contents"][0]["image"]
+        return httpx.Response(
+            200,
+            json={"output": {"embeddings": [{"embedding": vector}]}},
+        )
+
+    monkeypatch.setattr(image_adapter, "_PNG_COMPRESSION_LEVEL", 3)
+    source = _png_bytes(size=(64, 48))
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = QwenVLImageEmbeddingAdapter(
+            api_key="test-secret",
+            base_url="https://dashscope.aliyuncs.com",
+            model_name="qwen3-vl-embedding",
+            model_version="test-d256",
+            dimensions=256,
+            client=client,
+        )
+        provider.analyze(source, content_type="image/png")
+
+    encoded = captured_image.removeprefix("data:image/png;base64,")
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as normalized:
+        normalized.load()
+        assert normalized.size == (64, 48)
+        assert normalized.convert("RGBA").getpixel((0, 0)) == (89, 188, 160, 255)
 
 
 def test_qwen_image_embedding_retries_transient_status() -> None:
@@ -176,6 +222,11 @@ def test_managed_image_model_version_captures_preprocessing_identity() -> None:
         model_name="qwen3-vl-embedding",
         dimensions=1024,
     )
+    compatible_mode = managed_image_model_version(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model_name="qwen3-vl-embedding",
+        dimensions=1024,
+    )
     changed = managed_image_model_version(
         base_url="https://dashscope.aliyuncs.com",
         model_name="qwen3-vl-embedding",
@@ -183,5 +234,6 @@ def test_managed_image_model_version_captures_preprocessing_identity() -> None:
     )
 
     assert first == repeated
+    assert first == compatible_mode
     assert first != changed
-    assert "product-image-v1" in first
+    assert "product-image-png-v2" in first

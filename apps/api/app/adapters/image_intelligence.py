@@ -9,7 +9,7 @@ import os
 import time
 from collections.abc import Mapping
 from functools import lru_cache
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -20,10 +20,11 @@ from ..services.embedding import EmbeddingIdentity, validate_vectors
 
 logger = logging.getLogger(__name__)
 QWEN3_VL_DIMENSIONS = frozenset({256, 512, 768, 1024, 1536, 2048, 2560})
-QWEN_IMAGE_PREPROCESSING_VERSION = "product-image-v1"
+QWEN_IMAGE_PREPROCESSING_VERSION = "product-image-png-v2"
 _RETRYABLE_STATUSES = {408, 409, 425, 429}
 _MAX_SOURCE_PIXELS = 50_000_000
 _MAX_EDGE = 1600
+_PNG_COMPRESSION_LEVEL = 3
 
 
 @lru_cache(maxsize=1)
@@ -31,7 +32,11 @@ def _shared_http_client() -> httpx.Client:
     """Reuse pooled DashScope connections across storefront requests."""
 
     return httpx.Client(
-        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        limits=httpx.Limits(
+            max_connections=50,
+            max_keepalive_connections=20,
+            keepalive_expiry=120.0,
+        ),
     )
 
 
@@ -72,7 +77,7 @@ class DeterministicImageFeatureAdapter:
         )
 
 
-def dashscope_multimodal_endpoint(base_url: str) -> str:
+def normalize_dashscope_multimodal_base_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     parsed = urlsplit(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -87,6 +92,18 @@ def dashscope_multimodal_endpoint(base_url: str) -> str:
         raise ImageIntelligenceProviderError(
             "图片 Embedding Base URL 不能包含查询参数或页面片段"
         )
+    path = parsed.path.rstrip("/")
+    chat_suffix = "/chat/completions"
+    if path.endswith(chat_suffix):
+        path = path[: -len(chat_suffix)]
+    compatible_suffix = "/compatible-mode/v1"
+    if path.endswith(compatible_suffix):
+        path = path[: -len(compatible_suffix)]
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", "")).rstrip("/")
+
+
+def dashscope_multimodal_endpoint(base_url: str) -> str:
+    normalized = normalize_dashscope_multimodal_base_url(base_url)
     suffix = "/services/embeddings/multimodal-embedding/multimodal-embedding"
     if normalized.endswith(suffix):
         return normalized
@@ -120,7 +137,17 @@ def _normalized_image_data_uri(
             source_min_edge = min(image.size)
             image.thumbnail((_MAX_EDGE, _MAX_EDGE), Image.Resampling.LANCZOS)
             output = io.BytesIO()
-            image.save(output, format="JPEG", quality=88, optimize=True)
+            # Level 9/``optimize=True`` saves little bandwidth for storefront
+            # photos but can spend more than a second recompressing every query.
+            # Level 3 keeps the exact same decoded pixels and strips metadata,
+            # while making the synchronous preparation phase an order of
+            # magnitude faster.
+            image.save(
+                output,
+                format="PNG",
+                optimize=False,
+                compress_level=_PNG_COMPRESSION_LEVEL,
+            )
     except ImageIntelligenceProviderError:
         raise
     except (
@@ -137,7 +164,7 @@ def _normalized_image_data_uri(
         raise ImageIntelligenceProviderError("图片预处理后仍超过 10 MB")
     quality = max(0.5, min(1.0, source_min_edge / 768))
     encoded = base64.b64encode(normalized).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}", quality
+    return f"data:image/png;base64,{encoded}", quality
 
 
 class QwenVLImageEmbeddingAdapter:

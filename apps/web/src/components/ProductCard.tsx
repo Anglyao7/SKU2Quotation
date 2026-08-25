@@ -14,6 +14,7 @@ export function ProductCard({
   onOpenDetails,
   onPrefetchDetails,
   locale,
+  visualMatch,
 }: {
   product: StoreProduct;
   tenantSlug: string;
@@ -21,6 +22,10 @@ export function ProductCard({
   onOpenDetails: () => void;
   onPrefetchDetails: () => void;
   locale: StorefrontLocale;
+  visualMatch?: {
+    percent: number;
+    label: string;
+  };
 }) {
   const [imageFailed, setImageFailed] = useState(!product.image_url);
   const [favorite, setFavorite] = useState(() => isStorefrontFavorite(tenantSlug, product.id));
@@ -108,6 +113,15 @@ export function ProductCard({
         )}
       </Link>
       <div className="sku-card-body">
+        {visualMatch ? (
+          <div className="product-visual-match">
+            <span className="product-visual-match-label">
+              <ImageIcon size={14} weight="duotone" aria-hidden="true" />
+              <span>{visualMatch.label}</span>
+            </span>
+            <strong>{visualMatch.percent.toFixed(1)}%</strong>
+          </div>
+        ) : null}
         <Text as="div" size="3" weight="medium" className="sku-name">
           <Link
             to={detailsHref}

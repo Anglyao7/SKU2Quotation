@@ -16,10 +16,12 @@ import {
   Columns,
   Fire,
   FolderOpen,
+  ImageSquare,
   MagnifyingGlass,
   Rows,
   ShareNetwork,
   Storefront as StoreIcon,
+  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import { ThinkingOrb } from "thinking-orbs";
@@ -34,7 +36,11 @@ import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
-import { StorefrontImageSearch } from "../components/StorefrontImageSearch";
+import {
+  StorefrontImageSearch,
+  type StorefrontImageSearchHandle,
+  type StorefrontImageSearchState,
+} from "../components/StorefrontImageSearch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
@@ -60,6 +66,12 @@ const DEFAULT_RECOMMENDED_QUESTIONS = [
   "请推荐一款适合户外使用、容易收纳的商品。",
   "有哪些商品支持定制，并且 MOQ 比较友好？",
 ];
+
+const EMPTY_IMAGE_SEARCH_STATE: StorefrontImageSearchState = {
+  phase: "idle",
+  previewUrl: "",
+  filename: "",
+};
 
 function importProductDetailModule() {
   return import("./ProductDetailPage");
@@ -272,6 +284,9 @@ export function StorePage() {
   const [deferredSearch, setDeferredSearch] = useState(initialView?.search.trim() ?? "");
   const [primaryCategory, setPrimaryCategory] = useState(initialView?.primaryCategory ?? "");
   const [secondaryCategory, setSecondaryCategory] = useState(initialView?.secondaryCategory ?? "");
+  const [imageSearchState, setImageSearchState] = useState<StorefrontImageSearchState>(
+    EMPTY_IMAGE_SEARCH_STATE,
+  );
   const [categoryLayout, setCategoryLayout] = useState<"horizontal" | "vertical">(
     initialView?.categoryLayout ?? "horizontal",
   );
@@ -283,6 +298,7 @@ export function StorePage() {
   );
   const [cartTenant, setCartTenant] = useState(loadedStore.slug);
   const requestId = useRef(0);
+  const imageSearchRef = useRef<StorefrontImageSearchHandle>(null);
   const hasCatalogResultsRef = useRef(Boolean(initialCatalogSnapshot?.products.length));
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
   const paginationRef = useRef<HTMLElement>(null);
@@ -338,6 +354,7 @@ export function StorePage() {
     setDeferredSearch(restoredView?.search.trim() ?? "");
     setPrimaryCategory(restoredView?.primaryCategory ?? "");
     setSecondaryCategory(restoredView?.secondaryCategory ?? "");
+    setImageSearchState(EMPTY_IMAGE_SEARCH_STATE);
     setCategoryLayout(restoredView?.categoryLayout ?? "horizontal");
     setExpandedCategories(new Set(restoredView?.expandedCategories ?? []));
     if (tenantChanged) {
@@ -721,6 +738,12 @@ export function StorePage() {
     }));
   }, [primaryCategory, secondaryOptions, selectedPrimary?.name]);
   const categoryShowcaseOptions = visibleSecondaryOptions;
+  const imageSearchActive = imageSearchState.phase !== "idle";
+  const imageSearchBusy = (
+    imageSearchState.phase === "preparing"
+    || imageSearchState.phase === "searching"
+  );
+  const imageSearchResults = imageSearchState.result?.results ?? [];
   const recommendedQuestions = useMemo(
     () => {
       const configured = (store.ai_search_questions ?? [])
@@ -737,13 +760,14 @@ export function StorePage() {
   const categoryShowcaseEnabled = store.category_showcase_enabled !== false;
   const showCategoryShowcase = Boolean(
     !shareToken
+    && !imageSearchActive
     && categoryShowcaseEnabled
     && Boolean(primaryCategory)
     && !search.trim()
     && !secondaryCategory
     && categoryShowcaseOptions.length,
   );
-  const hasFilters = Boolean(search || category);
+  const hasFilters = Boolean(search || category || imageSearchActive);
   const shareDisplayTitle = useMemo(() => {
     if (!catalogShare) return "";
     if (catalogShare.target_type === "PRODUCTS") {
@@ -754,8 +778,10 @@ export function StorePage() {
       (option) => option.value === catalogShare.category_path,
     )?.label ?? catalogShare.category_name ?? catalogShare.title;
   }, [catalogShare, products, store.category_options, t]);
-  const hotSortActive = Boolean(store.hot_products_enabled && !hasFilters);
-  const searchPending = Boolean(search.trim()) && (
+  const hotSortActive = Boolean(
+    store.hot_products_enabled && !hasFilters && !imageSearchActive
+  );
+  const searchPending = !imageSearchActive && Boolean(search.trim()) && (
     search.trim() !== deferredSearch || loading
   );
   const cartLines = useMemo(() => Object.values(cart), [cart]);
@@ -767,10 +793,31 @@ export function StorePage() {
     setPageJumpInput(String(page));
   }, [page]);
 
+  const handleImageSearchState = useCallback((next: StorefrontImageSearchState) => {
+    setImageSearchState(next);
+    if (next.phase !== "preparing") return;
+    requestId.current += 1;
+    setSearch("");
+    setDeferredSearch("");
+    setPrimaryCategory("");
+    setSecondaryCategory("");
+    setPageTransitioning(false);
+    setPageTransitionError("");
+    setError("");
+    window.requestAnimationFrame(() => {
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      resultsHeaderRef.current?.scrollIntoView({
+        behavior: reducedMotion ? "auto" : "smooth",
+        block: "start",
+      });
+    });
+  }, []);
+
   const resetFilters = () => {
     setSearch("");
     setPrimaryCategory("");
     setSecondaryCategory("");
+    setImageSearchState(EMPTY_IMAGE_SEARCH_STATE);
   };
   const toggleCategoryExpansion = (path: string) => {
     setExpandedCategories((current) => {
@@ -965,14 +1012,19 @@ export function StorePage() {
                 <TextField.Root
                   size="3"
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) => {
+                    if (imageSearchActive) {
+                      setImageSearchState(EMPTY_IMAGE_SEARCH_STATE);
+                    }
+                    setSearch(event.target.value);
+                  }}
                   placeholder={t("搜索 SKU、名称、规格或使用场景")}
                   aria-label={t("查找商品")}
                   className="store-search"
                 >
                   <TextField.Slot><MagnifyingGlass size={19} /></TextField.Slot>
-                  {search && (
-                    <TextField.Slot side="right">
+                  <TextField.Slot side="right">
+                    {search ? (
                       <IconButton
                         type="button"
                         size="1"
@@ -983,19 +1035,20 @@ export function StorePage() {
                       >
                         <X size={15} />
                       </IconButton>
-                    </TextField.Slot>
-                  )}
+                    ) : null}
+                    <StorefrontImageSearch
+                      ref={imageSearchRef}
+                      tenantSlug={tenantSlug}
+                      locale={locale}
+                      shareToken={shareToken}
+                      active={imageSearchActive}
+                      t={t}
+                      onStateChange={handleImageSearchState}
+                    />
+                  </TextField.Slot>
                 </TextField.Root>
-                <StorefrontImageSearch
-                  tenantSlug={tenantSlug}
-                  locale={locale}
-                  shareToken={shareToken}
-                  sharedQuery={sharedQuery}
-                  t={t}
-                  onOpenDetails={rememberCatalogPosition}
-                />
               </div>
-              {!shareToken && !search.trim() && recommendedQuestions.length ? (
+              {!shareToken && !imageSearchActive && !search.trim() && recommendedQuestions.length ? (
                 <div className="store-recommended-questions" aria-label={t("推荐问题")}>
                   <Text size="1" color="gray">{t("推荐问题")}</Text>
                   <div className="store-recommended-question-list">
@@ -1017,7 +1070,7 @@ export function StorePage() {
                   </div>
                 </div>
               ) : null}
-              {!shareToken && categoryLayout === "horizontal" ? (
+              {!shareToken && !imageSearchActive && categoryLayout === "horizontal" ? (
                 <nav className="category-browser" aria-label={t("商品分类")}>
                   <div className="category-browser-row">
                     <span className="category-browser-label">{t("一级分类")}</span>
@@ -1093,8 +1146,8 @@ export function StorePage() {
               ) : null}
             </div>
 
-            <div className={`results-container${!shareToken && categoryLayout === "vertical" ? " has-sidebar" : ""}`}>
-              {!shareToken && categoryLayout === "vertical" && (
+            <div className={`results-container${!shareToken && !imageSearchActive && categoryLayout === "vertical" ? " has-sidebar" : ""}`}>
+              {!shareToken && !imageSearchActive && categoryLayout === "vertical" && (
                 <aside className="category-sidebar">
                   <div className="category-sidebar-header">
                     <Text size="2" weight="medium">{t("商品分类")}</Text>
@@ -1154,7 +1207,7 @@ export function StorePage() {
                 </aside>
               )}
               <div className="results-main">
-            {!shareToken && categoryLayout === "vertical" && selectedPrimary && secondaryOptions.length > 0 && !showCategoryShowcase ? (
+            {!shareToken && !imageSearchActive && categoryLayout === "vertical" && selectedPrimary && secondaryOptions.length > 0 && !showCategoryShowcase ? (
               <nav className="category-secondary-nav" aria-label={t("二级分类")}>
                 <CategoryScrollTrack
                   ariaLabel={t("二级分类")}
@@ -1187,7 +1240,9 @@ export function StorePage() {
               <div>
                 <div className="results-title-row">
                   <Heading as="h2" size="5">
-                    {shareDisplayTitle
+                    {imageSearchActive
+                      ? t("视觉匹配")
+                      : shareDisplayTitle
                       || selectedSecondary?.name
                       || selectedPrimary?.name
                       || t(hasFilters ? "筛选结果" : "全部商品")}
@@ -1200,17 +1255,33 @@ export function StorePage() {
                   ) : null}
                 </div>
                 <Text size="2" color="gray">
-                  {t(
-                    showCategoryShowcase
+                  {imageSearchActive
+                    ? imageSearchState.phase === "preparing"
+                      ? t("正在压缩并转换为 PNG…")
+                      : imageSearchState.phase === "searching"
+                        ? t("正在生成查询向量，并与店铺商品图片进行相似度计算…")
+                        : imageSearchState.phase === "error"
+                          ? imageSearchState.error
+                          : t("系统会比较商品视觉特征，并按匹配度给出当前店铺可购买的商品。")
+                    : t(showCategoryShowcase
                       ? "选择一个二级分类查看商品。"
                       : hotSortActive
                       ? "根据近 90 天浏览与下单热度优先展示，手动置顶商品仍排在最前。"
-                      : "点击商品查看可选规格与 SKU。",
-                  )}
+                      : "点击商品查看可选规格与 SKU。")}
                 </Text>
               </div>
-              <Badge color={hasFilters ? "jade" : "gray"} variant="soft" aria-live="polite">
-                {showCategoryShowcase
+              <Badge
+                color={imageSearchState.phase === "error" ? "red" : hasFilters ? "jade" : "gray"}
+                variant="soft"
+                aria-live="polite"
+              >
+                {imageSearchActive
+                  ? imageSearchBusy
+                    ? t("正在查找")
+                    : t("{count} 条结果", {
+                        count: imageSearchResults.length.toLocaleString(locale),
+                      })
+                  : showCategoryShowcase
                   ? t("{count} 个分类", { count: categoryShowcaseOptions.length.toLocaleString(locale) })
                   : searchPending
                   ? t("搜索中……")
@@ -1224,7 +1295,96 @@ export function StorePage() {
             <Separator size="4" />
 
             <div className="results-body">
-              {showCategoryShowcase ? (
+              {imageSearchActive ? (
+                imageSearchBusy ? (
+                  <div className="store-image-inline-loading" role="status" aria-live="polite">
+                    <div className="store-image-inline-progress">
+                      <div className={`store-image-inline-preview${imageSearchState.previewUrl ? " has-image" : ""}`}>
+                        {imageSearchState.previewUrl ? (
+                          <img src={imageSearchState.previewUrl} alt={t("待搜索图片预览")} />
+                        ) : (
+                          <ImageSquare size={34} weight="duotone" aria-hidden="true" />
+                        )}
+                        <span className="store-image-scan-line" aria-hidden="true" />
+                      </div>
+                      <ThinkingOrb
+                        state="working"
+                        size={64}
+                        speed={1.35}
+                        aria-hidden="true"
+                      />
+                      <div className="store-image-inline-progress-copy">
+                        <Text size="3" weight="medium">
+                          {t(imageSearchState.phase === "preparing"
+                            ? "正在压缩并转换为 PNG…"
+                            : "正在生成查询向量，并与店铺商品图片进行相似度计算…")}
+                        </Text>
+                        <Text size="2" color="gray">
+                          {t("系统会比较商品视觉特征，并按匹配度给出当前店铺可购买的商品。")}
+                        </Text>
+                        <span className="store-image-inline-progress-track" aria-hidden="true"><i /></span>
+                      </div>
+                    </div>
+                    <ProductGridSkeleton count={8} />
+                  </div>
+                ) : imageSearchState.phase === "error" ? (
+                  <div className="store-image-inline-state is-error" role="alert">
+                    <WarningCircle size={34} weight="duotone" aria-hidden="true" />
+                    <Text size="3" weight="medium">{t("暂时无法完成图片搜索")}</Text>
+                    <Text size="2" color="gray">{imageSearchState.error}</Text>
+                    <Button type="button" variant="soft" onClick={() => imageSearchRef.current?.openPicker()}>
+                      <ImageSquare size={17} weight="duotone" />
+                      {t("重新选择图片")}
+                    </Button>
+                  </div>
+                ) : imageSearchResults.length ? (
+                  <div className="sku-grid-shell store-image-results-shell">
+                    <div className="sku-grid store-image-results-grid">
+                      {imageSearchResults.map((item) => {
+                        const product = item.product;
+                        const confidenceLabel = item.confidence === "HIGH"
+                          ? t("高度相似")
+                          : item.confidence === "MEDIUM"
+                            ? t("较为相似")
+                            : t("参考匹配");
+                        return (
+                          <ProductCard
+                            key={product.id}
+                            product={product}
+                            tenantSlug={tenantSlug}
+                            detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
+                            onOpenDetails={rememberCatalogPosition}
+                            onPrefetchDetails={() => prefetchProductDetails(product.id)}
+                            locale={locale}
+                            visualMatch={{
+                              percent: item.match_percent,
+                              label: confidenceLabel,
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                    {imageSearchState.result?.warnings[0] ? (
+                      <Text className="store-image-results-note" size="1" color="gray">
+                        {t(imageSearchState.result.warnings[0])}
+                      </Text>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="store-image-inline-state">
+                    <ImageSquare size={36} weight="duotone" aria-hidden="true" />
+                    <Text size="3" weight="medium">{t("暂时没有可比较的商品图片")}</Text>
+                    <Text size="2" color="gray">
+                      {t(imageSearchState.result?.status === "INDEX_EMPTY"
+                        ? "当前店铺还没有可搜索的图片向量，请联系商家更新图片索引。"
+                        : "请换一张图片重试，或使用文字搜索。")}
+                    </Text>
+                    <Button type="button" variant="soft" onClick={() => imageSearchRef.current?.openPicker()}>
+                      {t("重新选择图片")}
+                    </Button>
+                  </div>
+                )
+              ) : showCategoryShowcase ? (
                 <div className="category-showcase-grid">
                   {categoryShowcaseOptions.map((item) => (
                     <button
@@ -1307,7 +1467,7 @@ export function StorePage() {
                   ) : null}
                 </div>
               )}
-              {!showCategoryShowcase && !searchPending && !loading && !error && products.length > 0 && pages > 1 && (
+              {!imageSearchActive && !showCategoryShowcase && !searchPending && !loading && !error && products.length > 0 && pages > 1 && (
                 <nav
                   className="store-pagination"
                   aria-label={t("商品分页")}

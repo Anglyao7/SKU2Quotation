@@ -7307,7 +7307,7 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
             "/api/v1/ai/image-embedding/settings",
             json={
                 "enabled": True,
-                "base_url": "https://dashscope.aliyuncs.com",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "api_key": raw_api_key,
                 "model_name": "qwen3-vl-embedding",
                 "dimensions": 1024,
@@ -7322,6 +7322,8 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
         assert payload["api_key_configured"] is True
         assert payload["api_key_hint"] == "••••1357"
         assert payload["dimensions"] == 1024
+        assert payload["base_url"] == "https://dashscope.aliyuncs.com"
+        assert "product-image-png-v2" in payload["model_version"]
         assert raw_api_key not in saved.text
         assert "api_key_ciphertext" not in payload
 
@@ -7331,9 +7333,16 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
                 "IMAGE_EMBEDDING",
             )
             assert row is not None
+            assert row.base_url == "https://dashscope.aliyuncs.com"
             assert raw_api_key not in row.api_key_ciphertext
             assert decrypt_api_key(row.api_key_ciphertext) == raw_api_key
             ciphertext = row.api_key_ciphertext
+            row.model_version = "legacy-jpeg-preprocessing"
+            session.commit()
+
+        refreshed = client.get("/api/v1/ai/image-embedding/settings")
+        assert refreshed.status_code == 200, refreshed.text
+        assert "product-image-png-v2" in refreshed.json()["model_version"]
 
         disabled = client.put(
             "/api/v1/ai/image-embedding/settings",
@@ -14029,6 +14038,109 @@ def test_image_intelligence_projection_search_and_media_gate(tmp_path: Path) -> 
         assert session.get(ProductImageRow, source_id).approval_status == "SOURCE"
 
 
+def test_image_index_downloads_legacy_public_r2_url_and_repairs_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    content_hash = hashlib.sha256(image_bytes).hexdigest()
+
+    def fake_download_image(_client, *, destination: Path, **_kwargs):
+        destination.write_bytes(image_bytes)
+        return SimpleNamespace(
+            content_type="image/png",
+            byte_size=len(image_bytes),
+            sha256=content_hash,
+            width=1,
+            height=1,
+        )
+
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "download_image",
+        fake_download_image,
+    )
+    image = SimpleNamespace(
+        object_key="https://resources.aitradecloud.top/catalog/example.png",
+        sha256="legacy-source-record-digest",
+        byte_size=0,
+        content_type="image/png",
+        width=None,
+        height=None,
+    )
+
+    content, effective_hash = (
+        image_intelligence_use_cases._materialize_approved_image(image)
+    )
+
+    assert content == image_bytes
+    assert effective_hash == content_hash
+    assert image.sha256 == content_hash
+    assert image.byte_size == len(image_bytes)
+    assert image.width == 1
+    assert image.height == 1
+
+
+def test_image_index_falls_back_to_public_cdn_for_managed_r2_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    content_hash = hashlib.sha256(image_bytes).hexdigest()
+    downloaded_urls: list[str] = []
+
+    class UnavailableStorage:
+        def materialize(self, _object_key: str):
+            raise FileNotFoundError("not available through configured credentials")
+
+    def fake_download_image(_client, *, source_url: str, destination: Path, **_kwargs):
+        downloaded_urls.append(source_url)
+        destination.write_bytes(image_bytes)
+        return SimpleNamespace(
+            content_type="image/png",
+            byte_size=len(image_bytes),
+            sha256=content_hash,
+            width=1,
+            height=1,
+        )
+
+    monkeypatch.setenv("PUBLIC_MEDIA_BASE_URL", "https://resources.example.test")
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "get_object_storage",
+        lambda: UnavailableStorage(),
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "download_image",
+        fake_download_image,
+    )
+    image = SimpleNamespace(
+        object_key="tenants/example/products/image.png",
+        sha256=content_hash,
+        byte_size=len(image_bytes),
+        content_type="image/png",
+        width=1,
+        height=1,
+    )
+
+    content, effective_hash = (
+        image_intelligence_use_cases._materialize_approved_image(image)
+    )
+
+    assert content == image_bytes
+    assert effective_hash == content_hash
+    assert downloaded_urls == [
+        "https://resources.example.test/tenants/example/products/image.png"
+    ]
+
+
 def test_public_image_search_is_ephemeral_and_published_catalog_only(
     tmp_path: Path,
 ) -> None:
@@ -14096,6 +14208,8 @@ def test_public_image_search_is_ephemeral_and_published_catalog_only(
             files={"file": ("visitor.png", image_bytes, "image/png")},
         )
         assert result.status_code == 200, result.text
+        assert "embedding;dur=" in result.headers["server-timing"]
+        assert "vector;dur=" in result.headers["server-timing"]
         payload = result.json()
         assert payload["status"] == "COMPLETED"
         assert payload["results"][0]["product"]["id"] == str(product_id)

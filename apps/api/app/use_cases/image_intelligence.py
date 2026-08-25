@@ -4,13 +4,16 @@ import hashlib
 import logging
 import os
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
+import httpx
 import psycopg
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -42,6 +45,11 @@ from ..ports.image_intelligence import ImageIntelligenceProvider
 from ..repositories import image_intelligence_repository as repository
 from ..services.auth.dependencies import RequestContext
 from ..services.embedding import validate_vectors
+from ..services.external_image_migration import (
+    ImageMigrationError,
+    SourcePolicy,
+    download_image,
+)
 from ..services.image_embedding_configuration import (
     resolved_image_embedding_provider,
 )
@@ -105,23 +113,91 @@ def _projection_response(
     )
 
 
-def _materialize_approved_image(image) -> bytes:
+def _download_public_image(source_url: str):
     try:
-        with get_object_storage().materialize(image.object_key) as path:
-            content = path.read_bytes()
-    except FileNotFoundError as exc:
+        with tempfile.TemporaryDirectory(prefix="atc-image-index-") as directory:
+            target = Path(directory) / "source-image"
+            with httpx.Client(
+                timeout=httpx.Timeout(30.0, connect=8.0),
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                metadata = download_image(
+                    client,
+                    source_url=source_url,
+                    destination=target,
+                    policy=SourcePolicy((), allow_all_public_hosts=True),
+                    max_bytes=int(
+                        os.getenv(
+                            "IMAGE_SEARCH_MAX_BYTES",
+                            str(20 * 1024 * 1024),
+                        )
+                    ),
+                    max_pixels=50_000_000,
+                    max_redirects=4,
+                )
+            return target.read_bytes(), metadata
+    except (ImageMigrationError, httpx.HTTPError, OSError) as exc:
+        error_code = getattr(exc, "code", type(exc).__name__)
         raise ApplicationError(
-            "IMAGE_OBJECT_MISSING",
-            "R2 中的商品图片对象不存在。",
-            kind="conflict",
+            "IMAGE_REMOTE_OBJECT_UNAVAILABLE",
+            f"商品图片地址暂时无法读取（{error_code}）。",
+            kind="unavailable",
         ) from exc
-    if hashlib.sha256(content).hexdigest() != image.sha256:
+
+
+def _materialize_approved_image(image) -> tuple[bytes, str]:
+    object_key = str(image.object_key or "").strip()
+    if object_key.startswith(("https://", "http://")):
+        content, metadata = _download_public_image(object_key)
+
+        # Legacy imports stored a source-record digest instead of the actual
+        # object digest. Repair that metadata once the public R2/CDN object has
+        # been downloaded and validated so future incremental runs can skip it.
+        image.sha256 = metadata.sha256
+        image.byte_size = metadata.byte_size
+        image.content_type = metadata.content_type
+        image.width = metadata.width
+        image.height = metadata.height
+        return content, metadata.sha256
+
+    storage_error: Exception | None = None
+    try:
+        with get_object_storage().materialize(object_key) as path:
+            content = path.read_bytes()
+    except Exception as exc:
+        storage_error = exc
+        media_base_url = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
+        if not media_base_url:
+            raise ApplicationError(
+                "IMAGE_OBJECT_MISSING",
+                "R2 中的商品图片对象不存在或暂时无法读取。",
+                kind="conflict",
+            ) from exc
+        public_url = (
+            f"{media_base_url}/{quote(object_key.lstrip('/'), safe='/')}"
+        )
+        try:
+            content, _metadata = _download_public_image(public_url)
+        except ApplicationError as cdn_exc:
+            raise ApplicationError(
+                "IMAGE_OBJECT_MISSING",
+                "商品图片在 R2 和公共 CDN 中均无法读取。",
+                kind="conflict",
+            ) from cdn_exc
+        logger.info(
+            "image index used public CDN fallback for object %s after storage error %s",
+            object_key,
+            type(storage_error).__name__,
+        )
+    content_hash = hashlib.sha256(content).hexdigest()
+    if content_hash != image.sha256:
         raise ApplicationError(
             "IMAGE_HASH_MISMATCH",
             "R2 图片内容与商品图片记录不一致。",
             kind="conflict",
         )
-    return content
+    return content, content_hash
 
 
 def _project_product_image(
@@ -151,6 +227,10 @@ def _project_product_image(
             kind="conflict",
         )
     identity = provider.identity
+    content: bytes | None = None
+    content_hash = image.sha256
+    if str(image.object_key or "").strip().startswith(("https://", "http://")):
+        content, content_hash = _materialize_approved_image(image)
     existing = repository.get_projection(
         session,
         tenant_id=tenant_id,
@@ -158,7 +238,7 @@ def _project_product_image(
         provider=identity.provider,
         model=identity.model_name,
         version=identity.model_version,
-        content_hash=image.sha256,
+        content_hash=content_hash,
     )
     if (
         existing
@@ -172,7 +252,8 @@ def _project_product_image(
             session.flush()
         return existing[0], existing[1], True
 
-    content = _materialize_approved_image(image)
+    if content is None:
+        content, content_hash = _materialize_approved_image(image)
     try:
         result = provider.analyze(content, content_type=image.content_type)
     except ImageIntelligenceProviderError as exc:
@@ -206,7 +287,7 @@ def _project_product_image(
             tenant_id=tenant_id,
             product_image_id=image.id,
             product_id=product.id,
-            content_hash=image.sha256,
+            content_hash=content_hash,
             model_provider=identity.provider,
             model_name=identity.model_name,
             model_version=identity.model_version,
@@ -220,7 +301,7 @@ def _project_product_image(
             product_image_id=image.id,
             product_id=product.id,
             product_version=product.current_version,
-            content_hash=image.sha256,
+            content_hash=content_hash,
             model_provider=identity.provider,
             model_name=identity.model_name,
             model_version=identity.model_version,
@@ -472,13 +553,23 @@ def search_public_image_matches(
     limit: int,
     allowed_product_ids: set[UUID] | None = None,
     category: str | None = None,
+    timings: dict[str, float] | None = None,
 ) -> list[PublicImageMatch]:
     """Search only current published offers and never persist visitor images."""
 
+    started = time.perf_counter()
     content_type = _validate_query_image(content, declared_content_type)
+    if timings is not None:
+        timings["validate"] = (time.perf_counter() - started) * 1000
+
+    started = time.perf_counter()
     provider = _provider(session)
     identity = provider.identity
+    if timings is not None:
+        timings["provider"] = (time.perf_counter() - started) * 1000
+
     now = utcnow()
+    started = time.perf_counter()
     if not repository.has_active_corpus(
         session,
         tenant_id=tenant_id,
@@ -491,7 +582,13 @@ def search_public_image_matches(
         category=category,
         now=now,
     ):
+        if timings is not None:
+            timings["corpus"] = (time.perf_counter() - started) * 1000
         return []
+    if timings is not None:
+        timings["corpus"] = (time.perf_counter() - started) * 1000
+
+    started = time.perf_counter()
     try:
         result = provider.analyze(content, content_type=content_type)
     except ImageIntelligenceProviderError as exc:
@@ -500,6 +597,10 @@ def search_public_image_matches(
             str(exc),
             kind="unavailable",
         ) from exc
+    if timings is not None:
+        timings["embedding"] = (time.perf_counter() - started) * 1000
+
+    started = time.perf_counter()
     candidates = repository.search_active_corpus(
         session,
         tenant_id=tenant_id,
@@ -514,6 +615,10 @@ def search_public_image_matches(
         category=category,
         now=now,
     )
+    if timings is not None:
+        timings["vector"] = (time.perf_counter() - started) * 1000
+
+    started = time.perf_counter()
     matches: list[PublicImageMatch] = []
     seen: set[UUID] = set()
     for candidate in candidates:
@@ -541,6 +646,8 @@ def search_public_image_matches(
         )
         if len(matches) >= limit:
             break
+    if timings is not None:
+        timings["rank"] = (time.perf_counter() - started) * 1000
     return matches
 
 
@@ -889,8 +996,8 @@ def _run_image_index_job(
             failed.error_message = (
                 f"{_safe_job_error(exc)} 已完成的图片向量和断点均已保留。"
             )
-            failed.current_image_id = None
-            failed.current_product_name = None
+            # Keep the failed image checkpoint visible so operators can identify
+            # the exact object while resume still starts from the same item.
             failed.pause_requested_at = None
             failed.paused_at = None
             failed.completed_at = utcnow()

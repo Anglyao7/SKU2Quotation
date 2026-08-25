@@ -15,6 +15,7 @@ from ..adapters.image_intelligence import (
     ImageIntelligenceUnavailable,
     dashscope_multimodal_endpoint,
     get_image_intelligence_provider,
+    normalize_dashscope_multimodal_base_url,
     qwen_vl_image_embedding_provider,
 )
 from ..embedding_management_models import ImageEmbeddingProviderSettingsRow
@@ -111,11 +112,16 @@ def resolved_image_embedding_provider(
         return _environment_provider()
     if not settings.is_active:
         raise ImageIntelligenceProviderError("图片搜索模型已关闭")
+    effective_model_version = managed_image_model_version(
+        base_url=settings.base_url,
+        model_name=settings.model_name,
+        dimensions=settings.dimensions,
+    )
     return qwen_vl_image_embedding_provider(
         api_key=decrypt_api_key(settings.api_key_ciphertext),
         base_url=settings.base_url,
         model_name=settings.model_name,
-        model_version=settings.model_version,
+        model_version=effective_model_version,
         dimensions=settings.dimensions,
         timeout_seconds=float(settings.timeout_seconds),
         max_retry_count=settings.max_retry_count,
@@ -127,13 +133,21 @@ def image_embedding_configuration_snapshot(
 ) -> ImageEmbeddingConfigurationSnapshot:
     settings = get_managed_image_embedding_settings(session)
     if settings is not None:
+        normalized_base_url = normalize_dashscope_multimodal_base_url(
+            settings.base_url
+        )
+        effective_model_version = managed_image_model_version(
+            base_url=normalized_base_url,
+            model_name=settings.model_name,
+            dimensions=settings.dimensions,
+        )
         return ImageEmbeddingConfigurationSnapshot(
             source="database",
             provider=settings.provider,
             enabled=bool(settings.is_active),
-            base_url=settings.base_url,
+            base_url=normalized_base_url,
             model_name=settings.model_name,
-            model_version=settings.model_version,
+            model_version=effective_model_version,
             dimensions=settings.dimensions,
             timeout_seconds=settings.timeout_seconds,
             max_retry_count=settings.max_retry_count,
@@ -218,7 +232,7 @@ def save_managed_image_embedding_settings(
     api_key: str | None,
     updated_by_user_id: UUID,
 ) -> ImageEmbeddingProviderSettingsRow:
-    normalized_base_url = base_url.strip().rstrip("/")
+    normalized_base_url = normalize_dashscope_multimodal_base_url(base_url)
     normalized_model = model_name.strip()
     dashscope_multimodal_endpoint(normalized_base_url)
     if not normalized_model:

@@ -168,7 +168,7 @@ export function ImageSearchManagementPage() {
       <CorePageHeading
         eyebrow={t("客户图搜")}
         title={t("图片搜索管理")}
-        description={t("把当前店铺已审批的商品图片从 R2 建立为视觉向量，供客户上传图片查找商品。")}
+        description={t("把当前店铺已审批的 R2 或 CDN 商品图片建立为视觉向量，供客户上传图片查找商品。")}
         actions={(
           <Button variant="soft" color="gray" disabled={loading} onClick={() => void load()}>
             <ArrowClockwise />{t("刷新状态")}
@@ -176,7 +176,7 @@ export function ImageSearchManagementPage() {
         )}
       />
 
-      {loading && !status ? <CoreLoading label={t("正在核对 R2 商品图片与视觉索引")} /> : null}
+      {loading && !status ? <CoreLoading label={t("正在核对商品图片与视觉索引")} /> : null}
       {error && !status ? <CoreError message={error} onRetry={() => void load()} /> : null}
 
       {status ? (
@@ -260,9 +260,9 @@ export function ImageSearchManagementPage() {
 
           <div className="core-ai-index-details is-single">
             <section>
-              <Text size="1" color="gray"><CloudArrowDown /> R2</Text>
-              <Heading size="4">{t("R2 图片无需生成公开链接")}</Heading>
-              <p>{t("服务端按对象键从 R2 临时读取图片，预处理后以 Base64 调用模型；客户上传的搜索图片只用于本次检索，不写入长期知识库。")}</p>
+              <Text size="1" color="gray"><CloudArrowDown /> R2 / CDN</Text>
+              <Heading size="4">{t("兼容 R2 对象键和现有 CDN 图片")}</Heading>
+              <p>{t("服务端临时读取已批准的 R2 或 CDN 商品图片，校验并预处理后以 Base64 调用模型；客户上传的搜索图片只用于本次检索，不写入长期知识库。")}</p>
             </section>
           </div>
         </>

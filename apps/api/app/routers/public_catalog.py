@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from uuid import UUID
 from urllib.parse import unquote
 
@@ -291,6 +292,8 @@ def search_public_products_by_image(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicImageSearchResponse:
+    request_started = time.perf_counter()
+    timings: dict[str, float] = {}
     response.headers.update(NO_STORE_HEADERS)
     enforce_rate_limit(
         request,
@@ -321,7 +324,7 @@ def search_public_products_by_image(
                 else None
             ),
         )
-        return use_cases.search_public_products_by_image(
+        result = use_cases.search_public_products_by_image(
             session,
             slug=tenant_slug,
             content=content,
@@ -330,7 +333,26 @@ def search_public_products_by_image(
             locale=locale,
             share_token=share,
             subaccount_membership_id=(submitter[0].id if submitter else None),
+            timings=timings,
         )
+        timings["total"] = (time.perf_counter() - request_started) * 1000
+        ordered_names = (
+            "store",
+            "validate",
+            "provider",
+            "corpus",
+            "embedding",
+            "vector",
+            "rank",
+            "catalog",
+            "total",
+        )
+        response.headers["Server-Timing"] = ", ".join(
+            f"{name};dur={timings[name]:.1f}"
+            for name in ordered_names
+            if name in timings
+        )
+        return result
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

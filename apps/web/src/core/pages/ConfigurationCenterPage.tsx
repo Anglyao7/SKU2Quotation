@@ -572,7 +572,7 @@ function ImageEmbeddingSettingsPanel() {
         <label className="configuration-wide">
           <Text size="1" color="gray">Base URL</Text>
           <TextField.Root type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://dashscope.aliyuncs.com" required />
-          <small>{t("可填写百炼服务域名、/api/v1，或完整 Multimodal-Embedding 接口地址。")}</small>
+          <small>{t("可填写千问 Qwen API（DashScope）服务域名；粘贴 /compatible-mode/v1 时会自动转换为多模态接口。")}</small>
         </label>
         <label>
           <Text size="1" color="gray">{t("模型名称")}</Text>
@@ -585,7 +585,7 @@ function ImageEmbeddingSettingsPanel() {
             autoComplete="new-password"
             value={apiKey}
             onChange={(event) => setApiKey(event.target.value)}
-            placeholder={settings?.apiKeyConfigured ? t("已配置 {hint}，留空保持不变", { hint: settings.apiKeyHint ?? "" }) : t("请输入百炼 API Key")}
+            placeholder={settings?.apiKeyConfigured ? t("已配置 {hint}，留空保持不变", { hint: settings.apiKeyHint ?? "" }) : t("请输入千问 Qwen API Key（DashScope）")}
             required={!settings?.apiKeyConfigured}
           />
         </label>

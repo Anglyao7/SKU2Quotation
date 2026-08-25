@@ -667,16 +667,18 @@ export const api = {
     if (shareToken) params.set("share", shareToken);
     const form = new FormData();
     form.append("file", file, file.name || "image-search.jpg");
-    const response = await request<StoreImageSearchResponse>(
-      `/api/store/${encodeURIComponent(slug)}/image-search?${params.toString()}`,
-      {
-        method: "POST",
-        body: form,
-        signal: AbortSignal.timeout(120_000),
-      },
-      Boolean(getCoreAccessToken()),
-    );
-    const languagePack = await storefrontLanguagePack(slug, locale);
+    const [response, languagePack] = await Promise.all([
+      request<StoreImageSearchResponse>(
+        `/api/store/${encodeURIComponent(slug)}/image-search?${params.toString()}`,
+        {
+          method: "POST",
+          body: form,
+          signal: AbortSignal.timeout(120_000),
+        },
+        Boolean(getCoreAccessToken()),
+      ),
+      storefrontLanguagePack(slug, locale),
+    ]);
     return {
       ...response,
       results: response.results.map((result) => ({
