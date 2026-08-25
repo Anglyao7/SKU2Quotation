@@ -83,7 +83,6 @@ from ..services.external_image_migration import (
     SourcePolicy,
     download_image,
 )
-from ..services.product_image_cleanup import cleanup_product_images
 from ..adapters.object_storage import get_object_storage
 from ..services.sku_catalog_export import build_sku_catalog_workbook
 from ..services.sku_quotas import ensure_sku_capacity
@@ -3444,7 +3443,6 @@ def batch_delete_skus(
     permissions: frozenset[str],
     sku_ids: list[UUID],
     commit: bool = True,
-    cleanup_images: bool = True,
 ) -> dict[str, Any]:
     """Archive SKUs, detach supplier/source links, and preserve history."""
     _require(permissions, "product.edit")
@@ -3612,31 +3610,6 @@ def batch_delete_skus(
                 kind="conflict",
             ) from exc
 
-    # Deleting one SKU must not remove images while another variant still
-    # keeps the product alive. Once the last SKU is archived, remove only the
-    # tenant-owned objects belonging to that product. Storage cleanup is
-    # intentionally best-effort and must never turn a successful soft-delete
-    # into a failed request.
-    if cleanup_images and archived_product_ids:
-        try:
-            cleanup = cleanup_product_images(
-                session,
-                tenant_id=tenant_id,
-                product_ids=archived_product_ids,
-                at=now,
-            )
-            if cleanup.removed_image_count:
-                session.commit()
-        except Exception:
-            session.rollback()
-            logger.exception(
-                "product image cleanup failed after SKU deletion",
-                extra={
-                    "tenant_id": str(tenant_id),
-                    "product_ids": [str(product_id) for product_id in archived_product_ids],
-                },
-            )
-
     return {
         "success_count": len(selected_rows),
         "failed_count": len(failed_items),
@@ -3724,7 +3697,6 @@ def batch_delete_products(
             permissions=permissions,
             sku_ids=[sku.id for sku in sku_rows],
             commit=False,
-            cleanup_images=False,
         )
 
     now = utcnow()
@@ -3771,25 +3743,6 @@ def batch_delete_products(
         conflict_code="BATCH_DELETE_PRODUCTS_FAILED",
         conflict_message="批量删除商品失败，请刷新商品库后重试。",
     )
-
-    try:
-        cleanup = cleanup_product_images(
-            session,
-            tenant_id=tenant_id,
-            product_ids=selected_product_ids,
-            at=now,
-        )
-        if cleanup.removed_image_count:
-            session.commit()
-    except Exception:
-        session.rollback()
-        logger.exception(
-            "product image cleanup failed after product batch deletion",
-            extra={
-                "tenant_id": str(tenant_id),
-                "product_ids": [str(product_id) for product_id in selected_product_ids],
-            },
-        )
 
     return {
         "success_count": len(selected_products),
@@ -3992,21 +3945,6 @@ def delete_all_products(
         conflict_message="全部商品删除失败，请刷新商品库后重试。",
     )
 
-    try:
-        cleanup = cleanup_product_images(
-            session,
-            tenant_id=tenant_id,
-            product_ids=all_product_ids,
-            at=now,
-        )
-        if cleanup.removed_image_count:
-            session.commit()
-    except Exception:
-        session.rollback()
-        logger.exception(
-            "product image cleanup failed after complete catalog deletion",
-            extra={"tenant_id": str(tenant_id)},
-        )
     return {
         "deleted_product_count": deleted_product_count,
         "deleted_sku_count": deleted_sku_count,

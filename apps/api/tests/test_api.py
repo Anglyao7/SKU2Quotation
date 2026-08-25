@@ -9471,14 +9471,17 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
         assert product.status == "ARCHIVED"
         assert product.archived_at is not None
         assert product.category_id is None
-        assert not storage.exists(image_key)
+        # Product deletion archives catalog rows but never removes the
+        # merchant's object-storage image. The same image can be reused when
+        # the product is restored or re-imported later.
+        assert storage.exists(image_key)
         image = session.scalar(
             select(ProductImageRow)
             .where(ProductImageRow.object_key == image_key)
             .execution_options(include_deleted=True)
         )
         assert image is not None
-        assert image.deleted_at is not None
+        assert image.deleted_at is None
         remaining_sku = session.scalar(
             select(SkuRow)
             .where(SkuRow.tenant_id == DEFAULT_TENANT_ID, SkuRow.id == second_sku_id)
