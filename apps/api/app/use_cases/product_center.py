@@ -68,6 +68,7 @@ from ..product_supplier_models import (
     ProductCategoryRow,
     ProductImageRow,
     ProductRow,
+    SupplierProductRow,
 )
 from ..identity_models import TenantRow
 from ..public_catalog_models import PublicCatalogOfferRow, TenantPublicProfileRow
@@ -3316,6 +3317,123 @@ def list_review_queue(
     return result
 
 
+def _detach_catalog_relationships(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_ids: list[UUID] | None = None,
+    sku_ids: list[UUID] | None = None,
+    at: datetime,
+) -> None:
+    """Remove live catalog relationships while retaining audit rows.
+
+    Product/SKU rows are intentionally retained because quotations, inventory
+    and audit records may still reference them.  Deletion must nevertheless
+    release the catalog relationships and business identities that belong to
+    the live catalog: category assignments, supplier assignments, source
+    relationships, public offers and active uniqueness slots.  The partial
+    indexes introduced with this behavior ensure that an archived identity
+    cannot block a later import.
+    """
+
+    product_ids = list(dict.fromkeys(product_ids or []))
+    sku_ids = list(dict.fromkeys(sku_ids or []))
+
+    if product_ids:
+        session.execute(
+            update(ProductRow)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.id.in_(product_ids),
+                (ProductRow.category_id.is_not(None)
+                 | ProductRow.storefront_pinned_at.is_not(None)),
+            )
+            .values(
+                category_id=None,
+                storefront_pinned_at=None,
+                updated_at=at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            update(ProductCategoryRow)
+            .where(
+                ProductCategoryRow.tenant_id == tenant_id,
+                ProductCategoryRow.cover_source == "PRODUCT",
+                ProductCategoryRow.cover_product_id.in_(product_ids),
+            )
+            .values(
+                cover_source="NONE",
+                cover_product_id=None,
+                cover_object_key=None,
+                updated_at=at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            update(SupplierProductRow)
+            .where(
+                SupplierProductRow.tenant_id == tenant_id,
+                SupplierProductRow.product_id.in_(product_ids),
+                (SupplierProductRow.deleted_at.is_(None)
+                 | (SupplierProductRow.status != "INACTIVE")),
+            )
+            .values(
+                status="INACTIVE",
+                deleted_at=at,
+                version=SupplierProductRow.version + 1,
+                updated_at=at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+    if sku_ids:
+        session.execute(
+            update(SkuRow)
+            .where(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.id.in_(sku_ids),
+                (SkuRow.supplier_id.is_not(None)
+                 | SkuRow.source_sku_code.is_not(None)),
+            )
+            .values(
+                supplier_id=None,
+                source_sku_code=None,
+                updated_at=at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            update(PublicCatalogOfferRow)
+            .where(
+                PublicCatalogOfferRow.tenant_id == tenant_id,
+                PublicCatalogOfferRow.sku_id.in_(sku_ids),
+                PublicCatalogOfferRow.publication_status != "SUSPENDED",
+            )
+            .values(
+                publication_status="SUSPENDED",
+                updated_at=at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            update(SupplierProductRow)
+            .where(
+                SupplierProductRow.tenant_id == tenant_id,
+                SupplierProductRow.sku_id.in_(sku_ids),
+                (SupplierProductRow.deleted_at.is_(None)
+                 | (SupplierProductRow.status != "INACTIVE")),
+            )
+            .values(
+                status="INACTIVE",
+                deleted_at=at,
+                version=SupplierProductRow.version + 1,
+                updated_at=at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+
 def batch_delete_skus(
     session: Session,
     *,
@@ -3327,7 +3445,7 @@ def batch_delete_skus(
     commit: bool = True,
     cleanup_images: bool = True,
 ) -> dict[str, Any]:
-    """Soft-delete SKUs while preserving inventory and quotation history."""
+    """Archive SKUs, detach supplier/source links, and preserve history."""
     _require(permissions, "product.edit")
     _lock_catalog_write(session, tenant_id=tenant_id)
 
@@ -3468,6 +3586,14 @@ def batch_delete_skus(
             supplier.active_skus = int(active_counts.get(supplier.id, 0))
             supplier.updated_at = now
 
+    _detach_catalog_relationships(
+        session,
+        tenant_id=tenant_id,
+        product_ids=archived_product_ids,
+        sku_ids=selected_ids,
+        at=now,
+    )
+
     if commit:
         _commit(
             session,
@@ -3527,7 +3653,7 @@ def batch_delete_products(
     permissions: frozenset[str],
     product_ids: list[UUID],
 ) -> dict[str, Any]:
-    """Soft-delete selected product cards, including products without SKUs."""
+    """Archive selected product cards and detach their catalog relationships."""
 
     _require(permissions, "product.edit")
     _lock_catalog_write(session, tenant_id=tenant_id)
@@ -3631,6 +3757,14 @@ def batch_delete_products(
             )
         )
 
+    _detach_catalog_relationships(
+        session,
+        tenant_id=tenant_id,
+        product_ids=selected_product_ids,
+        sku_ids=[sku.id for sku in sku_rows],
+        at=now,
+    )
+
     _commit(
         session,
         conflict_code="BATCH_DELETE_PRODUCTS_FAILED",
@@ -3708,7 +3842,7 @@ def delete_all_products(
     membership_id: UUID,
     permissions: frozenset[str],
 ) -> dict[str, int]:
-    """Soft-delete one tenant's complete catalog with set-based updates."""
+    """Archive a tenant catalog and detach every live product relationship."""
 
     _require(permissions, "product.edit")
     _lock_catalog_write(session, tenant_id=tenant_id)
@@ -3735,7 +3869,34 @@ def delete_all_products(
         )
         or 0
     )
+    all_product_ids = list(
+        session.scalars(
+            select(ProductRow.id)
+            .where(ProductRow.tenant_id == tenant_id)
+            .execution_options(include_deleted=True)
+        ).all()
+    )
+    all_sku_ids = list(
+        session.scalars(
+            select(SkuRow.id)
+            .where(SkuRow.tenant_id == tenant_id)
+            .execution_options(include_deleted=True)
+        ).all()
+    )
     if deleted_sku_count == 0 and deleted_product_count == 0:
+        # A previous version of the delete path left archived rows linked to
+        # categories, suppliers and offers.  Clean those stale relationships
+        # even when there is no currently-live product left to archive.
+        if all_product_ids or all_sku_ids:
+            cleanup_at = utcnow()
+            _detach_catalog_relationships(
+                session,
+                tenant_id=tenant_id,
+                product_ids=all_product_ids,
+                sku_ids=all_sku_ids,
+                at=cleanup_at,
+            )
+            session.commit()
         return {"deleted_product_count": 0, "deleted_sku_count": 0}
 
     archived_product_ids = list(
@@ -3801,6 +3962,13 @@ def delete_all_products(
         .values(active_skus=0, updated_at=now)
         .execution_options(synchronize_session=False)
     )
+    _detach_catalog_relationships(
+        session,
+        tenant_id=tenant_id,
+        product_ids=all_product_ids,
+        sku_ids=all_sku_ids,
+        at=now,
+    )
     session.add(
         ProductAuditEventRow(
             tenant_id=tenant_id,
@@ -3827,7 +3995,7 @@ def delete_all_products(
         cleanup = cleanup_product_images(
             session,
             tenant_id=tenant_id,
-            product_ids=archived_product_ids,
+            product_ids=all_product_ids,
             at=now,
         )
         if cleanup.removed_image_count:

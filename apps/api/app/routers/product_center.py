@@ -759,7 +759,7 @@ def batch_delete_products(
     request: ProductBatchDeleteRequest,
     session: Session = Depends(get_authenticated_session),
 ) -> ProductBatchOperationResponse:
-    """Soft-delete selected product cards and all of their SKU rows."""
+    """Archive selected product cards and detach their SKU relationships."""
 
     context = _context(session)
     try:

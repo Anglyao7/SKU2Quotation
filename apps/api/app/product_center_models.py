@@ -40,12 +40,27 @@ class SkuRow(AuditTimestampMixin, Base):
         CheckConstraint("default_moq IS NULL OR default_moq >= 0", name="moq_nonnegative"),
         CheckConstraint("weight IS NULL OR weight >= 0", name="weight_nonnegative"),
         UniqueConstraint("tenant_id", "id", name="uq_skus_tenant_identity"),
-        UniqueConstraint("tenant_id", "sku_code", name="uq_skus_tenant_code"),
+        # Keep historical/archived SKU rows without reserving their business
+        # code for future imports.
+        Index(
+            "uq_skus_tenant_code_active",
+            "tenant_id",
+            "sku_code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL AND status <> 'ARCHIVED'"),
+            sqlite_where=text("deleted_at IS NULL AND status <> 'ARCHIVED'"),
+        ),
         Index(
             "uq_skus_tenant_source_code",
             "tenant_id",
             "source_sku_code",
             unique=True,
+            postgresql_where=text(
+                "deleted_at IS NULL AND status <> 'ARCHIVED' AND source_sku_code IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "deleted_at IS NULL AND status <> 'ARCHIVED' AND source_sku_code IS NOT NULL"
+            ),
         ),
         Index(
             "uq_skus_tenant_product_sequence",
@@ -53,6 +68,12 @@ class SkuRow(AuditTimestampMixin, Base):
             "product_id",
             "sku_sequence",
             unique=True,
+            postgresql_where=text(
+                "deleted_at IS NULL AND status <> 'ARCHIVED' AND sku_sequence IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "deleted_at IS NULL AND status <> 'ARCHIVED' AND sku_sequence IS NOT NULL"
+            ),
         ),
         ForeignKeyConstraint(
             ["tenant_id", "product_id"],

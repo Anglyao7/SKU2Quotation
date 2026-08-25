@@ -9366,6 +9366,7 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
                     tenant_id=DEFAULT_TENANT_ID,
                     product_id=product_id,
                     sku_code=f"BATCH-{suffix}-A",
+                    source_sku_code=f"SOURCE-{suffix}-A",
                     name=f"Batch SKU A {suffix}",
                     option_values={},
                     status="ACTIVE",
@@ -9375,6 +9376,7 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
                     tenant_id=DEFAULT_TENANT_ID,
                     product_id=product_id,
                     sku_code=f"BATCH-{suffix}-B",
+                    source_sku_code=f"SOURCE-{suffix}-B",
                     name=f"Batch SKU B {suffix}",
                     option_values={},
                     status="ACTIVE",
@@ -9446,6 +9448,7 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
         assert deleted_sku.deleted_at is not None
         assert deleted_sku.status == "ARCHIVED"
         assert deleted_sku.version == 2
+        assert deleted_sku.source_sku_code is None
         assert offer is not None
         assert offer.publication_status == "SUSPENDED"
         assert product is not None
@@ -9464,6 +9467,7 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
         assert product is not None
         assert product.status == "ARCHIVED"
         assert product.archived_at is not None
+        assert product.category_id is None
         assert not storage.exists(image_key)
         image = session.scalar(
             select(ProductImageRow)
@@ -9472,6 +9476,12 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
         )
         assert image is not None
         assert image.deleted_at is not None
+        remaining_sku = session.scalar(
+            select(SkuRow)
+            .where(SkuRow.tenant_id == DEFAULT_TENANT_ID, SkuRow.id == second_sku_id)
+            .execution_options(include_deleted=True)
+        )
+        assert remaining_sku is not None and remaining_sku.source_sku_code is None
 
     empty_listing = client.get(
         "/api/v1/product-center/skus",
@@ -9504,16 +9514,21 @@ def test_batch_delete_products_archives_selected_products_including_empty() -> N
                     name=f"Batch empty product card {suffix}",
                     status="ACTIVE",
                 ),
-                SkuRow(
-                    id=sku_id,
-                    tenant_id=DEFAULT_TENANT_ID,
-                    product_id=product_id,
-                    sku_code=f"BATCH-CARD-SKU-{suffix}",
-                    name=f"Batch card SKU {suffix}",
-                    option_values={},
-                    status="ACTIVE",
-                ),
             ]
+        )
+        # SQLite does not infer this composite foreign-key dependency when
+        # products and SKUs are added in one executemany batch.
+        session.flush()
+        session.add(
+            SkuRow(
+                id=sku_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                sku_code=f"BATCH-CARD-SKU-{suffix}",
+                name=f"Batch card SKU {suffix}",
+                option_values={},
+                status="ACTIVE",
+            )
         )
         session.commit()
 

@@ -77,7 +77,21 @@ class ProductRow(AuditTimestampMixin, Base):
         CheckConstraint("current_version >= 1", name="current_version_positive"),
         CheckConstraint("search_document_version >= 0", name="search_version_nonnegative"),
         UniqueConstraint("tenant_id", "id", name="uq_products_tenant_identity"),
-        UniqueConstraint("tenant_id", "product_code", name="uq_products_tenant_code"),
+        # Product codes are unique only among live catalog rows.  Archived
+        # rows remain as audit/history records, but must not reserve a code
+        # after the merchant deletes a product and imports it again.
+        Index(
+            "uq_products_tenant_code_active",
+            "tenant_id",
+            "product_code",
+            unique=True,
+            postgresql_where=text(
+                "deleted_at IS NULL AND status <> 'ARCHIVED' AND product_code IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "deleted_at IS NULL AND status <> 'ARCHIVED' AND product_code IS NOT NULL"
+            ),
+        ),
         Index(
             "uq_products_tenant_sku_code_sequence",
             "tenant_id",
@@ -291,12 +305,18 @@ class SupplierProductRow(AuditTimestampMixin, Base):
         CheckConstraint("version >= 1", name="version_positive"),
         CheckConstraint("status IN ('ACTIVE', 'INACTIVE', 'UNVERIFIED')", name="status_allowed"),
         UniqueConstraint("tenant_id", "id", name="uq_supplier_products_tenant_identity"),
-        UniqueConstraint(
+        # A deleted source relationship must not block a later import of the
+        # same product/supplier SKU.  Keep the historical row, but enforce
+        # uniqueness only for active source relationships.
+        Index(
+            "uq_supplier_products_tenant_source_sku_active",
             "tenant_id",
             "supplier_id",
             "product_id",
             "supplier_sku",
-            name="uq_supplier_products_tenant_source_sku",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
         ),
         ForeignKeyConstraint(
             ["tenant_id", "supplier_id"],
