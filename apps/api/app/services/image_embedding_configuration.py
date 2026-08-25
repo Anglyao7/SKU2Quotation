@@ -28,6 +28,8 @@ SETTINGS_ID = "IMAGE_EMBEDDING"
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com"
 DEFAULT_MODEL_NAME = "qwen3-vl-embedding"
 DEFAULT_DIMENSIONS = 1024
+DEFAULT_INDEX_CONCURRENCY = 16
+MAX_INDEX_CONCURRENCY = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +43,7 @@ class ImageEmbeddingConfigurationSnapshot:
     dimensions: int
     timeout_seconds: int
     max_retry_count: int
+    index_concurrency: int
     api_key_configured: bool
     api_key_hint: str | None
     updated_at: datetime | None
@@ -65,6 +68,25 @@ def get_managed_image_embedding_settings(
     session: Session,
 ) -> ImageEmbeddingProviderSettingsRow | None:
     return session.get(ImageEmbeddingProviderSettingsRow, SETTINGS_ID)
+
+
+def _environment_index_concurrency() -> int:
+    raw_value = os.getenv(
+        "IMAGE_INDEX_CONCURRENCY",
+        str(DEFAULT_INDEX_CONCURRENCY),
+    ).strip()
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return DEFAULT_INDEX_CONCURRENCY
+    return max(1, min(MAX_INDEX_CONCURRENCY, value))
+
+
+def resolved_image_index_concurrency(session: Session) -> int:
+    settings = get_managed_image_embedding_settings(session)
+    if settings is not None:
+        return max(1, min(MAX_INDEX_CONCURRENCY, settings.index_concurrency))
+    return _environment_index_concurrency()
 
 
 def _environment_provider() -> ImageIntelligenceProvider:
@@ -151,6 +173,7 @@ def image_embedding_configuration_snapshot(
             dimensions=settings.dimensions,
             timeout_seconds=settings.timeout_seconds,
             max_retry_count=settings.max_retry_count,
+            index_concurrency=settings.index_concurrency,
             api_key_configured=bool(settings.api_key_ciphertext),
             api_key_hint=(
                 f"••••{settings.api_key_last_four}"
@@ -178,6 +201,7 @@ def image_embedding_configuration_snapshot(
             max_retry_count=int(
                 os.getenv("IMAGE_EMBEDDING_PROVIDER_RETRIES", "2")
             ),
+            index_concurrency=_environment_index_concurrency(),
             api_key_configured=bool(raw_key),
             api_key_hint=f"••••{raw_key[-4:]}" if raw_key else None,
             updated_at=None,
@@ -200,6 +224,7 @@ def image_embedding_configuration_snapshot(
             dimensions=DEFAULT_DIMENSIONS,
             timeout_seconds=30,
             max_retry_count=2,
+            index_concurrency=_environment_index_concurrency(),
             api_key_configured=False,
             api_key_hint=None,
             updated_at=None,
@@ -214,6 +239,7 @@ def image_embedding_configuration_snapshot(
         dimensions=provider.identity.dimensions,
         timeout_seconds=30,
         max_retry_count=0,
+        index_concurrency=_environment_index_concurrency(),
         api_key_configured=False,
         api_key_hint=None,
         updated_at=None,
@@ -229,6 +255,7 @@ def save_managed_image_embedding_settings(
     dimensions: int,
     timeout_seconds: int,
     max_retry_count: int,
+    index_concurrency: int,
     api_key: str | None,
     updated_by_user_id: UUID,
 ) -> ImageEmbeddingProviderSettingsRow:
@@ -243,6 +270,8 @@ def save_managed_image_embedding_settings(
         raise ImageIntelligenceProviderError("请求超时必须在 1–120 秒之间")
     if max_retry_count < 0 or max_retry_count > 5:
         raise ImageIntelligenceProviderError("重试次数必须在 0–5 之间")
+    if index_concurrency < 1 or index_concurrency > MAX_INDEX_CONCURRENCY:
+        raise ImageIntelligenceProviderError("图片向量化并发数必须在 1–32 之间")
 
     settings = get_managed_image_embedding_settings(session)
     normalized_key = api_key.strip() if api_key is not None else ""
@@ -267,6 +296,7 @@ def save_managed_image_embedding_settings(
             dimensions=dimensions,
             timeout_seconds=timeout_seconds,
             max_retry_count=max_retry_count,
+            index_concurrency=index_concurrency,
             api_key_ciphertext=encrypt_api_key(normalized_key),
             api_key_last_four=normalized_key[-4:] or None,
             is_active=enabled,
@@ -281,6 +311,7 @@ def save_managed_image_embedding_settings(
         settings.dimensions = dimensions
         settings.timeout_seconds = timeout_seconds
         settings.max_retry_count = max_retry_count
+        settings.index_concurrency = index_concurrency
         settings.is_active = enabled
         settings.version += 1
         settings.updated_by_user_id = updated_by_user_id

@@ -52,13 +52,45 @@ from ..services.external_image_migration import (
 )
 from ..services.image_embedding_configuration import (
     resolved_image_embedding_provider,
+    resolved_image_index_concurrency,
 )
 
 
 logger = logging.getLogger(__name__)
+
+
+def _bounded_index_concurrency(
+    environment_name: str,
+    *,
+    default: int,
+    maximum: int,
+) -> int:
+    raw_value = os.getenv(environment_name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "%s=%r is invalid; using %s",
+            environment_name,
+            raw_value,
+            default,
+        )
+        return default
+    return max(1, min(maximum, value))
+
+
+_IMAGE_INDEX_GLOBAL_CONCURRENCY = _bounded_index_concurrency(
+    "IMAGE_INDEX_GLOBAL_CONCURRENCY",
+    default=32,
+    maximum=64,
+)
 _image_index_executor = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="image-index",
+)
+_image_index_projection_executor = ThreadPoolExecutor(
+    max_workers=_IMAGE_INDEX_GLOBAL_CONCURRENCY,
+    thread_name_prefix="image-projection",
 )
 _stale_job_after = timedelta(minutes=10)
 _ZERO_IDENTITY = UUID(int=0)
@@ -836,6 +868,44 @@ def _safe_job_error(exc: Exception) -> str:
     return "图片向量化失败，请检查模型配置、R2 对象或服务日志。"
 
 
+def _project_image_index_target(
+    *,
+    organization_id: UUID,
+    tenant_id: UUID,
+    user_id: UUID,
+    image_id: UUID,
+    provider: ImageIntelligenceProvider,
+    force: bool,
+) -> bool:
+    """Project one image in a thread-owned transaction.
+
+    SQLAlchemy sessions are never shared across workers. The configured image
+    providers are immutable after construction; Qwen requests share only the
+    thread-safe pooled HTTP client.
+    """
+
+    with SessionLocal() as worker_session:
+        set_request_context(
+            worker_session,
+            organization_id=organization_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        try:
+            _embedding, _observation, idempotent = _project_product_image(
+                worker_session,
+                tenant_id=tenant_id,
+                image_id=image_id,
+                provider=provider,
+                force=force,
+            )
+            worker_session.commit()
+            return idempotent
+        except Exception:
+            worker_session.rollback()
+            raise
+
+
 def _run_image_index_job(
     *,
     job_id: UUID,
@@ -942,30 +1012,94 @@ def _run_image_index_job(
             if _pause_at_checkpoint(session, job):
                 return
 
-            for index, (image_id, product_name) in enumerate(targets):
+            concurrency = min(
+                resolved_image_index_concurrency(session),
+                _IMAGE_INDEX_GLOBAL_CONCURRENCY,
+                max(1, len(targets)),
+            )
+            completed_ids: set[UUID] = set()
+            embeddings_written = 0
+            logger.info(
+                "image index job %s processing %s images with concurrency=%s",
+                job_id,
+                len(targets),
+                concurrency,
+            )
+            for batch_start in range(0, len(targets), concurrency):
                 if _pause_at_checkpoint(session, job):
                     return
-                job.current_image_id = image_id
-                job.current_product_name = product_name
+                batch = targets[batch_start : batch_start + concurrency]
+                job.current_image_id = batch[0][0]
+                job.current_product_name = (
+                    batch[0][1]
+                    if len(batch) == 1
+                    else f"{batch[0][1]} 等 {len(batch)} 张图片"
+                )[:500]
                 job.updated_at = utcnow()
                 session.commit()
-                _embedding, _observation, idempotent = _project_product_image(
-                    session,
-                    tenant_id=tenant_id,
-                    image_id=image_id,
-                    provider=provider,
-                    force=job.mode == "FULL_REBUILD",
-                )
-                job.processed_images = base_processed + index + 1
-                if not idempotent:
-                    job.embeddings += 1
-                job.remaining_image_ids = [
-                    str(value) for value in target_ids[index + 1 :]
+
+                futures = [
+                    (
+                        image_id,
+                        product_name,
+                        _image_index_projection_executor.submit(
+                            _project_image_index_target,
+                            organization_id=organization_id,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            image_id=image_id,
+                            provider=provider,
+                            force=job.mode == "FULL_REBUILD",
+                        ),
+                    )
+                    for image_id, product_name in batch
                 ]
+                batch_failures: list[tuple[UUID, str, Exception]] = []
+                for image_id, product_name, future in futures:
+                    try:
+                        idempotent = future.result()
+                    except Exception as exc:
+                        logger.exception(
+                            "image index job %s failed image %s",
+                            job_id,
+                            image_id,
+                        )
+                        batch_failures.append((image_id, product_name, exc))
+                    else:
+                        completed_ids.add(image_id)
+                        if not idempotent:
+                            embeddings_written += 1
+
+                job.processed_images = base_processed + len(completed_ids)
+                job.embeddings = base_embeddings + embeddings_written
+                job.remaining_image_ids = [
+                    str(value)
+                    for value in target_ids
+                    if value not in completed_ids
+                ]
+                job.updated_at = utcnow()
+
+                if batch_failures:
+                    failed_image_id, failed_product_name, failure = batch_failures[0]
+                    job.status = "FAILED"
+                    job.failed_images = len(batch_failures)
+                    job.current_image_id = failed_image_id
+                    job.current_product_name = failed_product_name
+                    job.error_message = (
+                        f"{_safe_job_error(failure)} "
+                        "已完成的图片向量和断点均已保留。"
+                    )
+                    job.pause_requested_at = None
+                    job.paused_at = None
+                    job.completed_at = utcnow()
+                    session.commit()
+                    return
+
                 job.current_image_id = None
                 job.current_product_name = None
-                job.updated_at = utcnow()
                 session.commit()
+                if _pause_at_checkpoint(session, job):
+                    return
 
             session.refresh(job)
             if job.pause_requested_at is not None:

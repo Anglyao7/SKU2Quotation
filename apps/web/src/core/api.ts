@@ -2310,6 +2310,7 @@ interface ApiImageEmbeddingSettings {
   dimensions: number;
   timeout_seconds: number;
   max_retry_count: number;
+  index_concurrency: number;
   api_key_configured: boolean;
   api_key_hint?: string | null;
   updated_at?: string | null;
@@ -2328,6 +2329,7 @@ function mapImageEmbeddingSettings(row: ApiImageEmbeddingSettings): ImageEmbeddi
     dimensions: row.dimensions,
     timeoutSeconds: row.timeout_seconds,
     maxRetryCount: row.max_retry_count,
+    indexConcurrency: row.index_concurrency,
     apiKeyConfigured: row.api_key_configured,
     apiKeyHint: defined(row.api_key_hint),
     updatedAt: defined(row.updated_at),
@@ -2351,6 +2353,7 @@ export async function updateImageEmbeddingSettings(input: {
   dimensions: QwenImageEmbeddingDimension;
   timeoutSeconds: number;
   maxRetryCount: number;
+  indexConcurrency: number;
 }): Promise<ImageEmbeddingSettings> {
   return mapImageEmbeddingSettings(await request<ApiImageEmbeddingSettings>(
     "/ai/image-embedding/settings",
@@ -2364,6 +2367,7 @@ export async function updateImageEmbeddingSettings(input: {
         dimensions: input.dimensions,
         timeout_seconds: input.timeoutSeconds,
         max_retry_count: input.maxRetryCount,
+        index_concurrency: input.indexConcurrency,
       }),
     },
   ));

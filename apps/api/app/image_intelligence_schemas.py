@@ -44,6 +44,7 @@ class ImageEmbeddingSettingsResponse(BaseModel):
     dimensions: int
     timeout_seconds: int = Field(ge=1, le=120)
     max_retry_count: int = Field(ge=0, le=5)
+    index_concurrency: int = Field(default=16, ge=1, le=32)
     api_key_configured: bool
     api_key_hint: str | None = None
     updated_at: datetime | None = None
@@ -67,6 +68,7 @@ class ImageEmbeddingSettingsUpdateRequest(BaseModel):
     dimensions: Literal[256, 512, 768, 1024, 1536, 2048, 2560] = 1024
     timeout_seconds: int = Field(default=30, ge=1, le=120)
     max_retry_count: int = Field(default=2, ge=0, le=5)
+    index_concurrency: int = Field(default=16, ge=1, le=32)
 
 
 class ImageIndexStatusResponse(BaseModel):

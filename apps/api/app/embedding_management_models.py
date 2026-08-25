@@ -87,6 +87,10 @@ class ImageEmbeddingProviderSettingsRow(AuditTimestampMixin, Base):
             "max_retry_count >= 0 AND max_retry_count <= 5",
             name="max_retry_count_supported",
         ),
+        CheckConstraint(
+            "index_concurrency >= 1 AND index_concurrency <= 32",
+            name="index_concurrency_supported",
+        ),
         CheckConstraint("version >= 1", name="version_positive"),
     )
 
@@ -100,6 +104,11 @@ class ImageEmbeddingProviderSettingsRow(AuditTimestampMixin, Base):
     dimensions: Mapped[int] = mapped_column(Integer, default=1024, nullable=False)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     max_retry_count: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    index_concurrency: Mapped[int] = mapped_column(
+        Integer,
+        default=16,
+        nullable=False,
+    )
     api_key_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     api_key_last_four: Mapped[str | None] = mapped_column(String(4), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

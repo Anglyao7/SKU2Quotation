@@ -867,6 +867,9 @@ const english: Record<string, string> = {
   "请输入 AccessKey Secret": "Enter the AccessKey Secret",
   "请求超时（秒）": "Request timeout (seconds)",
   "并发请求数": "Concurrent requests",
+  "图片向量化并发数": "Image indexing concurrency",
+  "每个店铺同时处理的图片数，建议 16。保存后新启动或继续的任务生效，并受服务全局上限保护。":
+    "Images processed concurrently per store. Recommended: 16. The value applies to new or resumed jobs and remains subject to the service-wide safety limit.",
   "图生图请求达到 RPM 或并发上限后会排队等待。":
     "Image requests wait in a queue after reaching the RPM or concurrency limit.",
   "图生图 API": "Image-to-image API",

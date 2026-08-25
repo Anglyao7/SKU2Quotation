@@ -483,6 +483,7 @@ function ImageEmbeddingSettingsPanel() {
   const [dimensions, setDimensions] = useState<QwenImageEmbeddingDimension>(1024);
   const [timeoutSeconds, setTimeoutSeconds] = useState("30");
   const [maxRetryCount, setMaxRetryCount] = useState("2");
+  const [indexConcurrency, setIndexConcurrency] = useState("16");
 
   const apply = useCallback((next: ImageEmbeddingSettings) => {
     setSettings(next);
@@ -493,6 +494,7 @@ function ImageEmbeddingSettingsPanel() {
     setDimensions(supportedDimensions.has(next.dimensions) ? next.dimensions as QwenImageEmbeddingDimension : 1024);
     setTimeoutSeconds(String(next.timeoutSeconds));
     setMaxRetryCount(String(next.maxRetryCount));
+    setIndexConcurrency(String(next.indexConcurrency));
     setApiKey("");
   }, []);
 
@@ -519,7 +521,10 @@ function ImageEmbeddingSettingsPanel() {
     && Number(timeoutSeconds) <= 120
     && Number.isInteger(Number(maxRetryCount))
     && Number(maxRetryCount) >= 0
-    && Number(maxRetryCount) <= 5,
+    && Number(maxRetryCount) <= 5
+    && Number.isInteger(Number(indexConcurrency))
+    && Number(indexConcurrency) >= 1
+    && Number(indexConcurrency) <= 32,
   );
 
   const save = async (event: FormEvent<HTMLFormElement>) => {
@@ -537,6 +542,7 @@ function ImageEmbeddingSettingsPanel() {
         dimensions,
         timeoutSeconds: Number(timeoutSeconds),
         maxRetryCount: Number(maxRetryCount),
+        indexConcurrency: Number(indexConcurrency),
       });
       apply(saved);
       setMessage(saved.modelChanged
@@ -606,6 +612,11 @@ function ImageEmbeddingSettingsPanel() {
         <label>
           <Text size="1" color="gray">{t("失败后最多重试次数")}</Text>
           <TextField.Root type="number" min="0" max="5" value={maxRetryCount} onChange={(event) => setMaxRetryCount(event.target.value)} required />
+        </label>
+        <label>
+          <Text size="1" color="gray">{t("图片向量化并发数")}</Text>
+          <TextField.Root type="number" min="1" max="32" value={indexConcurrency} onChange={(event) => setIndexConcurrency(event.target.value)} required />
+          <Text size="1" color="gray">{t("每个店铺同时处理的图片数，建议 16。保存后新启动或继续的任务生效，并受服务全局上限保护。")}</Text>
         </label>
         <div className="configuration-actions configuration-wide">
           <Button type="submit" size="3" disabled={!valid || saving}><FloppyDisk />{t(saving ? "保存中…" : "保存配置")}</Button>

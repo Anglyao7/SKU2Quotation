@@ -7170,6 +7170,7 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
         assert initial.status_code == 200
         assert initial.headers["cache-control"] == "no-store"
         assert "api_key" not in initial.json()
+        assert initial.json()["index_concurrency"] == 16
 
         saved = client.put(
             "/api/v1/ai/embedding/settings",
@@ -7313,6 +7314,7 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
                 "dimensions": 1024,
                 "timeout_seconds": 35,
                 "max_retry_count": 2,
+                "index_concurrency": 24,
             },
         )
         assert saved.status_code == 200, saved.text
@@ -7322,6 +7324,7 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
         assert payload["api_key_configured"] is True
         assert payload["api_key_hint"] == "••••1357"
         assert payload["dimensions"] == 1024
+        assert payload["index_concurrency"] == 24
         assert payload["base_url"] == "https://dashscope.aliyuncs.com"
         assert "product-image-png-v2" in payload["model_version"]
         assert raw_api_key not in saved.text
@@ -7336,6 +7339,13 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
             assert row.base_url == "https://dashscope.aliyuncs.com"
             assert raw_api_key not in row.api_key_ciphertext
             assert decrypt_api_key(row.api_key_ciphertext) == raw_api_key
+            assert row.index_concurrency == 24
+            assert (
+                image_intelligence_use_cases.resolved_image_index_concurrency(
+                    session
+                )
+                == 24
+            )
             ciphertext = row.api_key_ciphertext
             row.model_version = "legacy-jpeg-preprocessing"
             session.commit()
@@ -7343,6 +7353,20 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
         refreshed = client.get("/api/v1/ai/image-embedding/settings")
         assert refreshed.status_code == 200, refreshed.text
         assert "product-image-png-v2" in refreshed.json()["model_version"]
+
+        invalid_concurrency = client.put(
+            "/api/v1/ai/image-embedding/settings",
+            json={
+                "enabled": True,
+                "base_url": "https://dashscope.aliyuncs.com",
+                "model_name": "qwen3-vl-embedding",
+                "dimensions": 1024,
+                "timeout_seconds": 30,
+                "max_retry_count": 1,
+                "index_concurrency": 33,
+            },
+        )
+        assert invalid_concurrency.status_code == 422
 
         disabled = client.put(
             "/api/v1/ai/image-embedding/settings",
@@ -7353,10 +7377,12 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
                 "dimensions": 1024,
                 "timeout_seconds": 30,
                 "max_retry_count": 1,
+                "index_concurrency": 12,
             },
         )
         assert disabled.status_code == 200, disabled.text
         assert disabled.json()["enabled"] is False
+        assert disabled.json()["index_concurrency"] == 12
         with SessionLocal() as session:
             row = session.get(
                 ImageEmbeddingProviderSettingsRow,
@@ -7364,6 +7390,7 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
             )
             assert row is not None
             assert row.api_key_ciphertext == ciphertext
+            assert row.index_concurrency == 12
     finally:
         with SessionLocal() as session:
             session.execute(delete(ImageEmbeddingProviderSettingsRow))
@@ -7411,6 +7438,269 @@ def test_interrupted_image_index_job_recovers_as_resumable_checkpoint() -> None:
             session.execute(
                 delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id)
             )
+            session.commit()
+
+
+def test_image_index_job_projects_images_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    targets = [(uuid4(), f"Concurrent image {index}") for index in range(8)]
+    active_workers = 0
+    max_active_workers = 0
+    counter_lock = Lock()
+
+    with SessionLocal() as session:
+        provider = image_intelligence_use_cases._provider(session)
+        job = ImageIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="QUEUED",
+            total_images=len(targets),
+            processed_images=0,
+            failed_images=0,
+            embeddings=0,
+            model_provider=provider.identity.provider,
+            model_name=provider.identity.model_name,
+            model_version=provider.identity.model_version,
+            dimensions=provider.identity.dimensions,
+            remaining_image_ids=[str(image_id) for image_id, _ in targets],
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    def fake_targets(*_args, **_kwargs):
+        return targets
+
+    def fake_projection(*_args, **_kwargs):
+        nonlocal active_workers, max_active_workers
+        with counter_lock:
+            active_workers += 1
+            max_active_workers = max(max_active_workers, active_workers)
+        try:
+            sleep(0.08)
+            return SimpleNamespace(), SimpleNamespace(), False
+        finally:
+            with counter_lock:
+                active_workers -= 1
+
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "resolved_image_index_concurrency",
+        lambda _session: 4,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases.repository,
+        "list_index_target_images",
+        fake_targets,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "_project_product_image",
+        fake_projection,
+    )
+
+    try:
+        image_intelligence_use_cases._run_image_index_job(
+            job_id=job_id,
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            tenant_id=DEFAULT_TENANT_ID,
+            user_id=DEFAULT_OWNER_USER_ID,
+        )
+        with SessionLocal() as session:
+            finished = session.get(ImageIndexJobRow, job_id)
+            assert finished is not None
+            assert finished.status == "SUCCEEDED"
+            assert finished.processed_images == len(targets)
+            assert finished.embeddings == len(targets)
+            assert finished.remaining_image_ids == []
+        assert max_active_workers == 4
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id))
+            session.commit()
+
+
+def test_image_index_pause_waits_for_current_concurrent_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    targets = [(uuid4(), f"Pause image {index}") for index in range(6)]
+    batch_started = Event()
+    release_batch = Event()
+    active_workers = 0
+    counter_lock = Lock()
+
+    with SessionLocal() as session:
+        provider = image_intelligence_use_cases._provider(session)
+        job = ImageIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="QUEUED",
+            total_images=len(targets),
+            processed_images=0,
+            failed_images=0,
+            embeddings=0,
+            model_provider=provider.identity.provider,
+            model_name=provider.identity.model_name,
+            model_version=provider.identity.model_version,
+            dimensions=provider.identity.dimensions,
+            remaining_image_ids=[str(image_id) for image_id, _ in targets],
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    def fake_targets(*_args, **_kwargs):
+        return targets
+
+    def blocked_projection(*_args, **_kwargs):
+        nonlocal active_workers
+        with counter_lock:
+            active_workers += 1
+            if active_workers == 4:
+                batch_started.set()
+        try:
+            assert release_batch.wait(5)
+            return SimpleNamespace(), SimpleNamespace(), False
+        finally:
+            with counter_lock:
+                active_workers -= 1
+
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "resolved_image_index_concurrency",
+        lambda _session: 4,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases.repository,
+        "list_index_target_images",
+        fake_targets,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "_project_product_image",
+        blocked_projection,
+    )
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            running = executor.submit(
+                image_intelligence_use_cases._run_image_index_job,
+                job_id=job_id,
+                organization_id=DEFAULT_ORGANIZATION_ID,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=DEFAULT_OWNER_USER_ID,
+            )
+            assert batch_started.wait(5)
+            with SessionLocal() as session:
+                active_job = session.get(ImageIndexJobRow, job_id)
+                assert active_job is not None
+                active_job.pause_requested_at = datetime.now(UTC)
+                session.commit()
+            release_batch.set()
+            running.result(timeout=10)
+
+        with SessionLocal() as session:
+            paused = session.get(ImageIndexJobRow, job_id)
+            assert paused is not None
+            assert paused.status == "PAUSED"
+            assert paused.processed_images == 4
+            assert len(paused.remaining_image_ids) == 2
+            assert paused.current_image_id is None
+            assert paused.current_product_name is None
+    finally:
+        release_batch.set()
+        with SessionLocal() as session:
+            session.execute(delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id))
+            session.commit()
+
+
+def test_image_index_concurrent_failure_keeps_only_failed_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    targets = [(uuid4(), f"Failure image {index}") for index in range(4)]
+    failed_image_id = targets[0][0]
+
+    with SessionLocal() as session:
+        provider = image_intelligence_use_cases._provider(session)
+        job = ImageIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="QUEUED",
+            total_images=len(targets),
+            processed_images=0,
+            failed_images=0,
+            embeddings=0,
+            model_provider=provider.identity.provider,
+            model_name=provider.identity.model_name,
+            model_version=provider.identity.model_version,
+            dimensions=provider.identity.dimensions,
+            remaining_image_ids=[str(image_id) for image_id, _ in targets],
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    def fake_targets(*_args, **_kwargs):
+        return targets
+
+    def sometimes_failing_projection(
+        _session,
+        *,
+        image_id: UUID,
+        **_kwargs,
+    ):
+        sleep(0.04)
+        if image_id == failed_image_id:
+            raise ApplicationError(
+                "IMAGE_EMBEDDING_FAILED",
+                "temporary provider failure",
+                kind="unavailable",
+            )
+        return SimpleNamespace(), SimpleNamespace(), False
+
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "resolved_image_index_concurrency",
+        lambda _session: 4,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases.repository,
+        "list_index_target_images",
+        fake_targets,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "_project_product_image",
+        sometimes_failing_projection,
+    )
+
+    try:
+        image_intelligence_use_cases._run_image_index_job(
+            job_id=job_id,
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            tenant_id=DEFAULT_TENANT_ID,
+            user_id=DEFAULT_OWNER_USER_ID,
+        )
+        with SessionLocal() as session:
+            failed = session.get(ImageIndexJobRow, job_id)
+            assert failed is not None
+            assert failed.status == "FAILED"
+            assert failed.processed_images == 3
+            assert failed.embeddings == 3
+            assert failed.failed_images == 1
+            assert failed.remaining_image_ids == [str(failed_image_id)]
+            assert failed.current_image_id == failed_image_id
+            assert "temporary provider failure" in (failed.error_message or "")
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id))
             session.commit()
 
 

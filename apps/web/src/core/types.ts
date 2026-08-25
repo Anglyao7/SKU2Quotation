@@ -973,6 +973,7 @@ export interface ImageEmbeddingSettings {
   dimensions: number;
   timeoutSeconds: number;
   maxRetryCount: number;
+  indexConcurrency: number;
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
   updatedAt?: string;
