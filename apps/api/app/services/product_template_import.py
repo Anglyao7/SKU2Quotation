@@ -3566,6 +3566,7 @@ def _parse_product_sku_rows(
                     image_urls=product.image_urls,
                     image_url_columns=product.image_url_columns,
                     embedded_images=product.embedded_images,
+                    direct_product_code=product.product_code,
                 )
             )
 
@@ -3611,6 +3612,7 @@ def _parse_product_sku_rows(
                 image_url_columns=product.image_url_columns,
                 embedded_images=product.embedded_images,
                 product_only=True,
+                direct_product_code=product.product_code,
             )
         )
 
@@ -5591,6 +5593,20 @@ def process_product_template_import(
                         changed = True
 
             if sku is None:
+                # Rows matched earlier in this import may already have been
+                # moved onto this product.  Reconcile the allocator with the
+                # live in-memory rows immediately before issuing a new
+                # sequence so a moved sequence cannot be reused.
+                for existing_row in sku_rows_by_product.get(product.id, ()):
+                    if (
+                        existing_row.sku_sequence is not None
+                        and existing_row.deleted_at is None
+                        and existing_row.status != "ARCHIVED"
+                    ):
+                        sku_code_allocator.reserve(
+                            product,
+                            existing_row.sku_sequence,
+                        )
                 system_sku_code, sku_sequence = sku_code_allocator.issue(product)
                 sku = SkuRow(
                     id=uuid4(),
@@ -5657,6 +5673,11 @@ def process_product_template_import(
                         if row.id != sku.id
                     ]
                     sku_rows_by_product[product.id].append(sku)
+                # Existing rows can be moved onto a different product while
+                # this import is still running.  Keep their sequence visible
+                # to the in-memory allocator before a later row requests a
+                # newly generated sequence for the same product.
+                sku_code_allocator.reserve(product, sku.sku_sequence)
                 # Provenance follows the most recent successful import even
                 # when the row's business fields were unchanged. It is kept
                 # out of ``changed`` so the import summary and AI index only

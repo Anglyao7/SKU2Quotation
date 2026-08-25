@@ -203,6 +203,24 @@ class CatalogSkuCodeAllocator:
             product.sku_code_date = self.business_date
             product.sku_code_sequence = self.next_product_sequence
 
+    def reserve(self, product: ProductRow, sku_sequence: int | None) -> None:
+        """Record a sequence already attached to a product during a merge.
+
+        Imports can move an archived SKU onto a newly selected product before
+        creating the next SKU in the same transaction.  Such a moved row is
+        not part of the allocator's initial snapshot, so make it visible to
+        subsequent allocations and avoid reusing its sequence.
+        """
+
+        if sku_sequence is None:
+            return
+        product_id = product.id
+        current = self.next_sku_sequence_by_product.get(product_id, 0)
+        self.next_sku_sequence_by_product[product_id] = max(
+            current,
+            int(sku_sequence),
+        )
+
     def issue(self, product: ProductRow) -> tuple[str, int]:
         self.ensure_product(product)
         sku_sequence = self.next_sku_sequence_by_product.get(product.id, 0) + 1

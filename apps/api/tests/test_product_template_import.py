@@ -207,6 +207,7 @@ def test_product_sku_template_groups_multiple_skus_under_one_product(
 
     assert len(result.rows) == 4
     assert {row.product_key for row in result.rows} == {"PRODUCT:PET-BOWL"}
+    assert {row.direct_product_code for row in result.rows} == {"PET-BOWL"}
     assert len({row.sku_code for row in result.rows}) == 4
     assert all(row.sku_code.startswith("PET-BOWL-") for row in result.rows)
     assert {row.specification for row in result.rows} == {

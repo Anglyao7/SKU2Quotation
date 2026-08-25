@@ -3331,9 +3331,12 @@ def _detach_catalog_relationships(
     and audit records may still reference them.  Deletion must nevertheless
     release the catalog relationships and business identities that belong to
     the live catalog: category assignments, supplier assignments, source
-    relationships, public offers and active uniqueness slots.  The partial
-    indexes introduced with this behavior ensure that an archived identity
-    cannot block a later import.
+    relationships, public offers and active uniqueness slots.  The source SKU
+    code itself is an import identity rather than a live supplier relation, so
+    it is retained on the archived row; this lets a later import match and
+    reactivate the historical SKU instead of allocating a conflicting variant
+    sequence.  The partial indexes introduced with this behavior ensure that
+    an archived identity cannot block a later import.
     """
 
     product_ids = list(dict.fromkeys(product_ids or []))
@@ -3393,12 +3396,10 @@ def _detach_catalog_relationships(
             .where(
                 SkuRow.tenant_id == tenant_id,
                 SkuRow.id.in_(sku_ids),
-                (SkuRow.supplier_id.is_not(None)
-                 | SkuRow.source_sku_code.is_not(None)),
+                SkuRow.supplier_id.is_not(None),
             )
             .values(
                 supplier_id=None,
-                source_sku_code=None,
                 updated_at=at,
             )
             .execution_options(synchronize_session=False)

@@ -9448,7 +9448,10 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
         assert deleted_sku.deleted_at is not None
         assert deleted_sku.status == "ARCHIVED"
         assert deleted_sku.version == 2
-        assert deleted_sku.source_sku_code is None
+        # The source code is an import identity, not a live supplier
+        # relationship; keep it on the archived row so the same workbook can
+        # reactivate it without allocating a conflicting sequence.
+        assert deleted_sku.source_sku_code == f"SOURCE-{suffix}-A"
         assert offer is not None
         assert offer.publication_status == "SUSPENDED"
         assert product is not None
@@ -9481,7 +9484,8 @@ def test_batch_delete_skus_hides_catalog_rows_and_preserves_history() -> None:
             .where(SkuRow.tenant_id == DEFAULT_TENANT_ID, SkuRow.id == second_sku_id)
             .execution_options(include_deleted=True)
         )
-        assert remaining_sku is not None and remaining_sku.source_sku_code is None
+        assert remaining_sku is not None
+        assert remaining_sku.source_sku_code == f"SOURCE-{suffix}-B"
 
     empty_listing = client.get(
         "/api/v1/product-center/skus",
