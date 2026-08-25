@@ -116,6 +116,63 @@ def test_qwen_image_embedding_sends_independent_base64_image_vector() -> None:
     assert 0.5 <= result.quality_score <= 1.0
 
 
+def test_qwen_image_embedding_sends_public_image_url_without_base64() -> None:
+    captured_image = ""
+    vector = [1.0] + [0.0] * 255
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_image
+        body = json.loads(request.content)
+        captured_image = body["input"]["contents"][0]["image"]
+        return httpx.Response(
+            200,
+            json={"output": {"embeddings": [{"embedding": vector}]}},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = QwenVLImageEmbeddingAdapter(
+            api_key="test-secret",
+            base_url="https://dashscope.aliyuncs.com",
+            model_name="qwen3-vl-embedding",
+            model_version="test-d256",
+            dimensions=256,
+            client=client,
+        )
+        result = provider.analyze_url(
+            "https://resources.example.test/products/image%201.png"
+        )
+
+    assert captured_image == (
+        "https://resources.example.test/products/image%201.png"
+    )
+    assert not captured_image.startswith("data:")
+    assert result.embedding == vector
+
+
+@pytest.mark.parametrize(
+    "image_url",
+    (
+        "file:///tmp/private.png",
+        "https://user:secret@resources.example.test/image.png",
+        "https://resources.example.test/image.png#fragment",
+        "https://resources.example.test/image name.png",
+    ),
+)
+def test_qwen_image_embedding_rejects_unsafe_image_url(image_url: str) -> None:
+    transport = httpx.MockTransport(lambda _: httpx.Response(500))
+    with httpx.Client(transport=transport) as client:
+        provider = QwenVLImageEmbeddingAdapter(
+            api_key="test-secret",
+            base_url="https://dashscope.aliyuncs.com",
+            model_name="qwen3-vl-embedding",
+            model_version="test-d256",
+            dimensions=256,
+            client=client,
+        )
+        with pytest.raises(ImageIntelligenceProviderError, match="公网地址"):
+            provider.analyze_url(image_url)
+
+
 def test_qwen_image_embedding_uses_fast_png_compression_without_changing_pixels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -236,4 +293,4 @@ def test_managed_image_model_version_captures_preprocessing_identity() -> None:
     assert first == repeated
     assert first == compatible_mode
     assert first != changed
-    assert "product-image-png-v2" in first
+    assert "product-image-url-or-png-v3" in first

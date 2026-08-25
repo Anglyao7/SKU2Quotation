@@ -20,11 +20,12 @@ from ..services.embedding import EmbeddingIdentity, validate_vectors
 
 logger = logging.getLogger(__name__)
 QWEN3_VL_DIMENSIONS = frozenset({256, 512, 768, 1024, 1536, 2048, 2560})
-QWEN_IMAGE_PREPROCESSING_VERSION = "product-image-png-v2"
+QWEN_IMAGE_PREPROCESSING_VERSION = "product-image-url-or-png-v3"
 _RETRYABLE_STATUSES = {408, 409, 425, 429}
 _MAX_SOURCE_PIXELS = 50_000_000
 _MAX_EDGE = 1600
 _PNG_COMPRESSION_LEVEL = 3
+_MAX_IMAGE_REFERENCE_URL_LENGTH = 4096
 
 
 @lru_cache(maxsize=1)
@@ -167,6 +168,22 @@ def _normalized_image_data_uri(
     return f"data:image/png;base64,{encoded}", quality
 
 
+def _validated_image_reference_url(image_url: str) -> str:
+    normalized = image_url.strip()
+    if not normalized or len(normalized) > _MAX_IMAGE_REFERENCE_URL_LENGTH:
+        raise ImageIntelligenceProviderError("商品图片公网地址无效")
+    if any(character.isspace() for character in normalized):
+        raise ImageIntelligenceProviderError("商品图片公网地址不能包含空白字符")
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ImageIntelligenceProviderError("商品图片公网地址必须是 HTTP(S) 地址")
+    if parsed.username is not None or parsed.password is not None:
+        raise ImageIntelligenceProviderError("商品图片公网地址不能包含账号或密码")
+    if parsed.fragment:
+        raise ImageIntelligenceProviderError("商品图片公网地址不能包含页面片段")
+    return normalized
+
+
 class QwenVLImageEmbeddingAdapter:
     """DashScope HTTP adapter for Qwen3-VL independent image vectors."""
 
@@ -207,13 +224,50 @@ class QwenVLImageEmbeddingAdapter:
         )
 
     def analyze(self, content: bytes, *, content_type: str) -> VisionResult:
+        started_at = time.perf_counter()
         image_data, quality = _normalized_image_data_uri(
             content,
             content_type=content_type,
         )
+        preprocessing_seconds = time.perf_counter() - started_at
+        return self._analyze_image_reference(
+            image_data,
+            quality=quality,
+            started_at=started_at,
+            preprocessing_seconds=preprocessing_seconds,
+            source_kind="base64",
+        )
+
+    def analyze_url(self, image_url: str) -> VisionResult:
+        """Let DashScope fetch an approved public CDN object directly.
+
+        Product indexing can use this path to avoid sending multi-megabyte
+        Base64 request bodies across regions. Visitor-uploaded query images
+        continue to use :meth:`analyze`, so they are never exposed by URL.
+        """
+
+        started_at = time.perf_counter()
+        normalized_url = _validated_image_reference_url(image_url)
+        return self._analyze_image_reference(
+            normalized_url,
+            quality=1.0,
+            started_at=started_at,
+            preprocessing_seconds=0.0,
+            source_kind="url",
+        )
+
+    def _analyze_image_reference(
+        self,
+        image_reference: str,
+        *,
+        quality: float,
+        started_at: float,
+        preprocessing_seconds: float,
+        source_kind: str,
+    ) -> VisionResult:
         payload = {
             "model": self.identity.model_name,
-            "input": {"contents": [{"image": image_data}]},
+            "input": {"contents": [{"image": image_reference}]},
             "parameters": {
                 "dimension": self.identity.dimensions,
                 "output_type": "dense",
@@ -275,7 +329,7 @@ class QwenVLImageEmbeddingAdapter:
                 raise ImageIntelligenceProviderError(
                     "图片 Embedding 服务返回了无效向量"
                 ) from exc
-            return VisionResult(
+            result = VisionResult(
                 labels=[
                     {
                         "label": "product_image",
@@ -286,6 +340,18 @@ class QwenVLImageEmbeddingAdapter:
                 quality_score=quality,
                 embedding=vector,
             )
+            elapsed = time.perf_counter() - started_at
+            if elapsed >= 10:
+                logger.warning(
+                    "slow qwen image embedding elapsed=%.2fs preprocess=%.2fs "
+                    "provider=%.2fs attempts=%s source=%s",
+                    elapsed,
+                    preprocessing_seconds,
+                    elapsed - preprocessing_seconds,
+                    attempt + 1,
+                    source_kind,
+                )
+            return result
         raise ImageIntelligenceProviderError("图片 Embedding 请求失败")
 
     def _wait(self, attempt: int, reason: str) -> None:

@@ -86,6 +86,10 @@ export interface CustomerSubaccount {
   orderCount: number;
   lastOrderAt?: string;
   orderAmount: number;
+  todayOrderCount: number;
+  todayOrderAmount: number;
+  monthOrderCount: number;
+  monthOrderAmount: number;
   markupPercent: number;
   overrideCount: number;
 }
@@ -110,6 +114,10 @@ export interface CustomerSubaccountDashboard {
   suspendedCount: number;
   orderCount: number;
   orderAmount: number;
+  todayOrderCount: number;
+  todayOrderAmount: number;
+  monthOrderCount: number;
+  monthOrderAmount: number;
   currency: string;
 }
 

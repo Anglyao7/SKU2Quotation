@@ -2859,7 +2859,7 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .customer-account-panel-heading > div { display: grid; gap: 4px; }
 .customer-account-panel-heading > .rt-Text { max-width: 240px; text-align: right; line-height: 1.55; }
 .customer-account-list { display: grid; border-top: 1px solid var(--line); }
-.customer-account-row { display: grid; grid-template-columns: minmax(210px, 1.2fr) minmax(124px, .7fr) minmax(112px, .55fr) auto minmax(280px, auto); align-items: center; gap: 10px; padding: 15px 2px; border-bottom: 1px solid var(--line); }
+.customer-account-row { display: grid; grid-template-columns: minmax(190px, 1.15fr) minmax(118px, .65fr) minmax(112px, .58fr) minmax(100px, .58fr) auto minmax(280px, auto); align-items: center; gap: 10px; padding: 15px 2px; border-bottom: 1px solid var(--line); }
 .customer-account-identity { min-width: 0; display: flex; align-items: center; gap: 11px; }
 .customer-account-avatar { width: 37px; height: 37px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 12px; color: var(--accent-strong); background: var(--accent-soft); font-size: 12px; font-weight: 700; }
 .customer-account-identity > span:last-child { min-width: 0; display: grid; gap: 2px; }

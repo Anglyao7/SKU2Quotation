@@ -18,3 +18,9 @@ class ImageIntelligenceProvider(Protocol):
     identity: EmbeddingIdentity
 
     def analyze(self, content: bytes, *, content_type: str) -> VisionResult: ...
+
+
+class ImageUrlIntelligenceProvider(ImageIntelligenceProvider, Protocol):
+    """Optional fast path for provider-fetchable, already-approved images."""
+
+    def analyze_url(self, image_url: str) -> VisionResult: ...

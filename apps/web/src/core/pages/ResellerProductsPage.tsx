@@ -88,7 +88,7 @@ export function ResellerProductsPage() {
       <CorePageHeading
         eyebrow={t("商品")}
         title={t("商品目录")}
-        description={t("子账号可以在这里浏览商品资料与已经生效的代理价格；内部原价、供应商和管理字段不会显示。")}
+        description={t("浏览商品资料与当前账号可见价格。")}
         actions={<Button asChild variant="soft"><Link to={storefrontPath} target="_blank" rel="noreferrer"><Storefront />{t("打开商品前台")}</Link></Button>}
       />
       <Card className="reseller-catalog-toolbar">
@@ -108,7 +108,7 @@ export function ResellerProductsPage() {
       {result?.items.length ? <>
         <Card className="reseller-catalog-card">
           <div className="reseller-catalog-table-scroll">
-            <div className="reseller-catalog-table reseller-catalog-table-head"><span>{t("商品")}</span><span>{t("分类")}</span><span>{t("SKU")}</span><span>{t("代理价格")}</span><span>{t("操作")}</span></div>
+            <div className="reseller-catalog-table reseller-catalog-table-head"><span>{t("商品")}</span><span>{t("分类")}</span><span>{t("SKU")}</span><span>{t("当前价格")}</span><span>{t("操作")}</span></div>
             {result.items.map((product) => <ProductRow key={product.id} product={product} onOpen={() => void openProduct(product)} t={t} />)}
           </div>
         </Card>
@@ -152,7 +152,7 @@ function ProductDetail({ product, t }: { product: StoreProductDetail; t: (value:
         <div className="reseller-product-detail-images">{images.length ? images.slice(0, 6).map((image, index) => <img key={`${image}-${index}`} src={image} alt="" loading="lazy" />) : <div className="reseller-product-detail-placeholder"><Cube /></div>}</div>
         <div className="reseller-product-detail-copy"><div className="reseller-detail-tags">{product.category_label || product.category ? <Badge color="gray">{product.category_label || product.category}</Badge> : null}{product.tags.slice(0, 4).map((tag) => <Badge key={tag} color="blue">{tag}</Badge>)}</div><Heading size="6">{product.name}</Heading>{product.description ? <Text size="2" color="gray" className="reseller-product-description">{product.description}</Text> : <Text size="2" color="gray">{t("暂无商品描述")}</Text>}<strong className="reseller-detail-price">{formatPriceRange(product)}</strong><Text size="1" color="gray">{t("共 {count} 个 SKU", { count: product.sku_count })}</Text></div>
       </div>
-      <div className="reseller-sku-list-heading"><Heading size="4">{t("SKU 规格")}</Heading><Text size="1" color="gray">{t("以下价格已应用当前子账号的代理规则")}</Text></div>
+      <div className="reseller-sku-list-heading"><Heading size="4">{t("SKU 规格")}</Heading><Text size="1" color="gray">{t("以下价格按当前账号规则展示")}</Text></div>
       <div className="reseller-sku-list">{product.skus.map((sku) => <SkuRow key={sku.id} sku={sku} t={t} />)}</div>
     </div>
   );

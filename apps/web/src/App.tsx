@@ -74,7 +74,6 @@ const SupportAIKnowledgePage = recoverableLazy(() => import("./core/pages/Suppor
 const PersonalCenterPage = recoverableLazy(() => import("./core/pages/PersonalCenterPage").then((module) => ({ default: module.PersonalCenterPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
-const ResellerDashboardPage = recoverableLazy(() => import("./core/pages/ResellerDashboardPage").then((module) => ({ default: module.ResellerDashboardPage })));
 const ResellerOrdersPage = recoverableLazy(() => import("./core/pages/ResellerOrdersPage").then((module) => ({ default: module.ResellerOrdersPage })));
 const ResellerProductsPage = recoverableLazy(() => import("./core/pages/ResellerProductsPage").then((module) => ({ default: module.ResellerProductsPage })));
 const QuoteWorkbenchPage = recoverableLazy(() => import("./core/pages/QuoteWorkbenchPage").then((module) => ({ default: module.QuoteWorkbenchPage })));
@@ -138,7 +137,7 @@ function CustomerPortalRoute() {
 function ConsoleHomeRoute() {
   const { profile } = useCoreAuth();
   return profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
-    ? <ResellerDashboardPage />
+    ? <ResellerProductsPage />
     : <CoreDashboardPage />;
 }
 

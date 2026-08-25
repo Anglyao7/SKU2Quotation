@@ -140,9 +140,9 @@ export function CustomerAccountsPage() {
 
   return <div className="core-workspace customer-accounts-page">
     <CorePageHeading
-      eyebrow={t("代理商门户")}
+      eyebrow={t("账户管理")}
       title={t("子账号管理")}
-      description={t("为下游代理商开通受限账号，统一管理代理价格、单品调价和订单数据。")}
+      description={t("管理子账号、价格规则和成交数据。")}
       actions={<Button onClick={() => setEditorOpen(true)}><UserPlus />{t("开通子账号")}</Button>}
     />
     {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
@@ -151,13 +151,15 @@ export function CustomerAccountsPage() {
       <Metric icon={<UsersThree />} label={t("全部子账号")} value={(data?.accounts.length ?? 0).toString()} />
       <Metric icon={<CheckCircle />} label={t("当前已开通")} value={(data?.activeCount ?? 0).toString()} tone="jade" />
       <Metric icon={<Eye />} label={t("近期开单申请")} value={(data?.orderCount ?? 0).toString()} />
-      <Metric icon={<CurrencyDollar />} label={t("子账号订单金额")} value={money(data?.orderAmount ?? 0, data?.currency || "CNY")} tone="jade" />
+      <Metric icon={<CurrencyDollar />} label={t("累计询价金额")} value={money(data?.orderAmount ?? 0, data?.currency || "CNY")} tone="jade" />
+      <Metric icon={<CurrencyDollar />} label={t("今日成交额")} value={money(data?.todayOrderAmount ?? 0, data?.currency || "CNY")} tone="jade" />
+      <Metric icon={<CheckCircle />} label={t("本月成交额")} value={money(data?.monthOrderAmount ?? 0, data?.currency || "CNY")} />
     </section>
 
     <section className="customer-account-grid">
       <Card className="customer-account-panel">
         <div className="customer-account-panel-heading">
-          <div><Text size="1" color="gray">{t("代理商列表")}</Text><Heading size="5">{t("已开通的子账号")}</Heading></div>
+          <div><Text size="1" color="gray">{t("账号列表")}</Text><Heading size="5">{t("已开通的子账号")}</Heading></div>
           <Text size="2" color="gray">{t("主账号可管理价格、启停和订单数据")}</Text>
         </div>
         {data?.accounts.length ? <div className="customer-account-list">
@@ -174,6 +176,10 @@ export function CustomerAccountsPage() {
               <small>{t("订单申请")}</small><strong>{t("{count} 笔", { count: account.orderCount })}</strong>
               <span>{money(account.orderAmount, data?.currency || "CNY")}{account.lastOrderAt ? ` · ${t("最近 {date}", { date: coreDate(account.lastOrderAt) })}` : ""}</span>
             </div>
+            <div className="customer-account-signal">
+              <small>{t("今日成交")}</small><strong>{money(account.todayOrderAmount, data?.currency || "CNY")}</strong>
+              <span>{t("{count} 笔", { count: account.todayOrderCount })} · {t("本月 {amount}", { amount: money(account.monthOrderAmount, data?.currency || "CNY") })}</span>
+            </div>
             <Badge color={account.status === "active" ? "jade" : "gray"}>{t(account.status === "active" ? "已开通" : "已停用")}</Badge>
             <div className="customer-account-actions">
               <Button size="1" variant="soft" color="gray" onClick={() => setAccessEditor(account)}><SlidersHorizontal />{t("权限")}</Button>
@@ -189,7 +195,7 @@ export function CustomerAccountsPage() {
           </article>)}
         </div> : <CoreEmpty
           title={t("还没有子账号")}
-          description={t("为下游代理商开通受限后台，他们可以使用商品目录和自己的询价记录。")}
+          description={t("为团队成员开通独立登录账号，并在这里管理可见范围。")}
           action={<Button variant="soft" onClick={() => setEditorOpen(true)}><Plus />{t("开通第一个子账号")}</Button>}
         />}
       </Card>
@@ -198,7 +204,7 @@ export function CustomerAccountsPage() {
         <span className="customer-account-side-icon"><Eye size={24} /></span>
         <Text size="1" color="gray">{t("主账号管理范围")}</Text>
         <Heading size="4">{t("价格、商品和订单一处管理")}</Heading>
-        <Text size="2" color="gray">{t("主账号设置统一加价后，可对单个商品单独调价，并查看每个子账号的访问与订单数据。")}</Text>
+        <Text size="2" color="gray">{t("主账号可以设置统一加价、单品价格，并查看每个子账号的访问与成交数据。")}</Text>
         <ul>
           <li>{t("子账号使用受限后台，不显示原价格、供应商与供应链")}</li>
           <li>{t("订单和金额按照提交账号自动归属")}</li>
@@ -302,10 +308,10 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Dialog.Content className="customer-account-dialog">
       <form onSubmit={(event) => void submit(event)}>
-        <Dialog.Title>{t("开通代理商子账号")}</Dialog.Title>
-        <Dialog.Description>{t("创建后，对方使用账号密码登录受限后台，可以浏览商品目录、提交询价并查看自己的记录。")}</Dialog.Description>
+        <Dialog.Title>{t("开通子账号")}</Dialog.Title>
+        <Dialog.Description>{t("创建后，对方使用账号密码登录商品后台，并按你配置的范围使用功能。")}</Dialog.Description>
         <div className="customer-account-form-grid">
-          <label><Text size="2" weight="medium">{t("代理商名称")}</Text><TextField.Root value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={t("例如 上海澄明贸易") } required maxLength={120} /></label>
+          <label><Text size="2" weight="medium">{t("子账号名称")}</Text><TextField.Root value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={t("例如 上海澄明贸易") } required maxLength={120} /></label>
           <label><Text size="2" weight="medium">{t("登录账号")}</Text><TextField.Root value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder={t("账号、邮箱或手机号") } required maxLength={320} autoCapitalize="none" /></label>
           <label><Text size="2" weight="medium">{t("联系邮箱（可选）")}</Text><TextField.Root value={email} onChange={(event) => setEmail(event.target.value)} placeholder={t("name@example.com") } type="email" maxLength={320} /></label>
           <label>
@@ -509,8 +515,8 @@ function SubaccountPricingDialog({
 
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Dialog.Content className="customer-account-dialog subaccount-pricing-dialog">
-      <Dialog.Title>{t("{name} 的代理价格", { name: account.displayName })}</Dialog.Title>
-      <Dialog.Description>{t("默认价格按统一加价计算；单品规则优先于统一加价。子账号只会看到最终价格。")}</Dialog.Description>
+      <Dialog.Title>{t("{name} 的价格设置", { name: account.displayName })}</Dialog.Title>
+      <Dialog.Description>{t("统一加价作用于全部商品；单品规则优先。子账号只会看到最终价格。")}</Dialog.Description>
       <section className="subaccount-pricing-policy">
         <label><Text size="2" weight="medium">{t("统一加价（%）")}</Text><TextField.Root type="number" min="0" max="100000" step="0.1" value={markup} onChange={(event) => setMarkup(event.target.value)} /></label>
         <Button loading={saving} onClick={() => void saveMarkup()}><CurrencyDollar />{t("应用到所有商品")}</Button>

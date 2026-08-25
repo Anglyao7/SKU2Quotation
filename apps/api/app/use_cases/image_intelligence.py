@@ -5,12 +5,12 @@ import logging
 import os
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -94,6 +94,8 @@ _image_index_projection_executor = ThreadPoolExecutor(
 )
 _stale_job_after = timedelta(minutes=10)
 _ZERO_IDENTITY = UUID(int=0)
+_DEFAULT_IMAGE_INDEX_URL_MAX_BYTES = 8 * 1024 * 1024
+_PROVIDER_IMAGE_URL_HARD_LIMIT_BYTES = 10 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +234,72 @@ def _materialize_approved_image(image) -> tuple[bytes, str]:
     return content, content_hash
 
 
+def _image_index_url_max_bytes() -> int:
+    raw_value = os.getenv(
+        "IMAGE_INDEX_URL_MAX_BYTES",
+        str(_DEFAULT_IMAGE_INDEX_URL_MAX_BYTES),
+    ).strip()
+    try:
+        configured = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "IMAGE_INDEX_URL_MAX_BYTES=%r is invalid; using %s",
+            raw_value,
+            _DEFAULT_IMAGE_INDEX_URL_MAX_BYTES,
+        )
+        configured = _DEFAULT_IMAGE_INDEX_URL_MAX_BYTES
+    return max(0, min(_PROVIDER_IMAGE_URL_HARD_LIMIT_BYTES, configured))
+
+
+def _image_index_failure_limit(concurrency: int) -> int:
+    raw_value = os.getenv(
+        "IMAGE_INDEX_FAILURE_CIRCUIT_BREAKER",
+        str(concurrency),
+    ).strip()
+    try:
+        configured = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "IMAGE_INDEX_FAILURE_CIRCUIT_BREAKER=%r is invalid; using %s",
+            raw_value,
+            concurrency,
+        )
+        configured = concurrency
+    return max(1, min(_IMAGE_INDEX_GLOBAL_CONCURRENCY, configured))
+
+
+def _public_image_embedding_url(image) -> str | None:
+    """Build a provider-fetchable URL only for trusted managed objects."""
+
+    object_key = str(image.object_key or "").strip()
+    if not object_key or object_key.startswith(("https://", "http://")):
+        # Legacy external URLs must still be downloaded once so their stale
+        # source-record digest can be repaired and verified.
+        return None
+    max_bytes = _image_index_url_max_bytes()
+    try:
+        byte_size = int(image.byte_size)
+    except (TypeError, ValueError):
+        return None
+    if max_bytes <= 0 or byte_size <= 0 or byte_size > max_bytes:
+        return None
+
+    media_base_url = os.getenv("PUBLIC_MEDIA_BASE_URL", "").strip().rstrip("/")
+    if not media_base_url:
+        return None
+    parsed = urlsplit(media_base_url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return f"{media_base_url}/{quote(object_key.lstrip('/'), safe='/')}"
+
+
 def _project_product_image(
     session: Session,
     *,
@@ -284,10 +352,15 @@ def _project_product_image(
             session.flush()
         return existing[0], existing[1], True
 
-    if content is None:
-        content, content_hash = _materialize_approved_image(image)
     try:
-        result = provider.analyze(content, content_type=image.content_type)
+        analyze_url = getattr(provider, "analyze_url", None)
+        public_image_url = _public_image_embedding_url(image)
+        if public_image_url is not None and callable(analyze_url):
+            result = analyze_url(public_image_url)
+        else:
+            if content is None:
+                content, content_hash = _materialize_approved_image(image)
+            result = provider.analyze(content, content_type=image.content_type)
     except ImageIntelligenceProviderError as exc:
         raise ApplicationError(
             "IMAGE_EMBEDDING_FAILED",
@@ -884,6 +957,7 @@ def _project_image_index_target(
     thread-safe pooled HTTP client.
     """
 
+    started_at = time.perf_counter()
     with SessionLocal() as worker_session:
         set_request_context(
             worker_session,
@@ -900,6 +974,14 @@ def _project_image_index_target(
                 force=force,
             )
             worker_session.commit()
+            elapsed = time.perf_counter() - started_at
+            if elapsed >= 10:
+                logger.warning(
+                    "slow image index target image=%s elapsed=%.2fs idempotent=%s",
+                    image_id,
+                    elapsed,
+                    idempotent,
+                )
             return idempotent
         except Exception:
             worker_session.rollback()
@@ -1017,89 +1099,132 @@ def _run_image_index_job(
                 _IMAGE_INDEX_GLOBAL_CONCURRENCY,
                 max(1, len(targets)),
             )
+            failure_limit = _image_index_failure_limit(concurrency)
             completed_ids: set[UUID] = set()
             embeddings_written = 0
+            job_started_at = time.perf_counter()
             logger.info(
-                "image index job %s processing %s images with concurrency=%s",
+                "image index job %s processing %s images with concurrency=%s "
+                "failure_limit=%s",
                 job_id,
                 len(targets),
                 concurrency,
+                failure_limit,
             )
-            for batch_start in range(0, len(targets), concurrency):
-                if _pause_at_checkpoint(session, job):
-                    return
-                batch = targets[batch_start : batch_start + concurrency]
-                job.current_image_id = batch[0][0]
-                job.current_product_name = (
-                    batch[0][1]
-                    if len(batch) == 1
-                    else f"{batch[0][1]} 等 {len(batch)} 张图片"
-                )[:500]
-                job.updated_at = utcnow()
-                session.commit()
+            next_target_index = 0
+            failures: list[tuple[UUID, str, Exception]] = []
+            in_flight: dict[Future[bool], tuple[UUID, str, float]] = {}
 
-                futures = [
-                    (
+            def fill_available_slots() -> None:
+                nonlocal next_target_index
+                while (
+                    len(failures) < failure_limit
+                    and next_target_index < len(targets)
+                    and len(in_flight) < concurrency
+                ):
+                    image_id, product_name = targets[next_target_index]
+                    next_target_index += 1
+                    future = _image_index_projection_executor.submit(
+                        _project_image_index_target,
+                        organization_id=organization_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        image_id=image_id,
+                        provider=provider,
+                        force=job.mode == "FULL_REBUILD",
+                    )
+                    in_flight[future] = (
                         image_id,
                         product_name,
-                        _image_index_projection_executor.submit(
-                            _project_image_index_target,
-                            organization_id=organization_id,
-                            tenant_id=tenant_id,
-                            user_id=user_id,
-                            image_id=image_id,
-                            provider=provider,
-                            force=job.mode == "FULL_REBUILD",
-                        ),
+                        time.perf_counter(),
                     )
-                    for image_id, product_name in batch
-                ]
-                batch_failures: list[tuple[UUID, str, Exception]] = []
-                for image_id, product_name, future in futures:
+
+            while in_flight or next_target_index < len(targets):
+                if not in_flight:
+                    session.refresh(job)
+                    if len(failures) >= failure_limit:
+                        break
+                    if job.pause_requested_at is not None:
+                        job.current_image_id = None
+                        job.current_product_name = None
+                        session.commit()
+                        if _pause_at_checkpoint(session, job):
+                            return
+                    fill_available_slots()
+                if not in_flight:
+                    break
+
+                finished, _pending = wait(
+                    tuple(in_flight),
+                    return_when=FIRST_COMPLETED,
+                )
+                for future in finished:
+                    image_id, product_name, target_started_at = in_flight.pop(
+                        future
+                    )
+                    elapsed = time.perf_counter() - target_started_at
                     try:
                         idempotent = future.result()
                     except Exception as exc:
                         logger.exception(
-                            "image index job %s failed image %s",
+                            "image index job %s failed image %s after %.2fs",
                             job_id,
                             image_id,
+                            elapsed,
                         )
-                        batch_failures.append((image_id, product_name, exc))
+                        failures.append((image_id, product_name, exc))
                     else:
                         completed_ids.add(image_id)
                         if not idempotent:
                             embeddings_written += 1
 
+                # Read pause intent after every completion group. When no pause
+                # or failure is pending, immediately refill the freed slots so
+                # one slow image never stalls every other worker in a batch.
+                session.refresh(job)
+                if (
+                    len(failures) < failure_limit
+                    and job.pause_requested_at is None
+                ):
+                    fill_available_slots()
+
                 job.processed_images = base_processed + len(completed_ids)
                 job.embeddings = base_embeddings + embeddings_written
+                job.failed_images = len(failures)
                 job.remaining_image_ids = [
                     str(value)
                     for value in target_ids
                     if value not in completed_ids
                 ]
+                if in_flight:
+                    active_targets = list(in_flight.values())
+                    job.current_image_id = active_targets[0][0]
+                    job.current_product_name = (
+                        active_targets[0][1]
+                        if len(active_targets) == 1
+                        else f"{active_targets[0][1]} 等 {len(active_targets)} 张图片"
+                    )[:500]
+                else:
+                    job.current_image_id = None
+                    job.current_product_name = None
                 job.updated_at = utcnow()
-
-                if batch_failures:
-                    failed_image_id, failed_product_name, failure = batch_failures[0]
-                    job.status = "FAILED"
-                    job.failed_images = len(batch_failures)
-                    job.current_image_id = failed_image_id
-                    job.current_product_name = failed_product_name
-                    job.error_message = (
-                        f"{_safe_job_error(failure)} "
-                        "已完成的图片向量和断点均已保留。"
-                    )
-                    job.pause_requested_at = None
-                    job.paused_at = None
-                    job.completed_at = utcnow()
-                    session.commit()
-                    return
-
-                job.current_image_id = None
-                job.current_product_name = None
                 session.commit()
-                if _pause_at_checkpoint(session, job):
-                    return
+
+            if failures:
+                failed_image_id, failed_product_name, failure = failures[0]
+                job.status = "FAILED"
+                job.failed_images = len(failures)
+                job.current_image_id = failed_image_id
+                job.current_product_name = failed_product_name
+                job.error_message = (
+                    f"{_safe_job_error(failure)} "
+                    "已完成的图片向量和断点均已保留。"
+                )
+                job.pause_requested_at = None
+                job.paused_at = None
+                job.completed_at = utcnow()
+                session.commit()
+                return
 
             session.refresh(job)
             if job.pause_requested_at is not None:
@@ -1114,6 +1239,13 @@ def _run_image_index_job(
                 job.error_message = None
                 job.completed_at = utcnow()
             session.commit()
+            logger.info(
+                "image index job %s finished status=%s processed=%s elapsed=%.2fs",
+                job_id,
+                job.status,
+                job.processed_images,
+                time.perf_counter() - job_started_at,
+            )
         except Exception as exc:
             logger.exception("image index job %s failed", job_id)
             session.rollback()

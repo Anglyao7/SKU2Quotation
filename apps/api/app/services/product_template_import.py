@@ -4753,6 +4753,15 @@ def process_product_template_import(
             for code, rows in sku_groups.items()
             if len(rows) == 1
         }
+        # Current Product + SKU exports use the system SKU code for expanded
+        # variants because one source/import definition may own several
+        # concrete SKUs. Keep a second identity index so importing such an
+        # export updates the existing row instead of creating a duplicate.
+        skus_by_system_code = {
+            _normalize_sku_code(row.sku_code): row
+            for row in sku_rows
+            if row.sku_code
+        }
         products_by_id = {row.id: row for row in product_rows}
         skus_by_id = {row.id: row for row in sku_rows}
         products_by_normalized_code = {
@@ -4794,7 +4803,8 @@ def process_product_template_import(
                 identified = skus_by_id.get(template_row.existing_sku_id)
                 if identified is not None:
                     return identified
-            return skus.get(_normalize_sku_code(template_row.sku_code))
+            normalized_code = _normalize_sku_code(template_row.sku_code)
+            return skus_by_system_code.get(normalized_code) or skus.get(normalized_code)
 
         def row_is_product_only(template_row: ProductTemplateRow) -> bool:
             if template_row.product_only:

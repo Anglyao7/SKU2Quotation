@@ -68,15 +68,6 @@ const navigationGroups = [
     ],
   },
   {
-    key: "reseller",
-    label: "代理商工作台",
-    icon: StoreIcon,
-    items: [
-      { to: "/console/products", label: "商品目录", mobileLabel: "商品", icon: Cube, end: true, permissions: ["customer_portal.access"], platformAdminOnly: false, mobilePrimary: true },
-      { to: "/console/quotes", label: "我的询价", mobileLabel: "询价", icon: FileText, permissions: ["customer_portal.order_view_self"], platformAdminOnly: false, mobilePrimary: false },
-    ],
-  },
-  {
     key: "products",
     label: "商品",
     icon: Cube,
@@ -210,16 +201,23 @@ export function ConsoleLayout() {
     .map((group) => ({
       ...group,
       items: group.items.filter((item) => (
-        // A child account uses the same console shell, but only receives the
-        // safe catalog/order workspace. Sensitive owner and platform modules
-        // remain absent from navigation and are also protected by API guards.
-        (!isCustomerSubaccount || group.key === "workspace" || group.key === "reseller")
+        // A child account uses the same console shell. Sensitive owner,
+        // supplier and platform modules remain absent from navigation and are
+        // also protected by API guards.
+        (!isCustomerSubaccount || ["workspace", "products", "sales"].includes(group.key))
         && (!isCustomerSubaccount || group.key !== "workspace" || item.to === "/console")
+        && (!isCustomerSubaccount || group.key !== "products" || item.to === "/console/products")
+        && (!isCustomerSubaccount || group.key !== "sales" || item.to === "/console/quotes")
         && (!item.platformAdminOnly || profile?.user.isPlatformAdmin)
-        && (item.permissions.length === 0 || hasAnyPermission(...item.permissions))
-        // Supplier relationships are internal to the owner workspace. A
-        // reseller child account must not even receive this navigation item;
-        // the API applies the same permission boundary server-side.
+        && (
+          item.permissions.length === 0
+          || hasAnyPermission(...item.permissions)
+          || (isCustomerSubaccount && item.to === "/console/products" && hasPermission("customer_portal.access"))
+          || (isCustomerSubaccount && item.to === "/console/quotes" && hasPermission("customer_portal.order_view_self"))
+        )
+        // Supplier relationships are internal to the owner workspace. A child
+        // account must not receive this navigation item; the API applies the
+        // same permission boundary server-side.
         && !(isCustomerSubaccount && item.to === "/console/supply-chain")
       )),
     }))

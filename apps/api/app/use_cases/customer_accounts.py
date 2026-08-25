@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -37,8 +38,11 @@ from ..identity_models import (
     UserRow,
 )
 from ..model_mixins import utcnow
-from ..public_catalog_models import PublicQuoteDraftRow
-from ..public_catalog_models import PublicCatalogOfferRow
+from ..public_catalog_models import (
+    PublicCatalogOfferRow,
+    PublicQuoteDraftRow,
+    StorefrontOrderRecordRow,
+)
 from ..product_center_models import SkuRow
 from ..product_supplier_models import ProductRow
 from ..subaccount_pricing_models import (
@@ -120,9 +124,11 @@ def _subaccount_metrics(
     dict[UUID, tuple[int, object | None]],
     dict[UUID, tuple[int, object | None]],
     dict[UUID, Decimal],
+    dict[UUID, tuple[int, Decimal]],
+    dict[UUID, tuple[int, Decimal]],
 ]:
     if not membership_ids:
-        return {}, {}, {}
+        return {}, {}, {}, {}, {}
     since = utcnow() - timedelta(days=30)
     access_rows = session.execute(
         select(
@@ -157,10 +163,66 @@ def _subaccount_metrics(
         )
         .group_by(PublicQuoteDraftRow.submitted_by_membership_id)
     ).all()
+    timezone_name = session.scalar(
+        select(TenantRow.timezone).where(TenantRow.id == tenant_id)
+    ) or "UTC"
+    try:
+        reporting_zone = ZoneInfo(str(timezone_name))
+    except ZoneInfoNotFoundError:
+        reporting_zone = ZoneInfo("UTC")
+    local_now = utcnow().astimezone(reporting_zone)
+    today_start = datetime.combine(local_now.date(), time.min, tzinfo=reporting_zone)
+    today_end = today_start + timedelta(days=1)
+    month_start = datetime(local_now.year, local_now.month, 1, tzinfo=reporting_zone)
+    month_end = (
+        datetime(local_now.year + 1, 1, 1, tzinfo=reporting_zone)
+        if local_now.month == 12
+        else datetime(local_now.year, local_now.month + 1, 1, tzinfo=reporting_zone)
+    )
+    confirmed_status = StorefrontOrderRecordRow.status.in_(("CONFIRMED", "COMPLETED"))
+    sales_rows = session.execute(
+        select(
+            StorefrontOrderRecordRow.submitted_by_membership_id,
+            func.count(StorefrontOrderRecordRow.id).filter(
+                confirmed_status,
+                StorefrontOrderRecordRow.confirmed_at >= month_start,
+                StorefrontOrderRecordRow.confirmed_at < month_end,
+            ),
+            func.coalesce(
+                func.sum(StorefrontOrderRecordRow.total_amount).filter(
+                    confirmed_status,
+                    StorefrontOrderRecordRow.confirmed_at >= month_start,
+                    StorefrontOrderRecordRow.confirmed_at < month_end,
+                ),
+                0,
+            ),
+            func.count(StorefrontOrderRecordRow.id).filter(
+                confirmed_status,
+                StorefrontOrderRecordRow.confirmed_at >= today_start,
+                StorefrontOrderRecordRow.confirmed_at < today_end,
+            ),
+            func.coalesce(
+                func.sum(StorefrontOrderRecordRow.total_amount).filter(
+                    confirmed_status,
+                    StorefrontOrderRecordRow.confirmed_at >= today_start,
+                    StorefrontOrderRecordRow.confirmed_at < today_end,
+                ),
+                0,
+            ),
+        )
+        .where(
+            StorefrontOrderRecordRow.tenant_id == tenant_id,
+            StorefrontOrderRecordRow.submitted_by_membership_id.in_(membership_ids),
+            StorefrontOrderRecordRow.deleted_at.is_(None),
+        )
+        .group_by(StorefrontOrderRecordRow.submitted_by_membership_id)
+    ).all()
     return (
         {row[0]: (int(row[1] or 0), row[2]) for row in access_rows},
         {row[0]: (int(row[1] or 0), row[2]) for row in order_rows},
         {row[0]: Decimal(str(row[3] or 0)) for row in order_rows},
+        {row[0]: (int(row[1] or 0), Decimal(str(row[2] or 0))) for row in sales_rows},
+        {row[0]: (int(row[3] or 0), Decimal(str(row[4] or 0))) for row in sales_rows},
     )
 
 
@@ -235,7 +297,7 @@ def _summary_rows(
         ).all()
     )
     membership_ids = [membership.id for membership, _user in rows]
-    access, orders, order_amounts = _subaccount_metrics(
+    access, orders, order_amounts, month_sales, today_sales = _subaccount_metrics(
         session, tenant_id=tenant_id, membership_ids=membership_ids
     )
     policies = {
@@ -281,6 +343,10 @@ def _summary_rows(
             order_count=orders.get(membership.id, (0, None))[0],
             last_order_at=orders.get(membership.id, (0, None))[1],
             order_amount=order_amounts.get(membership.id, Decimal("0")),
+            today_order_count=today_sales.get(membership.id, (0, Decimal("0")))[0],
+            today_order_amount=today_sales.get(membership.id, (0, Decimal("0")))[1],
+            month_order_count=month_sales.get(membership.id, (0, Decimal("0")))[0],
+            month_order_amount=month_sales.get(membership.id, (0, Decimal("0")))[1],
             markup_percent=(policies.get(membership.id).markup_percent if policies.get(membership.id) else Decimal("0")),
             override_count=override_counts.get(membership.id, 0),
         )
@@ -344,6 +410,10 @@ def get_customer_subaccount_dashboard(
         suspended_count=sum(row.status == "suspended" for row in accounts),
         order_count=sum(row.order_count for row in accounts),
         order_amount=sum((row.order_amount for row in accounts), Decimal("0")),
+        today_order_count=sum(row.today_order_count for row in accounts),
+        today_order_amount=sum((row.today_order_amount for row in accounts), Decimal("0")),
+        month_order_count=sum(row.month_order_count for row in accounts),
+        month_order_amount=sum((row.month_order_amount for row in accounts), Decimal("0")),
         currency=str(
             session.scalar(
                 select(TenantRow.default_currency).where(

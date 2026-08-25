@@ -72,7 +72,7 @@ export function ResellerOrdersPage() {
           </div>)}
         </div>
       </Card> : null}
-      <Card className="reseller-visibility-note"><FileText /><Text size="2" color="gray">{t("此工作台只展示已经应用代理规则后的价格；供应商、原始价格、平台配置等内部信息不会向子账号开放。")}</Text></Card>
+      <Card className="reseller-visibility-note"><FileText /><Text size="2" color="gray">{t("报价页面只展示当前账号可见的商品和价格；供应商和内部成本信息不会显示。")}</Text></Card>
     </div>
   );
 }

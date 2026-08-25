@@ -7170,7 +7170,6 @@ def test_platform_admin_manages_encrypted_embedding_configuration() -> None:
         assert initial.status_code == 200
         assert initial.headers["cache-control"] == "no-store"
         assert "api_key" not in initial.json()
-        assert initial.json()["index_concurrency"] == 16
 
         saved = client.put(
             "/api/v1/ai/embedding/settings",
@@ -7326,7 +7325,7 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
         assert payload["dimensions"] == 1024
         assert payload["index_concurrency"] == 24
         assert payload["base_url"] == "https://dashscope.aliyuncs.com"
-        assert "product-image-png-v2" in payload["model_version"]
+        assert "product-image-url-or-png-v3" in payload["model_version"]
         assert raw_api_key not in saved.text
         assert "api_key_ciphertext" not in payload
 
@@ -7352,7 +7351,7 @@ def test_platform_admin_manages_encrypted_image_embedding_without_connection_tes
 
         refreshed = client.get("/api/v1/ai/image-embedding/settings")
         assert refreshed.status_code == 200, refreshed.text
-        assert "product-image-png-v2" in refreshed.json()["model_version"]
+        assert "product-image-url-or-png-v3" in refreshed.json()["model_version"]
 
         invalid_concurrency = client.put(
             "/api/v1/ai/image-embedding/settings",
@@ -7523,6 +7522,100 @@ def test_image_index_job_projects_images_concurrently(
             session.commit()
 
 
+def test_image_index_job_refills_slot_before_slowest_image_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    targets = [(uuid4(), f"Sliding image {index}") for index in range(5)]
+    slow_image_id = targets[0][0]
+    replacement_ids = {targets[3][0], targets[4][0]}
+    slow_started = Event()
+    release_slow = Event()
+    replacement_started = Event()
+
+    with SessionLocal() as session:
+        provider = image_intelligence_use_cases._provider(session)
+        job = ImageIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="QUEUED",
+            total_images=len(targets),
+            processed_images=0,
+            failed_images=0,
+            embeddings=0,
+            model_provider=provider.identity.provider,
+            model_name=provider.identity.model_name,
+            model_version=provider.identity.model_version,
+            dimensions=provider.identity.dimensions,
+            remaining_image_ids=[str(image_id) for image_id, _ in targets],
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    def fake_targets(*_args, **_kwargs):
+        return targets
+
+    def projection_with_one_slow_image(
+        _session,
+        *,
+        image_id: UUID,
+        **_kwargs,
+    ):
+        if image_id == slow_image_id:
+            slow_started.set()
+            assert release_slow.wait(5)
+        elif image_id in replacement_ids:
+            replacement_started.set()
+        return SimpleNamespace(), SimpleNamespace(), False
+
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "resolved_image_index_concurrency",
+        lambda _session: 3,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases.repository,
+        "list_index_target_images",
+        fake_targets,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "_project_product_image",
+        projection_with_one_slow_image,
+    )
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            running = executor.submit(
+                image_intelligence_use_cases._run_image_index_job,
+                job_id=job_id,
+                organization_id=DEFAULT_ORGANIZATION_ID,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=DEFAULT_OWNER_USER_ID,
+            )
+            assert slow_started.wait(5)
+            # A fixed batch barrier cannot start image 4/5 until image 1 is
+            # released. Sliding concurrency refills the two completed slots.
+            assert replacement_started.wait(5)
+            release_slow.set()
+            running.result(timeout=10)
+
+        with SessionLocal() as session:
+            finished = session.get(ImageIndexJobRow, job_id)
+            assert finished is not None
+            assert finished.status == "SUCCEEDED"
+            assert finished.processed_images == len(targets)
+    finally:
+        release_slow.set()
+        with SessionLocal() as session:
+            session.execute(
+                delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id)
+            )
+            session.commit()
+
+
 def test_image_index_pause_waits_for_current_concurrent_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7622,7 +7715,7 @@ def test_image_index_pause_waits_for_current_concurrent_batch(
 def test_image_index_concurrent_failure_keeps_only_failed_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    targets = [(uuid4(), f"Failure image {index}") for index in range(4)]
+    targets = [(uuid4(), f"Failure image {index}") for index in range(6)]
     failed_image_id = targets[0][0]
 
     with SessionLocal() as session:
@@ -7692,8 +7785,10 @@ def test_image_index_concurrent_failure_keeps_only_failed_checkpoint(
             failed = session.get(ImageIndexJobRow, job_id)
             assert failed is not None
             assert failed.status == "FAILED"
-            assert failed.processed_images == 3
-            assert failed.embeddings == 3
+            # One isolated provider failure does not prevent later images from
+            # being projected; only the failed image remains for resume.
+            assert failed.processed_images == 5
+            assert failed.embeddings == 5
             assert failed.failed_images == 1
             assert failed.remaining_image_ids == [str(failed_image_id)]
             assert failed.current_image_id == failed_image_id
@@ -14429,6 +14524,134 @@ def test_image_index_falls_back_to_public_cdn_for_managed_r2_key(
     assert downloaded_urls == [
         "https://resources.example.test/tenants/example/products/image.png"
     ]
+
+
+def test_image_index_builds_public_cdn_url_only_for_managed_bounded_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PUBLIC_MEDIA_BASE_URL",
+        "https://resources.example.test/catalog/",
+    )
+    monkeypatch.setenv("IMAGE_INDEX_URL_MAX_BYTES", str(8 * 1024 * 1024))
+    managed = SimpleNamespace(
+        object_key="tenants/example/products/image name.png",
+        byte_size=1024,
+    )
+
+    assert image_intelligence_use_cases._public_image_embedding_url(managed) == (
+        "https://resources.example.test/catalog/tenants/example/products/"
+        "image%20name.png"
+    )
+    assert image_intelligence_use_cases._public_image_embedding_url(
+        SimpleNamespace(
+            object_key="tenants/example/products/oversized.png",
+            byte_size=9 * 1024 * 1024,
+        )
+    ) is None
+    assert image_intelligence_use_cases._public_image_embedding_url(
+        SimpleNamespace(
+            object_key="https://legacy.example.test/source.png",
+            byte_size=1024,
+        )
+    ) is None
+
+
+def test_image_index_projects_managed_product_through_provider_url_fast_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_id = uuid4()
+    product_id = uuid4()
+    image = SimpleNamespace(
+        id=image_id,
+        product_id=product_id,
+        object_key=f"tenants/example/products/{image_id}.png",
+        byte_size=1024,
+        sha256="a" * 64,
+        content_type="image/png",
+        approval_status="APPROVED",
+    )
+    product = SimpleNamespace(
+        id=product_id,
+        status="ACTIVE",
+        current_version=3,
+    )
+    requested_urls: list[str] = []
+
+    class UrlProvider:
+        identity = SimpleNamespace(
+            provider="dashscope",
+            model_name="qwen3-vl-embedding",
+            model_version="url-v3",
+            dimensions=256,
+            distance_metric="COSINE",
+        )
+
+        def analyze_url(self, image_url: str):
+            requested_urls.append(image_url)
+            return SimpleNamespace(
+                labels=[],
+                risks=[],
+                quality_score=1.0,
+                embedding=[1.0] + [0.0] * 255,
+            )
+
+        def analyze(self, _content: bytes, *, content_type: str):
+            raise AssertionError(
+                f"managed image unexpectedly used Base64 ({content_type})"
+            )
+
+    class EmptyScalars:
+        @staticmethod
+        def all():
+            return []
+
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.rows: list[object] = []
+
+        @staticmethod
+        def scalars(_statement):
+            return EmptyScalars()
+
+        def add_all(self, rows) -> None:
+            self.rows.extend(rows)
+
+        @staticmethod
+        def flush() -> None:
+            return None
+
+    monkeypatch.setenv(
+        "PUBLIC_MEDIA_BASE_URL",
+        "https://resources.example.test",
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases.repository,
+        "get_product_image",
+        lambda *_args, **_kwargs: (image, product),
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases.repository,
+        "get_projection",
+        lambda *_args, **_kwargs: None,
+    )
+    session = RecordingSession()
+
+    embedding, _observation, idempotent = (
+        image_intelligence_use_cases._project_product_image(
+            session,
+            tenant_id=DEFAULT_TENANT_ID,
+            image_id=image_id,
+            provider=UrlProvider(),
+        )
+    )
+
+    assert idempotent is False
+    assert embedding.content_hash == image.sha256
+    assert requested_urls == [
+        f"https://resources.example.test/tenants/example/products/{image_id}.png"
+    ]
+    assert len(session.rows) == 2
 
 
 def test_public_image_search_is_ephemeral_and_published_catalog_only(

@@ -93,6 +93,10 @@ class CustomerSubaccountSummary(BaseModel):
     order_count: int
     last_order_at: datetime | None
     order_amount: Decimal = Decimal("0")
+    today_order_count: int = 0
+    today_order_amount: Decimal = Decimal("0")
+    month_order_count: int = 0
+    month_order_amount: Decimal = Decimal("0")
     markup_percent: Decimal = Decimal("0")
     override_count: int = 0
 
@@ -117,6 +121,10 @@ class CustomerSubaccountDashboard(BaseModel):
     suspended_count: int
     order_count: int
     order_amount: Decimal = Decimal("0")
+    today_order_count: int = 0
+    today_order_amount: Decimal = Decimal("0")
+    month_order_count: int = 0
+    month_order_amount: Decimal = Decimal("0")
     currency: str = "CNY"
 
 

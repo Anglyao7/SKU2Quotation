@@ -753,6 +753,10 @@ interface ApiCustomerSubaccount {
   order_count: number;
   last_order_at?: string | null;
   order_amount?: number | string;
+  today_order_count?: number;
+  today_order_amount?: number | string;
+  month_order_count?: number;
+  month_order_amount?: number | string;
   markup_percent?: number | string;
   override_count?: number;
 }
@@ -787,6 +791,10 @@ function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
     orderCount: Number(row.order_count || 0),
     lastOrderAt: defined(row.last_order_at),
     orderAmount: Number(row.order_amount || 0),
+    todayOrderCount: Number(row.today_order_count || 0),
+    todayOrderAmount: Number(row.today_order_amount || 0),
+    monthOrderCount: Number(row.month_order_count || 0),
+    monthOrderAmount: Number(row.month_order_amount || 0),
     markupPercent: Number(row.markup_percent || 0),
     overrideCount: Number(row.override_count || 0),
   };
@@ -815,6 +823,10 @@ export async function getCustomerSubaccountDashboard(): Promise<CustomerSubaccou
     suspended_count: number;
     order_count: number;
     order_amount?: number | string;
+    today_order_count?: number;
+    today_order_amount?: number | string;
+    month_order_count?: number;
+    month_order_amount?: number | string;
     currency?: string;
   }>("/customer-accounts");
   return {
@@ -823,6 +835,10 @@ export async function getCustomerSubaccountDashboard(): Promise<CustomerSubaccou
     suspendedCount: Number(row.suspended_count || 0),
     orderCount: Number(row.order_count || 0),
     orderAmount: Number(row.order_amount || 0),
+    todayOrderCount: Number(row.today_order_count || 0),
+    todayOrderAmount: Number(row.today_order_amount || 0),
+    monthOrderCount: Number(row.month_order_count || 0),
+    monthOrderAmount: Number(row.month_order_amount || 0),
     currency: String(row.currency || "CNY").toUpperCase(),
   };
 }
