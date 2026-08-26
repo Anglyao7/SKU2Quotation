@@ -62,6 +62,7 @@ const InquiryPage = recoverableLazy(() => import("./core/pages/InquiryPage").the
 const InventoryPage = recoverableLazy(() => import("./core/pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
 const SupplyChainPage = recoverableLazy(() => import("./core/pages/SupplyChainPage").then((module) => ({ default: module.SupplyChainPage })));
 const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMonitoringPage").then((module) => ({ default: module.SystemMonitoringPage })));
+const PlatformUsageAnalyticsPage = recoverableLazy(() => import("./core/pages/PlatformUsageAnalyticsPage").then((module) => ({ default: module.PlatformUsageAnalyticsPage })));
 const ConfigurationCenterPage = recoverableLazy(() => import("./core/pages/ConfigurationCenterPage").then((module) => ({ default: module.ConfigurationCenterPage })));
 const LanguagePackagesPage = recoverableLazy(() => import("./core/pages/LanguagePackagesPage").then((module) => ({ default: module.LanguagePackagesPage })));
 const StorefrontAnalyticsPage = recoverableLazy(() => import("./core/pages/StorefrontAnalyticsPage").then((module) => ({ default: module.StorefrontAnalyticsPage })));
@@ -357,6 +358,7 @@ const router = createBrowserRouter([{
         { path: "account", element: <AccountSettingsPage /> },
         { path: "personal-center", element: <PermissionGate anyOf={["support.settings_manage"]}><PersonalCenterPage /></PermissionGate> },
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
+        { path: "system/usage", element: <PlatformAdminGate><PlatformUsageAnalyticsPage /></PlatformAdminGate> },
         { path: "system/configuration", element: <PlatformAdminGate><ConfigurationCenterPage /></PlatformAdminGate> },
         { path: "system/translation", element: <Navigate to="/console/system/configuration?section=translation" replace /> },
         { path: "analytics", element: <PermissionGate anyOf={["analytics.view"]}><StorefrontAnalyticsPage /></PermissionGate> },

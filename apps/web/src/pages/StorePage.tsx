@@ -386,6 +386,26 @@ export function StorePage() {
   }, [loadedStore, locale, shareToken]);
 
   useEffect(() => {
+    // Keep one marker per browser tab/session. The server deduplicates the
+    // reporting window by a one-way visitor digest, so refreshes do not inflate
+    // the number of people visiting a shop.
+    const storageKey = `atc:storefront-visit:${tenantSlug}`;
+    let eventId = "";
+    try {
+      eventId = window.sessionStorage.getItem(storageKey) || "";
+      if (!eventId) {
+        eventId = typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        window.sessionStorage.setItem(storageKey, eventId);
+      }
+    } catch {
+      eventId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+    void api.recordStorefrontVisit(tenantSlug, eventId).catch(() => undefined);
+  }, [tenantSlug]);
+
+  useEffect(() => {
     if (!shareToken) {
       setCatalogShare(undefined);
       setShareError("");
@@ -813,12 +833,6 @@ export function StorePage() {
     });
   }, []);
 
-  const resetFilters = () => {
-    setSearch("");
-    setPrimaryCategory("");
-    setSecondaryCategory("");
-    setImageSearchState(EMPTY_IMAGE_SEARCH_STATE);
-  };
   const toggleCategoryExpansion = (path: string) => {
     setExpandedCategories((current) => {
       const next = new Set(current);
@@ -1001,11 +1015,6 @@ export function StorePage() {
                       </Button>
                     </div>
                   ) : null}
-                  {hasFilters && (
-                    <Button className="filter-reset-button" size="1" variant="ghost" color="gray" onClick={resetFilters}>
-                      <ArrowCounterClockwise size={15} />{t("清除筛选")}
-                    </Button>
-                  )}
                 </div>
               </div>
               <div className="search-row">
@@ -1023,8 +1032,8 @@ export function StorePage() {
                   className="store-search"
                 >
                   <TextField.Slot><MagnifyingGlass size={19} /></TextField.Slot>
-                  <TextField.Slot side="right">
-                    {search ? (
+                  {search ? (
+                    <TextField.Slot side="right">
                       <IconButton
                         type="button"
                         size="1"
@@ -1035,18 +1044,18 @@ export function StorePage() {
                       >
                         <X size={15} />
                       </IconButton>
-                    ) : null}
-                    <StorefrontImageSearch
-                      ref={imageSearchRef}
-                      tenantSlug={tenantSlug}
-                      locale={locale}
-                      shareToken={shareToken}
-                      active={imageSearchActive}
-                      t={t}
-                      onStateChange={handleImageSearchState}
-                    />
-                  </TextField.Slot>
+                    </TextField.Slot>
+                  ) : null}
                 </TextField.Root>
+                <StorefrontImageSearch
+                  ref={imageSearchRef}
+                  tenantSlug={tenantSlug}
+                  locale={locale}
+                  shareToken={shareToken}
+                  active={imageSearchActive}
+                  t={t}
+                  onStateChange={handleImageSearchState}
+                />
               </div>
               {!shareToken && !imageSearchActive && !search.trim() && recommendedQuestions.length ? (
                 <div className="store-recommended-questions" aria-label={t("推荐问题")}>
@@ -1236,63 +1245,52 @@ export function StorePage() {
                 </CategoryScrollTrack>
               </nav>
             ) : null}
-            <div className="results-header" ref={resultsHeaderRef}>
-              <div>
-                <div className="results-title-row">
-                  <Heading as="h2" size="5">
-                    {imageSearchActive
-                      ? t("视觉匹配")
-                      : shareDisplayTitle
-                      || selectedSecondary?.name
-                      || selectedPrimary?.name
-                      || t(hasFilters ? "筛选结果" : "全部商品")}
-                  </Heading>
-                  {hotSortActive ? (
-                    <Badge color="amber" variant="soft">
-                      <Fire size={14} weight="fill" aria-hidden="true" />
-                      {t("爆款优先")}
-                    </Badge>
-                  ) : null}
+            <span className="results-scroll-anchor" ref={resultsHeaderRef} aria-hidden="true" />
+            {!imageSearchActive ? (
+              <>
+                <div className="results-header">
+                  <div>
+                    <div className="results-title-row">
+                      <Heading as="h2" size="5">
+                        {shareDisplayTitle
+                          || selectedSecondary?.name
+                          || selectedPrimary?.name
+                          || t(hasFilters ? "筛选结果" : "全部商品")}
+                      </Heading>
+                      {hotSortActive ? (
+                        <Badge color="amber" variant="soft">
+                          <Fire size={14} weight="fill" aria-hidden="true" />
+                          {t("爆款优先")}
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <Text size="2" color="gray">
+                      {t(showCategoryShowcase
+                        ? "选择一个二级分类查看商品。"
+                        : hotSortActive
+                        ? "根据近 90 天浏览与下单热度优先展示，手动置顶商品仍排在最前。"
+                        : "点击商品查看可选规格与 SKU。")}
+                    </Text>
+                  </div>
+                  <Badge
+                    color={hasFilters ? "jade" : "gray"}
+                    variant="soft"
+                    aria-live="polite"
+                  >
+                    {showCategoryShowcase
+                      ? t("{count} 个分类", { count: categoryShowcaseOptions.length.toLocaleString(locale) })
+                      : searchPending
+                      ? t("搜索中……")
+                      : loading
+                        ? t("正在查找")
+                      : pageTransitioning
+                        ? t("切换中…")
+                      : t("{count} 条结果", { count: total.toLocaleString(locale) })}
+                  </Badge>
                 </div>
-                <Text size="2" color="gray">
-                  {imageSearchActive
-                    ? imageSearchState.phase === "preparing"
-                      ? t("正在压缩并转换为 PNG…")
-                      : imageSearchState.phase === "searching"
-                        ? t("正在生成查询向量，并与店铺商品图片进行相似度计算…")
-                        : imageSearchState.phase === "error"
-                          ? imageSearchState.error
-                          : t("系统会比较商品视觉特征，并按匹配度给出当前店铺可购买的商品。")
-                    : t(showCategoryShowcase
-                      ? "选择一个二级分类查看商品。"
-                      : hotSortActive
-                      ? "根据近 90 天浏览与下单热度优先展示，手动置顶商品仍排在最前。"
-                      : "点击商品查看可选规格与 SKU。")}
-                </Text>
-              </div>
-              <Badge
-                color={imageSearchState.phase === "error" ? "red" : hasFilters ? "jade" : "gray"}
-                variant="soft"
-                aria-live="polite"
-              >
-                {imageSearchActive
-                  ? imageSearchBusy
-                    ? t("正在查找")
-                    : t("{count} 条结果", {
-                        count: imageSearchResults.length.toLocaleString(locale),
-                      })
-                  : showCategoryShowcase
-                  ? t("{count} 个分类", { count: categoryShowcaseOptions.length.toLocaleString(locale) })
-                  : searchPending
-                  ? t("搜索中……")
-                  : loading
-                    ? t("正在查找")
-                  : pageTransitioning
-                    ? t("切换中…")
-                  : t("{count} 条结果", { count: total.toLocaleString(locale) })}
-              </Badge>
-            </div>
-            <Separator size="4" />
+                <Separator size="4" />
+              </>
+            ) : null}
 
             <div className="results-body">
               {imageSearchActive ? (
@@ -1307,20 +1305,11 @@ export function StorePage() {
                         )}
                         <span className="store-image-scan-line" aria-hidden="true" />
                       </div>
-                      <ThinkingOrb
-                        state="working"
-                        size={64}
-                        speed={1.35}
-                        aria-hidden="true"
-                      />
                       <div className="store-image-inline-progress-copy">
                         <Text size="3" weight="medium">
                           {t(imageSearchState.phase === "preparing"
                             ? "正在压缩并转换为 PNG…"
-                            : "正在生成查询向量，并与店铺商品图片进行相似度计算…")}
-                        </Text>
-                        <Text size="2" color="gray">
-                          {t("系统会比较商品视觉特征，并按匹配度给出当前店铺可购买的商品。")}
+                            : "正在查找")}
                         </Text>
                         <span className="store-image-inline-progress-track" aria-hidden="true"><i /></span>
                       </div>
@@ -1426,7 +1415,6 @@ export function StorePage() {
                 <EmptyState
                   title={t("没有匹配的商品")}
                   description={t("换一个关键词、使用场景或分类，再试一次。")}
-                  action={hasFilters ? <Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button> : undefined}
                 />
               ) : (
                 <div

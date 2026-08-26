@@ -1,6 +1,6 @@
 import { Dialog, IconButton } from "@radix-ui/themes";
 import { CaretLeft, CaretRight, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useLayoutEffect, useMemo, useState, type MouseEvent } from "react";
 
 interface ProductImagePreviewProps {
   src: string;
@@ -30,9 +30,15 @@ export function ProductImagePreview({
   const [activeIndex, setActiveIndex] = useState(0);
   const activeSrc = imageUrls[activeIndex] || imageUrls[0] || src;
 
-  useEffect(() => {
+  // Keep the first frame in sync with the selected SKU/image.  Using a layout
+  // effect avoids painting the previous gallery index for one frame when the
+  // parent changes `src` (which made variant changes feel like they were stuck).
+  useLayoutEffect(() => {
     const sourceIndex = imageUrls.indexOf(src);
-    setActiveIndex(sourceIndex >= 0 ? sourceIndex : 0);
+    setActiveIndex((current) => {
+      const next = sourceIndex >= 0 ? sourceIndex : 0;
+      return current === next ? current : next;
+    });
   }, [imageUrls, src]);
 
   const showPrevious = imageUrls.length > 1 && activeIndex > 0;
@@ -57,7 +63,13 @@ export function ProductImagePreview({
             className="sku-detail-image-trigger"
             aria-label={openLabel}
           >
-            <img src={activeSrc} alt={alt} onError={onError} />
+            <img
+              src={activeSrc}
+              alt={alt}
+              loading="eager"
+              decoding="async"
+              onError={onError}
+            />
             <span className="sku-detail-image-affordance" aria-hidden="true">
               <MagnifyingGlassPlus weight="bold" />
               <span>{openLabel}</span>
@@ -109,7 +121,13 @@ export function ProductImagePreview({
           </IconButton>
         </Dialog.Close>
         <div className="product-image-lightbox-stage">
-          <img src={activeSrc} alt={alt} onError={onError} />
+          <img
+            src={activeSrc}
+            alt={alt}
+            loading="eager"
+            decoding="async"
+            onError={onError}
+          />
           {showPrevious ? (
             <button
               type="button"

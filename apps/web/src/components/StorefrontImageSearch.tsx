@@ -280,7 +280,7 @@ export const StorefrontImageSearch = forwardRef<
       />
       <IconButton
         type="button"
-        size="1"
+        size="2"
         variant="ghost"
         color={active ? "jade" : "gray"}
         className={`store-image-search-button${active ? " is-active" : ""}`}
@@ -289,7 +289,7 @@ export const StorefrontImageSearch = forwardRef<
         title={t("图片搜索")}
         onClick={openPicker}
       >
-        <ImageSquare size={18} weight={active ? "fill" : "duotone"} />
+        <ImageSquare size={20} weight={active ? "fill" : "duotone"} />
       </IconButton>
     </>
   );

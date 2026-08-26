@@ -356,3 +356,8 @@ from .support_models import (  # noqa: E402,F401
 )
 
 from .dashboard_models import DashboardStatisticsRow  # noqa: E402,F401
+
+from .platform_usage_models import (  # noqa: E402,F401
+    StorefrontVisitEventRow,
+    TenantUsageDailyRow,
+)

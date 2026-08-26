@@ -65,6 +65,17 @@ class EmbeddingProvider(Protocol):
 class EmbeddingProviderError(ValueError):
     """A safe provider failure that never includes credentials or response bodies."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        input_fingerprint: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.input_fingerprint = input_fingerprint
+
 
 class DeterministicFeatureHashEmbedding:
     """Network-free, repeatable development adapter behind a provider-neutral contract."""
@@ -208,7 +219,8 @@ class OpenAICompatibleEmbedding:
 
             if response.status_code < 200 or response.status_code >= 300:
                 error = EmbeddingProviderError(
-                    f"embedding provider returned HTTP {response.status_code}"
+                    f"embedding provider returned HTTP {response.status_code}",
+                    status_code=response.status_code,
                 )
                 if (
                     attempt < self.max_retry_count
@@ -449,24 +461,148 @@ def precompute_embeddings(
     texts: list[str],
     *,
     batch_size: int = 128,
+    max_input_tokens: int | None = None,
+    max_batch_tokens: int | None = None,
 ) -> PrecomputedEmbedding:
     if batch_size < 1 or batch_size > 2048:
         raise EmbeddingProviderError("embedding batch size must be between 1 and 2048")
+    if max_input_tokens is not None and max_input_tokens < 1:
+        raise EmbeddingProviderError("embedding input token limit must be positive")
+    if max_batch_tokens is not None and max_batch_tokens < 1:
+        raise EmbeddingProviderError("embedding batch token limit must be positive")
     unique_texts = list(dict.fromkeys(texts))
+    for value in unique_texts:
+        _validate_embedding_input(value, max_input_tokens=max_input_tokens)
     vectors_by_text: dict[str, list[float]] = {}
-    for start in range(0, len(unique_texts), batch_size):
-        batch = unique_texts[start : start + batch_size]
-        vectors = provider.embed(batch)
-        validate_vectors(
-            vectors,
-            expected_count=len(batch),
-            dimensions=provider.identity.dimensions,
+    for batch in _bounded_embedding_batches(
+        unique_texts,
+        batch_size=batch_size,
+        max_batch_tokens=max_batch_tokens,
+    ):
+        vectors = _embed_batch_with_input_isolation(
+            provider,
+            batch,
         )
         vectors_by_text.update(zip(batch, vectors, strict=True))
     return PrecomputedEmbedding(
         identity=provider.identity,
         vectors_by_text=vectors_by_text,
     )
+
+
+def estimate_embedding_tokens(value: str) -> int:
+    """Return a conservative, tokenizer-free estimate for multilingual input.
+
+    The application can use multiple OpenAI-compatible providers, so loading a
+    provider-specific tokenizer in the API process would make indexing fragile.
+    Chinese characters are counted individually by ``tokenize`` while the UTF-8
+    fallback keeps long Latin strings, punctuation and emoji from being
+    undercounted.
+    """
+
+    if not value:
+        return 0
+    lexical_units = len(tokenize(value))
+    utf8_units = math.ceil(len(value.encode("utf-8")) / 3)
+    return max(lexical_units, utf8_units)
+
+
+def _embedding_input_fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _bounded_embedding_batches(
+    texts: list[str],
+    *,
+    batch_size: int,
+    max_batch_tokens: int | None,
+) -> list[list[str]]:
+    if not texts:
+        return []
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_tokens = 0
+    for value in texts:
+        value_tokens = estimate_embedding_tokens(value)
+        token_limit_reached = (
+            max_batch_tokens is not None
+            and current
+            and current_tokens + value_tokens > max_batch_tokens
+        )
+        if current and (len(current) >= batch_size or token_limit_reached):
+            batches.append(current)
+            current = []
+            current_tokens = 0
+        current.append(value)
+        current_tokens += value_tokens
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _validate_embedding_input(
+    value: str,
+    *,
+    max_input_tokens: int | None,
+) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise EmbeddingProviderError("embedding input must be non-empty text")
+    estimated_tokens = estimate_embedding_tokens(value)
+    if max_input_tokens is None or estimated_tokens <= max_input_tokens:
+        return
+    raise EmbeddingProviderError(
+        "embedding input exceeds safe token budget "
+        f"(fingerprint={_embedding_input_fingerprint(value)}, "
+        f"estimated_tokens={estimated_tokens}, "
+        f"utf8_bytes={len(value.encode('utf-8'))}, "
+        f"limit={max_input_tokens})",
+        input_fingerprint=_embedding_input_fingerprint(value),
+    )
+
+
+def _embed_batch_with_input_isolation(
+    provider: EmbeddingProvider,
+    batch: list[str],
+) -> list[list[float]]:
+    """Embed a batch and bisect deterministic input errors safely.
+
+    Some compatible gateways reject the whole request when one item is invalid
+    or when the aggregate payload is too large. Splitting only 400/413/422
+    responses lets valid sub-batches proceed and identifies a bad singleton
+    without putting its possibly sensitive content in logs or job errors.
+    """
+
+    try:
+        vectors = provider.embed(batch)
+        validate_vectors(
+            vectors,
+            expected_count=len(batch),
+            dimensions=provider.identity.dimensions,
+        )
+        return vectors
+    except EmbeddingProviderError as exc:
+        if exc.status_code not in {400, 413, 422}:
+            raise
+        if len(batch) > 1:
+            midpoint = len(batch) // 2
+            logger.warning(
+                "embedding batch rejected with HTTP %s; isolating %s inputs",
+                exc.status_code,
+                len(batch),
+            )
+            return [
+                *_embed_batch_with_input_isolation(provider, batch[:midpoint]),
+                *_embed_batch_with_input_isolation(provider, batch[midpoint:]),
+            ]
+        value = batch[0]
+        raise EmbeddingProviderError(
+            f"embedding input rejected with HTTP {exc.status_code} "
+            f"(fingerprint={_embedding_input_fingerprint(value)}, "
+            f"estimated_tokens={estimate_embedding_tokens(value)}, "
+            f"utf8_bytes={len(value.encode('utf-8'))})",
+            status_code=exc.status_code,
+            input_fingerprint=_embedding_input_fingerprint(value),
+        ) from exc
 
 
 def validate_vectors(vectors: list[list[float]], *, expected_count: int, dimensions: int) -> None:

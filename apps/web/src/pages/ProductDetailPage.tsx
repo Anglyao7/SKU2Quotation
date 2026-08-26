@@ -299,6 +299,7 @@ export function ProductDetailPage() {
             <Card className="sku-detail-media" variant="surface">
               {selectedImageUrl && !imageFailed ? (
                 <ProductImagePreview
+                  key={selectedSku?.id || product.id}
                   src={selectedImageUrl}
                   images={product.image_urls}
                   alt={`${product.name} · ${selectedLabel}`}
@@ -431,7 +432,12 @@ export function ProductDetailPage() {
                               onClick={() => selectVariantChoice(dimension.key, choice.value)}
                             >
                               <span>{choice.label}</span>
-                              {selected ? <Check size={13} weight="bold" aria-hidden="true" /> : null}
+                              <span
+                                className={`product-option-choice-check${selected ? " is-visible" : ""}`}
+                                aria-hidden="true"
+                              >
+                                <Check size={13} weight="bold" />
+                              </span>
                             </button>
                           );
                         })}

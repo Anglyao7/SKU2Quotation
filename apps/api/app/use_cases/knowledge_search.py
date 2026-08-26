@@ -37,8 +37,10 @@ from ..services.embedding_configuration import resolved_text_embedding_provider
 from ..services.hybrid_search import hybrid_product_search
 from ..services.knowledge import (
     KnowledgeProjectionError,
+    indexed_product_ids,
     knowledge_index_status,
     knowledge_index_target_products,
+    knowledge_projection_policy_mismatch_exists,
     project_product_knowledge,
     update_knowledge_index,
 )
@@ -447,7 +449,43 @@ def _run_index_job(
                 identity.dimensions,
             )
             stored_remaining = _remaining_product_ids(job)
-            if identity_changed:
+            projection_policy_changed = False
+            if job.started_at is not None and job.processed_products > 0:
+                if job.mode == "FULL_REBUILD":
+                    all_eligible_products = knowledge_index_target_products(
+                        session,
+                        tenant_id=tenant_id,
+                        full_rebuild=True,
+                        embedder=embedder,
+                    )
+                    remaining_ids = set(stored_remaining)
+                    checkpointed_ids = [
+                        product_id
+                        for product_id, _name in all_eligible_products
+                        if product_id not in remaining_ids
+                    ]
+                    projection_policy_changed = (
+                        knowledge_projection_policy_mismatch_exists(
+                            session,
+                            tenant_id=tenant_id,
+                            product_ids=checkpointed_ids,
+                        )
+                    )
+                elif knowledge_projection_policy_mismatch_exists(
+                    session,
+                    tenant_id=tenant_id,
+                ):
+                    projection_policy_changed = (
+                        len(
+                            indexed_product_ids(
+                                session,
+                                tenant_id=tenant_id,
+                                embedder=embedder,
+                            )
+                        )
+                        < job.processed_products
+                    )
+            if identity_changed or projection_policy_changed:
                 target_products = knowledge_index_target_products(
                     session,
                     tenant_id=tenant_id,

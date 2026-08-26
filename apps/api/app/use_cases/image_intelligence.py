@@ -34,6 +34,7 @@ from ..image_intelligence_models import (
 )
 from ..image_intelligence_schemas import (
     ImageIndexJobResponse,
+    ImageIndexJobResumeRequest,
     ImageIndexJobStartRequest,
     ImageIndexStatusResponse,
     ImageProjectionResponse,
@@ -96,6 +97,17 @@ _stale_job_after = timedelta(minutes=10)
 _ZERO_IDENTITY = UUID(int=0)
 _DEFAULT_IMAGE_INDEX_URL_MAX_BYTES = 8 * 1024 * 1024
 _PROVIDER_IMAGE_URL_HARD_LIMIT_BYTES = 10 * 1024 * 1024
+_SKIPPED_IMAGE_FAILURE_DETAILS_LIMIT = 100
+_SOURCE_FAILURE_APPLICATION_CODES = {
+    "IMAGE_HASH_MISMATCH",
+    "IMAGE_OBJECT_MISSING",
+    "IMAGE_REMOTE_OBJECT_UNAVAILABLE",
+}
+_SOURCE_NOT_FOUND_CODES = {
+    "IMAGE_OBJECT_MISSING",
+    "SOURCE_HTTP_404",
+    "SOURCE_HTTP_410",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -766,6 +778,39 @@ def _remaining_image_ids(job: ImageIndexJobRow) -> list[UUID]:
     return list(dict.fromkeys(values))
 
 
+def _skipped_image_ids(job: ImageIndexJobRow) -> list[UUID]:
+    values: list[UUID] = []
+    for raw in job.skipped_image_ids or []:
+        try:
+            values.append(UUID(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(values))
+
+
+def _skipped_failure_records(job: ImageIndexJobRow) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for raw in job.skipped_image_failures or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            image_id = UUID(str(raw.get("image_id")))
+        except (TypeError, ValueError):
+            continue
+        product_name = str(raw.get("product_name") or "未命名商品")[:500]
+        error_code = str(raw.get("error_code") or "SOURCE_UNREADABLE")[:100]
+        records.append(
+            {
+                "image_id": image_id,
+                "product_name": product_name,
+                "error_code": error_code,
+            }
+        )
+        if len(records) >= _SKIPPED_IMAGE_FAILURE_DETAILS_LIMIT:
+            break
+    return records
+
+
 def _job_response(job: ImageIndexJobRow) -> ImageIndexJobResponse:
     progress = (
         100.0
@@ -784,6 +829,9 @@ def _job_response(job: ImageIndexJobRow) -> ImageIndexJobResponse:
         total_images=job.total_images,
         processed_images=job.processed_images,
         failed_images=job.failed_images,
+        skipped_images=job.skipped_images,
+        skipped_failures=_skipped_failure_records(job),
+        source_failure_policy=job.source_failure_policy,
         embeddings=job.embeddings,
         remaining_images=remaining,
         progress_percent=progress,
@@ -941,6 +989,44 @@ def _safe_job_error(exc: Exception) -> str:
     return "图片向量化失败，请检查模型配置、R2 对象或服务日志。"
 
 
+def _source_failure_code(exc: Exception) -> str | None:
+    """Return a stable source-read code without classifying provider failures."""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    application_code: str | None = None
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ImageMigrationError):
+            code = str(current.code or "").strip().upper()
+            if code.startswith(("SOURCE_", "IMAGE_")):
+                return code
+        if (
+            isinstance(current, ApplicationError)
+            and current.code in _SOURCE_FAILURE_APPLICATION_CODES
+        ):
+            application_code = current.code
+        current = current.__cause__ or current.__context__
+    return application_code
+
+
+def _skippable_source_failure_code(
+    exc: Exception,
+    *,
+    policy: str,
+) -> str | None:
+    if policy == "STOP":
+        return None
+    code = _source_failure_code(exc)
+    if code is None:
+        return None
+    if policy == "SKIP_NOT_FOUND" and code not in _SOURCE_NOT_FOUND_CODES:
+        return None
+    if policy not in {"SKIP_NOT_FOUND", "SKIP_UNREADABLE"}:
+        return None
+    return code
+
+
 def _project_image_index_target(
     *,
     organization_id: UUID,
@@ -1028,6 +1114,7 @@ def _run_image_index_job(
                 identity.dimensions,
             )
             stored_remaining = _remaining_image_ids(job)
+            stored_skipped = set(_skipped_image_ids(job))
             base_processed = 0 if identity_changed else job.processed_images
             base_embeddings = 0 if identity_changed else job.embeddings
             if identity_changed:
@@ -1062,7 +1149,9 @@ def _run_image_index_job(
                     full_rebuild=False,
                 )
                 targets.extend(
-                    item for item in newly_pending if item[0] not in target_ids
+                    item
+                    for item in newly_pending
+                    if item[0] not in target_ids and item[0] not in stored_skipped
                 )
             else:
                 targets = repository.list_index_target_images(
@@ -1086,6 +1175,16 @@ def _run_image_index_job(
             job.embeddings = base_embeddings
             job.total_images = base_processed + len(target_ids)
             job.remaining_image_ids = [str(value) for value in target_ids]
+            if identity_changed:
+                stored_skipped.clear()
+                job.skipped_images = 0
+                job.skipped_image_ids = []
+                job.skipped_image_failures = []
+            else:
+                job.skipped_images = len(stored_skipped)
+                job.skipped_image_ids = [
+                    str(value) for value in sorted(stored_skipped, key=str)
+                ]
             job.failed_images = 0
             job.error_message = None
             job.paused_at = None
@@ -1094,6 +1193,8 @@ def _run_image_index_job(
             if _pause_at_checkpoint(session, job):
                 return
 
+            source_failure_policy = job.source_failure_policy
+
             concurrency = min(
                 resolved_image_index_concurrency(session),
                 _IMAGE_INDEX_GLOBAL_CONCURRENCY,
@@ -1101,6 +1202,15 @@ def _run_image_index_job(
             )
             failure_limit = _image_index_failure_limit(concurrency)
             completed_ids: set[UUID] = set()
+            skipped_ids = set(stored_skipped)
+            skipped_failure_records = [
+                {
+                    "image_id": str(record["image_id"]),
+                    "product_name": str(record["product_name"]),
+                    "error_code": str(record["error_code"]),
+                }
+                for record in _skipped_failure_records(job)
+            ]
             embeddings_written = 0
             job_started_at = time.perf_counter()
             logger.info(
@@ -1166,13 +1276,42 @@ def _run_image_index_job(
                     try:
                         idempotent = future.result()
                     except Exception as exc:
-                        logger.exception(
-                            "image index job %s failed image %s after %.2fs",
-                            job_id,
-                            image_id,
-                            elapsed,
+                        source_error_code = _skippable_source_failure_code(
+                            exc,
+                            policy=source_failure_policy,
                         )
-                        failures.append((image_id, product_name, exc))
+                        if source_error_code is not None:
+                            completed_ids.add(image_id)
+                            if image_id not in skipped_ids:
+                                skipped_ids.add(image_id)
+                                if (
+                                    len(skipped_failure_records)
+                                    < _SKIPPED_IMAGE_FAILURE_DETAILS_LIMIT
+                                ):
+                                    skipped_failure_records.append(
+                                        {
+                                            "image_id": str(image_id),
+                                            "product_name": product_name[:500],
+                                            "error_code": source_error_code,
+                                        }
+                                    )
+                            logger.warning(
+                                "image index job %s skipped unreadable image %s "
+                                "code=%s policy=%s elapsed=%.2fs",
+                                job_id,
+                                image_id,
+                                source_error_code,
+                                source_failure_policy,
+                                elapsed,
+                            )
+                        else:
+                            logger.exception(
+                                "image index job %s failed image %s after %.2fs",
+                                job_id,
+                                image_id,
+                                elapsed,
+                            )
+                            failures.append((image_id, product_name, exc))
                     else:
                         completed_ids.add(image_id)
                         if not idempotent:
@@ -1191,6 +1330,11 @@ def _run_image_index_job(
                 job.processed_images = base_processed + len(completed_ids)
                 job.embeddings = base_embeddings + embeddings_written
                 job.failed_images = len(failures)
+                job.skipped_images = len(skipped_ids)
+                job.skipped_image_ids = [
+                    str(value) for value in sorted(skipped_ids, key=str)
+                ]
+                job.skipped_image_failures = skipped_failure_records
                 job.remaining_image_ids = [
                     str(value)
                     for value in target_ids
@@ -1323,12 +1467,16 @@ def start_image_index_job(
         total_images=len(targets),
         processed_images=0,
         failed_images=0,
+        skipped_images=0,
         embeddings=0,
         model_provider=identity.provider,
         model_name=identity.model_name,
         model_version=identity.model_version,
         dimensions=identity.dimensions,
         remaining_image_ids=[str(image_id) for image_id, _ in targets],
+        skipped_image_ids=[],
+        skipped_image_failures=[],
+        source_failure_policy=request.source_failure_policy,
         completed_at=now if not targets else None,
     )
     session.add(job)
@@ -1389,6 +1537,7 @@ def resume_image_index_job(
     *,
     context: RequestContext,
     job_id: UUID,
+    request: ImageIndexJobResumeRequest | None = None,
 ) -> ImageIndexJobResponse:
     _require(context.permissions, "product.edit")
     job = _managed_job(
@@ -1398,6 +1547,8 @@ def resume_image_index_job(
         for_update=True,
     )
     if job.status == "RUNNING" and job.pause_requested_at is not None:
+        if request is not None and request.source_failure_policy is not None:
+            job.source_failure_policy = request.source_failure_policy
         job.pause_requested_at = None
         session.commit()
         return _job_response(job)
@@ -1439,12 +1590,17 @@ def resume_image_index_job(
         )
         job.processed_images = 0
         job.embeddings = 0
+        job.skipped_images = 0
         job.total_images = len(targets)
         job.remaining_image_ids = [str(image_id) for image_id, _ in targets]
+        job.skipped_image_ids = []
+        job.skipped_image_failures = []
         job.model_provider = identity.provider
         job.model_name = identity.model_name
         job.model_version = identity.model_version
         job.dimensions = identity.dimensions
+    if request is not None and request.source_failure_policy is not None:
+        job.source_failure_policy = request.source_failure_policy
     job.status = "QUEUED"
     job.pause_requested_at = None
     job.paused_at = None

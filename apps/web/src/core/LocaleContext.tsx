@@ -14,6 +14,19 @@ import type { UiLocale } from "./types";
 const STORAGE_KEY = "zhimaoyun.console.locale";
 
 const english: Record<string, string> = {
+  "图片向量化完成，本次处理 {count} 张，跳过 {skipped} 张无法读取的图片。":
+    "Image vectorization completed: {count} processed and {skipped} unreadable images skipped.",
+  "已跳过 {count} 张无法读取的图片": "Skipped {count} unreadable source images",
+  "查看跳过记录（{count}）": "View skipped records ({count})",
+  "仅展示前 {count} 条跳过记录。": "Only the first {count} skipped records are shown.",
+  "源图片读取失败时": "When a source image cannot be read",
+  "选择源图片失败处理方式": "Choose how to handle source image failures",
+  "停止任务并保留断点": "Stop and keep the checkpoint",
+  "跳过不存在的图片（404 / 410 / R2 缺失）":
+    "Skip missing images (404 / 410 / missing R2 object)",
+  "跳过所有无法读取的源图片": "Skip every unreadable source image",
+  "跳过只针对图片链接、对象缺失或文件损坏；模型、API 和配置错误仍会停止任务。":
+    "Skipping only applies to broken image links, missing objects, or damaged files. Model, API, and configuration errors still stop the job.",
   "图片变清晰": "Enhance images",
   "系统提示词": "System prompt",
   "首次图生图系统提示词": "First-attempt image-to-image system prompt",
@@ -975,6 +988,28 @@ const english: Record<string, string> = {
   "立即刷新": "Refresh now",
   "正在读取服务器资源": "Loading server resources",
   "系统监控数据加载失败": "Could not load system monitoring data",
+  "数据监控": "Usage analytics",
+  "商家数据监控": "Merchant usage analytics",
+  "按店铺汇总访问、商品互动、报价、图片搜索与客服使用情况。仅展示聚合统计，不展示访客原始信息。":
+    "Aggregate storefront visits, product interactions, quotations, image searches, and support usage by merchant. Only aggregate counts are shown.",
+  "店铺访问人数": "Storefront visitors",
+  "商品点击次数": "Product clicks",
+  "报价请求": "Quote requests",
+  "已制作报价单": "Quotations created",
+  "图片搜索次数": "Image searches",
+  "AI 客服对话": "AI support conversations",
+  "AI 客服对话次数": "AI support conversations",
+  "正在读取商家数据": "Loading merchant usage",
+  "商家数据加载失败": "Could not load merchant usage",
+  "店铺明细": "Merchant details",
+  "统计周期：{start} 至 {end}": "Reporting period: {start} to {end}",
+  "{count} 家店铺": "{count} merchants",
+  "暂无商家数据": "No merchant data yet",
+  "店铺数据": "Merchant usage data",
+  "店铺": "Merchant",
+  "访问人数": "Visitors",
+  "商品点击": "Product clicks",
+  "图片搜索": "Image searches",
   "本次刷新失败，页面保留上一份有效数据：{message}":
     "This refresh failed. The last valid snapshot is still shown: {message}",
   "资源状态": "Resource status",
@@ -1845,6 +1880,13 @@ const english: Record<string, string> = {
   "失败后最多重试次数": "Maximum retries after failure",
   "仅临时错误会自动重试；次数不包含首次请求，建议设置为 2–3。":
     "Only transient errors are retried. The initial request is not counted; 2–3 retries are recommended.",
+  "自动重试中": "Retrying automatically",
+  "重试后完成": "Completed after retry",
+  "上一次请求失败，系统正在自动缩小批次重试。":
+    "The previous request failed. The system is retrying automatically with smaller batches.",
+  "已自动重试 {count} 次，仍未成功。":
+    "The request is still unsuccessful after {count} automatic retries.",
+  "当前任务结束后可重试": "Retry when the current job finishes",
   "商品批量翻译": "Catalog translation batching",
   "同时满足 SKU 数量和字符上限时才会放入同一次请求。":
     "A request is filled only while both the SKU and character limits are satisfied.",

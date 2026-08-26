@@ -996,6 +996,14 @@ export interface ImageIndexStatus {
   indexedProducts: number;
 }
 
+export type ImageSourceFailurePolicy = "STOP" | "SKIP_NOT_FOUND" | "SKIP_UNREADABLE";
+
+export interface ImageIndexSkippedFailure {
+  imageId: string;
+  productName: string;
+  errorCode: string;
+}
+
 export interface ImageIndexJob {
   id: string;
   mode: "INCREMENTAL" | "FULL_REBUILD";
@@ -1003,6 +1011,9 @@ export interface ImageIndexJob {
   totalImages: number;
   processedImages: number;
   failedImages: number;
+  skippedImages: number;
+  skippedFailures: ImageIndexSkippedFailure[];
+  sourceFailurePolicy: ImageSourceFailurePolicy;
   embeddings: number;
   remainingImages: number;
   progressPercent: number;

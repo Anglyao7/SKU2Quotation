@@ -28,6 +28,7 @@ from ..storefront_analytics_schemas import (
     PopularCategoryAssignResponse,
     StorefrontAnalyticsResponse,
     StorefrontProductRankingResponse,
+    StorefrontVisitCreate,
     StorefrontProductViewCreate,
 )
 from ..use_cases import storefront_analytics as use_cases
@@ -36,6 +37,42 @@ from .errors import application_http_error
 
 router = APIRouter(tags=["storefront-analytics"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+@router.post(
+    "/api/store/{tenant_slug}/visits",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def record_storefront_visit(
+    tenant_slug: str,
+    payload: StorefrontVisitCreate,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+) -> None:
+    response.headers.update(NO_STORE_HEADERS)
+    enforce_rate_limit(
+        request,
+        scope="public-storefront-visit",
+        limit=configured_limit("RATE_LIMIT_PUBLIC_STOREFRONT_VISIT_REQUESTS", 60),
+        window_seconds=configured_limit(
+            "RATE_LIMIT_PUBLIC_STOREFRONT_VISIT_WINDOW_SECONDS",
+            60,
+            maximum=86_400,
+        ),
+    )
+    visitor_ip = request_visitor_ip(request)
+    country_code = request_country_code(request, visitor_ip=visitor_ip)
+    try:
+        use_cases.record_storefront_visit_event(
+            session,
+            slug=tenant_slug,
+            event_id=payload.event_id,
+            ip_address=visitor_ip,
+            country_code=country_code,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
 
 
 @router.post(

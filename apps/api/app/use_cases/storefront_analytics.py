@@ -23,6 +23,7 @@ from ..repositories import public_catalog_repository
 from ..repositories import storefront_analytics_repository as repository
 from ..services.catalog_translation import catalog_translation_source
 from ..services.storefront_analytics import raw_ip_retention_days
+from ..services.platform_usage import record_storefront_visit
 from ..services.catalog_write_guard import (
     lock_catalog_write,
     release_rollback_ownership,
@@ -163,6 +164,28 @@ def record_product_view(
     )
     session.commit()
     return tenant.id, True
+
+
+def record_storefront_visit_event(
+    session: Session,
+    *,
+    slug: str,
+    event_id: str,
+    ip_address: str,
+    country_code: str,
+) -> tuple[UUID, bool]:
+    """Record an anonymous storefront entry for platform-level usage metrics."""
+
+    tenant = _resolve_public_store(session, slug=slug)
+    recorded = record_storefront_visit(
+        session,
+        tenant_id=tenant.id,
+        event_id=event_id,
+        ip_address=ip_address,
+        country_code=country_code,
+    )
+    session.commit()
+    return tenant.id, recorded
 
 
 def get_storefront_analytics(

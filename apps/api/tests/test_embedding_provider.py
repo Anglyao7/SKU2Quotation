@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -9,6 +11,7 @@ from app.services.embedding import (
     EmbeddingProviderError,
     OpenAICompatibleEmbedding,
     configured_text_embedding_provider,
+    precompute_embeddings,
 )
 
 
@@ -223,3 +226,138 @@ def test_openai_compatible_embedding_does_not_retry_authentication_error() -> No
             provider.embed(["query"])
 
     assert attempts == 1
+
+
+def test_precompute_embeddings_bisects_rejected_aggregate_batches() -> None:
+    request_sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = json.loads(request.read())["input"]
+        request_sizes.append(len(inputs))
+        if len(inputs) > 1:
+            return httpx.Response(400)
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
+    texts = ["first", "second", "third", "fourth"]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleEmbedding(
+            api_key="test-secret",
+            base_url="https://embedding.example",
+            model_name="text-embedding-3-large",
+            model_version="test-d2",
+            dimensions=2,
+            max_retry_count=0,
+            client=client,
+        )
+        prepared = precompute_embeddings(provider, texts, batch_size=4)
+
+    assert prepared.embed(texts) == [[1.0, 0.0]] * 4
+    assert request_sizes == [4, 2, 1, 1, 2, 1, 1]
+
+
+def test_precompute_embeddings_bounds_batches_by_aggregate_token_budget() -> None:
+    request_sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = json.loads(request.read())["input"]
+        request_sizes.append(len(inputs))
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": index, "embedding": [1.0, 0.0]}
+                    for index, _value in enumerate(inputs)
+                ]
+            },
+        )
+
+    texts = ["一二三四", "五六七八", "九十十一"]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleEmbedding(
+            api_key="test-secret",
+            base_url="https://embedding.example",
+            model_name="text-embedding-3-large",
+            model_version="test-d2",
+            dimensions=2,
+            max_retry_count=0,
+            client=client,
+        )
+        prepared = precompute_embeddings(
+            provider,
+            texts,
+            batch_size=10,
+            max_batch_tokens=8,
+        )
+
+    assert prepared.embed(texts) == [[1.0, 0.0]] * 3
+    assert request_sizes == [2, 1]
+
+
+def test_precompute_embeddings_identifies_bad_singleton_without_exposing_text() -> None:
+    private_text = "customer-private-invalid-input"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = json.loads(request.read())["input"]
+        if private_text in inputs:
+            return httpx.Response(400)
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleEmbedding(
+            api_key="test-secret",
+            base_url="https://embedding.example",
+            model_name="text-embedding-3-large",
+            model_version="test-d2",
+            dimensions=2,
+            max_retry_count=0,
+            client=client,
+        )
+        with pytest.raises(EmbeddingProviderError) as raised:
+            precompute_embeddings(
+                provider,
+                ["valid input", private_text],
+                batch_size=2,
+            )
+
+    message = str(raised.value)
+    assert "embedding input rejected with HTTP 400" in message
+    assert "fingerprint=" in message
+    assert "estimated_tokens=" in message
+    assert private_text not in message
+
+
+def test_precompute_embeddings_rejects_oversized_text_before_network_call() -> None:
+    requests = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(500)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleEmbedding(
+            api_key="test-secret",
+            base_url="https://embedding.example",
+            model_name="text-embedding-3-large",
+            model_version="test-d2",
+            dimensions=2,
+            max_retry_count=0,
+            client=client,
+        )
+        with pytest.raises(
+            EmbeddingProviderError,
+            match="embedding input exceeds safe token budget",
+        ):
+            precompute_embeddings(
+                provider,
+                ["超长文本" * 20],
+                max_input_tokens=10,
+            )
+
+    assert requests == 0

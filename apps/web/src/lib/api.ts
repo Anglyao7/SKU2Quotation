@@ -14,6 +14,7 @@ import type {
   PublicSupportConversation,
   PublicSupportMessage,
   PublicSupportStreamEvent,
+  PlatformUsageResponse,
   Quote,
   Sku,
   SkuList,
@@ -725,6 +726,15 @@ export const api = {
         keepalive: true,
       },
     ),
+  recordStorefrontVisit: (slug: string, eventId: string) =>
+    request<void>(
+      `/api/store/${encodeURIComponent(slug)}/visits`,
+      {
+        method: "POST",
+        body: JSON.stringify({ event_id: eventId }),
+        keepalive: true,
+      },
+    ),
   async getStoreSkus(
     slug: string,
     filters: StoreSkuFilters = {},
@@ -969,6 +979,12 @@ export const api = {
     const raw = await request<unknown>("/api/admin/tenants", {}, true);
     return normalizeList<Tenant>(raw).items.map(normalizeTenant);
   },
+  getPlatformUsage: (days: 7 | 30 | 60 | 90) =>
+    request<PlatformUsageResponse>(
+      `/api/admin/usage-analytics?days=${days}`,
+      { cache: "no-store" },
+      true,
+    ),
   getMerchantIdentities: () =>
     request<MerchantIdentityProfile[]>("/api/admin/merchant-identities", {}, true),
   createMerchantIdentity: (payload: { name: string; enabled_modules: TenantModuleCode[] }) =>

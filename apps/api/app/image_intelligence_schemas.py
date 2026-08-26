@@ -7,6 +7,9 @@ from uuid import UUID
 from pydantic import BaseModel, Field, SecretStr
 
 
+ImageSourceFailurePolicy = Literal["STOP", "SKIP_NOT_FOUND", "SKIP_UNREADABLE"]
+
+
 class ImageProjectionResponse(BaseModel):
     product_id: UUID
     product_image_id: UUID
@@ -81,6 +84,17 @@ class ImageIndexStatusResponse(BaseModel):
 class ImageIndexJobStartRequest(BaseModel):
     mode: Literal["INCREMENTAL", "FULL_REBUILD"] = "INCREMENTAL"
     confirm_full_rebuild: bool = False
+    source_failure_policy: ImageSourceFailurePolicy = "STOP"
+
+
+class ImageIndexJobResumeRequest(BaseModel):
+    source_failure_policy: ImageSourceFailurePolicy | None = None
+
+
+class ImageIndexSkippedFailure(BaseModel):
+    image_id: UUID
+    product_name: str
+    error_code: str
 
 
 class ImageIndexJobResponse(BaseModel):
@@ -90,6 +104,9 @@ class ImageIndexJobResponse(BaseModel):
     total_images: int = Field(ge=0)
     processed_images: int = Field(ge=0)
     failed_images: int = Field(ge=0)
+    skipped_images: int = Field(ge=0)
+    skipped_failures: list[ImageIndexSkippedFailure] = Field(default_factory=list)
+    source_failure_policy: ImageSourceFailurePolicy
     embeddings: int = Field(ge=0)
     remaining_images: int = Field(ge=0)
     progress_percent: float = Field(ge=0, le=100)

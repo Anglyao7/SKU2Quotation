@@ -21,6 +21,21 @@ class StorefrontProductViewCreate(BaseModel):
         return normalized
 
 
+class StorefrontVisitCreate(BaseModel):
+    event_id: str = Field(min_length=8, max_length=80)
+
+    @field_validator("event_id")
+    @classmethod
+    def validate_event_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(
+            character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:"
+            for character in normalized
+        ):
+            raise ValueError("event_id contains unsupported characters")
+        return normalized
+
+
 class StorefrontAnalyticsSummary(BaseModel):
     total_views: int = Field(ge=0)
     unique_visitors: int = Field(ge=0)

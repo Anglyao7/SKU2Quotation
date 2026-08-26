@@ -127,6 +127,7 @@ from app.saas_seed import (
     seed_saas_foundation,
 )
 from app.services.file_detection import OLE_SIGNATURE, detect_file_path, detect_file_type
+from app.services.external_image_migration import ImageMigrationError
 from app.services.embedding import (
     DeterministicFeatureHashEmbedding,
     EmbeddingProviderError,
@@ -154,10 +155,15 @@ from app.services.hybrid_search import (
     hybrid_product_search,
 )
 from app.services.knowledge import (
+    FIELD_POLICY_VERSION,
+    KNOWLEDGE_CHUNK_MAX_TOKENS,
+    SCHEMA_VERSION,
     KnowledgeIndexExcludedError,
+    KnowledgeProjectionError,
     build_product_chunks,
     indexed_product_ids,
     project_product_knowledge,
+    project_products_knowledge,
     update_knowledge_index,
 )
 from app.services.parsers import parse_document
@@ -6169,7 +6175,8 @@ def test_phase3b_product_projection_is_filtered_idempotent_and_versioned() -> No
         assert document.canonical_payload["suppliers"] == [
             {"lead_time_days": 15, "moq": "100.000000", "moq_unit": "pcs"}
         ]
-        assert document.schema_version == 3
+        assert document.schema_version == SCHEMA_VERSION
+        assert document.field_policy_version == FIELD_POLICY_VERSION
         assert "DO-NOT-PROJECT" not in str(document.canonical_payload)
         chunks = session.scalars(
             select(KnowledgeChunkRow).where(KnowledgeChunkRow.document_id == document.id)
@@ -6231,6 +6238,52 @@ def test_chinese_rag_tokens_and_tag_signal_avoid_single_character_noise() -> Non
     assert _score_tag_relevance(query, query_tokens, ["唇彩"]) < 0.50
 
 
+def test_product_embedding_rejection_reports_product_and_chunk_without_content() -> None:
+    product_id = uuid4()
+    private_description = "PRIVATE-CUSTOMER-CONTENT-MUST-NOT-LEAK"
+
+    class RejectingEmbedding:
+        identity = DeterministicFeatureHashEmbedding.identity
+
+        def embed(self, _texts: list[str]) -> list[list[float]]:
+            raise EmbeddingProviderError(
+                "embedding provider returned HTTP 400",
+                status_code=400,
+            )
+
+    with SessionLocal() as session:
+        session.add(
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"REJECTED-{product_id.hex[:8]}",
+                name="Rejected embedding product",
+                description=private_description,
+                status="ACTIVE",
+                search_document_version=0,
+            )
+        )
+        session.commit()
+        try:
+            with pytest.raises(KnowledgeProjectionError) as raised:
+                project_products_knowledge(
+                    session,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_ids=[product_id],
+                    embedder=RejectingEmbedding(),
+                )
+            message = str(raised.value)
+            assert "Rejected embedding product" in message
+            assert str(product_id) in message
+            assert "product/overview/0001" in message
+            assert "fingerprint=" in message
+            assert private_description not in message
+        finally:
+            session.rollback()
+            session.execute(delete(ProductRow).where(ProductRow.id == product_id))
+            session.commit()
+
+
 def test_product_knowledge_promotes_sku_tags_into_rag_overview() -> None:
     chunks = build_product_chunks({
         "product": {
@@ -6263,13 +6316,125 @@ def test_product_knowledge_promotes_sku_tags_into_rag_overview() -> None:
     overview = next(chunk for chunk in chunks if chunk["chunk_type"] == "OVERVIEW")
     assert "Search tags / 商品标签: 旅行装, 防水, 礼赠, 轻量" in overview["content"]
     assert (
-        "SKU MOQ / SKU最低起订量: "
-        "TAG-RAG-001-A=100 pcs; TAG-RAG-001-B=200 pcs"
+        "SKU MOQ options / SKU最低起订量选项: 100 pcs; 200 pcs"
         in overview["content"]
     )
     assert "MOQ options / 最低起订量选项: 300 pcs" in overview["content"]
     assert overview["metadata"]["search_tags"] == ["旅行装", "防水", "礼赠", "轻量"]
-    assert overview["metadata"]["field_policy_version"] == 3
+    assert overview["metadata"]["field_policy_version"] == FIELD_POLICY_VERSION
+
+
+def test_product_knowledge_splits_large_sku_catalog_into_bounded_child_chunks() -> None:
+    skus = [
+        {
+            "code": f"INTERNAL-SKU-{index:03d}",
+            "barcode": f"690000000{index:03d}",
+            "name": f"桌布款式{index:03d}",
+            "options": {
+                "尺寸": f"{120 + index % 8 * 10}x{160 + index % 5 * 10}cm",
+                "图案说明": "防水耐磨易清洁，适合家庭餐桌和户外活动" * 6,
+                "供应商SKU": f"SUPPLIER-PRIVATE-{index:03d}",
+                "内部备注": "不应进入向量正文",
+            },
+            "default_moq": "30",
+            "moq_unit": "pcs",
+            "tags": ["桌布", "防水", "户外"],
+        }
+        for index in range(273)
+    ]
+    payload = {
+        "entity": {"type": "PRODUCT", "id": str(uuid4()), "version": 1},
+        "product": {
+            "code": "TABLE-CLOTH-PARENT",
+            "name": "新品桌布",
+            "description": "适用于不同桌型和使用场景",
+        },
+        "category": {"name": "家居布艺"},
+        "attributes": [],
+        "suppliers": [],
+        "skus": skus,
+    }
+
+    chunks = build_product_chunks(payload)
+    repeated = build_product_chunks(payload)
+    overview = [chunk for chunk in chunks if chunk["chunk_type"] == "OVERVIEW"]
+    specification_chunks = [
+        chunk for chunk in chunks if chunk["chunk_type"] == "SPECIFICATIONS"
+    ]
+
+    assert chunks == repeated
+    assert len(overview) == 1
+    assert len(specification_chunks) > 1
+    assert all(
+        chunk["token_count"] <= KNOWLEDGE_CHUNK_MAX_TOKENS
+        for chunk in chunks
+    )
+    assert [chunk["section_path"] for chunk in specification_chunks] == [
+        f"product/specifications/{index:04d}"
+        for index in range(1, len(specification_chunks) + 1)
+    ]
+    assert all(
+        chunk["metadata"]["parts"] == len(specification_chunks)
+        for chunk in specification_chunks
+    )
+
+    projected_sku_codes = {
+        sku_code
+        for chunk in specification_chunks
+        for sku_code in chunk["metadata"].get("sku_codes", [])
+    }
+    assert projected_sku_codes == {sku["code"] for sku in skus}
+    projected_text = "\n".join(chunk["content"] for chunk in specification_chunks)
+    assert all(sku["name"] in projected_text for sku in skus)
+    assert "moq=30 pcs" in projected_text
+    assert "INTERNAL-SKU-000" not in projected_text
+    assert "690000000000" not in projected_text
+    assert "SUPPLIER-PRIVATE" not in projected_text
+    assert "不应进入向量正文" not in projected_text
+    assert "SKU MOQ options / SKU最低起订量选项: 30 pcs" in overview[0]["content"]
+    assert "INTERNAL-SKU" not in overview[0]["content"]
+
+
+def test_product_knowledge_splits_one_oversized_variant_without_losing_identity() -> None:
+    chunks = build_product_chunks({
+        "entity": {"type": "PRODUCT", "id": str(uuid4()), "version": 1},
+        "product": {
+            "code": "LONG-VARIANT-PARENT",
+            "name": "超长规格商品",
+            "description": "用于验证极端规格",
+        },
+        "category": {"name": "测试分类"},
+        "attributes": [],
+        "suppliers": [],
+        "skus": [
+            {
+                "code": "PRIVATE-LONG-SKU",
+                "barcode": "6999999999999",
+                "name": "超长规格款",
+                "options": {"说明": "防水耐磨" * 3_000},
+                "default_moq": "50",
+                "moq_unit": "pcs",
+                "tags": ["耐用"],
+            }
+        ],
+    })
+
+    specification_chunks = [
+        chunk for chunk in chunks if chunk["chunk_type"] == "SPECIFICATIONS"
+    ]
+    assert len(specification_chunks) > 1
+    assert all(
+        chunk["token_count"] <= KNOWLEDGE_CHUNK_MAX_TOKENS
+        for chunk in specification_chunks
+    )
+    assert all(
+        chunk["metadata"]["sku_codes"] == ["PRIVATE-LONG-SKU"]
+        for chunk in specification_chunks
+    )
+    projected_text = "\n".join(chunk["content"] for chunk in specification_chunks)
+    assert "PRIVATE-LONG-SKU" not in projected_text
+    assert "6999999999999" not in projected_text
+    assert "防水耐磨" in projected_text
 
 
 def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
@@ -6480,6 +6645,81 @@ def test_manual_knowledge_index_update_and_full_rebuild() -> None:
             )
         session.execute(delete(ProductRow).where(ProductRow.id == product_id))
         session.commit()
+
+
+def test_knowledge_index_checkpoints_valid_product_before_rejected_product() -> None:
+    good_product_id = uuid4()
+    bad_product_id = uuid4()
+    rejected_marker = "REJECT-THIS-PRODUCT-INPUT"
+    deterministic = DeterministicFeatureHashEmbedding()
+
+    class SelectiveRejectingEmbedding:
+        identity = deterministic.identity
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            if any(rejected_marker in text for text in texts):
+                raise EmbeddingProviderError(
+                    "embedding provider returned HTTP 400",
+                    status_code=400,
+                )
+            return deterministic.embed(texts)
+
+    progress: list[tuple[int, UUID | None]] = []
+    with SessionLocal() as session:
+        session.add_all([
+            ProductRow(
+                id=good_product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"GOOD-INDEX-{good_product_id.hex[:8]}",
+                name="Valid checkpoint product",
+                description="This product should be committed before the failure.",
+                status="ACTIVE",
+                search_document_version=0,
+            ),
+            ProductRow(
+                id=bad_product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"BAD-INDEX-{bad_product_id.hex[:8]}",
+                name="Rejected checkpoint product",
+                description=rejected_marker,
+                status="ACTIVE",
+                search_document_version=0,
+            ),
+        ])
+        session.commit()
+        try:
+            with pytest.raises(KnowledgeProjectionError) as raised:
+                update_knowledge_index(
+                    session,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    full_rebuild=False,
+                    batch_size=2,
+                    embedder=SelectiveRejectingEmbedding(),
+                    target_product_ids=[good_product_id, bad_product_id],
+                    progress_callback=lambda processed, _total, _embeddings, current_id, _name: (
+                        progress.append((processed, current_id))
+                    ),
+                )
+
+            session.rollback()
+            indexed_ids = indexed_product_ids(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                embedder=SelectiveRejectingEmbedding(),
+            )
+            assert good_product_id in indexed_ids
+            assert bad_product_id not in indexed_ids
+            assert progress[-1] == (1, bad_product_id)
+            assert "Rejected checkpoint product" in str(raised.value)
+            assert rejected_marker not in str(raised.value)
+        finally:
+            session.rollback()
+            session.execute(
+                delete(ProductRow).where(
+                    ProductRow.id.in_([good_product_id, bad_product_id])
+                )
+            )
+            session.commit()
 
 
 def test_uncategorized_product_is_removed_from_the_smart_index() -> None:
@@ -7007,6 +7247,133 @@ def test_knowledge_index_failed_job_resumes_only_remaining_products(
             session.execute(
                 delete(KnowledgeIndexJobRow).where(
                     KnowledgeIndexJobRow.id == job_id
+                )
+            )
+            session.execute(
+                delete(ProductRow).where(ProductRow.id.in_(product_ids))
+            )
+            session.commit()
+
+
+def test_knowledge_index_resume_restarts_when_chunk_policy_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product_ids = [uuid4(), uuid4()]
+    old_document_id = uuid4()
+    with SessionLocal() as session:
+        embedder = knowledge_search_use_cases.resolved_text_embedding_provider(session)
+        for index, product_id in enumerate(product_ids, start=1):
+            session.add(
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"POLICY-RESUME-{product_id.hex[:8]}",
+                    name=f"Projection policy resume product {index}",
+                    description="Verifies a safe restart after chunk policy changes.",
+                    status="ACTIVE",
+                    search_document_version=1 if index == 1 else 0,
+                )
+            )
+        session.flush()
+        session.add(
+            KnowledgeDocumentRow(
+                id=old_document_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                source_entity_type="PRODUCT",
+                source_entity_id=product_ids[0],
+                source_version=1,
+                title="Old projection policy",
+                locale="und",
+                schema_version=SCHEMA_VERSION - 1,
+                field_policy_version=FIELD_POLICY_VERSION - 1,
+                canonical_payload={"projection": "old"},
+                content_hash="f" * 64,
+                classification="INTERNAL",
+                permission_scope={"modules": ["PRODUCT_CENTER"]},
+                status="ACTIVE",
+            )
+        )
+        job = KnowledgeIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="FULL_REBUILD",
+            status="QUEUED",
+            total_products=2,
+            processed_products=1,
+            failed_products=1,
+            embeddings=2,
+            model_provider=embedder.identity.provider,
+            model_name=embedder.identity.model_name,
+            model_version=embedder.identity.model_version,
+            dimensions=embedder.identity.dimensions,
+            remaining_product_ids=[str(product_ids[1])],
+            started_at=datetime.now(UTC),
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    attempts: list[list[UUID]] = []
+    all_product_ids = list(product_ids)
+
+    def target_products(
+        _session: object,
+        *,
+        product_ids: list[UUID] | None = None,
+        **_kwargs: object,
+    ) -> list[tuple[UUID, str]]:
+        selected = product_ids if product_ids is not None else all_product_ids
+        return [(product_id, "policy changed") for product_id in selected]
+
+    def finish_update(
+        session: object,
+        *,
+        target_product_ids: list[UUID],
+        progress_callback: object,
+        **_kwargs: object,
+    ) -> SimpleNamespace:
+        attempts.append(list(target_product_ids))
+        callback = progress_callback
+        assert callable(callback)
+        callback(2, 2, 4, None, None)
+        session.commit()
+        return SimpleNamespace(paused=False)
+
+    monkeypatch.setattr(
+        knowledge_search_use_cases,
+        "knowledge_index_target_products",
+        target_products,
+    )
+    monkeypatch.setattr(
+        knowledge_search_use_cases,
+        "update_knowledge_index",
+        finish_update,
+    )
+
+    try:
+        knowledge_search_use_cases._run_index_job(
+            job_id=job_id,
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            tenant_id=DEFAULT_TENANT_ID,
+            user_id=DEFAULT_OWNER_USER_ID,
+        )
+        finished = client.get(f"/api/v1/ai/knowledge/index/jobs/{job_id}")
+        assert finished.status_code == 200, finished.text
+        assert finished.json()["status"] == "SUCCEEDED"
+        assert finished.json()["processed_products"] == 2
+        assert finished.json()["total_products"] == 2
+        assert attempts == [product_ids]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(KnowledgeIndexJobRow).where(
+                    KnowledgeIndexJobRow.id == job_id
+                )
+            )
+            session.execute(
+                delete(KnowledgeDocumentRow).where(
+                    KnowledgeDocumentRow.id == old_document_id
                 )
             )
             session.execute(
@@ -7796,6 +8163,219 @@ def test_image_index_concurrent_failure_keeps_only_failed_checkpoint(
     finally:
         with SessionLocal() as session:
             session.execute(delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id))
+            session.commit()
+
+
+def _wrapped_image_source_error(code: str) -> ApplicationError:
+    source_error = ImageMigrationError(code)
+    error = ApplicationError(
+        "IMAGE_REMOTE_OBJECT_UNAVAILABLE",
+        f"商品图片地址暂时无法读取（{code}）。",
+        kind="unavailable",
+    )
+    error.__cause__ = source_error
+    return error
+
+
+def test_image_index_source_failure_policy_only_skips_source_read_errors() -> None:
+    not_found = _wrapped_image_source_error("SOURCE_HTTP_404")
+    forbidden = _wrapped_image_source_error("SOURCE_HTTP_403")
+    provider_failure = ApplicationError(
+        "IMAGE_EMBEDDING_FAILED",
+        "provider rejected request",
+        kind="unavailable",
+    )
+
+    assert (
+        image_intelligence_use_cases._skippable_source_failure_code(
+            not_found,
+            policy="STOP",
+        )
+        is None
+    )
+    assert image_intelligence_use_cases._skippable_source_failure_code(
+        not_found,
+        policy="SKIP_NOT_FOUND",
+    ) == "SOURCE_HTTP_404"
+    assert (
+        image_intelligence_use_cases._skippable_source_failure_code(
+            forbidden,
+            policy="SKIP_NOT_FOUND",
+        )
+        is None
+    )
+    assert image_intelligence_use_cases._skippable_source_failure_code(
+        forbidden,
+        policy="SKIP_UNREADABLE",
+    ) == "SOURCE_HTTP_403"
+    assert (
+        image_intelligence_use_cases._skippable_source_failure_code(
+            provider_failure,
+            policy="SKIP_UNREADABLE",
+        )
+        is None
+    )
+
+
+def test_image_index_job_skips_404_and_keeps_auditable_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    targets = [(uuid4(), f"Source image {index}") for index in range(4)]
+    missing_image_id = targets[1][0]
+
+    with SessionLocal() as session:
+        provider = image_intelligence_use_cases._provider(session)
+        job = ImageIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="QUEUED",
+            total_images=len(targets),
+            processed_images=0,
+            failed_images=0,
+            skipped_images=0,
+            embeddings=0,
+            model_provider=provider.identity.provider,
+            model_name=provider.identity.model_name,
+            model_version=provider.identity.model_version,
+            dimensions=provider.identity.dimensions,
+            remaining_image_ids=[str(image_id) for image_id, _ in targets],
+            skipped_image_ids=[],
+            skipped_image_failures=[],
+            source_failure_policy="SKIP_NOT_FOUND",
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    def fake_targets(*_args, **_kwargs):
+        return targets
+
+    def projection_with_missing_source(
+        _session,
+        *,
+        image_id: UUID,
+        **_kwargs,
+    ):
+        if image_id == missing_image_id:
+            raise _wrapped_image_source_error("SOURCE_HTTP_404")
+        return SimpleNamespace(), SimpleNamespace(), False
+
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "resolved_image_index_concurrency",
+        lambda _session: 4,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases.repository,
+        "list_index_target_images",
+        fake_targets,
+    )
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "_project_product_image",
+        projection_with_missing_source,
+    )
+
+    try:
+        image_intelligence_use_cases._run_image_index_job(
+            job_id=job_id,
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            tenant_id=DEFAULT_TENANT_ID,
+            user_id=DEFAULT_OWNER_USER_ID,
+        )
+        with SessionLocal() as session:
+            finished = session.get(ImageIndexJobRow, job_id)
+            assert finished is not None
+            assert finished.status == "SUCCEEDED"
+            assert finished.processed_images == len(targets)
+            assert finished.embeddings == len(targets) - 1
+            assert finished.failed_images == 0
+            assert finished.skipped_images == 1
+            assert finished.skipped_image_ids == [str(missing_image_id)]
+            assert finished.skipped_image_failures == [
+                {
+                    "image_id": str(missing_image_id),
+                    "product_name": "Source image 1",
+                    "error_code": "SOURCE_HTTP_404",
+                }
+            ]
+            assert finished.remaining_image_ids == []
+
+            response = image_intelligence_use_cases._job_response(finished)
+            assert response.source_failure_policy == "SKIP_NOT_FOUND"
+            assert response.skipped_images == 1
+            assert response.skipped_failures[0].image_id == missing_image_id
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id)
+            )
+            session.commit()
+
+
+def test_failed_image_index_job_can_resume_with_a_new_source_failure_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed_image_id = uuid4()
+    with SessionLocal() as session:
+        provider = image_intelligence_use_cases._provider(session)
+        job = ImageIndexJobRow(
+            tenant_id=DEFAULT_TENANT_ID,
+            requested_by_membership_id=DEFAULT_MEMBERSHIP_ID,
+            requested_by_user_id=DEFAULT_OWNER_USER_ID,
+            mode="INCREMENTAL",
+            status="FAILED",
+            total_images=1,
+            processed_images=0,
+            failed_images=1,
+            skipped_images=0,
+            embeddings=0,
+            current_image_id=failed_image_id,
+            current_product_name="Missing source",
+            model_provider=provider.identity.provider,
+            model_name=provider.identity.model_name,
+            model_version=provider.identity.model_version,
+            dimensions=provider.identity.dimensions,
+            remaining_image_ids=[str(failed_image_id)],
+            skipped_image_ids=[],
+            skipped_image_failures=[],
+            source_failure_policy="STOP",
+            error_message="SOURCE_HTTP_404",
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    monkeypatch.setattr(
+        image_intelligence_use_cases,
+        "_dispatch_image_index_job",
+        lambda **_kwargs: None,
+    )
+
+    try:
+        resumed = client.post(
+            f"/api/v1/ai/image-search/index/jobs/{job_id}/resume",
+            json={"source_failure_policy": "SKIP_NOT_FOUND"},
+        )
+        assert resumed.status_code == 200, resumed.text
+        payload = resumed.json()
+        assert payload["status"] == "QUEUED"
+        assert payload["source_failure_policy"] == "SKIP_NOT_FOUND"
+        assert payload["failed_images"] == 0
+        assert payload["remaining_images"] == 1
+
+        with SessionLocal() as session:
+            queued = session.get(ImageIndexJobRow, job_id)
+            assert queued is not None
+            assert queued.source_failure_policy == "SKIP_NOT_FOUND"
+            assert queued.status == "QUEUED"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ImageIndexJobRow).where(ImageIndexJobRow.id == job_id)
+            )
             session.commit()
 
 
@@ -15924,6 +16504,25 @@ class _SplitRecoveryCatalogTranslationTestProvider:
         )
 
 
+class _SplitRecoveryCatalogJobTestProvider:
+    identity = TranslationIdentity(provider="split-recovery-job-test", version="v1")
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        item_ids = set(re.findall(r"\[\[ATCF_(\d{3})_\d{3}\]\]", text))
+        if len(item_ids) > 1:
+            raise TranslationProviderError(
+                "damaged batch boundary",
+                recover_with_smaller_batches=True,
+            )
+        return re.sub(r"[\u3400-\u9fff]+", "Translated", text)
+
+
 def test_translation_memory_recovers_failed_batches_in_smaller_groups() -> None:
     successes, failures = translation_memory_service._translate_uncached_values(
         _SplitRecoveryCatalogTranslationTestProvider(),
@@ -16761,6 +17360,20 @@ def test_catalog_translation_job_resumes_failed_provider_from_last_batch(
         assert interrupted_payload["resumable"] is True
         assert "断点" in interrupted_payload["error_message"]
         assert provider.calls == 3
+        interrupted_batches = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert interrupted_batches.status_code == 200, interrupted_batches.text
+        failed_batches = [
+            batch
+            for batch in interrupted_batches.json()
+            if batch["status"] == "FAILED"
+        ]
+        assert len(failed_batches) == 1
+        assert failed_batches[0]["attempt_count"] == 2
+        assert [
+            attempt["status"] for attempt in failed_batches[0]["attempts"]
+        ] == ["FAILED", "FAILED"]
 
         provider.outage_after_first = False
         resumed = client.post(
@@ -16778,6 +17391,93 @@ def test_catalog_translation_job_resumes_failed_provider_from_last_batch(
         assert finished_payload["remaining_skus"] == 0
         assert finished_payload["resumable"] is False
         assert finished_payload["package_published"] is True
+        assert finished_payload["failed_batch_count"] == 0
+        recovered_batches = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert recovered_batches.status_code == 200, recovered_batches.text
+        assert all(
+            batch["status"] == "SUCCEEDED"
+            for batch in recovered_batches.json()
+        )
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogLanguagePackRow).where(
+                    CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogSkuTranslationRow).where(
+                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogTranslationJobRow).where(
+                    CatalogTranslationJobRow.id == job_id
+                )
+            )
+            session.commit()
+
+
+def test_catalog_translation_split_recovery_syncs_parent_batch_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = _SplitRecoveryCatalogJobTestProvider()
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.setenv("CATALOG_TRANSLATION_BATCH_SIZE", "50")
+    monkeypatch.setenv("CATALOG_TRANSLATION_PROVIDER_RETRIES", "0")
+    monkeypatch.setenv("CATALOG_TRANSLATION_CONCURRENCY", "1")
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "configured_catalog_translator",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **kwargs: catalog_translation_use_cases._run_translation_job(
+            **kwargs
+        ),
+    )
+
+    started = client.post(
+        "/api/v1/catalog/translations/jobs",
+        json={
+            "target_locale": "en-US",
+            "mode": "FULL_REBUILD",
+            "confirm_full_rebuild": True,
+        },
+    )
+    assert started.status_code == 202, started.text
+    job_id = UUID(started.json()["id"])
+
+    try:
+        finished = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}"
+        )
+        assert finished.status_code == 200, finished.text
+        assert finished.json()["status"] == "SUCCEEDED"
+        assert finished.json()["failed_batch_count"] == 0
+
+        batches = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert batches.status_code == 200, batches.text
+        payload = batches.json()
+        assert len(payload) > 1
+        assert all(batch["status"] == "SUCCEEDED" for batch in payload)
+        assert any(
+            any(attempt["status"] == "FAILED" for attempt in batch["attempts"])
+            for batch in payload
+        )
     finally:
         with SessionLocal() as session:
             session.execute(

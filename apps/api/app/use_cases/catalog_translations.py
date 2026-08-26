@@ -481,6 +481,48 @@ def _persist_batch_attempts(
         job_batch.completed_at = last.completed_at
 
 
+def _reconcile_split_recovery_batches(
+    session: Session,
+    *,
+    job: CatalogTranslationJobRow,
+    remaining_ids: list[str],
+) -> None:
+    """Resolve parent batches that were automatically retried in smaller pieces.
+
+    A recoverable provider error records a failed outbound attempt, but the
+    logical batch is still in progress while its smaller child batches run.
+    Once the recovery queue has drained, reflect the final SKU outcome on the
+    parent row so operators do not see a stale FAILED/RUNNING batch after the
+    job has actually recovered.
+    """
+
+    unresolved = set(remaining_ids)
+    recovered_at = utcnow()
+    recovering = list(
+        session.scalars(
+            select(CatalogTranslationBatchRow).where(
+                CatalogTranslationBatchRow.tenant_id == job.tenant_id,
+                CatalogTranslationBatchRow.job_id == job.id,
+                CatalogTranslationBatchRow.status == "RUNNING",
+            )
+        ).all()
+    )
+    for batch in recovering:
+        batch_ids = {str(value) for value in batch.sku_ids or []}
+        failed_skus = len(batch_ids & unresolved)
+        batch.processed_skus = max(0, batch.total_skus - failed_skus)
+        batch.failed_skus = failed_skus
+        batch.completed_at = recovered_at
+        if failed_skus:
+            batch.status = "FAILED"
+            batch.error_message = (
+                f"自动拆分重试后仍有 {failed_skus} 个 SKU 未完成。"
+            )
+        else:
+            batch.status = "SUCCEEDED"
+            batch.error_message = None
+
+
 def _translate_batch_outcome(
     translator: TranslationProvider,
     batch: list[CatalogTranslationSource],
@@ -1441,15 +1483,26 @@ def _run_translation_job(
                             error = outcome.error or TranslationProviderError(
                                 "translation batch request failed"
                             )
-                            batch_row.status = "FAILED"
-                            batch_row.failed_skus = len(batch)
-                            batch_row.error_message = str(error)
                             if error.recover_with_smaller_batches and len(batch) > 1:
+                                # The provider request failed, but this logical
+                                # batch has not failed yet: it is being retried
+                                # automatically as smaller child batches. Keep
+                                # it RUNNING until the child outcomes are known.
+                                batch_row.status = "RUNNING"
+                                batch_row.processed_skus = 0
+                                batch_row.failed_skus = 0
+                                batch_row.completed_at = None
+                                batch_row.error_message = (
+                                    "批次响应不完整，正在自动拆分重试。"
+                                )
                                 midpoint = max(1, len(batch) // 2)
                                 split_batches.extend(
                                     [batch[:midpoint], batch[midpoint:]]
                                 )
                             else:
+                                batch_row.status = "FAILED"
+                                batch_row.failed_skus = len(batch)
+                                batch_row.error_message = str(error)
                                 if len(failures) < _FAILURE_DETAIL_LIMIT:
                                     failures.append(_failure_detail(batch[0], str(error)))
                                 job.failed_skus += len(batch)
@@ -1521,6 +1574,13 @@ def _run_translation_job(
 
                     if _pause_at_safe_checkpoint(session, job):
                         return
+
+            _reconcile_split_recovery_batches(
+                session,
+                job=job,
+                remaining_ids=remaining_ids,
+            )
+            session.commit()
 
             if job.failed_skus:
                 raise TranslationProviderError(

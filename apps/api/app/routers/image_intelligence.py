@@ -10,6 +10,7 @@ from ..image_intelligence_schemas import (
     ImageEmbeddingSettingsResponse,
     ImageEmbeddingSettingsUpdateRequest,
     ImageIndexJobResponse,
+    ImageIndexJobResumeRequest,
     ImageIndexJobStartRequest,
     ImageIndexStatusResponse,
     ImageProjectionResponse,
@@ -176,6 +177,7 @@ def pause_image_index_job(
 )
 def resume_image_index_job(
     job_id: UUID,
+    payload: ImageIndexJobResumeRequest | None = None,
     session: Session = Depends(get_authenticated_session),
 ) -> ImageIndexJobResponse:
     try:
@@ -183,6 +185,7 @@ def resume_image_index_job(
             session,
             context=current_context(session),
             job_id=job_id,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

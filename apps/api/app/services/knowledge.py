@@ -22,18 +22,48 @@ from ..product_supplier_models import (
 from ..public_catalog_models import PublicCatalogOfferRow
 from .embedding import (
     EmbeddingProvider,
+    EmbeddingProviderError,
+    estimate_embedding_tokens,
     precompute_embeddings,
     validate_vectors,
 )
 from .embedding_configuration import resolved_text_embedding_provider
 
 
-SCHEMA_VERSION = 3
-FIELD_POLICY_VERSION = 3
+SCHEMA_VERSION = 4
+FIELD_POLICY_VERSION = 4
 LOCALE = "und"
 FEATURE_MARKERS = ("feature", "use", "application", "cert", "特点", "用途", "认证")
 MARKET_MARKERS = ("market", "country", "region", "市场", "国家", "地区")
 UNCATEGORIZED_CATEGORY_NAME = "未分类"
+KNOWLEDGE_CHUNK_TARGET_TOKENS = 1_600
+KNOWLEDGE_CHUNK_MAX_TOKENS = 2_400
+KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS = 12_000
+NON_SEMANTIC_SKU_OPTION_MARKERS = (
+    "supplier",
+    "供应商",
+    "source_sku",
+    "source sku",
+    "barcode",
+    "条码",
+    "internal",
+    "内部",
+)
+
+
+@dataclass(frozen=True)
+class _KnowledgeLine:
+    text: str
+    sku_code: str | None = None
+    barcode: str | None = None
+
+
+@dataclass(frozen=True)
+class _KnowledgeEmbeddingContext:
+    text: str
+    product_id: UUID
+    product_name: str
+    section_path: str
 
 
 class KnowledgeProjectionError(ValueError):
@@ -251,6 +281,132 @@ def _render_value(value: Any) -> str:
     return str(value)
 
 
+def _semantic_sku_options(value: Any) -> Any:
+    if isinstance(value, dict):
+        projected_values: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            if any(
+                marker in str(raw_key).casefold()
+                for marker in NON_SEMANTIC_SKU_OPTION_MARKERS
+            ):
+                continue
+            projected = _semantic_sku_options(raw_value)
+            if projected in ({}, [], "", None):
+                continue
+            projected_values[str(raw_key)] = projected
+        return projected_values
+    if isinstance(value, list):
+        return [
+            projected
+            for item in value
+            if (projected := _semantic_sku_options(item)) not in ({}, [], "", None)
+        ]
+    return value
+
+
+def _content_with_prefix(prefix: str, lines: list[_KnowledgeLine]) -> str:
+    parts = [prefix] if prefix else []
+    parts.extend(line.text for line in lines if line.text)
+    return "\n".join(parts)
+
+
+def _split_oversized_knowledge_line(
+    line: _KnowledgeLine,
+    *,
+    prefix: str,
+) -> list[_KnowledgeLine]:
+    """Split one exceptional line while preserving its identifier metadata."""
+
+    if estimate_embedding_tokens(_content_with_prefix(prefix, [line])) <= (
+        KNOWLEDGE_CHUNK_MAX_TOKENS
+    ):
+        return [line]
+
+    remaining = line.text.strip()
+    pieces: list[_KnowledgeLine] = []
+    while remaining:
+        if estimate_embedding_tokens(
+            _content_with_prefix(
+                prefix,
+                [_KnowledgeLine(remaining, line.sku_code, line.barcode)],
+            )
+        ) <= KNOWLEDGE_CHUNK_MAX_TOKENS:
+            pieces.append(_KnowledgeLine(remaining, line.sku_code, line.barcode))
+            break
+
+        low = 1
+        high = len(remaining)
+        best = 0
+        while low <= high:
+            midpoint = (low + high) // 2
+            candidate = remaining[:midpoint].strip()
+            candidate_tokens = estimate_embedding_tokens(
+                _content_with_prefix(
+                    prefix,
+                    [_KnowledgeLine(candidate, line.sku_code, line.barcode)],
+                )
+            )
+            if candidate and candidate_tokens <= KNOWLEDGE_CHUNK_MAX_TOKENS:
+                best = midpoint
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+        if best < 1:
+            raise KnowledgeProjectionError(
+                "product context exceeds the safe embedding chunk budget"
+            )
+
+        boundary_floor = max(1, int(best * 0.65))
+        boundary = max(
+            remaining.rfind(separator, boundary_floor, best)
+            for separator in ("\n", "; ", "。", ". ", "，", ", ", " ")
+        )
+        if boundary < boundary_floor:
+            boundary = best
+        piece = remaining[:boundary].strip(" \n;,，。")
+        if not piece:
+            piece = remaining[:best].strip()
+            boundary = best
+        pieces.append(_KnowledgeLine(piece, line.sku_code, line.barcode))
+        remaining = remaining[boundary:].lstrip(" \n;,，。")
+    return pieces
+
+
+def _partition_knowledge_section(
+    lines: list[_KnowledgeLine],
+    *,
+    prefix_lines: list[str],
+) -> list[tuple[str, list[_KnowledgeLine]]]:
+    prefix = "\n".join(line for line in prefix_lines if line)
+    expanded = [
+        piece
+        for line in lines
+        for piece in _split_oversized_knowledge_line(line, prefix=prefix)
+    ]
+    parts: list[tuple[str, list[_KnowledgeLine]]] = []
+    current: list[_KnowledgeLine] = []
+    for line in expanded:
+        candidate = [*current, line]
+        candidate_content = _content_with_prefix(prefix, candidate)
+        if (
+            current
+            and estimate_embedding_tokens(candidate_content)
+            > KNOWLEDGE_CHUNK_TARGET_TOKENS
+        ):
+            parts.append((_content_with_prefix(prefix, current), current))
+            current = [line]
+        else:
+            current = candidate
+        current_content = _content_with_prefix(prefix, current)
+        if estimate_embedding_tokens(current_content) > KNOWLEDGE_CHUNK_MAX_TOKENS:
+            raise KnowledgeProjectionError(
+                "knowledge chunk exceeds the safe embedding token budget"
+            )
+    if current:
+        parts.append((_content_with_prefix(prefix, current), current))
+    return parts
+
+
 def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
     product = payload["product"]
     category = payload.get("category") or {}
@@ -263,15 +419,17 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if str(tag).strip()
     ))
 
-    sku_moq_items: list[str] = []
+    sku_moq_options: list[str] = []
     represented_moqs: set[str] = set()
     for sku in skus:
         if sku.get("default_moq") is None:
             continue
         moq = f"{sku['default_moq']} {sku.get('moq_unit') or ''}".strip()
-        sku_code = str(sku.get("code") or "SKU").strip()
-        sku_moq_items.append(f"{sku_code}={moq}")
-        represented_moqs.add(moq.casefold())
+        normalized_moq = moq.casefold()
+        if normalized_moq in represented_moqs:
+            continue
+        represented_moqs.add(normalized_moq)
+        sku_moq_options.append(moq)
 
     moq_options: list[str] = []
     for supplier in suppliers:
@@ -290,34 +448,52 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
         f"Category: {category.get('name') or ''}",
         f"Description: {product.get('description') or ''}",
         f"Search tags / 商品标签: {_render_value(search_tags)}" if search_tags else "",
-        f"SKU MOQ / SKU最低起订量: {'; '.join(sku_moq_items)}" if sku_moq_items else "",
+        f"SKU MOQ options / SKU最低起订量选项: {'; '.join(sku_moq_options)}"
+        if sku_moq_options
+        else "",
         f"MOQ options / 最低起订量选项: {'; '.join(moq_options)}" if moq_options else "",
     ]
-    sections: dict[str, list[str]] = {
-        "OVERVIEW": [line for line in overview_lines if line and not line.endswith(": ")],
+    sections: dict[str, list[_KnowledgeLine]] = {
+        "OVERVIEW": [
+            _KnowledgeLine(line)
+            for line in overview_lines
+            if line and not line.endswith(": ")
+        ],
         "SPECIFICATIONS": [],
         "FEATURES": [],
         "MARKETS": [],
         "SUPPLY": [],
     }
     for sku in skus:
-        details = [f"SKU: {sku['code']}"]
-        if sku.get("name"):
-            details.append(f"name={sku['name']}")
-        if sku.get("options"):
-            details.append(f"options={_render_value(sku['options'])}")
-        if sku.get("barcode"):
-            details.append(f"barcode={sku['barcode']}")
+        details = []
+        sku_name = str(sku.get("name") or "").strip()
+        non_semantic_identifiers = {
+            str(sku.get(field) or "").strip().casefold()
+            for field in ("code", "source_code", "barcode")
+            if str(sku.get(field) or "").strip()
+        }
+        if sku_name and sku_name.casefold() not in non_semantic_identifiers:
+            details.append(f"name={sku_name}")
+        semantic_options = _semantic_sku_options(sku.get("options"))
+        if semantic_options:
+            details.append(f"options={_render_value(semantic_options)}")
         if sku.get("tags"):
             details.append(f"tags={_render_value(sku['tags'])}")
         if sku.get("default_moq") is not None:
             details.append(
                 f"moq={sku['default_moq']} {sku.get('moq_unit') or ''}".strip()
             )
-        sections["SPECIFICATIONS"].append("; ".join(details))
+        if details:
+            sections["SPECIFICATIONS"].append(
+                _KnowledgeLine(
+                    "Variant: " + "; ".join(details),
+                    sku_code=str(sku.get("code") or "").strip() or None,
+                    barcode=str(sku.get("barcode") or "").strip() or None,
+                )
+            )
     for attribute in payload.get("attributes", []):
         key = str(attribute["key"])
-        line = f"{key}: {_render_value(attribute['value'])}"
+        line = _KnowledgeLine(f"{key}: {_render_value(attribute['value'])}")
         lowered = key.casefold()
         if any(marker in lowered for marker in FEATURE_MARKERS):
             sections["FEATURES"].append(line)
@@ -332,32 +508,107 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if supplier.get("lead_time_days") is not None:
             details.append(f"lead_time_days={supplier['lead_time_days']}")
         if details:
-            sections["SUPPLY"].append("; ".join(details))
+            sections["SUPPLY"].append(_KnowledgeLine("; ".join(details)))
 
     chunks: list[dict[str, Any]] = []
     for chunk_type in ("OVERVIEW", "SPECIFICATIONS", "FEATURES", "MARKETS", "SUPPLY"):
         lines = sections[chunk_type]
         if not lines:
             continue
-        content = "\n".join(lines)
-        metadata: dict[str, Any] = {
-            "source": "Product Center",
-            "field_policy_version": FIELD_POLICY_VERSION,
-        }
-        if chunk_type == "OVERVIEW" and search_tags:
-            metadata["search_tags"] = search_tags
-        chunks.append(
-            {
-                "chunk_index": len(chunks),
-                "chunk_type": chunk_type,
-                "section_path": f"product/{chunk_type.casefold()}",
-                "content": content,
-                "content_hash": _sha256(content),
-                "token_count": len(content.split()),
-                "metadata": metadata,
+        prefix_lines = []
+        if chunk_type != "OVERVIEW":
+            prefix_lines = [
+                f"Product name: {product.get('name') or ''}",
+                f"Category: {category.get('name') or ''}",
+                f"Section: {chunk_type.casefold()}",
+            ]
+        parts = _partition_knowledge_section(lines, prefix_lines=prefix_lines)
+        for part_index, (content, part_lines) in enumerate(parts, start=1):
+            section_path = f"product/{chunk_type.casefold()}/{part_index:04d}"
+            metadata: dict[str, Any] = {
+                "source": "Product Center",
+                "field_policy_version": FIELD_POLICY_VERSION,
+                "parent_entity_type": "PRODUCT",
+                "parent_entity_id": str((payload.get("entity") or {}).get("id") or ""),
+                "chunk_key": section_path,
+                "part": part_index,
+                "parts": len(parts),
             }
-        )
+            sku_codes = list(
+                dict.fromkeys(line.sku_code for line in part_lines if line.sku_code)
+            )
+            barcodes = list(
+                dict.fromkeys(line.barcode for line in part_lines if line.barcode)
+            )
+            if sku_codes:
+                metadata["sku_codes"] = sku_codes
+            if barcodes:
+                metadata["barcodes"] = barcodes
+            if chunk_type == "OVERVIEW" and search_tags:
+                metadata["search_tags"] = search_tags
+            token_count = estimate_embedding_tokens(content)
+            if token_count > KNOWLEDGE_CHUNK_MAX_TOKENS:
+                raise KnowledgeProjectionError(
+                    "knowledge chunk exceeds the safe embedding token budget"
+                )
+            chunks.append(
+                {
+                    "chunk_index": len(chunks),
+                    "chunk_type": chunk_type,
+                    "section_path": section_path,
+                    "content": content,
+                    "content_hash": _sha256(content),
+                    "token_count": token_count,
+                    "metadata": metadata,
+                }
+            )
     return chunks
+
+
+def _contextual_embedding_error(
+    exc: EmbeddingProviderError,
+    contexts: list[_KnowledgeEmbeddingContext],
+) -> KnowledgeProjectionError | None:
+    failed_context = next(
+        (
+            context
+            for context in contexts
+            if exc.input_fingerprint
+            and _sha256(context.text).startswith(exc.input_fingerprint)
+        ),
+        None,
+    )
+    if failed_context is None:
+        return None
+    return KnowledgeProjectionError(
+        "商品知识向量输入被拒绝"
+        f"（商品={failed_context.product_name}，"
+        f"product_id={failed_context.product_id}，"
+        f"分块={failed_context.section_path}；{exc}）"
+    )
+
+
+def _embed_knowledge_texts(
+    embedder: EmbeddingProvider,
+    contexts: list[_KnowledgeEmbeddingContext],
+) -> list[list[float]]:
+    texts = [context.text for context in contexts]
+    if not texts:
+        return []
+    try:
+        prepared = precompute_embeddings(
+            embedder,
+            texts,
+            batch_size=min(128, len(texts)),
+            max_input_tokens=KNOWLEDGE_CHUNK_MAX_TOKENS,
+            max_batch_tokens=KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS,
+        )
+    except EmbeddingProviderError as exc:
+        contextual_error = _contextual_embedding_error(exc, contexts)
+        if contextual_error is None:
+            raise
+        raise contextual_error from exc
+    return prepared.embed(texts)
 
 
 def project_product_knowledge(
@@ -421,7 +672,18 @@ def project_product_knowledge(
             ]
         )
         if target_chunks:
-            vectors = embedder.embed([chunk.content for chunk in target_chunks])
+            vectors = _embed_knowledge_texts(
+                embedder,
+                [
+                    _KnowledgeEmbeddingContext(
+                        text=chunk.content,
+                        product_id=product.id,
+                        product_name=product.name,
+                        section_path=chunk.section_path,
+                    )
+                    for chunk in target_chunks
+                ],
+            )
             validate_vectors(
                 vectors,
                 expected_count=len(target_chunks),
@@ -558,7 +820,18 @@ def project_product_knowledge(
     ]
     session.add_all(chunks)
     session.flush()
-    vectors = embedder.embed([chunk.content for chunk in chunks])
+    vectors = _embed_knowledge_texts(
+        embedder,
+        [
+            _KnowledgeEmbeddingContext(
+                text=chunk.content,
+                product_id=product.id,
+                product_name=product.name,
+                section_path=chunk.section_path,
+            )
+            for chunk in chunks
+        ],
+    )
     validate_vectors(
         vectors,
         expected_count=len(chunks),
@@ -615,22 +888,36 @@ def project_products_knowledge(
         return []
     embedder = embedder or resolved_text_embedding_provider(session)
     ordered_product_ids = list(dict.fromkeys(product_ids))
-    texts: list[str] = []
+    contexts: list[_KnowledgeEmbeddingContext] = []
     for product_id in ordered_product_ids:
-        _product, payload = build_product_payload(
+        product, payload = build_product_payload(
             session,
             tenant_id=tenant_id,
             product_id=product_id,
         )
-        texts.extend(
-            chunk["content"]
+        contexts.extend(
+            _KnowledgeEmbeddingContext(
+                text=chunk["content"],
+                product_id=product.id,
+                product_name=product.name,
+                section_path=chunk["section_path"],
+            )
             for chunk in build_product_chunks(payload)
         )
-    cached_embedder = precompute_embeddings(
-        embedder,
-        texts,
-        batch_size=embedding_batch_size,
-    )
+    texts = [context.text for context in contexts]
+    try:
+        cached_embedder = precompute_embeddings(
+            embedder,
+            texts,
+            batch_size=embedding_batch_size,
+            max_input_tokens=KNOWLEDGE_CHUNK_MAX_TOKENS,
+            max_batch_tokens=KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS,
+        )
+    except EmbeddingProviderError as exc:
+        contextual_error = _contextual_embedding_error(exc, contexts)
+        if contextual_error is None:
+            raise
+        raise contextual_error from exc
     return [
         project_product_knowledge(
             session,
@@ -826,6 +1113,37 @@ def knowledge_index_status(
     )
 
 
+def knowledge_projection_policy_mismatch_exists(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_ids: list[UUID] | None = None,
+) -> bool:
+    """Return whether an active product projection uses an older chunk policy."""
+
+    if product_ids is not None and not product_ids:
+        return False
+    statement = select(KnowledgeDocumentRow.id).where(
+        KnowledgeDocumentRow.tenant_id == tenant_id,
+        KnowledgeDocumentRow.source_entity_type == "PRODUCT",
+        KnowledgeDocumentRow.locale == LOCALE,
+        KnowledgeDocumentRow.status == "ACTIVE",
+        KnowledgeDocumentRow.deleted_at.is_(None),
+        or_(
+            KnowledgeDocumentRow.schema_version != SCHEMA_VERSION,
+            KnowledgeDocumentRow.field_policy_version != FIELD_POLICY_VERSION,
+        ),
+    )
+    if product_ids is not None:
+        statement = statement.where(
+            KnowledgeDocumentRow.source_entity_id.in_(
+                list(dict.fromkeys(product_ids))
+            )
+        )
+    mismatch = session.scalar(statement.limit(1))
+    return mismatch is not None
+
+
 def knowledge_index_target_products(
     session: Session,
     *,
@@ -928,6 +1246,30 @@ def update_knowledge_index(
     embedding_count = 0
     processed = 0
     paused = False
+
+    def checkpoint_results(
+        results: list[KnowledgeProjectionResult],
+        *,
+        processed_count: int,
+    ) -> None:
+        nonlocal embedding_count, processed
+        embedding_count += sum(result.embeddings for result in results)
+        processed = min(processed_count, total_targets)
+        next_product = (
+            target_products[processed]
+            if processed < total_targets
+            else (None, None)
+        )
+        if progress_callback is not None:
+            progress_callback(
+                processed,
+                total_targets,
+                embedding_count,
+                next_product[0],
+                next_product[1],
+            )
+        session.commit()
+
     if progress_callback is not None:
         first = target_products[0] if target_products else (None, None)
         progress_callback(0, total_targets, 0, first[0], first[1])
@@ -937,29 +1279,41 @@ def update_knowledge_index(
     else:
         for start in range(0, total_targets, batch_size):
             batch = target_products[start : start + batch_size]
-            results = project_products_knowledge(
-                session,
-                tenant_id=tenant_id,
-                product_ids=[product_id for product_id, _name in batch],
-                embedder=embedder,
-                force_reembed=full_rebuild,
-            )
-            embedding_count += sum(result.embeddings for result in results)
-            processed = min(start + len(batch), total_targets)
-            next_product = (
-                target_products[processed]
-                if processed < total_targets
-                else (None, None)
-            )
-            if progress_callback is not None:
-                progress_callback(
-                    processed,
-                    total_targets,
-                    embedding_count,
-                    next_product[0],
-                    next_product[1],
+            try:
+                results = project_products_knowledge(
+                    session,
+                    tenant_id=tenant_id,
+                    product_ids=[product_id for product_id, _name in batch],
+                    embedder=embedder,
+                    force_reembed=full_rebuild,
                 )
-            session.commit()
+            except KnowledgeProjectionError:
+                # A deterministic bad input should not discard every valid
+                # product before it in the remote batch. Replay this bounded
+                # group product-by-product and checkpoint each success; the
+                # failing product then remains first in the durable resume set.
+                for offset, (product_id, _name) in enumerate(batch):
+                    single_result = project_products_knowledge(
+                        session,
+                        tenant_id=tenant_id,
+                        product_ids=[product_id],
+                        embedder=embedder,
+                        force_reembed=full_rebuild,
+                    )
+                    checkpoint_results(
+                        single_result,
+                        processed_count=start + offset + 1,
+                    )
+                    if pause_callback is not None and pause_callback():
+                        paused = True
+                        break
+                if paused:
+                    break
+                continue
+            checkpoint_results(
+                results,
+                processed_count=start + len(batch),
+            )
             if pause_callback is not None and pause_callback():
                 paused = True
                 break

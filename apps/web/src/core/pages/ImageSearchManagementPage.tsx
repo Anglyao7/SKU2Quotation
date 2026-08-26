@@ -5,6 +5,7 @@ import {
   Card,
   Heading,
   Progress,
+  Select,
   Text,
 } from "@radix-ui/themes";
 import {
@@ -28,7 +29,11 @@ import {
 import { useCoreAuth } from "../AuthContext";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
-import type { ImageIndexJob, ImageIndexStatus } from "../types";
+import type {
+  ImageIndexJob,
+  ImageIndexStatus,
+  ImageSourceFailurePolicy,
+} from "../types";
 
 const ACTIVE_STATUSES = new Set(["QUEUED", "RUNNING"]);
 
@@ -53,6 +58,8 @@ export function ImageSearchManagementPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [rebuildOpen, setRebuildOpen] = useState(false);
+  const [sourceFailurePolicy, setSourceFailurePolicy] =
+    useState<ImageSourceFailurePolicy>("STOP");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -64,6 +71,7 @@ export function ImageSearchManagementPage() {
       ]);
       setStatus(nextStatus);
       setJob(nextJob);
+      setSourceFailurePolicy(nextJob?.sourceFailurePolicy ?? "STOP");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("图片索引状态读取失败"));
     } finally {
@@ -90,8 +98,13 @@ export function ImageSearchManagementPage() {
         if (next.status === "SUCCEEDED") {
           setStatus(await getImageIndexStatus());
           setStarting("");
-          setMessage(next.processedImages
-            ? t("图片向量化完成，本次处理 {count} 张图片。", { count: next.processedImages.toLocaleString(locale) })
+          setMessage(next.skippedImages
+            ? t("图片向量化完成，本次处理 {count} 张，跳过 {skipped} 张无法读取的图片。", {
+                count: next.processedImages.toLocaleString(locale),
+                skipped: next.skippedImages.toLocaleString(locale),
+              })
+            : next.processedImages
+              ? t("图片向量化完成，本次处理 {count} 张图片。", { count: next.processedImages.toLocaleString(locale) })
             : t("当前没有需要更新的商品图片。"));
         } else if (next.status === "FAILED") {
           setStarting("");
@@ -117,7 +130,7 @@ export function ImageSearchManagementPage() {
     setError("");
     setMessage("");
     try {
-      const next = await startImageIndexJob(full);
+      const next = await startImageIndexJob(full, sourceFailurePolicy);
       setJob(next);
       if (next.status === "SUCCEEDED") {
         setStarting("");
@@ -139,7 +152,7 @@ export function ImageSearchManagementPage() {
     try {
       const next = action === "pause"
         ? await pauseImageIndexJob(job.id)
-        : await resumeImageIndexJob(job.id);
+        : await resumeImageIndexJob(job.id, sourceFailurePolicy);
       setJob(next);
       setMessage(action === "pause"
         ? next.status === "PAUSED"
@@ -213,12 +226,33 @@ export function ImageSearchManagementPage() {
                 <Progress value={job.progressPercent} color={job.status === "FAILED" ? "red" : job.status === "PAUSED" ? "amber" : "jade"} />
                 <div className="core-ai-job-meta">
                   <Text size="1" color="gray">{t("已写入 {count} 条图片向量", { count: job.embeddings })}</Text>
+                  {job.skippedImages ? (
+                    <Text size="1" color="amber">{t("已跳过 {count} 张无法读取的图片", { count: job.skippedImages })}</Text>
+                  ) : null}
                   {job.currentProductName ? <Text size="1" color="gray">{t("正在读取：{name}", { name: job.currentProductName })}</Text> : null}
                   {job.checkpointAt && job.remainingImages ? (
                     <Text size="1" color="gray">{t("剩余 {count} 张 · 断点 {time}", { count: job.remainingImages, time: checkpointTime(job.checkpointAt, locale) })}</Text>
                   ) : null}
                 </div>
                 {job.errorMessage ? <Text size="2" color={job.status === "FAILED" ? "red" : "gray"}>{job.errorMessage}</Text> : null}
+                {job.skippedFailures.length ? (
+                  <details className="core-image-index-skipped-details">
+                    <summary>{t("查看跳过记录（{count}）", { count: job.skippedImages })}</summary>
+                    <div>
+                      {job.skippedFailures.map((failure) => (
+                        <span key={failure.imageId}>
+                          <strong>{failure.productName}</strong>
+                          <code>{failure.errorCode}</code>
+                        </span>
+                      ))}
+                    </div>
+                    {job.skippedImages > job.skippedFailures.length ? (
+                      <Text size="1" color="gray">
+                        {t("仅展示前 {count} 条跳过记录。", { count: job.skippedFailures.length })}
+                      </Text>
+                    ) : null}
+                  </details>
+                ) : null}
               </div>
             ) : null}
 
@@ -228,6 +262,27 @@ export function ImageSearchManagementPage() {
                 <Text size="2" weight="bold">{status.indexedImages} / {status.totalImages}</Text>
               </span>
               <Progress value={coverage} />
+            </div>
+
+            <div className="core-image-index-failure-policy">
+              <label>
+                <Text size="1" color="gray" as="div">{t("源图片读取失败时")}</Text>
+                <Select.Root
+                  value={sourceFailurePolicy}
+                  disabled={!canManage || jobIsActive}
+                  onValueChange={(value) => setSourceFailurePolicy(value as ImageSourceFailurePolicy)}
+                >
+                  <Select.Trigger aria-label={t("选择源图片失败处理方式")} />
+                  <Select.Content>
+                    <Select.Item value="STOP">{t("停止任务并保留断点")}</Select.Item>
+                    <Select.Item value="SKIP_NOT_FOUND">{t("跳过不存在的图片（404 / 410 / R2 缺失）")}</Select.Item>
+                    <Select.Item value="SKIP_UNREADABLE">{t("跳过所有无法读取的源图片")}</Select.Item>
+                  </Select.Content>
+                </Select.Root>
+              </label>
+              <Text size="1" color="gray">
+                {t("跳过只针对图片链接、对象缺失或文件损坏；模型、API 和配置错误仍会停止任务。")}
+              </Text>
             </div>
 
             <div className="core-ai-index-actions">

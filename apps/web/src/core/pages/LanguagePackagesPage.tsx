@@ -605,14 +605,34 @@ export function LanguagePackagesPage() {
           <div className="language-batch-list">
             {batches.map((batch) => {
               const latestAttempt = batch.attempts[batch.attempts.length - 1];
+              const failedAttemptCount = batch.attempts.filter(
+                (attempt) => attempt.status === "FAILED",
+              ).length;
+              const automaticRetrying = batch.status === "RUNNING"
+                && latestAttempt?.status === "FAILED";
+              const recoveredAfterRetry = batch.status === "SUCCEEDED"
+                && failedAttemptCount > 0;
+              const retryAvailable = batch.status === "FAILED"
+                && !activeJob;
+              const batchStatusLabel = automaticRetrying
+                ? "自动重试中"
+                : recoveredAfterRetry
+                  ? "重试后完成"
+                  : batch.status === "SUCCEEDED"
+                    ? "已完成"
+                    : batch.status === "FAILED"
+                      ? "失败"
+                      : batch.status === "RUNNING"
+                        ? "请求中"
+                        : "等待中";
               const preview = batch.skuRefs.slice(0, 3).map((ref) => ref.code || ref.name).join("、");
               return (
                 <div className={`language-batch-row is-${batch.status.toLowerCase()}`} key={batch.id}>
                   <div className="language-batch-main">
                     <div className="language-batch-title">
                       <strong>{t("第 {batch} 批", { batch: batch.sequenceNo })}</strong>
-                      <Badge color={batch.status === "SUCCEEDED" ? "green" : batch.status === "FAILED" ? "red" : batch.status === "RUNNING" ? "blue" : "gray"}>
-                        {t(batch.status === "SUCCEEDED" ? "已完成" : batch.status === "FAILED" ? "失败" : batch.status === "RUNNING" ? "请求中" : "等待中")}
+                      <Badge color={batch.status === "SUCCEEDED" ? "green" : batch.status === "FAILED" ? "red" : automaticRetrying ? "amber" : batch.status === "RUNNING" ? "blue" : "gray"}>
+                        {t(batchStatusLabel)}
                       </Badge>
                     </div>
                     <Text size="1" color="gray">
@@ -633,23 +653,41 @@ export function LanguagePackagesPage() {
                           : ""}
                       </Text>
                     ) : null}
-                    {batch.errorMessage ? <Text size="1" color="red">{batch.errorMessage}</Text> : null}
+                    {automaticRetrying ? (
+                      <Text size="1" color="amber">
+                        {t("上一次请求失败，系统正在自动缩小批次重试。")}
+                      </Text>
+                    ) : null}
+                    {batch.status === "FAILED" && failedAttemptCount > 1 ? (
+                      <Text size="1" color="red">
+                        {t("已自动重试 {count} 次，仍未成功。", {
+                          count: failedAttemptCount - 1,
+                        })}
+                      </Text>
+                    ) : null}
+                    {batch.status === "FAILED" && batch.errorMessage ? <Text size="1" color="red">{batch.errorMessage}</Text> : null}
                   </div>
                   <div className="language-batch-actions">
                     <Text size="1" color="gray">
                       {latestAttempt?.responseTimeMs != null ? `${latestAttempt.responseTimeMs} ms` : "—"}
                     </Text>
                     {batch.status === "FAILED" ? (
-                      <Button
-                        size="1"
-                        variant="soft"
-                        color="amber"
-                        loading={retryingBatchId === batch.id}
-                        disabled={Boolean(retryingBatchId) || Boolean(activeJob)}
-                        onClick={() => void retryBatch(batch)}
-                      >
-                        {t("重新请求")}
-                      </Button>
+                      retryAvailable ? (
+                        <Button
+                          size="1"
+                          variant="soft"
+                          color="amber"
+                          loading={retryingBatchId === batch.id}
+                          disabled={!canEditProducts || Boolean(retryingBatchId)}
+                          onClick={() => void retryBatch(batch)}
+                        >
+                          {t("重新请求")}
+                        </Button>
+                      ) : (
+                        <Badge color="amber" variant="soft">
+                          {t("当前任务结束后可重试")}
+                        </Badge>
+                      )
                     ) : null}
                   </div>
                 </div>

@@ -23,6 +23,7 @@ import type {
   ImageEmbeddingSettings,
   ImageIndexJob,
   ImageIndexStatus,
+  ImageSourceFailurePolicy,
   ImageGenerationSettings,
   ImageEnhancementItem,
   ImageEnhancementRatio,
@@ -2205,6 +2206,13 @@ interface ApiImageIndexJob {
   total_images: number;
   processed_images: number;
   failed_images: number;
+  skipped_images: number;
+  skipped_failures: Array<{
+    image_id: string;
+    product_name: string;
+    error_code: string;
+  }>;
+  source_failure_policy: ImageSourceFailurePolicy;
   embeddings: number;
   remaining_images: number;
   progress_percent: number;
@@ -2229,6 +2237,13 @@ function mapImageIndexJob(row: ApiImageIndexJob): ImageIndexJob {
     totalImages: row.total_images,
     processedImages: row.processed_images,
     failedImages: row.failed_images,
+    skippedImages: row.skipped_images ?? 0,
+    skippedFailures: (row.skipped_failures ?? []).map((failure) => ({
+      imageId: failure.image_id,
+      productName: failure.product_name,
+      errorCode: failure.error_code,
+    })),
+    sourceFailurePolicy: row.source_failure_policy ?? "STOP",
     embeddings: row.embeddings,
     remainingImages: row.remaining_images,
     progressPercent: row.progress_percent,
@@ -2259,12 +2274,16 @@ export async function getImageIndexStatus(): Promise<ImageIndexStatus> {
   };
 }
 
-export async function startImageIndexJob(fullRebuild = false): Promise<ImageIndexJob> {
+export async function startImageIndexJob(
+  fullRebuild = false,
+  sourceFailurePolicy: ImageSourceFailurePolicy = "STOP",
+): Promise<ImageIndexJob> {
   return mapImageIndexJob(await request<ApiImageIndexJob>("/ai/image-search/index/jobs", {
     method: "POST",
     body: JSON.stringify({
       mode: fullRebuild ? "FULL_REBUILD" : "INCREMENTAL",
       confirm_full_rebuild: fullRebuild,
+      source_failure_policy: sourceFailurePolicy,
     }),
   }));
 }
@@ -2291,10 +2310,16 @@ export async function pauseImageIndexJob(jobId: string): Promise<ImageIndexJob> 
   ));
 }
 
-export async function resumeImageIndexJob(jobId: string): Promise<ImageIndexJob> {
+export async function resumeImageIndexJob(
+  jobId: string,
+  sourceFailurePolicy?: ImageSourceFailurePolicy,
+): Promise<ImageIndexJob> {
   return mapImageIndexJob(await request<ApiImageIndexJob>(
     `/ai/image-search/index/jobs/${encodeURIComponent(jobId)}/resume`,
-    { method: "POST" },
+    {
+      method: "POST",
+      body: JSON.stringify({ source_failure_policy: sourceFailurePolicy }),
+    },
   ));
 }
 

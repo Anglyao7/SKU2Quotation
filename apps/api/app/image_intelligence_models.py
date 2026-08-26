@@ -126,7 +126,12 @@ class ImageIndexJobRow(AuditTimestampMixin, Base):
             name="processed_images_valid",
         ),
         CheckConstraint("failed_images >= 0", name="failed_images_nonnegative"),
+        CheckConstraint("skipped_images >= 0", name="skipped_images_nonnegative"),
         CheckConstraint("embeddings >= 0", name="embeddings_nonnegative"),
+        CheckConstraint(
+            "source_failure_policy IN ('STOP', 'SKIP_NOT_FOUND', 'SKIP_UNREADABLE')",
+            name="source_failure_policy_allowed",
+        ),
         UniqueConstraint("tenant_id", "id", name="uq_image_index_jobs_tenant_identity"),
         ForeignKeyConstraint(
             ["tenant_id", "requested_by_membership_id"],
@@ -161,6 +166,7 @@ class ImageIndexJobRow(AuditTimestampMixin, Base):
     total_images: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     processed_images: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failed_images: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    skipped_images: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     embeddings: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     current_image_id: Mapped[UUID | None] = mapped_column(nullable=True)
     current_product_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -170,6 +176,15 @@ class ImageIndexJobRow(AuditTimestampMixin, Base):
     dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
     remaining_image_ids: Mapped[list[str]] = mapped_column(
         JSON_DOCUMENT, default=list, nullable=False
+    )
+    skipped_image_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    skipped_image_failures: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    source_failure_policy: Mapped[str] = mapped_column(
+        String(30), default="STOP", nullable=False
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -511,6 +511,42 @@ export interface TenantSubscriptionPayload {
   sku_limit: number | null;
 }
 
+export interface PlatformUsageTotals {
+  storefront_visitors: number;
+  product_visitors: number;
+  product_clicks: number;
+  quote_requests: number;
+  quotations: number;
+  image_searches: number;
+  ai_conversations: number;
+  ai_messages: number;
+}
+
+export interface PlatformTenantUsageItem {
+  tenant_id: string;
+  name: string;
+  slug: string;
+  status: string;
+  active: boolean;
+  storefront_visitors: number;
+  product_visitors: number;
+  product_clicks: number;
+  quote_requests: number;
+  quotations: number;
+  image_searches: number;
+  ai_conversations: number;
+  ai_messages: number;
+}
+
+export interface PlatformUsageResponse {
+  generated_at: string;
+  start_date: string;
+  end_date: string;
+  days: number;
+  totals: PlatformUsageTotals;
+  tenants: PlatformTenantUsageItem[];
+}
+
 export interface MerchantOwnerAccountPayload {
   display_name: string;
   login_identifier: string;

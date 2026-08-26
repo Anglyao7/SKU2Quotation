@@ -98,6 +98,7 @@ from ..services.subaccount_pricing import (
     effective_subaccount_price,
     subaccount_price_rules,
 )
+from ..services.platform_usage import increment_image_search
 from ..services.translation_configuration import (
     resolved_catalog_translator,
     translation_provider_is_configured,
@@ -2435,6 +2436,10 @@ def search_public_products_by_image(
         for match in matches
         if match.product_id in products_by_id
     ]
+    # Public image searches do not create an ImageSearchRow, so keep a small
+    # daily counter for the platform usage dashboard instead.
+    increment_image_search(session, tenant_id=tenant.id)
+    session.commit()
     return PublicImageSearchResponse(
         id=uuid4(),
         status="COMPLETED" if results else "INDEX_EMPTY",

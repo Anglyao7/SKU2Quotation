@@ -11,7 +11,7 @@ from .routers.knowledge_search import router as knowledge_search_router
 from .routers.legacy_operations import router as legacy_operations_router
 from .routers.product_intelligence import router as product_intelligence_router
 from .routers.product_center import router as product_center_router
-from .routers.platform_admin import router as platform_admin_router
+from .routers import platform_admin, platform_usage
 from .routers.system import router as system_router
 from .routers.storefront_analytics import router as storefront_analytics_router
 from .routers.support import router as support_router
@@ -59,7 +59,7 @@ def create_app() -> FastAPI:
         product_intelligence_router,
         product_center_router,
         inventory_router,
-        platform_admin_router,
+        platform_admin.router, platform_usage.router,
         image_intelligence_router, image_enhancement_router,
         trade_flow_router,
         public_catalog_router,
