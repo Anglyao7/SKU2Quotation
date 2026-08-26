@@ -237,6 +237,12 @@ const localizedStorefrontMessagesBase: Record<
   "正在组织可信回复…": { es: "Preparando una respuesta fiable…", tr: "Güvenilir bir yanıt hazırlanıyor…", ar: "جارٍ إعداد رد موثوق…", ja: "信頼できる回答をまとめています…", ko: "신뢰할 수 있는 답변을 구성하고 있습니다…" },
   "我": { es: "Yo", tr: "Ben", ar: "أنا", ja: "自分", ko: "나" },
   "商家快捷入口": { es: "Acceso rápido del comerciante", tr: "Satıcı kısayolu", ar: "اختصار التاجر", ja: "販売者ショートカット", ko: "판매자 바로가기" },
+  "实时汇率参考": { es: "Referencia de tipos de cambio en vivo", tr: "Canlı döviz kuru referansı", ar: "مرجع أسعار الصرف المباشرة", ja: "リアルタイム為替レート参考", ko: "실시간 환율 참고" },
+  "正在读取汇率…": { es: "Cargando tipos de cambio…", tr: "Döviz kurları yükleniyor…", ar: "جارٍ تحميل أسعار الصرف…", ja: "為替レートを読み込み中…", ko: "환율을 불러오는 중…" },
+  "汇率暂时不可用，点击重试": { es: "Tipos no disponibles · toca para reintentar", tr: "Kurlar kullanılamıyor · yeniden denemek için dokunun", ar: "الأسعار غير متاحة · اضغط لإعادة المحاولة", ja: "為替レートを取得できません・タップして再試行", ko: "환율을 불러올 수 없음 · 눌러서 다시 시도" },
+  "更新于 {time}": { es: "Actualizado el {time}", tr: "Güncellendi: {time}", ar: "آخر تحديث {time}", ja: "更新：{time}", ko: "업데이트 {time}" },
+  "数据日期：{date}": { es: "Fecha de los tipos: {date}", tr: "Kur tarihi: {date}", ar: "تاريخ الأسعار: {date}", ja: "レート日付：{date}", ko: "환율 기준일: {date}" },
+  "参考汇率，实际结算以银行或支付渠道为准。": { es: "Tipos orientativos. La liquidación final depende del banco o proveedor de pago.", tr: "Kurlar referans amaçlıdır. Kesin tutar banka veya ödeme sağlayıcısına bağlıdır.", ar: "الأسعار مرجعية، وتخضع التسوية الفعلية للبنك أو مزود الدفع.", ja: "参考レートです。実際の決済額は銀行または決済事業者のレートに従います。", ko: "참고 환율이며 실제 결제 금액은 은행 또는 결제 서비스 기준을 따릅니다." },
 };
 
 export const localizedStorefrontMessages = Object.fromEntries(

@@ -86,6 +86,24 @@ export interface Storefront {
   support_widget?: PublicSupportWidget;
 }
 
+export interface StorefrontExchangeRate {
+  currency: string;
+  name: string;
+  symbol: string;
+  rate: number | string | null;
+  base_currency: string;
+  rate_date?: string | null;
+  source: string;
+}
+
+export interface StorefrontExchangeRateSnapshot {
+  observed_at: string;
+  base_currency: string;
+  exchange_rates: StorefrontExchangeRate[];
+  rate_date?: string | null;
+  rate_source: string;
+}
+
 export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY";
 
 export interface CatalogSharePublic {

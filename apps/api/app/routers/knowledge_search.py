@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ApplicationError
@@ -19,6 +19,7 @@ from ..knowledge_embedding_schemas import (
     KnowledgeIndexStatusResponse,
     KnowledgeIndexUpdateResponse,
     KnowledgeProjectionResponse,
+    PopularSearchTermsResponse,
     RerankSettingsResponse,
     RerankSettingsUpdateRequest,
 )
@@ -362,6 +363,30 @@ def get_recommended_questions(
             session,
             tenant_id=context.tenant_id,
             permissions=context.permissions,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/search/popular-terms",
+    response_model=PopularSearchTermsResponse,
+)
+def get_popular_search_terms(
+    response: Response,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=10, ge=1, le=10),
+    session: Session = Depends(get_authenticated_session),
+) -> PopularSearchTermsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.get_popular_search_terms(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            days=days,
+            limit=limit,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

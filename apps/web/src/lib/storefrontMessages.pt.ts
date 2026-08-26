@@ -228,4 +228,10 @@ export const portugueseStorefrontMessages: Record<string, string> = {
   "正在组织可信回复…": "A preparar uma resposta fiável…",
   "我": "Eu",
   "商家快捷入口": "Atalho do comerciante",
+  "实时汇率参考": "Referência de câmbio em tempo real",
+  "正在读取汇率…": "A carregar taxas de câmbio…",
+  "汇率暂时不可用，点击重试": "Taxas indisponíveis · toque para tentar novamente",
+  "更新于 {time}": "Atualizado em {time}",
+  "数据日期：{date}": "Data das taxas: {date}",
+  "参考汇率，实际结算以银行或支付渠道为准。": "Taxas apenas de referência. A liquidação final depende do banco ou fornecedor de pagamento.",
 };

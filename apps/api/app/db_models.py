@@ -361,3 +361,7 @@ from .platform_usage_models import (  # noqa: E402,F401
     StorefrontVisitEventRow,
     TenantUsageDailyRow,
 )
+
+from .search_analytics_models import (  # noqa: E402,F401
+    StorefrontSearchTermDailyRow,
+)

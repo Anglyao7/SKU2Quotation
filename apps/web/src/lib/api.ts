@@ -23,6 +23,7 @@ import type {
   StoreProductList,
   StoreImageSearchResponse,
   Storefront,
+  StorefrontExchangeRateSnapshot,
   StorefrontCategoryOption,
   StorefrontLocale,
   StorefrontVisitorQuote,
@@ -53,6 +54,7 @@ import {
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const PUBLIC_CACHE_MAX_ENTRIES = 160;
 const PUBLIC_STORE_CACHE_TTL_MS = 60_000;
+const PUBLIC_EXCHANGE_RATE_CACHE_TTL_MS = 5 * 60_000;
 const PUBLIC_CATALOG_CACHE_TTL_MS = 2 * 60_000;
 const PUBLIC_SKU_CACHE_TTL_MS = 2 * 60_000;
 const PUBLIC_PRODUCT_CACHE_TTL_MS = 2 * 60_000;
@@ -591,6 +593,18 @@ export const api = {
           locale: languagePack.target_locale,
         };
       },
+    );
+  },
+  getStoreExchangeRates: (slug: string) => {
+    const path = `/api/store/${encodeURIComponent(slug)}/exchange-rates`;
+    return cachedPublicRequest(
+      publicCatalogCacheKey("exchange-rates", path),
+      PUBLIC_EXCHANGE_RATE_CACHE_TTL_MS,
+      () => request<StorefrontExchangeRateSnapshot>(path),
+      (snapshot) => snapshot.exchange_rates.some((item) => (
+        item.currency !== snapshot.base_currency
+        && Number(item.rate) > 0
+      )),
     );
   },
   getCatalogShare: async (

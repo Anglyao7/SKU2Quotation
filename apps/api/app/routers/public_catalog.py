@@ -6,7 +6,18 @@ import time
 from uuid import UUID
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, File, Header, Query, Request, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Header,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -15,6 +26,7 @@ from ..adapters.object_storage import get_object_storage
 from ..domain.errors import ApplicationError
 from ..public_catalog_schemas import (
     PublicProductDetail,
+    PublicExchangeRateResponse,
     PublicImageSearchResponse,
     PublicProductPage,
     PublicQuoteDraftCreate,
@@ -43,6 +55,7 @@ from ..services.public_quote_documents import (
     render_public_quote_draft_xlsx,
 )
 from ..services.rate_limit import configured_limit, enforce_rate_limit
+from ..services.search_analytics import record_storefront_search_background
 from ..use_cases import public_catalog as use_cases
 from ..use_cases import catalog_translations as translation_use_cases
 from ..services.language_package_storage import IMMUTABLE_CACHE_CONTROL
@@ -54,6 +67,9 @@ logger = logging.getLogger(__name__)
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PUBLIC_DETAIL_CACHE_HEADERS = {
     "Cache-Control": "public, max-age=30, stale-while-revalidate=120",
+}
+PUBLIC_EXCHANGE_RATE_CACHE_HEADERS = {
+    "Cache-Control": "public, max-age=300, stale-while-revalidate=900",
 }
 PRIVATE_DETAIL_CACHE_HEADERS = {
     # A child-account token changes the returned prices. Never let a shared
@@ -68,6 +84,29 @@ _PUBLIC_QUOTE_MEDIA_PATTERN = re.compile(
 )
 
 
+def _schedule_search_term_record(
+    background_tasks: BackgroundTasks,
+    *,
+    session: Session,
+    term: str,
+    page: int,
+) -> None:
+    """Record only the first result page so pagination is not over-counted."""
+
+    if page != 1 or not term.strip():
+        return
+    raw_tenant_id = session.info.get("tenant_id")
+    try:
+        tenant_id = UUID(str(raw_tenant_id))
+    except (TypeError, ValueError):
+        return
+    background_tasks.add_task(
+        record_storefront_search_background,
+        tenant_id,
+        term,
+    )
+
+
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
 def get_public_store(
     tenant_slug: str,
@@ -78,6 +117,22 @@ def get_public_store(
     response.headers.update(NO_STORE_HEADERS)
     try:
         return use_cases.get_store(session, slug=tenant_slug, locale=locale)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/api/store/{tenant_slug}/exchange-rates",
+    response_model=PublicExchangeRateResponse,
+)
+def get_public_exchange_rates(
+    tenant_slug: str,
+    response: Response,
+    session: Session = Depends(get_session),
+) -> PublicExchangeRateResponse:
+    response.headers.update(PUBLIC_EXCHANGE_RATE_CACHE_HEADERS)
+    try:
+        return use_cases.get_public_exchange_rates(session, slug=tenant_slug)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -138,6 +193,7 @@ def list_public_skus(
     tenant_slug: str,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     q: str = Query(default="", max_length=300),
     category: str | None = Query(default=None, max_length=200),
     tags: list[str] = Query(default=[]),
@@ -182,7 +238,7 @@ def list_public_skus(
                 else None
             ),
         )
-        return use_cases.list_public_skus(
+        result = use_cases.list_public_skus(
             session,
             slug=tenant_slug,
             query=q,
@@ -195,6 +251,13 @@ def list_public_skus(
             locale=locale,
             subaccount_membership_id=(submitter[0].id if submitter else None),
         )
+        _schedule_search_term_record(
+            background_tasks,
+            session=session,
+            term=q,
+            page=page,
+        )
+        return result
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -207,6 +270,7 @@ def list_public_products(
     tenant_slug: str,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     q: str = Query(default="", max_length=300),
     category: str | None = Query(default=None, max_length=200),
     tags: list[str] = Query(default=[]),
@@ -258,7 +322,7 @@ def list_public_products(
                 else None
             ),
         )
-        return use_cases.list_public_products(
+        result = use_cases.list_public_products(
             session,
             slug=tenant_slug,
             query=q,
@@ -272,6 +336,13 @@ def list_public_products(
             share_token=share,
             subaccount_membership_id=(submitter[0].id if submitter else None),
         )
+        _schedule_search_term_record(
+            background_tasks,
+            session=session,
+            term=q,
+            page=page,
+        )
+        return result
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

@@ -50,6 +50,7 @@ from ..public_catalog_schemas import (
     StorefrontOrderPeriodStatistics,
     StorefrontOrderStatistics,
     PublicCategoryOption,
+    PublicExchangeRateResponse,
     PublicImageSearchResponse,
     PublicImageSearchResult,
     PublicProductDetail,
@@ -103,7 +104,10 @@ from ..services.translation_configuration import (
     resolved_catalog_translator,
     translation_provider_is_configured,
 )
-from ..services.world_market import get_dashboard_market_snapshot
+from ..services.world_market import (
+    get_dashboard_market_snapshot,
+    get_exchange_rate_snapshot,
+)
 from ..storefront_locales import (
     effective_storefront_locales,
     normalize_storefront_locale,
@@ -161,11 +165,7 @@ def _public_ai_search_questions(value: object) -> list[str]:
             continue
         seen.add(key)
         normalized.append(question)
-    return (
-        normalized[:3]
-        if len(normalized) >= 3
-        else list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
-    )
+    return normalized[:5] or list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
 
 
 _NONLINGUISTIC_ENGLISH_FRAGMENTS = frozenset(
@@ -786,6 +786,23 @@ def get_store(
             tenant_id=tenant.id,
         ),
         support_widget=support_use_cases.public_widget(session, profile),
+    )
+
+
+def get_public_exchange_rates(
+    session: Session,
+    *,
+    slug: str,
+) -> PublicExchangeRateResponse:
+    """Expose shared reference FX data only for a published storefront."""
+
+    _resolve_store(session, slug=slug)
+    market = get_exchange_rate_snapshot()
+    return PublicExchangeRateResponse(
+        observed_at=market.observed_at,
+        exchange_rates=[item.model_dump() for item in market.exchange_rates],
+        rate_date=market.rate_date,
+        rate_source=market.rate_source,
     )
 
 

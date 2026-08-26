@@ -78,6 +78,8 @@ _CURRENCY_META: dict[str, tuple[str, str]] = {
 _CACHE_LOCK = RLock()
 _CACHE: DashboardMarketSnapshot | None = None
 _CACHE_AT = 0.0
+_RATE_CACHE: DashboardMarketSnapshot | None = None
+_RATE_CACHE_AT = 0.0
 
 
 def _cache_seconds() -> int:
@@ -280,7 +282,7 @@ def _snapshot(observed_at: datetime, previous: DashboardMarketSnapshot | None) -
 def get_dashboard_market_snapshot(observed_at: datetime | None = None) -> DashboardMarketSnapshot:
     """Return cached dashboard market context without making it a hard dependency."""
 
-    global _CACHE, _CACHE_AT
+    global _CACHE, _CACHE_AT, _RATE_CACHE, _RATE_CACHE_AT
     now = observed_at or datetime.now(UTC)
     with _CACHE_LOCK:
         if _CACHE is not None and monotonic() - _CACHE_AT < _cache_seconds():
@@ -293,6 +295,78 @@ def get_dashboard_market_snapshot(observed_at: datetime | None = None) -> Dashbo
             current = previous or _snapshot_local_only(now)
         _CACHE = current
         _CACHE_AT = monotonic()
+        _RATE_CACHE = _rate_only_snapshot(current)
+        _RATE_CACHE_AT = _CACHE_AT
+        return current
+
+
+def _rate_only_snapshot(snapshot: DashboardMarketSnapshot) -> DashboardMarketSnapshot:
+    """Strip dashboard-only world clocks from a market snapshot."""
+
+    return snapshot.model_copy(
+        update={
+            "world_times": [],
+            "time_source": "system",
+        }
+    )
+
+
+def _has_foreign_rates(snapshot: DashboardMarketSnapshot) -> bool:
+    return any(
+        item.currency != BASE_CURRENCY
+        and item.rate is not None
+        and item.rate > 0
+        for item in snapshot.exchange_rates
+    )
+
+
+def _rate_cache_seconds(snapshot: DashboardMarketSnapshot) -> int:
+    # Do not pin a cold-start provider outage for the full normal cache TTL.
+    return _cache_seconds() if _has_foreign_rates(snapshot) else 60
+
+
+def get_exchange_rate_snapshot(
+    observed_at: datetime | None = None,
+) -> DashboardMarketSnapshot:
+    """Return cached FX data without querying the dashboard world clocks.
+
+    The customer storefront loads this after its primary content. Keeping a
+    rate-only cache means a cold storefront request performs one provider call
+    instead of also waiting for every world-time endpoint.
+    """
+
+    global _RATE_CACHE, _RATE_CACHE_AT
+    now = observed_at or datetime.now(UTC)
+    with _CACHE_LOCK:
+        cache_ttl = _cache_seconds()
+        if (
+            _RATE_CACHE is not None
+            and monotonic() - _RATE_CACHE_AT < _rate_cache_seconds(_RATE_CACHE)
+        ):
+            return _RATE_CACHE
+        if (
+            _CACHE is not None
+            and monotonic() - _CACHE_AT < cache_ttl
+            and _has_foreign_rates(_CACHE)
+        ):
+            _RATE_CACHE = _rate_only_snapshot(_CACHE)
+            _RATE_CACHE_AT = _CACHE_AT
+            return _RATE_CACHE
+
+        previous = _RATE_CACHE
+        if previous is None and _CACHE is not None:
+            previous = _rate_only_snapshot(_CACHE)
+        rates, rate_date, rate_source = _fetch_exchange_rates(previous)
+        current = DashboardMarketSnapshot(
+            observed_at=now,
+            world_times=[],
+            exchange_rates=rates,
+            rate_date=rate_date,
+            time_source="system",
+            rate_source=rate_source,
+        )
+        _RATE_CACHE = current
+        _RATE_CACHE_AT = monotonic()
         return current
 
 
@@ -309,7 +383,9 @@ def _snapshot_local_only(observed_at: datetime) -> DashboardMarketSnapshot:
 def reset_dashboard_market_cache() -> None:
     """Clear the process-local cache in tests or after configuration changes."""
 
-    global _CACHE, _CACHE_AT
+    global _CACHE, _CACHE_AT, _RATE_CACHE, _RATE_CACHE_AT
     with _CACHE_LOCK:
         _CACHE = None
         _CACHE_AT = 0.0
+        _RATE_CACHE = None
+        _RATE_CACHE_AT = 0.0

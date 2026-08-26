@@ -28,9 +28,12 @@ from ..knowledge_embedding_schemas import (
     KnowledgeIndexStatusResponse,
     KnowledgeIndexUpdateResponse,
     KnowledgeProjectionResponse,
+    PopularSearchTerm,
+    PopularSearchTermsResponse,
 )
 from ..model_mixins import utcnow
 from ..public_catalog_models import TenantPublicProfileRow
+from ..repositories import search_analytics_repository
 from ..services.auth.dependencies import RequestContext
 from ..services.embedding import EmbeddingProviderError
 from ..services.embedding_configuration import resolved_text_embedding_provider
@@ -44,6 +47,7 @@ from ..services.knowledge import (
     project_product_knowledge,
     update_knowledge_index,
 )
+from ..services.search_analytics import popular_search_window
 
 
 _index_guard = Lock()
@@ -58,7 +62,7 @@ _ZERO_IDENTITY = UUID(int=0)
 
 
 def _normalized_recommended_questions(value: object) -> list[str]:
-    """Return exactly three safe questions for the public storefront."""
+    """Return up to five safe questions for the public storefront."""
 
     if not isinstance(value, list):
         return list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
@@ -71,11 +75,7 @@ def _normalized_recommended_questions(value: object) -> list[str]:
             continue
         seen.add(key)
         normalized.append(question)
-    return (
-        normalized[:3]
-        if len(normalized) >= 3
-        else list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
-    )
+    return normalized[:5] or list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -205,6 +205,36 @@ def get_recommended_questions(
         profile.ai_search_questions if profile is not None else None,
     )
     return AISearchRecommendedQuestionsResponse(questions=questions)
+
+
+def get_popular_search_terms(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    days: int,
+    limit: int,
+) -> PopularSearchTermsResponse:
+    _require(permissions, "product.view")
+    start_date, end_date = popular_search_window(days=days)
+    rows = search_analytics_repository.list_popular_search_terms(
+        session,
+        tenant_id=tenant_id,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+    )
+    return PopularSearchTermsResponse(
+        days=days,
+        items=[
+            PopularSearchTerm(
+                term=str(row["term_display"] or row["term_normalized"]),
+                count=int(row["search_count"] or 0),
+                last_searched_at=row["last_searched_at"],
+            )
+            for row in rows
+        ],
+    )
 
 
 def update_recommended_questions(

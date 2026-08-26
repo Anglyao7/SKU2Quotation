@@ -33,6 +33,7 @@ import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
+import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
@@ -769,8 +770,8 @@ export function StorePage() {
       const configured = (store.ai_search_questions ?? [])
         .map((question) => question.trim())
         .filter(Boolean)
-        .slice(0, 3);
-      const values = configured.length === 3
+        .slice(0, 5);
+      const values = configured.length
         ? configured
         : DEFAULT_RECOMMENDED_QUESTIONS;
       return values.map((question) => t(question));
@@ -958,6 +959,8 @@ export function StorePage() {
         tenantSlug={tenantSlug}
         locale={locale}
       />
+
+      <StorefrontExchangeRates tenantSlug={tenantSlug} locale={locale} />
 
       {shareToken ? (
         <Container size="4" className="store-share-banner-wrap">

@@ -44,6 +44,7 @@ import type {
   InventoryStockPage,
   KnowledgeIndexStatus,
   KnowledgeIndexJob,
+  PopularSearchTerms,
   ManualProductCreateInput,
   MembershipSummary,
   MerchantSettings,
@@ -5638,12 +5639,43 @@ interface ApiAISearchRecommendedQuestions {
   questions: string[];
 }
 
+interface ApiPopularSearchTerms {
+  days: number;
+  items: Array<{
+    term: string;
+    count: number;
+    last_searched_at: string;
+  }>;
+}
+
 export async function getAISearchRecommendedQuestions(): Promise<AISearchRecommendedQuestions> {
   const row = await request<ApiAISearchRecommendedQuestions>(
     "/ai/search/recommended-questions",
     { cache: "no-store" },
   );
   return { questions: row.questions };
+}
+
+export async function getAISearchPopularTerms(
+  days = 30,
+  limit = 10,
+): Promise<PopularSearchTerms> {
+  const params = new URLSearchParams({
+    days: String(days),
+    limit: String(limit),
+  });
+  const row = await request<ApiPopularSearchTerms>(
+    `/ai/search/popular-terms?${params.toString()}`,
+    { cache: "no-store" },
+  );
+  return {
+    days: row.days,
+    items: row.items.map((item) => ({
+      term: item.term,
+      count: item.count,
+      lastSearchedAt: item.last_searched_at,
+    })),
+  };
 }
 
 export async function updateAISearchRecommendedQuestions(

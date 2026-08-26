@@ -497,8 +497,13 @@
 .storefront-support-composer > small { display: block; margin-top: 6px; color: var(--gray-9); font-size: 10px; text-align: center; }
 
 @media (max-width: 760px) {
-  .storefront-support { right: max(12px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); }
-  .store-shell.has-cart .storefront-support { bottom: calc(92px + env(safe-area-inset-bottom)); }
+  .storefront-support {
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+  }
+  .store-shell.has-cart .storefront-support,
+  .store-shell.has-mobile-purchase .storefront-support { bottom: calc(92px + env(safe-area-inset-bottom)); }
   .storefront-support-orb { width: 48px; height: 48px; }
   .storefront-support-action-preview {
     right: calc(100% + 10px);
@@ -520,7 +525,22 @@
     max-height: min(280px, calc(100dvh - 158px - env(safe-area-inset-top)));
   }
   .storefront-support-action-placeholder { min-height: 120px; }
-  .storefront-support-panel { width: min(366px, calc(100vw - 40px)); height: min(560px, calc(100dvh - 130px)); min-height: 380px; border-radius: 20px; transform-origin: calc(100% - 24px) calc(100% + 60px); }
+  .storefront-support-panel {
+    width: 100%;
+    height: min(640px, calc(100dvh - 94px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+    min-height: min(380px, calc(100dvh - 94px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+    border-radius: 20px;
+    transform-origin: calc(100% - 24px) calc(100% + 60px);
+  }
+  .store-shell.has-cart .storefront-support-panel,
+  .store-shell.has-mobile-purchase .storefront-support-panel {
+    height: min(640px, calc(100dvh - 164px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+    min-height: min(380px, calc(100dvh - 164px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+  }
+  .storefront-support.is-open .storefront-support-actions { display: none; }
+  .storefront-support-header > button { width: 40px; height: 40px; }
+  .storefront-support-composer div > button { width: 42px; height: 42px; }
+  .storefront-support-composer textarea { min-height: 42px; font-size: 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

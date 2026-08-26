@@ -2034,19 +2034,36 @@ const english: Record<string, string> = {
     "Manage product search data for this workspace. Update it here after importing or editing products.",
   "前台商品查找": "Storefront product search",
   "推荐问题": "Recommended questions",
-  "设置三个常用问题，它们会显示在公开商品目录的“查找商品”下面。":
-    "Set three common questions to show below “Find products” in the public catalog.",
+  "设置最多五条常用搜索词，它们会显示在公开商品目录的“查找商品”下面。":
+    "Set up to five common search terms to show below “Find products” in the public catalog.",
   "商家自定义": "Merchant-defined",
+  "商家自定义 · 最多5条": "Merchant-defined · Up to 5",
   "推荐问题 {index}": "Recommended question {index}",
   "例如：适合户外使用的轻便商品有哪些？": "e.g. Which lightweight products are suitable for outdoor use?",
-  "请填写三个推荐问题。": "Please fill in all three recommended questions.",
-  "三个推荐问题不能重复。": "The three recommended questions must be different.",
+  "推荐问题不能重复。": "Recommended questions must be different.",
+  "该热门搜索词已在推荐列表中。": "This popular search term is already recommended.",
+  "推荐问题最多设置五条。": "You can set up to five recommended questions.",
+  "已填入推荐列表，保存后将在前台显示。":
+    "Added to the recommendation list. Save to show it on the storefront.",
+  "已用热门搜索词前五条填入推荐列表，保存后将在前台显示。":
+    "The top five popular terms were added to the recommendation list. Save to show them on the storefront.",
+  "用热门前五条填充推荐": "Use top five popular terms",
   "前台推荐问题已保存。": "Storefront recommended questions saved.",
   "推荐问题保存失败。": "Could not save the recommended questions.",
   "保存推荐问题": "Save recommended questions",
   "当前账号没有商品编辑权限，无法修改推荐问题。":
     "Product edit permission is required to change the recommended questions.",
   "打开 AI 搜索": "Open AI Search",
+  "搜索趋势": "Search trends",
+  "热门搜索词": "Popular search terms",
+  "自动记录近30天前台搜索次数最多的前十个词，可一键填入下方推荐。":
+    "Automatically track the top ten storefront search terms from the last 30 days and add them below with one click.",
+  "自动记录": "Automatic",
+  "{count} 次": "{count} searches",
+  "已在推荐中": "Already recommended",
+  "填入推荐": "Add to recommendations",
+  "暂未记录到搜索词，访客开始搜索后会自动汇总。":
+    "No search terms yet. They will appear after visitors start searching.",
   "刷新状态": "Refresh status",
   "正在核对商品与智能索引": "Checking products and AI index",
   "当前商家索引": "Current merchant index",

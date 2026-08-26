@@ -119,11 +119,11 @@ class HybridSearchRequest(BaseModel):
 
 
 class AISearchRecommendedQuestionsResponse(BaseModel):
-    questions: list[str] = Field(min_length=3, max_length=3)
+    questions: list[str] = Field(max_length=5)
 
 
 class AISearchRecommendedQuestionsUpdate(BaseModel):
-    questions: list[str] = Field(min_length=3, max_length=3)
+    questions: list[str] = Field(default_factory=list, max_length=5)
 
     @field_validator("questions")
     @classmethod
@@ -134,12 +134,23 @@ class AISearchRecommendedQuestionsUpdate(BaseModel):
             question = str(item).strip()[:200]
             key = question.casefold()
             if not question:
-                raise ValueError("推荐问题不能为空")
+                continue
             if key in seen:
                 raise ValueError("推荐问题不能重复")
             seen.add(key)
             normalized.append(question)
         return normalized
+
+
+class PopularSearchTerm(BaseModel):
+    term: str
+    count: int = Field(ge=0)
+    last_searched_at: datetime
+
+
+class PopularSearchTermsResponse(BaseModel):
+    days: int = Field(ge=1, le=365)
+    items: list[PopularSearchTerm] = Field(max_length=10)
 
 
 class SearchScoreBreakdown(BaseModel):

@@ -917,6 +917,17 @@ export interface AISearchRecommendedQuestions {
   questions: string[];
 }
 
+export interface PopularSearchTerm {
+  term: string;
+  count: number;
+  lastSearchedAt: string;
+}
+
+export interface PopularSearchTerms {
+  days: number;
+  items: PopularSearchTerm[];
+}
+
 export interface KnowledgeIndexStatus {
   totalProducts: number;
   indexedProducts: number;

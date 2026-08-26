@@ -344,6 +344,12 @@ const english: Record<string, string> = {
   "重试": "Retry",
   "正在加载…": "Loading…",
   "未分类": "Uncategorized",
+  "实时汇率参考": "Live exchange-rate reference",
+  "正在读取汇率…": "Loading exchange rates…",
+  "汇率暂时不可用，点击重试": "Exchange rates are unavailable · tap to retry",
+  "更新于 {time}": "Updated {time}",
+  "数据日期：{date}": "Rate date: {date}",
+  "参考汇率，实际结算以银行或支付渠道为准。": "Reference rates only. Final settlement is determined by your bank or payment provider.",
 };
 
 export function storefrontText(

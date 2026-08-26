@@ -43,6 +43,27 @@ class PublicStoreResponse(BaseModel):
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
 
 
+class PublicExchangeRate(BaseModel):
+    currency: str
+    name: str
+    symbol: str
+    rate: Decimal | None = Field(
+        default=None,
+        description="CNY value of one unit of this currency.",
+    )
+    base_currency: str = "CNY"
+    rate_date: str | None = None
+    source: str = "Frankfurter"
+
+
+class PublicExchangeRateResponse(BaseModel):
+    observed_at: datetime
+    base_currency: str = "CNY"
+    exchange_rates: list[PublicExchangeRate] = Field(default_factory=list)
+    rate_date: str | None = None
+    rate_source: str = "Frankfurter"
+
+
 class PublicCategoryOption(BaseModel):
     value: str
     label: str

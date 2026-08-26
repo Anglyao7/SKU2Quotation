@@ -24,6 +24,7 @@ import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom"
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
+import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
@@ -130,6 +131,9 @@ export function ProductDetailPage() {
   const priceLabel = selectedSku
     ? money(selectedSku.price, selectedSku.currency || product.currency)
     : money(product.price_from, product.currency);
+  const showMobilePurchaseDock = Boolean(
+    selectedSku && !selectedQuantity && cartLines.length === 0,
+  );
 
   useEffect(() => {
     writeStoreCart(store.slug, cart);
@@ -225,7 +229,7 @@ export function ProductDetailPage() {
 
   return (
     <div
-      className={`store-shell sku-detail-shell${cartLines.length ? " has-cart" : ""}`}
+      className={`store-shell sku-detail-shell${cartLines.length ? " has-cart" : ""}${showMobilePurchaseDock ? " has-mobile-purchase" : ""}`}
       dir={storefrontDirection(locale)}
     >
       <header className="store-header">
@@ -283,6 +287,8 @@ export function ProductDetailPage() {
         tenantSlug={store.slug}
         locale={locale}
       />
+
+      <StorefrontExchangeRates tenantSlug={store.slug} locale={locale} />
 
       <main className="sku-detail-main product-detail-main">
         <Container size="4">
@@ -497,6 +503,25 @@ export function ProductDetailPage() {
           </section>
         </Container>
       </main>
+
+      {showMobilePurchaseDock && selectedSku ? (
+        <div className="product-mobile-purchase" role="region" aria-label={t("加入报价清单")}>
+          <div className="product-mobile-purchase-copy">
+            <small>{t("已选 SKU")}</small>
+            <strong>{selectedLabel}</strong>
+            <span>{priceLabel}</span>
+          </div>
+          <Button
+            type="button"
+            size="3"
+            onClick={() => addToCart(selectedSku)}
+            aria-label={t("将 {name} 加入报价清单", { name: selectedLabel })}
+          >
+            <Plus size={18} />
+            {t("加入报价清单")}
+          </Button>
+        </div>
+      ) : null}
 
       <StorefrontSupportWidget
         tenantSlug={store.slug}
