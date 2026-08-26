@@ -15,6 +15,23 @@ const compiled = ts.transpileModule(trackerSource, {
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
 const { humanRequestKey, mergeHumanRequestSnapshot } = await import(moduleUrl);
 
+const backoffSource = await fs.readFile(
+  new URL("../src/core/pollingBackoff.ts", import.meta.url),
+  "utf8",
+);
+const compiledBackoff = ts.transpileModule(backoffSource, {
+  compilerOptions: {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ES2022,
+  },
+}).outputText;
+const backoffModuleUrl = `data:text/javascript;base64,${Buffer.from(compiledBackoff).toString("base64")}`;
+const { pollingBackoffMs } = await import(backoffModuleUrl);
+assert.equal(pollingBackoffMs(4_000, 0), 4_000);
+assert.equal(pollingBackoffMs(4_000, 1), 8_000);
+assert.equal(pollingBackoffMs(4_000, 4), 60_000);
+assert.equal(pollingBackoffMs(20_000, 3), 60_000);
+
 const request = (conversationId, requestedAt) => ({
   conversationId,
   requestedAt,

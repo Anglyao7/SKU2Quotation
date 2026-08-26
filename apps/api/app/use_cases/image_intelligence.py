@@ -98,6 +98,7 @@ _ZERO_IDENTITY = UUID(int=0)
 _DEFAULT_IMAGE_INDEX_URL_MAX_BYTES = 8 * 1024 * 1024
 _PROVIDER_IMAGE_URL_HARD_LIMIT_BYTES = 10 * 1024 * 1024
 _SKIPPED_IMAGE_FAILURE_DETAILS_LIMIT = 100
+_DEFAULT_IMAGE_INDEX_FAILURE_LIMIT = 3
 _SOURCE_FAILURE_APPLICATION_CODES = {
     "IMAGE_HASH_MISMATCH",
     "IMAGE_OBJECT_MISSING",
@@ -117,6 +118,25 @@ class PublicImageMatch:
     similarity: float
     match_percent: float
     confidence: str
+
+
+@dataclass(slots=True)
+class _ProductImageSource:
+    """Detached image metadata used while external services are called.
+
+    Keeping this as plain data is intentional: image downloads and Qwen
+    requests must never retain an ORM object whose session owns a checked-out
+    database connection.
+    """
+
+    id: UUID
+    product_id: UUID
+    object_key: str
+    sha256: str
+    byte_size: int
+    content_type: str
+    width: int | None
+    height: int | None
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -264,9 +284,10 @@ def _image_index_url_max_bytes() -> int:
 
 
 def _image_index_failure_limit(concurrency: int) -> int:
+    default_limit = min(concurrency, _DEFAULT_IMAGE_INDEX_FAILURE_LIMIT)
     raw_value = os.getenv(
         "IMAGE_INDEX_FAILURE_CIRCUIT_BREAKER",
-        str(concurrency),
+        str(default_limit),
     ).strip()
     try:
         configured = int(raw_value)
@@ -274,9 +295,9 @@ def _image_index_failure_limit(concurrency: int) -> int:
         logger.warning(
             "IMAGE_INDEX_FAILURE_CIRCUIT_BREAKER=%r is invalid; using %s",
             raw_value,
-            concurrency,
+            default_limit,
         )
-        configured = concurrency
+        configured = default_limit
     return max(1, min(_IMAGE_INDEX_GLOBAL_CONCURRENCY, configured))
 
 
@@ -339,10 +360,123 @@ def _project_product_image(
             kind="conflict",
         )
     identity = provider.identity
+    source = _ProductImageSource(
+        id=image.id,
+        product_id=image.product_id,
+        object_key=str(image.object_key or "").strip(),
+        sha256=image.sha256,
+        byte_size=int(image.byte_size),
+        content_type=image.content_type,
+        width=image.width,
+        height=image.height,
+    )
+    original_content_hash = source.sha256
+    is_external_source = source.object_key.startswith(("https://", "http://"))
     content: bytes | None = None
-    content_hash = image.sha256
-    if str(image.object_key or "").strip().startswith(("https://", "http://")):
-        content, content_hash = _materialize_approved_image(image)
+    content_hash = source.sha256
+
+    # Managed objects already have a trusted digest, so an existing projection
+    # can be reused before any paid provider request. Legacy public URLs must be
+    # materialized first because older imports may contain a source-record hash
+    # instead of the actual object digest.
+    if not is_external_source:
+        existing = repository.get_projection(
+            session,
+            tenant_id=tenant_id,
+            image_id=image.id,
+            provider=identity.provider,
+            model=identity.model_name,
+            version=identity.model_version,
+            content_hash=content_hash,
+        )
+        if (
+            existing
+            and not force
+            and existing[0].status == "ACTIVE"
+            and existing[0].dimensions == identity.dimensions
+        ):
+            if existing[0].product_version != product.current_version:
+                existing[0].product_version = product.current_version
+                existing[0].updated_at = utcnow()
+                session.flush()
+            return existing[0], existing[1], True
+
+    # The read phase is complete. Roll the transaction back before R2/CDN and
+    # Qwen I/O so slow retries cannot pin the SQLAlchemy QueuePool. Request
+    # context lives in session.info and is rebound automatically on the next
+    # short transaction.
+    session.rollback()
+
+    try:
+        if is_external_source:
+            content, content_hash = _materialize_approved_image(source)
+        analyze_url = getattr(provider, "analyze_url", None)
+        public_image_url = _public_image_embedding_url(source)
+        if public_image_url is not None and callable(analyze_url):
+            result = analyze_url(public_image_url)
+        else:
+            if content is None:
+                content, content_hash = _materialize_approved_image(source)
+            result = provider.analyze(content, content_type=source.content_type)
+    except ImageIntelligenceProviderError as exc:
+        raise ApplicationError(
+            "IMAGE_EMBEDDING_FAILED",
+            str(exc),
+            kind="unavailable",
+        ) from exc
+    validate_vectors(
+        [result.embedding],
+        expected_count=1,
+        dimensions=identity.dimensions,
+    )
+
+    # Re-read the source before persisting. A product image may be edited while
+    # the external request is in flight; never attach a stale vector to a new
+    # object revision.
+    refreshed_pair = repository.get_product_image(
+        session,
+        tenant_id=tenant_id,
+        image_id=image_id,
+    )
+    if refreshed_pair is None:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_NOT_FOUND",
+            "商品图片不存在。",
+            kind="not_found",
+        )
+    image, product = refreshed_pair
+    if image.approval_status != "APPROVED" or product.status != "ACTIVE":
+        raise ApplicationError(
+            "IMAGE_NOT_APPROVED",
+            "只有已审批且商品有效的图片才能进入图片搜索索引。",
+            kind="conflict",
+        )
+    if str(image.object_key or "").strip() != source.object_key:
+        raise ApplicationError(
+            "IMAGE_SOURCE_CHANGED",
+            "商品图片在向量化期间发生变化，请重新执行该图片。",
+            kind="conflict",
+        )
+    if is_external_source:
+        if image.sha256 not in {original_content_hash, content_hash}:
+            raise ApplicationError(
+                "IMAGE_SOURCE_CHANGED",
+                "商品图片在向量化期间发生变化，请重新执行该图片。",
+                kind="conflict",
+            )
+        # Preserve the legacy metadata repair performed by materialization.
+        image.sha256 = source.sha256
+        image.byte_size = source.byte_size
+        image.content_type = source.content_type
+        image.width = source.width
+        image.height = source.height
+    elif image.sha256 != original_content_hash:
+        raise ApplicationError(
+            "IMAGE_SOURCE_CHANGED",
+            "商品图片在向量化期间发生变化，请重新执行该图片。",
+            kind="conflict",
+        )
+
     existing = repository.get_projection(
         session,
         tenant_id=tenant_id,
@@ -352,6 +486,8 @@ def _project_product_image(
         version=identity.model_version,
         content_hash=content_hash,
     )
+    # Another request may have completed the same projection while this worker
+    # was outside the transaction. Reuse it rather than writing a duplicate.
     if (
         existing
         and not force
@@ -364,26 +500,6 @@ def _project_product_image(
             session.flush()
         return existing[0], existing[1], True
 
-    try:
-        analyze_url = getattr(provider, "analyze_url", None)
-        public_image_url = _public_image_embedding_url(image)
-        if public_image_url is not None and callable(analyze_url):
-            result = analyze_url(public_image_url)
-        else:
-            if content is None:
-                content, content_hash = _materialize_approved_image(image)
-            result = provider.analyze(content, content_type=image.content_type)
-    except ImageIntelligenceProviderError as exc:
-        raise ApplicationError(
-            "IMAGE_EMBEDDING_FAILED",
-            str(exc),
-            kind="unavailable",
-        ) from exc
-    validate_vectors(
-        [result.embedding],
-        expected_count=1,
-        dimensions=identity.dimensions,
-    )
     now = utcnow()
     active_rows = session.scalars(
         select(ImageEmbeddingRow).where(
@@ -966,10 +1082,15 @@ def get_image_index_job(
 def _pause_at_checkpoint(session: Session, job: ImageIndexJobRow) -> bool:
     session.refresh(job, attribute_names=("status", "pause_requested_at", "updated_at"))
     if job.status == "PAUSED":
+        session.commit()
         return True
     if job.status != "RUNNING":
+        session.commit()
         return True
     if job.pause_requested_at is None:
+        # Do not retain the coordinator connection while worker threads wait on
+        # external image services.
+        session.commit()
         return False
     now = utcnow()
     job.status = "PAUSED"
@@ -1200,6 +1321,11 @@ def _run_image_index_job(
                 _IMAGE_INDEX_GLOBAL_CONCURRENCY,
                 max(1, len(targets)),
             )
+            # The provider/configuration lookup above opens a transaction. The
+            # coordinator only needs plain values from this point until it
+            # checkpoints progress, so release that connection before workers
+            # begin external I/O.
+            session.commit()
             failure_limit = _image_index_failure_limit(concurrency)
             completed_ids: set[UUID] = set()
             skipped_ids = set(stored_skipped)
@@ -1253,6 +1379,7 @@ def _run_image_index_job(
                 if not in_flight:
                     session.refresh(job)
                     if len(failures) >= failure_limit:
+                        session.commit()
                         break
                     if job.pause_requested_at is not None:
                         job.current_image_id = None
@@ -1260,6 +1387,10 @@ def _run_image_index_job(
                         session.commit()
                         if _pause_at_checkpoint(session, job):
                             return
+                    else:
+                        # A refresh begins a transaction; close it before the
+                        # following wait so page/API traffic keeps pool access.
+                        session.commit()
                     fill_available_slots()
                 if not in_flight:
                     break

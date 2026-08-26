@@ -40,6 +40,7 @@ import { useCoreAuth } from "../../core/AuthContext";
 import { listPublicQuoteDrafts, updateMerchantSettings } from "../../core/api";
 import { preloadConsoleRoute } from "../../core/routePreload";
 import { useLocale } from "../../core/LocaleContext";
+import { pollingBackoffMs } from "../../core/pollingBackoff";
 import { initials } from "../../lib/format";
 import {
   SUBSCRIPTION_TIER_PRESENTATION,
@@ -268,6 +269,9 @@ export function ConsoleLayout() {
     // unavailable. This prevents the same reminder from reopening on every
     // polling cycle while still allowing a new tab/session to be notified.
     const memorySeenIds = new Set<string>();
+    let refreshInFlight: Promise<void> | null = null;
+    let consecutiveFailures = 0;
+    let nextRefreshAt = 0;
     const readSeenIds = () => {
       const seen = new Set(memorySeenIds);
       try {
@@ -282,35 +286,55 @@ export function ConsoleLayout() {
       }
       return seen;
     };
-    const refreshPendingQuotes = async () => {
-      try {
-        const rows = await listPublicQuoteDrafts();
-        if (disposed) return;
-        const pending = rows.filter((row) => ["PENDING_CONFIRMATION", "SUBMITTED", "PENDING_REVIEW"].includes(row.status));
-        setPendingInquiryCount(pending.length);
-        const seen = readSeenIds();
-        const unseen = pending.filter((row) => !seen.has(row.id));
-        if (unseen.length) {
-          setNewInquiryNotice({
-            count: unseen.length,
-            customers: unseen.slice(0, 3).map((row) => row.customerCompany || row.customerName),
-          });
-          pending.forEach((row) => seen.add(row.id));
-          pending.forEach((row) => memorySeenIds.add(row.id));
-          try {
-            window.localStorage.setItem(storageKey, JSON.stringify([...seen].slice(-200)));
-          } catch {
-            // Private browsing may deny localStorage; the memory fallback still works.
-          }
-        }
-      } catch {
-        // Notification polling must never block the console or show a noisy
-        // error when the member does not have access to the sales inbox.
+    const refreshPendingQuotes = () => {
+      if (disposed || refreshInFlight || Date.now() < nextRefreshAt) {
+        return refreshInFlight ?? Promise.resolve();
       }
+      const pendingRequest = (async () => {
+        try {
+          const rows = await listPublicQuoteDrafts();
+          if (disposed) return;
+          consecutiveFailures = 0;
+          nextRefreshAt = Date.now() + 20_000;
+          const pending = rows.filter((row) => ["PENDING_CONFIRMATION", "SUBMITTED", "PENDING_REVIEW"].includes(row.status));
+          setPendingInquiryCount(pending.length);
+          const seen = readSeenIds();
+          const unseen = pending.filter((row) => !seen.has(row.id));
+          if (unseen.length) {
+            setNewInquiryNotice({
+              count: unseen.length,
+              customers: unseen.slice(0, 3).map((row) => row.customerCompany || row.customerName),
+            });
+            pending.forEach((row) => seen.add(row.id));
+            pending.forEach((row) => memorySeenIds.add(row.id));
+            try {
+              window.localStorage.setItem(storageKey, JSON.stringify([...seen].slice(-200)));
+            } catch {
+              // Private browsing may deny localStorage; the memory fallback still works.
+            }
+          }
+        } catch {
+          consecutiveFailures += 1;
+          nextRefreshAt = Date.now() + pollingBackoffMs(
+            20_000,
+            consecutiveFailures,
+            60_000,
+          );
+          // Notification polling must never block the console or show a noisy
+          // error when the member does not have access to the sales inbox.
+        }
+      })();
+      refreshInFlight = pendingRequest;
+      void pendingRequest.finally(() => {
+        if (refreshInFlight === pendingRequest) refreshInFlight = null;
+      });
+      return pendingRequest;
     };
 
     void refreshPendingQuotes();
-    const timer = window.setInterval(() => void refreshPendingQuotes(), 20_000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshPendingQuotes();
+    }, 20_000);
     const handleQuoteChanged = () => void refreshPendingQuotes();
     window.addEventListener("atc:public-quote-changed", handleQuoteChanged);
     return () => {

@@ -7889,6 +7889,17 @@ def test_image_index_job_projects_images_concurrently(
             session.commit()
 
 
+def test_image_index_provider_failure_circuit_breaker_is_conservative_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("IMAGE_INDEX_FAILURE_CIRCUIT_BREAKER", raising=False)
+    assert image_intelligence_use_cases._image_index_failure_limit(20) == 3
+    assert image_intelligence_use_cases._image_index_failure_limit(2) == 2
+
+    monkeypatch.setenv("IMAGE_INDEX_FAILURE_CIRCUIT_BREAKER", "1")
+    assert image_intelligence_use_cases._image_index_failure_limit(20) == 1
+
+
 def test_image_index_job_refills_slot_before_slowest_image_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -15171,6 +15182,8 @@ def test_image_index_projects_managed_product_through_provider_url_fast_path(
         byte_size=1024,
         sha256="a" * 64,
         content_type="image/png",
+        width=100,
+        height=100,
         approval_status="APPROVED",
     )
     product = SimpleNamespace(
@@ -15190,6 +15203,7 @@ def test_image_index_projects_managed_product_through_provider_url_fast_path(
         )
 
         def analyze_url(self, image_url: str):
+            assert session.rollback_count == 1
             requested_urls.append(image_url)
             return SimpleNamespace(
                 labels=[],
@@ -15211,6 +15225,7 @@ def test_image_index_projects_managed_product_through_provider_url_fast_path(
     class RecordingSession:
         def __init__(self) -> None:
             self.rows: list[object] = []
+            self.rollback_count = 0
 
         @staticmethod
         def scalars(_statement):
@@ -15218,6 +15233,9 @@ def test_image_index_projects_managed_product_through_provider_url_fast_path(
 
         def add_all(self, rows) -> None:
             self.rows.extend(rows)
+
+        def rollback(self) -> None:
+            self.rollback_count += 1
 
         @staticmethod
         def flush() -> None:

@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { getSupportHumanRequests } from "../api";
 import { useLocale } from "../LocaleContext";
+import { pollingBackoffMs } from "../pollingBackoff";
 import type {
   SupportHumanRequest,
   SupportHumanRequestSummary,
@@ -25,6 +26,8 @@ const EMPTY_SUMMARY: SupportHumanRequestSummary = {
   pendingCount: 0,
   items: [],
 };
+const SUPPORT_POLL_INTERVAL_MS = 4_000;
+const SUPPORT_POLL_MAX_BACKOFF_MS = 60_000;
 
 export function SupportNotificationBell({
   tenantId,
@@ -42,39 +45,62 @@ export function SupportNotificationBell({
   const refreshSequenceRef = useRef(0);
   const appliedSequenceRef = useRef(0);
   const activeTenantRef = useRef(tenantId);
+  const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const refreshFailuresRef = useRef(0);
+  const nextRefreshAtRef = useRef(0);
 
-  const refresh = useCallback(async (notify = true) => {
-    if (!enabled || !tenantId) return;
+  const refresh = useCallback((notify = true) => {
+    if (!enabled || !tenantId) return Promise.resolve();
+    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+    if (Date.now() < nextRefreshAtRef.current) return Promise.resolve();
+
     const sequence = ++refreshSequenceRef.current;
-    try {
-      const next = await getSupportHumanRequests(30);
-      if (
-        activeTenantRef.current !== tenantId
-        || sequence < appliedSequenceRef.current
-      ) return;
-      appliedSequenceRef.current = sequence;
-      const merged = mergeHumanRequestSnapshot(
-        requestTrackerRef.current,
-        next.items,
-        notify,
-      );
-      requestTrackerRef.current = merged.tracker;
-      if (merged.arrivals.length) {
-        setToastRequest(merged.arrivals[0]);
-        setToastAdditionalCount(Math.max(0, merged.arrivals.length - 1));
+    const pending = (async () => {
+      try {
+        const next = await getSupportHumanRequests(30);
+        if (
+          activeTenantRef.current !== tenantId
+          || sequence < appliedSequenceRef.current
+        ) return;
+        appliedSequenceRef.current = sequence;
+        refreshFailuresRef.current = 0;
+        nextRefreshAtRef.current = Date.now() + SUPPORT_POLL_INTERVAL_MS;
+        const merged = mergeHumanRequestSnapshot(
+          requestTrackerRef.current,
+          next.items,
+          notify,
+        );
+        requestTrackerRef.current = merged.tracker;
+        if (merged.arrivals.length) {
+          setToastRequest(merged.arrivals[0]);
+          setToastAdditionalCount(Math.max(0, merged.arrivals.length - 1));
+        }
+        setSummary({ ...next, items: next.items.slice(0, 10) });
+        setLoadError("");
+      } catch (caught) {
+        if (
+          activeTenantRef.current !== tenantId
+          || sequence < appliedSequenceRef.current
+        ) return;
+        appliedSequenceRef.current = sequence;
+        refreshFailuresRef.current += 1;
+        nextRefreshAtRef.current = Date.now() + pollingBackoffMs(
+          SUPPORT_POLL_INTERVAL_MS,
+          refreshFailuresRef.current,
+          SUPPORT_POLL_MAX_BACKOFF_MS,
+        );
+        setLoadError(
+          caught instanceof Error ? caught.message : t("人工客服提醒加载失败"),
+        );
       }
-      setSummary({ ...next, items: next.items.slice(0, 10) });
-      setLoadError("");
-    } catch (caught) {
-      if (
-        activeTenantRef.current !== tenantId
-        || sequence < appliedSequenceRef.current
-      ) return;
-      appliedSequenceRef.current = sequence;
-      setLoadError(
-        caught instanceof Error ? caught.message : t("人工客服提醒加载失败"),
-      );
-    }
+    })();
+    refreshInFlightRef.current = pending;
+    void pending.finally(() => {
+      if (refreshInFlightRef.current === pending) {
+        refreshInFlightRef.current = null;
+      }
+    });
+    return pending;
   }, [enabled, t, tenantId]);
 
   useEffect(() => {
@@ -82,6 +108,9 @@ export function SupportNotificationBell({
     refreshSequenceRef.current += 1;
     appliedSequenceRef.current = refreshSequenceRef.current;
     requestTrackerRef.current = null;
+    refreshInFlightRef.current = null;
+    refreshFailuresRef.current = 0;
+    nextRefreshAtRef.current = 0;
     setSummary(EMPTY_SUMMARY);
     setLoadError("");
     setToastRequest(undefined);
@@ -90,7 +119,7 @@ export function SupportNotificationBell({
     void refresh(false);
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") void refresh(true);
-    }, 4_000);
+    }, SUPPORT_POLL_INTERVAL_MS);
     const refreshAfterChange = () => void refresh(true);
     const refreshOnVisible = () => {
       if (document.visibilityState === "visible") void refresh(true);
