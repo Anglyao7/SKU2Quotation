@@ -2971,8 +2971,8 @@ def test_local_password_login_uses_the_same_browser_contract(
             "/api/v1/auth/login",
             json={
                 "grant_type": "password",
-                "identifier": "owner",
-                "password": "localpass123",
+                "identifier": "  owner  ",
+                "password": "  localpass123  ",
                 "device_label": "pytest-local-password-browser",
             },
         )
