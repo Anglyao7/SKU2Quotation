@@ -749,20 +749,24 @@ function SubaccountPricingDialog({
         <Text size="1" color="gray">{t("当前已有 {count} 个单品规则、{skuCount} 个 SKU 特价", { count: data?.policy.overrideCount ?? account.overrideCount, skuCount: data?.policy.skuOverrideCount ?? 0 })}</Text>
       </section>
       <section className="subaccount-category-pricing">
-        <div><Text size="2" weight="medium">{t("分类加价（%）")}</Text><Text size="1" color="gray">{t("分类规则按每个 SKU 原价分别计算；单品规则优先。")}</Text></div>
-        <select value={categoryId} onChange={(event) => {
-          const nextId = event.target.value;
-          setCategoryId(nextId);
-          const current = data?.items.find((row) => row.categoryId === nextId)?.categoryMarkupPercent;
-          setCategoryMarkup(current == null ? "" : String(current));
-        }} aria-label={t("选择加价分类")}>
-          <option value="">{t("选择分类")}</option>
-          {categories.map((category) => <option value={category.id} key={category.id}>{category.path || category.name}</option>)}
-        </select>
-        <TextField.Root type="number" min="0" max="100000" step="0.1" value={categoryMarkup} onChange={(event) => setCategoryMarkup(event.target.value)} placeholder={t("加价百分比")} aria-label={t("分类加价百分比")} />
-        <Button size="2" loading={editingCategory} disabled={!categoryId} onClick={() => void saveCategoryRule()}>{t("应用分类规则")}</Button>
-        <Button size="2" variant="ghost" color="gray" loading={editingCategory} disabled={!categoryId || !categoryMarkup} onClick={() => void clearCategoryRule()}>{t("清除")}</Button>
-        <Text size="1" color="gray">{t("已设置 {count} 个分类规则", { count: data?.policy.categoryOverrideCount ?? account.categoryOverrideCount ?? 0 })}</Text>
+        <div className="subaccount-category-pricing-copy"><Text size="2" weight="medium">{t("分类加价（%）")}</Text><Text size="1" color="gray">{t("分类规则按每个 SKU 原价分别计算；单品规则优先。")}</Text></div>
+        <div className="subaccount-category-pricing-controls">
+          <select value={categoryId} onChange={(event) => {
+            const nextId = event.target.value;
+            setCategoryId(nextId);
+            const current = data?.items.find((row) => row.categoryId === nextId)?.categoryMarkupPercent;
+            setCategoryMarkup(current == null ? "" : String(current));
+          }} aria-label={t("选择加价分类")}>
+            <option value="">{t("选择分类")}</option>
+            {categories.map((category) => <option value={category.id} key={category.id}>{category.path || category.name}</option>)}
+          </select>
+          <TextField.Root type="number" min="0" max="100000" step="0.1" value={categoryMarkup} onChange={(event) => setCategoryMarkup(event.target.value)} placeholder={t("加价百分比")} aria-label={t("分类加价百分比")} />
+          <div className="subaccount-category-pricing-actions">
+            <Button size="2" loading={editingCategory} disabled={!categoryId} onClick={() => void saveCategoryRule()}>{t("应用分类规则")}</Button>
+            <Button size="2" variant="ghost" color="gray" loading={editingCategory} disabled={!categoryId || !categoryMarkup} onClick={() => void clearCategoryRule()}>{t("清除")}</Button>
+          </div>
+        </div>
+        <Text className="subaccount-category-pricing-count" size="1" color="gray">{t("已设置 {count} 个分类规则", { count: data?.policy.categoryOverrideCount ?? account.categoryOverrideCount ?? 0 })}</Text>
       </section>
       <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={t("搜索商品名称或编码") } />
       {error ? <Text color="red" size="2">{error}</Text> : null}

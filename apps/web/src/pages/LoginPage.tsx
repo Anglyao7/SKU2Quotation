@@ -81,7 +81,7 @@ export function LoginPage() {
             <span className="login-lock"><LockKey size={24} weight="duotone" /></span>
             <div>
               <Heading size="6">{t(status === "selecting_tenant" ? "选择工作区" : "登录商家工作台")}</Heading>
-              <Text size="2" color="gray">{t(status === "selecting_tenant" ? "确认本次使用的商家空间" : "输入登录账号和密码")}</Text>
+              <Text size="2" color="gray">{t(status === "selecting_tenant" ? "确认本次使用的商家空间" : "使用账号、邮箱或手机号登录")}</Text>
             </div>
           </div>
 
@@ -115,7 +115,7 @@ export function LoginPage() {
                     setIdentifier(event.target.value);
                     if (error) setError("");
                   }}
-                  placeholder={t("请输入登录账号")}
+                  placeholder={t("账号、邮箱或手机号")}
                   autoComplete="username"
                   autoCapitalize="none"
                   spellCheck={false}

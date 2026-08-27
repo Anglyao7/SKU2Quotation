@@ -26,7 +26,7 @@ class LoginRequest(BaseModel):
 
 
 class PasswordLoginRequest(BaseModel):
-    """A password grant whose secret is verified only by the identity provider."""
+    """Password login using either the provisioned username or email alias."""
 
     grant_type: Literal["password"]
     identifier: str

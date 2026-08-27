@@ -3244,35 +3244,59 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .customer-account-success { display: flex; align-items: flex-start; gap: 10px; padding: 14px !important; border-color: color-mix(in srgb, var(--accent) 30%, var(--line)) !important; background: var(--accent-soft) !important; }
 .customer-account-success > svg { flex: 0 0 auto; color: var(--accent-strong); }
 .customer-account-success > div { display: grid; gap: 3px; }
-.subaccount-pricing-dialog { width: min(980px, calc(100vw - 32px)) !important; }
-.subaccount-pricing-policy { display: grid; grid-template-columns: minmax(150px, 190px) auto 1fr; align-items: end; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--page-soft); }
+.subaccount-pricing-dialog {
+  width: min(1180px, calc(100vw - 32px)) !important;
+  max-width: calc(100vw - 32px) !important;
+  max-height: min(90dvh, 900px) !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  box-sizing: border-box;
+}
+.subaccount-pricing-dialog .rt-DialogDescription { max-width: 78ch; line-height: 1.55; }
+.subaccount-pricing-policy,
+.subaccount-category-pricing,
+.subaccount-pricing-dialog > .rt-TextFieldRoot,
+.subaccount-pricing-table,
+.subaccount-pricing-pagination { margin-top: 14px; }
+.subaccount-pricing-policy { display: grid; grid-template-columns: minmax(170px, 220px) auto minmax(200px, 1fr); align-items: end; gap: 14px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--page-soft); }
+.subaccount-pricing-policy > * { min-width: 0; }
 .subaccount-pricing-policy label { display: grid; gap: 7px; }
 .subaccount-pricing-policy > .rt-Text { align-self: center; }
-.subaccount-category-pricing { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(180px, 1fr) minmax(110px, .6fr) auto auto; align-items: end; gap: 10px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--accent-soft) 45%, var(--page-soft)); }
-.subaccount-category-pricing > div { display: grid; gap: 4px; }
-.subaccount-category-pricing select { height: 32px; min-width: 0; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 8px; color: var(--text); background: var(--surface); }
-.subaccount-pricing-table { display: grid; gap: 0; max-height: min(52vh, 520px); overflow: auto; border: 1px solid var(--line); border-radius: 14px; }
-.subaccount-pricing-table-head, .subaccount-pricing-table-row { display: grid; grid-template-columns: minmax(190px, 1.4fr) minmax(105px, .65fr) minmax(105px, .65fr) minmax(300px, 1.2fr); align-items: center; gap: 12px; padding: 12px 14px; }
+.subaccount-category-pricing { display: grid; grid-template-columns: minmax(210px, .9fr) minmax(0, 1.1fr) minmax(0, 1fr); align-items: center; gap: 14px; min-width: 0; padding: 16px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--accent-soft) 45%, var(--page-soft)); }
+.subaccount-category-pricing > * { min-width: 0; }
+.subaccount-category-pricing-copy { display: grid; gap: 4px; }
+.subaccount-category-pricing-copy .rt-Text { min-width: 0; line-height: 1.4; }
+.subaccount-category-pricing-controls { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(105px, .65fr); align-items: center; gap: 8px; min-width: 0; }
+.subaccount-category-pricing select { width: 100%; height: 34px; min-width: 0; border: 1px solid var(--line-strong); border-radius: 9px; padding: 0 9px; color: var(--text); background: var(--surface); }
+.subaccount-category-pricing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; grid-column: 1 / -1; }
+.subaccount-category-pricing-actions .rt-Button { white-space: nowrap; }
+.subaccount-category-pricing-count { justify-self: end; text-align: right; }
+.subaccount-pricing-table { display: grid; gap: 0; max-height: min(56vh, 620px); min-width: 0; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; border: 1px solid var(--line); border-radius: 16px; }
+.subaccount-pricing-table::-webkit-scrollbar { width: 7px; height: 0; }
+.subaccount-pricing-table::-webkit-scrollbar-track { background: transparent; }
+.subaccount-pricing-table::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--line-strong) 72%, transparent); }
+.subaccount-pricing-table-head, .subaccount-pricing-table-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(105px, .65fr) minmax(105px, .65fr) minmax(0, 1.35fr); align-items: center; gap: 14px; min-width: 0; padding: 13px 16px; }
 .subaccount-pricing-table-head { position: sticky; top: 0; z-index: 1; color: var(--text-soft); font-size: 11px; background: var(--page-soft); border-bottom: 1px solid var(--line); }
-.subaccount-pricing-table-row { min-height: 66px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.subaccount-pricing-table-row { min-height: 72px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .subaccount-pricing-table-row:last-child { border-bottom: 0; }
-.subaccount-pricing-table-row > div:first-child { min-width: 0; display: grid; gap: 3px; }
-.subaccount-pricing-table-row strong, .subaccount-pricing-table-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subaccount-pricing-table-row > * { min-width: 0; }
+.subaccount-pricing-table-row > div:first-child { display: grid; gap: 3px; }
+.subaccount-pricing-table-row strong, .subaccount-pricing-table-row small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subaccount-pricing-table-row small { color: var(--text-soft); }
-.subaccount-sku-price-list { display: grid; gap: 6px; margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--page-soft) 72%, transparent); }
-.subaccount-sku-price-rule { display: grid; grid-template-columns: minmax(110px, 1.3fr) minmax(78px, .7fr) minmax(78px, .7fr) minmax(92px, .8fr) minmax(72px, .6fr) auto auto; align-items: center; gap: 6px; min-width: 0; font-size: 11px; }
+.subaccount-sku-price-list { display: grid; gap: 4px; min-width: 0; max-width: 100%; margin-top: 5px; padding: 7px 8px; overflow: hidden; border-radius: 8px; background: var(--page-soft); }
+.subaccount-sku-price-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(78px, auto) minmax(78px, auto) minmax(92px, auto) minmax(72px, auto) auto auto; align-items: center; gap: 6px; min-width: 0; font-size: 11px; }
 .subaccount-sku-price-rule > span, .subaccount-sku-price-rule > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subaccount-sku-price-rule select { height: 28px; min-width: 0; border: 1px solid var(--line-strong); border-radius: 7px; padding: 0 5px; color: var(--text); background: var(--surface); }
 .subaccount-sku-price-rule .rt-TextFieldRoot { min-width: 0; }
 .subaccount-sku-price-toggle { width: fit-content; display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; color: var(--accent-strong); background: transparent; font-size: 11px; cursor: pointer; }
 .subaccount-sku-price-toggle svg { transition: transform 140ms ease; }
 .subaccount-sku-price-toggle svg[data-expanded] { transform: rotate(180deg); }
-.subaccount-sku-price-list { display: grid; gap: 4px; margin-top: 5px; padding: 7px 8px; border-radius: 8px; background: var(--page-soft); }
-.subaccount-sku-price-list > div { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; font-size: 11px; }
-.subaccount-sku-price-list > div > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.subaccount-pricing-rule-editor { display: grid; grid-template-columns: minmax(112px, 1fr) minmax(82px, .7fr) auto auto; gap: 6px; align-items: center; }
+.subaccount-sku-price-list > div { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; min-width: 0; font-size: 11px; }
+.subaccount-sku-price-list > div > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subaccount-pricing-rule-editor { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(76px, .65fr) auto auto; gap: 6px; align-items: center; min-width: 0; }
 .subaccount-pricing-rule-editor select { height: 30px; min-width: 0; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 7px; color: var(--text); background: var(--surface); }
-.subaccount-pricing-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; }
+.subaccount-pricing-rule-editor .rt-Button, .subaccount-pricing-table .rt-Button { white-space: nowrap; }
+.subaccount-pricing-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .subaccount-pricing-pagination > div { display: flex; gap: 7px; }
 
 .customer-portal-shell { min-height: 100dvh; background: radial-gradient(circle at 85% -10%, color-mix(in srgb, var(--accent-soft) 95%, transparent), transparent 38%), var(--page); }
@@ -3376,6 +3400,9 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .customer-order-table { margin-inline: -5px; padding-inline: 5px; }
   .customer-order-pagination { align-items: flex-start; flex-direction: column; }
   .customer-order-pagination > div { width: 100%; justify-content: space-between; }
+  .subaccount-category-pricing { grid-template-columns: 1fr; align-items: stretch; }
+  .subaccount-category-pricing-controls { grid-template-columns: minmax(0, 1fr) minmax(92px, .48fr); }
+  .subaccount-category-pricing-count { justify-self: start; text-align: left; }
   .customer-portal-header, .customer-portal-main { width: min(100% - 32px, 1080px); }
   .customer-portal-header { min-height: 67px; }
   .customer-portal-header .brand-copy { display: none; }

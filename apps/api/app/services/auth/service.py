@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -266,7 +266,14 @@ def password_login(
         adapter = _identity_adapter(configured_provider)
         try:
             claim = adapter.authenticate_password(
-                identifier=request.identifier,
+                identifier=(
+                    _resolve_enterprise_login_identifier(
+                        session,
+                        request.identifier,
+                    )
+                    if configured_provider == "enterprise_oidc"
+                    else request.identifier
+                ),
                 password=password,
             )
         except IdentityProviderError as exc:
@@ -281,13 +288,64 @@ def password_login(
     )
 
 
+def _resolve_enterprise_login_identifier(
+    session: Session,
+    identifier: str,
+) -> str:
+    """Resolve an email alias to the provisioned identity-provider username.
+
+    Keycloak-compatible providers can be configured to accept email directly,
+    but that is not guaranteed across realms.  Provisioned merchant and child
+    accounts keep their canonical username on ``memberships``; when an email
+    maps to exactly one active OIDC account, use that username for the direct
+    grant.  Ambiguous legacy data falls back to the value the user supplied so
+    the provider can apply its own policy without us selecting an account.
+    """
+
+    normalized = normalize_local_identifier(identifier)
+
+    def unique_value(values: list[str | None]) -> str | None:
+        candidates = {
+            str(value).strip()
+            for value in values
+            if value is not None and str(value).strip()
+        }
+        return next(iter(candidates)) if len(candidates) == 1 else None
+
+    if "@" not in normalized:
+        return identifier.strip()
+
+    matching_identifiers = session.scalars(
+        select(MembershipRow.login_identifier)
+        .join(UserRow, UserRow.id == MembershipRow.user_id)
+        .where(
+            MembershipRow.status == "active",
+            MembershipRow.login_identifier.is_not(None),
+            UserRow.status == "active",
+            UserRow.identity_provider.like("oidc:%"),
+            or_(
+                func.lower(MembershipRow.login_identifier) == normalized,
+                func.lower(UserRow.email_normalized) == normalized,
+            ),
+        )
+        .distinct()
+    ).all()
+    return unique_value(matching_identifiers) or identifier.strip()
+
+
 def _local_customer_password_claim(
     session: Session,
     *,
     identifier: str,
     password: str,
 ) -> IdentityClaim | None:
-    """Authenticate a provisioned local password account without env secrets."""
+    """Authenticate a local account by its username or registered email.
+
+    ``local_account_credentials`` deliberately stores one verifier per user,
+    keyed by the username that was provisioned.  Email is an alias on the
+    user record rather than a second password row, so resolving it here keeps
+    both login forms on exactly the same password and session path.
+    """
 
     normalized_identifier = normalize_local_identifier(identifier)
     credential = session.scalar(
@@ -295,6 +353,26 @@ def _local_customer_password_claim(
             LocalAccountCredentialRow.identifier_normalized == normalized_identifier
         )
     )
+    if credential is None:
+        # Email aliases are case-insensitive and must resolve to one local
+        # account only.  Do not guess when legacy data contains duplicate
+        # email addresses; returning the generic authentication error is safer
+        # than authenticating the wrong account.
+        email_credentials = session.scalars(
+            select(LocalAccountCredentialRow)
+            .join(UserRow, UserRow.id == LocalAccountCredentialRow.user_id)
+            .where(
+                UserRow.status == "active",
+                UserRow.identity_provider.in_(
+                    {"local-subaccount", "local-password"}
+                ),
+                func.lower(UserRow.email_normalized) == normalized_identifier,
+            )
+        ).all()
+        if len(email_credentials) == 1:
+            credential = email_credentials[0]
+        elif len(email_credentials) > 1:
+            raise AuthError("AUTH_INVALID_CREDENTIALS", "authentication failed")
     if credential is None:
         return None
     if not verify_local_password(
