@@ -706,7 +706,7 @@ export function TenantManagementPage() {
   );
 }
 
-function TenantSubscriptionDialog({
+export function TenantSubscriptionDialog({
   tenant,
   onOpenChange,
   onSaved,
@@ -948,7 +948,7 @@ function TenantSubscriptionDialog({
   );
 }
 
-function TenantModuleDialog({
+export function TenantModuleDialog({
   tenant,
   identities,
   onOpenChange,
@@ -1133,7 +1133,7 @@ function TenantModuleDialog({
   );
 }
 
-function MerchantOwnerDialog({
+export function MerchantOwnerDialog({
   tenant,
   onOpenChange,
   onSaved,
@@ -1236,7 +1236,7 @@ function MerchantOwnerDialog({
   );
 }
 
-function MerchantOwnerPasswordResetDialog({
+export function MerchantOwnerPasswordResetDialog({
   tenant,
   onOpenChange,
 }: {
@@ -1360,7 +1360,7 @@ function MerchantOwnerPasswordResetDialog({
   );
 }
 
-function TenantFormDialog({
+export function TenantFormDialog({
   tenant,
   identities,
   onOpenChange,
@@ -1519,7 +1519,7 @@ function TenantFormDialog({
             {current ? (
               <label className="field-group">
                 <Text size="2" weight="medium">{t("状态")}</Text>
-                <Select.Root name="status" defaultValue={current.status}>
+                <Select.Root name="status" defaultValue={current.status === "active" ? "active" : "inactive"}>
                   <Select.Trigger />
                   <Select.Content>
                     <Select.Item value="active">{t("启用")}</Select.Item>

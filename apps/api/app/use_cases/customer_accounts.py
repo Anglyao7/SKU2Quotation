@@ -11,21 +11,29 @@ from sqlalchemy.orm import Session
 
 from ..customer_accounts_schemas import (
     CUSTOMER_SUBACCOUNT_CAPABILITIES,
+    CUSTOMER_SUBACCOUNT_MODULES,
     CustomerPortalOrderSummary,
     CustomerPortalOverview,
     CustomerSubaccountAccessUpdate,
     CustomerSubaccountCreate,
     CustomerSubaccountDashboard,
+    CustomerSubaccountOrderDetail,
+    CustomerSubaccountOrderItemSummary,
     CustomerSubaccountOrderPage,
     CustomerSubaccountOrderSummary,
+    CustomerSubaccountPasswordReset,
     CustomerSubaccountStatusUpdate,
     CustomerSubaccountSummary,
     normalize_capabilities,
+    normalize_modules,
     SubaccountPricingPage,
     SubaccountPricingPolicyResponse,
     SubaccountPricingPolicyUpdate,
+    SubaccountCategoryPriceOverrideRequest,
     SubaccountProductPriceOverrideRequest,
     SubaccountProductPricingItem,
+    SubaccountSkuPriceOverrideRequest,
+    SubaccountSkuPricingItem,
 )
 from ..database import set_request_context
 from ..domain.errors import ApplicationError
@@ -34,6 +42,7 @@ from ..identity_models import (
     LocalAccountCredentialRow,
     MembershipRoleRow,
     MembershipRow,
+    PermissionRow,
     TenantRow,
     UserRow,
 )
@@ -41,13 +50,16 @@ from ..model_mixins import utcnow
 from ..public_catalog_models import (
     PublicCatalogOfferRow,
     PublicQuoteDraftRow,
+    PublicQuoteDraftItemRow,
     StorefrontOrderRecordRow,
 )
 from ..product_center_models import SkuRow
-from ..product_supplier_models import ProductRow
+from ..product_supplier_models import ProductCategoryRow, ProductRow
 from ..subaccount_pricing_models import (
+    SubaccountCategoryPriceOverrideRow,
     SubaccountPricingPolicyRow,
     SubaccountProductPriceOverrideRow,
+    SubaccountSkuPriceOverrideRow,
 )
 from ..saas_seed import ensure_tenant_rbac
 from ..services.auth.dependencies import RequestContext
@@ -57,7 +69,16 @@ from ..services.auth.password_accounts import (
     password_is_valid,
     provision_password_identity,
 )
-from ..services.subaccount_pricing import effective_subaccount_price
+from ..services.auth.service import AuthError, reset_password_for_user
+from ..services.subaccount_pricing import (
+    effective_subaccount_price,
+    subaccount_category_price_rules,
+    subaccount_sku_price_rules,
+)
+from ..services.rbac import (
+    CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES,
+    PLATFORM_ADMIN_ONLY_PERMISSION_CODES,
+)
 
 
 _CUSTOMER_SCOPE = "CUSTOMER_SUBACCOUNT"
@@ -67,6 +88,53 @@ _CAPABILITY_PERMISSIONS = {
     "submit_orders": "customer_portal.order_create",
     "view_orders": "customer_portal.order_view_self",
 }
+
+# Parent-selected module scopes are translated to the existing fine-grained
+# permission catalogue.  The mapping deliberately excludes owner-only modules;
+# even if a caller sends a crafted permission list, rbac.py removes those
+# permissions for customer subaccounts.
+_SUBACCOUNT_MODULE_PERMISSION_MODULES = {
+    "products": frozenset({"product", "catalog"}),
+    "inquiries": frozenset({"customer", "inquiry"}),
+    "quotations": frozenset({"quotation", "order"}),
+    "announcements": frozenset({"announcement"}),
+    "support": frozenset({"support"}),
+}
+
+
+def _modules_from_permissions(value: object) -> list[str]:
+    """Project an account-level permission ceiling back to UI module names.
+
+    Existing child rows use either NULL or the former three portal permissions;
+    both represent the old all-access operator default.  New rows contain the
+    concrete safe permission codes generated from the module selector.
+    """
+
+    if not isinstance(value, list):
+        return list(CUSTOMER_SUBACCOUNT_MODULES)
+    permissions = {str(code) for code in value}
+    if not permissions or permissions == {
+        "customer_portal.access",
+        "customer_portal.order_create",
+        "customer_portal.order_view_self",
+    }:
+        return ["products"] if not permissions else list(CUSTOMER_SUBACCOUNT_MODULES)
+    selected: set[str] = set()
+    for code in permissions:
+        if code.startswith(("product.", "catalog.")) or code == "customer_portal.access":
+            selected.add("products")
+        elif code.startswith(("customer.", "inquiry.")) or code in {
+            "customer_portal.order_create",
+            "customer_portal.order_view_self",
+        }:
+            selected.add("inquiries")
+        elif code.startswith(("quotation.", "order.")):
+            selected.add("quotations")
+        elif code.startswith("announcement."):
+            selected.add("announcements")
+        elif code.startswith("support.") and not code.startswith("support.ai."):
+            selected.add("support")
+    return normalize_modules(list(selected))
 
 
 def _capabilities_from_permissions(value: object) -> list[str]:
@@ -89,6 +157,58 @@ def _permissions_from_capabilities(value: list[str]) -> list[str]:
         for capability, permission in _CAPABILITY_PERMISSIONS.items()
         if capability in selected
     ]
+
+
+def _permissions_from_modules(
+    session: Session,
+    value: list[str],
+) -> list[str]:
+    """Return concrete safe permission codes for a selected module scope."""
+
+    modules = normalize_modules(value)
+    allowed_permission_modules = frozenset(
+        permission_module
+        for module in modules
+        for permission_module in _SUBACCOUNT_MODULE_PERMISSION_MODULES.get(module, ())
+    )
+    portal_actions = set()
+    if "products" in modules:
+        portal_actions.add("customer_portal.access")
+    if "inquiries" in modules:
+        portal_actions.update(
+            {"customer_portal.order_create", "customer_portal.order_view_self"}
+        )
+    rows = session.scalars(
+        select(PermissionRow).where(PermissionRow.deleted_at.is_(None))
+    ).all()
+    selected = {
+        row.code
+        for row in rows
+        if row.module in allowed_permission_modules
+        and row.code not in CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES
+        and row.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+    }
+    selected.update(
+        row.code
+        for row in rows
+        if row.code in portal_actions
+        and row.code not in CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES
+        and row.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+    )
+    return sorted(selected)
+
+
+def _permissions_for_subaccount_request(
+    session: Session,
+    *,
+    modules: list[str] | None,
+    capabilities: list[str] | None,
+) -> list[str]:
+    if modules is not None:
+        return _permissions_from_modules(session, modules)
+    return _permissions_from_capabilities(
+        capabilities or list(CUSTOMER_SUBACCOUNT_CAPABILITIES)
+    )
 
 
 def _require_parent(context: RequestContext) -> None:
@@ -252,6 +372,25 @@ def _pricing_policy(
     return policy
 
 
+def _sku_override_count(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+) -> int:
+    return int(
+        session.scalar(
+            select(func.count(SubaccountSkuPriceOverrideRow.id)).where(
+                SubaccountSkuPriceOverrideRow.tenant_id == tenant_id,
+                SubaccountSkuPriceOverrideRow.membership_id == membership_id,
+                SubaccountSkuPriceOverrideRow.is_active.is_(True),
+                SubaccountSkuPriceOverrideRow.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+
+
 def _parent_child_membership(
     session: Session,
     *,
@@ -326,6 +465,38 @@ def _summary_rows(
             .group_by(SubaccountProductPriceOverrideRow.membership_id)
         ).all()
     }
+    category_override_counts = {
+        membership_id: int(count or 0)
+        for membership_id, count in session.execute(
+            select(
+                SubaccountCategoryPriceOverrideRow.membership_id,
+                func.count(SubaccountCategoryPriceOverrideRow.id),
+            )
+            .where(
+                SubaccountCategoryPriceOverrideRow.tenant_id == tenant_id,
+                SubaccountCategoryPriceOverrideRow.membership_id.in_(membership_ids),
+                SubaccountCategoryPriceOverrideRow.is_active.is_(True),
+                SubaccountCategoryPriceOverrideRow.deleted_at.is_(None),
+            )
+            .group_by(SubaccountCategoryPriceOverrideRow.membership_id)
+        ).all()
+    }
+    sku_override_counts = {
+        membership_id: int(count or 0)
+        for membership_id, count in session.execute(
+            select(
+                SubaccountSkuPriceOverrideRow.membership_id,
+                func.count(SubaccountSkuPriceOverrideRow.id),
+            )
+            .where(
+                SubaccountSkuPriceOverrideRow.tenant_id == tenant_id,
+                SubaccountSkuPriceOverrideRow.membership_id.in_(membership_ids),
+                SubaccountSkuPriceOverrideRow.is_active.is_(True),
+                SubaccountSkuPriceOverrideRow.deleted_at.is_(None),
+            )
+            .group_by(SubaccountSkuPriceOverrideRow.membership_id)
+        ).all()
+    }
     return [
         CustomerSubaccountSummary(
             id=membership.id,
@@ -337,6 +508,7 @@ def _summary_rows(
             capabilities=_capabilities_from_permissions(
                 membership.permission_overrides
             ),
+            modules=_modules_from_permissions(membership.permission_overrides),
             created_at=membership.created_at,
             last_login_at=user.last_login_at or access.get(membership.id, (0, None))[1],
             login_count_30d=access.get(membership.id, (0, None))[0],
@@ -349,6 +521,8 @@ def _summary_rows(
             month_order_amount=month_sales.get(membership.id, (0, Decimal("0")))[1],
             markup_percent=(policies.get(membership.id).markup_percent if policies.get(membership.id) else Decimal("0")),
             override_count=override_counts.get(membership.id, 0),
+            category_override_count=category_override_counts.get(membership.id, 0),
+            sku_override_count=sku_override_counts.get(membership.id, 0),
         )
         for membership, user in rows
     ]
@@ -371,6 +545,7 @@ def _order_summary(
         total_amount=draft.estimated_total,
         created_at=draft.created_at,
         valid_until=draft.expires_at,
+        visitor_country_code=getattr(draft, "visitor_country_code", None),
     )
 
 
@@ -457,6 +632,55 @@ def list_customer_subaccount_orders(
     )
 
 
+def get_customer_subaccount_order(
+    session: Session,
+    *,
+    context: RequestContext,
+    quote_draft_id: UUID,
+) -> CustomerSubaccountOrderDetail:
+    """Return a read-only child quote with its selected SKUs and final prices."""
+
+    _require_parent(context)
+    row = session.execute(
+        _child_order_statement(context=context).where(
+            PublicQuoteDraftRow.id == quote_draft_id
+        )
+    ).one_or_none()
+    if row is None:
+        raise ApplicationError(
+            "CUSTOMER_ORDER_NOT_FOUND",
+            "Customer subaccount order was not found.",
+            kind="not_found",
+        )
+    draft, membership, user = row
+    items = session.scalars(
+        select(PublicQuoteDraftItemRow)
+        .where(
+            PublicQuoteDraftItemRow.tenant_id == context.tenant_id,
+            PublicQuoteDraftItemRow.quote_draft_id == draft.id,
+            PublicQuoteDraftItemRow.deleted_at.is_(None),
+        )
+        .order_by(PublicQuoteDraftItemRow.position, PublicQuoteDraftItemRow.id)
+    ).all()
+    summary = _order_summary(draft, membership, user)
+    return CustomerSubaccountOrderDetail(
+        **summary.model_dump(),
+        items=[
+            CustomerSubaccountOrderItemSummary(
+                sku_id=item.sku_id,
+                product_id=item.product_id_snapshot,
+                sku_code=item.sku_code_snapshot,
+                product_name=item.name_snapshot,
+                quantity=item.quantity,
+                currency=item.currency_snapshot,
+                unit_price=item.unit_price_snapshot,
+                line_total=item.line_total,
+            )
+            for item in items
+        ],
+    )
+
+
 def create_customer_subaccount(
     identity_session: Session,
     *,
@@ -538,7 +762,11 @@ def create_customer_subaccount(
         login_identifier=request.login_identifier.casefold(),
         status="active",
         joined_at=utcnow(),
-        permission_overrides=_permissions_from_capabilities(request.capabilities),
+        permission_overrides=_permissions_for_subaccount_request(
+            identity_session,
+            modules=request.modules,
+            capabilities=request.capabilities,
+        ),
     )
     identity_session.add(user)
     identity_session.add(membership)
@@ -578,6 +806,56 @@ def create_customer_subaccount(
         parent_membership_id=context.membership_id,
     )
     return next(summary for summary in summaries if summary.id == membership.id)
+
+
+def reset_customer_subaccount_password(
+    identity_session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+    request: CustomerSubaccountPasswordReset,
+) -> None:
+    """Issue a new password and revoke every existing child session."""
+
+    child = _parent_child_membership(
+        identity_session,
+        context=context,
+        membership_id=membership_id,
+    )
+    set_request_context(
+        identity_session,
+        organization_id=context.organization_id,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+    )
+    password = request.password.get_secret_value()
+    if not password_is_valid(
+        password=password,
+        identifier=child.login_identifier or "",
+        display_name="",
+    ):
+        raise ApplicationError(
+            "PASSWORD_POLICY_VIOLATION",
+            "Password must be exactly 6 digits.",
+            kind="invalid",
+        )
+    try:
+        reset_password_for_user(
+            identity_session,
+            user_id=child.user_id,
+            new_password=password,
+        )
+    except AuthError as exc:
+        kind = (
+            "invalid"
+            if exc.status_code == 422
+            else "not_found"
+            if exc.status_code == 404
+            else "unavailable"
+            if exc.status_code >= 500
+            else "conflict"
+        )
+        raise ApplicationError(exc.code, exc.message, kind=kind) from exc
 
 
 def update_customer_subaccount_status(
@@ -647,7 +925,11 @@ def update_customer_subaccount_access(
             "Customer subaccount was not found.",
             kind="not_found",
         )
-    next_permissions = _permissions_from_capabilities(request.capabilities)
+    next_permissions = _permissions_for_subaccount_request(
+        identity_session,
+        modules=request.modules,
+        capabilities=request.capabilities,
+    )
     if membership.permission_overrides != next_permissions:
         membership.permission_overrides = next_permissions
         membership.permission_version += 1
@@ -670,7 +952,7 @@ def _pricing_product_rows(
 ):
     normalized = query.strip().casefold()
     base = (
-        select(ProductRow, PublicCatalogOfferRow, SkuRow)
+        select(ProductRow, PublicCatalogOfferRow, SkuRow, ProductCategoryRow)
         .join(
             SkuRow,
             (SkuRow.tenant_id == ProductRow.tenant_id)
@@ -680,6 +962,12 @@ def _pricing_product_rows(
             PublicCatalogOfferRow,
             (PublicCatalogOfferRow.tenant_id == SkuRow.tenant_id)
             & (PublicCatalogOfferRow.sku_id == SkuRow.id),
+        )
+        .outerjoin(
+            ProductCategoryRow,
+            (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+            & (ProductCategoryRow.id == ProductRow.category_id)
+            & (ProductCategoryRow.deleted_at.is_(None)),
         )
         .where(
             ProductRow.tenant_id == tenant_id,
@@ -720,7 +1008,7 @@ def _pricing_product_rows(
     if not selected_product_ids:
         return [], count
     all_product_rows = (
-        select(ProductRow, PublicCatalogOfferRow, SkuRow)
+        select(ProductRow, PublicCatalogOfferRow, SkuRow, ProductCategoryRow)
         .join(
             SkuRow,
             (SkuRow.tenant_id == ProductRow.tenant_id)
@@ -730,6 +1018,12 @@ def _pricing_product_rows(
             PublicCatalogOfferRow,
             (PublicCatalogOfferRow.tenant_id == SkuRow.tenant_id)
             & (PublicCatalogOfferRow.sku_id == SkuRow.id),
+        )
+        .outerjoin(
+            ProductCategoryRow,
+            (ProductCategoryRow.tenant_id == ProductRow.tenant_id)
+            & (ProductCategoryRow.id == ProductRow.category_id)
+            & (ProductCategoryRow.deleted_at.is_(None)),
         )
         .where(
             ProductRow.tenant_id == tenant_id,
@@ -744,9 +1038,9 @@ def _pricing_product_rows(
         .order_by(ProductRow.name.asc(), ProductRow.id, SkuRow.sku_code)
     )
     rows = session.execute(all_product_rows).all()
-    grouped: dict[UUID, list[tuple[ProductRow, PublicCatalogOfferRow, SkuRow]]] = {}
-    for product, offer, sku in rows:
-        grouped.setdefault(product.id, []).append((product, offer, sku))
+    grouped: dict[UUID, list[tuple[ProductRow, PublicCatalogOfferRow, SkuRow, ProductCategoryRow | None]]] = {}
+    for product, offer, sku, category in rows:
+        grouped.setdefault(product.id, []).append((product, offer, sku, category))
     return [grouped[product_id] for product_id in selected_product_ids if product_id in grouped], count
 
 
@@ -788,6 +1082,17 @@ def get_subaccount_pricing(
             )
         ).all()
     }
+    category_overrides = {
+        row.category_id: row
+        for row in session.scalars(
+            select(SubaccountCategoryPriceOverrideRow).where(
+                SubaccountCategoryPriceOverrideRow.tenant_id == context.tenant_id,
+                SubaccountCategoryPriceOverrideRow.membership_id == child.id,
+                SubaccountCategoryPriceOverrideRow.is_active.is_(True),
+                SubaccountCategoryPriceOverrideRow.deleted_at.is_(None),
+            )
+        ).all()
+    }
     groups, total = _pricing_product_rows(
         session,
         tenant_id=context.tenant_id,
@@ -795,24 +1100,54 @@ def get_subaccount_pricing(
         page=page,
         page_size=page_size,
     )
+    sku_overrides = subaccount_sku_price_rules(
+        session,
+        tenant_id=context.tenant_id,
+        membership_id=child.id,
+        sku_ids={row[2].id for group in groups for row in group},
+    )
     items: list[SubaccountProductPricingItem] = []
+    category_markup_by_id = subaccount_category_price_rules(
+        session,
+        tenant_id=context.tenant_id,
+        membership_id=child.id,
+        category_ids={
+            row[0].category_id
+            for group in groups
+            for row in group
+            if row[0].category_id is not None
+        },
+    )
     for group in groups:
         product = group[0][0]
         prices = [Decimal(row[1].unit_price) for row in group]
         override = overrides.get(product.id)
+        category = group[0][3]
+        category_markup = (
+            category_markup_by_id.get(category.id)
+            if category is not None
+            else None
+        )
         effective = [
             effective_subaccount_price(
                 price,
                 markup_percent=Decimal(policy.markup_percent),
                 override=override,
+                category_markup_percent=category_markup,
+                sku_override=sku_overrides.get(group[index][2].id),
             )
-            for price in prices
+            for index, price in enumerate(prices)
         ]
+        sku_override_count = sum(
+            1 for row in group if row[2].id in sku_overrides
+        )
         items.append(
             SubaccountProductPricingItem(
                 product_id=product.id,
                 product_code=product.product_code,
                 product_name=product.name,
+                category_id=category.id if category is not None else None,
+                category_name=category.name if category is not None else None,
                 sku_count=len(group),
                 base_price_from=min(prices),
                 base_price_to=max(prices),
@@ -821,6 +1156,34 @@ def get_subaccount_pricing(
                 currency=str(group[0][1].currency).upper(),
                 override_mode=override.pricing_mode if override else None,
                 override_value=Decimal(override.value) if override else None,
+                category_markup_percent=category_markup,
+                sku_override_count=sku_override_count,
+                sku_prices=[
+                    SubaccountSkuPricingItem(
+                        sku_id=row[2].id,
+                        sku_code=row[2].sku_code,
+                        base_price=Decimal(row[1].unit_price),
+                        effective_price=effective_subaccount_price(
+                            Decimal(row[1].unit_price),
+                            markup_percent=Decimal(policy.markup_percent),
+                            override=override,
+                            category_markup_percent=category_markup,
+                            sku_override=sku_overrides.get(row[2].id),
+                        ),
+                        currency=str(row[1].currency).upper(),
+                        override_mode=(
+                            sku_overrides[row[2].id].pricing_mode
+                            if row[2].id in sku_overrides
+                            else None
+                        ),
+                        override_value=(
+                            Decimal(sku_overrides[row[2].id].value)
+                            if row[2].id in sku_overrides
+                            else None
+                        ),
+                    )
+                    for row in group
+                ],
                 updated_at=max(row[0].updated_at for row in group),
             )
         )
@@ -831,6 +1194,12 @@ def get_subaccount_pricing(
             markup_percent=Decimal(policy.markup_percent),
             override_count=len(overrides),
             hidden_product_count=hidden_count,
+            category_override_count=len(category_overrides),
+            sku_override_count=_sku_override_count(
+                session,
+                tenant_id=context.tenant_id,
+                membership_id=child.id,
+            ),
         ),
         items=items,
         total=total,
@@ -866,12 +1235,133 @@ def update_subaccount_pricing_policy(
         )
         or 0
     )
+    category_override_count = int(
+        session.scalar(
+            select(func.count(SubaccountCategoryPriceOverrideRow.id)).where(
+                SubaccountCategoryPriceOverrideRow.tenant_id == context.tenant_id,
+                SubaccountCategoryPriceOverrideRow.membership_id == child.id,
+                SubaccountCategoryPriceOverrideRow.is_active.is_(True),
+                SubaccountCategoryPriceOverrideRow.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
     return SubaccountPricingPolicyResponse(
         membership_id=child.id,
         markup_percent=Decimal(policy.markup_percent),
         override_count=override_count,
         hidden_product_count=len(policy.hidden_product_ids or []),
+        category_override_count=category_override_count,
+        sku_override_count=_sku_override_count(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=child.id,
+        ),
     )
+
+
+def update_subaccount_category_price_override(
+    session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+    category_id: UUID,
+    request: SubaccountCategoryPriceOverrideRequest,
+) -> SubaccountPricingPolicyResponse:
+    child = _parent_child_membership(
+        session, context=context, membership_id=membership_id
+    )
+    category = session.scalar(
+        select(ProductCategoryRow).where(
+            ProductCategoryRow.tenant_id == context.tenant_id,
+            ProductCategoryRow.id == category_id,
+            ProductCategoryRow.deleted_at.is_(None),
+        )
+    )
+    if category is None:
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND", "Category was not found.", kind="not_found"
+        )
+    override = session.scalar(
+        select(SubaccountCategoryPriceOverrideRow).where(
+            SubaccountCategoryPriceOverrideRow.tenant_id == context.tenant_id,
+            SubaccountCategoryPriceOverrideRow.membership_id == child.id,
+            SubaccountCategoryPriceOverrideRow.category_id == category_id,
+        )
+    )
+    if override is None:
+        override = SubaccountCategoryPriceOverrideRow(
+            tenant_id=context.tenant_id,
+            membership_id=child.id,
+            category_id=category_id,
+            markup_percent=request.markup_percent,
+            is_active=True,
+        )
+        session.add(override)
+    else:
+        override.markup_percent = request.markup_percent
+        override.is_active = True
+        override.deleted_at = None
+    session.commit()
+    policy = _pricing_policy(
+        session, tenant_id=context.tenant_id, membership_id=child.id, create=False
+    )
+    return SubaccountPricingPolicyResponse(
+        membership_id=child.id,
+        markup_percent=Decimal(policy.markup_percent) if policy else Decimal("0"),
+        override_count=int(
+            session.scalar(
+                select(func.count(SubaccountProductPriceOverrideRow.id)).where(
+                    SubaccountProductPriceOverrideRow.tenant_id == context.tenant_id,
+                    SubaccountProductPriceOverrideRow.membership_id == child.id,
+                    SubaccountProductPriceOverrideRow.is_active.is_(True),
+                    SubaccountProductPriceOverrideRow.deleted_at.is_(None),
+                )
+            )
+            or 0
+        ),
+        hidden_product_count=len(policy.hidden_product_ids or []) if policy else 0,
+        category_override_count=int(
+            session.scalar(
+                select(func.count(SubaccountCategoryPriceOverrideRow.id)).where(
+                    SubaccountCategoryPriceOverrideRow.tenant_id == context.tenant_id,
+                    SubaccountCategoryPriceOverrideRow.membership_id == child.id,
+                    SubaccountCategoryPriceOverrideRow.is_active.is_(True),
+                    SubaccountCategoryPriceOverrideRow.deleted_at.is_(None),
+                )
+            )
+            or 0
+        ),
+        sku_override_count=_sku_override_count(
+            session,
+            tenant_id=context.tenant_id,
+            membership_id=child.id,
+        ),
+    )
+
+
+def clear_subaccount_category_price_override(
+    session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+    category_id: UUID,
+) -> None:
+    child = _parent_child_membership(
+        session, context=context, membership_id=membership_id
+    )
+    override = session.scalar(
+        select(SubaccountCategoryPriceOverrideRow).where(
+            SubaccountCategoryPriceOverrideRow.tenant_id == context.tenant_id,
+            SubaccountCategoryPriceOverrideRow.membership_id == child.id,
+            SubaccountCategoryPriceOverrideRow.category_id == category_id,
+            SubaccountCategoryPriceOverrideRow.deleted_at.is_(None),
+        )
+    )
+    if override is not None:
+        override.is_active = False
+        override.deleted_at = utcnow()
+        session.commit()
 
 
 def set_subaccount_product_price_override(
@@ -951,6 +1441,102 @@ def clear_subaccount_product_price_override(
             SubaccountProductPriceOverrideRow.membership_id == child.id,
             SubaccountProductPriceOverrideRow.product_id == product_id,
             SubaccountProductPriceOverrideRow.deleted_at.is_(None),
+        )
+    )
+    if override is not None:
+        override.is_active = False
+        override.deleted_at = utcnow()
+        session.commit()
+
+
+def set_subaccount_sku_price_override(
+    session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+    sku_id: UUID,
+    request: SubaccountSkuPriceOverrideRequest,
+) -> SubaccountProductPricingItem:
+    """Set a price for one concrete SKU and return the refreshed product row."""
+
+    child = _parent_child_membership(
+        session, context=context, membership_id=membership_id
+    )
+    sku = session.scalar(
+        select(SkuRow).where(
+            SkuRow.id == sku_id,
+            SkuRow.tenant_id == context.tenant_id,
+            SkuRow.status == "ACTIVE",
+            SkuRow.deleted_at.is_(None),
+        )
+    )
+    if sku is None:
+        raise ApplicationError("SKU_NOT_FOUND", "SKU was not found.", kind="not_found")
+    product = session.scalar(
+        select(ProductRow).where(
+            ProductRow.id == sku.product_id,
+            ProductRow.tenant_id == context.tenant_id,
+            ProductRow.status == "ACTIVE",
+            ProductRow.deleted_at.is_(None),
+        )
+    )
+    if product is None:
+        raise ApplicationError(
+            "PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found"
+        )
+    override = session.scalar(
+        select(SubaccountSkuPriceOverrideRow).where(
+            SubaccountSkuPriceOverrideRow.tenant_id == context.tenant_id,
+            SubaccountSkuPriceOverrideRow.membership_id == child.id,
+            SubaccountSkuPriceOverrideRow.sku_id == sku_id,
+        )
+    )
+    if override is None:
+        override = SubaccountSkuPriceOverrideRow(
+            tenant_id=context.tenant_id,
+            membership_id=child.id,
+            sku_id=sku_id,
+            pricing_mode=request.pricing_mode,
+            value=request.value,
+            is_active=True,
+        )
+        session.add(override)
+    else:
+        override.pricing_mode = request.pricing_mode
+        override.value = request.value
+        override.is_active = True
+        override.deleted_at = None
+    session.commit()
+    page = get_subaccount_pricing(
+        session,
+        context=context,
+        membership_id=child.id,
+        query=product.product_code or product.name,
+        page=1,
+        page_size=20,
+    )
+    for item in page.items:
+        if item.product_id == product.id:
+            return item
+    raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+
+
+def clear_subaccount_sku_price_override(
+    session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+    sku_id: UUID,
+) -> None:
+    child = _parent_child_membership(
+        session, context=context, membership_id=membership_id
+    )
+    override = session.scalar(
+        select(SubaccountSkuPriceOverrideRow).where(
+            SubaccountSkuPriceOverrideRow.tenant_id == context.tenant_id,
+            SubaccountSkuPriceOverrideRow.membership_id == child.id,
+            SubaccountSkuPriceOverrideRow.sku_id == sku_id,
+            SubaccountSkuPriceOverrideRow.deleted_at.is_(None),
         )
     )
     if override is not None:

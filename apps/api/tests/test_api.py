@@ -52,6 +52,7 @@ from app.services.repository import import_job_model
 from app.identity_models import (
     AuthRefreshTokenRow,
     AuthSessionRow,
+    CustomerAccountAccessEventRow,
     LocalAccountCredentialRow,
     MembershipRoleRow,
     MembershipRow,
@@ -3993,6 +3994,116 @@ def test_platform_admin_manages_tenant_lifecycle(
     )
     assert current_tenant_guard.status_code == 409
     assert current_tenant_guard.json()["detail"]["code"] == "ACTIVE_TENANT_SUSPENSION_FORBIDDEN"
+
+
+def test_platform_admin_reads_merchant_workspace_and_subaccount_detail() -> None:
+    suffix = uuid4().hex[:10]
+    merchant_name = f"Merchant Workspace {suffix}"
+    created = client.post(
+        "/api/admin/tenants",
+        json={
+            "name": merchant_name,
+            "slug": f"merchant-workspace-{suffix}",
+            "contact_email": f"ops-{suffix}@merchant.test",
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    tenant_id = UUID(created.json()["id"])
+    user_id = uuid4()
+    membership_id = uuid4()
+    quote_id = uuid4()
+    now = datetime.now(UTC)
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=f"buyer-{suffix}@customer.test",
+                display_name="Workspace Buyer",
+                identity_provider="local-bootstrap",
+                identity_subject=str(user_id),
+                status="active",
+                last_login_at=now,
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                account_scope="CUSTOMER_SUBACCOUNT",
+                login_identifier=f"buyer-{suffix}",
+                status="active",
+                permission_overrides=[
+                    "customer_portal.access",
+                    "customer_portal.order_create",
+                ],
+            )
+        )
+        session.flush()
+        session.add(
+            CustomerAccountAccessEventRow(
+                tenant_id=tenant_id,
+                membership_id=membership_id,
+                event_type="LOGIN",
+                occurred_at=now,
+            )
+        )
+        session.add(
+            PublicQuoteDraftRow(
+                id=quote_id,
+                tenant_id=tenant_id,
+                request_number=f"WORKSPACE-{suffix}",
+                status="PENDING_CONFIRMATION",
+                submitted_by_membership_id=membership_id,
+                customer_name="Workspace Buyer",
+                customer_company="Workspace Customer",
+                currency="USD",
+                subtotal_amount=Decimal("120.00"),
+                estimated_total=Decimal("120.00"),
+                expires_at=now + timedelta(days=7),
+                snapshot={"status": "PENDING_CONFIRMATION", "items": []},
+                content_hash="d" * 64,
+                disclaimer_version="public-draft-v1",
+            )
+        )
+        session.commit()
+
+    workspace = client.get(f"/api/admin/tenants/{tenant_id}")
+    assert workspace.status_code == 200, workspace.text
+    payload = workspace.json()
+    assert payload["merchant"]["name"] == merchant_name
+    assert payload["monitoring"]["quotes_total"] == 1
+    assert payload["monitoring"]["quotes_period"] == 1
+    assert payload["monitoring"]["quotes_pending"] == 1
+    assert len(payload["monitoring"]["quote_trend"]) == 30
+    account = next(
+        row for row in payload["subaccounts"] if row["id"] == str(membership_id)
+    )
+    assert account["login_count_30d"] == 1
+    assert account["quote_count"] == 1
+    assert account["capabilities"] == ["catalog", "submit_orders"]
+
+    account_detail = client.get(
+        f"/api/admin/tenants/{tenant_id}/subaccounts/{membership_id}"
+    )
+    assert account_detail.status_code == 200, account_detail.text
+    assert account_detail.json()["account"]["display_name"] == "Workspace Buyer"
+    assert account_detail.json()["recent_quotes"][0]["id"] == str(quote_id)
+    assert account_detail.json()["recent_quotes"][0]["total_amount"] == "120.00"
+
+    updated = client.patch(
+        f"/api/admin/tenants/{tenant_id}",
+        json={
+            "default_locale": "en-US",
+            "default_currency": "USD",
+            "timezone": "America/New_York",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["default_locale"] == "en-US"
+    assert updated.json()["default_currency"] == "USD"
+    assert updated.json()["timezone"] == "America/New_York"
 
 
 def test_platform_admin_manages_merchant_subscription_level_and_expiry() -> None:

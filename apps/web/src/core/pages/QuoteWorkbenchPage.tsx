@@ -33,6 +33,7 @@ import {
   Palette,
   PaperPlaneTilt,
   SlidersHorizontal,
+  ShieldCheck,
   X,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -267,7 +268,12 @@ export function QuoteWorkbenchPage() {
     visibleColumns: [...activeColumns],
   }), [activeColumns, locale, quoteNumber, style, templateId]);
   const previewGrid = useMemo(() => `repeat(${Math.max(activeColumns.length, 1)}, minmax(0, 1fr))`, [activeColumns.length]);
-  const canEditPrices = draft?.status === "PENDING_CONFIRMATION";
+  // A parent account can inspect a child-owned inquiry, but the child remains
+  // the only operator allowed to edit, confirm, or otherwise advance it.
+  // Keep this flag at the UI boundary as well as enforcing it in the API so a
+  // read-only workbench never sends a mutation that is guaranteed to fail.
+  const isReadOnly = Boolean(draft?.readOnly);
+  const canEditPrices = draft?.status === "PENDING_CONFIRMATION" && !isReadOnly;
   const hasPendingItemEdits = Object.values(itemEdits).some((edit) => Object.keys(edit).length > 0);
   const conversionRate = useMemo(() => {
     if (!draft || !market?.exchangeRates?.length) return undefined;
@@ -417,6 +423,7 @@ export function QuoteWorkbenchPage() {
   }, [canEditPrices, draft, itemEdits, t]);
 
   const persistSettings = useCallback(async (target: PublicQuoteDraft, payload: QuoteSettingsPayload, quiet = false) => {
+    if (target.readOnly) return target;
     if (!payload.quoteNumber) {
       if (!quiet) setError(t("报价单编号不能为空。"));
       return undefined;
@@ -457,6 +464,7 @@ export function QuoteWorkbenchPage() {
 
   const save = useCallback(async () => {
     if (!draft) return draft;
+    if (draft.readOnly) return draft;
     const edited = await saveAllItemEdits();
     if (!edited) return undefined;
     return persistSettings(edited, currentSettings);
@@ -490,7 +498,9 @@ export function QuoteWorkbenchPage() {
     setDownloading(type);
     setError("");
     try {
-      const saved = await save();
+      // A parent may download a child-owned quote, but must not trigger an
+      // implicit settings write while doing so.
+      const saved = draft.readOnly ? draft : await save();
       if (!saved) return;
       await downloadPublicQuoteDraftDocument(saved.id, saved.quoteNumber, type);
     } catch (reason) {
@@ -501,7 +511,7 @@ export function QuoteWorkbenchPage() {
   };
 
   const confirm = async () => {
-    if (!draft) return;
+    if (!draft || draft.readOnly || !canEditPrices) return;
     setConfirming(true);
     setError("");
     try {
@@ -738,21 +748,22 @@ export function QuoteWorkbenchPage() {
 
     <Card className="quote-status-card">
       <div className="quote-status-main"><Text size="1" color="gray">{t("当前订单状态")}</Text><Badge color={draft.status === "CONFIRMED" || draft.status === "COMPLETED" ? "jade" : draft.status === "CANCELLED" ? "gray" : "amber"}>{t(draft.status)}</Badge></div>
-      <div className="quote-status-meta"><span>{t("客户")}: {draft.customerCompany || draft.customerName}</span><span>{t("更新时间")}: {coreDate(draft.updatedAt)}</span><span>{t("有效期")}: {coreDate(draft.validUntil)}</span></div>
+      <div className="quote-status-meta"><span>{t("客户")}: {draft.customerCompany || draft.customerName}</span><span>{t("更新时间")}: {coreDate(draft.updatedAt)}</span><span>{t("有效期")}: {coreDate(draft.validUntil)}</span>{draft.visitorCountryCode ? <span>{t("客户国家")}: {draft.visitorCountryCode}</span> : null}</div>
     </Card>
+    {isReadOnly ? <Card className="quote-readonly-notice"><ShieldCheck size={19} /><div><Text size="2" weight="medium">{t("当前为只读查看")}</Text><Text size="1" color="gray">{t("这是子账号提交的询价单，只能由提交该询价的子账号制作、确认和处理。")}</Text></div></Card> : null}
 
     <Card className="quote-workbench-toolbar">
       <div className="quote-workbench-fields">
        <div className="quote-workbench-number">
         <Text size="1" color="gray">{t("报价单 ID / 编号")}</Text>
-        <div className="quote-number-control"><TextField.Root value={quoteNumber} onChange={(event) => setQuoteNumber(event.target.value)} maxLength={80} /><Button size="1" variant="soft" color="gray" onClick={() => void copyNumber()}><Copy />{copied ? t("已复制") : t("复制")}</Button></div>
+        <div className="quote-number-control"><TextField.Root value={quoteNumber} onChange={(event) => setQuoteNumber(event.target.value)} maxLength={80} disabled={isReadOnly} /><Button size="1" variant="soft" color="gray" onClick={() => void copyNumber()}><Copy />{copied ? t("已复制") : t("复制")}</Button></div>
        </div>
-       <label className="quote-workbench-select"><Text size="1" color="gray">{t("商家报价模板")}</Text><Select.Root value={templateId || "default"} onValueChange={changeTemplate}><Select.Trigger /><Select.Content position="popper"><Select.Item value="default">{t("系统默认模板")}</Select.Item>{readyTemplates.filter((template) => !template.isDefault).map((template) => <Select.Item key={template.id} value={template.id}>{template.name}</Select.Item>)}</Select.Content></Select.Root></label>
+       <label className="quote-workbench-select"><Text size="1" color="gray">{t("商家报价模板")}</Text><Select.Root value={templateId || "default"} onValueChange={changeTemplate} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper"><Select.Item value="default">{t("系统默认模板")}</Select.Item>{readyTemplates.filter((template) => !template.isDefault).map((template) => <Select.Item key={template.id} value={template.id}>{template.name}</Select.Item>)}</Select.Content></Select.Root></label>
        <div className="quote-workbench-select">
          <Text size="1" color="gray"><Columns />{t("商品表格列")}</Text>
          <DropdownMenu.Root>
            <DropdownMenu.Trigger>
-             <Button variant="soft" color="gray" className="quote-column-trigger"><Columns />{t("已选 {count} 列", { count: activeColumns.length })}<CaretDown /></Button>
+             <Button variant="soft" color="gray" className="quote-column-trigger" disabled={isReadOnly}><Columns />{t("已选 {count} 列", { count: activeColumns.length })}<CaretDown /></Button>
            </DropdownMenu.Trigger>
            <DropdownMenu.Content align="start" className="quote-column-menu">
              <DropdownMenu.Label>{t("选择客户可见列")}</DropdownMenu.Label>
@@ -760,8 +771,8 @@ export function QuoteWorkbenchPage() {
            </DropdownMenu.Content>
          </DropdownMenu.Root>
        </div>
-       <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
-       <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
+       <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
+       <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
       </div>
       <div className="quote-workbench-actions">
         <Button variant="soft" color="blue" disabled={!canConvertToUsd || hasPendingItemEdits || converting} loading={converting} onClick={() => setConversionOpen(true)}><CurrencyDollar />{draft.currency === "USD" ? t("已是 USD") : t("换算为 USD")}</Button>
@@ -769,12 +780,12 @@ export function QuoteWorkbenchPage() {
         <Button variant="soft" disabled={!canEditPrices || bulkSaving} onClick={() => setBulkPriceOpen(true)}><SlidersHorizontal />{t("一键调价")}</Button>
         <Button variant="soft" onClick={() => { setItemsDrawerOpen(true); setSelectedItemId(undefined); }}><Package />{t("订单商品")}<Badge color="gray">{draft.items.length}</Badge></Button>
         <Text size="1" color="gray" className="quote-autosave-status" aria-live="polite">{saving || savingItems ? t("正在自动保存…") : t("已自动保存")}</Text>
-        <Button color="blue" disabled={saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{t("保存报价单")}</Button>
+        <Button color="blue" disabled={!canEditPrices || saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{t("保存报价单")}</Button>
         <DropdownMenu.Root>
           <DropdownMenu.Trigger><Button variant="soft" loading={Boolean(downloading)}><DownloadSimple />{t("导出")}{downloading ? ` ${downloading.toUpperCase()}` : ""}<CaretDown /></Button></DropdownMenu.Trigger>
           <DropdownMenu.Content align="end"><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("pdf")}><FilePdf />{t("导出为 PDF")}</DropdownMenu.Item><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("xlsx")}><FileXls />{t("导出为 Excel")}</DropdownMenu.Item></DropdownMenu.Content>
         </DropdownMenu.Root>
-        {draft.status === "PENDING_CONFIRMATION" ? <Button color="green" disabled={confirming || saving || savingItems} loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
+        {draft.status === "PENDING_CONFIRMATION" && !isReadOnly ? <Button color="green" disabled={confirming || saving || savingItems} loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
       </div>
     </Card>
 

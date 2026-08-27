@@ -72,6 +72,10 @@ class InquiryResponse(BaseModel):
     language: str
     status: str
     version: int
+    # A parent account may inspect a child-owned inquiry, but cannot advance
+    # or edit it.  Keeping this marker in the response lets the UI present the
+    # same operator workspace without accidentally rendering mutation actions.
+    read_only: bool = False
     items: list[InquiryItemResponse]
 
 
@@ -104,6 +108,7 @@ class InquiryMatchResponse(BaseModel):
     status: str
     ranking_version: str
     candidates: dict[str, list[MatchResultResponse]]
+    read_only: bool = False
 
 
 class CandidateSelectRequest(BaseModel):
@@ -120,7 +125,9 @@ class QuotationItemResponse(BaseModel):
     inquiry_item_id: UUID
     product_id: UUID
     sku_id: UUID | None
-    supplier_product_id: UUID
+    # Supplier sources are owner-only.  A child account receives a redacted
+    # quotation item, while the parent can still inspect the full source.
+    supplier_product_id: UUID | None
     product_snapshot: dict[str, object]
     source_snapshot: dict[str, object]
     quantity: Decimal
@@ -153,6 +160,7 @@ class QuotationResponse(BaseModel):
     total_amount: Decimal
     expires_at: datetime | None
     approval_status: str
+    read_only: bool = False
     version_hash: str
     items: list[QuotationItemResponse]
     versions: list[QuotationVersionSummary] = Field(default_factory=list)
@@ -169,6 +177,7 @@ class QuotationSummary(BaseModel):
     current_version: int
     total_amount: Decimal
     updated_at: datetime
+    read_only: bool = False
 
 
 class QuotationDecisionRequest(BaseModel):

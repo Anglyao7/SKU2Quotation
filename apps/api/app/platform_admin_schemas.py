@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 import re
 from typing import Literal
 from uuid import UUID
@@ -110,6 +111,102 @@ class PlatformTenantSummary(BaseModel):
     updated_at: datetime
 
 
+class PlatformMerchantDailyMetric(BaseModel):
+    date: date
+    count: int = Field(ge=0)
+
+
+class PlatformMerchantStatusMetric(BaseModel):
+    status: Literal[
+        "PENDING_CONFIRMATION",
+        "CONFIRMED",
+        "COMPLETED",
+        "CANCELLED",
+        "EXPIRED",
+    ]
+    count: int = Field(ge=0)
+
+
+class PlatformMerchantMonitoring(BaseModel):
+    generated_at: datetime
+    period_days: int = Field(default=30, ge=1)
+    quotes_total: int = Field(ge=0)
+    quotes_period: int = Field(ge=0)
+    quotes_pending: int = Field(ge=0)
+    quotes_confirmed: int = Field(ge=0)
+    quotes_completed: int = Field(ge=0)
+    quotes_cancelled: int = Field(ge=0)
+    skus_total: int = Field(ge=0)
+    subaccounts_total: int = Field(ge=0)
+    subaccounts_active: int = Field(ge=0)
+    storefront_visitors_period: int = Field(ge=0)
+    product_views_period: int = Field(ge=0)
+    last_quote_at: datetime | None = None
+    quote_statuses: list[PlatformMerchantStatusMetric]
+    quote_trend: list[PlatformMerchantDailyMetric]
+    product_view_trend: list[PlatformMerchantDailyMetric]
+
+
+class PlatformMerchantSubaccountSummary(BaseModel):
+    id: UUID
+    user_id: UUID
+    display_name: str
+    login_identifier: str
+    email: str | None
+    status: Literal["invited", "active", "suspended"]
+    # Kept alongside the legacy capability projection for older clients.  A
+    # child account is an operator of the merchant workspace, so the platform
+    # view should describe the actual workspace modules that the parent has
+    # opened rather than presenting it as a public guest account.
+    modules: list[Literal["products", "inquiries", "quotations", "announcements", "support"]] = Field(
+        default_factory=lambda: [
+            "products",
+            "inquiries",
+            "quotations",
+            "announcements",
+            "support",
+        ]
+    )
+    capabilities: list[Literal["catalog", "submit_orders", "view_orders"]]
+    parent_membership_id: UUID | None = None
+    parent_display_name: str | None = None
+    created_at: datetime
+    last_login_at: datetime | None = None
+    login_count_30d: int = Field(ge=0)
+    quote_count: int = Field(ge=0)
+    last_quote_at: datetime | None = None
+
+
+class PlatformMerchantRecentQuote(BaseModel):
+    id: UUID
+    quote_number: str
+    status: Literal[
+        "PENDING_CONFIRMATION",
+        "CONFIRMED",
+        "COMPLETED",
+        "CANCELLED",
+        "EXPIRED",
+    ]
+    customer_name: str
+    customer_company: str | None = None
+    currency: str
+    total_amount: Decimal = Field(ge=0)
+    created_at: datetime
+    valid_until: datetime
+
+
+class PlatformTenantDetail(BaseModel):
+    merchant: PlatformTenantSummary
+    monitoring: PlatformMerchantMonitoring
+    subaccounts: list[PlatformMerchantSubaccountSummary]
+
+
+class PlatformMerchantSubaccountDetail(BaseModel):
+    merchant: PlatformTenantSummary
+    account: PlatformMerchantSubaccountSummary
+    recent_quotes: list[PlatformMerchantRecentQuote]
+
+
 class PlatformTenantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     slug: str | None = Field(
@@ -165,6 +262,9 @@ class PlatformTenantUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     contact_email: str | None = Field(default=None, max_length=320)
     active: bool | None = None
+    default_locale: str | None = Field(default=None, min_length=2, max_length=20)
+    default_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
     identity_code: MerchantIdentityCode | None = Field(
         default=None,
         min_length=1,
@@ -174,10 +274,15 @@ class PlatformTenantUpdate(BaseModel):
     module_access_mode: TenantModuleAccessMode | None = None
     enabled_modules: list[TenantModuleCode] | None = None
 
-    @field_validator("name", "contact_email", mode="before")
+    @field_validator("name", "contact_email", "default_locale", "timezone", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("default_currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: object) -> object:
+        return value.strip().upper() if isinstance(value, str) else value
 
     @field_validator("identity_code", "module_access_mode", mode="before")
     @classmethod

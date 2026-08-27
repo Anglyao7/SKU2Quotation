@@ -256,6 +256,12 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
             "visitor_token_hash",
             "updated_at",
         ),
+        Index(
+            "ix_public_quote_drafts_tenant_visitor_country",
+            "tenant_id",
+            "visitor_country_code",
+            "created_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -268,6 +274,11 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
         String(30), default="PENDING_CONFIRMATION", nullable=False
     )
     submitted_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    # Country is derived once from the visitor IP at submission time.  Keep
+    # the normalized code rather than the raw address in this commercial row.
+    visitor_country_code: Mapped[str | None] = mapped_column(
+        String(8), nullable=True
+    )
     visitor_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     visitor_token_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -451,6 +462,12 @@ class StorefrontOrderRecordRow(AuditTimestampMixin, Base):
             "submitted_by_membership_id",
             "confirmed_at",
         ),
+        Index(
+            "ix_storefront_order_records_tenant_visitor_country",
+            "tenant_id",
+            "visitor_country_code",
+            "confirmed_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -461,6 +478,9 @@ class StorefrontOrderRecordRow(AuditTimestampMixin, Base):
     order_number: Mapped[str] = mapped_column(String(80), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="CONFIRMED", nullable=False)
     submitted_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    visitor_country_code: Mapped[str | None] = mapped_column(
+        String(8), nullable=True
+    )
     customer_name: Mapped[str] = mapped_column(String(160), nullable=False)
     customer_company: Mapped[str | None] = mapped_column(String(200), nullable=True)
     customer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)

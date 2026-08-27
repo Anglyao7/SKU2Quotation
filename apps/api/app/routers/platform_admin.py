@@ -17,7 +17,9 @@ from ..platform_admin_schemas import (
     PlatformMerchantOwnerCreate,
     PlatformMerchantOwnerPasswordReset,
     PlatformMerchantOwnerPasswordResetResponse,
+    PlatformMerchantSubaccountDetail,
     PlatformTenantCreate,
+    PlatformTenantDetail,
     PlatformTenantSubscriptionUpdate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
@@ -119,6 +121,43 @@ def tenants_endpoint(
 ) -> list[PlatformTenantSummary]:
     try:
         return use_cases.list_tenants(session, context=context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get("/tenants/{tenant_id}", response_model=PlatformTenantDetail)
+def tenant_detail_endpoint(
+    tenant_id: UUID,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> PlatformTenantDetail:
+    try:
+        return use_cases.get_tenant_detail(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/tenants/{tenant_id}/subaccounts/{membership_id}",
+    response_model=PlatformMerchantSubaccountDetail,
+)
+def tenant_subaccount_detail_endpoint(
+    tenant_id: UUID,
+    membership_id: UUID,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> PlatformMerchantSubaccountDetail:
+    try:
+        return use_cases.get_tenant_subaccount_detail(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

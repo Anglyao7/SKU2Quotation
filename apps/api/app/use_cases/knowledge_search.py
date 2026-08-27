@@ -38,6 +38,7 @@ from ..services.auth.dependencies import RequestContext
 from ..services.embedding import EmbeddingProviderError
 from ..services.embedding_configuration import resolved_text_embedding_provider
 from ..services.hybrid_search import hybrid_product_search
+from ..services.subaccount_pricing import subaccount_price_rules
 from ..services.knowledge import (
     KnowledgeProjectionError,
     indexed_product_ids,
@@ -173,8 +174,22 @@ def search_products(
     tenant_id: UUID,
     permissions: frozenset[str],
     request: HybridSearchRequest,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> HybridSearchResponse:
     _require(permissions, "product.view")
+    child_scope = account_scope == "CUSTOMER_SUBACCOUNT"
+    hidden_product_ids: set[UUID] = set()
+    if child_scope and membership_id is not None:
+        # Resolve the account's private product exclusions before retrieval so
+        # hidden products cannot enter either the semantic or lexical candidate
+        # pool.  This keeps AI search consistent with the regular catalog API.
+        _markup, _overrides, hidden_product_ids = subaccount_price_rules(
+            session,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            product_ids=set(),
+        )
     try:
         result = hybrid_product_search(
             session,
@@ -182,6 +197,8 @@ def search_products(
             query=request.query,
             limit=request.limit,
             embedder=resolved_text_embedding_provider(session),
+            excluded_product_ids=hidden_product_ids,
+            supplier_scoring_enabled=not child_scope,
         )
     except ValueError as exc:
         raise ApplicationError("SEARCH_QUERY_INVALID", str(exc)) from exc

@@ -50,10 +50,17 @@ def get_dashboard(
     membership_id: UUID,
     permissions: frozenset[str],
     import_limit: int,
+    account_scope: str = "STAFF",
 ) -> DashboardResponse:
     now = datetime.now(UTC)
     start_of_day = datetime.combine(now.date(), time.min, tzinfo=UTC)
-    tenant_scope = bool({"system.user_manage", "supplier.manage", "quotation.approve"} & permissions)
+    # A child account is an operator with its own queue.  Even if a legacy
+    # role still carries an owner-level permission, its dashboard must never
+    # switch to the tenant aggregate view.
+    tenant_scope = (
+        account_scope != "CUSTOMER_SUBACCOUNT"
+        and bool({"system.user_manage", "supplier.manage", "quotation.approve"} & permissions)
+    )
     cache_slot = query_cache.lookup(
         tenant_id=tenant_id,
         domain=query_cache.DOMAIN_DASHBOARD,

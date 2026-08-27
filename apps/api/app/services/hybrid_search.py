@@ -360,6 +360,7 @@ def _postgres_semantic_candidate_rows(
     embedder: EmbeddingProvider,
     candidate_limit: int,
     product_ids: list[UUID] | None,
+    excluded_product_ids: Collection[UUID] | None = None,
 ) -> list[tuple[UUID, UUID, float]]:
     vector_expression = cast(
         EmbeddingRow.embedding,
@@ -415,6 +416,8 @@ def _postgres_semantic_candidate_rows(
     )
     if product_ids is not None:
         statement = statement.where(ProductRow.id.in_(product_ids))
+    if excluded_product_ids:
+        statement = statement.where(ProductRow.id.not_in(excluded_product_ids))
     return list(session.execute(statement).all())
 
 
@@ -513,6 +516,7 @@ def hybrid_product_search(
     query: str,
     limit: int = 10,
     product_ids: Collection[UUID] | None = None,
+    excluded_product_ids: Collection[UUID] | None = None,
     embedder: EmbeddingProvider | None = None,
     precomputed_query_vector: list[float] | None = None,
     semantic_search_enabled: bool = True,
@@ -523,6 +527,7 @@ def hybrid_product_search(
     if not normalized_query:
         raise ValueError("search query must contain searchable characters")
     query_tokens = _retrieval_tokens(query, query=True)
+    excluded_ids = set(excluded_product_ids or ())
     document_statement = (
         select(KnowledgeDocumentRow, ProductRow)
         .join(
@@ -562,6 +567,8 @@ def hybrid_product_search(
         )
     else:
         allowed_product_ids = None
+    if excluded_ids:
+        document_statement = document_statement.where(ProductRow.id.not_in(excluded_ids))
 
     query_vector = precomputed_query_vector
     preselected_semantic_by_chunk: dict[UUID, float] | None = None
@@ -585,6 +592,7 @@ def hybrid_product_search(
                 embedder=embedder,
                 candidate_limit=vector_candidate_limit,
                 product_ids=allowed_product_ids,
+                excluded_product_ids=excluded_ids,
             )
         else:
             semantic_rows = []

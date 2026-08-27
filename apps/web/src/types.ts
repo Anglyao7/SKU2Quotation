@@ -27,12 +27,16 @@ export type TenantSubscriptionStatus = "active" | "expiring_soon" | "expired";
 
 export interface Tenant {
   id: string;
+  organization_id?: string;
   name: string;
   slug: string;
   active?: boolean;
-  status: "active" | "inactive";
+  status: "active" | "suspended" | "archived";
   logo_url?: string | null;
   contact_email?: string | null;
+  default_locale?: string;
+  default_currency?: string;
+  timezone?: string;
   sku_count?: number;
   quote_count?: number;
   owner_account?: MerchantOwnerAccount | null;
@@ -47,6 +51,7 @@ export interface Tenant {
   sku_limit: number | null;
   sku_remaining: number | null;
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface MerchantOwnerAccount {
@@ -62,6 +67,81 @@ export interface MerchantOwnerAccount {
 export interface MerchantOwnerPasswordResetResult {
   account: MerchantOwnerAccount;
   one_time_password: string;
+}
+
+export interface MerchantDailyMetric {
+  date: string;
+  count: number;
+}
+
+export interface MerchantStatusMetric {
+  status: "PENDING_CONFIRMATION" | "CONFIRMED" | "COMPLETED" | "CANCELLED" | "EXPIRED";
+  count: number;
+}
+
+export interface MerchantMonitoring {
+  generated_at: string;
+  period_days: number;
+  quotes_total: number;
+  quotes_period: number;
+  quotes_pending: number;
+  quotes_confirmed: number;
+  quotes_completed: number;
+  quotes_cancelled: number;
+  skus_total: number;
+  subaccounts_total: number;
+  subaccounts_active: number;
+  storefront_visitors_period: number;
+  product_views_period: number;
+  last_quote_at?: string | null;
+  quote_statuses: MerchantStatusMetric[];
+  quote_trend: MerchantDailyMetric[];
+  product_view_trend: MerchantDailyMetric[];
+}
+
+export type MerchantSubaccountCapability = "catalog" | "submit_orders" | "view_orders";
+export type MerchantSubaccountModule = "products" | "inquiries" | "quotations" | "announcements" | "support";
+
+export interface MerchantSubaccountSummary {
+  id: string;
+  user_id: string;
+  display_name: string;
+  login_identifier: string;
+  email?: string | null;
+  status: "invited" | "active" | "suspended";
+  modules: MerchantSubaccountModule[];
+  capabilities: MerchantSubaccountCapability[];
+  parent_membership_id?: string | null;
+  parent_display_name?: string | null;
+  created_at: string;
+  last_login_at?: string | null;
+  login_count_30d: number;
+  quote_count: number;
+  last_quote_at?: string | null;
+}
+
+export interface MerchantRecentQuote {
+  id: string;
+  quote_number: string;
+  status: MerchantStatusMetric["status"];
+  customer_name: string;
+  customer_company?: string | null;
+  currency: string;
+  total_amount: number | string;
+  created_at: string;
+  valid_until: string;
+}
+
+export interface MerchantDetail {
+  merchant: Tenant;
+  monitoring: MerchantMonitoring;
+  subaccounts: MerchantSubaccountSummary[];
+}
+
+export interface MerchantSubaccountDetail {
+  merchant: Tenant;
+  account: MerchantSubaccountSummary;
+  recent_quotes: MerchantRecentQuote[];
 }
 
 export interface Storefront {
@@ -515,6 +595,15 @@ export interface TenantPayload {
   identity_code?: MerchantIdentityCode;
   module_access_mode?: TenantModuleAccessMode;
   enabled_modules?: TenantModuleCode[];
+}
+
+export interface TenantBasicInfoPayload {
+  name: string;
+  contact_email: string | null;
+  active: boolean;
+  default_locale: string;
+  default_currency: string;
+  timezone: string;
 }
 
 export interface TenantAccessPayload {

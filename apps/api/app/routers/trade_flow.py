@@ -35,61 +35,61 @@ def create_inquiry(request: InquiryCreateRequest, session: Session = Depends(get
 @router.get("/inquiries/{inquiry_id}", response_model=InquiryResponse)
 def get_inquiry(inquiry_id: UUID, session: Session = Depends(get_authenticated_session)) -> InquiryResponse:
     context = _ctx(session)
-    try: return use_cases.get_inquiry(session, tenant_id=context.tenant_id, permissions=context.permissions, inquiry_id=inquiry_id)
+    try: return use_cases.get_inquiry(session, tenant_id=context.tenant_id, permissions=context.permissions, inquiry_id=inquiry_id, account_scope=context.account_scope, membership_id=context.membership_id)
     except ApplicationError as exc: raise application_http_error(exc) from exc
 
 
 @router.patch("/inquiry-items/{item_id}/confirm", response_model=InquiryItemResponse)
 def confirm_item(item_id: UUID, request: InquiryItemConfirmRequest, session: Session = Depends(get_authenticated_session)) -> InquiryItemResponse:
     context = _ctx(session)
-    try: return use_cases.confirm_item(session, tenant_id=context.tenant_id, permissions=context.permissions, item_id=item_id, request=request)
+    try: return use_cases.confirm_item(session, tenant_id=context.tenant_id, permissions=context.permissions, item_id=item_id, request=request, account_scope=context.account_scope, membership_id=context.membership_id)
     except ApplicationError as exc: raise application_http_error(exc) from exc
 
 
 @router.post("/inquiries/{inquiry_id}/match", response_model=InquiryMatchResponse)
 def match_inquiry(inquiry_id: UUID, limit: int = Query(default=5, ge=1, le=10), session: Session = Depends(get_authenticated_session)) -> InquiryMatchResponse:
     context = _ctx(session)
-    try: return use_cases.match_inquiry(session, tenant_id=context.tenant_id, permissions=context.permissions, inquiry_id=inquiry_id, limit=limit)
+    try: return use_cases.match_inquiry(session, tenant_id=context.tenant_id, permissions=context.permissions, inquiry_id=inquiry_id, limit=limit, account_scope=context.account_scope, membership_id=context.membership_id)
     except ApplicationError as exc: raise application_http_error(exc) from exc
 
 
 @router.post("/inquiry-items/{item_id}/selection", response_model=MatchResultResponse)
 def select_candidate(item_id: UUID, request: CandidateSelectRequest, session: Session = Depends(get_authenticated_session)) -> MatchResultResponse:
     context = _ctx(session)
-    try: return use_cases.select_candidate(session, tenant_id=context.tenant_id, membership_id=context.membership_id, permissions=context.permissions, item_id=item_id, request=request)
+    try: return use_cases.select_candidate(session, tenant_id=context.tenant_id, membership_id=context.membership_id, permissions=context.permissions, item_id=item_id, request=request, account_scope=context.account_scope)
     except ApplicationError as exc: raise application_http_error(exc) from exc
 
 
 @router.post("/inquiries/{inquiry_id}/quotation", response_model=QuotationResponse, status_code=status.HTTP_201_CREATED)
 def create_quotation(inquiry_id: UUID, request: QuotationCreateRequest, session: Session = Depends(get_authenticated_session)) -> QuotationResponse:
     context = _ctx(session)
-    try: return use_cases.create_quotation(session, tenant_id=context.tenant_id, membership_id=context.membership_id, permissions=context.permissions, inquiry_id=inquiry_id, request=request)
+    try: return use_cases.create_quotation(session, tenant_id=context.tenant_id, membership_id=context.membership_id, permissions=context.permissions, inquiry_id=inquiry_id, request=request, account_scope=context.account_scope)
     except ApplicationError as exc: raise application_http_error(exc) from exc
 
 
 @router.get("/quotations/{quotation_id}", response_model=QuotationResponse)
 def get_quotation(quotation_id: UUID, session: Session = Depends(get_authenticated_session)) -> QuotationResponse:
     context = _ctx(session)
-    try: return use_cases.get_quotation(session, tenant_id=context.tenant_id, permissions=context.permissions, quotation_id=quotation_id)
+    try: return use_cases.get_quotation(session, tenant_id=context.tenant_id, permissions=context.permissions, quotation_id=quotation_id, account_scope=context.account_scope, membership_id=context.membership_id)
     except ApplicationError as exc: raise application_http_error(exc) from exc
 
 
 @router.get("/quotations", response_model=list[QuotationSummary])
 def list_quotations(limit: int = Query(default=100, ge=1, le=500), session: Session = Depends(get_authenticated_session)) -> list[QuotationSummary]:
     context = _ctx(session)
-    try: return use_cases.list_quotations(session, tenant_id=context.tenant_id, permissions=context.permissions, limit=limit)
+    try: return use_cases.list_quotations(session, tenant_id=context.tenant_id, permissions=context.permissions, limit=limit, account_scope=context.account_scope, membership_id=context.membership_id)
     except ApplicationError as exc: raise application_http_error(exc) from exc
 
 
 @router.post("/quotations/{quotation_id}/decision", response_model=QuotationResponse)
 def decide_quotation(quotation_id: UUID, request: QuotationDecisionRequest, session: Session = Depends(get_authenticated_session)) -> QuotationResponse:
     context = _ctx(session)
-    try: return use_cases.decide_quotation(session, tenant_id=context.tenant_id, membership_id=context.membership_id, permissions=context.permissions, quotation_id=quotation_id, request=request)
+    try: return use_cases.decide_quotation(session, tenant_id=context.tenant_id, membership_id=context.membership_id, permissions=context.permissions, quotation_id=quotation_id, request=request, account_scope=context.account_scope)
     except ApplicationError as exc: raise application_http_error(exc) from exc
 
 
 @router.post("/quotations/{quotation_id}/revisions", response_model=QuotationResponse, status_code=status.HTTP_201_CREATED)
 def revise_quotation(quotation_id: UUID, request: QuotationRevisionRequest, session: Session = Depends(get_authenticated_session)) -> QuotationResponse:
     context = _ctx(session)
-    try: return use_cases.revise_quotation(session, tenant_id=context.tenant_id, membership_id=context.membership_id, permissions=context.permissions, quotation_id=quotation_id, request=request)
+    try: return use_cases.revise_quotation(session, tenant_id=context.tenant_id, membership_id=context.membership_id, permissions=context.permissions, quotation_id=quotation_id, request=request, account_scope=context.account_scope)
     except ApplicationError as exc: raise application_http_error(exc) from exc

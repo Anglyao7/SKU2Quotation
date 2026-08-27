@@ -124,6 +124,8 @@ def list_products(
             statuses=product_status,
             approved_images_only=approved_images_only,
             limit=limit,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -151,6 +153,8 @@ def list_product_catalog(
             missing_images_only=missing_images_only,
             page=page,
             page_size=page_size,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -174,6 +178,7 @@ def create_manual_product(
             membership_id=context.membership_id,
             permissions=context.permissions,
             request=request,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -202,6 +207,8 @@ def list_skus(
             page=page,
             page_size=page_size,
             include_supplier_summary=include_supplier_summary,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -219,6 +226,8 @@ def export_skus(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             request=payload,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -249,6 +258,8 @@ def get_product(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             product_id=product_id,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -333,6 +344,7 @@ def create_skus(
             permissions=context.permissions,
             product_id=product_id,
             request=request,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -354,6 +366,7 @@ def update_sku(
             permissions=context.permissions,
             sku_id=sku_id,
             request=request,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -374,6 +387,8 @@ def list_public_offers(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             product_id=product_id,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

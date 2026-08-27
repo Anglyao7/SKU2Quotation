@@ -343,6 +343,8 @@ def search_products(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             request=payload,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

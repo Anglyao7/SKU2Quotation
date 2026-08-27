@@ -49,7 +49,9 @@ const SkuDetailPage = recoverableLazy(() => import("./pages/SkuDetailPage").then
 const StorefrontVisitorCenterPage = recoverableLazy(() => import("./pages/StorefrontVisitorCenterPage").then((module) => ({ default: module.StorefrontVisitorCenterPage })));
 const PrivacyPage = recoverableLazy(() => import("./pages/PrivacyPage").then((module) => ({ default: module.PrivacyPage })));
 const ConsoleLayout = recoverableLazy(() => import("./pages/console/ConsoleLayout").then((module) => ({ default: module.ConsoleLayout })));
-const TenantManagementPage = recoverableLazy(() => import("./pages/console/TenantManagementPage").then((module) => ({ default: module.TenantManagementPage })));
+const MerchantManagementPage = recoverableLazy(() => import("./pages/console/MerchantManagementPage").then((module) => ({ default: module.MerchantManagementPage })));
+const MerchantDetailPage = recoverableLazy(() => import("./pages/console/MerchantDetailPage").then((module) => ({ default: module.MerchantDetailPage })));
+const MerchantSubaccountDetailPage = recoverableLazy(() => import("./pages/console/MerchantSubaccountDetailPage").then((module) => ({ default: module.MerchantSubaccountDetailPage })));
 const IdentityManagementPage = recoverableLazy(() => import("./pages/console/IdentityManagementPage").then((module) => ({ default: module.IdentityManagementPage })));
 const NotFoundPage = recoverableLazy(() => import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })));
 const AiSearchPage = recoverableLazy(() => import("./core/pages/AiSearchPage").then((module) => ({ default: module.AiSearchPage })));
@@ -136,24 +138,15 @@ function CustomerPortalRoute() {
 }
 
 function ConsoleHomeRoute() {
-  const { profile } = useCoreAuth();
-  return profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
-    ? <ResellerProductsPage />
-    : <CoreDashboardPage />;
+  return <CoreDashboardPage />;
 }
 
 function ConsoleProductsRoute() {
-  const { profile } = useCoreAuth();
-  return profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
-    ? <PermissionGate anyOf={["customer_portal.access"]}><ResellerProductsPage /></PermissionGate>
-    : <PermissionGate anyOf={["product.view"]}><ProductsPage /></PermissionGate>;
+  return <PermissionGate anyOf={["product.view", "customer_portal.access"]}><ProductsPage /></PermissionGate>;
 }
 
 function ConsoleQuotesRoute() {
-  const { profile } = useCoreAuth();
-  return profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
-    ? <PermissionGate anyOf={["customer_portal.order_view_self"]}><ResellerOrdersPage /></PermissionGate>
-    : <PermissionGate anyOf={["quotation.view"]}><QuotesPage /></PermissionGate>;
+  return <PermissionGate anyOf={["quotation.view", "customer_portal.order_view_self"]}><QuotesPage /></PermissionGate>;
 }
 
 function PermissionGate({ anyOf, children }: { anyOf: string[]; children: ReactNode }) {
@@ -374,7 +367,9 @@ const router = createBrowserRouter([{
         { path: "skus", element: <Navigate to="/console/products" replace /> },
         { path: "review", element: <Navigate to="/console/products" replace /> },
         { path: "quotations", element: <Navigate to="/console/quotes" replace /> },
-        { path: "tenants", element: <PlatformAdminGate><TenantManagementPage /></PlatformAdminGate> },
+        { path: "tenants", element: <PlatformAdminGate><MerchantManagementPage /></PlatformAdminGate> },
+        { path: "tenants/:tenantId", element: <PlatformAdminGate><MerchantDetailPage /></PlatformAdminGate> },
+        { path: "tenants/:tenantId/subaccounts/:membershipId", element: <PlatformAdminGate><MerchantSubaccountDetailPage /></PlatformAdminGate> },
         { path: "identities", element: <PlatformAdminGate><IdentityManagementPage /></PlatformAdminGate> },
       ],
       }],

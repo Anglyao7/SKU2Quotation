@@ -15,6 +15,36 @@ from ..identity_models import (
 from ..tenant_modules import effective_tenant_modules, enabled_permission_modules
 
 
+# A child account is an operator of the same storefront, not a public guest.
+# These records are the owner-only data that must never be granted by the
+# child-account role.  Product selling prices are intentionally not listed:
+# they are the child account's effective prices and are redacted separately by
+# the product read use cases.
+CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES = frozenset(
+    {
+        "product.cost.read",
+        "product.cost.write",
+        "supplier.view",
+        "supplier.manage",
+        "system.user_manage",
+        "system.role_manage",
+        "system.settings_manage",
+        "customer_portal.subaccount_manage",
+        # These modules aggregate the merchant workspace rather than a
+        # child account's own queue.  A reseller may still operate products
+        # and quotes, but must not infer the owner's traffic, stock, or
+        # warehouse activity from a shared tenant-level report.
+        "analytics.view",
+        "inventory.view",
+        "inventory.adjust",
+        "inventory.purchase",
+        "inventory.sale",
+        "inventory.transfer",
+        "inventory.warehouse_manage",
+    }
+)
+
+
 PLATFORM_ADMIN_ONLY_PERMISSION_CODES = frozenset(
     {
         "support.ai.manage",
@@ -56,13 +86,16 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
             TenantRow.enabled_modules,
         ).where(TenantRow.id == tenant_id)
     ).one_or_none()
-    account_overrides = session.scalar(
-        select(MembershipRow.permission_overrides).where(
+    membership_row = session.scalar(
+        select(MembershipRow).where(
             MembershipRow.tenant_id == tenant_id,
             MembershipRow.user_id == user_id,
             MembershipRow.status == "active",
             MembershipRow.deleted_at.is_(None),
         )
+    )
+    account_overrides = (
+        membership_row.permission_overrides if membership_row is not None else None
     )
     account_permission_ceiling = (
         {str(code) for code in account_overrides}
@@ -88,7 +121,7 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
         else ()
     )
     allowed_permission_modules = enabled_permission_modules(tenant_modules)
-    return frozenset(
+    resolved = {
         code
         for code, permission_module in session.execute(statement).all()
         if (
@@ -99,7 +132,70 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
                 or code in account_permission_ceiling
             )
         )
-    )
+    }
+
+    # Existing child accounts were created with the old three-item customer
+    # portal role.  Expand that legacy role into a normal operator workspace
+    # at read time so they do not need to be recreated, while preserving the
+    # explicit owner-only exclusions above.  Tenant module ceilings still
+    # apply, and a future expanded permission override remains authoritative.
+    if (
+        membership_row is not None
+        and membership_row.account_scope == "CUSTOMER_SUBACCOUNT"
+        and (
+            account_permission_ceiling is None
+            or account_permission_ceiling
+            == {
+                "customer_portal.access",
+                "customer_portal.order_create",
+                "customer_portal.order_view_self",
+            }
+        )
+    ):
+        available = session.execute(
+            select(PermissionRow.code, PermissionRow.module).where(
+                PermissionRow.deleted_at.is_(None)
+            )
+        ).all()
+        resolved.update(
+            code
+            for code, permission_module in available
+            if permission_module in allowed_permission_modules
+            and code not in CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES
+            and code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+        )
+
+    # Newer child accounts store a concrete, parent-selected permission
+    # ceiling instead of relying on the legacy portal role.  The role still
+    # anchors the account to the child scope, while this expansion makes the
+    # selected ordinary workspace actions available without granting the
+    # owner-only modules listed above.
+    elif (
+        membership_row is not None
+        and membership_row.account_scope == "CUSTOMER_SUBACCOUNT"
+        and account_permission_ceiling is not None
+    ):
+        available = session.execute(
+            select(PermissionRow.code, PermissionRow.module).where(
+                PermissionRow.deleted_at.is_(None)
+            )
+        ).all()
+        resolved.update(
+            code
+            for code, permission_module in available
+            if code in account_permission_ceiling
+            and permission_module in allowed_permission_modules
+            and code not in CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES
+            and code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+        )
+
+    # Enforce the boundary even if a legacy role or a hand-edited permission
+    # override accidentally contains an owner-only code.  The parent can
+    # still decide which ordinary workspace modules the child uses, but these
+    # codes are never valid for a customer subaccount.
+    if membership_row is not None and membership_row.account_scope == "CUSTOMER_SUBACCOUNT":
+        resolved.difference_update(CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES)
+    return frozenset(resolved)
 
 
 def has_permission(

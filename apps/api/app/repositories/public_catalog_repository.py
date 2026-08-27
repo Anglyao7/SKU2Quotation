@@ -8,7 +8,7 @@ from sqlalchemy import Text, case, cast, exists, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
 from ..catalog_merchandising import POPULAR_CATEGORY_CODE
-from ..identity_models import TenantRow
+from ..identity_models import MembershipRow, TenantRow
 from ..product_center_models import SkuRow
 from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
 from ..public_catalog_models import (
@@ -426,6 +426,7 @@ def _public_product_id_statement(
     category: str | None,
     tags: set[str],
     product_ids: set[UUID] | None = None,
+    excluded_product_ids: set[UUID] | None = None,
     hot: bool = False,
 ):
     statement = _public_catalog_statement(
@@ -440,6 +441,11 @@ def _public_product_id_statement(
             statement = statement.where(ProductRow.id.is_(None))
         else:
             statement = statement.where(ProductRow.id.in_(product_ids))
+    if excluded_product_ids:
+        # Keep account-level hidden products out of the count and the page
+        # query itself.  Filtering after pagination would create short pages
+        # and, more importantly, could leak a hidden product through facets.
+        statement = statement.where(~ProductRow.id.in_(excluded_product_ids))
     uncategorized = case((ProductCategoryRow.id.is_(None), 1), else_=0)
     root_sort = func.coalesce(
         ParentProductCategoryRow.sort_order,
@@ -627,6 +633,7 @@ def list_public_product_ids_page(
     page: int,
     page_size: int,
     product_ids: set[UUID] | None = None,
+    excluded_product_ids: set[UUID] | None = None,
     hot: bool = False,
 ) -> list[UUID]:
     statement = _public_product_id_statement(
@@ -637,6 +644,7 @@ def list_public_product_ids_page(
         category=category,
         tags=tags,
         product_ids=product_ids,
+        excluded_product_ids=excluded_product_ids,
         hot=hot,
     )
     return [
@@ -656,6 +664,7 @@ def count_public_catalog_products(
     category: str | None,
     tags: set[str],
     product_ids: set[UUID] | None = None,
+    excluded_product_ids: set[UUID] | None = None,
 ) -> int:
     statement = _public_catalog_statement(
         tenant_id=tenant_id,
@@ -668,6 +677,8 @@ def count_public_catalog_products(
         if not product_ids:
             return 0
         statement = statement.where(ProductRow.id.in_(product_ids))
+    if excluded_product_ids:
+        statement = statement.where(~ProductRow.id.in_(excluded_product_ids))
     matching_ids = (
         statement.with_only_columns(ProductRow.id)
         .order_by(None)
@@ -777,6 +788,7 @@ def list_public_catalog_category_ids(
     query: str,
     category: str | None,
     product_ids: set[UUID] | None = None,
+    excluded_product_ids: set[UUID] | None = None,
 ) -> set[UUID]:
     statement = _public_catalog_statement(
         tenant_id=tenant_id,
@@ -788,6 +800,8 @@ def list_public_catalog_category_ids(
         if not product_ids:
             return set()
         statement = statement.where(ProductRow.id.in_(product_ids))
+    if excluded_product_ids:
+        statement = statement.where(~ProductRow.id.in_(excluded_product_ids))
     statement = (
         statement.with_only_columns(ProductRow.category_id)
         .where(ProductRow.category_id.is_not(None))
@@ -1077,39 +1091,82 @@ def storefront_order_statistics_rows(
     tenant_id: UUID,
     start_at: datetime,
     end_at: datetime,
+    submitted_by_membership_id: UUID | None = None,
 ) -> list[tuple[str, str, int, Decimal]]:
+    statement = select(
+        StorefrontOrderRecordRow.currency,
+        StorefrontOrderRecordRow.status,
+        func.count(StorefrontOrderRecordRow.id),
+        func.coalesce(func.sum(StorefrontOrderRecordRow.total_amount), 0),
+    ).where(
+        StorefrontOrderRecordRow.tenant_id == tenant_id,
+        StorefrontOrderRecordRow.confirmed_at >= start_at,
+        StorefrontOrderRecordRow.confirmed_at < end_at,
+        StorefrontOrderRecordRow.deleted_at.is_(None),
+    )
+    if submitted_by_membership_id is not None:
+        statement = statement.where(
+            StorefrontOrderRecordRow.submitted_by_membership_id
+            == submitted_by_membership_id
+        )
     return list(
         session.execute(
-            select(
+            statement.group_by(
                 StorefrontOrderRecordRow.currency,
                 StorefrontOrderRecordRow.status,
-                func.count(StorefrontOrderRecordRow.id),
-                func.coalesce(func.sum(StorefrontOrderRecordRow.total_amount), 0),
-            )
-            .where(
-                StorefrontOrderRecordRow.tenant_id == tenant_id,
-                StorefrontOrderRecordRow.confirmed_at >= start_at,
-                StorefrontOrderRecordRow.confirmed_at < end_at,
-                StorefrontOrderRecordRow.deleted_at.is_(None),
-            )
-            .group_by(
+            ).order_by(
                 StorefrontOrderRecordRow.currency,
                 StorefrontOrderRecordRow.status,
             )
-            .order_by(StorefrontOrderRecordRow.currency, StorefrontOrderRecordRow.status)
         ).all()
     )
 
 
 def list_quote_drafts(
-    session: Session, *, tenant_id: UUID, limit: int
+    session: Session,
+    *,
+    tenant_id: UUID,
+    limit: int,
+    owner_membership_id: UUID | None = None,
+    parent_membership_id: UUID | None = None,
 ) -> list[PublicQuoteDraftRow]:
+    """Load the quote inbox with ownership filtering before pagination.
+
+    A child account must only receive its own queue.  A parent receives
+    merchant-created drafts plus drafts created by direct children, but never a
+    sibling child’s draft.  Applying the predicate in SQL avoids the old
+    ``limit -> filter`` hole where a page could be empty even though visible
+    records existed later in the inbox.
+    """
+
+    statement = select(PublicQuoteDraftRow).where(
+        PublicQuoteDraftRow.tenant_id == tenant_id
+    )
+    owner_column = PublicQuoteDraftRow.submitted_by_membership_id
+    if owner_membership_id is not None:
+        statement = statement.where(owner_column == owner_membership_id)
+    elif parent_membership_id is not None:
+        child_ids = select(MembershipRow.id).where(
+            MembershipRow.tenant_id == tenant_id,
+            MembershipRow.account_scope == "CUSTOMER_SUBACCOUNT",
+            MembershipRow.status.in_(("active", "suspended")),
+            MembershipRow.deleted_at.is_(None),
+        )
+        direct_child_ids = child_ids.where(
+            MembershipRow.parent_membership_id == parent_membership_id
+        )
+        statement = statement.where(
+            or_(
+                owner_column.is_(None),
+                ~owner_column.in_(child_ids),
+                owner_column.in_(direct_child_ids),
+            )
+        )
     return list(
         session.scalars(
-            select(PublicQuoteDraftRow)
-            .where(PublicQuoteDraftRow.tenant_id == tenant_id)
-            .order_by(PublicQuoteDraftRow.created_at.desc(), PublicQuoteDraftRow.id)
-            .limit(limit)
+            statement.order_by(
+                PublicQuoteDraftRow.created_at.desc(), PublicQuoteDraftRow.id
+            ).limit(limit)
         ).all()
     )
 

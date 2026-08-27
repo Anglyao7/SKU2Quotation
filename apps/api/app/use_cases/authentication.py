@@ -66,7 +66,7 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
             ),
             default_currency=tenant.default_currency.upper(),
             default_workspace=(
-                "customer_portal"
+                "dashboard"
                 if membership.account_scope == "CUSTOMER_SUBACCOUNT"
                 else "dashboard"
             ),

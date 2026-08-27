@@ -203,14 +203,11 @@ export function ConsoleLayout() {
     .map((group) => ({
       ...group,
       items: group.items.filter((item) => (
-        // A child account uses the same console shell. Sensitive owner,
-        // supplier and platform modules remain absent from navigation and are
-        // also protected by API guards.
-        (!isCustomerSubaccount || ["workspace", "products", "sales"].includes(group.key))
-        && (!isCustomerSubaccount || group.key !== "workspace" || item.to === "/console")
-        && (!isCustomerSubaccount || group.key !== "products" || item.to === "/console/products")
-        && (!isCustomerSubaccount || group.key !== "sales" || item.to === "/console/quotes")
-        && (!item.platformAdminOnly || profile?.user.isPlatformAdmin)
+        // A child account is an operator, not a guest: it receives the same
+        // workspace navigation as the parent. Only owner-only relationship
+        // management remains hidden; sensitive product fields are redacted by
+        // the API response rather than by removing the whole module.
+        (!item.platformAdminOnly || profile?.user.isPlatformAdmin)
         && (
           item.permissions.length === 0
           || hasAnyPermission(...item.permissions)
@@ -220,7 +217,10 @@ export function ConsoleLayout() {
         // Supplier relationships are internal to the owner workspace. A child
         // account must not receive this navigation item; the API applies the
         // same permission boundary server-side.
-        && !(isCustomerSubaccount && item.to === "/console/supply-chain")
+        && !(isCustomerSubaccount && (
+          item.to === "/console/supply-chain"
+          || item.to === "/console/customer-accounts"
+        ))
       )),
     }))
     .filter((group) => group.items.length);

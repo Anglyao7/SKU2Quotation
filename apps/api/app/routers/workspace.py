@@ -36,6 +36,7 @@ def get_dashboard(
             membership_id=context.membership_id,
             permissions=context.permissions,
             import_limit=import_limit,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

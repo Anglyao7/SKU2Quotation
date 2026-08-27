@@ -169,8 +169,14 @@ def _product_tags(rows: Sequence[SkuListRow]) -> str:
     return "，".join(tags)
 
 
-def _product_price(rows: Sequence[SkuListRow]) -> float:
+def _product_price(
+    rows: Sequence[SkuListRow],
+    *,
+    public_price_overrides: Mapping[UUID, float] | None = None,
+) -> float:
     for row in rows:
+        if public_price_overrides is not None and row.sku.id in public_price_overrides:
+            return float(public_price_overrides[row.sku.id])
         if row.public_offer is not None:
             price = _number(row.public_offer.unit_price)
             if price is not None:
@@ -181,7 +187,12 @@ def _product_price(rows: Sequence[SkuListRow]) -> float:
     return 0.0
 
 
-def _export_sku_identifier(sku: Any, *, source_is_unique: bool) -> str:
+def _export_sku_identifier(
+    sku: Any,
+    *,
+    source_is_unique: bool,
+    include_source_sku_codes: bool = True,
+) -> str:
     """Use source codes for ordinary SKUs and system codes for variants.
 
     A source code identifies an import definition and can intentionally be
@@ -193,7 +204,12 @@ def _export_sku_identifier(sku: Any, *, source_is_unique: bool) -> str:
     source_code = _text(getattr(sku, "source_sku_code", None))
     return (
         source_code
-        if source_code and source_is_unique and not _variant_options(sku.option_values)
+        if (
+            include_source_sku_codes
+            and source_code
+            and source_is_unique
+            and not _variant_options(sku.option_values)
+        )
         else system_code
     )
 
@@ -220,6 +236,8 @@ def build_sku_catalog_workbook(
     images_by_product: Mapping[UUID, Sequence[ProductImageRow]],
     image_urls: Mapping[UUID, str],
     supplier_names: Mapping[str, str],
+    public_price_overrides: Mapping[UUID, float] | None = None,
+    include_source_sku_codes: bool = True,
 ) -> bytes:
     """Build a Product + SKU workbook with editable variant columns.
 
@@ -289,7 +307,10 @@ def build_sku_catalog_workbook(
                 product.name or "",
                 _category_name(row),
                 _first_option_text(product_rows_for_product, "商品型号"),
-                _product_price(product_rows_for_product),
+                _product_price(
+                    product_rows_for_product,
+                    public_price_overrides=public_price_overrides,
+                ),
                 product.description or "",
                 _first_option_text(product_rows_for_product, "备注"),
                 _product_tags(product_rows_for_product),
@@ -319,6 +340,7 @@ def build_sku_catalog_workbook(
             _export_sku_identifier(
                 sku,
                 source_is_unique=bool(source_code and source_counts[source_code] == 1),
+                include_source_sku_codes=include_source_sku_codes,
             ),
             sku.name or row.product.name,
         ]
@@ -331,7 +353,11 @@ def build_sku_catalog_workbook(
         sku_values.extend(
             [
                 supplier_names.get(sku.supplier_id or "", ""),
-                _number(offer.unit_price) if offer is not None else 0.0,
+                (
+                    float(public_price_overrides[sku.id])
+                    if public_price_overrides is not None and sku.id in public_price_overrides
+                    else _number(offer.unit_price) if offer is not None else 0.0
+                ),
                 _number(sku.weight),
                 _number(sku.default_moq),
                 _number(_units_per_carton(sku.option_values)),

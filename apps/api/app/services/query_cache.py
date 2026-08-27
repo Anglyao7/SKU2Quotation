@@ -275,6 +275,12 @@ _TABLE_DOMAINS: dict[str, frozenset[str]] = {
     "skus": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD, DOMAIN_INVENTORY}),
     "product_images": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),
     "public_catalog_offers": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),
+    # Child-account selling rules affect the catalog projection returned to
+    # that membership.  Bump the catalog generation immediately after a
+    # parent changes a rule so the next read cannot show stale prices.
+    "subaccount_pricing_policies": frozenset({DOMAIN_CATALOG}),
+    "subaccount_product_price_overrides": frozenset({DOMAIN_CATALOG}),
+    "subaccount_category_price_overrides": frozenset({DOMAIN_CATALOG}),
     "supplier_products": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD}),
     "suppliers": frozenset({DOMAIN_CATALOG, DOMAIN_DASHBOARD, DOMAIN_INVENTORY}),
     # Import history is no longer read by the dashboard.  Source provenance

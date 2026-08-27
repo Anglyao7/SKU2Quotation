@@ -143,6 +143,8 @@ def test_composed_routes_preserve_the_public_contract(tmp_path: Path) -> None:
         ("GET", "/api/v1/public-quote-drafts/{quote_draft_id}/pdf"),
         ("GET", "/api/v1/public-quote-drafts/{quote_draft_id}/xlsx"),
         ("GET", "/api/admin/tenants"),
+        ("GET", "/api/admin/tenants/{tenant_id}"),
+        ("GET", "/api/admin/tenants/{tenant_id}/subaccounts/{membership_id}"),
         ("POST", "/api/admin/tenants"),
         ("PATCH", "/api/admin/tenants/{tenant_id}"),
         ("PATCH", "/api/admin/tenants/{tenant_id}/subscription"),

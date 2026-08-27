@@ -136,6 +136,7 @@ def storefront_analytics(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             days=days,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -162,6 +163,7 @@ def storefront_product_ranking(
             days=days,
             page=page,
             page_size=page_size,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -186,6 +188,7 @@ def assign_storefront_popular_category(
             membership_id=context.membership_id,
             permissions=context.permissions,
             product_ids=payload.product_ids,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

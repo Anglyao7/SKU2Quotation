@@ -104,3 +104,112 @@ class SubaccountProductPriceOverrideRow(AuditTimestampMixin, Base):
     pricing_mode: Mapped[str] = mapped_column(String(30), nullable=False)
     value: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class SubaccountSkuPriceOverrideRow(AuditTimestampMixin, Base):
+    """An optional price rule for one concrete SKU of a child account.
+
+    A product may contain variants with different source prices.  Keeping the
+    most specific rule at SKU level means a reseller can adjust one variant
+    without flattening the other variants into a single product price.
+    """
+
+    __tablename__ = "subaccount_sku_price_overrides"
+    __table_args__ = (
+        CheckConstraint(
+            "pricing_mode IN ('MARKUP_PERCENT', 'FIXED_PRICE')",
+            name="sku_pricing_mode_allowed",
+        ),
+        CheckConstraint("value >= 0", name="sku_override_value_nonnegative"),
+        UniqueConstraint(
+            "tenant_id",
+            "membership_id",
+            "sku_id",
+            name="uq_subaccount_sku_price_override",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_subaccount_sku_price_override_membership",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "sku_id"],
+            ["skus.tenant_id", "skus.id"],
+            name="fk_subaccount_sku_price_override_sku",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_subaccount_sku_price_overrides_tenant_membership",
+            "tenant_id",
+            "membership_id",
+        ),
+        Index(
+            "ix_subaccount_sku_price_overrides_tenant_sku",
+            "tenant_id",
+            "sku_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    membership_id: Mapped[UUID] = mapped_column(nullable=False)
+    sku_id: Mapped[UUID] = mapped_column(nullable=False)
+    pricing_mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class SubaccountCategoryPriceOverrideRow(AuditTimestampMixin, Base):
+    """A category-level markup inherited by the category's SKUs.
+
+    Product overrides remain the most specific rule.  This table deliberately
+    stores only a percentage so a category can contain SKUs with different
+    base prices without collapsing them into one artificial fixed price.
+    """
+
+    __tablename__ = "subaccount_category_price_overrides"
+    __table_args__ = (
+        CheckConstraint(
+            "markup_percent >= 0", name="category_markup_nonnegative"
+        ),
+        CheckConstraint(
+            "markup_percent <= 100000", name="category_markup_reasonable"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "membership_id",
+            "category_id",
+            name="uq_subaccount_category_price_override",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_subaccount_category_price_override_membership",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "category_id"],
+            ["product_categories.tenant_id", "product_categories.id"],
+            name="fk_subaccount_category_price_override_category",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_subaccount_category_price_overrides_tenant_membership",
+            "tenant_id",
+            "membership_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    membership_id: Mapped[UUID] = mapped_column(nullable=False)
+    category_id: Mapped[UUID] = mapped_column(nullable=False)
+    markup_percent: Mapped[Decimal] = mapped_column(
+        Numeric(12, 4), nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

@@ -194,8 +194,15 @@ def get_storefront_analytics(
     tenant_id: UUID,
     permissions: frozenset[str],
     days: int,
+    account_scope: str = "STAFF",
 ) -> StorefrontAnalyticsResponse:
     _require(permissions, "analytics.view")
+    if account_scope == "CUSTOMER_SUBACCOUNT":
+        raise ApplicationError(
+            "ANALYTICS_NOT_AVAILABLE",
+            "子账号暂不提供全店铺统计。",
+            kind="forbidden",
+        )
     _tenant, now, timezone_name, zone, started_at, ended_at = (
         _analytics_date_window(session, tenant_id=tenant_id, days=days)
     )
@@ -305,10 +312,17 @@ def get_product_ranking(
     days: int,
     page: int,
     page_size: int,
+    account_scope: str = "STAFF",
 ) -> StorefrontProductRankingResponse:
     """Return a product-level ranking suitable for merchant bulk actions."""
 
     _require(permissions, "analytics.view")
+    if account_scope == "CUSTOMER_SUBACCOUNT":
+        raise ApplicationError(
+            "ANALYTICS_NOT_AVAILABLE",
+            "子账号暂不提供全店铺统计。",
+            kind="forbidden",
+        )
     _tenant, _now, _timezone_name, zone, started_at, ended_at = (
         _analytics_date_window(session, tenant_id=tenant_id, days=days)
     )
@@ -356,10 +370,17 @@ def assign_products_to_popular_category(
     membership_id: UUID,
     permissions: frozenset[str],
     product_ids: list[UUID],
+    account_scope: str = "STAFF",
 ) -> PopularCategoryAssignResponse:
     """Move selected products into the tenant's stable, system-managed hot category."""
 
     _require(permissions, "analytics.view")
+    if account_scope == "CUSTOMER_SUBACCOUNT":
+        raise ApplicationError(
+            "ANALYTICS_NOT_AVAILABLE",
+            "子账号暂不提供全店铺统计。",
+            kind="forbidden",
+        )
     _require(permissions, "product.edit")
     lock_catalog_write(session, tenant_id=tenant_id)
     products = list(

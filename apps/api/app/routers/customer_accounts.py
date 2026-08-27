@@ -11,14 +11,18 @@ from ..customer_accounts_schemas import (
     CustomerSubaccountAccessUpdate,
     CustomerSubaccountCreate,
     CustomerSubaccountDashboard,
+    CustomerSubaccountOrderDetail,
     CustomerSubaccountOrderPage,
+    CustomerSubaccountPasswordReset,
     CustomerSubaccountStatusUpdate,
     CustomerSubaccountSummary,
     SubaccountPricingPage,
+    SubaccountCategoryPriceOverrideRequest,
     SubaccountPricingPolicyResponse,
     SubaccountPricingPolicyUpdate,
     SubaccountProductPriceOverrideRequest,
     SubaccountProductPricingItem,
+    SubaccountSkuPriceOverrideRequest,
 )
 from ..database import get_auth_session
 from ..domain.errors import ApplicationError
@@ -26,6 +30,7 @@ from ..services.auth.dependencies import (
     current_context,
     get_authenticated_session,
 )
+from ..services.auth.service import AuthError
 from ..use_cases import customer_accounts as use_cases
 from .errors import application_http_error
 
@@ -100,6 +105,49 @@ def customer_account_orders(
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/customer-accounts/orders/{quote_draft_id}",
+    response_model=CustomerSubaccountOrderDetail,
+)
+def customer_account_order_detail(
+    quote_draft_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> CustomerSubaccountOrderDetail:
+    try:
+        return use_cases.get_customer_subaccount_order(
+            session,
+            context=current_context(session),
+            quote_draft_id=quote_draft_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/customer-accounts/{membership_id}/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def reset_customer_account_password(
+    membership_id: UUID,
+    request: CustomerSubaccountPasswordReset,
+    session: Session = Depends(get_authenticated_session),
+    identity_session: Session = Depends(get_auth_session),
+) -> None:
+    try:
+        use_cases.reset_customer_subaccount_password(
+            _identity_write_session(session, identity_session),
+            context=current_context(session),
+            membership_id=membership_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    except AuthError as exc:
+        raise application_http_error(
+            ApplicationError(exc.code, exc.message, kind="unavailable")
+        ) from exc
 
 
 @router.patch(
@@ -223,6 +271,90 @@ def clear_customer_account_product_pricing(
             context=current_context(session),
             membership_id=membership_id,
             product_id=product_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/customer-accounts/{membership_id}/pricing/skus/{sku_id}",
+    response_model=SubaccountProductPricingItem,
+)
+def set_customer_account_sku_pricing(
+    membership_id: UUID,
+    sku_id: UUID,
+    request: SubaccountSkuPriceOverrideRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SubaccountProductPricingItem:
+    try:
+        return use_cases.set_subaccount_sku_price_override(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            sku_id=sku_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/customer-accounts/{membership_id}/pricing/skus/{sku_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def clear_customer_account_sku_pricing(
+    membership_id: UUID,
+    sku_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> None:
+    try:
+        use_cases.clear_subaccount_sku_price_override(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            sku_id=sku_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/customer-accounts/{membership_id}/pricing/categories/{category_id}",
+    response_model=SubaccountPricingPolicyResponse,
+)
+def set_customer_account_category_pricing(
+    membership_id: UUID,
+    category_id: UUID,
+    request: SubaccountCategoryPriceOverrideRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SubaccountPricingPolicyResponse:
+    try:
+        return use_cases.update_subaccount_category_price_override(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            category_id=category_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/customer-accounts/{membership_id}/pricing/categories/{category_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def clear_customer_account_category_pricing(
+    membership_id: UUID,
+    category_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> None:
+    try:
+        use_cases.clear_subaccount_category_price_override(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+            category_id=category_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

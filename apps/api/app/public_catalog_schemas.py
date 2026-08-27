@@ -242,6 +242,14 @@ class PublicQuoteDraftResponse(BaseModel):
     customer_company: str | None
     customer_email: str | None
     customer_phone: str | None
+    # A normalized two-letter country code captured at submission time.  It is
+    # safe for the merchant workspace and avoids exposing or retaining the
+    # visitor's raw IP address in the quote payload.
+    visitor_country_code: str | None = None
+    # This flag is populated for authenticated merchant workspaces.  It lets
+    # an owner view a child-account inquiry without accidentally showing edit
+    # controls.  Public storefront responses keep the default ``False``.
+    read_only: bool = False
     notes: str | None
     locale: StorefrontLocale = "zh-CN"
     document_style: QuoteDocumentStyle = "indigo"
@@ -379,6 +387,8 @@ class PublicQuoteDraftSummary(BaseModel):
     status: str
     customer_name: str
     customer_company: str | None
+    visitor_country_code: str | None = None
+    read_only: bool = False
     locale: StorefrontLocale = "zh-CN"
     currency: str
     total_amount: Decimal

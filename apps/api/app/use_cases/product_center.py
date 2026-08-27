@@ -87,6 +87,13 @@ from ..adapters.object_storage import get_object_storage
 from ..services.sku_catalog_export import build_sku_catalog_workbook
 from ..services.sku_quotas import ensure_sku_capacity
 from ..services.sku_codes import issue_sku_codes
+from ..services.subaccount_pricing import (
+    effective_subaccount_price,
+    subaccount_category_price_rules,
+    subaccount_price_rules,
+    subaccount_sku_price_rules,
+)
+from ..services.public_catalog_privacy import public_sku_option_values
 from ..services.catalog_write_guard import (
     lock_catalog_write as _lock_catalog_write,
     release_rollback_ownership as _release_rollback_ownership,
@@ -321,6 +328,35 @@ def _sku_response(row: SkuRow) -> SkuResponse:
     )
 
 
+def _scoped_sku_response(row: SkuRow, *, account_scope: str = "STAFF") -> SkuResponse:
+    """Return the SKU projection allowed for the current workspace member.
+
+    Child accounts operate the catalogue, so they still receive the generated
+    SKU code, variant values and fulfilment fields.  The source/import SKU code
+    is intentionally omitted: it belongs to the owner's sourcing data and is
+    not needed to sell or edit a SKU.
+    """
+
+    if account_scope != "CUSTOMER_SUBACCOUNT":
+        return _sku_response(row)
+    return SkuResponse(
+        id=row.id,
+        product_id=row.product_id,
+        sku_code=row.sku_code,
+        source_sku_code=None,
+        name=row.name,
+        option_values=public_sku_option_values(row.option_values or {}),
+        barcode=None,
+        default_moq=row.default_moq,
+        moq_unit=row.moq_unit,
+        weight=row.weight,
+        weight_unit=row.weight_unit,
+        status=row.status,
+        version=row.version,
+        updated_at=row.updated_at,
+    )
+
+
 def _public_offer_response(row: PublicCatalogOfferRow) -> PublicCatalogOfferResponse:
     return PublicCatalogOfferResponse(
         id=row.id,
@@ -392,6 +428,118 @@ def _offers(
     ]
 
 
+def _child_pricing_context(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID | None,
+    product_ids: set[UUID],
+    category_ids: set[UUID],
+    sku_ids: set[UUID] | None = None,
+) -> tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID]]:
+    """Load one child account's effective-price rules for a catalog read.
+
+    The context is intentionally assembled once per page.  Besides avoiding a
+    query per card, this makes it impossible for a child response to fall back
+    to the parent's source/cost offer while rendering a later row.
+    """
+
+    if membership_id is None:
+        return Decimal("0"), {}, {}, {}, set()
+    markup, overrides, hidden = subaccount_price_rules(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id,
+        product_ids=product_ids,
+    )
+    category_markup = subaccount_category_price_rules(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id,
+        category_ids=category_ids,
+    )
+    sku_overrides = subaccount_sku_price_rules(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id,
+        sku_ids=sku_ids,
+        product_ids=product_ids,
+    )
+    return markup, overrides, category_markup, sku_overrides, hidden
+
+
+def _public_offer_is_live(offer: PublicCatalogOfferRow, *, now: datetime) -> bool:
+    if offer.publication_status != "PUBLISHED" or offer.deleted_at is not None:
+        return False
+    valid_from = offer.valid_from
+    valid_to = offer.valid_to
+    if valid_from is not None and valid_from.tzinfo is None:
+        valid_from = valid_from.replace(tzinfo=UTC)
+    if valid_to is not None and valid_to.tzinfo is None:
+        valid_to = valid_to.replace(tzinfo=UTC)
+    return (valid_from is None or valid_from <= now) and (
+        valid_to is None or valid_to >= now
+    )
+
+
+def _child_offer_prices(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID | None,
+    product: Any,
+    skus: list[SkuRow],
+    pricing_context: tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID]] | None = None,
+    now: datetime | None = None,
+) -> dict[UUID, tuple[Decimal, str]]:
+    """Return effective selling prices keyed by public-offer id.
+
+    A product may have several SKU prices.  We preserve every SKU's price and
+    let the caller derive a range; we never replace the set with one product
+    level fixed price.
+    """
+
+    if membership_id is None:
+        return {}
+    now = now or datetime.now(UTC)
+    context = pricing_context or _child_pricing_context(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id,
+        product_ids={product.id},
+        category_ids={product.category_id} if product.category_id else set(),
+    )
+    markup, overrides, category_markup_by_id, sku_overrides, hidden = context
+    if product.id in hidden:
+        return {}
+    category_markup = (
+        category_markup_by_id.get(product.category_id)
+        if product.category_id is not None
+        else None
+    )
+    sku_by_id = {sku.id: sku for sku in skus}
+    result: dict[UUID, tuple[Decimal, str]] = {}
+    for offer in repository.list_public_offers_for_product(
+        session,
+        tenant_id=tenant_id,
+        product_id=product.id,
+    ):
+        sku = sku_by_id.get(offer.sku_id)
+        if sku is None or sku.status != "ACTIVE" or not _public_offer_is_live(offer, now=now):
+            continue
+        result[offer.id] = (
+            effective_subaccount_price(
+                Decimal(offer.unit_price),
+                markup_percent=markup,
+                override=overrides.get(product.id),
+                category_markup_percent=category_markup,
+                sku_override=sku_overrides.get(sku.id),
+            ),
+            str(offer.currency).upper(),
+        )
+    return result
+
+
 def _card(
     session: Session,
     *,
@@ -399,6 +547,9 @@ def _card(
     product: Any,
     permissions: frozenset[str],
     storefront_slug: str | None,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
+    pricing_context: tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID]] | None = None,
 ) -> ProductCard:
     category = repository.get_category(
         session, tenant_id=tenant_id, category_id=product.category_id
@@ -422,16 +573,27 @@ def _card(
         if any(image.approval_status == "APPROVED" for image in images)
         else "SOURCE" if images else "NONE"
     )
+    can_read_owner_data = account_scope != "CUSTOMER_SUBACCOUNT"
     offers = _offers(
         session,
         tenant_id=tenant_id,
         product_id=product.id,
-        can_read_cost="product.cost.read" in permissions,
-    )
+        can_read_cost=can_read_owner_data and "product.cost.read" in permissions,
+    ) if can_read_owner_data else []
     current_offer = next(
         (offer for offer in offers if offer.price_validity in {"VALID", "EXPIRING"}),
         offers[0] if offers else None,
     )
+    child_prices = _child_offer_prices(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id if not can_read_owner_data else None,
+        product=product,
+        skus=skus,
+        pricing_context=pricing_context,
+    )
+    child_price_values = [value for value, _currency in child_prices.values()]
+    child_currency = next(iter(child_prices.values()), (None, None))[1]
     model = skus[0].sku_code if skus else (current_offer.supplier_sku if current_offer else "")
     capabilities = ["read"]
     if "product.edit" in permissions:
@@ -454,7 +616,7 @@ def _card(
         ),
         material=material,
         sku_count=len(skus),
-        supplier_count=len(offers),
+        supplier_count=len(offers) if can_read_owner_data else 0,
         primary_image_url=(
             _sku_thumbnail_url(
                 primary_image,
@@ -464,16 +626,36 @@ def _card(
             else None
         ),
         image_status=image_status,
-        current_offer=current_offer,
+        current_offer=current_offer if can_read_owner_data else None,
         current_version=product.current_version,
         updated_at=product.updated_at,
         capabilities=capabilities,
         model=model,
-        supplier=current_offer.supplier_name if current_offer else "Unassigned",
-        price=current_offer.unit_price if current_offer else None,
-        currency=current_offer.currency if current_offer else None,
-        moq=current_offer.moq if current_offer else None,
+        supplier=current_offer.supplier_name if can_read_owner_data and current_offer else "—",
+        price=(
+            current_offer.unit_price
+            if can_read_owner_data and current_offer
+            else min(child_price_values) if child_price_values else None
+        ),
+        currency=(
+            current_offer.currency
+            if can_read_owner_data and current_offer
+            else child_currency
+        ),
+        moq=current_offer.moq if can_read_owner_data and current_offer else None,
         tags=[value for value in [category.name if category else None, material] if value],
+        price_from=(
+            min(child_price_values) if child_price_values else None
+        ) if not can_read_owner_data else (
+            min((offer.unit_price for offer in offers if offer.unit_price is not None), default=None)
+            if offers else None
+        ),
+        price_to=(
+            max(child_price_values) if child_price_values else None
+        ) if not can_read_owner_data else (
+            max((offer.unit_price for offer in offers if offer.unit_price is not None), default=None)
+            if offers else None
+        ),
     )
 
 
@@ -488,17 +670,40 @@ def list_products(
     statuses: list[str],
     approved_images_only: bool,
     limit: int,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> list[ProductCard]:
     _require(permissions, "product.view")
+    hidden_product_ids = (
+        subaccount_price_rules(
+            session,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            product_ids=set(),
+        )[2]
+        if account_scope == "CUSTOMER_SUBACCOUNT"
+        else set()
+    )
     rows = repository.list_product_rows(
         session,
         tenant_id=tenant_id,
         query=query,
         category_id=category_id,
-        supplier_id=supplier_id,
+        # Supplier relationships are owner-only.  Ignore a guessed supplier
+        # filter for child accounts instead of allowing a side-channel that
+        # reveals whether a private supplier id exists in the workspace.
+        supplier_id=None if account_scope == "CUSTOMER_SUBACCOUNT" else supplier_id,
         statuses=statuses,
         approved_images_only=approved_images_only,
         limit=limit,
+        hidden_product_ids=hidden_product_ids,
+    )
+    pricing_context = _child_pricing_context(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id if account_scope == "CUSTOMER_SUBACCOUNT" else None,
+        product_ids={row.id for row in rows},
+        category_ids={row.category_id for row in rows if row.category_id is not None},
     )
     storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
     return [
@@ -508,6 +713,9 @@ def list_products(
             product=row,
             permissions=permissions,
             storefront_slug=storefront_slug,
+            account_scope=account_scope,
+            membership_id=membership_id,
+            pricing_context=pricing_context,
         )
         for row in rows
     ]
@@ -524,6 +732,8 @@ def list_product_page(
     missing_images_only: bool,
     page: int,
     page_size: int,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> ProductListPage:
     """List the catalog by product, including products without any SKU rows."""
 
@@ -538,6 +748,16 @@ def list_product_page(
             f"Unsupported product status: {', '.join(sorted(invalid_statuses))}",
         )
 
+    hidden_product_ids = (
+        subaccount_price_rules(
+            session,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            product_ids=set(),
+        )[2]
+        if account_scope == "CUSTOMER_SUBACCOUNT"
+        else set()
+    )
     rows, total = repository.list_product_page_rows(
         session,
         tenant_id=tenant_id,
@@ -547,6 +767,14 @@ def list_product_page(
         missing_images_only=missing_images_only,
         page=page,
         page_size=page_size,
+        hidden_product_ids=hidden_product_ids,
+    )
+    pricing_context = _child_pricing_context(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id if account_scope == "CUSTOMER_SUBACCOUNT" else None,
+        product_ids={row.id for row in rows},
+        category_ids={row.category_id for row in rows if row.category_id is not None},
     )
     storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
     items = [
@@ -556,6 +784,9 @@ def list_product_page(
             product=row,
             permissions=permissions,
             storefront_slug=storefront_slug,
+            account_scope=account_scope,
+            membership_id=membership_id,
+            pricing_context=pricing_context,
         )
         for row in rows
     ]
@@ -580,8 +811,11 @@ def list_skus(
     page_size: int,
     include_supplier_summary: bool = True,
     missing_images_only: bool = False,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> SkuListPage:
     _require(permissions, "product.view")
+    expose_supplier_summary = include_supplier_summary and account_scope != "CUSTOMER_SUBACCOUNT"
     normalized_statuses = sorted(
         {status.strip().upper() for status in statuses if status.strip()}
     )
@@ -591,6 +825,20 @@ def list_skus(
             "SKU_STATUS_INVALID",
             f"Unsupported SKU status: {', '.join(sorted(invalid_statuses))}",
         )
+
+    child_scope = account_scope == "CUSTOMER_SUBACCOUNT"
+    # Resolve the child visibility policy before paging so hidden products do
+    # not occupy a page or inflate the reported total.
+    hidden_product_ids = (
+        subaccount_price_rules(
+            session,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            product_ids=set(),
+        )[2]
+        if child_scope
+        else set()
+    )
 
     cache_slot = query_cache.lookup(
         tenant_id=tenant_id,
@@ -603,7 +851,10 @@ def list_skus(
             "missing_images_only": missing_images_only,
             "page": page,
             "page_size": page_size,
-            "include_supplier_summary": include_supplier_summary,
+            "include_supplier_summary": expose_supplier_summary,
+            "account_scope": account_scope,
+            "membership_id": str(membership_id) if child_scope and membership_id else None,
+            "hidden_product_ids": sorted(str(value) for value in hidden_product_ids),
         },
     )
     if cache_slot.hit:
@@ -621,6 +872,9 @@ def list_skus(
             "category_id": str(category_id) if category_id else None,
             "statuses": normalized_statuses,
             "missing_images_only": missing_images_only,
+            "account_scope": account_scope,
+            "membership_id": str(membership_id) if child_scope and membership_id else None,
+            "hidden_product_ids": sorted(str(value) for value in hidden_product_ids),
         },
     )
     known_total = (
@@ -642,6 +896,7 @@ def list_skus(
         page=page,
         page_size=page_size,
         known_total=known_total,
+        hidden_product_ids=hidden_product_ids,
     )
     if known_total is None:
         query_cache.store(
@@ -655,6 +910,30 @@ def list_skus(
         )
     sku_ids = {row.sku.id for row in rows}
     product_ids = {row.product.id for row in rows}
+    pricing_context = _child_pricing_context(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id if child_scope else None,
+        product_ids=product_ids,
+        category_ids={row.product.category_id for row in rows if row.product.category_id is not None},
+    )
+    child_prices_by_product: dict[UUID, dict[UUID, tuple[Decimal, str]]] = {}
+    if child_scope:
+        skus_by_product: dict[UUID, list[SkuRow]] = {}
+        product_by_id: dict[UUID, Any] = {}
+        for row in rows:
+            skus_by_product.setdefault(row.product.id, []).append(row.sku)
+            product_by_id[row.product.id] = row.product
+        for product_id, product_skus in skus_by_product.items():
+            product = product_by_id[product_id]
+            child_prices_by_product[product_id] = _child_offer_prices(
+                session,
+                tenant_id=tenant_id,
+                membership_id=membership_id,
+                product=product,
+                skus=product_skus,
+                pricing_context=pricing_context,
+            )
     direct_suppliers = {
         supplier.id: supplier
         for supplier in repository.list_suppliers_by_ids(
@@ -666,11 +945,11 @@ def list_skus(
                 if row.sku.supplier_id is not None
             },
         )
-    }
+    } if expose_supplier_summary else {}
 
     suppliers_by_sku: dict[UUID, list[tuple[Any, Any]]] = {}
     suppliers_by_product: dict[UUID, list[tuple[Any, Any]]] = {}
-    if include_supplier_summary:
+    if expose_supplier_summary:
         for source, supplier in repository.list_supplier_rows_for_sku_page(
             session,
             tenant_id=tenant_id,
@@ -729,11 +1008,22 @@ def list_skus(
             else "SOURCE" if image_states else "NONE"
         )
         offer = row.public_offer
+        child_offer_price = (
+            child_prices_by_product.get(row.product.id, {}).get(offer.id)
+            if child_scope and offer is not None
+            else None
+        )
         items.append(
             SkuListItem(
                 id=row.sku.id,
                 sku_code=row.sku.sku_code,
-                source_sku_code=row.sku.source_sku_code,
+                # ``source_sku_code`` is the supplier/import identifier.  A
+                # reseller needs the generated SKU code to operate the
+                # catalogue, but must not be able to infer the owner's source
+                # workbook or supplier mapping from this list endpoint.
+                source_sku_code=(
+                    None if child_scope else row.sku.source_sku_code
+                ),
                 name=row.sku.name or row.product.name,
                 product_id=row.product.id,
                 product_code=row.product.product_code,
@@ -757,22 +1047,37 @@ def list_skus(
                         unique_suppliers[0].name if unique_suppliers else None
                     ),
                     names=[supplier.name for supplier in unique_suppliers[:3]],
-                ),
+                ) if expose_supplier_summary else SkuSupplierSummary(count=0),
                 default_moq=row.sku.default_moq,
                 moq_unit=row.sku.moq_unit,
                 packing_quantity=_packing_quantity(row.sku.option_values),
-                public_price=offer.unit_price if offer else None,
-                public_currency=offer.currency if offer else None,
+                public_price=(
+                    child_offer_price[0]
+                    if child_scope and child_offer_price is not None
+                    else offer.unit_price if offer else None
+                ),
+                public_currency=(
+                    child_offer_price[1]
+                    if child_scope and child_offer_price is not None
+                    else offer.currency if offer else None
+                ),
                 public_offer_status=offer.publication_status if offer else None,
                 status=row.sku.status,
                 version=row.sku.version,
                 updated_at=row.sku.updated_at,
-                source_type=_sku_source_type(
-                    row.sku,
-                    source_filename=row.source_filename,
+                source_type=(
+                    "MANUAL"
+                    if child_scope
+                    else _sku_source_type(
+                        row.sku,
+                        source_filename=row.source_filename,
+                    )
                 ),
-                source_filename=row.source_filename,
-                source_imported_at=row.source_imported_at,
+                # Import provenance can reveal the owner's internal files to
+                # a reseller, so it is an owner-only field just like supplier
+                # identity.
+                source_filename=None if child_scope else row.source_filename,
+                source_imported_at=None if child_scope else row.source_imported_at,
                 image_status=image_status,
                 thumbnail_url=thumbnail_urls_by_product.get(row.product.id),
                 is_pinned=row.product.storefront_pinned_at is not None,
@@ -804,8 +1109,21 @@ def export_sku_catalog(
     tenant_id: UUID,
     permissions: frozenset[str],
     request: SkuCatalogExportRequest,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> bytes:
     _require(permissions, "product.view")
+    child_scope = account_scope == "CUSTOMER_SUBACCOUNT"
+    hidden_product_ids = (
+        subaccount_price_rules(
+            session,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            product_ids=set(),
+        )[2]
+        if child_scope
+        else set()
+    )
     rows, total = repository.list_sku_page_rows(
         session,
         tenant_id=tenant_id,
@@ -816,6 +1134,7 @@ def export_sku_catalog(
         page=1,
         page_size=MAX_SKU_EXPORT_ROWS + 1,
         sku_ids=set(request.sku_ids) if request.sku_ids else None,
+        hidden_product_ids=hidden_product_ids,
     )
     if total > MAX_SKU_EXPORT_ROWS:
         raise ApplicationError(
@@ -825,6 +1144,38 @@ def export_sku_catalog(
         )
 
     product_ids = {row.product.id for row in rows}
+    pricing_context = _child_pricing_context(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id if child_scope else None,
+        product_ids=product_ids,
+        category_ids={row.product.category_id for row in rows if row.product.category_id is not None},
+    )
+    public_price_overrides: dict[UUID, Decimal] = {}
+    if child_scope:
+        skus_by_product: dict[UUID, list[SkuRow]] = {}
+        product_by_id: dict[UUID, Any] = {}
+        for row in rows:
+            skus_by_product.setdefault(row.product.id, []).append(row.sku)
+            product_by_id[row.product.id] = row.product
+        for product_id, product_skus in skus_by_product.items():
+            effective_by_offer = _child_offer_prices(
+                session,
+                tenant_id=tenant_id,
+                membership_id=membership_id,
+                product=product_by_id[product_id],
+                skus=product_skus,
+                pricing_context=pricing_context,
+            )
+            offer_by_sku = {
+                row.public_offer.sku_id: row.public_offer
+                for row in rows
+                if row.product.id == product_id and row.public_offer is not None
+            }
+            for sku_id, offer in offer_by_sku.items():
+                effective = effective_by_offer.get(offer.id)
+                if effective is not None:
+                    public_price_overrides[sku_id] = effective[0]
     images_by_product: dict[UUID, list[ProductImageRow]] = {}
     ordered_product_ids = list(product_ids)
     for start in range(0, len(ordered_product_ids), 1000):
@@ -835,16 +1186,22 @@ def export_sku_catalog(
         ):
             images_by_product.setdefault(image.product_id, []).append(image)
 
-    supplier_rows = repository.list_suppliers_by_ids(
-        session,
-        tenant_id=tenant_id,
-        supplier_ids={
-            row.sku.supplier_id
-            for row in rows
-            if row.sku.supplier_id is not None
-        },
-    )
-    supplier_names = {row.id: row.name for row in supplier_rows}
+    # Child accounts operate the same catalog workflow as the owner, but
+    # supplier identity is an owner-only field.  Keep it out of exports as
+    # well as the list/detail responses so a downloaded workbook cannot leak
+    # the parent's sourcing data.
+    supplier_names: dict[UUID, str] = {}
+    if account_scope != "CUSTOMER_SUBACCOUNT":
+        supplier_rows = repository.list_suppliers_by_ids(
+            session,
+            tenant_id=tenant_id,
+            supplier_ids={
+                row.sku.supplier_id
+                for row in rows
+                if row.sku.supplier_id is not None
+            },
+        )
+        supplier_names = {row.id: row.name for row in supplier_rows}
     storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
     image_urls = {
         image.id: _absolute_image_url(image, storefront_slug=storefront_slug)
@@ -856,6 +1213,8 @@ def export_sku_catalog(
         images_by_product=images_by_product,
         image_urls=image_urls,
         supplier_names=supplier_names,
+        public_price_overrides=public_price_overrides if child_scope else None,
+        include_source_sku_codes=not child_scope,
     )
 
 
@@ -865,21 +1224,41 @@ def get_product(
     tenant_id: UUID,
     permissions: frozenset[str],
     product_id: UUID,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> ProductDetail:
     _require(permissions, "product.view")
     product = repository.get_product_row(session, tenant_id=tenant_id, product_id=product_id)
     if product is None:
         raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+    if account_scope == "CUSTOMER_SUBACCOUNT":
+        hidden_product_ids = subaccount_price_rules(
+            session,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            product_ids=set(),
+        )[2]
+        if product.id in hidden_product_ids:
+            raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
     card = _card(
         session,
         tenant_id=tenant_id,
         product=product,
         permissions=permissions,
         storefront_slug=_storefront_slug(session, tenant_id=tenant_id),
+        account_scope=account_scope,
+        membership_id=membership_id,
     )
     attributes = repository.list_attributes(session, tenant_id=tenant_id, product_id=product.id)
     skus = repository.list_skus(session, tenant_id=tenant_id, product_id=product.id)
-    audit = repository.list_audit_events(session, tenant_id=tenant_id, product_id=product.id)
+    can_read_owner_data = account_scope != "CUSTOMER_SUBACCOUNT"
+    audit = (
+        repository.list_audit_events(
+            session, tenant_id=tenant_id, product_id=product.id
+        )
+        if can_read_owner_data
+        else []
+    )
     return ProductDetail(
         **card.model_dump(),
         description=product.description,
@@ -895,12 +1274,19 @@ def get_product(
             )
             for row in attributes
         ],
-        skus=[_sku_response(row) for row in skus],
-        sources=_offers(
-            session,
-            tenant_id=tenant_id,
-            product_id=product.id,
-            can_read_cost="product.cost.read" in permissions,
+        skus=[
+            _scoped_sku_response(row, account_scope=account_scope)
+            for row in skus
+        ],
+        sources=(
+            _offers(
+                session,
+                tenant_id=tenant_id,
+                product_id=product.id,
+                can_read_cost="product.cost.read" in permissions,
+            )
+            if can_read_owner_data
+            else []
         ),
         activity=[
             ProductAuditEventResponse(
@@ -1379,6 +1765,7 @@ def create_manual_product(
     membership_id: UUID,
     permissions: frozenset[str],
     request: ManualProductCreateRequest,
+    account_scope: str = "STAFF",
 ) -> ProductDetail:
     _require(permissions, "product.view")
     _require(permissions, "product.edit")
@@ -1596,6 +1983,8 @@ def create_manual_product(
         tenant_id=tenant_id,
         permissions=permissions,
         product_id=product.id,
+        account_scope=account_scope,
+        membership_id=membership_id,
     )
 
 
@@ -1608,6 +1997,7 @@ def create_skus(
     permissions: frozenset[str],
     product_id: UUID,
     request: SkuBatchCreateRequest,
+    account_scope: str = "STAFF",
 ) -> list[SkuResponse]:
     _require(permissions, "product.edit")
     _lock_catalog_write(session, tenant_id=tenant_id)
@@ -1703,7 +2093,7 @@ def create_skus(
         rows.append(row)
     product.search_document_version = 0
     _commit(session, conflict_code="SKU_CODE_CONFLICT", conflict_message="SKU code already exists.")
-    return [_sku_response(row) for row in rows]
+    return [_scoped_sku_response(row, account_scope=account_scope) for row in rows]
 
 
 def update_sku(
@@ -1715,6 +2105,7 @@ def update_sku(
     permissions: frozenset[str],
     sku_id: UUID,
     request: SkuUpdateRequest,
+    account_scope: str = "STAFF",
 ) -> SkuResponse:
     _require(permissions, "product.edit")
     _lock_catalog_write(session, tenant_id=tenant_id)
@@ -1787,7 +2178,7 @@ def update_sku(
     )
     session.commit()
     session.refresh(row)
-    return _sku_response(row)
+    return _scoped_sku_response(row, account_scope=account_scope)
 
 
 def list_public_offers(
@@ -1796,15 +2187,53 @@ def list_public_offers(
     tenant_id: UUID,
     permissions: frozenset[str],
     product_id: UUID,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> list[PublicCatalogOfferResponse]:
     _require(permissions, "catalog.view")
-    if repository.get_product_row(session, tenant_id=tenant_id, product_id=product_id) is None:
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if product is None:
         raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+    offers = repository.list_public_offers_for_product(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if account_scope != "CUSTOMER_SUBACCOUNT":
+        return [_public_offer_response(row) for row in offers]
+    skus = repository.list_skus(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    pricing_context = _child_pricing_context(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id,
+        product_ids={product_id},
+        category_ids={product.category_id} if product.category_id is not None else set(),
+    )
+    effective_prices = _child_offer_prices(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id,
+        product=product,
+        skus=skus,
+        pricing_context=pricing_context,
+    )
     return [
-        _public_offer_response(row)
-        for row in repository.list_public_offers_for_product(
-            session, tenant_id=tenant_id, product_id=product_id
+        _public_offer_response(row).model_copy(
+            update={
+                "unit_price": effective_prices[row.id][0],
+                "currency": effective_prices[row.id][1],
+            }
         )
+        for row in offers
+        if row.id in effective_prices
     ]
 
 

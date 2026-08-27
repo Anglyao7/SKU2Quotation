@@ -164,7 +164,7 @@ def _token_response(
                     else None
                 ),
                 default_workspace=(
-                    "customer_portal"
+                    "dashboard"
                     if result.membership
                     and result.membership.account_scope == "CUSTOMER_SUBACCOUNT"
                     else "dashboard"

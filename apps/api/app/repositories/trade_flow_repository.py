@@ -7,6 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..image_intelligence_models import ImageSearchRow
+from ..identity_models import MembershipRow
 from ..product_center_models import SkuRow, SupplierPriceRow
 from ..product_supplier_models import ProductRow, SupplierProductRow
 from ..trade_flow_models import CustomerRow, InquiryItemRow, InquiryMatchResultRow, InquiryRow, QuotationApprovalRow, QuotationItemRow, QuotationRow, QuotationVersionRow
@@ -84,8 +85,50 @@ def current_price(session: Session, *, tenant_id: UUID, source_id: UUID, sku_id:
     return session.scalar(statement.order_by(SupplierPriceRow.valid_from.desc(), SupplierPriceRow.created_at.desc()))
 
 
-def list_quotations(session: Session, *, tenant_id: UUID, limit: int) -> list[tuple[QuotationRow, CustomerRow]]:
-    return session.execute(select(QuotationRow, CustomerRow).join(CustomerRow, (CustomerRow.tenant_id == QuotationRow.tenant_id) & (CustomerRow.id == QuotationRow.customer_id)).where(QuotationRow.tenant_id == tenant_id, QuotationRow.deleted_at.is_(None)).order_by(QuotationRow.updated_at.desc()).limit(limit)).all()
+def list_quotations(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    limit: int,
+    owner_membership_id: UUID | None = None,
+    parent_membership_id: UUID | None = None,
+) -> list[tuple[QuotationRow, CustomerRow]]:
+    """Load only records visible to the active account before pagination."""
+
+    statement = (
+        select(QuotationRow, CustomerRow)
+        .join(
+            CustomerRow,
+            (CustomerRow.tenant_id == QuotationRow.tenant_id)
+            & (CustomerRow.id == QuotationRow.customer_id),
+        )
+        .where(
+            QuotationRow.tenant_id == tenant_id,
+            QuotationRow.deleted_at.is_(None),
+        )
+    )
+    owner_column = QuotationRow.created_by_membership_id
+    if owner_membership_id is not None:
+        statement = statement.where(owner_column == owner_membership_id)
+    elif parent_membership_id is not None:
+        child_ids = select(MembershipRow.id).where(
+            MembershipRow.tenant_id == tenant_id,
+            MembershipRow.account_scope == "CUSTOMER_SUBACCOUNT",
+            MembershipRow.status.in_(("active", "suspended")),
+            MembershipRow.deleted_at.is_(None),
+        )
+        direct_child_ids = child_ids.where(
+            MembershipRow.parent_membership_id == parent_membership_id
+        )
+        # Formal quotations always have a creator. Staff-owned records remain
+        # collaborative; direct-child records are included for read-only
+        # supervision, while sibling-child records stay private.
+        statement = statement.where(
+            or_(~owner_column.in_(child_ids), owner_column.in_(direct_child_ids))
+        )
+    return session.execute(
+        statement.order_by(QuotationRow.updated_at.desc(), QuotationRow.id).limit(limit)
+    ).all()
 
 
 def get_quotation(session: Session, *, tenant_id: UUID, quotation_id: UUID) -> tuple[QuotationRow, QuotationVersionRow, QuotationApprovalRow] | None:

@@ -10,8 +10,10 @@ import type {
   CustomerPortalOverview,
   CustomerSubaccount,
   CustomerSubaccountCapability,
+  CustomerSubaccountModule,
   CustomerSubaccountDashboard,
   CustomerSubaccountOrder,
+  CustomerSubaccountOrderDetail,
   CustomerSubaccountOrderPage,
   SubaccountPricingMode,
   SubaccountPricingPage,
@@ -749,6 +751,7 @@ interface ApiCustomerSubaccount {
   status: string;
   identity_code: "SUBACCOUNT";
   capabilities: CustomerSubaccountCapability[];
+  modules?: CustomerSubaccountModule[];
   created_at: string;
   last_login_at?: string | null;
   login_count_30d: number;
@@ -761,6 +764,8 @@ interface ApiCustomerSubaccount {
   month_order_amount?: number | string;
   markup_percent?: number | string;
   override_count?: number;
+  category_override_count?: number;
+  sku_override_count?: number;
 }
 
 interface ApiCustomerSubaccountOrder {
@@ -775,6 +780,22 @@ interface ApiCustomerSubaccountOrder {
   total_amount: number;
   created_at: string;
   valid_until: string;
+  visitor_country_code?: string | null;
+}
+
+interface ApiCustomerSubaccountOrderItem {
+  sku_id: string;
+  product_id?: string | null;
+  sku_code: string;
+  product_name: string;
+  quantity: number | string;
+  currency: string;
+  unit_price: number | string;
+  line_total: number | string;
+}
+
+interface ApiCustomerSubaccountOrderDetail extends ApiCustomerSubaccountOrder {
+  items: ApiCustomerSubaccountOrderItem[];
 }
 
 function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
@@ -787,6 +808,7 @@ function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
     status: row.status,
     identityCode: row.identity_code,
     capabilities: row.capabilities || ["catalog", "submit_orders", "view_orders"],
+    modules: row.modules || ["products", "inquiries", "quotations", "announcements", "support"],
     createdAt: row.created_at,
     lastLoginAt: defined(row.last_login_at),
     loginCount30d: Number(row.login_count_30d || 0),
@@ -799,6 +821,8 @@ function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
     monthOrderAmount: Number(row.month_order_amount || 0),
     markupPercent: Number(row.markup_percent || 0),
     overrideCount: Number(row.override_count || 0),
+    categoryOverrideCount: Number(row.category_override_count || 0),
+    skuOverrideCount: Number(row.sku_override_count || 0),
   };
 }
 
@@ -815,6 +839,25 @@ function mapCustomerSubaccountOrder(row: ApiCustomerSubaccountOrder): CustomerSu
     totalAmount: Number(row.total_amount),
     createdAt: row.created_at,
     validUntil: row.valid_until,
+    visitorCountryCode: row.visitor_country_code || undefined,
+  };
+}
+
+function mapCustomerSubaccountOrderDetail(
+  row: ApiCustomerSubaccountOrderDetail,
+): CustomerSubaccountOrderDetail {
+  return {
+    ...mapCustomerSubaccountOrder(row),
+    items: (row.items || []).map((item) => ({
+      skuId: item.sku_id,
+      productId: item.product_id || undefined,
+      skuCode: item.sku_code,
+      productName: item.product_name,
+      quantity: Number(item.quantity || 0),
+      currency: item.currency,
+      unitPrice: Number(item.unit_price || 0),
+      lineTotal: Number(item.line_total || 0),
+    })),
   };
 }
 
@@ -849,6 +892,8 @@ interface ApiSubaccountPricingItem {
   product_id: string;
   product_code?: string | null;
   product_name: string;
+  category_id?: string | null;
+  category_name?: string | null;
   sku_count: number;
   base_price_from: number | string;
   base_price_to: number | string;
@@ -857,6 +902,17 @@ interface ApiSubaccountPricingItem {
   currency: string;
   override_mode?: SubaccountPricingMode | null;
   override_value?: number | string | null;
+  category_markup_percent?: number | string | null;
+  sku_override_count?: number;
+  sku_prices?: Array<{
+    sku_id: string;
+    sku_code: string;
+    base_price: number | string;
+    effective_price: number | string;
+    currency: string;
+    override_mode?: SubaccountPricingMode | null;
+    override_value?: number | string | null;
+  }>;
   updated_at: string;
 }
 
@@ -865,12 +921,16 @@ function mapSubaccountPricingPolicy(row: {
   markup_percent: number | string;
   override_count: number;
   hidden_product_count: number;
+  category_override_count?: number;
+  sku_override_count?: number;
 }): SubaccountPricingPolicy {
   return {
     membershipId: row.membership_id,
     markupPercent: Number(row.markup_percent || 0),
     overrideCount: Number(row.override_count || 0),
     hiddenProductCount: Number(row.hidden_product_count || 0),
+    categoryOverrideCount: Number(row.category_override_count || 0),
+    skuOverrideCount: Number(row.sku_override_count || 0),
   };
 }
 
@@ -879,6 +939,8 @@ function mapSubaccountPricingItem(row: ApiSubaccountPricingItem): SubaccountProd
     productId: row.product_id,
     productCode: defined(row.product_code),
     productName: row.product_name,
+    categoryId: row.category_id || undefined,
+    categoryName: row.category_name || undefined,
     skuCount: Number(row.sku_count || 0),
     basePriceFrom: Number(row.base_price_from || 0),
     basePriceTo: Number(row.base_price_to || 0),
@@ -887,6 +949,17 @@ function mapSubaccountPricingItem(row: ApiSubaccountPricingItem): SubaccountProd
     currency: row.currency,
     overrideMode: row.override_mode || undefined,
     overrideValue: row.override_value == null ? undefined : Number(row.override_value),
+    categoryMarkupPercent: row.category_markup_percent == null ? undefined : Number(row.category_markup_percent),
+    skuOverrideCount: Number(row.sku_override_count || 0),
+    skuPrices: (row.sku_prices || []).map((sku) => ({
+      skuId: sku.sku_id,
+      skuCode: sku.sku_code,
+      basePrice: Number(sku.base_price || 0),
+      effectivePrice: Number(sku.effective_price || 0),
+      currency: sku.currency,
+      overrideMode: sku.override_mode || undefined,
+      overrideValue: sku.override_value == null ? undefined : Number(sku.override_value),
+    })),
     updatedAt: row.updated_at,
   };
 }
@@ -898,7 +971,7 @@ export async function getCustomerSubaccountPricing(
   pageSize = 20,
 ): Promise<SubaccountPricingPage> {
   const row = await request<{
-    policy: { membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number };
+    policy: { membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number; category_override_count?: number; sku_override_count?: number };
     items: ApiSubaccountPricingItem[];
     total: number;
     page: number;
@@ -917,7 +990,7 @@ export async function updateCustomerSubaccountPricing(
   membershipId: string,
   markupPercent: number,
 ): Promise<SubaccountPricingPolicy> {
-  const row = await request<{ membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number }>(
+  const row = await request<{ membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number; category_override_count?: number; sku_override_count?: number }>(
     `/customer-accounts/${encodeURIComponent(membershipId)}/pricing`,
     { method: "PATCH", body: JSON.stringify({ markup_percent: markupPercent }) },
   );
@@ -947,6 +1020,58 @@ export async function clearCustomerSubaccountProductPricing(
   );
 }
 
+export async function updateCustomerSubaccountSkuPricing(
+  membershipId: string,
+  skuId: string,
+  pricingMode: SubaccountPricingMode,
+  value: number,
+): Promise<SubaccountProductPricingItem> {
+  const row = await request<ApiSubaccountPricingItem>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/pricing/skus/${encodeURIComponent(skuId)}`,
+    { method: "PUT", body: JSON.stringify({ pricing_mode: pricingMode, value }) },
+  );
+  return mapSubaccountPricingItem(row);
+}
+
+export async function clearCustomerSubaccountSkuPricing(
+  membershipId: string,
+  skuId: string,
+): Promise<void> {
+  await request<void>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/pricing/skus/${encodeURIComponent(skuId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function updateCustomerSubaccountCategoryPricing(
+  membershipId: string,
+  categoryId: string,
+  markupPercent: number,
+): Promise<SubaccountPricingPolicy> {
+  const row = await request<{
+    membership_id: string;
+    markup_percent: number | string;
+    override_count: number;
+    hidden_product_count: number;
+    category_override_count?: number;
+    sku_override_count?: number;
+  }>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/pricing/categories/${encodeURIComponent(categoryId)}`,
+    { method: "PUT", body: JSON.stringify({ markup_percent: markupPercent }) },
+  );
+  return mapSubaccountPricingPolicy(row);
+}
+
+export async function clearCustomerSubaccountCategoryPricing(
+  membershipId: string,
+  categoryId: string,
+): Promise<void> {
+  await request<void>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/pricing/categories/${encodeURIComponent(categoryId)}`,
+    { method: "DELETE" },
+  );
+}
+
 export async function listCustomerSubaccountOrders(
   page = 1,
   pageSize = 20,
@@ -965,12 +1090,32 @@ export async function listCustomerSubaccountOrders(
   };
 }
 
+export async function getCustomerSubaccountOrder(
+  quoteDraftId: string,
+): Promise<CustomerSubaccountOrderDetail> {
+  const row = await request<ApiCustomerSubaccountOrderDetail>(
+    `/customer-accounts/orders/${encodeURIComponent(quoteDraftId)}`,
+  );
+  return mapCustomerSubaccountOrderDetail(row);
+}
+
+export async function resetCustomerSubaccountPassword(
+  membershipId: string,
+  password: string,
+): Promise<void> {
+  await request<void>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}/password`,
+    { method: "PATCH", body: JSON.stringify({ password }) },
+  );
+}
+
 export async function createCustomerSubaccount(input: {
   displayName: string;
   loginIdentifier: string;
   password: string;
   email?: string;
-  capabilities: CustomerSubaccountCapability[];
+  capabilities?: CustomerSubaccountCapability[];
+  modules?: CustomerSubaccountModule[];
 }): Promise<CustomerSubaccount> {
   const row = await request<ApiCustomerSubaccount>("/customer-accounts", {
     method: "POST",
@@ -980,6 +1125,7 @@ export async function createCustomerSubaccount(input: {
       password: input.password,
       email: input.email || null,
       capabilities: input.capabilities,
+      modules: input.modules,
     }),
   });
   return mapCustomerSubaccount(row);
@@ -987,11 +1133,14 @@ export async function createCustomerSubaccount(input: {
 
 export async function updateCustomerSubaccountAccess(
   membershipId: string,
-  capabilities: CustomerSubaccountCapability[],
+  input: {
+    capabilities?: CustomerSubaccountCapability[];
+    modules?: CustomerSubaccountModule[];
+  },
 ): Promise<CustomerSubaccount> {
   const row = await request<ApiCustomerSubaccount>(
     `/customer-accounts/${encodeURIComponent(membershipId)}/access`,
-    { method: "PATCH", body: JSON.stringify({ capabilities }) },
+    { method: "PATCH", body: JSON.stringify(input) },
   );
   return mapCustomerSubaccount(row);
 }
@@ -1418,6 +1567,8 @@ interface ApiProduct {
   model: string;
   supplier: string;
   price?: number | null;
+  price_from?: number | null;
+  price_to?: number | null;
   currency?: string | null;
   tags: string[];
 }
@@ -1603,6 +1754,8 @@ function mapProduct(row: ApiProduct): CoreProduct {
     categoryId: row.category?.id,
     supplier: row.supplier,
     price: row.price == null ? undefined : Number(row.price),
+    priceFrom: row.price_from == null ? undefined : Number(row.price_from),
+    priceTo: row.price_to == null ? undefined : Number(row.price_to),
     currency: defined(row.currency),
     updated: row.updated_at,
     primaryImageUrl: defined(row.primary_image_url),
@@ -5693,12 +5846,13 @@ export async function updateAISearchRecommendedQuestions(
 }
 
 interface ApiInquiryItem { id: string; line_number: number; raw_requirement: string; normalized_requirement: Record<string, unknown>; quantity?: number | null; unit_code?: string | null; image_search_id?: string | null; status: string; version: number }
-interface ApiInquiry { id: string; inquiry_number: string; customer_id?: string | null; temporary_customer_name?: string | null; currency: string; language: string; status: string; version: number; items: ApiInquiryItem[] }
+interface ApiInquiry { id: string; inquiry_number: string; customer_id?: string | null; temporary_customer_name?: string | null; currency: string; language: string; status: string; version: number; read_only?: boolean; items: ApiInquiryItem[] }
 interface ApiMatch { id: string; inquiry_item_id: string; product_id: string; sku_id?: string | null; supplier_product_id?: string | null; product_version: number; rank: number; total_score: number; score_breakdown: Record<string, unknown>; reasons: string[]; gaps: string[]; evidence: Array<Record<string, unknown>>; ranking_version: string; status: string }
-interface ApiQuotation { id: string; quotation_number: string; inquiry_id: string; customer_id: string; currency: string; status: string; current_version: number; total_amount: number | string; expires_at?: string | null; approval_status: string; version_hash: string; created_at: string; updated_at: string; versions: Array<{ version_number: number; total_amount: number | string; currency: string; rule_version: string; content_hash: string; approval_status: string; created_at: string }>; items: Array<{ id: string; inquiry_item_id: string; product_id: string; product_snapshot: Record<string, unknown>; source_snapshot: Record<string, unknown>; quantity: number | string; unit_code: string; unit_cost?: number | string | null; target_margin_rate?: number | string | null; unit_price: number | string; line_total: number | string; warnings: string[] }> }
+interface ApiMatchBatch { inquiry_id: string; status: string; ranking_version: string; read_only?: boolean; candidates: Record<string, ApiMatch[]> }
+interface ApiQuotation { id: string; quotation_number: string; inquiry_id: string; customer_id: string; currency: string; status: string; current_version: number; total_amount: number | string; expires_at?: string | null; approval_status: string; read_only?: boolean; version_hash: string; created_at: string; updated_at: string; versions: Array<{ version_number: number; total_amount: number | string; currency: string; rule_version: string; content_hash: string; approval_status: string; created_at: string }>; items: Array<{ id: string; inquiry_item_id: string; product_id: string; sku_id?: string | null; supplier_product_id?: string | null; product_snapshot: Record<string, unknown>; source_snapshot: Record<string, unknown>; quantity: number | string; unit_code: string; unit_cost?: number | string | null; target_margin_rate?: number | string | null; unit_price: number | string; line_total: number | string; warnings: string[] }> }
 
 function mapInquiry(row: ApiInquiry): InquiryRecord {
-  return { id: row.id, inquiryNumber: row.inquiry_number, customerId: defined(row.customer_id), temporaryCustomerName: defined(row.temporary_customer_name), currency: row.currency, language: row.language, status: row.status, version: row.version, items: row.items.map((item) => ({ id: item.id, lineNumber: item.line_number, rawRequirement: item.raw_requirement, normalizedRequirement: item.normalized_requirement, quantity: defined(item.quantity), unitCode: defined(item.unit_code), imageSearchId: defined(item.image_search_id), status: item.status, version: item.version })) };
+  return { id: row.id, inquiryNumber: row.inquiry_number, customerId: defined(row.customer_id), temporaryCustomerName: defined(row.temporary_customer_name), currency: row.currency, language: row.language, status: row.status, version: row.version, readOnly: row.read_only, items: row.items.map((item) => ({ id: item.id, lineNumber: item.line_number, rawRequirement: item.raw_requirement, normalizedRequirement: item.normalized_requirement, quantity: defined(item.quantity), unitCode: defined(item.unit_code), imageSearchId: defined(item.image_search_id), status: item.status, version: item.version })) };
 }
 
 function mapMatch(row: ApiMatch): InquiryMatch {
@@ -5706,7 +5860,7 @@ function mapMatch(row: ApiMatch): InquiryMatch {
 }
 
 function mapQuotation(row: ApiQuotation): QuotationRecord {
-  return { id: row.id, quotationNumber: row.quotation_number, inquiryId: row.inquiry_id, customerId: row.customer_id, currency: row.currency, status: row.status, currentVersion: row.current_version, totalAmount: Number(row.total_amount), expiresAt: defined(row.expires_at), approvalStatus: row.approval_status, versionHash: row.version_hash, createdAt: row.created_at, updatedAt: row.updated_at, versions: row.versions.map((version) => ({ versionNumber: version.version_number, totalAmount: Number(version.total_amount), currency: version.currency, ruleVersion: version.rule_version, contentHash: version.content_hash, approvalStatus: version.approval_status, createdAt: version.created_at })), items: row.items.map((item) => ({ id: item.id, inquiryItemId: item.inquiry_item_id, productId: item.product_id, productSnapshot: item.product_snapshot, sourceSnapshot: item.source_snapshot, quantity: Number(item.quantity), unitCode: item.unit_code, unitCost: item.unit_cost == null ? undefined : Number(item.unit_cost), targetMarginRate: item.target_margin_rate == null ? undefined : Number(item.target_margin_rate), unitPrice: Number(item.unit_price), lineTotal: Number(item.line_total), warnings: item.warnings })) };
+  return { id: row.id, quotationNumber: row.quotation_number, inquiryId: row.inquiry_id, customerId: row.customer_id, currency: row.currency, status: row.status, currentVersion: row.current_version, totalAmount: Number(row.total_amount), expiresAt: defined(row.expires_at), approvalStatus: row.approval_status, readOnly: row.read_only, versionHash: row.version_hash, createdAt: row.created_at, updatedAt: row.updated_at, versions: row.versions.map((version) => ({ versionNumber: version.version_number, totalAmount: Number(version.total_amount), currency: version.currency, ruleVersion: version.rule_version, contentHash: version.content_hash, approvalStatus: version.approval_status, createdAt: version.created_at })), items: row.items.map((item) => ({ id: item.id, inquiryItemId: item.inquiry_item_id, productId: item.product_id, productSnapshot: item.product_snapshot, sourceSnapshot: item.source_snapshot, quantity: Number(item.quantity), unitCode: item.unit_code, unitCost: item.unit_cost == null ? undefined : Number(item.unit_cost), targetMarginRate: item.target_margin_rate == null ? undefined : Number(item.target_margin_rate), unitPrice: Number(item.unit_price), lineTotal: Number(item.line_total), warnings: item.warnings })) };
 }
 
 export async function createCustomer(companyName: string, currency: string) {
@@ -5718,7 +5872,7 @@ export async function createInquiry(input: { customerId: string; currency: strin
 }
 
 export async function matchInquiry(inquiryId: string) {
-  const row = await request<{ candidates: Record<string, ApiMatch[]> }>(`/inquiries/${encodeURIComponent(inquiryId)}/match`, { method: "POST" });
+  const row = await request<ApiMatchBatch>(`/inquiries/${encodeURIComponent(inquiryId)}/match`, { method: "POST" });
   return Object.fromEntries(Object.entries(row.candidates).map(([key, value]) => [key, value.map(mapMatch)]));
 }
 
@@ -5747,13 +5901,13 @@ export async function reviseQuotation(quotation: QuotationRecord, items: Array<{
 }
 
 export async function listQuotations(): Promise<QuotationSummary[]> {
-  const rows = await request<Array<{ id: string; quotation_number: string; customer_name: string; currency: string; status: string; current_version: number; total_amount: number | string; updated_at: string }>>("/quotations");
-  return rows.map((row) => ({ id: row.id, quotationNumber: row.quotation_number, customerName: row.customer_name, currency: row.currency, status: row.status, currentVersion: row.current_version, totalAmount: Number(row.total_amount), updatedAt: row.updated_at }));
+  const rows = await request<Array<{ id: string; quotation_number: string; customer_name: string; currency: string; status: string; current_version: number; total_amount: number | string; updated_at: string; read_only?: boolean }>>("/quotations");
+  return rows.map((row) => ({ id: row.id, quotationNumber: row.quotation_number, customerName: row.customer_name, currency: row.currency, status: row.status, currentVersion: row.current_version, totalAmount: Number(row.total_amount), updatedAt: row.updated_at, readOnly: row.read_only }));
 }
 
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; product_id?: string | null; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
-interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; visitor_country_code?: string | null; read_only?: boolean; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
+interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; visitor_country_code?: string | null; read_only?: boolean; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
 interface ApiStorefrontOrderPeriodStatistics { start_at: string; end_at: string; order_count: number; completed_order_count: number; cancelled_order_count: number; amounts: Array<{ currency: string; total_amount: number | string; completed_amount: number | string; order_count: number }> }
 interface ApiStorefrontOrderStatistics { timezone: string; current_month: ApiStorefrontOrderPeriodStatistics; current_year: ApiStorefrontOrderPeriodStatistics }
 
@@ -5780,6 +5934,8 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     contentHash: row.content_hash,
+    visitorCountryCode: defined(row.visitor_country_code),
+    readOnly: Boolean(row.read_only),
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
     items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, productId: item.product_id ?? item.sku_id, position: item.position, quantity: Number(item.quantity), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
@@ -5788,7 +5944,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
 
 export async function listPublicQuoteDrafts(limit = 500): Promise<PublicQuoteDraftSummary[]> {
   const rows = await request<ApiPublicQuoteDraftSummary[]>(`/public-quote-drafts?limit=${Math.min(Math.max(limit, 1), 500)}`);
-  return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), locale: row.locale, currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at, updatedAt: row.updated_at }));
+  return rows.map((row) => ({ id: row.id, quoteNumber: row.quote_number, status: row.status, customerName: row.customer_name, customerCompany: defined(row.customer_company), visitorCountryCode: defined(row.visitor_country_code), readOnly: Boolean(row.read_only), locale: row.locale, currency: row.currency, total: Number(row.total_amount), validUntil: row.valid_until, createdAt: row.created_at, updatedAt: row.updated_at }));
 }
 
 export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteDraft> {

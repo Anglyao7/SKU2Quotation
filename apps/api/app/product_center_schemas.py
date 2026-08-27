@@ -51,6 +51,11 @@ class ProductCard(BaseModel):
     currency: str | None
     moq: Decimal | None
     tags: list[str]
+    # A product can contain variants with different selling prices.  Keep the
+    # range alongside the compatibility ``price`` (which remains the lowest
+    # price for existing table consumers).
+    price_from: Decimal | None = None
+    price_to: Decimal | None = None
 
 
 class ProductListPage(BaseModel):

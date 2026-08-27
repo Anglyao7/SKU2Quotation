@@ -1385,8 +1385,13 @@ export function ProductsPage() {
                       <small>{t("{count} 个供应商", { count: product.supplierCount })}</small>
                     </td>
                     <td className="core-sku-price-column core-tabular">
-                      <strong>{product.price === undefined ? t("未设置") : `${product.currency ?? ""} ${product.price.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim()}</strong>
-                      <small>{product.supplierCount ? t("已有供应来源") : t("尚无供应来源")}</small>
+                      <strong>{product.price === undefined ? t("未设置") : (() => {
+                        const from = product.priceFrom ?? product.price;
+                        const to = product.priceTo ?? product.price;
+                        const format = (value: number) => value.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        return `${product.currency ?? ""} ${from !== to ? `${format(from)} – ${format(to)}` : format(from)}`.trim();
+                      })()}</strong>
+                      <small>{product.supplier === "—" ? t("子账号销售价") : product.supplierCount ? t("已有供应来源") : t("尚无供应来源")}</small>
                     </td>
                     <td className="core-sku-status-column">
                       <Badge color={product.status === "ACTIVE" ? "jade" : product.status === "DRAFT" || product.status === "IN_REVIEW" ? "amber" : "gray"}>

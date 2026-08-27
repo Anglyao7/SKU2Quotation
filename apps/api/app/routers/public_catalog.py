@@ -56,6 +56,7 @@ from ..services.public_quote_documents import (
 )
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.search_analytics import record_storefront_search_background
+from ..services.storefront_analytics import request_country_code, request_visitor_ip
 from ..use_cases import public_catalog as use_cases
 from ..use_cases import catalog_translations as translation_use_cases
 from ..services.language_package_storage import IMMUTABLE_CACHE_CONTROL
@@ -623,6 +624,11 @@ def submit_public_quote_draft(
         ),
     )
     try:
+        visitor_ip = request_visitor_ip(request)
+        visitor_country_code = request_country_code(
+            request,
+            visitor_ip=visitor_ip,
+        )
         submitter = use_cases.optional_customer_quote_submitter(
             identity_session,
             access_token=(
@@ -639,6 +645,7 @@ def submit_public_quote_draft(
             submitted_by_tenant_id=(submitter.tenant_id if submitter else None),
             submitted_by_user_id=(submitter.user_id if submitter else None),
             visitor_token=x_storefront_visitor_token,
+            visitor_country_code=visitor_country_code,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -761,6 +768,8 @@ def list_tenant_public_quote_drafts(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             limit=limit,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -783,6 +792,8 @@ def get_tenant_public_quote_draft(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -808,6 +819,7 @@ def update_tenant_public_quote_draft_status(
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
             request=payload,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -832,6 +844,8 @@ def update_tenant_public_quote_draft_settings(
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
             request=payload,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -856,6 +870,8 @@ def convert_tenant_public_quote_draft_currency(
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
             request=payload,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -880,6 +896,8 @@ def update_tenant_public_quote_draft_items(
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
             request=payload,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -904,6 +922,8 @@ def adjust_tenant_public_quote_draft_prices(
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
             request=payload,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -932,6 +952,7 @@ def update_tenant_public_quote_draft_item_price(
             item_id=item_id,
             request=payload,
             sync_to_catalog=False,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -960,6 +981,7 @@ def sync_tenant_public_quote_draft_item_price(
             item_id=item_id,
             request=payload,
             sync_to_catalog=True,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -980,6 +1002,8 @@ def get_tenant_storefront_order_statistics(
             session,
             tenant_id=context.tenant_id,
             permissions=context.permissions,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -1133,6 +1157,8 @@ def download_tenant_quote_draft_pdf(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -1167,6 +1193,8 @@ def download_tenant_quote_draft_xlsx(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

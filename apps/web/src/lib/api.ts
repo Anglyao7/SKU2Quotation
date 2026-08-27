@@ -4,10 +4,12 @@ import type {
   CatalogSharePublic,
   CreateQuoteInput,
   MerchantIdentityCode,
+  MerchantDetail,
   MerchantIdentityProfile,
   MerchantOwnerAccount,
   MerchantOwnerAccountPayload,
   MerchantOwnerPasswordResetResult,
+  MerchantSubaccountDetail,
   ProductTag,
   ProductTagList,
   ProductTagPayload,
@@ -29,6 +31,7 @@ import type {
   StorefrontVisitorQuote,
   Tenant,
   TenantAccessPayload,
+  TenantBasicInfoPayload,
   TenantModuleCode,
   TenantPayload,
   TenantSubscriptionPayload,
@@ -328,7 +331,10 @@ function hasCompleteSkuListTranslation(value: SkuList) {
 }
 
 function normalizeTenant(raw: Tenant): Tenant {
-  return { ...raw, status: raw.active === false ? "inactive" : "active" };
+  const status = raw.status === "suspended" || raw.status === "archived"
+    ? raw.status
+    : raw.active === false ? "suspended" : "active";
+  return { ...raw, status, active: status === "active" };
 }
 
 function normalizeQuote(raw: Quote): Quote {
@@ -993,6 +999,25 @@ export const api = {
     const raw = await request<unknown>("/api/admin/tenants", {}, true);
     return normalizeList<Tenant>(raw).items.map(normalizeTenant);
   },
+  async getTenantDetail(tenantId: string): Promise<MerchantDetail> {
+    const detail = await request<MerchantDetail>(
+      `/api/admin/tenants/${encodeURIComponent(tenantId)}`,
+      { cache: "no-store" },
+      true,
+    );
+    return { ...detail, merchant: normalizeTenant(detail.merchant) };
+  },
+  async getTenantSubaccountDetail(
+    tenantId: string,
+    membershipId: string,
+  ): Promise<MerchantSubaccountDetail> {
+    const detail = await request<MerchantSubaccountDetail>(
+      `/api/admin/tenants/${encodeURIComponent(tenantId)}/subaccounts/${encodeURIComponent(membershipId)}`,
+      { cache: "no-store" },
+      true,
+    );
+    return { ...detail, merchant: normalizeTenant(detail.merchant) };
+  },
   getPlatformUsage: (days: 7 | 30 | 60 | 90) =>
     request<PlatformUsageResponse>(
       `/api/admin/usage-analytics?days=${days}`,
@@ -1037,6 +1062,11 @@ export const api = {
         ...(payload.enabled_modules ? { enabled_modules: payload.enabled_modules } : {}),
       }),
     }, true),
+  updateTenantBasics: (id: string, payload: TenantBasicInfoPayload) =>
+    request<Tenant>(`/api/admin/tenants/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }, true).then(normalizeTenant),
   updateTenantModules: (id: string, enabledModules: TenantModuleCode[]) =>
     request<Tenant>(
       `/api/admin/tenants/${encodeURIComponent(id)}`,

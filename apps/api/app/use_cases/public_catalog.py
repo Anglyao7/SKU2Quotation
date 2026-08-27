@@ -97,7 +97,9 @@ from ..services.translation import (
 from ..services.translation_memory import translate_values_with_memory
 from ..services.subaccount_pricing import (
     effective_subaccount_price,
+    subaccount_category_price_rules,
     subaccount_price_rules,
+    subaccount_sku_price_rules,
 )
 from ..services.platform_usage import increment_image_search
 from ..services.translation_configuration import (
@@ -819,6 +821,8 @@ def _sku_response(
     product_translation: PublicProductTranslation | None = None,
     pricing_markup_percent: Decimal = Decimal("0"),
     pricing_overrides: dict[UUID, object] | None = None,
+    category_markup_percent: Decimal | None = None,
+    sku_price_override: object | None = None,
 ) -> PublicSkuResponse:
     offer, sku, product, category = row
     source = catalog_translation_source(row)
@@ -908,6 +912,8 @@ def _sku_response(
             _money(Decimal(offer.unit_price)),
             markup_percent=pricing_markup_percent,
             override=(pricing_overrides or {}).get(product.id),
+            category_markup_percent=category_markup_percent,
+            sku_override=sku_price_override,
         ),
         currency=display_currency,
         unit_code=product.default_unit or "piece",
@@ -1878,6 +1884,8 @@ def _product_summary_response(
     translation: PublicProductTranslation | None,
     pricing_markup_percent: Decimal = Decimal("0"),
     pricing_overrides: dict[UUID, object] | None = None,
+    category_markup_percent: Decimal | None = None,
+    sku_price_overrides: dict[UUID, object] | None = None,
 ) -> PublicProductSummary:
     _offer, first_sku, product, category = rows[0]
     tags = _product_group_tags(rows)
@@ -1888,6 +1896,8 @@ def _product_summary_response(
             _money(Decimal(row[0].unit_price)),
             markup_percent=pricing_markup_percent,
             override=(pricing_overrides or {}).get(product.id),
+            category_markup_percent=category_markup_percent,
+            sku_override=(sku_price_overrides or {}).get(row[1].id),
         )
         for row in rows
     ]
@@ -2169,6 +2179,18 @@ def list_public_products(
         if include_facets
         else []
     )
+    # Resolve the child policy before selecting a page.  Hidden products must
+    # be excluded at the SQL boundary (and from semantic/ranked candidates),
+    # otherwise a child could still discover them through pagination or a
+    # category facet even though the normal product response is redacted.
+    _policy_markup_percent, _policy_overrides, hidden_product_ids = (
+        subaccount_price_rules(
+            session,
+            tenant_id=tenant.id,
+            membership_id=subaccount_membership_id,
+            product_ids=set(),
+        )
+    )
 
     if ranked_product_ids is not None:
         matching_product_ids = list(dict.fromkeys(ranked_product_ids))
@@ -2177,6 +2199,12 @@ def list_public_products(
                 product_id
                 for product_id in matching_product_ids
                 if product_id in shared_product_ids
+            ]
+        if hidden_product_ids:
+            matching_product_ids = [
+                product_id
+                for product_id in matching_product_ids
+                if product_id not in hidden_product_ids
             ]
         total = len(matching_product_ids)
         start = (page - 1) * page_size
@@ -2198,6 +2226,10 @@ def list_public_products(
                 now=now,
                 category=category,
             )
+        if hidden_product_ids:
+            candidate_rows = [
+                row for row in candidate_rows if row[2].id not in hidden_product_ids
+            ]
         if wanted_tags:
             candidate_rows = [
                 row
@@ -2218,6 +2250,12 @@ def list_public_products(
                 for product_id in matching_product_ids
                 if product_id in shared_product_ids
             ]
+        if hidden_product_ids:
+            matching_product_ids = [
+                product_id
+                for product_id in matching_product_ids
+                if product_id not in hidden_product_ids
+            ]
         total = len(matching_product_ids)
         start = (page - 1) * page_size
         selected_product_ids = matching_product_ids[start : start + page_size]
@@ -2230,6 +2268,7 @@ def list_public_products(
             category=category,
             tags=wanted_tags,
             product_ids=shared_product_ids,
+            excluded_product_ids=hidden_product_ids,
         )
         selected_product_ids = repository.list_public_product_ids_page(
             session,
@@ -2241,6 +2280,7 @@ def list_public_products(
             page=page,
             page_size=page_size,
             product_ids=shared_product_ids,
+            excluded_product_ids=hidden_product_ids,
             hot=hot_sort_applied,
         )
 
@@ -2251,11 +2291,25 @@ def list_public_products(
         now=now,
         category=category,
     )
-    pricing_markup_percent, pricing_overrides, _hidden_product_ids = subaccount_price_rules(
+    pricing_markup_percent, pricing_overrides, _page_hidden_product_ids = subaccount_price_rules(
         session,
         tenant_id=tenant.id,
         membership_id=subaccount_membership_id,
         product_ids=set(selected_product_ids),
+    )
+    category_markup_by_id = subaccount_category_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        category_ids={
+            row[3].id for row in selected_rows if row[3] is not None
+        },
+    )
+    sku_price_overrides = subaccount_sku_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        sku_ids={row[1].id for row in selected_rows},
     )
     groups = _group_catalog_rows(
         selected_rows,
@@ -2269,6 +2323,7 @@ def list_public_products(
             query="",
             category=None,
             product_ids=shared_product_ids,
+            excluded_product_ids=hidden_product_ids,
         )
     else:
         visible_category_ids = set()
@@ -2341,6 +2396,12 @@ def list_public_products(
                 translation=translations.get(rows[0][2].id),
                 pricing_markup_percent=pricing_markup_percent,
                 pricing_overrides=pricing_overrides,
+                category_markup_percent=(
+                    category_markup_by_id.get(rows[0][3].id)
+                    if rows[0][3] is not None
+                    else None
+                ),
+                sku_price_overrides=sku_price_overrides,
             )
             for rows in groups
         ],
@@ -2524,6 +2585,18 @@ def get_public_product(
         membership_id=subaccount_membership_id,
         product_ids={product_id},
     )
+    category_markup_by_id = subaccount_category_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        category_ids={row[3].id for row in rows if row[3] is not None},
+    )
+    sku_price_overrides = subaccount_sku_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        sku_ids={row[1].id for row in rows},
+    )
     if product_id in hidden_product_ids:
         raise ApplicationError(
             "PUBLIC_PRODUCT_NOT_FOUND",
@@ -2571,6 +2644,12 @@ def get_public_product(
         translation=product_translation,
         pricing_markup_percent=pricing_markup_percent,
         pricing_overrides=pricing_overrides,
+        category_markup_percent=(
+            category_markup_by_id.get(category.id)
+            if category is not None
+            else None
+        ),
+        sku_price_overrides=sku_price_overrides,
     )
     source_group_tags = _product_group_tags(rows)
     translated_tag_by_source = (
@@ -2604,6 +2683,12 @@ def get_public_product(
             product_translation=product_translation,
             pricing_markup_percent=pricing_markup_percent,
             pricing_overrides=pricing_overrides,
+            category_markup_percent=(
+                category_markup_by_id.get(row[3].id)
+                if row[3] is not None
+                else None
+            ),
+            sku_price_override=sku_price_overrides.get(row[1].id),
         )
         source_specification = str(
             (row[1].option_values or {}).get("规格名称") or ""
@@ -2846,6 +2931,18 @@ def list_public_skus(
         product_ids={row[2].id for row in selected},
     )
     selected = [row for row in selected if row[2].id not in hidden_product_ids]
+    category_markup_by_id = subaccount_category_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        category_ids={row[3].id for row in selected if row[3] is not None},
+    )
+    sku_price_overrides = subaccount_sku_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        sku_ids={row[1].id for row in selected},
+    )
     translations, product_translations = _quote_translation_maps(
         session,
         tenant_id=tenant.id,
@@ -2889,6 +2986,12 @@ def list_public_skus(
                 product_translation=product_translations.get(row[2].id),
                 pricing_markup_percent=pricing_markup_percent,
                 pricing_overrides=pricing_overrides,
+                category_markup_percent=(
+                    category_markup_by_id.get(row[3].id)
+                    if row[3] is not None
+                    else None
+                ),
+                sku_price_override=sku_price_overrides.get(row[1].id),
             )
             for row in selected
         ],
@@ -2961,6 +3064,18 @@ def get_public_sku(
         membership_id=subaccount_membership_id,
         product_ids={row[2].id},
     )
+    category_markup_by_id = subaccount_category_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        category_ids={row[3].id} if row[3] is not None else set(),
+    )
+    sku_price_overrides = subaccount_sku_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=subaccount_membership_id,
+        sku_ids={sku_id},
+    )
     if row[2].id in hidden_product_ids:
         raise ApplicationError(
             "PUBLIC_SKU_NOT_FOUND",
@@ -3027,6 +3142,12 @@ def get_public_sku(
         product_translation=product_translations.get(row[2].id),
         pricing_markup_percent=pricing_markup_percent,
         pricing_overrides=pricing_overrides,
+        category_markup_percent=(
+            category_markup_by_id.get(row[3].id)
+            if row[3] is not None
+            else None
+        ),
+        sku_price_override=sku_price_overrides.get(sku_id),
     )
 
 
@@ -3377,6 +3498,7 @@ def _draft_response(
     *,
     raw_token: str | None = None,
     token_expires_at: datetime | None = None,
+    read_only: bool = False,
 ) -> PublicQuoteDraftResponse:
     base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
     document_base = f"{base}/api/quotes/{draft.id}" if base else f"/api/quotes/{draft.id}"
@@ -3390,6 +3512,8 @@ def _draft_response(
         customer_company=draft.customer_company,
         customer_email=draft.customer_email,
         customer_phone=draft.customer_phone,
+        visitor_country_code=getattr(draft, "visitor_country_code", None),
+        read_only=read_only,
         notes=draft.notes,
         locale=_normalized_locale(
             getattr(draft, "document_locale", None),
@@ -3596,6 +3720,7 @@ def create_public_quote_draft(
     submitted_by_tenant_id: UUID | None = None,
     submitted_by_user_id: UUID | None = None,
     visitor_token: str | None = None,
+    visitor_country_code: str | None = None,
 ) -> PublicQuoteDraftResponse:
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
@@ -3654,6 +3779,18 @@ def create_public_quote_draft(
                 "One or more selected products are not available for this account.",
                 kind="not_found",
             )
+    category_markup_by_id = subaccount_category_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=submitted_by_membership_id,
+        category_ids={row[3].id for row in rows if row[3] is not None},
+    )
+    sku_price_overrides = subaccount_sku_price_rules(
+        session,
+        tenant_id=tenant.id,
+        membership_id=submitted_by_membership_id,
+        sku_ids={row[1].id for row in rows},
+    )
     # Prices are deliberately not converted. The merchant's selected currency
     # controls only the presentation/snapshot currency used for new documents.
     currency = str(tenant.default_currency or "CNY").strip().upper()
@@ -3679,6 +3816,12 @@ def create_public_quote_draft(
             _money(Decimal(offer.unit_price)),
             markup_percent=pricing_markup_percent,
             override=pricing_overrides.get(product.id),
+            category_markup_percent=(
+                category_markup_by_id.get(category.id)
+                if category is not None
+                else None
+            ),
+            sku_override=sku_price_overrides.get(sku.id),
         )
         line_total = _money(unit_price * quantity)
         subtotal += line_total
@@ -3819,6 +3962,7 @@ def create_public_quote_draft(
             "email": request.customer_email,
             "phone": request.customer_phone,
         },
+        "visitor_country_code": visitor_country_code,
         "notes": request.notes,
         "document_locale": requested_locale,
         "source_locale": source_locale,
@@ -3850,6 +3994,11 @@ def create_public_quote_draft(
         request_number=request_number,
         status="PENDING_CONFIRMATION",
         submitted_by_membership_id=submitted_by_membership_id,
+        visitor_country_code=(
+            str(visitor_country_code).strip().upper()[:8]
+            if visitor_country_code
+            else None
+        ),
         visitor_token_hash=visitor_token_hash,
         visitor_token_expires_at=(
             utcnow() + timedelta(days=180)
@@ -4070,17 +4219,132 @@ def _require_any(permissions: frozenset[str], *codes: str) -> None:
         )
 
 
+def _ensure_quote_draft_access(
+    session: Session,
+    *,
+    draft: PublicQuoteDraftRow,
+    tenant_id: UUID,
+    account_scope: str,
+    membership_id: UUID | None,
+    mutate: bool,
+) -> bool:
+    """Keep child-account inquiries private and immutable to the parent.
+
+    A child account is a full operator of its own storefront view, but its
+    customer inquiries are its own work queue.  The parent can still read the
+    inquiry through the account-management report; it cannot edit or advance
+    the quote status.  Returning ``not_found`` for another child's request
+    also avoids leaking quote existence to a child that guesses an id.
+    """
+
+    owner_membership_id = draft.submitted_by_membership_id
+    if account_scope == "CUSTOMER_SUBACCOUNT":
+        if membership_id is None or owner_membership_id != membership_id:
+            raise ApplicationError(
+                "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+                "Public quote draft was not found.",
+                kind="not_found",
+            )
+        return False
+    if owner_membership_id is None:
+        return False
+
+    owner = session.execute(
+        select(
+            MembershipRow.account_scope,
+            MembershipRow.parent_membership_id,
+        ).where(
+            MembershipRow.tenant_id == tenant_id,
+            MembershipRow.id == owner_membership_id,
+            MembershipRow.deleted_at.is_(None),
+        )
+    ).one_or_none()
+    if owner is None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    owner_scope, owner_parent_membership_id = owner
+    if owner_scope != "CUSTOMER_SUBACCOUNT":
+        # Owner/staff-created drafts remain available to staff members in the
+        # same workspace.  The child branch above already prevents a child
+        # from opening another account's draft.
+        return False
+    if owner_membership_id == membership_id:
+        return False
+    # A parent may inspect a direct child's quote, but no other staff member
+    # should be able to discover it by guessing the UUID.  Mutations by the
+    # direct parent use the explicit read-only error so the UI can explain why
+    # the action is unavailable.
+    if owner_parent_membership_id != membership_id:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    if mutate:
+        raise ApplicationError(
+            "CHILD_QUOTE_READ_ONLY",
+            "子账号询价只能由提交该询价的子账号处理。",
+            kind="forbidden",
+        )
+    return True
+
+
 def list_tenant_quote_drafts(
     session: Session,
     *,
     tenant_id: UUID,
     permissions: frozenset[str],
     limit: int,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> list[PublicQuoteDraftSummary]:
     # Incoming storefront quote requests are part of the sales inbox. A
     # member who can view inquiries may see the pending customer requests even
     # when they do not have access to the separate formal quotation ledger.
     _require_any(permissions, "quotation.view", "inquiry.view")
+    rows = repository.list_quote_drafts(
+        session,
+        tenant_id=tenant_id,
+        limit=limit,
+        owner_membership_id=(
+            membership_id if account_scope == "CUSTOMER_SUBACCOUNT" else None
+        ),
+        parent_membership_id=(
+            membership_id if account_scope == "STAFF" else None
+        ),
+    )
+    owner_ids = {
+        row.submitted_by_membership_id
+        for row in rows
+        if row.submitted_by_membership_id is not None
+    }
+    owner_details = {
+        owner_id: (scope, parent_membership_id)
+        for owner_id, scope, parent_membership_id in session.execute(
+            select(
+                MembershipRow.id,
+                MembershipRow.account_scope,
+                MembershipRow.parent_membership_id,
+            ).where(
+                MembershipRow.tenant_id == tenant_id,
+                MembershipRow.id.in_(owner_ids),
+                MembershipRow.deleted_at.is_(None),
+            )
+        ).all()
+    } if owner_ids else {}
+    if account_scope == "STAFF" and membership_id is not None:
+        rows = [
+            row
+            for row in rows
+            if row.submitted_by_membership_id is None
+            or owner_details.get(row.submitted_by_membership_id, (None, None))[0]
+            != "CUSTOMER_SUBACCOUNT"
+            or owner_details.get(row.submitted_by_membership_id, (None, None))[1]
+            == membership_id
+        ]
     return [
         PublicQuoteDraftSummary(
             id=row.id,
@@ -4088,6 +4352,12 @@ def list_tenant_quote_drafts(
             status=row.status,
             customer_name=row.customer_name,
             customer_company=row.customer_company,
+            visitor_country_code=getattr(row, "visitor_country_code", None),
+            read_only=(
+                account_scope == "STAFF"
+                and owner_details.get(row.submitted_by_membership_id, (None, None))[0]
+                == "CUSTOMER_SUBACCOUNT"
+            ),
             locale=_normalized_locale(
                 getattr(row, "document_locale", None),
                 default="zh-CN",
@@ -4098,9 +4368,7 @@ def list_tenant_quote_drafts(
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
-        for row in repository.list_quote_drafts(
-            session, tenant_id=tenant_id, limit=limit
-        )
+        for row in rows
     ]
 
 
@@ -4137,6 +4405,7 @@ def list_storefront_visitor_quote_drafts(
             status=row.status,
             customer_name=row.customer_name,
             customer_company=row.customer_company,
+            visitor_country_code=getattr(row, "visitor_country_code", None),
             locale=_normalized_locale(
                 getattr(row, "document_locale", None),
                 default="zh-CN",
@@ -4159,6 +4428,7 @@ def update_tenant_quote_draft_status(
     permissions: frozenset[str],
     quote_draft_id: UUID,
     request: PublicQuoteDraftStatusUpdate,
+    account_scope: str = "STAFF",
 ) -> PublicQuoteDraftResponse:
     _require(permissions, "quotation.create")
     draft = repository.get_quote_draft(
@@ -4173,6 +4443,14 @@ def update_tenant_quote_draft_status(
             "Public quote draft was not found.",
             kind="not_found",
         )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
     transitions = {
         "PENDING_CONFIRMATION": {"CONFIRMED", "CANCELLED"},
         "CONFIRMED": {"COMPLETED", "CANCELLED"},
@@ -4312,6 +4590,7 @@ def _create_storefront_order_record(
                 else None
             ),
         },
+        "visitor_country_code": getattr(draft, "visitor_country_code", None),
         "document_locale": draft.document_locale,
         "currency": draft.currency,
         "subtotal_amount": str(draft.subtotal_amount),
@@ -4336,6 +4615,7 @@ def _create_storefront_order_record(
         order_number=(getattr(draft, "quotation_number", None) or draft.request_number),
         status="CONFIRMED",
         submitted_by_membership_id=draft.submitted_by_membership_id,
+        visitor_country_code=getattr(draft, "visitor_country_code", None),
         customer_name=draft.customer_name,
         customer_company=draft.customer_company,
         customer_email=draft.customer_email,
@@ -4372,6 +4652,7 @@ def _order_period_statistics(
     tenant_id: UUID,
     start_at: datetime,
     end_at: datetime,
+    submitted_by_membership_id: UUID | None = None,
 ) -> StorefrontOrderPeriodStatistics:
     by_currency: dict[str, dict[str, Decimal | int]] = {}
     completed_count = 0
@@ -4381,6 +4662,7 @@ def _order_period_statistics(
         tenant_id=tenant_id,
         start_at=start_at,
         end_at=end_at,
+        submitted_by_membership_id=submitted_by_membership_id,
     ):
         count = int(count)
         amount = Decimal(amount)
@@ -4425,8 +4707,13 @@ def get_tenant_order_statistics(
     tenant_id: UUID,
     permissions: frozenset[str],
     now: datetime | None = None,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> StorefrontOrderStatistics:
     _require(permissions, "quotation.view")
+    scoped_membership_id = (
+        membership_id if account_scope == "CUSTOMER_SUBACCOUNT" else None
+    )
     tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
     timezone = _reporting_timezone(tenant.timezone if tenant is not None else None)
     local_now = (now or utcnow()).astimezone(timezone)
@@ -4457,12 +4744,14 @@ def get_tenant_order_statistics(
             tenant_id=tenant_id,
             start_at=month_start,
             end_at=month_end,
+            submitted_by_membership_id=scoped_membership_id,
         ),
         current_year=_order_period_statistics(
             session,
             tenant_id=tenant_id,
             start_at=year_start,
             end_at=year_end,
+            submitted_by_membership_id=scoped_membership_id,
         ),
     )
 
@@ -4473,6 +4762,8 @@ def get_tenant_quote_draft(
     tenant_id: UUID,
     permissions: frozenset[str],
     quote_draft_id: UUID,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> PublicQuoteDraftResponse:
     _require(permissions, "quotation.view")
     draft = repository.get_quote_draft(
@@ -4484,15 +4775,24 @@ def get_tenant_quote_draft(
             "Public quote draft was not found.",
             kind="not_found",
         )
+    read_only = _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=False,
+    )
     items = repository.list_quote_draft_items(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
     )
     tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
-    return (
+    response = (
         _localized_quote_response(session, draft=draft, items=items, tenant=tenant)
         if tenant is not None
         else _draft_response(draft, items)
     )
+    return response.model_copy(update={"read_only": read_only})
 
 
 def update_tenant_quote_draft_settings(
@@ -4502,6 +4802,8 @@ def update_tenant_quote_draft_settings(
     permissions: frozenset[str],
     quote_draft_id: UUID,
     request: PublicQuoteDraftSettingsUpdate,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> PublicQuoteDraftResponse:
     """Save the presentation settings used by the quote document workspace."""
     _require(permissions, "quotation.create")
@@ -4517,6 +4819,14 @@ def update_tenant_quote_draft_settings(
             "Public quote draft was not found.",
             kind="not_found",
         )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
     tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
     profile = repository.find_profile_by_tenant(session, tenant_id=tenant_id)
     if tenant is None or profile is None:
@@ -4586,6 +4896,8 @@ def convert_tenant_quote_draft_currency(
     permissions: frozenset[str],
     quote_draft_id: UUID,
     request: PublicQuoteDraftCurrencyConversion,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> PublicQuoteDraftResponse:
     """Convert all current quote-line prices using the cached market rate."""
 
@@ -4602,6 +4914,14 @@ def convert_tenant_quote_draft_currency(
             "Public quote draft was not found.",
             kind="not_found",
         )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
     if draft.status != "PENDING_CONFIRMATION":
         raise ApplicationError(
             "PUBLIC_QUOTE_CURRENCY_EDIT_NOT_ALLOWED",
@@ -4806,6 +5126,8 @@ def update_tenant_quote_draft_items(
     permissions: frozenset[str],
     quote_draft_id: UUID,
     request: PublicQuoteDraftItemsUpdate,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> PublicQuoteDraftResponse:
     """Persist customer-facing edits made directly in the quote preview."""
 
@@ -4822,6 +5144,14 @@ def update_tenant_quote_draft_items(
             "Public quote draft was not found.",
             kind="not_found",
         )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
     if draft.status != "PENDING_CONFIRMATION":
         raise ApplicationError(
             "PUBLIC_QUOTE_EDIT_NOT_ALLOWED",
@@ -4874,6 +5204,8 @@ def adjust_tenant_quote_draft_prices(
     permissions: frozenset[str],
     quote_draft_id: UUID,
     request: PublicQuoteDraftPriceAdjustment,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> PublicQuoteDraftResponse:
     """Apply one signed percentage to every quote-line unit price."""
 
@@ -4890,6 +5222,14 @@ def adjust_tenant_quote_draft_prices(
             "Public quote draft was not found.",
             kind="not_found",
         )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
     if draft.status != "PENDING_CONFIRMATION":
         raise ApplicationError(
             "PUBLIC_QUOTE_EDIT_NOT_ALLOWED",
@@ -4925,6 +5265,7 @@ def update_tenant_quote_draft_item_price(
     item_id: UUID,
     request: PublicQuoteDraftItemPriceUpdate,
     sync_to_catalog: bool = False,
+    account_scope: str = "STAFF",
 ) -> PublicQuoteDraftResponse:
     """Update a quote-line price, optionally publishing the same price to the SKU.
 
@@ -4949,6 +5290,14 @@ def update_tenant_quote_draft_item_price(
             "Public quote draft was not found.",
             kind="not_found",
         )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
     if draft.status != "PENDING_CONFIRMATION":
         raise ApplicationError(
             "PUBLIC_QUOTE_PRICE_EDIT_NOT_ALLOWED",
@@ -5036,6 +5385,8 @@ def get_tenant_quote_document(
     tenant_id: UUID,
     permissions: frozenset[str],
     quote_draft_id: UUID,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
 ) -> PublicQuoteDocument:
     _require(permissions, "quotation.view")
     tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
@@ -5048,6 +5399,17 @@ def get_tenant_quote_document(
             "Public quote draft was not found.",
             kind="not_found",
         )
+    # Keep document downloads on the same ownership path as the quote
+    # workbench.  A parent may download a child's document as a read-only
+    # audit view, while a child may download only its own customer request.
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=False,
+    )
     profile = repository.find_profile_by_tenant(session, tenant_id=tenant_id)
     items = repository.list_quote_draft_items(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id

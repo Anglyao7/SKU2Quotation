@@ -70,6 +70,12 @@ export interface PermissionSet {
 }
 
 export type CustomerSubaccountCapability = "catalog" | "submit_orders" | "view_orders";
+export type CustomerSubaccountModule =
+  | "products"
+  | "inquiries"
+  | "quotations"
+  | "announcements"
+  | "support";
 
 export interface CustomerSubaccount {
   id: string;
@@ -80,6 +86,7 @@ export interface CustomerSubaccount {
   status: "active" | "suspended" | string;
   identityCode: "SUBACCOUNT";
   capabilities: CustomerSubaccountCapability[];
+  modules: CustomerSubaccountModule[];
   createdAt: string;
   lastLoginAt?: string;
   loginCount30d: number;
@@ -92,6 +99,8 @@ export interface CustomerSubaccount {
   monthOrderAmount: number;
   markupPercent: number;
   overrideCount: number;
+  categoryOverrideCount?: number;
+  skuOverrideCount?: number;
 }
 
 export interface CustomerSubaccountOrder {
@@ -106,6 +115,22 @@ export interface CustomerSubaccountOrder {
   totalAmount: number;
   createdAt: string;
   validUntil: string;
+  visitorCountryCode?: string;
+}
+
+export interface CustomerSubaccountOrderItem {
+  skuId: string;
+  productId?: string;
+  skuCode: string;
+  productName: string;
+  quantity: number;
+  currency: string;
+  unitPrice: number;
+  lineTotal: number;
+}
+
+export interface CustomerSubaccountOrderDetail extends CustomerSubaccountOrder {
+  items: CustomerSubaccountOrderItem[];
 }
 
 export interface CustomerSubaccountDashboard {
@@ -128,12 +153,16 @@ export interface SubaccountPricingPolicy {
   markupPercent: number;
   overrideCount: number;
   hiddenProductCount: number;
+  categoryOverrideCount: number;
+  skuOverrideCount: number;
 }
 
 export interface SubaccountProductPricingItem {
   productId: string;
   productCode?: string;
   productName: string;
+  categoryId?: string;
+  categoryName?: string;
   skuCount: number;
   basePriceFrom: number;
   basePriceTo: number;
@@ -142,6 +171,17 @@ export interface SubaccountProductPricingItem {
   currency: string;
   overrideMode?: SubaccountPricingMode;
   overrideValue?: number;
+  categoryMarkupPercent?: number;
+  skuOverrideCount: number;
+  skuPrices: Array<{
+    skuId: string;
+    skuCode: string;
+    basePrice: number;
+    effectivePrice: number;
+    currency: string;
+    overrideMode?: SubaccountPricingMode;
+    overrideValue?: number;
+  }>;
   updatedAt: string;
 }
 
@@ -394,6 +434,8 @@ export interface CoreProduct {
   categoryId?: string;
   supplier: string;
   price?: number;
+  priceFrom?: number;
+  priceTo?: number;
   currency?: string;
   updated: string;
   primaryImageUrl?: string;
@@ -1526,6 +1568,7 @@ export interface InquiryRecord {
   language: string;
   status: string;
   version: number;
+  readOnly?: boolean;
   items: InquiryItem[];
 }
 
@@ -1546,6 +1589,14 @@ export interface InquiryMatch {
   status: string;
 }
 
+export interface InquiryMatchResult {
+  inquiryId: string;
+  status: string;
+  rankingVersion: string;
+  candidates: Record<string, InquiryMatch[]>;
+  readOnly?: boolean;
+}
+
 export interface QuotationRecord {
   id: string;
   quotationNumber: string;
@@ -1557,6 +1608,7 @@ export interface QuotationRecord {
   totalAmount: number;
   expiresAt?: string;
   approvalStatus: string;
+  readOnly?: boolean;
   versionHash: string;
   createdAt: string;
   updatedAt: string;
@@ -1594,6 +1646,7 @@ export interface QuotationSummary {
   currentVersion: number;
   totalAmount: number;
   updatedAt: string;
+  readOnly?: boolean;
 }
 
 export interface PublicQuoteDraftItem {
@@ -1640,6 +1693,8 @@ export interface PublicQuoteDraft {
   createdAt: string;
   updatedAt: string;
   contentHash: string;
+  visitorCountryCode?: string;
+  readOnly?: boolean;
   disclaimer: string;
   disclaimerVersion: string;
   items: PublicQuoteDraftItem[];
@@ -1657,6 +1712,8 @@ export interface PublicQuoteDraftSummary {
   validUntil: string;
   createdAt: string;
   updatedAt: string;
+  visitorCountryCode?: string;
+  readOnly?: boolean;
 }
 
 export interface StorefrontOrderCurrencyStatistics {

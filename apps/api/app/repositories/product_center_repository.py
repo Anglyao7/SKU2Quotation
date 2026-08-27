@@ -46,6 +46,7 @@ def list_product_rows(
     statuses: list[str],
     approved_images_only: bool,
     limit: int,
+    hidden_product_ids: set[UUID] | None = None,
 ) -> list[ProductRow]:
     statement = _product_statement(
         tenant_id=tenant_id,
@@ -55,6 +56,7 @@ def list_product_rows(
         statuses=statuses,
         approved_images_only=approved_images_only,
         missing_images_only=False,
+        hidden_product_ids=hidden_product_ids,
     )
     return list(session.scalars(statement.limit(limit)).all())
 
@@ -69,6 +71,7 @@ def list_product_page_rows(
     missing_images_only: bool,
     page: int,
     page_size: int,
+    hidden_product_ids: set[UUID] | None = None,
 ) -> tuple[list[ProductRow], int]:
     """Return a tenant-scoped, product-first page and its total count.
 
@@ -84,6 +87,7 @@ def list_product_page_rows(
         statuses=statuses,
         approved_images_only=False,
         missing_images_only=missing_images_only,
+        hidden_product_ids=hidden_product_ids,
     )
     total = int(
         session.scalar(
@@ -106,6 +110,7 @@ def _product_statement(
     statuses: list[str],
     approved_images_only: bool,
     missing_images_only: bool,
+    hidden_product_ids: set[UUID] | None = None,
 ):
     statement = select(ProductRow).where(
         ProductRow.tenant_id == tenant_id,
@@ -159,6 +164,8 @@ def _product_statement(
                 )
             )
         )
+    if hidden_product_ids:
+        statement = statement.where(~ProductRow.id.in_(hidden_product_ids))
     normalized = query.casefold().strip()
     if normalized:
         exact_sku = exists(
@@ -420,6 +427,7 @@ def list_sku_page_rows(
     page_size: int,
     sku_ids: set[UUID] | None = None,
     known_total: int | None = None,
+    hidden_product_ids: set[UUID] | None = None,
 ) -> tuple[list[SkuListRow], int]:
     conditions = [
         SkuRow.tenant_id == tenant_id,
@@ -436,6 +444,8 @@ def list_sku_page_rows(
         if not sku_ids:
             return [], 0
         conditions.append(SkuRow.id.in_(sku_ids))
+    if hidden_product_ids:
+        conditions.append(~ProductRow.id.in_(hidden_product_ids))
     if category_id is not None:
         conditions.append(
             or_(
