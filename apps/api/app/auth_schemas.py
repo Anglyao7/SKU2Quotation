@@ -48,6 +48,15 @@ class PasswordLoginRequest(BaseModel):
             raise ValueError("identifier is invalid")
         return normalized
 
+    @field_validator("password", mode="before")
+    @classmethod
+    def normalize_password(cls, value: object) -> object:
+        """Remove accidental surrounding whitespace from pasted passwords."""
+
+        if isinstance(value, SecretStr):
+            return value.get_secret_value().strip()
+        return value.strip() if isinstance(value, str) else value
+
 
 class PasswordChangeRequest(BaseModel):
     """Secrets used for one authenticated, self-service password change."""

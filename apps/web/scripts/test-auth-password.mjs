@@ -29,7 +29,7 @@ assert.equal(
 );
 assert.equal(
   buildPasswordLoginPayload("merchant-owner", "  keep-password-spaces  ").password,
-  "  keep-password-spaces  ",
+  "keep-password-spaces",
 );
 assert.throws(
   () => buildPasswordLoginPayload("   ", "Secret 123!"),
@@ -37,6 +37,10 @@ assert.throws(
 );
 assert.throws(
   () => buildPasswordLoginPayload("owner@example.com", ""),
+  /请输入密码/,
+);
+assert.throws(
+  () => buildPasswordLoginPayload("owner@example.com", "   "),
   /请输入密码/,
 );
 

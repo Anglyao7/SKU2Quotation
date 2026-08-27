@@ -64,3 +64,16 @@ def test_local_identity_adapter_uses_the_shared_password_login_contract(
             identifier="merchant-owner",
             password="wrong-password",
         )
+
+
+def test_password_login_request_trims_surrounding_password_whitespace() -> None:
+    from app.auth_schemas import PasswordLoginRequest
+
+    request = PasswordLoginRequest(
+        grant_type="password",
+        identifier="  merchant-owner  ",
+        password="  merchant123  ",
+    )
+
+    assert request.identifier == "merchant-owner"
+    assert request.password.get_secret_value() == "merchant123"
