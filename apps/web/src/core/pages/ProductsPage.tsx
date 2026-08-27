@@ -21,12 +21,14 @@ import {
   getImport,
   getProduct,
   listCatalogImportBatches,
+  listCatalogImportFiles,
   listCategories,
   listProductCatalog,
   listPublicCatalogOffers,
   PRODUCT_TEMPLATE_DOWNLOAD_URL,
-  rollbackCatalogImportBatch,
+  rollbackCatalogImportFile,
   retryCatalogTranslationProduct,
+  updateProductCategory,
   updateSku,
   uploadProductMainImage,
   upsertPublicCatalogOffer,
@@ -42,7 +44,7 @@ import { primaryCategoryLabel } from "../../lib/format";
 import { storefrontLanguage } from "../../lib/storefrontLocale";
 import { api } from "../../lib/api";
 import type { ProductTag, StorefrontLocale } from "../../types";
-import type { CatalogImportBatch, CatalogImportRollbackResult, CoreProduct, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductListPage, ProductSku, PublicCatalogOffer, SkuListItem } from "../types";
+import type { CatalogImportFile, CatalogImportFileRollbackResult, CoreProduct, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductListPage, ProductSku, PublicCatalogOffer, SkuListItem } from "../types";
 import { useToast } from "../ToastContext";
 
 const emptyProductPage: ProductListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
@@ -104,6 +106,25 @@ const importStatusLabel: Record<ImportJob["status"], string> = {
   published: "已完成",
   failed: "导入失败",
 };
+
+const rollbackFileStatusLabel: Record<CatalogImportFile["rollbackStatus"], string> = {
+  AVAILABLE: "可撤回",
+  PROCESSING: "导入中",
+  FAILED: "导入失败",
+  REVOKED: "已撤回",
+  NO_REMAINING_ITEMS: "商品已不存在",
+  NO_CREATED_ITEMS: "无新增商品",
+};
+
+function rollbackFileStatusColor(
+  status: CatalogImportFile["rollbackStatus"],
+): "jade" | "blue" | "red" | "gray" | "amber" {
+  if (status === "AVAILABLE") return "jade";
+  if (status === "PROCESSING") return "blue";
+  if (status === "FAILED") return "red";
+  if (status === "NO_CREATED_ITEMS") return "amber";
+  return "gray";
+}
 
 const importStageLabel: Record<string, string> = {
   READING_WORKBOOK: "正在读取工作簿",
@@ -322,14 +343,13 @@ export function ProductsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [importTab, setImportTab] = useState("upload");
   const [importFiles, setImportFiles] = useState<ImportQueueItem[]>([]);
-  const [importBatches, setImportBatches] = useState<CatalogImportBatch[]>([]);
-  const [importBatchesLoading, setImportBatchesLoading] = useState(false);
-  const [rollbackBatchId, setRollbackBatchId] = useState("");
-  const [rollbackCategoryId, setRollbackCategoryId] = useState("");
-  const [rollbackTarget, setRollbackTarget] = useState<CatalogImportBatch>();
+  const [rollbackFiles, setRollbackFiles] = useState<CatalogImportFile[]>([]);
+  const [rollbackFilesLoading, setRollbackFilesLoading] = useState(false);
+  const [rollbackSourceFileId, setRollbackSourceFileId] = useState("");
+  const [rollbackTarget, setRollbackTarget] = useState<CatalogImportFile>();
   const [rollbackBusy, setRollbackBusy] = useState(false);
   const [rollbackError, setRollbackError] = useState("");
-  const [rollbackResult, setRollbackResult] = useState<CatalogImportRollbackResult>();
+  const [rollbackResult, setRollbackResult] = useState<CatalogImportFileRollbackResult>();
   const [importDragActive, setImportDragActive] = useState(false);
   const [lastImport, setLastImport] = useState<ImportJob>();
   const [loadedWarningJobId, setLoadedWarningJobId] = useState<string>();
@@ -390,21 +410,21 @@ export function ProductsPage() {
   const loadCategories = useCallback(async () => {
     setCategories(await listCategories());
   }, []);
-  const loadImportBatches = useCallback(async () => {
-    setImportBatchesLoading(true);
+  const loadRollbackFiles = useCallback(async () => {
+    setRollbackFilesLoading(true);
     try {
-      const batches = await listCatalogImportBatches();
-      setImportBatches(batches);
+      const files = await listCatalogImportFiles();
+      setRollbackFiles(files);
       setRollbackError("");
-      setRollbackBatchId((current) => (
-        current && batches.some((batch) => batch.id === current)
+      setRollbackSourceFileId((current) => (
+        current && files.some((file) => file.sourceFileId === current)
           ? current
-          : batches.find((batch) => batch.status !== "REVOKED")?.id ?? ""
+          : files.find((file) => file.canRollback)?.sourceFileId ?? files[0]?.sourceFileId ?? ""
       ));
     } catch (reason) {
-      setRollbackError(reason instanceof Error ? reason.message : t("导入批次加载失败"));
+      setRollbackError(reason instanceof Error ? reason.message : t("导入文件加载失败"));
     } finally {
-      setImportBatchesLoading(false);
+      setRollbackFilesLoading(false);
     }
   }, [t]);
   useEffect(() => { void loadCategories().catch(() => setCategories([])); }, [loadCategories]);
@@ -451,10 +471,10 @@ export function ProductsPage() {
     if (next.status === "published") {
       await load();
       await loadCategories().catch(() => undefined);
-      await loadImportBatches().catch(() => undefined);
+      await loadRollbackFiles().catch(() => undefined);
     }
     return next;
-  }, [lastImport?.id, load, loadCategories, loadImportBatches]);
+  }, [lastImport?.id, load, loadCategories, loadRollbackFiles]);
 
   const activeImportJobIds = useMemo(
     () => importFiles
@@ -491,7 +511,7 @@ export function ProductsPage() {
               await Promise.all([
                 load(),
                 loadCategories().catch(() => undefined),
-                loadImportBatches().catch(() => undefined),
+                loadRollbackFiles().catch(() => undefined),
               ]);
             }
             if (!cancelled && jobs.some((job) => ["scanning", "parsing"].includes(job.status))) poll();
@@ -507,7 +527,7 @@ export function ProductsPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeImportJobIds, importOpen, load, loadCategories, loadImportBatches, t]);
+  }, [activeImportJobIds, importOpen, load, loadCategories, loadRollbackFiles, t]);
 
   useEffect(() => {
     const requested = params.get("import") === "1";
@@ -536,8 +556,8 @@ export function ProductsPage() {
       .catch(() => setLoadedWarningJobId(undefined));
   }, [lastImport, loadedWarningJobId]);
   useEffect(() => {
-    if (importOpen) void loadImportBatches();
-  }, [importOpen, loadImportBatches]);
+    if (importOpen) void loadRollbackFiles();
+  }, [importOpen, loadRollbackFiles]);
 
   const setImportDialogOpen = (open: boolean) => {
     if (open && !canImport) return;
@@ -769,7 +789,7 @@ export function ProductsPage() {
       }
       setImportSubmitStage("processing");
       setUploadProgress(100);
-      await loadImportBatches();
+      await loadRollbackFiles();
     } catch (reason) {
       setImportError(reason instanceof Error ? reason.message : t("商品导入失败"));
     } finally {
@@ -778,26 +798,22 @@ export function ProductsPage() {
     }
   };
 
-  const selectedRollbackBatch = importBatches.find((batch) => batch.id === rollbackBatchId);
+  const selectedRollbackFile = rollbackFiles.find((file) => file.sourceFileId === rollbackSourceFileId);
   const requestRollback = () => {
-    if (!selectedRollbackBatch) return;
+    if (!selectedRollbackFile?.canRollback) return;
     setRollbackError("");
     setRollbackResult(undefined);
-    setRollbackTarget(selectedRollbackBatch);
+    setRollbackTarget(selectedRollbackFile);
   };
   const executeRollback = async () => {
     if (!rollbackTarget) return;
     setRollbackBusy(true);
     setRollbackError("");
     try {
-      const result = await rollbackCatalogImportBatch(
-        rollbackTarget.id,
-        rollbackCategoryId || undefined,
-      );
+      const result = await rollbackCatalogImportFile(rollbackTarget.sourceFileId);
       setRollbackResult(result);
       setRollbackTarget(undefined);
-      setRollbackCategoryId("");
-      await Promise.all([load(), loadCategories(), loadImportBatches()]);
+      await Promise.all([load(), loadCategories(), loadRollbackFiles()]);
     } catch (reason) {
       setRollbackError(reason instanceof Error ? reason.message : t("撤回失败，请稍后重试。"));
     } finally {
@@ -1672,7 +1688,7 @@ export function ProductsPage() {
             <div>
               <Text size="1" color="gray">{t("商品批量操作")}</Text>
               <Dialog.Title>{t("导入与撤回")}</Dialog.Title>
-              <Dialog.Description>{t("一次导入多个商品文件，或撤回指定批次与分类。")}</Dialog.Description>
+              <Dialog.Description>{t("一次导入多个商品文件，或选择具体文件撤回它带入的商品。")}</Dialog.Description>
             </div>
             <Button variant="ghost" color="gray" onClick={() => setImportDialogOpen(false)} aria-label={t("关闭")}><X /></Button>
           </div>
@@ -1962,91 +1978,85 @@ export function ProductsPage() {
             <Tabs.Content value="rollback" className="core-import-tab-content">
               <div className="core-import-rollback-toolbar">
                 <div>
-                  <Text weight="bold" as="div">{t("按批次或分类撤回")}</Text>
-                  <Text size="1" color="gray">{t("只撤回该批次新建且之后未被其他导入批次接管的 SKU；既有 SKU 不会被删除。")}</Text>
+                  <Text weight="bold" as="div">{t("按导入文件撤回")}</Text>
+                  <Text size="1" color="gray">{t("选择一个文件，删除该文件带入的全部 SKU；没有其他 SKU 的商品会同时归档。")}</Text>
                 </div>
-                <Button size="1" variant="soft" color="gray" disabled={importBatchesLoading} onClick={() => void loadImportBatches()}>
+                <Button size="1" variant="soft" color="gray" disabled={rollbackFilesLoading} onClick={() => void loadRollbackFiles()}>
                   <ArrowsClockwise />{t("刷新")}
                 </Button>
               </div>
 
-              {rollbackError && !rollbackTarget ? <CoreError message={rollbackError} onRetry={() => void loadImportBatches()} /> : null}
+              {rollbackError && !rollbackTarget ? <CoreError message={rollbackError} onRetry={() => void loadRollbackFiles()} /> : null}
               {rollbackResult ? (
                 <Card className="core-import-rollback-result" role="status">
                   <CheckCircle weight="fill" />
                   <div>
                     <Text weight="bold" as="div">{t("撤回完成")}</Text>
                     <Text size="1" color="gray">
-                      {t("已撤回 {skus} 个由该批次新建的 SKU，并归档 {products} 个不再包含有效 SKU 的商品。", {
+                      {t("已删除该文件带入的 {skus} 个 SKU，并归档 {products} 个不再包含有效 SKU 的商品。", {
                         skus: rollbackResult.deletedSkuCount,
                         products: rollbackResult.archivedProductCount,
                       })}
+                      {rollbackResult.retainedProductCount > 0
+                        ? t(" 另有 {count} 个商品仍包含其他来源的 SKU，因此已保留。", { count: rollbackResult.retainedProductCount })
+                        : null}
                     </Text>
                   </div>
                 </Card>
               ) : null}
 
-              {importBatchesLoading && !importBatches.length ? <CoreLoading label={t("正在读取导入批次")} /> : importBatches.length ? (
+              {rollbackFilesLoading && !rollbackFiles.length ? <CoreLoading label={t("正在读取导入文件")} /> : rollbackFiles.length ? (
                 <div className="core-import-batch-layout">
                   <div className="core-import-batch-list" role="list">
-                    {importBatches.map((batch) => {
-                      const running = batch.jobs.some((job) => ["scanning", "parsing"].includes(job.status));
-                      return (
-                        <button
-                          key={batch.id}
-                          type="button"
-                          className={rollbackBatchId === batch.id ? "is-selected" : ""}
-                          onClick={() => { setRollbackBatchId(batch.id); setRollbackCategoryId(""); setRollbackResult(undefined); }}
-                        >
-                          <span>
-                            <strong>{new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(batch.createdAt))}</strong>
-                            <small>{batch.jobs.map((job) => job.filename).join("、") || t("等待上传文件")}</small>
-                          </span>
-                          <span>
-                            <Badge color={batch.status === "REVOKED" ? "gray" : running ? "blue" : batch.status === "PARTIALLY_REVOKED" ? "amber" : "jade"}>
-                              {batch.status === "REVOKED" ? t("已撤回") : running ? t("导入中") : batch.status === "PARTIALLY_REVOKED" ? t("部分撤回") : t("可撤回")}
-                            </Badge>
-                            <small>{t("{files} 个文件 · {skus} 个 SKU", { files: batch.fileCount, skus: batch.remainingSkuCount })}</small>
-                          </span>
-                        </button>
-                      );
-                    })}
+                    {rollbackFiles.map((file) => (
+                      <button
+                        key={file.sourceFileId}
+                        type="button"
+                        className={rollbackSourceFileId === file.sourceFileId ? "is-selected" : ""}
+                        onClick={() => { setRollbackSourceFileId(file.sourceFileId); setRollbackResult(undefined); }}
+                      >
+                        <span>
+                          <strong>{file.filename}</strong>
+                          <small>{new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(file.createdAt))}</small>
+                        </span>
+                        <span>
+                          <Badge color={rollbackFileStatusColor(file.rollbackStatus)}>
+                            {t(rollbackFileStatusLabel[file.rollbackStatus])}
+                          </Badge>
+                          <small>{t("带入 {products} 个商品 · {skus} 个 SKU", { products: file.createdProductCount, skus: file.createdSkuCount })}</small>
+                        </span>
+                      </button>
+                    ))}
                   </div>
 
-                  {selectedRollbackBatch ? (
+                  {selectedRollbackFile ? (
                     <Card className="core-import-rollback-panel">
                       <div>
-                        <Text weight="bold" as="div">{t("撤回范围")}</Text>
-                        <Text size="1" color="gray">{selectedRollbackBatch.jobs.map((job) => job.filename).join("、")}</Text>
+                        <Text weight="bold" as="div">{t("文件带入的数据")}</Text>
+                        <Text size="1" color="gray">{selectedRollbackFile.filename}</Text>
                       </div>
-                      <label>
-                        <Text size="2" weight="medium">{t("选择范围")}</Text>
-                        <select value={rollbackCategoryId} onChange={(event) => setRollbackCategoryId(event.target.value)}>
-                          <option value="">{t("整个批次（当前可撤回 {count} 个 SKU）", { count: selectedRollbackBatch.remainingSkuCount })}</option>
-                          {selectedRollbackBatch.categories.map((category) => (
-                            <option key={category.id} value={category.id}>{category.name}（{category.skuCount}）</option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="core-import-file-origin-stats">
+                        <span><small>{t("导入时新建商品")}</small><strong>{selectedRollbackFile.createdProductCount}</strong></span>
+                        <span><small>{t("导入时新建 SKU")}</small><strong>{selectedRollbackFile.createdSkuCount}</strong></span>
+                        <span><small>{t("当前将删除")}</small><strong>{selectedRollbackFile.remainingSkuCount}</strong></span>
+                      </div>
                       <Text size="1" color="gray">
-                        {t("撤回不会恢复字段历史值；只会删除可确认由该批次新建且未被后续批次接管的 SKU。")}
+                        {selectedRollbackFile.unavailableReason
+                          ? t(selectedRollbackFile.unavailableReason)
+                          : t("文件来源会永久保留。撤回将删除该文件创建的 SKU，即使这些 SKU 后来被人工编辑过；其他文件创建的 SKU 不受影响。")}
                       </Text>
                       <Button
                         color="red"
-                        disabled={
-                          selectedRollbackBatch.status === "REVOKED"
-                          || (selectedRollbackBatch.remainingSkuCount === 0 && selectedRollbackBatch.status !== "PARTIALLY_REVOKED")
-                          || selectedRollbackBatch.jobs.some((job) => ["scanning", "parsing"].includes(job.status))
-                        }
+                        disabled={!selectedRollbackFile.canRollback}
                         onClick={requestRollback}
                       >
-                        <Trash />{t(rollbackCategoryId ? "撤回这个分类" : "撤回整个批次")}
+                        <Trash />{t("撤回这个文件")}
                       </Button>
                     </Card>
                   ) : null}
                 </div>
               ) : (
-                <CoreEmpty title={t("暂无可撤回的导入批次")} description={t("通过“批量导入”上传的文件会显示在这里。")}/>
+                <CoreEmpty title={t("暂无商品导入文件")} description={t("通过“批量导入”上传的文件会显示在这里。")}/>
               )}
             </Tabs.Content>
           </Tabs.Root>
@@ -2055,11 +2065,14 @@ export function ProductsPage() {
 
       <Dialog.Root open={Boolean(rollbackTarget)} onOpenChange={(open) => { if (!open && !rollbackBusy) setRollbackTarget(undefined); }}>
         <Dialog.Content className="core-confirm-dialog">
-          <Dialog.Title>{t(rollbackCategoryId ? "确认撤回这个分类？" : "确认撤回整个批次？")}</Dialog.Title>
+          <Dialog.Title>{t("确认撤回这个文件？")}</Dialog.Title>
           <Dialog.Description>
-            {rollbackCategoryId
-              ? t("只会删除所选分类中由该批次新建且未被后续批次接管的 SKU；既有 SKU 与无法确认归属的图片不会被删除。")
-              : t("只会删除该批次新建且未被后续批次接管的 SKU；既有 SKU 与无法确认归属的图片不会被删除。")}
+            {rollbackTarget
+              ? t("将删除“{filename}”带入的 {count} 个 SKU。没有其他 SKU 的商品会同时归档；这个操作不能恢复。", {
+                  filename: rollbackTarget.filename,
+                  count: rollbackTarget.remainingSkuCount,
+                })
+              : null}
           </Dialog.Description>
           {rollbackError ? <CoreError message={rollbackError} /> : null}
           <div className="core-dialog-actions">
@@ -2071,7 +2084,7 @@ export function ProductsPage() {
 
       <Dialog.Root open={Boolean(selected || detailLoading)} onOpenChange={(open) => { if (!open) close(); }}>
         <Dialog.Content className="core-detail-dialog">
-          {detailLoading || !selected ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} selectedSkuId={selectedSkuId} managedTags={managedTags} onEnhanceProduct={openImageEnhancementForProduct} onEnhanceSkus={openImageEnhancementForSkus} onTranslateProduct={translateProduct} translatingProductId={translatingProductId} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
+          {detailLoading || !selected ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} selectedSkuId={selectedSkuId} categories={categories} managedTags={managedTags} onEnhanceProduct={openImageEnhancementForProduct} onEnhanceSkus={openImageEnhancementForSkus} onTranslateProduct={translateProduct} translatingProductId={translatingProductId} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
         </Dialog.Content>
       </Dialog.Root>
 
@@ -2354,9 +2367,10 @@ function ManagedTagPicker({ tags, selected, onChange, disabled = false }: {
   );
 }
 
-function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProduct, onEnhanceSkus, onTranslateProduct, translatingProductId, onChanged, onClose }: {
+function ProductDetailPanel({ product, selectedSkuId, categories, managedTags, onEnhanceProduct, onEnhanceSkus, onTranslateProduct, translatingProductId, onChanged, onClose }: {
   product: ProductDetail;
   selectedSkuId?: string;
+  categories: ProductCategory[];
   managedTags: ProductTag[];
   onEnhanceProduct: (productId: string) => void;
   onEnhanceSkus: (productId: string, skuIds: string[]) => void;
@@ -2375,8 +2389,18 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProd
   const [imageError, setImageError] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
+  const [selectedCategoryId, setSelectedCategoryId] = useState(product.categoryId ?? "");
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [categoryError, setCategoryError] = useState("");
   const canEdit = hasPermission("product.edit");
   const canEnhanceImages = canEdit;
+
+  const categoryOptions = useMemo(
+    () => categories.filter((category) => (
+      category.status === "ACTIVE" || category.id === product.categoryId
+    )),
+    [categories, product.categoryId],
+  );
 
   useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
   useEffect(() => {
@@ -2384,7 +2408,31 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProd
     imageDragDepthRef.current = 0;
     setImageDragging(false);
     setImageError("");
-  }, [product.id, selectedSkuId]);
+    setSelectedCategoryId(product.categoryId ?? "");
+    setCategoryError("");
+  }, [product.categoryId, product.id, selectedSkuId]);
+
+  useEffect(() => {
+    setSelectedCategoryId(product.categoryId ?? "");
+  }, [product.categoryId]);
+
+  const saveCategory = async () => {
+    if (!canEdit || categorySaving) return;
+    const nextCategoryId = selectedCategoryId || null;
+    const currentCategoryId = product.categoryId || null;
+    if (nextCategoryId === currentCategoryId) return;
+    setCategorySaving(true);
+    setCategoryError("");
+    try {
+      await updateProductCategory(product.id, product.currentVersion, nextCategoryId);
+      await onChanged();
+    } catch (reason) {
+      setCategoryError(reason instanceof Error ? reason.message : t("分类保存失败，请稍后重试。"));
+      setSelectedCategoryId(product.categoryId ?? "");
+    } finally {
+      setCategorySaving(false);
+    }
+  };
 
   const uploadImage = async (file?: File) => {
     if (!file || imageUploading || !canEdit) return;
@@ -2561,10 +2609,48 @@ function ProductDetailPanel({ product, selectedSkuId, managedTags, onEnhanceProd
             <div className="core-product-overview-content">
               <dl className="core-product-facts">
                 <div><dt>{t("商品编码")}</dt><dd className="core-tabular">{product.productCode || t("未设置")}</dd></div>
-                <div><dt>{t("分类")}</dt><dd>{primaryCategoryLabel(product.category) || t("未分类")}</dd></div>
+                <div className="core-product-category-fact">
+                  <dt>{t("分类")}</dt>
+                  <dd>
+                    {canEdit ? (
+                      <span className="core-product-category-control">
+                        <select
+                          value={selectedCategoryId}
+                          onChange={(event) => {
+                            setSelectedCategoryId(event.target.value);
+                            setCategoryError("");
+                          }}
+                          aria-label={t("选择商品分类")}
+                          disabled={categorySaving}
+                        >
+                          <option value="">{t("未分类")}</option>
+                          {categoryOptions.map((category) => (
+                            <option key={category.id} value={category.id}>
+                              {category.path?.trim() || category.name}
+                            </option>
+                          ))}
+                        </select>
+                        {selectedCategoryId !== (product.categoryId ?? "") ? (
+                          <Button
+                            size="1"
+                            variant="soft"
+                            loading={categorySaving}
+                            disabled={categorySaving}
+                            onClick={() => void saveCategory()}
+                          >
+                            {t("保存")}
+                          </Button>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <span>{primaryCategoryLabel(product.category) || t("未分类")}</span>
+                    )}
+                  </dd>
+                </div>
                 <div><dt>{t("计量单位")}</dt><dd>{product.defaultUnit || t("未设置")}</dd></div>
                 <div><dt>{t("供应商")}</dt><dd>{product.supplier || t("未设置")}</dd></div>
               </dl>
+              {categoryError ? <div className="core-form-error" role="alert">{categoryError}</div> : null}
               <section className="core-product-description">
                 <Text size="1" color="gray">{t("商品描述")}</Text>
                 <p>{product.description || t("暂无描述")}</p>

@@ -35,6 +35,8 @@ POSTGRESQL_MIGRATION_MANAGED_FOREIGN_KEYS = {
     "fk_skus_tenant_supplier",
     "fk_skus_tenant_latest_import_job",
     "fk_skus_tenant_rollback_owner_batch",
+    "fk_skus_tenant_origin_source_file",
+    "fk_products_tenant_origin_source_file",
     # SQLite cannot add these composite constraints to established tables
     # without a disruptive table rebuild. The application keeps the same
     # tenant/parent checks, while PostgreSQL receives the database-level FKs.

@@ -35,6 +35,7 @@ from ..product_center_schemas import (
     ProductCard,
     ProductBatchDeleteRequest,
     ProductBatchOperationResponse,
+    ProductCategoryUpdateRequest,
     ProductDeleteAllJobResponse,
     ProductDeleteAllRequest,
     ProductDetail,
@@ -260,6 +261,30 @@ def get_product(
             product_id=product_id,
             account_scope=context.account_scope,
             membership_id=context.membership_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/products/{product_id}/category", response_model=ProductDetail)
+def update_product_category(
+    product_id: UUID,
+    request: ProductCategoryUpdateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> ProductDetail:
+    """Update a product's category directly from the product detail view."""
+
+    context = _context(session)
+    try:
+        return use_cases.update_product_category(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_id=product_id,
+            request=request,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

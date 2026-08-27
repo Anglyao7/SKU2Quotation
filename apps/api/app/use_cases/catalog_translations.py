@@ -649,10 +649,16 @@ def _pending_sources(
     tenant_id: UUID,
     target_locale: str,
     sources: list[CatalogTranslationSource],
-    provider: str,
-    provider_version: str,
     full_rebuild: bool,
 ) -> tuple[list[CatalogTranslationSource], int]:
+    """Return sources whose content is missing or no longer matches.
+
+    A translation provider/model is an implementation detail, not part of the
+    catalog content identity.  Switching providers must not force a complete
+    retranslation of unchanged SKU source text; operators can still request a
+    full rebuild explicitly when they want to refresh wording.
+    """
+
     translations = translation_repository.translation_map(
         session,
         tenant_id=tenant_id,
@@ -666,8 +672,6 @@ def _pending_sources(
         invalid = (
             translation is None
             or translation.source_hash != source.source_hash
-            or translation.provider != provider
-            or translation.provider_version != provider_version
         )
         if translation is not None and invalid:
             stale += 1
@@ -1014,16 +1018,12 @@ def get_translation_status(
         session,
         environment_check=catalog_translation_is_configured,
     )
-    provider = "deeplx" if configured else "not-configured"
-    provider_version = "v1"
     if configured:
         try:
-            translator = resolved_catalog_translator(
+            resolved_catalog_translator(
                 session,
                 environment_factory=configured_catalog_translator,
             )
-            provider = translator.identity.provider
-            provider_version = translator.identity.version
         except TranslationProviderError:
             configured = False
 
@@ -1034,8 +1034,6 @@ def get_translation_status(
         tenant_id=tenant_id,
         target_locale=target_locale,
         sources=sources,
-        provider=provider,
-        provider_version=provider_version,
         full_rebuild=False,
     )
     valid_count = max(0, len(sources) - len(pending))
@@ -1049,8 +1047,6 @@ def get_translation_status(
     package_outdated = bool(
         pack is None
         or pack.source_digest != current_source_digest
-        or pack.provider != provider
-        or pack.provider_version != provider_version
         or pack.storage_fingerprint != storage_status.fingerprint
     )
     return CatalogTranslationStatusResponse(
@@ -1280,7 +1276,6 @@ def _run_translation_job(
             return
         try:
             first_run = job.started_at is None
-            previous_provider = (job.provider, job.provider_version)
             job.status = "RUNNING"
             job.stage = "PREPARING"
             if first_run:
@@ -1303,22 +1298,16 @@ def _run_translation_job(
                 now=utcnow(),
             )
             sources = [catalog_translation_source(row) for row in rows]
-            provider_changed = previous_provider != (
-                translator.identity.provider,
-                translator.identity.version,
-            )
             sources_by_id = {source.sku_id: source for source in sources}
             forced_ids = _forced_sku_ids(job)
             stored_remaining = _remaining_sku_ids(job)
             forced_resume = (
                 not first_run
-                and not provider_changed
                 and bool(forced_ids)
                 and bool(stored_remaining)
             )
             preserve_progress = (
                 not first_run
-                and not provider_changed
                 and not forced_ids
                 and (
                     bool(stored_remaining)
@@ -1331,29 +1320,32 @@ def _run_translation_job(
                     for sku_id in forced_ids
                     if sku_id in sources_by_id
                 ]
-            elif forced_resume or preserve_progress:
+            elif forced_resume:
                 candidates = [
                     sources_by_id[sku_id]
                     for sku_id in stored_remaining
                     if sku_id in sources_by_id
                 ]
-                # A long-running checkpoint may span later imports or edits.
-                # Merge newly missing/stale rows into the same resume without
-                # redoing translations already committed by this job.
-                newly_pending = [] if forced_resume else _pending_sources(
+            elif preserve_progress and job.mode == "FULL_REBUILD":
+                # An explicit full rebuild is allowed to resume its own
+                # checkpoint even though the provider/model may have changed.
+                candidates = [
+                    sources_by_id[sku_id]
+                    for sku_id in stored_remaining
+                    if sku_id in sources_by_id
+                ]
+            elif preserve_progress:
+                # Reconcile an incremental checkpoint against source hashes on
+                # every resume.  Older jobs may have populated
+                # ``remaining_sku_ids`` using the old provider-sensitive
+                # rules; trusting that list would make a model switch keep
+                # translating thousands of already-valid SKUs.
+                candidates, _stale = _pending_sources(
                     session,
                     tenant_id=tenant_id,
                     target_locale=job.target_locale,
                     sources=sources,
-                    provider=translator.identity.provider,
-                    provider_version=translator.identity.version,
                     full_rebuild=False,
-                )[0]
-                candidate_ids = {source.sku_id for source in candidates}
-                candidates.extend(
-                    source
-                    for source in newly_pending
-                    if source.sku_id not in candidate_ids
                 )
             else:
                 candidates, _stale = _pending_sources(
@@ -1361,8 +1353,6 @@ def _run_translation_job(
                     tenant_id=tenant_id,
                     target_locale=job.target_locale,
                     sources=sources,
-                    provider=translator.identity.provider,
-                    provider_version=translator.identity.version,
                     full_rebuild=job.mode == "FULL_REBUILD",
                 )
             storage = configured_language_package_storage()
@@ -1614,11 +1604,10 @@ def _run_translation_job(
                 translator=translator,
                 sku_translations=sku_translations,
                 previous_payload=previous_payload,
-                reuse_previous=bool(
-                    current_pack
-                    and current_pack.provider == translator.identity.provider
-                    and current_pack.provider_version == translator.identity.version
-                ),
+                # A provider/model switch does not invalidate the published
+                # package. Reuse entries by source hash and only translate
+                # genuinely new or changed catalog content.
+                reuse_previous=bool(current_pack),
                 full_rebuild=job.mode == "FULL_REBUILD",
                 force_rebuild_sku_ids=set(forced_ids),
             )
@@ -1993,8 +1982,6 @@ def start_translation_job(
         tenant_id=context.tenant_id,
         target_locale=request.target_locale,
         sources=sources,
-        provider=translator.identity.provider,
-        provider_version=translator.identity.version,
         full_rebuild=request.mode == "FULL_REBUILD",
     )
     current_pack = translation_repository.language_pack(
@@ -2006,8 +1993,6 @@ def start_translation_job(
     package_current = bool(
         current_pack is not None
         and current_pack.source_digest == current_digest
-        and current_pack.provider == translator.identity.provider
-        and current_pack.provider_version == translator.identity.version
         and current_pack.storage_fingerprint == storage_status.fingerprint
     )
     work_required = bool(

@@ -7,6 +7,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from app.use_cases import catalog_translations as catalog_translation_use_cases
 from app.services.catalog_translation import (
     CatalogTranslationSource,
     catalog_translation_value_is_complete,
@@ -858,3 +859,41 @@ def test_catalog_value_translation_rejects_residual_chinese() -> None:
         source_locale="zh-CN",
         target_locale="ja",
     )
+
+
+def test_pending_sources_reuses_translation_after_provider_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = CatalogTranslationSource(
+        sku_id=uuid4(),
+        sku_code="SKU-1",
+        name="商品",
+        description=None,
+        category=None,
+        tags=(),
+        display_tag=None,
+        product_version=1,
+        sku_version=1,
+        source_hash="same-source",
+    )
+    existing = SimpleNamespace(
+        source_hash="same-source",
+        provider="old-provider",
+        provider_version="old-model",
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases.translation_repository,
+        "translation_map",
+        lambda *_args, **_kwargs: {source.sku_id: existing},
+    )
+
+    pending, stale = catalog_translation_use_cases._pending_sources(
+        SimpleNamespace(),
+        tenant_id=uuid4(),
+        target_locale="en-US",
+        sources=[source],
+        full_rebuild=False,
+    )
+
+    assert pending == []
+    assert stale == 0

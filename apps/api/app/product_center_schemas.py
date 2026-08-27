@@ -387,6 +387,13 @@ class ManualProductCreateRequest(BaseModel):
         return self
 
 
+class ProductCategoryUpdateRequest(BaseModel):
+    """Move one product to a category from its detail view."""
+
+    expected_version: int = Field(ge=1)
+    category_id: UUID | None = None
+
+
 class AttributeDefinitionCreateRequest(BaseModel):
     category_id: UUID | None = None
     attribute_key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,99}$")

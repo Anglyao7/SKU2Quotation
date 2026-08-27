@@ -105,8 +105,19 @@ class ProductRow(AuditTimestampMixin, Base):
             name="fk_products_tenant_category",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "origin_source_file_id"],
+            ["source_files.tenant_id", "source_files.id"],
+            name="fk_products_tenant_origin_source_file",
+            ondelete="RESTRICT",
+        ),
         Index("ix_products_tenant_status_updated", "tenant_id", "status", "updated_at"),
         Index("ix_products_tenant_category", "tenant_id", "category_id"),
+        Index(
+            "ix_products_tenant_origin_source_file",
+            "tenant_id",
+            "origin_source_file_id",
+        ),
         Index(
             "ix_products_tenant_category_pinned",
             "tenant_id",
@@ -118,6 +129,12 @@ class ProductRow(AuditTimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     product_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Immutable creation provenance. Later imports and manual edits must not
+    # replace this value; file rollback is scoped by the file that introduced
+    # the product to the catalog.
+    origin_source_file_id: Mapped[str | None] = mapped_column(
+        String(40), nullable=True
+    )
     sku_code_date: Mapped[date | None] = mapped_column(nullable=True)
     sku_code_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     name: Mapped[str] = mapped_column(String(500), nullable=False)

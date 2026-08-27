@@ -87,6 +87,34 @@ class CatalogImportBatchRollbackResponse(BaseModel):
     remaining_sku_count: int = Field(ge=0)
 
 
+class CatalogImportFile(BaseModel):
+    source_file_id: str
+    import_job_id: str
+    batch_id: UUID | None = None
+    filename: str
+    import_status: JobStatus
+    rollback_status: str
+    created_product_count: int = Field(ge=0)
+    created_sku_count: int = Field(ge=0)
+    remaining_product_count: int = Field(ge=0)
+    remaining_sku_count: int = Field(ge=0)
+    created_at: str
+    completed_at: str | None = None
+    rolled_back_at: str | None = None
+    can_rollback: bool
+    unavailable_reason: str | None = None
+
+
+class CatalogImportFileRollbackResponse(BaseModel):
+    source_file_id: str
+    import_job_id: str
+    status: str
+    deleted_sku_count: int = Field(ge=0)
+    archived_product_count: int = Field(ge=0)
+    retained_product_count: int = Field(ge=0)
+    remaining_sku_count: int = Field(ge=0)
+
+
 class ProductCandidateEvidence(BaseModel):
     source_file_id: str | None
     location: dict[str, object]

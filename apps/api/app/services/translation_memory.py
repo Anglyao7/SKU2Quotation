@@ -209,11 +209,8 @@ def _database_get_many(
                             CatalogTextTranslationRow.tenant_id == tenant_id,
                             CatalogTextTranslationRow.source_locale == source_locale,
                             CatalogTextTranslationRow.target_locale == target_locale,
-                            CatalogTextTranslationRow.provider == provider,
-                            CatalogTextTranslationRow.provider_version
-                            == provider_version,
                             CatalogTextTranslationRow.source_hash.in_(hash_batch),
-                        )
+                        ).order_by(CatalogTextTranslationRow.updated_at.desc())
                     ).all()
                 )
             now = utcnow()
@@ -235,12 +232,19 @@ def _database_get_many(
                 )
             if stale_ids:
                 session.commit()
-            return {
-                row.source_text: row.translated_text
-                for row in rows
-                if sources_by_hash.get(row.source_hash) == row.source_text
-                and row.translated_text.strip()
-            }
+            hits: dict[str, str] = {}
+            for row in rows:
+                if (
+                    sources_by_hash.get(row.source_hash) != row.source_text
+                    or not row.translated_text.strip()
+                ):
+                    continue
+                # Multiple provider/model versions may exist for one source.
+                # The newest complete translation is reusable regardless of
+                # which provider produced it; the caller may cache it under
+                # the current provider identity.
+                hits.setdefault(row.source_text, row.translated_text)
+            return hits
     except SQLAlchemyError:
         logger.warning(
             "catalog translation memory lookup failed; continuing without cache"

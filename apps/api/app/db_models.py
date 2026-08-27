@@ -171,6 +171,9 @@ class ImportJobRow(AuditTimestampMixin, Base):
     warnings_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    file_rollback_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     source_file: Mapped[SourceFileRow] = relationship(back_populates="jobs")
     reviews: Mapped[list["ReviewItemRow"]] = relationship(

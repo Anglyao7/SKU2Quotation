@@ -40,6 +40,7 @@ from ..product_center_schemas import (
     CategoryReorderRequest,
     CategoryResponse,
     CategoryUpdateRequest,
+    ProductCategoryUpdateRequest,
     ManualProductCreateRequest,
     ProductAttributeResponse,
     ProductAuditEventResponse,
@@ -1301,6 +1302,109 @@ def get_product(
             )
             for row in audit
         ],
+    )
+
+
+def update_product_category(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+    request: ProductCategoryUpdateRequest,
+    account_scope: str = "STAFF",
+) -> ProductDetail:
+    """Move a single product to a category without requiring a SKU selection."""
+
+    _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if product is None or product.deleted_at is not None or product.status == "ARCHIVED":
+        raise ApplicationError(
+            "PRODUCT_NOT_FOUND",
+            "Product was not found.",
+            kind="not_found",
+        )
+    if product.current_version != request.expected_version:
+        raise ApplicationError(
+            "PRODUCT_VERSION_CONFLICT",
+            "Product has been changed by another user.",
+            kind="conflict",
+        )
+
+    category = repository.get_category(
+        session,
+        tenant_id=tenant_id,
+        category_id=request.category_id,
+    )
+    if request.category_id is not None and category is None:
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND",
+            "分类不存在或已经归档。",
+            kind="not_found",
+        )
+    if category is not None and category.status != "ACTIVE":
+        raise ApplicationError(
+            "CATEGORY_NOT_ACTIVE",
+            "归档或停用的分类不能接收商品。",
+            kind="conflict",
+        )
+
+    previous_category_id = product.category_id
+    if previous_category_id != request.category_id:
+        _release_rollback_ownership(
+            session,
+            tenant_id=tenant_id,
+            product_ids=[product.id],
+        )
+        now = utcnow()
+        product.category_id = request.category_id
+        product.current_version += 1
+        # Category names are part of the searchable document. Force the next
+        # incremental index run to rebuild this product.
+        product.search_document_version = 0
+        product.updated_by = user_id
+        product.updated_at = now
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                entity_type="PRODUCT",
+                entity_id=str(product.id),
+                action="product.category_updated",
+                before={
+                    "category_id": str(previous_category_id)
+                    if previous_category_id
+                    else None,
+                },
+                after={
+                    "category_id": str(request.category_id)
+                    if request.category_id
+                    else None,
+                },
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            )
+        )
+        _commit(
+            session,
+            conflict_code="PRODUCT_CATEGORY_UPDATE_FAILED",
+            conflict_message="商品分类保存失败，请刷新后重试。",
+        )
+
+    return get_product(
+        session,
+        tenant_id=tenant_id,
+        permissions=permissions,
+        product_id=product.id,
+        account_scope=account_scope,
+        membership_id=membership_id,
     )
 
 
@@ -3872,8 +3976,14 @@ def batch_delete_skus(
     permissions: frozenset[str],
     sku_ids: list[UUID],
     commit: bool = True,
+    archive_empty_product_ids: set[UUID] | None = None,
 ) -> dict[str, Any]:
-    """Archive SKUs, detach supplier/source links, and preserve history."""
+    """Archive SKUs, detach supplier/source links, and preserve history.
+
+    By default every Product left without an active SKU is archived. Callers
+    that delete rows by an external ownership boundary can restrict that
+    behavior to Products they also own.
+    """
     _require(permissions, "product.edit")
     _lock_catalog_write(session, tenant_id=tenant_id)
 
@@ -3985,7 +4095,13 @@ def batch_delete_skus(
         product.search_document_version = 0
         product.updated_by = user_id
         product.updated_at = now
-        if remaining_by_product.get(product.id, 0) == 0:
+        if (
+            remaining_by_product.get(product.id, 0) == 0
+            and (
+                archive_empty_product_ids is None
+                or product.id in archive_empty_product_ids
+            )
+        ):
             product.status = "ARCHIVED"
             product.archived_at = now
             archived_product_ids.append(product.id)

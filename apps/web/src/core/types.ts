@@ -296,6 +296,42 @@ export interface CatalogImportRollbackResult {
   remainingSkuCount: number;
 }
 
+export type CatalogImportFileRollbackStatus =
+  | "AVAILABLE"
+  | "PROCESSING"
+  | "FAILED"
+  | "REVOKED"
+  | "NO_REMAINING_ITEMS"
+  | "NO_CREATED_ITEMS";
+
+export interface CatalogImportFile {
+  sourceFileId: string;
+  importJobId: string;
+  batchId?: string;
+  filename: string;
+  importStatus: ImportJobStatus;
+  rollbackStatus: CatalogImportFileRollbackStatus;
+  createdProductCount: number;
+  createdSkuCount: number;
+  remainingProductCount: number;
+  remainingSkuCount: number;
+  createdAt: string;
+  completedAt?: string;
+  rolledBackAt?: string;
+  canRollback: boolean;
+  unavailableReason?: string;
+}
+
+export interface CatalogImportFileRollbackResult {
+  sourceFileId: string;
+  importJobId: string;
+  status: "REVOKED";
+  deletedSkuCount: number;
+  archivedProductCount: number;
+  retainedProductCount: number;
+  remainingSkuCount: number;
+}
+
 export interface FileDetection {
   filename: string;
   detected_type: string;

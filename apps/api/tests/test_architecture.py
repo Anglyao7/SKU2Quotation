@@ -121,6 +121,8 @@ def test_composed_routes_preserve_the_public_contract(tmp_path: Path) -> None:
         ("GET", "/api/v1/supplier-profiles"),
         ("GET", "/api/v1/supplier-profiles/{supplier_id}"),
         ("POST", "/api/v1/imports"),
+        ("GET", "/api/v1/import-files"),
+        ("POST", "/api/v1/import-files/{source_file_id}/rollback"),
         ("GET", "/api/v1/review-items"),
         ("POST", "/api/v1/pricing/calculate"),
         ("GET", "/api/v1/ai/product-intelligence/tasks/{task_id}/candidates"),

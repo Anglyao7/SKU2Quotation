@@ -35,6 +35,8 @@ import type {
   HybridSearchResponse,
   ImportJob,
   CatalogImportBatch,
+  CatalogImportFile,
+  CatalogImportFileRollbackResult,
   CatalogImportRollbackResult,
   InquiryMatch,
   InquiryRecord,
@@ -1536,6 +1538,75 @@ export async function rollbackCatalogImportBatch(batchId: string, categoryId?: s
     storageDeleteFailures: row.storage_delete_failures,
     remainingSkuCount: row.remaining_sku_count,
   } satisfies CatalogImportRollbackResult;
+}
+
+interface ApiCatalogImportFile {
+  source_file_id: string;
+  import_job_id: string;
+  batch_id?: string | null;
+  filename: string;
+  import_status: CatalogImportFile["importStatus"];
+  rollback_status: CatalogImportFile["rollbackStatus"];
+  created_product_count: number;
+  created_sku_count: number;
+  remaining_product_count: number;
+  remaining_sku_count: number;
+  created_at: string;
+  completed_at?: string | null;
+  rolled_back_at?: string | null;
+  can_rollback: boolean;
+  unavailable_reason?: string | null;
+}
+
+function mapCatalogImportFile(row: ApiCatalogImportFile): CatalogImportFile {
+  return {
+    sourceFileId: row.source_file_id,
+    importJobId: row.import_job_id,
+    batchId: row.batch_id || undefined,
+    filename: row.filename,
+    importStatus: row.import_status,
+    rollbackStatus: row.rollback_status,
+    createdProductCount: row.created_product_count,
+    createdSkuCount: row.created_sku_count,
+    remainingProductCount: row.remaining_product_count,
+    remainingSkuCount: row.remaining_sku_count,
+    createdAt: row.created_at,
+    completedAt: row.completed_at || undefined,
+    rolledBackAt: row.rolled_back_at || undefined,
+    canRollback: row.can_rollback,
+    unavailableReason: row.unavailable_reason || undefined,
+  };
+}
+
+export async function listCatalogImportFiles(limit = 100, signal?: AbortSignal) {
+  const rows = await request<ApiCatalogImportFile[]>(`/import-files?limit=${limit}`, {
+    cache: "no-store",
+    signal,
+  });
+  return rows.map(mapCatalogImportFile);
+}
+
+export async function rollbackCatalogImportFile(sourceFileId: string) {
+  const row = await request<{
+    source_file_id: string;
+    import_job_id: string;
+    status: "REVOKED";
+    deleted_sku_count: number;
+    archived_product_count: number;
+    retained_product_count: number;
+    remaining_sku_count: number;
+  }>(`/import-files/${encodeURIComponent(sourceFileId)}/rollback`, {
+    method: "POST",
+  });
+  return {
+    sourceFileId: row.source_file_id,
+    importJobId: row.import_job_id,
+    status: row.status,
+    deletedSkuCount: row.deleted_sku_count,
+    archivedProductCount: row.archived_product_count,
+    retainedProductCount: row.retained_product_count,
+    remainingSkuCount: row.remaining_sku_count,
+  } satisfies CatalogImportFileRollbackResult;
 }
 
 interface ApiOffer {
@@ -3216,6 +3287,25 @@ export async function retryCatalogTranslationProduct(
 
 export async function getProduct(productId: string): Promise<ProductDetail> {
   const row = await request<ApiProductDetail>(`/products/${encodeURIComponent(productId)}`);
+  return mapProductDetail(row);
+}
+
+export async function updateProductCategory(
+  productId: string,
+  expectedVersion: number,
+  categoryId: string | null,
+): Promise<ProductDetail> {
+  const row = await request<ApiProductDetail>(
+    `/products/${encodeURIComponent(productId)}/category`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        expected_version: expectedVersion,
+        category_id: categoryId,
+      }),
+    },
+  );
+  bumpPublicCatalogRevision();
   return mapProductDetail(row);
 }
 

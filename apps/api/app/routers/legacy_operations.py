@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session
 from ..domain.errors import ApplicationError
 from ..models import (
     FileDetectionResponse,
+    CatalogImportFile,
+    CatalogImportFileRollbackResponse,
     CatalogImportBatch,
     CatalogImportBatchCreateRequest,
     CatalogImportBatchRollbackRequest,
@@ -41,6 +43,7 @@ from ..services.auth.dependencies import (
 )
 from ..use_cases import legacy_operations as use_cases
 from ..use_cases import catalog_import_batches
+from ..use_cases import catalog_import_files
 from .errors import application_http_error
 
 
@@ -162,6 +165,45 @@ def rollback_import_batch(
             permissions=context.permissions,
             batch_id=batch_id,
             category_id=request.category_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get("/import-files", response_model=list[CatalogImportFile])
+def list_import_files(
+    limit: int = Query(default=100, ge=1, le=300),
+    session: Session = Depends(get_authenticated_session),
+) -> list[CatalogImportFile]:
+    context = current_context(session)
+    try:
+        return catalog_import_files.list_import_files(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            limit=limit,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/import-files/{source_file_id}/rollback",
+    response_model=CatalogImportFileRollbackResponse,
+)
+def rollback_import_file(
+    source_file_id: str,
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogImportFileRollbackResponse:
+    context = current_context(session)
+    try:
+        return catalog_import_files.rollback_import_file(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            source_file_id=source_file_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

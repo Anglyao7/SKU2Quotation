@@ -548,8 +548,6 @@ def build_catalog_language_pack(
     rows_by_sku_id = {
         str(sku_id): translation
         for sku_id, translation in sku_translations.items()
-        if translation.provider == translator.identity.provider
-        and translation.provider_version == translator.identity.version
     }
     seed = _translation_seed(changed_skus, rows_by_sku_id)
     values = _all_translatable_values(changed_products, changed_skus)

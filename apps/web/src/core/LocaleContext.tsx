@@ -1665,6 +1665,8 @@ const english: Record<string, string> = {
   "导入与撤回": "Import and rollback",
   "一次导入多个商品文件，或撤回指定批次与分类。":
     "Import multiple catalog files at once, or roll back a selected batch or category.",
+  "一次导入多个商品文件，或选择具体文件撤回它带入的商品。":
+    "Import multiple catalog files, or choose a specific file and remove the products it introduced.",
   "批量导入": "Batch import",
   "撤回导入": "Roll back imports",
   "拖入或选择多个商品文件": "Drop or select multiple catalog files",
@@ -1695,17 +1697,38 @@ const english: Record<string, string> = {
   "这些文件已经在当前列表中。":
     "These files are already in the current list.",
   "导入批次加载失败": "Could not load import batches",
+  "导入文件加载失败": "Could not load import files",
+  "按导入文件撤回": "Roll back by import file",
+  "选择一个文件，删除该文件带入的全部 SKU；没有其他 SKU 的商品会同时归档。":
+    "Choose a file to delete every SKU it introduced. Products with no other SKUs are archived as well.",
   "按批次或分类撤回": "Roll back by batch or category",
   "只撤回该批次新建且之后未被其他导入批次接管的 SKU；既有 SKU 不会被删除。":
     "Only SKUs created by this batch and not subsequently claimed by another import batch can be rolled back. Existing SKUs are not deleted.",
   "撤回完成": "Rollback complete",
   "已撤回 {skus} 个由该批次新建的 SKU，并归档 {products} 个不再包含有效 SKU 的商品。":
     "Rolled back {skus} SKUs created by this batch and archived {products} products that no longer contain active SKUs.",
+  "已删除该文件带入的 {skus} 个 SKU，并归档 {products} 个不再包含有效 SKU 的商品。":
+    "Deleted {skus} SKUs introduced by this file and archived {products} products that no longer contain active SKUs.",
+  " 另有 {count} 个商品仍包含其他来源的 SKU，因此已保留。":
+    " {count} products still contain SKUs from other sources and were retained.",
   "正在读取导入批次": "Loading import batches",
+  "正在读取导入文件": "Loading import files",
   "等待上传文件": "Waiting for files",
   "已撤回": "Rolled back",
   "部分撤回": "Partially rolled back",
   "可撤回": "Available to roll back",
+  "商品已不存在": "Products no longer exist",
+  "无新增商品": "No new products",
+  "带入 {products} 个商品 · {skus} 个 SKU":
+    "Introduced {products} products · {skus} SKUs",
+  "文件带入的数据": "Data introduced by this file",
+  "导入时新建商品": "Products created",
+  "导入时新建 SKU": "SKUs created",
+  "当前将删除": "Will be deleted",
+  "文件来源会永久保留。撤回将删除该文件创建的 SKU，即使这些 SKU 后来被人工编辑过；其他文件创建的 SKU 不受影响。":
+    "File provenance is permanent. Rollback deletes SKUs created by this file even if they were edited later; SKUs created by other files are unaffected.",
+  "撤回这个文件": "Roll back this file",
+  "暂无商品导入文件": "No catalog import files",
   "{files} 个文件 · {skus} 个 SKU": "{files} files · {skus} SKUs",
   "撤回范围": "Rollback scope",
   "选择范围": "Select scope",
@@ -1720,6 +1743,15 @@ const english: Record<string, string> = {
     "Files uploaded through Batch import appear here.",
   "确认撤回这个分类？": "Roll back this category?",
   "确认撤回整个批次？": "Roll back the entire batch?",
+  "确认撤回这个文件？": "Roll back this file?",
+  "将删除“{filename}”带入的 {count} 个 SKU。没有其他 SKU 的商品会同时归档；这个操作不能恢复。":
+    "This deletes {count} SKUs introduced by “{filename}”. Products with no other SKUs are archived too. This action cannot be undone.",
+  "这个文件带来的商品已经撤回。": "Products introduced by this file have already been rolled back.",
+  "文件仍在导入，请完成后再撤回。": "The file is still importing. Wait until it finishes before rolling it back.",
+  "文件导入失败，没有写入可撤回的商品。": "The file import failed and did not write any products that can be rolled back.",
+  "这个文件带来的商品已经不存在。": "Products introduced by this file no longer exist.",
+  "该文件没有新建商品，或者历史记录无法安全确认文件来源。":
+    "This file did not create new products, or historical records cannot safely prove their file provenance.",
   "只会删除所选分类中由该批次新建且未被后续批次接管的 SKU；既有 SKU 与无法确认归属的图片不会被删除。":
     "Only SKUs in this category that were created by this batch and not claimed by a later batch will be deleted. Existing SKUs and images whose ownership cannot be verified will not be deleted.",
   "只会删除该批次新建且未被后续批次接管的 SKU；既有 SKU 与无法确认归属的图片不会被删除。":

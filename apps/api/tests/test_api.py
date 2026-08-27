@@ -393,6 +393,13 @@ def _cleanup_template_test_records(
                 *(row.source_file_id for row in import_rows),
                 *(row.source_file_id for row in worker_rows),
             }
+            if source_file_ids:
+                session.execute(
+                    delete(ProductAuditEventRow).where(
+                        ProductAuditEventRow.tenant_id == DEFAULT_TENANT_ID,
+                        ProductAuditEventRow.entity_id.in_(source_file_ids),
+                    )
+                )
             source_rows = (
                 session.scalars(
                     select(SourceFileRow)
@@ -10636,6 +10643,312 @@ def test_import_batch_rollback_preserves_existing_and_manually_edited_skus() -> 
     assert cleanup.json()["success_count"] == 2
 
 
+def test_import_file_rollback_deletes_all_skus_created_by_the_selected_file(
+    request: pytest.FixtureRequest,
+) -> None:
+    suffix = uuid4().hex[:10].upper()
+    category = f"文件撤回分类 {suffix}"
+    existing_code = f"FILE-ROLLBACK-EXISTING-{suffix}"
+    created_code = f"FILE-ROLLBACK-CREATED-{suffix}"
+    edited_code = f"FILE-ROLLBACK-EDITED-{suffix}"
+    import_job_ids: list[str] = []
+    batch_ids: list[UUID] = []
+
+    def workbook_content(rows: list[tuple[str, str]]) -> bytes:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = PRODUCT_TEMPLATE_SHEET
+        sheet.append(list(PRODUCT_TEMPLATE_HEADERS))
+        for name, sku_code in rows:
+            sheet.append(
+                [
+                    name,
+                    category,
+                    sku_code,
+                    None,
+                    "12.50",
+                    None,
+                    None,
+                    None,
+                    *([None] * 10),
+                ]
+            )
+        output = BytesIO()
+        workbook.save(output)
+        workbook.close()
+        return output.getvalue()
+
+    def cleanup() -> None:
+        _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[existing_code, created_code, edited_code],
+            category_names=[category],
+        )
+        if batch_ids:
+            with SessionLocal() as session:
+                session.execute(
+                    delete(CatalogImportBatchRow).where(
+                        CatalogImportBatchRow.tenant_id == DEFAULT_TENANT_ID,
+                        CatalogImportBatchRow.id.in_(batch_ids),
+                    )
+                )
+                session.commit()
+
+    cleanup()
+    request.addfinalizer(cleanup)
+
+    baseline = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "文件撤回前既有商品.xlsx",
+                workbook_content([("既有商品", existing_code)]),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE"},
+    )
+    assert baseline.status_code == 201, baseline.text
+    assert baseline.json()["status"] == "published"
+    import_job_ids.append(baseline.json()["id"])
+
+    created = client.post(
+        "/api/v1/import-batches",
+        json={"expected_file_count": 1},
+    )
+    assert created.status_code == 201, created.text
+    batch_id = UUID(created.json()["id"])
+    batch_ids.append(batch_id)
+
+    imported = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "需要按文件撤回.xlsx",
+                workbook_content(
+                    [
+                        ("既有商品被文件更新", existing_code),
+                        ("文件新建商品", created_code),
+                        ("文件新建后人工编辑", edited_code),
+                    ]
+                ),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={
+            "source_type": "PRODUCT_TEMPLATE",
+            "batch_id": str(batch_id),
+        },
+    )
+    assert imported.status_code == 201, imported.text
+    assert imported.json()["status"] == "published"
+    import_job_id = imported.json()["id"]
+    import_job_ids.append(import_job_id)
+
+    files = client.get("/api/v1/import-files")
+    assert files.status_code == 200, files.text
+    selected_file = next(
+        row for row in files.json() if row["import_job_id"] == import_job_id
+    )
+    source_file_id = selected_file["source_file_id"]
+    assert selected_file["filename"] == "需要按文件撤回.xlsx"
+    assert selected_file["rollback_status"] == "AVAILABLE"
+    assert selected_file["created_product_count"] == 2
+    assert selected_file["created_sku_count"] == 2
+    assert selected_file["remaining_sku_count"] == 2
+    assert selected_file["can_rollback"] is True
+
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.source_sku_code.in_(
+                    [existing_code, created_code, edited_code]
+                ),
+            )
+        ).all()
+        by_code = {row.source_sku_code: row for row in rows}
+        assert by_code[existing_code].origin_source_file_id != source_file_id
+        assert by_code[created_code].origin_source_file_id == source_file_id
+        assert by_code[edited_code].origin_source_file_id == source_file_id
+        edited_id = by_code[edited_code].id
+        edited_version = by_code[edited_code].version
+
+    edited = client.patch(
+        f"/api/v1/skus/{edited_id}",
+        json={
+            "expected_version": edited_version,
+            "option_values": {"人工备注": "来源仍然属于导入文件"},
+        },
+    )
+    assert edited.status_code == 200, edited.text
+
+    rolled_back = client.post(f"/api/v1/import-files/{source_file_id}/rollback")
+    assert rolled_back.status_code == 200, rolled_back.text
+    payload = rolled_back.json()
+    assert payload["status"] == "REVOKED"
+    assert payload["deleted_sku_count"] == 2
+    assert payload["archived_product_count"] == 2
+    assert payload["remaining_sku_count"] == 0
+
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.source_sku_code.in_(
+                    [existing_code, created_code, edited_code]
+                ),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+        by_code = {row.source_sku_code: row for row in rows}
+        assert by_code[existing_code].deleted_at is None
+        assert by_code[created_code].deleted_at is not None
+        assert by_code[edited_code].deleted_at is not None
+        assert by_code[edited_code].origin_source_file_id == source_file_id
+        batch = session.get(CatalogImportBatchRow, batch_id)
+        assert batch is not None and batch.status == "REVOKED"
+
+    refreshed = client.get("/api/v1/import-files")
+    assert refreshed.status_code == 200, refreshed.text
+    selected_file = next(
+        row for row in refreshed.json() if row["source_file_id"] == source_file_id
+    )
+    assert selected_file["rollback_status"] == "REVOKED"
+    assert selected_file["created_sku_count"] == 2
+    assert selected_file["remaining_sku_count"] == 0
+    assert selected_file["can_rollback"] is False
+
+
+def test_import_file_rollback_tracks_product_only_generated_sku(
+    request: pytest.FixtureRequest,
+) -> None:
+    suffix = uuid4().hex[:10].upper()
+    product_source_code = f"FILE-PRODUCT-ONLY-{suffix}"
+    product_name = f"文件来源无规格商品 {suffix}"
+    category_name = f"文件来源分类 {suffix}"
+    import_job_ids: list[str] = []
+    batch_ids: list[UUID] = []
+
+    def cleanup() -> None:
+        _cleanup_template_test_records(
+            import_job_ids=import_job_ids,
+            sku_codes=[],
+            category_names=[category_name],
+            product_names=[product_name],
+        )
+        if batch_ids:
+            with SessionLocal() as session:
+                session.execute(
+                    delete(CatalogImportBatchRow).where(
+                        CatalogImportBatchRow.tenant_id == DEFAULT_TENANT_ID,
+                        CatalogImportBatchRow.id.in_(batch_ids),
+                    )
+                )
+                session.commit()
+
+    cleanup()
+    request.addfinalizer(cleanup)
+
+    workbook = Workbook()
+    product_sheet = workbook.active
+    product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    product_sheet.append(list(PRODUCT_MASTER_TEMPLATE_HEADERS))
+    product_sheet.append([
+        product_source_code,
+        product_name,
+        category_name,
+        None,
+        None,
+        "该商品只有 Product 主数据。",
+        None,
+        None,
+        None,
+        *([None] * 9),
+    ])
+    sku_sheet = workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
+    sku_sheet.append(list(SKU_DETAIL_TEMPLATE_HEADERS))
+    content = BytesIO()
+    workbook.save(content)
+    workbook.close()
+
+    created = client.post(
+        "/api/v1/import-batches",
+        json={"expected_file_count": 1},
+    )
+    assert created.status_code == 201, created.text
+    batch_id = UUID(created.json()["id"])
+    batch_ids.append(batch_id)
+    imported = client.post(
+        "/api/v1/imports",
+        files={
+            "file": (
+                "按文件撤回无规格商品.xlsx",
+                content.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"source_type": "PRODUCT_TEMPLATE", "batch_id": str(batch_id)},
+    )
+    assert imported.status_code == 201, imported.text
+    assert imported.json()["status"] == "published"
+    import_job_id = imported.json()["id"]
+    import_job_ids.append(import_job_id)
+
+    files = client.get("/api/v1/import-files")
+    assert files.status_code == 200, files.text
+    selected_file = next(
+        row for row in files.json() if row["import_job_id"] == import_job_id
+    )
+    source_file_id = selected_file["source_file_id"]
+    assert selected_file["created_product_count"] == 1
+    assert selected_file["created_sku_count"] == 1
+
+    with SessionLocal() as session:
+        product = session.scalar(
+            select(ProductRow).where(
+                ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductRow.name == product_name,
+            )
+        )
+        assert product is not None
+        base_sku = session.scalar(
+            select(SkuRow).where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.product_id == product.id,
+            )
+        )
+        assert base_sku is not None
+        assert product.origin_source_file_id == source_file_id
+        assert base_sku.origin_source_file_id == source_file_id
+
+    rolled_back = client.post(f"/api/v1/import-files/{source_file_id}/rollback")
+    assert rolled_back.status_code == 200, rolled_back.text
+    assert rolled_back.json()["deleted_sku_count"] == 1
+    assert rolled_back.json()["archived_product_count"] == 1
+
+    with SessionLocal() as session:
+        product = session.scalar(
+            select(ProductRow)
+            .where(
+                ProductRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductRow.name == product_name,
+            )
+            .execution_options(include_deleted=True)
+        )
+        base_sku = session.scalar(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == DEFAULT_TENANT_ID,
+                SkuRow.product_id == product.id,
+            )
+            .execution_options(include_deleted=True)
+        ) if product is not None else None
+        assert product is not None and product.status == "ARCHIVED"
+        assert base_sku is not None and base_sku.deleted_at is not None
+
+
 def test_batch_merchandising_updates_category_pin_status_and_storefront_order() -> None:
     suffix = uuid4().hex[:8].upper()
     source_category_id = uuid4()
@@ -16716,8 +17029,10 @@ def test_translation_memory_chunks_large_database_reads_and_writes() -> None:
             tenant_id=DEFAULT_TENANT_ID,
             source_locale="zh-CN",
             target_locale="en-US",
-            provider=provider,
-            provider_version="v1",
+            # The memory should remain reusable after switching translation
+            # providers/models; provider identity is not source content.
+            provider="new-provider",
+            provider_version="v2",
             sources_by_hash={
                 translation_memory_service.translation_source_hash(value): value
                 for value in values

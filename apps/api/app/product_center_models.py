@@ -94,6 +94,12 @@ class SkuRow(AuditTimestampMixin, Base):
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
+            ["tenant_id", "origin_source_file_id"],
+            ["source_files.tenant_id", "source_files.id"],
+            name="fk_skus_tenant_origin_source_file",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
             ["tenant_id", "rollback_owner_batch_id"],
             ["catalog_import_batches.tenant_id", "catalog_import_batches.id"],
             name="fk_skus_tenant_rollback_owner_batch",
@@ -105,6 +111,11 @@ class SkuRow(AuditTimestampMixin, Base):
             "ix_skus_tenant_latest_import_job",
             "tenant_id",
             "latest_import_job_id",
+        ),
+        Index(
+            "ix_skus_tenant_origin_source_file",
+            "tenant_id",
+            "origin_source_file_id",
         ),
         Index(
             "ix_skus_tenant_rollback_owner_batch",
@@ -121,6 +132,12 @@ class SkuRow(AuditTimestampMixin, Base):
     product_id: Mapped[UUID] = mapped_column(nullable=False)
     supplier_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     latest_import_job_id: Mapped[str | None] = mapped_column(
+        String(40), nullable=True
+    )
+    # Immutable creation provenance used by file-scoped rollback. Unlike the
+    # latest import job and the legacy batch rollback marker, normal catalog
+    # edits never clear or replace this source file.
+    origin_source_file_id: Mapped[str | None] = mapped_column(
         String(40), nullable=True
     )
     # Deletion rights are deliberately narrower than import provenance. Only
