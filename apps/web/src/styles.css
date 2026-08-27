@@ -466,6 +466,13 @@
 html {
   width: 100%;
   max-width: 100%;
+  /*
+   * Radix menus/selects lock body scrolling while their popup is open. Keep
+   * the viewport scrollbar gutter reserved so opening a popup never changes
+   * the width of the page (especially after the user has scrolled).
+   */
+  scrollbar-gutter: stable;
+  overflow-y: auto;
   overflow-x: hidden;
   overflow-x: clip;
   overscroll-behavior: none;
