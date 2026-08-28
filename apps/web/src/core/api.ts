@@ -3042,6 +3042,9 @@ interface ApiCatalogTranslationJob {
   external_total_requests: number;
   external_completed_requests: number;
   external_failed_requests: number;
+  translation_total_values: number;
+  translation_processed_values: number;
+  translation_processed_skus: number;
   finalization_total_values: number;
   finalization_processed_values: number;
 }
@@ -3066,12 +3069,18 @@ interface ApiCatalogTranslationBatch {
   id: string;
   sequence_no: number;
   status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  item_kind: "SKU" | "TEXT";
+  request_id?: string | null;
+  source_locale?: string | null;
   sku_ids: string[];
   sku_refs: Array<{ id: string; code: string; name: string }>;
   attempt_count: number;
   total_skus: number;
   processed_skus: number;
   failed_skus: number;
+  total_items: number;
+  processed_items: number;
+  failed_items: number;
   request_started_at?: string | null;
   first_byte_at?: string | null;
   completed_at?: string | null;
@@ -3155,6 +3164,9 @@ function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTransla
     externalTotalRequests: row.external_total_requests ?? 0,
     externalCompletedRequests: row.external_completed_requests ?? 0,
     externalFailedRequests: row.external_failed_requests ?? 0,
+    translationTotalValues: row.translation_total_values ?? 0,
+    translationProcessedValues: row.translation_processed_values ?? 0,
+    translationProcessedSkus: row.translation_processed_skus ?? row.processed_skus,
     finalizationTotalValues: row.finalization_total_values ?? 0,
     finalizationProcessedValues: row.finalization_processed_values ?? 0,
   };
@@ -3187,12 +3199,18 @@ function mapCatalogTranslationBatch(
     id: row.id,
     sequenceNo: row.sequence_no,
     status: row.status,
+    itemKind: row.item_kind ?? "SKU",
+    requestId: defined(row.request_id),
+    sourceLocale: defined(row.source_locale),
     skuIds: row.sku_ids,
     skuRefs: row.sku_refs,
     attemptCount: row.attempt_count,
     totalSkus: row.total_skus,
     processedSkus: row.processed_skus,
     failedSkus: row.failed_skus,
+    totalItems: row.total_items ?? row.total_skus,
+    processedItems: row.processed_items ?? row.processed_skus,
+    failedItems: row.failed_items ?? row.failed_skus,
     requestStartedAt: defined(row.request_started_at),
     firstByteAt: defined(row.first_byte_at),
     completedAt: defined(row.completed_at),

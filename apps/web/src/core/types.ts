@@ -1545,6 +1545,9 @@ export interface CatalogTranslationJob {
   externalTotalRequests: number;
   externalCompletedRequests: number;
   externalFailedRequests: number;
+  translationTotalValues: number;
+  translationProcessedValues: number;
+  translationProcessedSkus: number;
   finalizationTotalValues: number;
   finalizationProcessedValues: number;
 }
@@ -1569,12 +1572,18 @@ export interface CatalogTranslationBatch {
   id: string;
   sequenceNo: number;
   status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  itemKind: "SKU" | "TEXT";
+  requestId?: string;
+  sourceLocale?: string;
   skuIds: string[];
   skuRefs: Array<{ id: string; code: string; name: string }>;
   attemptCount: number;
   totalSkus: number;
   processedSkus: number;
   failedSkus: number;
+  totalItems: number;
+  processedItems: number;
+  failedItems: number;
   requestStartedAt?: string;
   firstByteAt?: string;
   completedAt?: string;

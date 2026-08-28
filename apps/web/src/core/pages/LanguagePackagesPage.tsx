@@ -357,7 +357,7 @@ export function LanguagePackagesPage() {
     try {
       const next = await retryCatalogTranslationBatch(job.id, batch.id);
       setJob(next);
-      setBatches([]);
+      await refreshBatches(next.id);
       setSuccess(t("已重新提交第 {batch} 批，正在从该批次重新翻译。", { batch: batch.sequenceNo }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("批次重新请求失败。"));
@@ -622,16 +622,31 @@ export function LanguagePackagesPage() {
                 : "blue"}
           />
           <div className="language-job-copy">
-            <span>{t("已处理 {done} / {total} 个 SKU", { done: job.processedSkus, total: job.totalSkus })}</span>
             {job.executionMode === "QWEN_BATCH" ? (
-              <span>
-                {t("Qwen Batch · {status} · {done} / {total} 个请求", {
-                  status: job.externalBatchStatus ?? t("准备中"),
-                  done: job.externalCompletedRequests,
-                  total: job.externalTotalRequests,
-                })}
-              </span>
-            ) : null}
+              <>
+                <span>
+                  {t("已完成 {done} / {total} 个翻译字段", {
+                    done: job.translationProcessedValues,
+                    total: job.translationTotalValues,
+                  })}
+                </span>
+                <span>
+                  {t("已有完整译文 {done} / {total} 个 SKU", {
+                    done: job.translationProcessedSkus,
+                    total: job.totalSkus,
+                  })}
+                </span>
+                <span>
+                  {t("Qwen Batch · {status} · 上游完成 {done} / {total} 个请求", {
+                    status: job.externalBatchStatus ?? t("准备中"),
+                    done: job.externalCompletedRequests,
+                    total: job.externalTotalRequests,
+                  })}
+                </span>
+              </>
+            ) : (
+              <span>{t("已处理 {done} / {total} 个 SKU", { done: job.processedSkus, total: job.totalSkus })}</span>
+            )}
             {job.finalizationTotalValues > 0 ? (
               <span>
                 {t("语言包字段 {done} / {total} 项", {
@@ -676,6 +691,7 @@ export function LanguagePackagesPage() {
               const recoveredAfterRetry = batch.status === "SUCCEEDED"
                 && failedAttemptCount > 0;
               const retryAvailable = batch.status === "FAILED"
+                && job.status === "FAILED"
                 && !activeJob;
               const batchStatusLabel = automaticRetrying
                 ? "自动重试中"
@@ -687,8 +703,13 @@ export function LanguagePackagesPage() {
                       ? "失败"
                       : batch.status === "RUNNING"
                         ? "请求中"
+                        : batch.status === "CANCELLED"
+                          ? "已拆分"
                         : "等待中";
-              const preview = batch.skuRefs.slice(0, 3).map((ref) => ref.code || ref.name).join("、");
+              const itemLabel = batch.itemKind === "TEXT" ? "字段" : "SKU";
+              const preview = batch.skuRefs.slice(0, 3).map((ref) => (
+                batch.itemKind === "TEXT" ? ref.name : ref.code || ref.name
+              )).join("、");
               return (
                 <div className={`language-batch-row is-${batch.status.toLowerCase()}`} key={batch.id}>
                   <div className="language-batch-main">
@@ -699,7 +720,9 @@ export function LanguagePackagesPage() {
                       </Badge>
                     </div>
                     <Text size="1" color="gray">
-                      {t("{count} 个 SKU", { count: batch.totalSkus })}{preview ? ` · ${preview}${batch.skuRefs.length > 3 ? " …" : ""}` : ""}
+                      {t("{count} 个{item}", { count: batch.totalItems, item: itemLabel })}
+                      {batch.sourceLocale ? ` · ${batch.sourceLocale}` : ""}
+                      {preview ? ` · ${preview}${batch.totalItems > batch.skuRefs.length ? " …" : ""}` : ""}
                     </Text>
                     {latestAttempt ? (
                       <Text size="1" color="gray">
@@ -729,6 +752,24 @@ export function LanguagePackagesPage() {
                       </Text>
                     ) : null}
                     {batch.status === "FAILED" && batch.errorMessage ? <Text size="1" color="red">{batch.errorMessage}</Text> : null}
+                    {batch.status === "CANCELLED" && batch.errorMessage ? <Text size="1" color="gray">{batch.errorMessage}</Text> : null}
+                    {batch.attempts.length ? (
+                      <details className="language-batch-attempts">
+                        <summary>{t("查看 {count} 次请求记录", { count: batch.attempts.length })}</summary>
+                        <div>
+                          {batch.attempts.map((attempt) => (
+                            <div key={attempt.id}>
+                              <span>
+                                {t("第 {attempt} 次", { attempt: attempt.attemptNo })}
+                                {` · ${attempt.status === "SUCCEEDED" ? t("成功") : t("失败")}`}
+                                {` · ${formatDate(attempt.completedAt)}`}
+                              </span>
+                              {attempt.errorMessage ? <small>{attempt.errorMessage}</small> : null}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    ) : null}
                   </div>
                   <div className="language-batch-actions">
                     <Text size="1" color="gray">

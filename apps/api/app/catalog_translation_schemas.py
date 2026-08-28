@@ -33,12 +33,18 @@ class CatalogTranslationBatchResponse(BaseModel):
     id: UUID
     sequence_no: int = Field(ge=1)
     status: Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+    item_kind: Literal["SKU", "TEXT"] = "SKU"
+    request_id: str | None = None
+    source_locale: str | None = None
     sku_ids: list[UUID] = Field(default_factory=list)
     sku_refs: list[dict[str, str]] = Field(default_factory=list)
     attempt_count: int = Field(default=0, ge=0)
     total_skus: int = Field(default=0, ge=0)
     processed_skus: int = Field(default=0, ge=0)
     failed_skus: int = Field(default=0, ge=0)
+    total_items: int = Field(default=0, ge=0)
+    processed_items: int = Field(default=0, ge=0)
+    failed_items: int = Field(default=0, ge=0)
     request_started_at: datetime | None = None
     first_byte_at: datetime | None = None
     completed_at: datetime | None = None
@@ -107,6 +113,9 @@ class CatalogTranslationJobResponse(BaseModel):
     external_total_requests: int = Field(default=0, ge=0)
     external_completed_requests: int = Field(default=0, ge=0)
     external_failed_requests: int = Field(default=0, ge=0)
+    translation_total_values: int = Field(default=0, ge=0)
+    translation_processed_values: int = Field(default=0, ge=0)
+    translation_processed_skus: int = Field(default=0, ge=0)
     finalization_total_values: int = Field(default=0, ge=0)
     finalization_processed_values: int = Field(default=0, ge=0)
 

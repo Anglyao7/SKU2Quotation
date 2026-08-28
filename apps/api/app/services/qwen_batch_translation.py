@@ -76,6 +76,37 @@ class QwenBatchStatus:
     error_message: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class QwenBatchItemFailure:
+    """One provider item that could not be safely imported."""
+
+    custom_id: str
+    request: dict[str, Any]
+    error_message: str
+
+    @property
+    def value_count(self) -> int:
+        values = self.request.get("values")
+        return len(values) if isinstance(values, list) else 0
+
+
+@dataclass(frozen=True, slots=True)
+class QwenBatchParseResult:
+    """Validated output plus the exact request subsets that need retrying."""
+
+    translations_by_locale: dict[str, dict[str, str]]
+    successful_request_ids: tuple[str, ...]
+    failures: tuple[QwenBatchItemFailure, ...]
+
+    @property
+    def processed_values(self) -> int:
+        return sum(len(values) for values in self.translations_by_locale.values())
+
+    @property
+    def failed_values(self) -> int:
+        return sum(failure.value_count for failure in self.failures)
+
+
 def qwen_batch_api_base_url(value: str, *, production: bool) -> str:
     """Normalize any accepted compatible URL to its `/v1` API root."""
 
@@ -99,13 +130,21 @@ def qwen_batch_translation_requests(
     job_id: UUID,
     max_items: int = 80,
     max_characters: int = 12_000,
+    generation: int = 0,
+    sequence_start: int = 0,
 ) -> list[dict[str, Any]]:
     """Split a de-duplicated text corpus into deterministic Batch requests."""
 
-    if max_items < 1 or max_items > 999 or max_characters < 1:
+    if (
+        max_items < 1
+        or max_items > 999
+        or max_characters < 1
+        or generation < 0
+        or sequence_start < 0
+    ):
         raise ValueError("invalid Qwen Batch translation request limits")
     requests: list[dict[str, Any]] = []
-    sequence = 0
+    sequence = sequence_start
     for source_locale in sorted(values_by_source_locale):
         values = list(
             dict.fromkeys(
@@ -127,7 +166,8 @@ def qwen_batch_translation_requests(
             requests.append(
                 {
                     "custom_id": (
-                        f"atc-{job_id.hex[:12]}-{sequence:05d}-{digest}"
+                        f"atc-{job_id.hex[:10]}-r{generation:02d}-"
+                        f"{sequence:05d}-{digest}"
                     ),
                     "source_locale": source_locale,
                     "values": current,
@@ -418,12 +458,40 @@ class QwenBatchClient:
         requests: list[dict[str, Any]],
         *,
         target_locale: str,
-    ) -> dict[str, dict[str, str]]:
+    ) -> QwenBatchParseResult:
         expected = {
             str(request["custom_id"]): request for request in requests
         }
-        completed: set[str] = set()
+        if len(expected) != len(requests):
+            raise TranslationProviderError(
+                "Qwen Batch translation snapshot contains duplicate custom_id values"
+            )
+        seen: set[str] = set()
+        successful: list[str] = []
+        failures: list[QwenBatchItemFailure] = []
         translations_by_locale: dict[str, dict[str, str]] = {}
+
+        def item_error(row: Mapping[str, Any], fallback: str) -> str:
+            error = row.get("error")
+            if isinstance(error, Mapping):
+                raw = error.get("message") or error.get("code")
+                if isinstance(raw, str) and raw.strip():
+                    return " ".join(raw.split())[:300]
+            return fallback
+
+        def fail(
+            custom_id: str,
+            request: dict[str, Any],
+            message: str,
+        ) -> None:
+            failures.append(
+                QwenBatchItemFailure(
+                    custom_id=custom_id,
+                    request=dict(request),
+                    error_message=" ".join(message.split())[:300],
+                )
+            )
+
         try:
             lines = content.decode("utf-8").splitlines()
         except UnicodeDecodeError as exc:
@@ -448,52 +516,84 @@ class QwenBatchClient:
                 raise TranslationProviderError(
                     "Qwen Batch result contains an unknown custom_id"
                 )
-            if custom_id in completed:
+            if custom_id in seen:
                 raise TranslationProviderError(
                     "Qwen Batch result contains a duplicate custom_id"
                 )
+            seen.add(custom_id)
+            request = expected[custom_id]
             response = row.get("response")
             if not isinstance(response, Mapping):
-                raise TranslationProviderError(
-                    "Qwen Batch result is missing a response"
+                fail(
+                    custom_id,
+                    request,
+                    item_error(row, "Qwen Batch result is missing a response"),
                 )
+                continue
             status_code = response.get("status_code")
             if not isinstance(status_code, int) or not 200 <= status_code < 300:
-                raise TranslationProviderError(
-                    f"Qwen Batch item returned HTTP {status_code or 'unknown'}"
+                fail(
+                    custom_id,
+                    request,
+                    item_error(
+                        row,
+                        f"Qwen Batch item returned HTTP {status_code or 'unknown'}",
+                    ),
                 )
+                continue
             response_body = response.get("body")
             if not isinstance(response_body, Mapping):
-                raise TranslationProviderError(
-                    "Qwen Batch item returned an invalid response body"
+                fail(
+                    custom_id,
+                    request,
+                    "Qwen Batch item returned an invalid response body",
                 )
-            request = expected[custom_id]
+                continue
             values = request["values"]
             source_locale = str(request["source_locale"])
-            source_text, protected = catalog_translation_values_payload(values)
-            translated_text = self._prompt_adapter.translated_response(
-                response_body,
-                source_text=source_text,
-            )
-            translated_values = parse_catalog_translation_values(
-                values,
-                translated_text,
-                protected=protected,
-            )
-            translated_values = validate_catalog_translation_values(
-                values,
-                translated_values,
-                translator=None,
-                source_locale=source_locale,
-                target_locale=target_locale,
-            )
+            try:
+                source_text, protected = catalog_translation_values_payload(values)
+                translated_text = self._prompt_adapter.translated_response(
+                    response_body,
+                    source_text=source_text,
+                )
+                translated_values = parse_catalog_translation_values(
+                    values,
+                    translated_text,
+                    protected=protected,
+                )
+                translated_values = validate_catalog_translation_values(
+                    values,
+                    translated_values,
+                    translator=None,
+                    source_locale=source_locale,
+                    target_locale=target_locale,
+                )
+            except (
+                TranslationProviderError,
+                ValueError,
+                TypeError,
+                KeyError,
+                IndexError,
+            ) as exc:
+                fail(
+                    custom_id,
+                    request,
+                    str(exc) or "Qwen Batch item returned invalid structured content",
+                )
+                continue
             translations_by_locale.setdefault(source_locale, {}).update(
                 zip(values, translated_values, strict=True)
             )
-            completed.add(custom_id)
-        missing = set(expected) - completed
-        if missing:
-            raise TranslationProviderError(
-                f"Qwen Batch result is missing {len(missing)} requests"
+            successful.append(custom_id)
+        for custom_id in sorted(set(expected) - seen):
+            fail(
+                custom_id,
+                expected[custom_id],
+                "Qwen Batch result is missing this request",
             )
-        return translations_by_locale
+        return QwenBatchParseResult(
+            translations_by_locale=translations_by_locale,
+            successful_request_ids=tuple(successful),
+            failures=tuple(failures),
+        )

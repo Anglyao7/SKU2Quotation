@@ -324,6 +324,11 @@
 .language-batch-main { min-width: 0; display: grid; gap: 4px; }
 .language-batch-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .language-batch-title strong { font-size: 13px; }
+.language-batch-attempts { margin-top: 3px; color: var(--core-muted); font-size: 11px; }
+.language-batch-attempts summary { width: fit-content; cursor: pointer; user-select: none; }
+.language-batch-attempts > div { margin-top: 7px; display: grid; gap: 6px; }
+.language-batch-attempts > div > div { display: grid; gap: 2px; padding-left: 10px; border-left: 2px solid var(--core-line); }
+.language-batch-attempts small { overflow-wrap: anywhere; color: var(--red-10, #b42318); }
 .language-batch-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
 .language-job-card.is-failed { border-color: color-mix(in srgb, var(--red-8, #d14343) 32%, var(--core-line)); }
 .language-job-card.is-paused { border-color: color-mix(in srgb, var(--amber-8, #d99a21) 34%, var(--core-line)); background: color-mix(in srgb, var(--amber-3, #fff4d6) 24%, var(--core-surface)); }

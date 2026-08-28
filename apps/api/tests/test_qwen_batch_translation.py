@@ -172,17 +172,19 @@ def test_qwen_batch_lifecycle_and_result_mapping() -> None:
     assert created.id == "batch-test"
     completed = client.retrieve_batch(created.id)
     assert completed.status == "completed"
-    translations = client.parse_output(
+    result = client.parse_output(
         client.download_file(completed.output_file_id or ""),
         batch_requests,
         target_locale="en-US",
     )
-    assert translations == {
+    assert result.translations_by_locale == {
         "zh-CN": {
             "智能宠物喂食器 SF-6L20": "Smart pet feeder SF-6L20",
             "颜色": "Color",
         }
     }
+    assert result.processed_values == 2
+    assert result.failures == ()
     assert client.delete_file(file_id) is True
     assert ("POST", "/compatible-mode/v1/batches") in seen
 
@@ -227,3 +229,53 @@ def test_qwen_batch_rejects_unknown_result_identity() -> None:
     ).encode()
     with pytest.raises(TranslationProviderError, match="unknown custom_id"):
         client.parse_output(content, requests, target_locale="en-US")
+
+
+def test_qwen_batch_salvages_valid_rows_and_reports_only_invalid_subset() -> None:
+    client = QwenBatchClient(
+        _configuration(),
+        client=httpx.Client(transport=httpx.MockTransport(lambda _request: None)),
+    )
+    requests = qwen_batch_translation_requests(
+        {"zh-CN": ["颜色", "尺寸"]},
+        job_id=JOB_ID,
+        max_items=1,
+    )
+    valid = {
+        "custom_id": requests[0]["custom_id"],
+        "response": {
+            "status_code": 200,
+            "body": {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(["Color"])},
+                    }
+                ]
+            },
+        },
+    }
+    invalid = {
+        "custom_id": requests[1]["custom_id"],
+        "response": {
+            "status_code": 200,
+            "body": {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps([])},
+                    }
+                ]
+            },
+        },
+    }
+    content = (json.dumps(valid) + "\n" + json.dumps(invalid) + "\n").encode()
+
+    result = client.parse_output(content, requests, target_locale="en-US")
+
+    assert result.translations_by_locale == {"zh-CN": {"颜色": "Color"}}
+    assert result.processed_values == 1
+    assert result.failed_values == 1
+    assert [failure.custom_id for failure in result.failures] == [
+        requests[1]["custom_id"]
+    ]

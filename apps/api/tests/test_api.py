@@ -78,6 +78,7 @@ from app.catalog_translation_models import (
     CatalogLanguagePackRow,
     CatalogSkuTranslationRow,
     CatalogTextTranslationRow,
+    CatalogTranslationBatchRow,
     CatalogTranslationJobRow,
 )
 from app.storefront_analytics_models import (
@@ -148,6 +149,8 @@ from app.services.translation_configuration import (
 from app.services.catalog_translation import catalog_translation_source
 from app.services.qwen_batch_translation import (
     QwenBatchConfiguration,
+    QwenBatchItemFailure,
+    QwenBatchParseResult,
     QwenBatchStatus,
 )
 from app.services.translation import TranslationIdentity, TranslationProviderError
@@ -16981,7 +16984,7 @@ class _QwenBatchJobTestClient:
         requests: list[dict[str, object]],
         *,
         target_locale: str,
-    ) -> dict[str, dict[str, str]]:
+    ) -> QwenBatchParseResult:
         assert content == b"mocked-output"
         assert target_locale == "en-US"
         translated: dict[str, dict[str, str]] = {}
@@ -16999,11 +17002,125 @@ class _QwenBatchJobTestClient:
                     for value in values
                 }
             )
-        return translated
+        return QwenBatchParseResult(
+            translations_by_locale=translated,
+            successful_request_ids=tuple(
+                str(request["custom_id"]) for request in requests
+            ),
+            failures=(),
+        )
 
     def delete_file(self, file_id: str) -> bool:
         type(self).deleted_file_ids.add(file_id)
         return True
+
+
+class _PartialQwenBatchJobTestClient(_QwenBatchJobTestClient):
+    parse_calls = 0
+
+    def __init__(
+        self,
+        configuration: QwenBatchConfiguration,
+        *,
+        production: bool = False,
+    ) -> None:
+        super().__init__(configuration, production=production)
+        self.current_requests: list[dict[str, object]] = []
+
+    @classmethod
+    def reset(cls) -> None:
+        super().reset()
+        cls.parse_calls = 0
+
+    def jsonl_content(
+        self,
+        requests: list[dict[str, object]],
+        *,
+        target_locale: str,
+    ) -> bytes:
+        self.current_requests = requests
+        self.request_count = len(requests)
+        assert target_locale == "en-US"
+        return b'{"custom_id":"test"}\n'
+
+    def upload_jsonl(self, content: bytes, *, filename: str) -> str:
+        assert content and filename.endswith(".jsonl")
+        type(self).uploads += 1
+        return f"file-input-{type(self).uploads}"
+
+    def find_batch(self, input_file_id: str) -> None:
+        assert input_file_id.startswith("file-input-")
+        return None
+
+    def create_batch(
+        self,
+        input_file_id: str,
+        *,
+        name: str,
+        description: str,
+    ) -> QwenBatchStatus:
+        assert name.startswith("ATC-") and description
+        type(self).submissions += 1
+        submission = type(self).submissions
+        return QwenBatchStatus(
+            id=f"batch-{submission}",
+            status="completed",
+            input_file_id=input_file_id,
+            output_file_id=f"file-output-{submission}",
+            error_file_id=None,
+            total_requests=self.request_count,
+            completed_requests=self.request_count,
+            failed_requests=0,
+        )
+
+    def download_file(self, file_id: str) -> bytes:
+        assert file_id.startswith("file-output-")
+        return file_id.encode()
+
+    def parse_output(
+        self,
+        content: bytes,
+        requests: list[dict[str, object]],
+        *,
+        target_locale: str,
+    ) -> QwenBatchParseResult:
+        assert content.startswith(b"file-output-")
+        assert target_locale == "en-US"
+        type(self).parse_calls += 1
+        failed_request = requests[-1] if type(self).parse_calls == 1 else None
+        translated: dict[str, dict[str, str]] = {}
+        successful: list[str] = []
+        failures: list[QwenBatchItemFailure] = []
+        for request in requests:
+            custom_id = str(request["custom_id"])
+            if request is failed_request:
+                failures.append(
+                    QwenBatchItemFailure(
+                        custom_id=custom_id,
+                        request=dict(request),
+                        error_message="invalid structured content",
+                    )
+                )
+                continue
+            source_locale = str(request["source_locale"])
+            values = request["values"]
+            assert isinstance(values, list)
+            translated.setdefault(source_locale, {}).update(
+                {
+                    str(value): re.sub(
+                        r"[\u3400-\u9fff]+",
+                        "Translated",
+                        str(value),
+                    )
+                    for value in values
+                }
+            )
+            successful.append(custom_id)
+        return QwenBatchParseResult(
+            translations_by_locale=translated,
+            successful_request_ids=tuple(successful),
+            failures=tuple(failures),
+        )
 
 
 class _BlockingCatalogTranslationTestProvider(_CatalogTranslationTestProvider):
@@ -17881,6 +17998,23 @@ def test_qwen_batch_job_reuses_completed_task_after_package_failure(
         assert failed_payload["execution_mode"] == "QWEN_BATCH"
         assert failed_payload["processed_skus"] == 3
         assert failed_payload["external_batch_status"] == "completed"
+        assert failed_payload["translation_total_values"] > 0
+        assert failed_payload["translation_processed_values"] == (
+            failed_payload["translation_total_values"]
+        )
+        batch_history = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches",
+            params={"include_skus": "false"},
+        )
+        assert batch_history.status_code == 200, batch_history.text
+        assert batch_history.json()
+        assert all(
+            batch["item_kind"] == "TEXT"
+            and batch["status"] == "SUCCEEDED"
+            and batch["total_items"] > 0
+            and batch["attempt_count"] == 1
+            for batch in batch_history.json()
+        )
         assert _QwenBatchJobTestClient.submissions == 1
         assert not _QwenBatchJobTestClient.deleted_file_ids
 
@@ -17904,6 +18038,14 @@ def test_qwen_batch_job_reuses_completed_task_after_package_failure(
             "file-input-test",
             "file-output-test",
         }
+        resumed_history = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert resumed_history.status_code == 200, resumed_history.text
+        assert all(
+            batch["attempt_count"] == 1
+            for batch in resumed_history.json()
+        )
     finally:
         with SessionLocal() as session:
             session.execute(
@@ -17927,6 +18069,266 @@ def test_qwen_batch_job_reuses_completed_task_after_package_failure(
                         CatalogTranslationJobRow.id == job_id
                     )
                 )
+            session.commit()
+
+
+def test_qwen_batch_job_salvages_valid_rows_and_retries_only_failed_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.delenv("TRANSLATION_PACKAGE_PUBLIC_BASE_URL", raising=False)
+    _PartialQwenBatchJobTestClient.reset()
+    configuration = QwenBatchConfiguration(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key="sk-qwen-batch-test",
+        model_name="qwen3.7-flash-2026-07-15",
+    )
+    original_request_builder = (
+        catalog_translation_use_cases.qwen_batch_translation_requests
+    )
+
+    def one_value_per_request(values_by_source_locale, **kwargs):
+        kwargs["max_items"] = 1
+        return original_request_builder(values_by_source_locale, **kwargs)
+
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_execution_mode",
+        lambda _session: "QWEN_BATCH",
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "resolved_qwen_batch_configuration",
+        lambda _session: configuration,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "QwenBatchClient",
+        _PartialQwenBatchJobTestClient,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "qwen_batch_translation_requests",
+        one_value_per_request,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **kwargs: catalog_translation_use_cases._run_translation_job(
+            **kwargs
+        ),
+    )
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(CatalogLanguagePackRow).where(
+                CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.execute(
+            delete(CatalogSkuTranslationRow).where(
+                CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.execute(
+            delete(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.execute(
+            delete(CatalogTranslationJobRow).where(
+                CatalogTranslationJobRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.commit()
+
+    job_id: UUID | None = None
+    try:
+        started = client.post(
+            "/api/v1/catalog/translations/jobs",
+            json={
+                "target_locale": "en-US",
+                "mode": "FULL_REBUILD",
+                "confirm_full_rebuild": True,
+            },
+        )
+        assert started.status_code == 202, started.text
+        job_id = UUID(started.json()["id"])
+
+        finished = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}"
+        )
+        assert finished.status_code == 200, finished.text
+        payload = finished.json()
+        assert payload["status"] == "SUCCEEDED"
+        assert payload["translation_total_values"] > 1
+        assert payload["translation_processed_values"] == (
+            payload["translation_total_values"]
+        )
+        assert _PartialQwenBatchJobTestClient.submissions == 2
+
+        history = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert history.status_code == 200, history.text
+        batches = history.json()
+        assert batches
+        retried = [batch for batch in batches if batch["attempt_count"] == 2]
+        assert len(retried) == 1
+        assert retried[0]["status"] == "SUCCEEDED"
+        assert [attempt["status"] for attempt in retried[0]["attempts"]] == [
+            "FAILED",
+            "SUCCEEDED",
+        ]
+        assert all(batch["item_kind"] == "TEXT" for batch in batches)
+        assert all(batch["status"] == "SUCCEEDED" for batch in batches)
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogLanguagePackRow).where(
+                    CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogSkuTranslationRow).where(
+                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogTextTranslationRow).where(
+                    CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            if job_id is not None:
+                session.execute(
+                    delete(CatalogTranslationJobRow).where(
+                        CatalogTranslationJobRow.id == job_id
+                    )
+                )
+            session.commit()
+
+
+def test_qwen_failed_text_batch_can_be_requeued_from_batch_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.delenv("TRANSLATION_PACKAGE_PUBLIC_BASE_URL", raising=False)
+    configuration = QwenBatchConfiguration(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key="sk-qwen-batch-test",
+        model_name="qwen3.7-flash-2026-07-15",
+    )
+    dispatches: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_execution_mode",
+        lambda _session: "QWEN_BATCH",
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "resolved_qwen_batch_configuration",
+        lambda _session: configuration,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "QwenBatchClient",
+        _QwenBatchJobTestClient,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+
+    started = client.post(
+        "/api/v1/catalog/translations/jobs",
+        json={
+            "target_locale": "tr",
+            "mode": "FULL_REBUILD",
+            "confirm_full_rebuild": True,
+        },
+    )
+    assert started.status_code == 202, started.text
+    job_id = UUID(started.json()["id"])
+    batch_id: UUID | None = None
+    try:
+        with SessionLocal() as session:
+            job = session.get(CatalogTranslationJobRow, job_id)
+            assert job is not None
+            rows = public_catalog_repository.list_all_public_catalog_rows(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                now=datetime.now(UTC),
+            )
+            job.status = "FAILED"
+            job.stage = "FAILED"
+            job.completed_at = datetime.now(UTC)
+            job.batch_request_payload = {
+                "schema_version": 2,
+                "catalog_digest": catalog_translation_use_cases.catalog_rows_source_digest(
+                    rows
+                ),
+                "requests": [],
+                "qwen_batch_progress": {
+                    "total_values": 1,
+                    "processed_values": 0,
+                    "retry_generation": 0,
+                    "imported_batch_ids": [],
+                },
+            }
+            batch = CatalogTranslationBatchRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                job_id=job_id,
+                sequence_no=1,
+                status="FAILED",
+                sku_ids=[],
+                sku_refs=[
+                    {
+                        "id": "failed-text-request",
+                        "code": "zh-CN",
+                        "name": "颜色",
+                        "kind": "TEXT",
+                    }
+                ],
+                attempt_count=1,
+                total_skus=1,
+                processed_skus=0,
+                failed_skus=1,
+                error_message="invalid structured content",
+            )
+            session.add(batch)
+            session.commit()
+            batch_id = batch.id
+
+        retried = client.post(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches/{batch_id}/retry"
+        )
+        assert retried.status_code == 202, retried.text
+        payload = retried.json()
+        assert payload["id"] == str(job_id)
+        assert payload["status"] == "QUEUED"
+        assert payload["translation_total_values"] == 1
+        assert payload["translation_processed_values"] == 0
+        assert len(dispatches) == 2
+
+        history = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert history.status_code == 200, history.text
+        assert history.json()[0]["id"] == str(batch_id)
+        assert history.json()[0]["item_kind"] == "TEXT"
+        assert history.json()[0]["status"] == "QUEUED"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTranslationJobRow).where(
+                    CatalogTranslationJobRow.id == job_id
+                )
+            )
             session.commit()
 
 
