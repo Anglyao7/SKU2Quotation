@@ -62,6 +62,7 @@ const PUBLIC_CATALOG_CACHE_TTL_MS = 2 * 60_000;
 const PUBLIC_SKU_CACHE_TTL_MS = 2 * 60_000;
 const PUBLIC_PRODUCT_CACHE_TTL_MS = 2 * 60_000;
 const LANGUAGE_PACK_DESCRIPTOR_TTL_MS = 60_000;
+const LANGUAGE_PACK_DESCRIPTOR_TIMEOUT_MS = 5_000;
 
 interface PublicCacheEntry {
   expiresAt: number;
@@ -116,7 +117,9 @@ async function storefrontLanguagePack(
     const descriptor = await cachedPublicRequest(
       publicCatalogCacheKey("language-pack-descriptor", descriptorPath),
       LANGUAGE_PACK_DESCRIPTOR_TTL_MS,
-      () => request<CatalogLanguagePackDescriptor>(descriptorPath),
+      () => request<CatalogLanguagePackDescriptor>(descriptorPath, {
+        signal: AbortSignal.timeout(LANGUAGE_PACK_DESCRIPTOR_TIMEOUT_MS),
+      }),
     );
     const downloadUrl = descriptor.download_url.startsWith("http")
       ? descriptor.download_url
@@ -364,7 +367,6 @@ async function getCachedStoreSkus(
   if (filters.tags?.length) params.set("tags", filters.tags.join(","));
   if (filters.semantic) params.set("semantic", "true");
   if (filters.includeFacets === false) params.set("include_facets", "false");
-  if (filters.locale) params.set("locale", filters.locale);
   if (filters.shareToken) params.set("share", filters.shareToken);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
@@ -413,7 +415,7 @@ async function getCachedStoreSkus(
     for (const sku of result.items) {
       if (languagePack) continue;
       if (!hasCompleteStorefrontTranslation(sku)) continue;
-      const detailPath = storeSkuPath(slug, sku.id, filters.locale);
+      const detailPath = storeSkuPath(slug, sku.id);
       primePublicRequestCache(
         publicCatalogCacheKey("sku", `${detailPath}${publicCatalogAuthScope()}`),
         PUBLIC_SKU_CACHE_TTL_MS,
@@ -451,7 +453,6 @@ async function getCachedStoreProducts(
   if (filters.tags?.length) params.set("tags", filters.tags.join(","));
   if (filters.semantic) params.set("semantic", "true");
   if (filters.includeFacets === false) params.set("include_facets", "false");
-  if (filters.locale) params.set("locale", filters.locale);
   if (filters.shareToken) params.set("share", filters.shareToken);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
@@ -571,10 +572,10 @@ async function download(
 export const api = {
   getStore: async (slug: string, locale?: StorefrontLocale) => {
     const languagePack = await storefrontLanguagePack(slug, locale);
-    // Always ask the server for the selected locale. A language package is an
-    // optimization, not a prerequisite: without one the API can still return
-    // live translations or source-text fallbacks while keeping the selected
-    // locale and language menu intact.
+    // Store metadata keeps the selected locale and language menu. Catalog
+    // reads below always request source data: a published package is applied
+    // locally, while a missing package immediately falls back to source text
+    // instead of blocking the storefront on foreground AI translation.
     const path = storePath(slug, locale);
     const cachePath = `${languagePack
       ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
@@ -631,7 +632,7 @@ export const api = {
     shareToken?: string,
   ): Promise<StoreProductDetail> {
     const languagePack = await storefrontLanguagePack(slug, locale);
-    const sourcePath = storeProductPath(slug, productId, locale);
+    const sourcePath = storeProductPath(slug, productId);
     const path = shareToken
       ? `${sourcePath}${sourcePath.includes("?") ? "&" : "?"}share=${encodeURIComponent(shareToken)}`
       : sourcePath;
@@ -684,7 +685,6 @@ export const api = {
   ): Promise<StoreImageSearchResponse> {
     const params = new URLSearchParams();
     params.set("limit", String(limit));
-    if (locale) params.set("locale", locale);
     if (shareToken) params.set("share", shareToken);
     const form = new FormData();
     form.append("file", file, file.name || "image-search.jpg");
@@ -718,7 +718,7 @@ export const api = {
   },
   async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale, shareToken?: string): Promise<Sku> {
     const languagePack = await storefrontLanguagePack(slug, locale);
-    const sourcePath = storeSkuPath(slug, skuId, locale);
+    const sourcePath = storeSkuPath(slug, skuId);
     const path = shareToken
       ? `${sourcePath}${sourcePath.includes("?") ? "&" : "?"}share=${encodeURIComponent(shareToken)}`
       : sourcePath;
