@@ -1498,21 +1498,10 @@ def _prepare_realtime_language_pack_values(
         session.commit()
         return False
 
-    provider_batch_items = _positive_environment(
-        "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
-        48,
-        maximum=200,
+    provider_batch_items, provider_batch_characters = (
+        resolved_catalog_translation_batch_limits(session)
     )
-    provider_batch_characters = _positive_environment(
-        "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
-        8_000,
-        maximum=100_000,
-    )
-    provider_concurrency = _positive_environment(
-        "PUBLIC_LIVE_TRANSLATION_CONCURRENCY",
-        3,
-        maximum=8,
-    )
+    provider_concurrency = resolved_catalog_translation_concurrency(session)
     checkpoint_items = provider_batch_items * provider_concurrency
     checkpoint_characters = provider_batch_characters * provider_concurrency
     checkpoints = [
@@ -1541,6 +1530,9 @@ def _prepare_realtime_language_pack_values(
             values=batch,
             source_locale=source_locale,
             target_locale=job.target_locale,
+            batch_size=provider_batch_items,
+            batch_characters=provider_batch_characters,
+            concurrency=provider_concurrency,
         )
         unresolved = [value for value in batch if value not in translated]
         if unresolved:

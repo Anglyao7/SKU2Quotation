@@ -30,7 +30,10 @@ from .translation import TranslationProvider, TranslationProviderError
 
 logger = logging.getLogger(__name__)
 _TRANSLATION_EXECUTOR = ThreadPoolExecutor(
-    max_workers=8,
+    # Managed catalog translation allows up to ten concurrent requests.  The
+    # shared executor must not become a lower, invisible limit when a caller
+    # explicitly supplies the platform-managed concurrency value.
+    max_workers=10,
     thread_name_prefix="catalog-translation",
 )
 _SINGLEFLIGHT_LOCK = Lock()
@@ -524,8 +527,9 @@ def _translate_batch(
     *,
     source_locale: str,
     target_locale: str,
+    provider_semaphore: BoundedSemaphore = _PROVIDER_SEMAPHORE,
 ) -> list[str]:
-    with _PROVIDER_SEMAPHORE:
+    with provider_semaphore:
         return translate_catalog_values(
             translator,
             batch,
@@ -540,23 +544,46 @@ def _translate_uncached_values(
     *,
     source_locale: str,
     target_locale: str,
+    batch_size: int | None = None,
+    batch_characters: int | None = None,
+    concurrency: int | None = None,
 ) -> tuple[dict[str, str], dict[str, TranslationProviderError]]:
-    batches = _translation_batches(
-        values,
-        max_items=_positive_int_environment(
+    resolved_batch_size = (
+        _positive_int_environment(
             "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
             48,
             maximum=200,
-        ),
-        max_characters=_positive_int_environment(
+        )
+        if batch_size is None
+        else max(1, min(int(batch_size), 200))
+    )
+    resolved_batch_characters = (
+        _positive_int_environment(
             "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
             8_000,
             maximum=100_000,
-        ),
+        )
+        if batch_characters is None
+        else max(1, min(int(batch_characters), 100_000))
+    )
+    resolved_concurrency = (
+        _PROVIDER_CONCURRENCY
+        if concurrency is None
+        else max(1, min(int(concurrency), 10))
+    )
+    batches = _translation_batches(
+        values,
+        max_items=resolved_batch_size,
+        max_characters=resolved_batch_characters,
     )
     successes: dict[str, str] = {}
     failures: dict[str, TranslationProviderError] = {}
     recoverable_sources: set[str] = set()
+    provider_semaphore = (
+        _PROVIDER_SEMAPHORE
+        if concurrency is None
+        else BoundedSemaphore(resolved_concurrency)
+    )
     futures = {
         _TRANSLATION_EXECUTOR.submit(
             _translate_batch,
@@ -564,6 +591,7 @@ def _translate_uncached_values(
             batch,
             source_locale=source_locale,
             target_locale=target_locale,
+            provider_semaphore=provider_semaphore,
         ): batch
         for batch in batches
     }
@@ -602,6 +630,7 @@ def _translate_uncached_values(
                 [value],
                 source_locale=source_locale,
                 target_locale=target_locale,
+                provider_semaphore=provider_semaphore,
             )[0]
         except Exception as value_error:
             if isinstance(value_error, TranslationProviderError):
@@ -619,6 +648,9 @@ def translate_values_with_memory(
     values: list[str],
     source_locale: str,
     target_locale: str,
+    batch_size: int | None = None,
+    batch_characters: int | None = None,
+    concurrency: int | None = None,
 ) -> dict[str, str]:
     """Return available translations and cache only text users actually requested.
 
@@ -710,6 +742,9 @@ def translate_values_with_memory(
                 leader_sources,
                 source_locale=source_locale,
                 target_locale=target_locale,
+                batch_size=batch_size,
+                batch_characters=batch_characters,
+                concurrency=concurrency,
             )
             _database_store_many(
                 tenant_id=tenant_id,

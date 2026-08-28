@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from threading import Lock
+from time import sleep
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
+from app.services import translation_memory
 from app.services.translation import TranslationIdentity
 from app.use_cases import catalog_translations
 
@@ -21,6 +24,55 @@ class _Translator:
     identity = TranslationIdentity(provider="test", version="v1")
 
 
+def test_translation_memory_honors_explicit_managed_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = 0
+    maximum_active = 0
+    observed_batches: list[list[str]] = []
+    lock = Lock()
+
+    def translate_batch(_translator, values, **_kwargs):
+        nonlocal active, maximum_active
+        batch = list(values)
+        with lock:
+            observed_batches.append(batch)
+            active += 1
+            maximum_active = max(maximum_active, active)
+        sleep(0.05)
+        with lock:
+            active -= 1
+        return [f"translated-{value}" for value in batch]
+
+    monkeypatch.setattr(
+        translation_memory,
+        "translate_catalog_values",
+        translate_batch,
+    )
+    values = [f"规格-{index}" for index in range(6)]
+
+    successes, failures = translation_memory._translate_uncached_values(
+        _Translator(),
+        values,
+        source_locale="zh-CN",
+        target_locale="en-US",
+        batch_size=2,
+        batch_characters=1_000,
+        concurrency=2,
+    )
+
+    assert failures == {}
+    assert successes == {
+        value: f"translated-{value}" for value in values
+    }
+    assert {tuple(batch) for batch in observed_batches} == {
+        tuple(values[0:2]),
+        tuple(values[2:4]),
+        tuple(values[4:6]),
+    }
+    assert maximum_active == 2
+
+
 def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -29,9 +81,16 @@ def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
     translated_requests: list[list[str]] = []
     pause_checks = 0
 
-    monkeypatch.setenv("PUBLIC_LIVE_TRANSLATION_BATCH_SIZE", "1")
-    monkeypatch.setenv("PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS", "100")
-    monkeypatch.setenv("PUBLIC_LIVE_TRANSLATION_CONCURRENCY", "1")
+    monkeypatch.setattr(
+        catalog_translations,
+        "resolved_catalog_translation_batch_limits",
+        lambda _session: (1, 100),
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "resolved_catalog_translation_concurrency",
+        lambda _session: 1,
+    )
     monkeypatch.setattr(
         catalog_translations,
         "catalog_language_pack_translatable_values",
@@ -51,6 +110,9 @@ def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
         return available, {"zh-CN": missing} if missing else {}
 
     def translate_values(**kwargs):
+        assert kwargs["batch_size"] == 1
+        assert kwargs["batch_characters"] == 100
+        assert kwargs["concurrency"] == 1
         batch = list(kwargs["values"])
         translated_requests.append(batch)
         translated_memory.update(batch)
