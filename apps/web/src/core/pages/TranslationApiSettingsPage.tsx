@@ -28,6 +28,7 @@ import {
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type {
+  CatalogTranslationExecutionMode,
   TranslationApiSettings,
   TranslationProviderKind,
   TranslationReasoningEffort,
@@ -46,6 +47,8 @@ const ALIYUN_ENDPOINT = "mt.cn-hangzhou.aliyuncs.com";
 const ALIYUN_REGION = "cn-hangzhou";
 const ALIYUN_EDITION = "translate_standard";
 const DEEPLX_MODEL = "DeepLX";
+const QWEN_BATCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const QWEN_BATCH_MODEL = "qwen3.7-flash-2026-07-15";
 
 
 export function TranslationApiSettingsPage({ embedded = false }: { embedded?: boolean } = {}) {
@@ -57,11 +60,16 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const [message, setMessage] = useState("");
   const [provider, setProvider] =
     useState<TranslationProviderKind>("openai-compatible");
+  const [catalogExecutionMode, setCatalogExecutionMode] =
+    useState<CatalogTranslationExecutionMode>("REALTIME");
   const [enabled, setEnabled] = useState(true);
   const [baseUrl, setBaseUrl] = useState("");
   const [modelName, setModelName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [accessKeyId, setAccessKeyId] = useState("");
+  const [batchBaseUrl, setBatchBaseUrl] = useState(QWEN_BATCH_BASE_URL);
+  const [batchModelName, setBatchModelName] = useState(QWEN_BATCH_MODEL);
+  const [batchApiKey, setBatchApiKey] = useState("");
   const [regionId, setRegionId] = useState(ALIYUN_REGION);
   const [timeoutSeconds, setTimeoutSeconds] = useState("20");
   const [maxTokens, setMaxTokens] = useState("16384");
@@ -77,6 +85,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const applySettings = useCallback((next: TranslationApiSettings) => {
     setSettings(next);
     setProvider(next.provider);
+    setCatalogExecutionMode(next.catalogExecutionMode);
     setEnabled(next.enabled);
     setBaseUrl(next.baseUrl ?? "");
     setModelName(next.modelName ?? "");
@@ -91,6 +100,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     setReasoningEffort(next.reasoningEffort);
     setApiKey("");
     setAccessKeyId("");
+    setBatchBaseUrl(next.batchBaseUrl || QWEN_BATCH_BASE_URL);
+    setBatchModelName(next.batchModelName || QWEN_BATCH_MODEL);
+    setBatchApiKey("");
   }, []);
 
   const loadSettings = useCallback(async () => {
@@ -132,13 +144,21 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     catalogBatchSize: Number(catalogBatchSize),
     catalogBatchCharacters: Number(catalogBatchCharacters),
     catalogConcurrency: Number(catalogConcurrency),
+    catalogExecutionMode,
+    batchBaseUrl: batchBaseUrl.trim(),
+    batchModelName: batchModelName.trim(),
+    batchApiKey: batchApiKey.trim() || undefined,
     reasoningEffort,
   }), [
     accessKeyId,
     apiKey,
     baseUrl,
+    batchApiKey,
+    batchBaseUrl,
+    batchModelName,
     catalogBatchCharacters,
     catalogConcurrency,
+    catalogExecutionMode,
     catalogBatchSize,
     maxRetryCount,
     maxTokens,
@@ -167,6 +187,10 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     input.accessKeyId
       || (storedCredentialsMatch && settings?.accessKeyIdConfigured)
       || !enabled,
+  );
+  const hasBatchApiSecret = Boolean(
+    input.batchApiKey
+      || settings?.batchApiKeyConfigured,
   );
   const validRpm = Number.isInteger(input.requestsPerMinute)
     && input.requestsPerMinute >= 1
@@ -201,7 +225,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
         && input.maxTokens <= 32768
       ))
       && (isDeepLX ? hasDeepLXEndpoint : hasApiSecret)
-      && (!isAliyun || hasAccessKeyId),
+      && (!isAliyun || hasAccessKeyId)
+      && (input.catalogExecutionMode !== "QWEN_BATCH" || (
+        input.batchBaseUrl
+        && input.batchModelName
+        && hasBatchApiSecret
+      )),
   );
   const saveSettings = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -290,7 +319,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
               </span>
               <div>
                 <Text size="1" color="gray" as="div">
-                  {t(isAliyun
+                  {t(catalogExecutionMode === "QWEN_BATCH"
+                    ? "Qwen Batch 文件翻译"
+                    : isAliyun
                     ? "阿里云机器翻译"
                     : (isDeepLX ? "DeepLX 翻译" : "OpenAI 兼容接口"))}
                 </Text>
@@ -308,7 +339,96 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
 
             <form className="core-translation-api-form" onSubmit={(event) => void saveSettings(event)}>
               <label className="core-translation-api-wide">
-                <Text size="1" color="gray">{t("翻译服务商")}</Text>
+                <Text size="1" color="gray">{t("商品翻译执行方式")}</Text>
+                <Select.Root
+                  value={catalogExecutionMode}
+                  onValueChange={(value) => {
+                    clearResult();
+                    setCatalogExecutionMode(value as CatalogTranslationExecutionMode);
+                  }}
+                >
+                  <Select.Trigger />
+                  <Select.Content>
+                    <Select.Item value="QWEN_BATCH">
+                      {t("Qwen Batch 文件翻译")}
+                    </Select.Item>
+                    <Select.Item value="REALTIME">
+                      {t("实时大模型 / 机器翻译")}
+                    </Select.Item>
+                  </Select.Content>
+                </Select.Root>
+                <Text size="1" color="gray">
+                  {t(catalogExecutionMode === "QWEN_BATCH"
+                    ? "全量目录异步提交到百炼 Batch，按文本去重并复用历史译文；新增少量商品时可切回实时翻译。"
+                    : "商品任务按当前实时服务商执行；客服与前台即时翻译也继续使用此配置。")}
+                </Text>
+              </label>
+
+              {catalogExecutionMode === "QWEN_BATCH" ? (
+                <div className="core-translation-batch-settings core-translation-api-wide">
+                  <div className="core-translation-batch-heading">
+                    <div>
+                      <Text size="2" weight="bold" as="div">
+                        {t("Qwen Batch 配置")}
+                      </Text>
+                      <Text size="1" color="gray">
+                        {t("固定关闭思考模式，任务完成后自动校验 custom_id、写入翻译记忆并发布语言包。")}
+                      </Text>
+                    </div>
+                    <Badge color="jade" variant="soft">
+                      {t("Batch 计费 5 折")}
+                    </Badge>
+                  </div>
+                  <div className="core-translation-batch-fields">
+                    <label>
+                      <Text size="1" color="gray">{t("Batch Base URL")}</Text>
+                      <TextField.Root
+                        type="url"
+                        value={batchBaseUrl}
+                        onChange={(event) => {
+                          clearResult();
+                          setBatchBaseUrl(event.target.value);
+                        }}
+                        placeholder={QWEN_BATCH_BASE_URL}
+                        required
+                      />
+                    </label>
+                    <label>
+                      <Text size="1" color="gray">{t("Batch 模型")}</Text>
+                      <TextField.Root
+                        value={batchModelName}
+                        onChange={(event) => {
+                          clearResult();
+                          setBatchModelName(event.target.value);
+                        }}
+                        placeholder={QWEN_BATCH_MODEL}
+                        required
+                      />
+                    </label>
+                    <label className="core-translation-api-wide">
+                      <Text size="1" color="gray">{t("Batch API Key")}</Text>
+                      <TextField.Root
+                        type="password"
+                        autoComplete="new-password"
+                        value={batchApiKey}
+                        onChange={(event) => {
+                          clearResult();
+                          setBatchApiKey(event.target.value);
+                        }}
+                        placeholder={hasBatchApiSecret
+                          ? t("已从 Qwen 配置复制 {hint}，留空则保持不变", {
+                              hint: settings.batchApiKeyHint ?? settings.apiKeyHint ?? "",
+                            })
+                          : t("请输入百炼 API Key")}
+                        required={!hasBatchApiSecret}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : null}
+
+              <label className="core-translation-api-wide">
+                <Text size="1" color="gray">{t("实时翻译服务商")}</Text>
                 <Select.Root
                   value={provider}
                   onValueChange={(value) => {
@@ -545,6 +665,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 </Text>
               </label>
 
+              {catalogExecutionMode === "REALTIME" ? (
               <div className="core-translation-batch-settings core-translation-api-wide">
                 <div className="core-translation-batch-heading">
                   <div>
@@ -639,6 +760,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                   </label>
                 </div>
               </div>
+              ) : null}
 
               {isOpenAICompatible ? (
                 <>

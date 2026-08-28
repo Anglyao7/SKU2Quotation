@@ -54,6 +54,15 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
             name="catalog_concurrency_supported",
         ),
         CheckConstraint(
+            "catalog_execution_mode IN ('REALTIME', 'QWEN_BATCH')",
+            name="catalog_execution_mode_supported",
+        ),
+        CheckConstraint(
+            "catalog_execution_mode = 'REALTIME' OR "
+            "batch_api_key_ciphertext IS NOT NULL",
+            name="batch_key_required",
+        ),
+        CheckConstraint(
             "reasoning_effort IN ('none', 'minimal', 'low', 'medium', 'high')",
             name="reasoning_effort_supported",
         ),
@@ -100,6 +109,27 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
         Integer,
         default=3,
         nullable=False,
+    )
+    catalog_execution_mode: Mapped[str] = mapped_column(
+        String(30), default="REALTIME", nullable=False
+    )
+    batch_base_url: Mapped[str] = mapped_column(
+        String(1000),
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        nullable=False,
+    )
+    batch_model_name: Mapped[str] = mapped_column(
+        String(300),
+        default="qwen3.7-flash-2026-07-15",
+        nullable=False,
+    )
+    batch_api_key_ciphertext: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    batch_api_key_last_four: Mapped[str | None] = mapped_column(
+        String(4),
+        nullable=True,
     )
     reasoning_effort: Mapped[str] = mapped_column(
         String(20), default="low", nullable=False

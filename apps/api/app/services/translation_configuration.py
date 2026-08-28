@@ -31,6 +31,12 @@ from .translation_rate_limit import (
     normalized_translation_requests_per_minute,
     rate_limited_translation_provider,
 )
+from .qwen_batch_translation import (
+    DEFAULT_QWEN_BATCH_BASE_URL,
+    DEFAULT_QWEN_BATCH_MODEL,
+    QwenBatchConfiguration,
+    qwen_batch_api_base_url,
+)
 
 
 SETTINGS_ID = "CATALOG_TRANSLATION"
@@ -49,6 +55,8 @@ DEFAULT_REASONING_EFFORT = "low"
 SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high"}
 SUPPORTED_PROVIDERS = {"openai-compatible", "deeplx", "aliyun-alimt"}
 ALIYUN_GENERAL_EDITION = "translate_standard"
+DEFAULT_CATALOG_EXECUTION_MODE = "REALTIME"
+SUPPORTED_CATALOG_EXECUTION_MODES = {"REALTIME", "QWEN_BATCH"}
 
 
 @dataclass(frozen=True)
@@ -66,11 +74,16 @@ class TranslationConfigurationSnapshot:
     catalog_batch_size: int
     catalog_batch_characters: int
     catalog_concurrency: int
+    catalog_execution_mode: str
     reasoning_effort: str
     api_key_configured: bool
     api_key_hint: str | None
     access_key_id_configured: bool
     access_key_id_hint: str | None
+    batch_base_url: str
+    batch_model_name: str
+    batch_api_key_configured: bool
+    batch_api_key_hint: str | None
     updated_at: datetime | None
 
 
@@ -136,6 +149,49 @@ def _normalized_provider(value: str) -> str:
             "translation provider must be openai-compatible, deeplx, or aliyun-alimt"
         )
     return normalized
+
+
+def normalized_catalog_translation_execution_mode(value: str) -> str:
+    normalized = value.strip().upper().replace("-", "_")
+    if normalized not in SUPPORTED_CATALOG_EXECUTION_MODES:
+        raise TranslationProviderError(
+            "catalog translation execution mode must be REALTIME or QWEN_BATCH"
+        )
+    return normalized
+
+
+def _environment_catalog_translation_execution_mode() -> str:
+    return normalized_catalog_translation_execution_mode(
+        os.getenv(
+            "CATALOG_TRANSLATION_EXECUTION_MODE",
+            DEFAULT_CATALOG_EXECUTION_MODE,
+        )
+    )
+
+
+def _environment_batch_api_key() -> str:
+    explicit = os.getenv("QWEN_BATCH_API_KEY", "").strip()
+    if explicit:
+        return explicit
+    realtime_base_url = os.getenv("OPENAI_TRANSLATION_BASE_URL", "").strip()
+    if _is_dashscope_qwen_base_url(realtime_base_url):
+        return _environment_api_key("openai-compatible")
+    return ""
+
+
+def _is_dashscope_qwen_base_url(value: str) -> bool:
+    host = (urlsplit(value.strip()).hostname or "").casefold()
+    return "dashscope" in host and host.endswith("aliyuncs.com")
+
+
+def _environment_batch_base_url() -> str:
+    explicit = os.getenv("QWEN_BATCH_BASE_URL", "").strip()
+    if explicit:
+        return explicit
+    realtime_base_url = os.getenv("OPENAI_TRANSLATION_BASE_URL", "").strip()
+    if _is_dashscope_qwen_base_url(realtime_base_url):
+        return realtime_base_url
+    return DEFAULT_QWEN_BATCH_BASE_URL
 
 
 def _redacted_deeplx_endpoint(endpoint: str) -> str:
@@ -325,6 +381,13 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
     catalog_batch_size, catalog_batch_characters = (
         _environment_catalog_translation_batch_limits()
     )
+    catalog_execution_mode = _environment_catalog_translation_execution_mode()
+    batch_base_url = _environment_batch_base_url()
+    batch_model_name = (
+        os.getenv("QWEN_BATCH_MODEL", DEFAULT_QWEN_BATCH_MODEL).strip()
+        or DEFAULT_QWEN_BATCH_MODEL
+    )
+    batch_api_key = _environment_batch_api_key()
     profile = os.getenv("CATALOG_TRANSLATION_PROFILE", "disabled").strip().lower()
     if profile in {"", "disabled", "none"}:
         return TranslationConfigurationSnapshot(
@@ -341,11 +404,18 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
             catalog_concurrency=_environment_catalog_translation_concurrency(),
+            catalog_execution_mode=catalog_execution_mode,
             reasoning_effort=DEFAULT_REASONING_EFFORT,
             api_key_configured=False,
             api_key_hint=None,
             access_key_id_configured=False,
             access_key_id_hint=None,
+            batch_base_url=batch_base_url,
+            batch_model_name=batch_model_name,
+            batch_api_key_configured=bool(batch_api_key),
+            batch_api_key_hint=(
+                f"••••{batch_api_key[-4:]}" if batch_api_key else None
+            ),
             updated_at=None,
         )
     if profile == "deeplx":
@@ -371,11 +441,18 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
             catalog_concurrency=_environment_catalog_translation_concurrency(),
+            catalog_execution_mode=catalog_execution_mode,
             reasoning_effort="none",
             api_key_configured=configured,
             api_key_hint=None,
             access_key_id_configured=False,
             access_key_id_hint=None,
+            batch_base_url=batch_base_url,
+            batch_model_name=batch_model_name,
+            batch_api_key_configured=bool(batch_api_key),
+            batch_api_key_hint=(
+                f"••••{batch_api_key[-4:]}" if batch_api_key else None
+            ),
             updated_at=None,
         )
     if profile == "aliyun_alimt":
@@ -409,12 +486,19 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             catalog_batch_size=catalog_batch_size,
             catalog_batch_characters=catalog_batch_characters,
             catalog_concurrency=_environment_catalog_translation_concurrency(),
+            catalog_execution_mode=catalog_execution_mode,
             reasoning_effort="none",
             api_key_configured=bool(raw_api_key),
             api_key_hint=f"••••{raw_api_key[-4:]}" if raw_api_key else None,
             access_key_id_configured=bool(access_key_id),
             access_key_id_hint=(
                 f"••••{access_key_id[-4:]}" if access_key_id else None
+            ),
+            batch_base_url=batch_base_url,
+            batch_model_name=batch_model_name,
+            batch_api_key_configured=bool(batch_api_key),
+            batch_api_key_hint=(
+                f"••••{batch_api_key[-4:]}" if batch_api_key else None
             ),
             updated_at=None,
         )
@@ -450,6 +534,7 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
         catalog_batch_size=catalog_batch_size,
         catalog_batch_characters=catalog_batch_characters,
         catalog_concurrency=_environment_catalog_translation_concurrency(),
+        catalog_execution_mode=catalog_execution_mode,
         reasoning_effort=_normalized_reasoning_effort(
             os.getenv(
                 "OPENAI_TRANSLATION_REASONING_EFFORT",
@@ -460,6 +545,12 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
         api_key_hint=f"••••{raw_api_key[-4:]}" if raw_api_key else None,
         access_key_id_configured=False,
         access_key_id_hint=None,
+        batch_base_url=batch_base_url,
+        batch_model_name=batch_model_name,
+        batch_api_key_configured=bool(batch_api_key),
+        batch_api_key_hint=(
+            f"••••{batch_api_key[-4:]}" if batch_api_key else None
+        ),
         updated_at=None,
     )
 
@@ -485,6 +576,7 @@ def translation_configuration_snapshot(
         catalog_batch_size=settings.catalog_batch_size,
         catalog_batch_characters=settings.catalog_batch_characters,
         catalog_concurrency=settings.catalog_concurrency,
+        catalog_execution_mode=settings.catalog_execution_mode,
         reasoning_effort=settings.reasoning_effort,
         api_key_configured=bool(settings.api_key_ciphertext),
         api_key_hint=(
@@ -496,6 +588,14 @@ def translation_configuration_snapshot(
         access_key_id_hint=(
             f"••••{settings.access_key_id_last_four}"
             if settings.access_key_id_last_four
+            else None
+        ),
+        batch_base_url=settings.batch_base_url,
+        batch_model_name=settings.batch_model_name,
+        batch_api_key_configured=bool(settings.batch_api_key_ciphertext),
+        batch_api_key_hint=(
+            f"••••{settings.batch_api_key_last_four}"
+            if settings.batch_api_key_last_four
             else None
         ),
         updated_at=settings.updated_at,
@@ -530,6 +630,71 @@ def resolved_catalog_translation_concurrency(session: Session) -> int:
     if settings is None:
         return _environment_catalog_translation_concurrency()
     return normalized_catalog_translation_concurrency(settings.catalog_concurrency)
+
+
+def catalog_translation_execution_mode(session: Session) -> str:
+    settings = get_managed_translation_settings(session)
+    if settings is None:
+        return _environment_catalog_translation_execution_mode()
+    return normalized_catalog_translation_execution_mode(
+        settings.catalog_execution_mode
+    )
+
+
+def resolved_qwen_batch_configuration(
+    session: Session,
+) -> QwenBatchConfiguration:
+    """Resolve the independent Batch profile without changing live translation."""
+
+    settings = get_managed_translation_settings(session)
+    if settings is None:
+        api_key = _environment_batch_api_key()
+        base_url = _environment_batch_base_url()
+        model_name = (
+            os.getenv("QWEN_BATCH_MODEL", DEFAULT_QWEN_BATCH_MODEL).strip()
+            or DEFAULT_QWEN_BATCH_MODEL
+        )
+        try:
+            timeout_seconds = int(
+                float(os.getenv("QWEN_BATCH_TIMEOUT_SECONDS", "20"))
+            )
+            max_tokens = int(os.getenv("QWEN_BATCH_MAX_TOKENS", "16384"))
+        except ValueError as exc:
+            raise TranslationProviderError(
+                "Qwen Batch timeout and max tokens must be numbers"
+            ) from exc
+    else:
+        if not settings.is_active:
+            raise TranslationProviderError("catalog translation provider is disabled")
+        if not settings.batch_api_key_ciphertext:
+            raise TranslationProviderError("Qwen Batch API key is not configured")
+        api_key = decrypt_translation_api_key(
+            settings.batch_api_key_ciphertext
+        )
+        base_url = settings.batch_base_url
+        model_name = settings.batch_model_name
+        timeout_seconds = settings.timeout_seconds
+        max_tokens = settings.max_tokens
+    configuration = QwenBatchConfiguration(
+        base_url=base_url,
+        api_key=api_key,
+        model_name=model_name,
+        timeout_seconds=timeout_seconds,
+        max_tokens=max_tokens,
+    )
+    if not configuration.api_key.strip():
+        raise TranslationProviderError("Qwen Batch API key is not configured")
+    if not configuration.model_name.strip():
+        raise TranslationProviderError("Qwen Batch model is not configured")
+    if configuration.timeout_seconds < 1 or configuration.timeout_seconds > 120:
+        raise TranslationProviderError(
+            "Qwen Batch timeout must be between 1 and 120 seconds"
+        )
+    qwen_batch_api_base_url(
+        configuration.base_url,
+        production=_managed_environment(),
+    )
+    return configuration
 
 
 def translation_provider_is_configured(
@@ -686,9 +851,13 @@ def save_managed_translation_settings(
     catalog_batch_size: int,
     catalog_batch_characters: int,
     catalog_concurrency: int,
+    catalog_execution_mode: str,
     reasoning_effort: str,
     api_key: str | None,
     access_key_id: str | None,
+    batch_base_url: str,
+    batch_model_name: str,
+    batch_api_key: str | None,
     enabled: bool,
     updated_by_user_id: UUID,
 ) -> TranslationProviderSettingsRow:
@@ -707,6 +876,9 @@ def save_managed_translation_settings(
     )
     normalized_concurrency = normalized_catalog_translation_concurrency(
         catalog_concurrency
+    )
+    normalized_execution_mode = normalized_catalog_translation_execution_mode(
+        catalog_execution_mode
     )
     settings = get_managed_translation_settings(session)
     provider_changed = bool(
@@ -785,6 +957,51 @@ def save_managed_translation_settings(
             reasoning_effort=normalized_reasoning,
         )
 
+    normalized_batch_base_url = (
+        batch_base_url.strip().rstrip("/")
+        or (
+            settings.batch_base_url
+            if settings is not None
+            else (
+                normalized_base_url
+                if normalized_provider == "openai-compatible"
+                else DEFAULT_QWEN_BATCH_BASE_URL
+            )
+        )
+    )
+    normalized_batch_model = (
+        batch_model_name.strip() or DEFAULT_QWEN_BATCH_MODEL
+    )
+    qwen_batch_api_base_url(
+        normalized_batch_base_url,
+        production=_managed_environment(),
+    )
+    normalized_input_batch_key = (batch_api_key or "").strip()
+    if normalized_input_batch_key:
+        resolved_batch_key = normalized_input_batch_key
+    elif settings is not None and settings.batch_api_key_ciphertext:
+        resolved_batch_key = decrypt_translation_api_key(
+            settings.batch_api_key_ciphertext
+        )
+    elif (
+        normalized_provider == "openai-compatible"
+        and _is_dashscope_qwen_base_url(normalized_base_url)
+    ):
+        resolved_batch_key = resolved_key
+    else:
+        resolved_batch_key = ""
+    if normalized_execution_mode == "QWEN_BATCH" and not resolved_batch_key:
+        raise TranslationProviderError(
+            "Qwen Batch API key is required before selecting Batch translation"
+        )
+    should_store_batch_key = bool(normalized_input_batch_key) or bool(
+        resolved_batch_key
+        and (
+            settings is None
+            or not settings.batch_api_key_ciphertext
+        )
+    )
+
     normalized_input_key = (
         base_url.strip()
         if normalized_provider == "deeplx"
@@ -821,6 +1038,17 @@ def save_managed_translation_settings(
             catalog_batch_size=normalized_batch_size,
             catalog_batch_characters=normalized_batch_characters,
             catalog_concurrency=normalized_concurrency,
+            catalog_execution_mode=normalized_execution_mode,
+            batch_base_url=normalized_batch_base_url,
+            batch_model_name=normalized_batch_model,
+            batch_api_key_ciphertext=(
+                encrypt_translation_api_key(resolved_batch_key)
+                if should_store_batch_key
+                else None
+            ),
+            batch_api_key_last_four=(
+                resolved_batch_key[-4:] if should_store_batch_key else None
+            ),
             reasoning_effort=normalized_reasoning,
             api_key_ciphertext=(
                 encrypt_translation_api_key(resolved_key)
@@ -864,6 +1092,9 @@ def save_managed_translation_settings(
         settings.catalog_batch_size = normalized_batch_size
         settings.catalog_batch_characters = normalized_batch_characters
         settings.catalog_concurrency = normalized_concurrency
+        settings.catalog_execution_mode = normalized_execution_mode
+        settings.batch_base_url = normalized_batch_base_url
+        settings.batch_model_name = normalized_batch_model
         settings.reasoning_effort = normalized_reasoning
         settings.is_active = enabled
         settings.version += 1
@@ -886,5 +1117,10 @@ def save_managed_translation_settings(
                 resolved_access_key_id
             )
             settings.access_key_id_last_four = resolved_access_key_id[-4:]
+        if should_store_batch_key:
+            settings.batch_api_key_ciphertext = encrypt_translation_api_key(
+                resolved_batch_key
+            )
+            settings.batch_api_key_last_four = resolved_batch_key[-4:]
     session.flush()
     return settings

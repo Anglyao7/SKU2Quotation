@@ -10,6 +10,7 @@ TranslationProviderKind = Literal[
     "deeplx",
     "aliyun-alimt",
 ]
+CatalogTranslationExecutionMode = Literal["REALTIME", "QWEN_BATCH"]
 
 
 class TranslationSettingsResponse(BaseModel):
@@ -26,11 +27,16 @@ class TranslationSettingsResponse(BaseModel):
     catalog_batch_size: int = Field(ge=1, le=200)
     catalog_batch_characters: int = Field(ge=1_000, le=100_000)
     catalog_concurrency: int = Field(ge=1, le=10)
+    catalog_execution_mode: CatalogTranslationExecutionMode
     reasoning_effort: ReasoningEffort
     api_key_configured: bool
     api_key_hint: str | None = None
     access_key_id_configured: bool = False
     access_key_id_hint: str | None = None
+    batch_base_url: str
+    batch_model_name: str
+    batch_api_key_configured: bool = False
+    batch_api_key_hint: str | None = None
     updated_at: datetime | None = None
 
 
@@ -52,6 +58,17 @@ class TranslationProviderParameters(BaseModel):
         le=100_000,
     )
     catalog_concurrency: int = Field(default=3, ge=1, le=10)
+    catalog_execution_mode: CatalogTranslationExecutionMode = "REALTIME"
+    batch_base_url: str = Field(
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        max_length=1000,
+    )
+    batch_model_name: str = Field(
+        default="qwen3.7-flash-2026-07-15",
+        min_length=1,
+        max_length=300,
+    )
+    batch_api_key: SecretStr | None = Field(default=None, max_length=4096)
     reasoning_effort: ReasoningEffort = "low"
 
 

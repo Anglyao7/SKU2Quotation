@@ -219,6 +219,10 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
             name="mode_allowed",
         ),
         CheckConstraint(
+            "execution_mode IN ('REALTIME', 'QWEN_BATCH')",
+            name="execution_mode_allowed",
+        ),
+        CheckConstraint(
             "status IN ('QUEUED', 'RUNNING', 'PAUSED', 'SUCCEEDED', 'FAILED')",
             name="status_allowed",
         ),
@@ -233,6 +237,12 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
             name="processed_skus_valid",
         ),
         CheckConstraint("failed_skus >= 0", name="failed_skus_nonnegative"),
+        CheckConstraint(
+            "external_total_requests >= 0 AND "
+            "external_completed_requests >= 0 AND "
+            "external_failed_requests >= 0",
+            name="external_request_counts_nonnegative",
+        ),
         CheckConstraint(
             "source_locale <> target_locale",
             name="source_target_locale_different",
@@ -278,6 +288,9 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
     source_locale: Mapped[str] = mapped_column(String(20), nullable=False)
     target_locale: Mapped[str] = mapped_column(String(20), nullable=False)
     mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    execution_mode: Mapped[str] = mapped_column(
+        String(30), default="REALTIME", nullable=False
+    )
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", nullable=False)
     stage: Mapped[str] = mapped_column(String(30), default="QUEUED", nullable=False)
     total_skus: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -301,6 +314,35 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
         JSON_DOCUMENT,
         default=list,
         nullable=False,
+    )
+    batch_request_payload: Mapped[dict[str, object]] = mapped_column(
+        JSON_DOCUMENT,
+        default=dict,
+        nullable=False,
+    )
+    external_input_file_id: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
+    external_batch_id: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
+    external_output_file_id: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
+    external_error_file_id: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
+    external_batch_status: Mapped[str | None] = mapped_column(
+        String(40), nullable=True
+    )
+    external_total_requests: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    external_completed_requests: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    external_failed_requests: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     package_version: Mapped[int | None] = mapped_column(Integer, nullable=True)

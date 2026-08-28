@@ -69,6 +69,7 @@ def update_settings(
             catalog_batch_size=request.catalog_batch_size,
             catalog_batch_characters=request.catalog_batch_characters,
             catalog_concurrency=request.catalog_concurrency,
+            catalog_execution_mode=request.catalog_execution_mode,
             reasoning_effort=request.reasoning_effort,
             api_key=(
                 request.api_key.get_secret_value()
@@ -78,6 +79,13 @@ def update_settings(
             access_key_id=(
                 request.access_key_id.get_secret_value()
                 if request.access_key_id is not None
+                else None
+            ),
+            batch_base_url=request.batch_base_url,
+            batch_model_name=request.batch_model_name,
+            batch_api_key=(
+                request.batch_api_key.get_secret_value()
+                if request.batch_api_key is not None
                 else None
             ),
             enabled=request.enabled,

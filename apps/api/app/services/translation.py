@@ -764,19 +764,29 @@ class OpenAICompatibleTranslator:
             "Return only the translation, with no analysis or Markdown."
         )
 
-    def translate(
+    def request_payload(
         self,
         text: str,
         *,
         source_locale: str,
         target_locale: str,
-    ) -> str:
+        enable_thinking: bool | None = None,
+    ) -> dict[str, object]:
+        """Build the exact chat-completions payload used by this adapter.
+
+        Batch File requests use the same prompt and structured response
+        contract as real-time requests.  Keeping payload construction here
+        prevents the two execution paths from drifting apart.
+        """
+
         if not text:
-            return ""
+            raise TranslationProviderError("translation text is required")
         source = _provider_locale(source_locale)
         target = _provider_locale(target_locale)
         if source == target:
-            return text
+            raise TranslationProviderError(
+                "translation source and target locales must be different"
+            )
         marker_items = _catalog_marker_items(text)
         structured = bool(marker_items)
         request_text = (
@@ -809,38 +819,25 @@ class OpenAICompatibleTranslator:
         }
         if self._reasoning_effort:
             payload["reasoning_effort"] = self._reasoning_effort
+        if enable_thinking is not None:
+            # DashScope Batch requires this extension at the top level of the
+            # JSONL request body (next to ``model``), not under extra_body.
+            payload["enable_thinking"] = enable_thinking
+        return payload
+
+    def translated_response(
+        self,
+        body: Mapping[str, object],
+        *,
+        source_text: str,
+    ) -> str:
+        """Validate one chat-completions body and restore catalog markers."""
+
+        marker_items = _catalog_marker_items(source_text)
+        structured = bool(marker_items)
         try:
-            response = self._client.post(
-                self._endpoint,
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self._timeout_seconds,
-            )
-        except httpx.TimeoutException as exc:
-            raise TranslationProviderError(
-                "translation provider request timed out",
-                recover_with_smaller_batches=structured,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise TranslationProviderError(
-                "translation provider request failed",
-                recover_with_smaller_batches=structured,
-            ) from exc
-        if response.status_code < 200 or response.status_code >= 300:
-            raise TranslationProviderError(
-                f"translation provider returned HTTP {response.status_code}",
-                recover_with_smaller_batches=(
-                    structured
-                    and response.status_code in {400, 408, 500, 502, 503, 504}
-                ),
-            )
-        try:
-            body = response.json()
             choices = body["choices"]
-            choice = choices[0]
+            choice = choices[0]  # type: ignore[index]
             finish_reason = str(choice.get("finish_reason") or "").strip()
             message = choice["message"]
             content = message["content"]
@@ -898,6 +895,65 @@ class OpenAICompatibleTranslator:
                 )
             )
         return normalized
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        if not text:
+            return ""
+        source = _provider_locale(source_locale)
+        target = _provider_locale(target_locale)
+        if source == target:
+            return text
+        payload = self.request_payload(
+            text,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+        structured = bool(_catalog_marker_items(text))
+        try:
+            response = self._client.post(
+                self._endpoint,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=self._timeout_seconds,
+            )
+        except httpx.TimeoutException as exc:
+            raise TranslationProviderError(
+                "translation provider request timed out",
+                recover_with_smaller_batches=structured,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise TranslationProviderError(
+                "translation provider request failed",
+                recover_with_smaller_batches=structured,
+            ) from exc
+        if response.status_code < 200 or response.status_code >= 300:
+            raise TranslationProviderError(
+                f"translation provider returned HTTP {response.status_code}",
+                recover_with_smaller_batches=(
+                    structured
+                    and response.status_code in {400, 408, 500, 502, 503, 504}
+                ),
+            )
+        try:
+            body = response.json()
+        except (TypeError, ValueError) as exc:
+            raise TranslationProviderError(
+                "translation provider returned an invalid response"
+            ) from exc
+        if not isinstance(body, Mapping):
+            raise TranslationProviderError(
+                "translation provider returned an invalid response"
+            )
+        return self.translated_response(body, source_text=text)
 
 
 def catalog_translation_is_configured(

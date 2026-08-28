@@ -56,8 +56,8 @@ const stageCopy: Record<CatalogTranslationJobStage, string> = {
   QUEUED: "等待开始",
   PREPARING: "核对变更",
   TRANSLATING: "正在翻译",
-  PACKAGING: "整理翻译内容",
-  UPLOADING: "正在发布",
+  PACKAGING: "正在生成语言包",
+  UPLOADING: "正在上传语言包",
   PAUSED: "翻译已暂停",
   PUBLISHED: "发布完成",
   FAILED: "任务失败",
@@ -115,6 +115,9 @@ export function LanguagePackagesPage() {
     ["QUEUED", "RUNNING"].includes(job.status) || job.pauseRequested
   ) ? job : undefined;
   const selectedLanguage = storefrontLanguage(selectedLocale);
+  const jobIsPublishing = Boolean(
+    activeJob && ["PACKAGING", "UPLOADING"].includes(activeJob.stage),
+  );
 
   const refreshStatus = async (locale = selectedLocale) => {
     const next = await getCatalogTranslationStatus(locale);
@@ -187,16 +190,49 @@ export function LanguagePackagesPage() {
   useEffect(() => {
     if (!pollableJob) return;
     let cancelled = false;
-    const timer = window.setInterval(() => {
+    let requestInFlight = false;
+    let lastObservedStage = pollableJob.stage;
+    let lastObservedProcessed = pollableJob.processedSkus;
+    let lastCoverageRefreshAt = Date.now();
+    let lastBatchRefreshAt = 0;
+    const poll = () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
       void getCatalogTranslationJob(pollableJob.id)
         .then((next) => {
           if (cancelled) return;
+          const now = Date.now();
+          const stageChanged = next.stage !== lastObservedStage;
+          const processedChanged = next.processedSkus !== lastObservedProcessed;
           setJob(next);
-          void refreshBatches(next.id).catch(() => undefined);
+          if (
+            now - lastBatchRefreshAt >= 5_000
+            || !["QUEUED", "RUNNING"].includes(next.status)
+          ) {
+            lastBatchRefreshAt = now;
+            void refreshBatches(next.id).catch(() => undefined);
+          }
+          if (
+            next.targetLocale === selectedLocale
+            && (
+              stageChanged
+              || (processedChanged && now - lastCoverageRefreshAt >= 8_000)
+            )
+          ) {
+            lastCoverageRefreshAt = now;
+            void getCatalogTranslationStatus(next.targetLocale)
+              .then((latest) => {
+                if (!cancelled) setStatus(latest);
+              })
+              .catch(() => undefined);
+          }
+          lastObservedStage = next.stage;
+          lastObservedProcessed = next.processedSkus;
           if (!["QUEUED", "RUNNING"].includes(next.status)) {
             window.clearInterval(timer);
             if (next.status === "PAUSED") {
               setSuccess(t("翻译已暂停，已完成的内容会保留。"));
+              void refreshStatus(next.targetLocale).catch(() => undefined);
               return;
             }
             void refreshStatus(next.targetLocale).then((latest) => {
@@ -207,13 +243,18 @@ export function LanguagePackagesPage() {
             });
           }
         })
-        .catch(() => undefined);
-    }, 1200);
+        .catch(() => undefined)
+        .finally(() => {
+          requestInFlight = false;
+        });
+    };
+    const timer = window.setInterval(poll, 1200);
+    poll();
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [pollableJob?.id, pollableJob?.pauseRequested]);
+  }, [pollableJob?.id, pollableJob?.pauseRequested, selectedLocale]);
 
   useEffect(() => {
     if (!job?.id || pollableJob) return;
@@ -496,7 +537,7 @@ export function LanguagePackagesPage() {
                 </div>
               </AlertDialog.Content>
             </AlertDialog.Root>
-            {controllableJob ? (
+            {controllableJob && !jobIsPublishing ? (
               <Button
                 size="3"
                 variant="soft"
@@ -515,15 +556,20 @@ export function LanguagePackagesPage() {
                   ? "从断点继续"
                   : controllableJob.status === "PAUSED"
                     ? "继续翻译"
-                  : controllableJob.pauseRequested
-                    ? "正在暂停"
-                    : "暂停翻译")}
+                    : controllableJob.pauseRequested
+                      ? "正在暂停"
+                      : "暂停翻译")}
               </Button>
             ) : null}
           </div>
           {activeJob?.pauseRequested && activeJob.status !== "PAUSED" ? (
             <Text size="1" color="gray" className="language-pause-note">
               {t("系统会先保存当前批次，再进入暂停状态，不会丢失已完成的翻译。")}
+            </Text>
+          ) : null}
+          {jobIsPublishing ? (
+            <Text size="1" color="gray" className="language-pause-note">
+              {t("翻译结果已全部保存；当前只在生成或上传语言包，不再请求翻译模型。")}
             </Text>
           ) : null}
         </Card>
@@ -577,6 +623,23 @@ export function LanguagePackagesPage() {
           />
           <div className="language-job-copy">
             <span>{t("已处理 {done} / {total} 个 SKU", { done: job.processedSkus, total: job.totalSkus })}</span>
+            {job.executionMode === "QWEN_BATCH" ? (
+              <span>
+                {t("Qwen Batch · {status} · {done} / {total} 个请求", {
+                  status: job.externalBatchStatus ?? t("准备中"),
+                  done: job.externalCompletedRequests,
+                  total: job.externalTotalRequests,
+                })}
+              </span>
+            ) : null}
+            {job.finalizationTotalValues > 0 ? (
+              <span>
+                {t("语言包字段 {done} / {total} 项", {
+                  done: job.finalizationProcessedValues,
+                  total: job.finalizationTotalValues,
+                })}
+              </span>
+            ) : null}
             {job.resumable ? (
               <span>
                 {t("剩余 {remaining} 个 SKU · 断点 {time}", {

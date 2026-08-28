@@ -344,6 +344,109 @@ def _database_store_many(
         )
 
 
+def cached_translation_values(
+    *,
+    tenant_id: UUID,
+    values: list[str],
+    source_locale: str,
+    target_locale: str,
+    provider: str,
+    provider_version: str,
+) -> dict[str, str]:
+    """Read complete translations without triggering any provider request."""
+
+    unique_sources = list(
+        dict.fromkeys(value.strip() for value in values if value and value.strip())
+    )
+    if not unique_sources or source_locale == target_locale:
+        return {}
+    memory_keys_by_source = {
+        source: _memory_key(
+            tenant_id=tenant_id,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            provider=provider,
+            provider_version=provider_version,
+            source_hash=translation_source_hash(source),
+        )
+        for source in unique_sources
+    }
+    translations = _redis_get_many(memory_keys_by_source)
+    missing = [source for source in unique_sources if source not in translations]
+    if missing:
+        database_hits = _database_get_many(
+            tenant_id=tenant_id,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            provider=provider,
+            provider_version=provider_version,
+            sources_by_hash={
+                translation_source_hash(source): source for source in missing
+            },
+        )
+        translations.update(database_hits)
+        _redis_store_many(memory_keys_by_source, database_hits)
+    return {
+        source: translated
+        for source, translated in translations.items()
+        if catalog_translation_value_is_complete(
+            source,
+            translated,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+    }
+
+
+def store_translation_values(
+    *,
+    tenant_id: UUID,
+    translations: dict[str, str],
+    source_locale: str,
+    target_locale: str,
+    provider: str,
+    provider_version: str,
+) -> None:
+    """Persist validated Batch results in the shared exact-text memory."""
+
+    complete = {
+        source.strip(): translated.strip()
+        for source, translated in translations.items()
+        if source.strip()
+        and translated.strip()
+        and catalog_translation_value_is_complete(
+            source,
+            translated,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+    }
+    if len(complete) != len(translations):
+        raise TranslationProviderError(
+            "Batch translation returned incomplete source-language text"
+        )
+    _database_store_many(
+        tenant_id=tenant_id,
+        source_locale=source_locale,
+        target_locale=target_locale,
+        provider=provider,
+        provider_version=provider_version,
+        translations=complete,
+    )
+    memory_keys_by_source = {
+        source: _memory_key(
+            tenant_id=tenant_id,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            provider=provider,
+            provider_version=provider_version,
+            source_hash=translation_source_hash(source),
+        )
+        for source in complete
+    }
+    _redis_store_many(memory_keys_by_source, complete)
+
+
 def _cleanup_stale_rows(
     session: Session,
     *,

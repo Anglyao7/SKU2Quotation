@@ -322,6 +322,16 @@ def _all_translatable_values(
     return list(dict.fromkeys(value.strip() for value in values if value.strip()))
 
 
+def catalog_language_pack_translatable_values(rows: list[object]) -> list[str]:
+    """Return the globally de-duplicated text corpus for a catalog snapshot."""
+
+    groups = _group_rows(rows)
+    return _all_translatable_values(
+        [_product_source(group) for group in groups],
+        [_sku_source(row) for row in rows],
+    )
+
+
 def _translation_seed(
     sku_sources: list[dict[str, Any]],
     rows_by_sku_id: dict[str, CatalogSkuTranslationRow],
@@ -343,6 +353,152 @@ def _translation_seed(
         for raw, localized in pairs:
             if raw and localized and str(localized).strip():
                 seed.setdefault(str(raw).strip(), str(localized).strip())
+    return seed
+
+
+def _seed_pair(
+    seed: dict[str, str],
+    source: object,
+    translated: object,
+) -> None:
+    raw = str(source or "").strip()
+    localized = str(translated or "").strip()
+    if raw and localized:
+        seed.setdefault(raw, localized)
+
+
+def _seed_description(
+    seed: dict[str, str],
+    source: object,
+    translated: object,
+) -> None:
+    raw = str(source or "")
+    localized = str(translated or "")
+    _seed_pair(seed, raw, localized)
+    raw_lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    localized_lines = [
+        line.strip() for line in localized.splitlines() if line.strip()
+    ]
+    if len(raw_lines) == len(localized_lines):
+        for raw_line, localized_line in zip(
+            raw_lines,
+            localized_lines,
+            strict=True,
+        ):
+            _seed_pair(seed, raw_line, localized_line)
+
+
+def _seed_path(
+    seed: dict[str, str],
+    source: object,
+    translated: object,
+) -> None:
+    raw = str(source or "").replace("／", "/")
+    localized = str(translated or "").replace("／", "/")
+    _seed_pair(seed, raw, localized)
+    raw_segments = [segment.strip() for segment in raw.split("/") if segment.strip()]
+    localized_segments = [
+        segment.strip() for segment in localized.split("/") if segment.strip()
+    ]
+    if len(raw_segments) == len(localized_segments):
+        for raw_segment, localized_segment in zip(
+            raw_segments,
+            localized_segments,
+            strict=True,
+        ):
+            _seed_pair(seed, raw_segment, localized_segment)
+
+
+def catalog_language_pack_translation_seed(
+    rows: list[object],
+    *,
+    sku_translations: dict[UUID, CatalogSkuTranslationRow],
+    previous_payload: dict[str, Any] | None,
+    reuse_previous: bool,
+) -> dict[str, str]:
+    """Recover exact-text translations from valid rows and the active pack.
+
+    Batch jobs use this before submitting a file, so changing execution modes
+    never makes unchanged catalog text start again from zero.
+    """
+
+    groups = _group_rows(rows)
+    product_sources = [_product_source(group) for group in groups]
+    sku_sources = [_sku_source(row) for row in rows]
+    seed = _translation_seed(
+        sku_sources,
+        {str(sku_id): row for sku_id, row in sku_translations.items()},
+    )
+    if not reuse_previous or not isinstance(previous_payload, dict):
+        return seed
+
+    previous_products = previous_payload.get("products")
+    previous_skus = previous_payload.get("skus")
+    previous_products = (
+        previous_products if isinstance(previous_products, dict) else {}
+    )
+    previous_skus = previous_skus if isinstance(previous_skus, dict) else {}
+
+    for source in product_sources:
+        translated = previous_products.get(source["product_id"])
+        if (
+            not isinstance(translated, dict)
+            or translated.get("source_hash") != source["source_hash"]
+        ):
+            continue
+        _seed_pair(seed, source["name"], translated.get("name"))
+        _seed_description(
+            seed,
+            source["description"],
+            translated.get("description"),
+        )
+        _seed_path(
+            seed,
+            source["category"],
+            translated.get("category_label"),
+        )
+        for raw, localized in zip(
+            source["tags"],
+            translated.get("tags") or [],
+            strict=False,
+        ):
+            _seed_pair(seed, raw, localized)
+        for field in ("specifications", "option_labels", "option_values"):
+            localized_values = translated.get(field)
+            if not isinstance(localized_values, dict):
+                continue
+            for raw in source[field]:
+                _seed_pair(seed, raw, localized_values.get(raw))
+
+    for source in sku_sources:
+        translated = previous_skus.get(source["sku_id"])
+        if (
+            not isinstance(translated, dict)
+            or translated.get("source_hash") != source["source_hash"]
+        ):
+            continue
+        _seed_pair(seed, source["name"], translated.get("name"))
+        _seed_description(
+            seed,
+            source["description"],
+            translated.get("description"),
+        )
+        _seed_path(
+            seed,
+            source["category"],
+            translated.get("category_label"),
+        )
+        for raw, localized in zip(
+            source["tags"],
+            translated.get("tags") or [],
+            strict=False,
+        ):
+            _seed_pair(seed, raw, localized)
+        _seed_pair(
+            seed,
+            source["specification"],
+            translated.get("specification"),
+        )
     return seed
 
 

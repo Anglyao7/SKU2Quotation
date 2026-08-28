@@ -66,6 +66,7 @@ class CatalogTranslationJobResponse(BaseModel):
     source_locale: str
     target_locale: str
     mode: Literal["INCREMENTAL", "FULL_REBUILD"]
+    execution_mode: Literal["REALTIME", "QWEN_BATCH"] = "REALTIME"
     status: Literal["QUEUED", "RUNNING", "PAUSED", "SUCCEEDED", "FAILED"]
     stage: Literal[
         "QUEUED",
@@ -101,6 +102,13 @@ class CatalogTranslationJobResponse(BaseModel):
     batch_count: int = Field(default=0, ge=0)
     completed_batch_count: int = Field(default=0, ge=0)
     failed_batch_count: int = Field(default=0, ge=0)
+    external_batch_id: str | None = None
+    external_batch_status: str | None = None
+    external_total_requests: int = Field(default=0, ge=0)
+    external_completed_requests: int = Field(default=0, ge=0)
+    external_failed_requests: int = Field(default=0, ge=0)
+    finalization_total_values: int = Field(default=0, ge=0)
+    finalization_processed_values: int = Field(default=0, ge=0)
 
 
 class CatalogLanguagePackResponse(BaseModel):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session, object_session
 
 from ..catalog_translation_models import (
     CatalogLanguagePackRow,
+    CatalogSkuTranslationRow,
     CatalogTranslationBatchAttemptRow,
     CatalogTranslationBatchRow,
     CatalogTranslationJobRow,
@@ -45,11 +47,15 @@ from ..services.catalog_translation import (
     CatalogTranslationResult,
     CatalogTranslationSource,
     catalog_translation_source,
+    catalog_translation_result_from_values,
+    catalog_translation_value_is_complete,
     translate_catalog_sources,
     translation_batches,
 )
 from ..services.catalog_language_packages import (
     build_catalog_language_pack,
+    catalog_language_pack_translatable_values,
+    catalog_language_pack_translation_seed,
     catalog_rows_source_digest,
     language_pack_object_key,
     load_language_pack_payload,
@@ -59,17 +65,30 @@ from ..services.language_package_storage import (
     language_package_storage_status,
 )
 from ..services.translation import (
+    TranslationIdentity,
     TranslationProvider,
     TranslationProviderError,
     catalog_translation_is_configured,
     configured_catalog_translator,
 )
 from ..services.translation_configuration import (
+    catalog_translation_execution_mode,
     resolved_catalog_translation_batch_limits,
     resolved_catalog_translation_concurrency,
     resolved_catalog_translation_retry_count,
     resolved_catalog_translator,
+    resolved_qwen_batch_configuration,
     translation_provider_is_configured,
+)
+from ..services.qwen_batch_translation import (
+    QWEN_BATCH_TERMINAL_STATUSES,
+    QwenBatchClient,
+    qwen_batch_translation_requests,
+)
+from ..services.translation_memory import (
+    cached_translation_values,
+    store_translation_values,
+    translate_values_with_memory,
 )
 from ..storefront_locales import (
     effective_storefront_locales,
@@ -82,10 +101,18 @@ _translation_executor = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="catalog-translation",
 )
+# Cloud Batch tasks spend most of their lifetime waiting on provider-side
+# execution.  Keep them off the two real-time translation workers so operators
+# can submit many target languages without serializing 24-hour cloud jobs.
+_qwen_batch_executor = ThreadPoolExecutor(
+    max_workers=16,
+    thread_name_prefix="catalog-qwen-batch",
+)
 _stale_job_after = timedelta(minutes=30)
 _SOURCE_LOCALE = "zh-CN"
 _FAILURE_DETAIL_LIMIT = 100
 _ZERO_IDENTITY = UUID(int=0)
+_LANGUAGE_PACK_FINALIZATION_KEY = "language_pack_finalization"
 _TRANSIENT_TRANSLATION_ERRORS = (
     "timed out",
     "request failed",
@@ -121,6 +148,24 @@ class _BatchTranslationOutcome:
     results: list[CatalogTranslationResult] | None
     error: TranslationProviderError | None
     attempts: list[_BatchAttemptEvent]
+
+
+class _CachedOnlyTranslationProvider:
+    """Guard language-pack assembly against accidental real-time requests."""
+
+    def __init__(self, identity: TranslationIdentity) -> None:
+        self.identity = identity
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        raise TranslationProviderError(
+            "Batch translation memory is incomplete; no real-time fallback was used"
+        )
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -187,14 +232,38 @@ def _language_pack_response(
 
 
 def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobResponse:
+    finalization_total, finalization_processed = _job_finalization_counts(job)
     if job.stage == "PUBLISHED" or job.status == "SUCCEEDED":
         progress = 100.0
     elif job.stage == "UPLOADING":
-        progress = 97.0
+        progress = 99.0
     elif job.stage == "PACKAGING":
-        progress = 93.0
+        progress = 97.0
     elif job.stage == "PREPARING":
         progress = 3.0
+    elif (
+        job.execution_mode == "QWEN_BATCH"
+        and job.external_total_requests > 0
+    ):
+        completed_requests = min(
+            job.external_total_requests,
+            job.external_completed_requests + job.external_failed_requests,
+        )
+        progress = min(
+            90.0,
+            round(
+                8 + completed_requests / job.external_total_requests * 82,
+                1,
+            ),
+        )
+    elif finalization_total > 0 and job.processed_skus >= job.total_skus:
+        progress = round(
+            90.0
+            + min(finalization_processed, finalization_total)
+            / finalization_total
+            * 6.0,
+            1,
+        )
     elif job.total_skus == 0:
         progress = 8.0 if job.status == "RUNNING" else 0.0
     else:
@@ -239,6 +308,7 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
         source_locale=job.source_locale,
         target_locale=job.target_locale,
         mode=job.mode,
+        execution_mode=job.execution_mode,
         status=job.status,
         stage=job.stage,
         total_skus=job.total_skus,
@@ -272,6 +342,13 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
         batch_count=batch_count,
         completed_batch_count=completed_batch_count,
         failed_batch_count=failed_batch_count,
+        external_batch_id=job.external_batch_id,
+        external_batch_status=job.external_batch_status,
+        external_total_requests=job.external_total_requests,
+        external_completed_requests=job.external_completed_requests,
+        external_failed_requests=job.external_failed_requests,
+        finalization_total_values=finalization_total,
+        finalization_processed_values=finalization_processed,
     )
 
 
@@ -835,11 +912,15 @@ def _start_forced_translation_job(
             "当前语言已有翻译任务正在执行，请等待完成后再试。",
             kind="conflict",
         )
+    execution_mode = catalog_translation_execution_mode(session)
     try:
-        translator = resolved_catalog_translator(
-            session,
-            environment_factory=configured_catalog_translator,
-        )
+        if execution_mode == "QWEN_BATCH":
+            identity = resolved_qwen_batch_configuration(session).identity
+        else:
+            identity = resolved_catalog_translator(
+                session,
+                environment_factory=configured_catalog_translator,
+            ).identity
     except TranslationProviderError as exc:
         raise ApplicationError(
             "CATALOG_TRANSLATION_CONFIGURATION_INVALID",
@@ -858,13 +939,14 @@ def _start_forced_translation_job(
         source_locale=source_locale,
         target_locale=target_locale,
         mode="INCREMENTAL",
+        execution_mode=execution_mode,
         status="QUEUED",
         stage="QUEUED",
         total_skus=len(ordered_ids),
         processed_skus=0,
         failed_skus=0,
-        provider=translator.identity.provider,
-        provider_version=translator.identity.version,
+        provider=identity.provider,
+        provider_version=identity.version,
         failure_details=[],
         remaining_sku_ids=[str(sku_id) for sku_id in ordered_ids],
         forced_sku_ids=[str(sku_id) for sku_id in ordered_ids],
@@ -1014,18 +1096,26 @@ def get_translation_status(
             "商家工作区不存在。",
             kind="not_found",
         )
-    configured = translation_provider_is_configured(
-        session,
-        environment_check=catalog_translation_is_configured,
-    )
-    if configured:
+    execution_mode = catalog_translation_execution_mode(session)
+    if execution_mode == "QWEN_BATCH":
         try:
-            resolved_catalog_translator(
-                session,
-                environment_factory=configured_catalog_translator,
-            )
+            resolved_qwen_batch_configuration(session)
+            configured = True
         except TranslationProviderError:
             configured = False
+    else:
+        configured = translation_provider_is_configured(
+            session,
+            environment_check=catalog_translation_is_configured,
+        )
+        if configured:
+            try:
+                resolved_catalog_translator(
+                    session,
+                    environment_factory=configured_catalog_translator,
+                )
+            except TranslationProviderError:
+                configured = False
 
     rows = _all_rows(session, tenant_id=tenant_id)
     sources = [catalog_translation_source(row) for row in rows]
@@ -1226,6 +1316,35 @@ def _forced_sku_ids(job: CatalogTranslationJobRow) -> list[UUID]:
     return _as_uuid_list(job.forced_sku_ids)
 
 
+def _job_finalization_counts(job: CatalogTranslationJobRow) -> tuple[int, int]:
+    payload = job.batch_request_payload or {}
+    checkpoint = payload.get(_LANGUAGE_PACK_FINALIZATION_KEY)
+    if not isinstance(checkpoint, dict):
+        return 0, 0
+    try:
+        total = max(0, int(checkpoint.get("total_values", 0)))
+        processed = max(0, int(checkpoint.get("processed_values", 0)))
+    except (TypeError, ValueError):
+        return 0, 0
+    return total, min(processed, total)
+
+
+def _save_job_finalization_counts(
+    job: CatalogTranslationJobRow,
+    *,
+    total: int,
+    processed: int,
+) -> None:
+    payload = dict(job.batch_request_payload or {})
+    payload[_LANGUAGE_PACK_FINALIZATION_KEY] = {
+        "total_values": max(0, total),
+        "processed_values": max(0, min(processed, total)),
+    }
+    # Assign a new object so SQLAlchemy reliably detects the JSON update on
+    # both PostgreSQL and SQLite.
+    job.batch_request_payload = payload
+
+
 def _pause_at_safe_checkpoint(
     session: Session,
     job: CatalogTranslationJobRow,
@@ -1249,6 +1368,742 @@ def _pause_at_safe_checkpoint(
     job.updated_at = now
     session.commit()
     return True
+
+
+def _catalog_value_source_locale(value: str) -> str:
+    return (
+        _SOURCE_LOCALE
+        if any("\u3400" <= character <= "\u9fff" for character in value)
+        else "en-US"
+    )
+
+
+def _batch_translation_availability(
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+    identity: TranslationIdentity,
+    values: list[str],
+    seed: dict[str, str],
+    force_refresh_values: set[str] | None = None,
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    forced = force_refresh_values or set()
+    available: dict[str, str] = {}
+    pending_by_locale: dict[str, list[str]] = {}
+    for value in values:
+        source_locale = _catalog_value_source_locale(value)
+        if source_locale == target_locale:
+            available[value] = value
+            continue
+        seeded = None if value in forced else seed.get(value)
+        if seeded and catalog_translation_value_is_complete(
+            value,
+            seeded,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        ):
+            available[value] = seeded
+            continue
+        pending_by_locale.setdefault(source_locale, []).append(value)
+
+    missing_by_locale: dict[str, list[str]] = {}
+    for source_locale, group in pending_by_locale.items():
+        cache_candidates = [value for value in group if value not in forced]
+        cached = cached_translation_values(
+            tenant_id=tenant_id,
+            values=cache_candidates,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            provider=identity.provider,
+            provider_version=identity.version,
+        )
+        available.update(cached)
+        missing = [value for value in group if value not in available]
+        if missing:
+            missing_by_locale[source_locale] = missing
+    return available, missing_by_locale
+
+
+def _translation_value_checkpoint_batches(
+    values: list[str],
+    *,
+    max_items: int,
+    max_characters: int,
+) -> list[list[str]]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_characters = 0
+    for value in values:
+        if current and (
+            len(current) >= max_items
+            or current_characters + len(value) > max_characters
+        ):
+            batches.append(current)
+            current = []
+            current_characters = 0
+        current.append(value)
+        current_characters += len(value)
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _prepare_realtime_language_pack_values(
+    session: Session,
+    *,
+    job: CatalogTranslationJobRow,
+    translator: TranslationProvider,
+    rows: list[object],
+    sku_translations: dict[UUID, CatalogSkuTranslationRow],
+    previous_payload: dict[str, object] | None,
+    reuse_previous: bool,
+) -> bool:
+    """Finish non-SKU package fields before entering the packaging stage.
+
+    Product options and specifications are not part of the per-SKU progress
+    rows.  Previously they triggered invisible provider calls from inside
+    ``build_catalog_language_pack`` after the UI already showed every SKU as
+    processed.  Translate them here in bounded, resumable checkpoints so the
+    PACKAGING and UPLOADING stages are provider-free and short-lived.
+
+    Returns ``True`` when a requested pause was acknowledged.
+    """
+
+    values = catalog_language_pack_translatable_values(rows)
+    seed = catalog_language_pack_translation_seed(
+        rows,
+        sku_translations=sku_translations,
+        previous_payload=previous_payload,
+        reuse_previous=reuse_previous,
+    )
+    _available, missing_by_locale = _batch_translation_availability(
+        tenant_id=job.tenant_id,
+        target_locale=job.target_locale,
+        identity=translator.identity,
+        values=values,
+        seed=seed,
+    )
+    missing_count = sum(len(group) for group in missing_by_locale.values())
+    previous_total, previous_processed = _job_finalization_counts(job)
+    inferred_processed = max(0, previous_total - missing_count)
+    processed = max(previous_processed, inferred_processed)
+    total = max(previous_total, processed + missing_count)
+    _save_job_finalization_counts(job, total=total, processed=processed)
+
+    if missing_count == 0:
+        _save_job_finalization_counts(job, total=total, processed=total)
+        job.current_sku_id = None
+        job.current_sku_name = None
+        job.updated_at = utcnow()
+        session.commit()
+        return False
+
+    provider_batch_items = _positive_environment(
+        "PUBLIC_LIVE_TRANSLATION_BATCH_SIZE",
+        48,
+        maximum=200,
+    )
+    provider_batch_characters = _positive_environment(
+        "PUBLIC_LIVE_TRANSLATION_BATCH_CHARACTERS",
+        8_000,
+        maximum=100_000,
+    )
+    provider_concurrency = _positive_environment(
+        "PUBLIC_LIVE_TRANSLATION_CONCURRENCY",
+        3,
+        maximum=8,
+    )
+    checkpoint_items = provider_batch_items * provider_concurrency
+    checkpoint_characters = provider_batch_characters * provider_concurrency
+    checkpoints = [
+        (source_locale, batch)
+        for source_locale, group in missing_by_locale.items()
+        for batch in _translation_value_checkpoint_batches(
+            group,
+            max_items=checkpoint_items,
+            max_characters=checkpoint_characters,
+        )
+    ]
+
+    for source_locale, batch in checkpoints:
+        if _pause_at_safe_checkpoint(session, job):
+            return True
+        job.current_sku_id = None
+        job.current_sku_name = (
+            "正在补全规格、分类和选项翻译"
+            f"（{processed} / {total} 项）"
+        )
+        job.updated_at = utcnow()
+        session.commit()
+        translated = translate_values_with_memory(
+            tenant_id=job.tenant_id,
+            translator=translator,
+            values=batch,
+            source_locale=source_locale,
+            target_locale=job.target_locale,
+        )
+        unresolved = [value for value in batch if value not in translated]
+        if unresolved:
+            raise TranslationProviderError(
+                f"语言包仍有 {len(unresolved)} 个字段翻译失败，请从断点继续。",
+                recover_with_smaller_batches=True,
+            )
+        processed += len(batch)
+        _save_job_finalization_counts(job, total=total, processed=processed)
+        job.current_sku_name = (
+            "正在补全规格、分类和选项翻译"
+            f"（{processed} / {total} 项）"
+        )
+        job.updated_at = utcnow()
+        session.commit()
+        if _pause_at_safe_checkpoint(session, job):
+            return True
+
+    _available, still_missing = _batch_translation_availability(
+        tenant_id=job.tenant_id,
+        target_locale=job.target_locale,
+        identity=translator.identity,
+        values=values,
+        seed=seed,
+    )
+    unresolved_count = sum(len(group) for group in still_missing.values())
+    if unresolved_count:
+        raise TranslationProviderError(
+            f"语言包仍有 {unresolved_count} 个字段未完成翻译，请从断点继续。"
+        )
+    _save_job_finalization_counts(job, total=total, processed=total)
+    job.current_sku_id = None
+    job.current_sku_name = None
+    job.updated_at = utcnow()
+    session.commit()
+    return False
+
+
+def _qwen_batch_error_summary(content: bytes | None) -> str | None:
+    if not content:
+        return None
+    messages: list[str] = []
+    try:
+        lines = content.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    for line in lines[:20]:
+        try:
+            row = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        error = row.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("code")
+        else:
+            message = None
+        if isinstance(message, str) and message.strip():
+            messages.append(" ".join(message.split())[:200])
+        if len(messages) >= 3:
+            break
+    return "；".join(dict.fromkeys(messages)) or None
+
+
+def _update_external_batch_status(
+    job: CatalogTranslationJobRow,
+    status: object,
+) -> None:
+    job.external_batch_id = getattr(status, "id")
+    job.external_batch_status = getattr(status, "status")
+    job.external_input_file_id = (
+        getattr(status, "input_file_id") or job.external_input_file_id
+    )
+    job.external_output_file_id = getattr(status, "output_file_id")
+    job.external_error_file_id = getattr(status, "error_file_id")
+    job.external_total_requests = max(
+        job.external_total_requests,
+        int(getattr(status, "total_requests")),
+    )
+    job.external_completed_requests = int(
+        getattr(status, "completed_requests")
+    )
+    job.external_failed_requests = int(getattr(status, "failed_requests"))
+    job.updated_at = utcnow()
+
+
+def _reset_qwen_batch_checkpoint(
+    job: CatalogTranslationJobRow,
+    *,
+    client: QwenBatchClient,
+) -> None:
+    """Discard a terminal/stale cloud checkpoint before a fresh submission."""
+
+    for file_id in dict.fromkeys(
+        value
+        for value in (
+            job.external_input_file_id,
+            job.external_output_file_id,
+            job.external_error_file_id,
+        )
+        if value
+    ):
+        try:
+            client.delete_file(file_id)
+        except TranslationProviderError:
+            logger.warning("could not delete stale Qwen Batch file %s", file_id)
+    job.batch_request_payload = {}
+    job.external_input_file_id = None
+    job.external_batch_id = None
+    job.external_output_file_id = None
+    job.external_error_file_id = None
+    job.external_batch_status = None
+    job.external_total_requests = 0
+    job.external_completed_requests = 0
+    job.external_failed_requests = 0
+    job.updated_at = utcnow()
+
+
+def _run_qwen_batch_translation_job(
+    session: Session,
+    *,
+    job: CatalogTranslationJobRow,
+    first_run: bool,
+) -> None:
+    configuration = resolved_qwen_batch_configuration(session)
+    identity = configuration.identity
+    client = QwenBatchClient(
+        configuration,
+        production=os.getenv("APP_ENV", "development").strip().lower()
+        in {"production", "staging"},
+    )
+    storage = configured_language_package_storage()
+    snapshot = (
+        job.batch_request_payload
+        if isinstance(job.batch_request_payload, dict)
+        else {}
+    )
+    requests = snapshot.get("requests")
+    requests = requests if isinstance(requests, list) else []
+
+    if snapshot:
+        checkpoint_rows = public_catalog_repository.list_all_public_catalog_rows(
+            session,
+            tenant_id=job.tenant_id,
+            now=utcnow(),
+        )
+        catalog_changed = (
+            snapshot.get("catalog_digest")
+            != catalog_rows_source_digest(checkpoint_rows)
+        )
+        unusable_terminal_task = (
+            job.external_batch_status in QWEN_BATCH_TERMINAL_STATUSES
+            and (
+                job.external_batch_status != "completed"
+                or job.external_failed_requests > 0
+                or not job.external_output_file_id
+            )
+        )
+        if catalog_changed or unusable_terminal_task:
+            # Text imported before a catalog change remains reusable through
+            # translation memory.  Only the obsolete transport checkpoint is
+            # discarded, so the next file contains the current missing text.
+            _reset_qwen_batch_checkpoint(job, client=client)
+            session.commit()
+            snapshot = {}
+            requests = []
+
+    if not snapshot:
+        rows = public_catalog_repository.list_all_public_catalog_rows(
+            session,
+            tenant_id=job.tenant_id,
+            now=utcnow(),
+        )
+        sources = [catalog_translation_source(row) for row in rows]
+        sources_by_id = {source.sku_id: source for source in sources}
+        forced_ids = _forced_sku_ids(job)
+        stored_remaining = _remaining_sku_ids(job)
+        forced_resume = not first_run and bool(forced_ids) and bool(stored_remaining)
+        preserve_progress = (
+            not first_run
+            and not forced_ids
+            and (bool(stored_remaining) or job.processed_skus >= job.total_skus)
+        )
+        if forced_ids and not forced_resume:
+            candidates = [
+                sources_by_id[sku_id]
+                for sku_id in forced_ids
+                if sku_id in sources_by_id
+            ]
+        elif forced_resume or (preserve_progress and job.mode == "FULL_REBUILD"):
+            candidates = [
+                sources_by_id[sku_id]
+                for sku_id in stored_remaining
+                if sku_id in sources_by_id
+            ]
+        else:
+            candidates, _stale = _pending_sources(
+                session,
+                tenant_id=job.tenant_id,
+                target_locale=job.target_locale,
+                sources=sources,
+                full_rebuild=job.mode == "FULL_REBUILD",
+            )
+        current_pack = translation_repository.language_pack(
+            session,
+            tenant_id=job.tenant_id,
+            target_locale=job.target_locale,
+        )
+        previous_payload = load_language_pack_payload(storage, current_pack)
+        sku_translations = translation_repository.translation_map(
+            session,
+            tenant_id=job.tenant_id,
+            sku_ids=[source.sku_id for source in sources],
+            target_locale=job.target_locale,
+        )
+        values = catalog_language_pack_translatable_values(rows)
+        seed = (
+            {}
+            if job.mode == "FULL_REBUILD"
+            else catalog_language_pack_translation_seed(
+                rows,
+                sku_translations=sku_translations,
+                previous_payload=previous_payload,
+                reuse_previous=bool(current_pack),
+            )
+        )
+        forced_values = (
+            set(
+                catalog_language_pack_translatable_values(
+                    [row for row in rows if row[1].id in set(forced_ids)]
+                )
+            )
+            if forced_ids
+            else set()
+        )
+        _available, missing_by_locale = _batch_translation_availability(
+            tenant_id=job.tenant_id,
+            target_locale=job.target_locale,
+            identity=identity,
+            values=values,
+            seed=seed,
+            force_refresh_values=(set(values) if job.mode == "FULL_REBUILD" else forced_values),
+        )
+        requests = qwen_batch_translation_requests(
+            missing_by_locale,
+            job_id=job.id,
+        )
+        snapshot = {
+            "schema_version": 1,
+            "catalog_digest": catalog_rows_source_digest(rows),
+            "requests": requests,
+            "candidate_source_hashes": {
+                str(source.sku_id): source.source_hash for source in candidates
+            },
+            # A failed packaging/upload step may be resumed after every SKU
+            # translation row was already committed.  Keep that completed
+            # prefix separate from the candidates in this Batch snapshot so a
+            # retry with zero pending SKUs cannot reset progress back to zero.
+            "processed_skus_before_batch": (
+                job.processed_skus if preserve_progress else 0
+            ),
+            "value_count": len(values),
+        }
+        job.batch_request_payload = snapshot
+        job.provider = identity.provider
+        job.provider_version = identity.version
+        if not preserve_progress and not forced_resume:
+            job.total_skus = len(candidates)
+            job.processed_skus = 0
+            job.failed_skus = 0
+            job.failure_details = []
+        else:
+            job.total_skus = job.processed_skus + len(candidates)
+        job.remaining_sku_ids = [str(source.sku_id) for source in candidates]
+        job.external_total_requests = len(requests)
+        job.stage = "TRANSLATING"
+        job.updated_at = utcnow()
+        session.commit()
+
+    if _pause_at_safe_checkpoint(session, job):
+        return
+
+    if requests:
+        if not job.external_input_file_id:
+            content = client.jsonl_content(
+                requests,
+                target_locale=job.target_locale,
+            )
+            job.external_input_file_id = client.upload_jsonl(
+                content,
+                filename=f"catalog-{job.id}.jsonl",
+            )
+            job.external_batch_status = "file_uploaded"
+            job.updated_at = utcnow()
+            session.commit()
+
+        if not job.external_batch_id:
+            status = client.find_batch(job.external_input_file_id)
+            if status is None:
+                status = client.create_batch(
+                    job.external_input_file_id,
+                    name=f"ATC-{job.target_locale}-{str(job.id)[:8]}",
+                    description=(
+                        f"Catalog {job.mode.lower()} translation for tenant "
+                        f"{str(job.tenant_id)[:8]}"
+                    ),
+                )
+            _update_external_batch_status(job, status)
+            session.commit()
+
+        poll_seconds = _positive_environment(
+            "QWEN_BATCH_POLL_SECONDS",
+            10,
+            maximum=60,
+        )
+        while job.external_batch_status not in QWEN_BATCH_TERMINAL_STATUSES:
+            if _pause_at_safe_checkpoint(session, job):
+                return
+            time.sleep(poll_seconds)
+            status = client.retrieve_batch(job.external_batch_id)
+            _update_external_batch_status(job, status)
+            session.commit()
+
+        if job.external_batch_status != "completed":
+            error_content = (
+                client.download_file(job.external_error_file_id)
+                if job.external_error_file_id
+                else None
+            )
+            detail = _qwen_batch_error_summary(error_content)
+            suffix = f"：{detail}" if detail else ""
+            raise TranslationProviderError(
+                f"Qwen Batch task {job.external_batch_status}{suffix}"
+            )
+        if job.external_failed_requests:
+            error_content = (
+                client.download_file(job.external_error_file_id)
+                if job.external_error_file_id
+                else None
+            )
+            detail = _qwen_batch_error_summary(error_content)
+            suffix = f"：{detail}" if detail else ""
+            raise TranslationProviderError(
+                f"Qwen Batch has {job.external_failed_requests} failed requests{suffix}"
+            )
+        if not job.external_output_file_id:
+            raise TranslationProviderError(
+                "Qwen Batch completed without an output file"
+            )
+        translations_by_locale = client.parse_output(
+            client.download_file(job.external_output_file_id),
+            requests,
+            target_locale=job.target_locale,
+        )
+        for source_locale, translations in translations_by_locale.items():
+            store_translation_values(
+                tenant_id=job.tenant_id,
+                translations=translations,
+                source_locale=source_locale,
+                target_locale=job.target_locale,
+                provider=identity.provider,
+                provider_version=identity.version,
+            )
+
+    # The cloud task can take hours. Never publish a mixed snapshot if catalog
+    # content changed while it was running; successful text stays in memory and
+    # the next incremental run submits only the new remainder.
+    rows = public_catalog_repository.list_all_public_catalog_rows(
+        session,
+        tenant_id=job.tenant_id,
+        now=utcnow(),
+    )
+    if snapshot.get("catalog_digest") != catalog_rows_source_digest(rows):
+        sources = [catalog_translation_source(row) for row in rows]
+        pending, _stale = _pending_sources(
+            session,
+            tenant_id=job.tenant_id,
+            target_locale=job.target_locale,
+            sources=sources,
+            full_rebuild=False,
+        )
+        job.remaining_sku_ids = [str(source.sku_id) for source in pending]
+        session.commit()
+        raise TranslationProviderError(
+            "商品在 Batch 执行期间发生了变更，请继续任务翻译新增内容"
+        )
+
+    sources = [catalog_translation_source(row) for row in rows]
+    source_by_id = {str(source.sku_id): source for source in sources}
+    current_pack = translation_repository.language_pack(
+        session,
+        tenant_id=job.tenant_id,
+        target_locale=job.target_locale,
+    )
+    previous_payload = load_language_pack_payload(storage, current_pack)
+    sku_translations = translation_repository.translation_map(
+        session,
+        tenant_id=job.tenant_id,
+        sku_ids=[source.sku_id for source in sources],
+        target_locale=job.target_locale,
+    )
+    values = catalog_language_pack_translatable_values(rows)
+    seed = (
+        {}
+        if job.mode == "FULL_REBUILD"
+        else catalog_language_pack_translation_seed(
+            rows,
+            sku_translations=sku_translations,
+            previous_payload=previous_payload,
+            reuse_previous=bool(current_pack),
+        )
+    )
+    translations, missing_by_locale = _batch_translation_availability(
+        tenant_id=job.tenant_id,
+        target_locale=job.target_locale,
+        identity=identity,
+        values=values,
+        seed=seed,
+    )
+    if missing_by_locale:
+        raise TranslationProviderError(
+            "Batch translation memory is incomplete after result import"
+        )
+
+    candidate_hashes = snapshot.get("candidate_source_hashes")
+    candidate_hashes = (
+        candidate_hashes if isinstance(candidate_hashes, dict) else {}
+    )
+    processed_before_batch = snapshot.get("processed_skus_before_batch", 0)
+    processed_before_batch = (
+        max(0, int(processed_before_batch))
+        if isinstance(processed_before_batch, (int, float))
+        else 0
+    )
+    translated_ids: list[str] = []
+    for sku_id, source_hash in candidate_hashes.items():
+        source = source_by_id.get(str(sku_id))
+        if source is None or source.source_hash != source_hash:
+            continue
+        result = catalog_translation_result_from_values(
+            source,
+            translations,
+            source_locale=job.source_locale,
+            target_locale=job.target_locale,
+        )
+        translation_repository.save_translation(
+            session,
+            tenant_id=job.tenant_id,
+            source_locale=job.source_locale,
+            target_locale=job.target_locale,
+            source=source,
+            result=result,
+            provider=identity.provider,
+            provider_version=identity.version,
+        )
+        translated_ids.append(str(source.sku_id))
+    job.processed_skus = min(
+        job.total_skus,
+        processed_before_batch + len(translated_ids),
+    )
+    job.failed_skus = max(0, len(candidate_hashes) - len(translated_ids))
+    job.remaining_sku_ids = [
+        sku_id for sku_id in candidate_hashes if sku_id not in set(translated_ids)
+    ]
+    if job.failed_skus:
+        session.commit()
+        raise TranslationProviderError(
+            f"{job.failed_skus} 个 SKU 在 Batch 结果应用时发生变化"
+        )
+    session.commit()
+
+    job.stage = "PACKAGING"
+    job.current_sku_id = None
+    job.current_sku_name = None
+    job.updated_at = utcnow()
+    session.commit()
+    if _pause_at_safe_checkpoint(session, job):
+        return
+
+    sku_translations = translation_repository.translation_map(
+        session,
+        tenant_id=job.tenant_id,
+        sku_ids=[source.sku_id for source in sources],
+        target_locale=job.target_locale,
+    )
+    next_version = (current_pack.version if current_pack else 0) + 1
+    build = build_catalog_language_pack(
+        tenant_id=job.tenant_id,
+        rows=rows,
+        source_locale=job.source_locale,
+        target_locale=job.target_locale,
+        version=next_version,
+        translator=_CachedOnlyTranslationProvider(identity),
+        sku_translations=sku_translations,
+        previous_payload=previous_payload,
+        reuse_previous=bool(current_pack),
+        full_rebuild=job.mode == "FULL_REBUILD",
+        force_rebuild_sku_ids=set(_forced_sku_ids(job)),
+    )
+    object_key = language_pack_object_key(
+        tenant_id=job.tenant_id,
+        target_locale=job.target_locale,
+        version=next_version,
+        content_sha256=build.content_sha256,
+    )
+    job.stage = "UPLOADING"
+    job.updated_at = utcnow()
+    session.commit()
+    stored = storage.put(build.compressed, object_key=object_key)
+    published_at = utcnow()
+    translation_repository.save_language_pack(
+        session,
+        tenant_id=job.tenant_id,
+        source_locale=job.source_locale,
+        target_locale=job.target_locale,
+        version=next_version,
+        object_key=stored.object_key,
+        public_url=stored.public_url,
+        content_sha256=build.content_sha256,
+        source_digest=build.source_digest,
+        storage_fingerprint=storage.status.fingerprint,
+        byte_size=stored.byte_size,
+        product_count=build.product_count,
+        sku_count=build.sku_count,
+        category_count=build.category_count,
+        provider=identity.provider,
+        provider_version=identity.version,
+        source_cutoff_at=build.source_cutoff_at,
+        published_at=published_at,
+        full_rebuild=job.mode == "FULL_REBUILD",
+    )
+    job.status = "SUCCEEDED"
+    job.stage = "PUBLISHED"
+    job.package_version = next_version
+    job.package_published = True
+    job.package_byte_size = stored.byte_size
+    job.source_cutoff_at = build.source_cutoff_at
+    job.remaining_sku_ids = []
+    job.forced_sku_ids = []
+    job.pause_requested_at = None
+    job.paused_at = None
+    job.current_sku_id = None
+    job.current_sku_name = None
+    job.completed_at = published_at
+    session.commit()
+
+    # DashScope keeps uploaded Batch files indefinitely. They are temporary
+    # transport artifacts here, so clean them after the immutable package and
+    # database checkpoint have both committed.
+    for file_id in dict.fromkeys(
+        value
+        for value in (
+            job.external_input_file_id,
+            job.external_output_file_id,
+            job.external_error_file_id,
+        )
+        if value
+    ):
+        try:
+            client.delete_file(file_id)
+        except TranslationProviderError:
+            logger.warning("could not delete completed Qwen Batch file %s", file_id)
 
 
 def _run_translation_job(
@@ -1286,6 +2141,14 @@ def _run_translation_job(
             session.commit()
 
             if _pause_at_safe_checkpoint(session, job):
+                return
+
+            if job.execution_mode == "QWEN_BATCH":
+                _run_qwen_batch_translation_job(
+                    session,
+                    job=job,
+                    first_run=first_run,
+                )
                 return
 
             translator = resolved_catalog_translator(
@@ -1579,6 +2442,24 @@ def _run_translation_job(
 
             if _pause_at_safe_checkpoint(session, job):
                 return
+            sku_translations = translation_repository.translation_map(
+                session,
+                tenant_id=tenant_id,
+                sku_ids=[source.sku_id for source in sources],
+                target_locale=job.target_locale,
+            )
+            if _prepare_realtime_language_pack_values(
+                session,
+                job=job,
+                translator=translator,
+                rows=rows,
+                sku_translations=sku_translations,
+                previous_payload=previous_payload,
+                reuse_previous=(
+                    bool(current_pack) and job.mode != "FULL_REBUILD"
+                ),
+            ):
+                return
             job.stage = "PACKAGING"
             job.current_sku_id = None
             job.current_sku_name = None
@@ -1588,12 +2469,6 @@ def _run_translation_job(
             if _pause_at_safe_checkpoint(session, job):
                 return
 
-            sku_translations = translation_repository.translation_map(
-                session,
-                tenant_id=tenant_id,
-                sku_ids=[source.sku_id for source in sources],
-                target_locale=job.target_locale,
-            )
             next_version = (current_pack.version if current_pack else 0) + 1
             build = build_catalog_language_pack(
                 tenant_id=tenant_id,
@@ -1601,7 +2476,10 @@ def _run_translation_job(
                 source_locale=job.source_locale,
                 target_locale=job.target_locale,
                 version=next_version,
-                translator=translator,
+                # The provider work is complete before PACKAGING. If a field
+                # escaped the resumable preparation above, fail safely instead
+                # of hiding another long model call behind 97% progress.
+                translator=_CachedOnlyTranslationProvider(translator.identity),
                 sku_translations=sku_translations,
                 previous_payload=previous_payload,
                 # A provider/model switch does not invalidate the published
@@ -1690,7 +2568,32 @@ def _dispatch_translation_job(
     tenant_id: UUID,
     user_id: UUID,
 ) -> None:
-    _translation_executor.submit(
+    executor = _translation_executor
+    try:
+        with SessionLocal() as session:
+            set_request_context(
+                session,
+                organization_id=organization_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+            execution_mode = session.scalar(
+                select(CatalogTranslationJobRow.execution_mode).where(
+                    CatalogTranslationJobRow.tenant_id == tenant_id,
+                    CatalogTranslationJobRow.id == job_id,
+                )
+            )
+            session.rollback()
+        if execution_mode == "QWEN_BATCH":
+            executor = _qwen_batch_executor
+    except Exception:
+        # Falling back to the conservative executor delays a submission but
+        # never loses it; the worker itself still reads the persisted mode.
+        logger.exception(
+            "could not select translation executor for job %s",
+            job_id,
+        )
+    executor.submit(
         _run_translation_job,
         job_id=job_id,
         organization_id=organization_id,
@@ -1897,6 +2800,10 @@ def resume_translation_job(
             "当前语言已有另一个翻译任务正在运行。",
             kind="conflict",
         )
+    # Qwen Batch transport checkpoints deliberately survive a local failure.
+    # The worker can replay a completed output after an upload/package outage,
+    # resume polling an in-flight task, or replace a stale/failed cloud task
+    # without creating a duplicate paid submission.
     job.status = "QUEUED"
     job.stage = "QUEUED"
     job.pause_requested_at = None
@@ -1945,11 +2852,15 @@ def start_translation_job(
             "CATALOG_TRANSLATION_REBUILD_CONFIRMATION_REQUIRED",
             "全量重新翻译需要明确确认。",
         )
+    execution_mode = catalog_translation_execution_mode(session)
     try:
-        translator = resolved_catalog_translator(
-            session,
-            environment_factory=configured_catalog_translator,
-        )
+        if execution_mode == "QWEN_BATCH":
+            identity = resolved_qwen_batch_configuration(session).identity
+        else:
+            identity = resolved_catalog_translator(
+                session,
+                environment_factory=configured_catalog_translator,
+            ).identity
     except TranslationProviderError as exc:
         raise ApplicationError(
             "CATALOG_TRANSLATION_CONFIGURATION_INVALID",
@@ -2008,13 +2919,14 @@ def start_translation_job(
         source_locale=_SOURCE_LOCALE,
         target_locale=request.target_locale,
         mode=request.mode,
+        execution_mode=execution_mode,
         status="QUEUED" if work_required else "SUCCEEDED",
         stage="QUEUED" if work_required else "PUBLISHED",
         total_skus=len(candidates),
         processed_skus=0,
         failed_skus=0,
-        provider=translator.identity.provider,
-        provider_version=translator.identity.version,
+        provider=identity.provider,
+        provider_version=identity.version,
         failure_details=[],
         remaining_sku_ids=[str(source.sku_id) for source in candidates],
         package_version=current_pack.version if current_pack and not work_required else None,

@@ -368,6 +368,33 @@ def translate_catalog_values(
 
     if not values:
         return []
+    payload, protected = catalog_translation_values_payload(values)
+    translated_text = translator.translate(
+        payload,
+        source_locale=source_locale,
+        target_locale=target_locale,
+    )
+    results = parse_catalog_translation_values(
+        values,
+        translated_text,
+        protected=protected,
+    )
+    return validate_catalog_translation_values(
+        values,
+        results,
+        translator=translator,
+        source_locale=source_locale,
+        target_locale=target_locale,
+    )
+
+
+def catalog_translation_values_payload(
+    values: list[str],
+) -> tuple[str, dict[str, str]]:
+    """Create the stable marker payload shared by real-time and Batch jobs."""
+
+    if not values:
+        return "", {}
     if len(values) > 999:
         raise ValueError("a translation request cannot contain more than 999 values")
 
@@ -376,12 +403,23 @@ def translate_catalog_values(
     for item_index, value in enumerate(values):
         payload_lines.append(f"[[ATCV_{item_index:03d}]]")
         payload_lines.append(_protect_identifiers(value, protected=protected))
+    return "\n".join(payload_lines), protected
 
-    translated_text = translator.translate(
-        "\n".join(payload_lines),
-        source_locale=source_locale,
-        target_locale=target_locale,
-    )
+
+def parse_catalog_translation_values(
+    values: list[str],
+    translated_text: str,
+    *,
+    protected: dict[str, str] | None = None,
+) -> list[str]:
+    """Parse one marker-preserving response without relying on line order."""
+
+    if not values:
+        return []
+    if len(values) > 999:
+        raise ValueError("a translation response cannot contain more than 999 values")
+    if protected is None:
+        _payload, protected = catalog_translation_values_payload(values)
     matches = list(_VALUE_MARKER_PATTERN.finditer(translated_text))
     translated: dict[int, str] = {}
     for index, match in enumerate(matches):
@@ -404,10 +442,27 @@ def translate_catalog_values(
             "translation provider did not preserve the catalog value structure",
             recover_with_smaller_batches=True,
         )
-    results = [
+    return [
         translated[item_index].strip()
         for item_index in range(len(values))
     ]
+
+
+def validate_catalog_translation_values(
+    values: list[str],
+    results: list[str],
+    *,
+    translator: TranslationProvider | None,
+    source_locale: str,
+    target_locale: str,
+) -> list[str]:
+    """Validate completed values and optionally retry a bad value in real time."""
+
+    if len(values) != len(results):
+        raise TranslationProviderError(
+            "translation provider returned an incomplete value response",
+            recover_with_smaller_batches=True,
+        )
     if source_locale != target_locale:
         for item_index, (source_value, translated_value) in enumerate(
             zip(values, results, strict=True)
@@ -425,7 +480,7 @@ def translate_catalog_values(
                     )
                 )
             )
-            if not needs_direct_retry:
+            if not needs_direct_retry or translator is None:
                 continue
             direct_protected: dict[str, str] = {}
             direct_source = _protect_identifiers(
@@ -464,3 +519,77 @@ def translate_catalog_values(
                 recover_with_smaller_batches=True,
             )
     return results
+
+
+def catalog_translation_result_from_values(
+    source: CatalogTranslationSource,
+    translations: dict[str, str],
+    *,
+    source_locale: str,
+    target_locale: str,
+) -> CatalogTranslationResult:
+    """Materialize one SKU row from exact-text Batch translation memory."""
+
+    def localized(value: str) -> str:
+        normalized = value.strip()
+        translated = translations.get(normalized, normalized).strip()
+        if not catalog_translation_value_is_complete(
+            normalized,
+            translated,
+            source_locale=(
+                source_locale
+                if _CJK_PROSE_PATTERN.search(normalized)
+                else "en-US"
+            ),
+            target_locale=target_locale,
+        ):
+            raise TranslationProviderError(
+                "Batch translation left source-language catalog text untranslated"
+            )
+        return translated
+
+    def localized_description(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if normalized in translations:
+            return localized(normalized)
+        return "\n".join(
+            localized(line) if line.strip() else line
+            for line in value.splitlines()
+        )
+
+    name = localized(source.name)
+    category = (
+        "/".join(
+            localized(segment.strip())
+            for segment in source.category.replace("／", "/").split("/")
+            if segment.strip()
+        )
+        if source.category
+        else None
+    )
+    tags = tuple(dict.fromkeys(localized(tag) for tag in source.tags))
+    display_tag_index = next(
+        (
+            index
+            for index, tag in enumerate(source.tags)
+            if source.display_tag
+            and tag.casefold() == source.display_tag.casefold()
+        ),
+        None,
+    )
+    display_tag = (
+        tags[display_tag_index]
+        if display_tag_index is not None and display_tag_index < len(tags)
+        else tags[0] if tags else None
+    )
+    return CatalogTranslationResult(
+        sku_id=source.sku_id,
+        source_hash=source.source_hash,
+        name=name,
+        description=localized_description(source.description),
+        category=category,
+        tags=tags,
+        display_tag=display_tag,
+    )

@@ -29,6 +29,14 @@ def _first_environment(*names: str) -> str:
     return ""
 
 
+def _positive_int_environment(name: str, default: int, *, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(1, min(value, maximum))
+
+
 @dataclass(frozen=True, slots=True)
 class LanguagePackageStorageStatus:
     backend: str
@@ -145,6 +153,7 @@ class LanguagePackageStorage:
             raise RuntimeError("language package object storage is not configured")
         try:
             import boto3
+            from botocore.config import Config
         except ImportError as exc:  # pragma: no cover - dependency guard
             raise RuntimeError("boto3 is required for R2 language packages") from exc
         self._client = boto3.client(
@@ -153,6 +162,27 @@ class LanguagePackageStorage:
             region_name=self._region,
             aws_access_key_id=self._access_key_id,
             aws_secret_access_key=self._secret_access_key,
+            config=Config(
+                connect_timeout=_positive_int_environment(
+                    "TRANSLATION_PACKAGE_CONNECT_TIMEOUT_SECONDS",
+                    5,
+                    maximum=60,
+                ),
+                read_timeout=_positive_int_environment(
+                    "TRANSLATION_PACKAGE_READ_TIMEOUT_SECONDS",
+                    30,
+                    maximum=300,
+                ),
+                retries={
+                    "mode": "standard",
+                    "total_max_attempts": _positive_int_environment(
+                        "TRANSLATION_PACKAGE_MAX_ATTEMPTS",
+                        3,
+                        maximum=10,
+                    ),
+                },
+                tcp_keepalive=True,
+            ),
         )
         return self._client
 

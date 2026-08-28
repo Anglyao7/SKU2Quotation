@@ -120,6 +120,7 @@ import type {
   TranslationApiTestResult,
   TranslationProviderKind,
   TranslationReasoningEffort,
+  CatalogTranslationExecutionMode,
   CatalogLanguagePackInfo,
   CatalogShare,
   CatalogShareLogoPosition,
@@ -2848,11 +2849,16 @@ interface ApiTranslationSettings {
   catalog_batch_size: number;
   catalog_batch_characters: number;
   catalog_concurrency: number;
+  catalog_execution_mode: CatalogTranslationExecutionMode;
   reasoning_effort: TranslationReasoningEffort;
   api_key_configured: boolean;
   api_key_hint?: string | null;
   access_key_id_configured: boolean;
   access_key_id_hint?: string | null;
+  batch_base_url: string;
+  batch_model_name: string;
+  batch_api_key_configured: boolean;
+  batch_api_key_hint?: string | null;
   updated_at?: string | null;
 }
 
@@ -2881,11 +2887,16 @@ function mapTranslationSettings(
     catalogBatchSize: row.catalog_batch_size,
     catalogBatchCharacters: row.catalog_batch_characters,
     catalogConcurrency: row.catalog_concurrency,
+    catalogExecutionMode: row.catalog_execution_mode,
     reasoningEffort: row.reasoning_effort,
     apiKeyConfigured: row.api_key_configured,
     apiKeyHint: defined(row.api_key_hint),
     accessKeyIdConfigured: row.access_key_id_configured,
     accessKeyIdHint: defined(row.access_key_id_hint),
+    batchBaseUrl: row.batch_base_url,
+    batchModelName: row.batch_model_name,
+    batchApiKeyConfigured: row.batch_api_key_configured,
+    batchApiKeyHint: defined(row.batch_api_key_hint),
     updatedAt: defined(row.updated_at),
   };
 }
@@ -2904,6 +2915,10 @@ export interface TranslationSettingsWriteInput {
   catalogBatchSize: number;
   catalogBatchCharacters: number;
   catalogConcurrency: number;
+  catalogExecutionMode: CatalogTranslationExecutionMode;
+  batchBaseUrl: string;
+  batchModelName: string;
+  batchApiKey?: string;
   reasoningEffort: TranslationReasoningEffort;
 }
 
@@ -2922,6 +2937,10 @@ function translationSettingsBody(input: TranslationSettingsWriteInput) {
     catalog_batch_size: input.catalogBatchSize,
     catalog_batch_characters: input.catalogBatchCharacters,
     catalog_concurrency: input.catalogConcurrency,
+    catalog_execution_mode: input.catalogExecutionMode,
+    batch_base_url: input.batchBaseUrl,
+    batch_model_name: input.batchModelName,
+    batch_api_key: input.batchApiKey || undefined,
     reasoning_effort: input.reasoningEffort,
   };
 }
@@ -2986,6 +3005,7 @@ interface ApiCatalogTranslationJob {
   source_locale: StorefrontLocale;
   target_locale: StorefrontLocale;
   mode: "INCREMENTAL" | "FULL_REBUILD";
+  execution_mode: CatalogTranslationExecutionMode;
   status: "QUEUED" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
   stage: CatalogTranslationJob["stage"];
   total_skus: number;
@@ -3017,6 +3037,13 @@ interface ApiCatalogTranslationJob {
   batch_count: number;
   completed_batch_count: number;
   failed_batch_count: number;
+  external_batch_id?: string | null;
+  external_batch_status?: string | null;
+  external_total_requests: number;
+  external_completed_requests: number;
+  external_failed_requests: number;
+  finalization_total_values: number;
+  finalization_processed_values: number;
 }
 
 interface ApiCatalogTranslationBatchAttempt {
@@ -3091,6 +3118,7 @@ function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTransla
     sourceLocale: row.source_locale,
     targetLocale: row.target_locale,
     mode: row.mode,
+    executionMode: row.execution_mode,
     status: row.status,
     stage: row.stage,
     totalSkus: row.total_skus,
@@ -3122,6 +3150,13 @@ function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTransla
     batchCount: row.batch_count ?? 0,
     completedBatchCount: row.completed_batch_count ?? 0,
     failedBatchCount: row.failed_batch_count ?? 0,
+    externalBatchId: defined(row.external_batch_id),
+    externalBatchStatus: defined(row.external_batch_status),
+    externalTotalRequests: row.external_total_requests ?? 0,
+    externalCompletedRequests: row.external_completed_requests ?? 0,
+    externalFailedRequests: row.external_failed_requests ?? 0,
+    finalizationTotalValues: row.finalization_total_values ?? 0,
+    finalizationProcessedValues: row.finalization_processed_values ?? 0,
   };
 }
 

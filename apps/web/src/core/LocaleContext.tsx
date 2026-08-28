@@ -856,6 +856,24 @@ const english: Record<string, string> = {
     "Alibaba Cloud Machine Translation (General Edition)",
   "大模型兼容接口": "LLM-compatible endpoint",
   "翻译服务商": "Translation provider",
+  "实时翻译服务商": "Real-time translation provider",
+  "商品翻译执行方式": "Catalog translation execution",
+  "Qwen Batch 文件翻译": "Qwen Batch File translation",
+  "实时大模型 / 机器翻译": "Real-time LLM / machine translation",
+  "全量目录异步提交到百炼 Batch，按文本去重并复用历史译文；新增少量商品时可切回实时翻译。":
+    "Submit the full catalog asynchronously to Model Studio Batch, de-duplicate exact text, and reuse existing translations. Switch back to real-time translation for small additions.",
+  "商品任务按当前实时服务商执行；客服与前台即时翻译也继续使用此配置。":
+    "Catalog jobs use the selected real-time provider. Support and storefront live translation continue using the same configuration.",
+  "Qwen Batch 配置": "Qwen Batch settings",
+  "固定关闭思考模式，任务完成后自动校验 custom_id、写入翻译记忆并发布语言包。":
+    "Thinking is always disabled. After completion, custom IDs are validated, translation memory is updated, and the language package is published.",
+  "Batch 计费 5 折": "50% Batch pricing",
+  "Batch Base URL": "Batch Base URL",
+  "Batch 模型": "Batch model",
+  "Batch API Key": "Batch API key",
+  "已从 Qwen 配置复制 {hint}，留空则保持不变":
+    "Copied from the Qwen settings ({hint}); leave blank to keep it",
+  "请输入百炼 API Key": "Enter the Model Studio API key",
   "全局翻译服务": "Global translation service",
   "适合大批量商品内容翻译。": "Suitable for large product catalogs.",
   "使用 DeepLX 接口进行低成本机器翻译。":
@@ -1970,6 +1988,9 @@ const english: Record<string, string> = {
   "任务失败": "Job failed",
   "任务中断，断点已保存": "Interrupted — checkpoint saved",
   "已处理 {done} / {total} 个 SKU": "Processed {done} / {total} SKUs",
+  "Qwen Batch · {status} · {done} / {total} 个请求":
+    "Qwen Batch · {status} · {done} / {total} requests",
+  "准备中": "Preparing",
   "剩余 {remaining} 个 SKU · 断点 {time}": "{remaining} SKUs remaining · checkpoint {time}",
   "从断点继续": "Resume from checkpoint",
   "运行模式": "Run mode",

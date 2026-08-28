@@ -1442,6 +1442,8 @@ export type TranslationProviderKind =
   | "deeplx"
   | "aliyun-alimt";
 
+export type CatalogTranslationExecutionMode = "REALTIME" | "QWEN_BATCH";
+
 export interface TranslationApiSettings {
   source: "database" | "environment" | "disabled";
   provider: TranslationProviderKind;
@@ -1456,11 +1458,16 @@ export interface TranslationApiSettings {
   catalogBatchSize: number;
   catalogBatchCharacters: number;
   catalogConcurrency: number;
+  catalogExecutionMode: CatalogTranslationExecutionMode;
   reasoningEffort: TranslationReasoningEffort;
   apiKeyConfigured: boolean;
   apiKeyHint?: string;
   accessKeyIdConfigured: boolean;
   accessKeyIdHint?: string;
+  batchBaseUrl: string;
+  batchModelName: string;
+  batchApiKeyConfigured: boolean;
+  batchApiKeyHint?: string;
   updatedAt?: string;
 }
 
@@ -1501,6 +1508,7 @@ export interface CatalogTranslationJob {
   sourceLocale: StorefrontLocale;
   targetLocale: StorefrontLocale;
   mode: "INCREMENTAL" | "FULL_REBUILD";
+  executionMode: CatalogTranslationExecutionMode;
   status: "QUEUED" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
   stage: CatalogTranslationJobStage;
   totalSkus: number;
@@ -1532,6 +1540,13 @@ export interface CatalogTranslationJob {
   batchCount: number;
   completedBatchCount: number;
   failedBatchCount: number;
+  externalBatchId?: string;
+  externalBatchStatus?: string;
+  externalTotalRequests: number;
+  externalCompletedRequests: number;
+  externalFailedRequests: number;
+  finalizationTotalValues: number;
+  finalizationProcessedValues: number;
 }
 
 export interface CatalogTranslationBatchAttempt {
