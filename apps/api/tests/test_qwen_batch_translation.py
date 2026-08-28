@@ -187,6 +187,29 @@ def test_qwen_batch_lifecycle_and_result_mapping() -> None:
     assert ("POST", "/compatible-mode/v1/batches") in seen
 
 
+def test_qwen_batch_empty_task_list_accepts_null_data() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path.endswith("/batches")
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": None,
+                "first_id": None,
+                "last_id": None,
+                "has_more": False,
+            },
+        )
+
+    client = QwenBatchClient(
+        _configuration(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.find_batch("file-batch-without-task") is None
+
+
 def test_qwen_batch_rejects_unknown_result_identity() -> None:
     client = QwenBatchClient(
         _configuration(),

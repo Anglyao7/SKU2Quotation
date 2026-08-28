@@ -333,11 +333,21 @@ class QwenBatchClient:
             params={"input_file_ids": input_file_id, "limit": 100},
         )
         try:
-            rows = response.json().get("data", [])
-        except (AttributeError, TypeError, ValueError) as exc:
+            body = response.json()
+        except (TypeError, ValueError) as exc:
             raise TranslationProviderError(
                 "Qwen Batch task list returned an invalid response"
             ) from exc
+        if not isinstance(body, Mapping) or "data" not in body:
+            raise TranslationProviderError(
+                "Qwen Batch task list returned an invalid response"
+            )
+        rows = body["data"]
+        # DashScope returns ``data: null`` (rather than an empty array) when
+        # the filter has no matching Batch.  That is a valid empty result and
+        # means the caller may safely create the task for this uploaded file.
+        if rows is None:
+            rows = []
         if not isinstance(rows, list):
             raise TranslationProviderError(
                 "Qwen Batch task list returned an invalid response"
