@@ -17890,6 +17890,25 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
             session.commit()
 
 
+def test_qwen_batch_progress_keeps_moving_before_result_import() -> None:
+    progress = catalog_translation_use_cases._qwen_batch_progress_fraction(
+        translation_total=3_980,
+        translation_processed=0,
+        external_total_requests=199,
+        external_completed_requests=50,
+        external_failed_requests=0,
+    )
+
+    assert progress == pytest.approx(50 / 199)
+    assert catalog_translation_use_cases._qwen_batch_progress_fraction(
+        translation_total=3_980,
+        translation_processed=3_000,
+        external_total_requests=199,
+        external_completed_requests=50,
+        external_failed_requests=0,
+    ) == pytest.approx(3_000 / 3_980)
+
+
 def test_qwen_batch_job_reuses_completed_task_after_package_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

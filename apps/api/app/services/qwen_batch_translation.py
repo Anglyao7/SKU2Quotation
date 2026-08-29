@@ -30,6 +30,12 @@ DEFAULT_QWEN_BATCH_BASE_URL = (
 DEFAULT_QWEN_BATCH_MODEL = "qwen3.7-flash-2026-07-15"
 QWEN_BATCH_PROMPT_VERSION = "catalog-text-v1"
 QWEN_BATCH_COMPLETION_WINDOW = "24h"
+# Keep each JSONL row small enough that one language can expose hundreds of
+# independent provider requests in a single Batch file.  The provider accepts
+# up to 50,000 rows per file; compact rows improve parallelism and also reduce
+# the blast radius of one malformed structured response.
+QWEN_BATCH_REQUEST_MAX_ITEMS = 20
+QWEN_BATCH_REQUEST_MAX_CHARACTERS = 3_000
 QWEN_BATCH_TERMINAL_STATUSES = {
     "completed",
     "failed",
@@ -128,8 +134,8 @@ def qwen_batch_translation_requests(
     values_by_source_locale: Mapping[str, list[str]],
     *,
     job_id: UUID,
-    max_items: int = 80,
-    max_characters: int = 12_000,
+    max_items: int = QWEN_BATCH_REQUEST_MAX_ITEMS,
+    max_characters: int = QWEN_BATCH_REQUEST_MAX_CHARACTERS,
     generation: int = 0,
     sequence_start: int = 0,
 ) -> list[dict[str, Any]]:
@@ -362,6 +368,12 @@ class QwenBatchClient:
 
     def retrieve_batch(self, batch_id: str) -> QwenBatchStatus:
         response = self._request("GET", f"/batches/{batch_id}")
+        return self._batch_status(response.json())
+
+    def cancel_batch(self, batch_id: str) -> QwenBatchStatus:
+        """Cancel provider work that has not completed yet."""
+
+        response = self._request("POST", f"/batches/{batch_id}/cancel")
         return self._batch_status(response.json())
 
     def find_batch(self, input_file_id: str) -> QwenBatchStatus | None:

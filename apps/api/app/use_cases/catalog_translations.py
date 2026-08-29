@@ -282,6 +282,33 @@ def _job_qwen_batch_processed_skus(job: CatalogTranslationJobRow) -> int:
     return min(job.total_skus, max(job.processed_skus, processed))
 
 
+def _qwen_batch_progress_fraction(
+    *,
+    translation_total: int,
+    translation_processed: int,
+    external_total_requests: int,
+    external_completed_requests: int,
+    external_failed_requests: int,
+) -> float:
+    """Combine exact imported progress with live provider request progress."""
+
+    imported_fraction = (
+        min(translation_processed, translation_total) / translation_total
+        if translation_total > 0
+        else 0.0
+    )
+    upstream_finished = min(
+        max(0, external_total_requests),
+        max(0, external_completed_requests) + max(0, external_failed_requests),
+    )
+    upstream_fraction = (
+        upstream_finished / external_total_requests
+        if external_total_requests > 0
+        else 0.0
+    )
+    return min(1.0, max(imported_fraction, upstream_fraction))
+
+
 def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobResponse:
     finalization_total, finalization_processed = _job_finalization_counts(job)
     translation_total, translation_processed = _job_qwen_batch_counts(job)
@@ -294,28 +321,19 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
         progress = 97.0
     elif job.stage == "PREPARING":
         progress = 3.0
-    elif job.execution_mode == "QWEN_BATCH" and translation_total > 0:
-        progress = min(
-            90.0,
-            round(
-                8 + translation_processed / translation_total * 82,
-                1,
-            ),
-        )
-    elif (
-        job.execution_mode == "QWEN_BATCH"
-        and job.external_total_requests > 0
+    elif job.execution_mode == "QWEN_BATCH" and (
+        translation_total > 0 or job.external_total_requests > 0
     ):
-        completed_requests = min(
-            job.external_total_requests,
-            job.external_completed_requests + job.external_failed_requests,
+        batch_progress = _qwen_batch_progress_fraction(
+            translation_total=translation_total,
+            translation_processed=translation_processed,
+            external_total_requests=job.external_total_requests,
+            external_completed_requests=job.external_completed_requests,
+            external_failed_requests=job.external_failed_requests,
         )
         progress = min(
             90.0,
-            round(
-                8 + completed_requests / job.external_total_requests * 82,
-                1,
-            ),
+            round(8 + batch_progress * 82, 1),
         )
     elif finalization_total > 0 and job.processed_skus >= job.total_skus:
         progress = round(

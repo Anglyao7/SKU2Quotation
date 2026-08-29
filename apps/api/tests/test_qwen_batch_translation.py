@@ -8,6 +8,7 @@ import pytest
 
 from app.services.qwen_batch_translation import (
     DEFAULT_QWEN_BATCH_MODEL,
+    QWEN_BATCH_REQUEST_MAX_ITEMS,
     QwenBatchClient,
     QwenBatchConfiguration,
     qwen_batch_api_base_url,
@@ -59,6 +60,18 @@ def test_qwen_batch_requests_are_deterministic_and_bounded() -> None:
         ["乙" * 6, "丙"],
     ]
     assert len({row["custom_id"] for row in first}) == len(first)
+
+
+def test_qwen_batch_default_layout_exposes_hundreds_of_file_requests() -> None:
+    requests = qwen_batch_translation_requests(
+        {"zh-CN": [f"待翻译字段 {index}" for index in range(3_980)]},
+        job_id=JOB_ID,
+    )
+
+    assert QWEN_BATCH_REQUEST_MAX_ITEMS == 20
+    assert len(requests) == 199
+    assert max(len(row["values"]) for row in requests) == 20
+    assert sum(len(row["values"]) for row in requests) == 3_980
 
 
 def test_qwen_batch_jsonl_uses_flash_and_disables_thinking() -> None:
@@ -187,6 +200,38 @@ def test_qwen_batch_lifecycle_and_result_mapping() -> None:
     assert result.failures == ()
     assert client.delete_file(file_id) is True
     assert ("POST", "/compatible-mode/v1/batches") in seen
+
+
+def test_qwen_batch_can_cancel_provider_work() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path.endswith("/batches/batch-running/cancel")
+        return httpx.Response(
+            200,
+            json={
+                "id": "batch-running",
+                "status": "cancelling",
+                "input_file_id": "file-batch-input",
+                "output_file_id": None,
+                "error_file_id": None,
+                "request_counts": {
+                    "total": 199,
+                    "completed": 12,
+                    "failed": 0,
+                },
+            },
+        )
+
+    client = QwenBatchClient(
+        _configuration(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    cancelled = client.cancel_batch("batch-running")
+
+    assert cancelled.status == "cancelling"
+    assert cancelled.total_requests == 199
+    assert cancelled.completed_requests == 12
 
 
 def test_qwen_batch_empty_task_list_accepts_null_data() -> None:
