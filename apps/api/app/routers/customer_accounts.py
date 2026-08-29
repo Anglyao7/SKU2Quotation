@@ -79,7 +79,8 @@ def create_customer_account(
 ) -> CustomerSubaccountSummary:
     try:
         return use_cases.create_customer_subaccount(
-            _identity_write_session(session, identity_session),
+            session,
+            identity_session=_identity_write_session(session, identity_session),
             context=current_context(session),
             request=request,
         )

@@ -21805,6 +21805,13 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             "login_identifier": f"customer-{suffix}",
             "password": subaccount_password,
             "email": f"customer-{suffix}@subaccount.test",
+            "modules": [
+                "products",
+                "inquiries",
+                "quotations",
+                "announcements",
+                "support",
+            ],
         },
     )
     assert created.status_code == 201, created.text
@@ -21812,6 +21819,13 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     assert account["status"] == "active"
     assert account["identity_code"] == "SUBACCOUNT"
     assert account["capabilities"] == ["catalog", "submit_orders", "view_orders"]
+    assert account["modules"] == [
+        "products",
+        "inquiries",
+        "quotations",
+        "announcements",
+        "support",
+    ]
     assert account["login_count_30d"] == 0
 
     listing = client.get("/api/store/demo/skus", params={"page_size": 1})

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, time, timedelta
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import case, func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import case, func, or_, select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from ..customer_accounts_schemas import (
@@ -682,8 +683,9 @@ def get_customer_subaccount_order(
 
 
 def create_customer_subaccount(
-    identity_session: Session,
+    session: Session,
     *,
+    identity_session: Session,
     context: RequestContext,
     request: CustomerSubaccountCreate,
 ) -> CustomerSubaccountSummary:
@@ -699,13 +701,25 @@ def create_customer_subaccount(
             "Password must be exactly 6 digits.",
             kind="invalid",
         )
+    # Resolve tenant-scoped roles, permissions and conflicts through the
+    # application connection.  The production identity role deliberately has
+    # no access to the global permission catalogue or direct user/membership
+    # writes; it can provision the final identity only through the constrained
+    # database function below.
     set_request_context(
-        identity_session,
+        session,
         organization_id=context.organization_id,
         tenant_id=context.tenant_id,
         user_id=context.user_id,
     )
-    existing_membership = identity_session.scalar(
+    if identity_session is not session:
+        set_request_context(
+            identity_session,
+            organization_id=context.organization_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+    existing_membership = session.scalar(
         select(MembershipRow.id).where(
             MembershipRow.tenant_id == context.tenant_id,
             MembershipRow.login_identifier == request.login_identifier.casefold(),
@@ -717,14 +731,11 @@ def create_customer_subaccount(
             "This login account is already in use.",
             kind="conflict",
         )
-    roles = ensure_tenant_rbac(identity_session, tenant_id=context.tenant_id)
-    portal_role = roles.get(_PORTAL_ROLE)
-    if portal_role is None:
-        raise ApplicationError(
-            "CUSTOMER_ACCOUNT_ROLE_UNAVAILABLE",
-            "Customer portal permissions are not available yet.",
-            kind="conflict",
-        )
+    permission_overrides = _permissions_for_subaccount_request(
+        session,
+        modules=request.modules,
+        capabilities=request.capabilities,
+    )
     try:
         provisioned = provision_password_identity(
             identity_session,
@@ -754,6 +765,111 @@ def create_customer_subaccount(
         ) from exc
     user = provisioned.user
     local_material = provisioned.local_credential
+
+    if (
+        identity_session.bind is not None
+        and identity_session.bind.dialect.name == "postgresql"
+    ):
+        membership_id = uuid4()
+        try:
+            row = identity_session.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM public.atc_provision_customer_subaccount(
+                        :actor_user_id,
+                        :parent_membership_id,
+                        :tenant_id,
+                        :user_id,
+                        :membership_id,
+                        :email,
+                        :display_name,
+                        :identity_provider,
+                        :identity_subject,
+                        :login_identifier,
+                        CAST(:permission_overrides AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "actor_user_id": context.user_id,
+                    "parent_membership_id": context.membership_id,
+                    "tenant_id": context.tenant_id,
+                    "user_id": user.id,
+                    "membership_id": membership_id,
+                    "email": user.email_normalized,
+                    "display_name": user.display_name,
+                    "identity_provider": user.identity_provider,
+                    "identity_subject": user.identity_subject,
+                    "login_identifier": request.login_identifier.casefold(),
+                    "permission_overrides": json.dumps(permission_overrides),
+                },
+            ).mappings().one()
+            if local_material is not None:
+                salt, password_hash = local_material
+                identity_session.add(
+                    LocalAccountCredentialRow(
+                        user_id=user.id,
+                        identifier_normalized=normalize_local_identifier(
+                            request.login_identifier
+                        ),
+                        password_salt=salt,
+                        password_hash=password_hash,
+                    )
+                )
+            identity_session.commit()
+        except DBAPIError as exc:
+            identity_session.rollback()
+            message = str(exc.orig).casefold()
+            if (
+                "login account is already used" in message
+                or "identity already exists" in message
+                or "unique" in message
+            ):
+                code = "CUSTOMER_ACCOUNT_IDENTIFIER_CONFLICT"
+                safe = "This login account is already in use."
+                kind = "conflict"
+            elif "customer subaccount role is unavailable" in message:
+                code = "CUSTOMER_ACCOUNT_ROLE_UNAVAILABLE"
+                safe = "Customer portal permissions are not available yet."
+                kind = "conflict"
+            elif "parent account cannot manage subaccounts" in message:
+                code = "PERMISSION_DENIED"
+                safe = "Customer subaccount management permission is required."
+                kind = "forbidden"
+            elif "invalid customer subaccount permission scope" in message:
+                code = "CUSTOMER_ACCOUNT_PERMISSION_SCOPE_INVALID"
+                safe = "The selected subaccount modules are invalid."
+                kind = "invalid"
+            else:
+                code = "CUSTOMER_ACCOUNT_PROVISIONING_FAILED"
+                safe = "The customer account could not be created. Check the account and try again."
+                kind = "conflict"
+            raise ApplicationError(code, safe, kind=kind) from exc
+        return CustomerSubaccountSummary(
+            id=row["subaccount_membership_id"],
+            user_id=row["subaccount_user_id"],
+            display_name=row["subaccount_display_name"],
+            login_identifier=row["subaccount_login_identifier"],
+            email=row["subaccount_email"],
+            status=row["subaccount_membership_status"],
+            capabilities=_capabilities_from_permissions(permission_overrides),
+            modules=_modules_from_permissions(permission_overrides),
+            created_at=row["subaccount_created_at"],
+            last_login_at=None,
+            login_count_30d=0,
+            order_count=0,
+            last_order_at=None,
+        )
+
+    roles = ensure_tenant_rbac(session, tenant_id=context.tenant_id)
+    portal_role = roles.get(_PORTAL_ROLE)
+    if portal_role is None:
+        raise ApplicationError(
+            "CUSTOMER_ACCOUNT_ROLE_UNAVAILABLE",
+            "Customer portal permissions are not available yet.",
+            kind="conflict",
+        )
     membership = MembershipRow(
         tenant_id=context.tenant_id,
         user_id=user.id,
@@ -762,17 +878,13 @@ def create_customer_subaccount(
         login_identifier=request.login_identifier.casefold(),
         status="active",
         joined_at=utcnow(),
-        permission_overrides=_permissions_for_subaccount_request(
-            identity_session,
-            modules=request.modules,
-            capabilities=request.capabilities,
-        ),
+        permission_overrides=permission_overrides,
     )
-    identity_session.add(user)
-    identity_session.add(membership)
+    session.add(user)
+    session.add(membership)
     try:
-        identity_session.flush()
-        identity_session.add(
+        session.flush()
+        session.add(
             MembershipRoleRow(
                 tenant_id=context.tenant_id,
                 membership_id=membership.id,
@@ -782,7 +894,7 @@ def create_customer_subaccount(
         )
         if local_material is not None:
             salt, password_hash = local_material
-            identity_session.add(
+            session.add(
                 LocalAccountCredentialRow(
                     user_id=user.id,
                     identifier_normalized=normalize_local_identifier(
@@ -792,16 +904,16 @@ def create_customer_subaccount(
                     password_hash=password_hash,
                 )
             )
-        identity_session.commit()
+        session.commit()
     except IntegrityError as exc:
-        identity_session.rollback()
+        session.rollback()
         raise ApplicationError(
             "CUSTOMER_ACCOUNT_IDENTIFIER_CONFLICT",
             "This login account is already in use.",
             kind="conflict",
         ) from exc
     summaries = _summary_rows(
-        identity_session,
+        session,
         tenant_id=context.tenant_id,
         parent_membership_id=context.membership_id,
     )

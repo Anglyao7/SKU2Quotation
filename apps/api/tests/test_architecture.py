@@ -290,6 +290,32 @@ def test_member_invitation_migration_has_database_email_race_guard() -> None:
         assert role in invitation_role_source
 
 
+def test_customer_subaccount_provisioning_preserves_the_postgres_role_boundary() -> None:
+    migration_source = (
+        API_ROOT
+        / "migrations"
+        / "versions"
+        / "20260829_0118_secure_customer_subaccount_provisioning.py"
+    ).read_text(encoding="utf-8")
+    use_case_source = (
+        APP_ROOT / "use_cases" / "customer_accounts.py"
+    ).read_text(encoding="utf-8")
+    grant_source = (
+        API_ROOT / "scripts" / "grant_runtime_roles.py"
+    ).read_text(encoding="utf-8")
+
+    assert "SECURITY DEFINER" in migration_source
+    assert "SET search_path = pg_catalog, public" in migration_source
+    assert "parent account cannot manage subaccounts" in migration_source
+    assert "permission.code = 'customer_portal.subaccount_manage'" in migration_source
+    assert "invalid customer subaccount permission scope" in migration_source
+    assert "'customer_portal.subaccount_manage'" in migration_source
+    assert "REVOKE ALL ON FUNCTION" in migration_source
+    assert "public.atc_provision_customer_subaccount(" in use_case_source
+    assert "CAST(:permission_overrides AS jsonb)" in use_case_source
+    assert "public.atc_provision_customer_subaccount(" in grant_source
+
+
 def test_postgres_oidc_binding_qualifies_the_tenant_loop_variable() -> None:
     source = (
         API_ROOT
