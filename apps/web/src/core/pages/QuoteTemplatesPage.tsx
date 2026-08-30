@@ -56,6 +56,7 @@ const systemFields: Array<{ value: QuoteTemplateField; label: string; group: str
   { value: "carton_dimensions", label: "装箱尺寸", group: "包装物流" },
   { value: "gross_weight", label: "毛重（kg）", group: "包装物流" },
   { value: "carton_volume", label: "立方（m³）", group: "包装物流" },
+  { value: "minimum_order_quantity", label: "起订数", group: "报价数据" },
   { value: "unit_price", label: "单价", group: "报价数据" },
   { value: "line_total", label: "总价", group: "报价数据" },
   { value: "total_volume", label: "总立方（m³）", group: "包装物流" },

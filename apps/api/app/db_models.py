@@ -370,3 +370,5 @@ from .platform_usage_models import (  # noqa: E402,F401
 from .search_analytics_models import (  # noqa: E402,F401
     StorefrontSearchTermDailyRow,
 )
+
+from .storefront_page_models import StorefrontCustomPageRow  # noqa: E402,F401

@@ -22,6 +22,7 @@ QuoteTemplateField = Literal[
     "carton_dimensions",
     "gross_weight",
     "carton_volume",
+    "minimum_order_quantity",
     "unit_price",
     "line_total",
     "total_volume",

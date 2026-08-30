@@ -25,6 +25,7 @@ import type {
   StoreProductList,
   StoreImageSearchResponse,
   Storefront,
+  StorefrontCustomPageDocument,
   StorefrontExchangeRateSnapshot,
   StorefrontCategoryOption,
   StorefrontLocale,
@@ -612,6 +613,14 @@ export const api = {
         item.currency !== snapshot.base_currency
         && Number(item.rate) > 0
       )),
+    );
+  },
+  getStorefrontCustomPage: (slug: string, pageSlug: string) => {
+    const path = `/api/store/${encodeURIComponent(slug)}/pages/${encodeURIComponent(pageSlug)}`;
+    return cachedPublicRequest(
+      publicCatalogCacheKey("storefront-custom-page", path),
+      PUBLIC_STORE_CACHE_TTL_MS,
+      () => request<StorefrontCustomPageDocument>(path),
     );
   },
   getCatalogShare: async (

@@ -129,6 +129,15 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "cbm",
         "cartonvolume",
     ),
+    "minimum_order_quantity": (
+        "起订数",
+        "起订量",
+        "最低起订量",
+        "最小起订量",
+        "moq",
+        "minimumorderquantity",
+        "minimumquantity",
+    ),
     "unit_price": (
         "报价单价",
         "销售单价",

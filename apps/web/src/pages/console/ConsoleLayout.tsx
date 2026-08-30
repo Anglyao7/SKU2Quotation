@@ -414,7 +414,9 @@ export function ConsoleLayout() {
     }
   };
 
-  return <div className="console-shell">
+  const isQuoteWorkbenchRoute = /^\/console\/quotes\/[^/]+\/workbench$/.test(location.pathname);
+
+  return <div className={`console-shell${isQuoteWorkbenchRoute ? " console-shell--quote-workbench" : ""}`}>
     <aside className="console-sidebar">
       <div className="sidebar-brand"><Brand /></div>
       <nav className="desktop-console-nav" aria-label={t("控制台导航")}>

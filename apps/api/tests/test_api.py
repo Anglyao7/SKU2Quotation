@@ -86,6 +86,7 @@ from app.storefront_analytics_models import (
     StorefrontProductViewEventRow,
 )
 from app.announcement_models import StorefrontAnnouncementRow
+from app.storefront_page_models import StorefrontCustomPageRow
 from app.image_intelligence_models import (
     ImageEmbeddingRow,
     ImageIndexJobRow,
@@ -1067,6 +1068,120 @@ def test_merchant_customizes_public_storefront_footer_links() -> None:
             assert profile is not None
             profile.storefront_footer_config = original
             session.commit()
+
+
+def test_merchant_uploads_and_manages_public_storefront_html_page() -> None:
+    unique = uuid4().hex[:10]
+    slug = f"our-partner-{unique}"
+    renamed_slug = f"available-channel-{unique}"
+    created_id: str | None = None
+    object_keys: list[str] = []
+    try:
+        created = client.post(
+            "/api/v1/storefront/pages",
+            data={"title": "Our Partner", "slug": slug},
+            files={
+                "html_file": (
+                    "partner.html",
+                    b"<!doctype html><html><body><main>Partner page</main></body></html>",
+                    "text/html",
+                )
+            },
+        )
+        assert created.status_code == 201, created.text
+        created_data = created.json()
+        created_id = created_data["id"]
+        assert created_data["slug"] == slug
+        assert created_data["enabled"] is True
+
+        with SessionLocal() as session:
+            row = session.get(StorefrontCustomPageRow, UUID(created_id))
+            assert row is not None
+            object_keys.append(row.object_key)
+            assert get_object_storage().exists(row.object_key)
+
+        listing = client.get("/api/v1/storefront/pages")
+        assert listing.status_code == 200, listing.text
+        assert any(item["id"] == created_id for item in listing.json()["items"])
+
+        storefront = client.get("/api/store/demo")
+        assert storefront.status_code == 200, storefront.text
+        assert any(
+            page["slug"] == slug and page["title"] == "Our Partner"
+            for page in storefront.json()["custom_pages"]
+        )
+
+        public_page = client.get(f"/api/store/demo/pages/{slug}")
+        assert public_page.status_code == 200, public_page.text
+        assert "Partner page" in public_page.json()["html"]
+
+        updated = client.patch(
+            f"/api/v1/storefront/pages/{created_id}",
+            json={
+                "title": "Available Channel",
+                "slug": renamed_slug,
+                "expected_version": created_data["version"],
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        updated_data = updated.json()
+        assert updated_data["version"] == created_data["version"] + 1
+
+        replacement = client.put(
+            f"/api/v1/storefront/pages/{created_id}/html",
+            data={"expected_version": updated_data["version"]},
+            files={
+                "html_file": (
+                    "channel.html",
+                    b"<section><h1>Available worldwide</h1></section>",
+                    "text/html",
+                )
+            },
+        )
+        assert replacement.status_code == 200, replacement.text
+        replacement_data = replacement.json()
+        with SessionLocal() as session:
+            row = session.get(StorefrontCustomPageRow, UUID(created_id))
+            assert row is not None
+            object_keys.append(row.object_key)
+
+        old_path = client.get(f"/api/store/demo/pages/{slug}")
+        assert old_path.status_code == 404
+        current_page = client.get(f"/api/store/demo/pages/{renamed_slug}")
+        assert current_page.status_code == 200, current_page.text
+        assert "Available worldwide" in current_page.json()["html"]
+
+        hidden = client.patch(
+            f"/api/v1/storefront/pages/{created_id}",
+            json={
+                "enabled": False,
+                "expected_version": replacement_data["version"],
+            },
+        )
+        assert hidden.status_code == 200, hidden.text
+        assert hidden.json()["enabled"] is False
+        assert client.get(f"/api/store/demo/pages/{renamed_slug}").status_code == 404
+        assert not any(
+            page["slug"] == renamed_slug
+            for page in client.get("/api/store/demo").json()["custom_pages"]
+        )
+
+        invalid = client.post(
+            "/api/v1/storefront/pages",
+            data={"title": "Invalid", "slug": f"invalid-{unique}"},
+            files={"html_file": ("invalid.txt", b"plain text", "text/plain")},
+        )
+        assert invalid.status_code == 422
+
+        removed = client.delete(f"/api/v1/storefront/pages/{created_id}")
+        assert removed.status_code == 204, removed.text
+        created_id = None
+        assert all(not get_object_storage().exists(key) for key in object_keys)
+    finally:
+        if created_id is not None:
+            client.delete(f"/api/v1/storefront/pages/{created_id}")
+        for object_key in object_keys:
+            get_object_storage().delete(object_key)
 
 
 def test_merchant_controls_optional_share_card_subtitle() -> None:
@@ -9401,6 +9516,7 @@ def test_postgresql_offline_migration_contains_forced_rls_policies() -> None:
         "catalog_delete_jobs",
         "storefront_chat_conversations",
         "storefront_chat_messages",
+        "storefront_custom_pages",
         "tenant_subscriptions",
         "catalog_shares",
         "catalog_language_packs",
@@ -20924,6 +21040,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "catalog_delete_jobs",
         "storefront_chat_conversations",
         "storefront_chat_messages",
+        "storefront_custom_pages",
         "tenant_subscriptions",
         "catalog_shares",
     }
@@ -21024,6 +21141,21 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert profile_columns["support_widget_config"]["nullable"] is False
     assert "storefront_footer_config" in profile_columns
     assert profile_columns["storefront_footer_config"]["nullable"] is True
+    storefront_page_columns = {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("storefront_custom_pages")
+    }
+    assert {
+        "tenant_id",
+        "title",
+        "slug",
+        "object_key",
+        "content_sha256",
+        "byte_size",
+        "enabled",
+        "sort_order",
+        "version",
+    }.issubset(storefront_page_columns)
     assert "logo_object_key" in profile_columns
     assert "category_showcase_enabled" in profile_columns
     assert profile_columns["category_showcase_enabled"]["nullable"] is False
@@ -21152,7 +21284,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-            ).scalar() == "20260830_0120"
+            ).scalar() == "20260830_0121"
     upgraded_engine.dispose()
     command.check(config)
 

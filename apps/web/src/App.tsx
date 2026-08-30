@@ -47,6 +47,7 @@ const StorePage = recoverableLazy(() => import("./pages/StorePage").then((module
 const ProductDetailPage = recoverableLazy(() => import("./pages/ProductDetailPage").then((module) => ({ default: module.ProductDetailPage })));
 const SkuDetailPage = recoverableLazy(() => import("./pages/SkuDetailPage").then((module) => ({ default: module.SkuDetailPage })));
 const StorefrontVisitorCenterPage = recoverableLazy(() => import("./pages/StorefrontVisitorCenterPage").then((module) => ({ default: module.StorefrontVisitorCenterPage })));
+const StorefrontCustomPage = recoverableLazy(() => import("./pages/StorefrontCustomPage").then((module) => ({ default: module.StorefrontCustomPage })));
 const PrivacyPage = recoverableLazy(() => import("./pages/PrivacyPage").then((module) => ({ default: module.PrivacyPage })));
 const ConsoleLayout = recoverableLazy(() => import("./pages/console/ConsoleLayout").then((module) => ({ default: module.ConsoleLayout })));
 const MerchantManagementPage = recoverableLazy(() => import("./pages/console/MerchantManagementPage").then((module) => ({ default: module.MerchantManagementPage })));
@@ -247,6 +248,38 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   }
 }
 
+async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArgs) {
+  const tenantSlug = params.tenantSlug;
+  const pageSlug = params.pageSlug;
+  if (!tenantSlug || !pageSlug) throw new Response("Not found", { status: 404 });
+  const currentUrl = new URL(request.url);
+  const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
+  try {
+    const [store, page] = await Promise.all([
+      api.getStore(tenantSlug, locale),
+      api.getStorefrontCustomPage(tenantSlug, pageSlug),
+    ]);
+    if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
+      return redirect(
+        `/${encodeURIComponent(store.slug)}/pages/${encodeURIComponent(page.slug)}${currentUrl.search}${currentUrl.hash}`,
+      );
+    }
+    return { store, page };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 422 && currentUrl.searchParams.has("lang")) {
+      currentUrl.searchParams.delete("lang");
+      const query = currentUrl.searchParams.toString();
+      return redirect(
+        `/${encodeURIComponent(tenantSlug)}/pages/${encodeURIComponent(pageSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+      );
+    }
+    if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+      throw new Response("Not found", { status: 404 });
+    }
+    throw error;
+  }
+}
+
 async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   const skuId = params.skuId;
@@ -399,6 +432,12 @@ const router = createBrowserRouter([{
     path: "/:tenantSlug/me",
     loader: storefrontLoader,
     element: <StorefrontVisitorCenterPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/pages/:pageSlug",
+    loader: storefrontCustomPageLoader,
+    element: <StorefrontCustomPage />,
     errorElement: <StorefrontRouteError />,
   },
   {

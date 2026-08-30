@@ -11,6 +11,7 @@ from .announcement_schemas import PublicAnnouncementResponse
 from .quote_template_schemas import QuoteExcelTemplateRenderSpec, QuoteTemplateField
 from .storefront_locales import StorefrontLocale
 from .storefront_footer import StorefrontFooterSection
+from .storefront_page_schemas import PublicStorefrontPageLink
 from .support_schemas import PublicSupportWidgetResponse
 
 PUBLIC_DRAFT_DISCLAIMER = (
@@ -42,6 +43,7 @@ class PublicStoreResponse(BaseModel):
     announcements: list[PublicAnnouncementResponse] = Field(default_factory=list)
     support_widget: PublicSupportWidgetResponse
     footer_sections: list[StorefrontFooterSection] = Field(default_factory=list)
+    custom_pages: list[PublicStorefrontPageLink] = Field(default_factory=list)
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
 
 
@@ -234,6 +236,18 @@ class PublicQuoteDraftItemResponse(BaseModel):
     sku_version: int
 
 
+class PublicQuoteExtraInformation(BaseModel):
+    """Merchant-authored key/value information shown below quote lines."""
+
+    title: str = Field(min_length=1, max_length=80)
+    content: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("title", "content", mode="before")
+    @classmethod
+    def normalize_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
 class PublicQuoteDraftResponse(BaseModel):
     id: UUID
     tenant_id: UUID
@@ -267,6 +281,7 @@ class PublicQuoteDraftResponse(BaseModel):
     content_hash: str
     disclaimer: str = PUBLIC_DRAFT_DISCLAIMER
     disclaimer_version: str = PUBLIC_DRAFT_DISCLAIMER_VERSION
+    extra_information: list[PublicQuoteExtraInformation] = Field(default_factory=list)
     items: list[PublicQuoteDraftItemResponse]
     download_token: str | None = None
     download_expires_at: datetime | None = None
@@ -282,6 +297,10 @@ class PublicQuoteDraftSettingsUpdate(BaseModel):
     template_id: UUID | None = None
     quote_number: str | None = Field(default=None, max_length=80)
     visible_columns: list[QuoteTemplateField] | None = Field(default=None, max_length=32)
+    extra_information: list[PublicQuoteExtraInformation] | None = Field(
+        default=None,
+        max_length=20,
+    )
 
     @field_validator("quote_number", mode="before")
     @classmethod

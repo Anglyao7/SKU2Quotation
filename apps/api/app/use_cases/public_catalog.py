@@ -40,6 +40,7 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftItemPriceUpdate,
     PublicQuoteDraftItemsUpdate,
+    PublicQuoteExtraInformation,
     PublicQuoteDraftPriceAdjustment,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSettingsUpdate,
@@ -118,6 +119,7 @@ from ..storefront_locales import (
 from . import announcements as announcement_use_cases
 from . import quote_templates as quote_template_use_cases
 from . import support as support_use_cases
+from . import storefront_pages as storefront_page_use_cases
 
 
 MONEY = Decimal("0.01")
@@ -793,6 +795,11 @@ def get_store(
             profile.storefront_footer_config,
             merchant_name=tenant.name,
             contact_email=profile.contact_email,
+        ),
+        custom_pages=storefront_page_use_cases.public_navigation_pages(
+            session,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
         ),
     )
 
@@ -3183,6 +3190,24 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
     )
 
 
+def _draft_extra_information(draft: PublicQuoteDraftRow) -> list[PublicQuoteExtraInformation]:
+    """Read merchant-authored quote metadata without trusting old snapshots."""
+    snapshot = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+    raw = snapshot.get("extra_information")
+    if not isinstance(raw, list):
+        return []
+    result: list[PublicQuoteExtraInformation] = []
+    for entry in raw[:20]:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            result.append(PublicQuoteExtraInformation.model_validate(entry))
+        except Exception:
+            # A malformed legacy entry should never make a quote unreadable.
+            continue
+    return result
+
+
 def _quote_specification(option_values: dict[str, object]) -> str | None:
     parts: list[str] = []
     for key, value in option_values.items():
@@ -3551,6 +3576,7 @@ def _draft_response(
         content_hash=draft.content_hash,
         disclaimer=quote_text(document_locale, "disclaimer"),
         disclaimer_version=draft.disclaimer_version,
+        extra_information=_draft_extra_information(draft),
         items=[_item_response(item) for item in items],
         download_token=raw_token,
         download_expires_at=token_expires_at,
@@ -3856,6 +3882,18 @@ def create_public_quote_draft(
             str(tag).strip() for tag in (offer.tags or []) if str(tag).strip()
         ]
         source_option_values = public_sku_option_values(sku.option_values or {})
+        # Keep structured catalog fields available to the quote document even
+        # when an older import stored MOQ only in the SKU column rather than in
+        # the flexible option map.
+        if sku.default_moq is not None and not any(
+            re.sub(r"[\s_\-:：]+", "", str(key).strip().casefold())
+            in {"起订数", "起订量", "moq", "minimumorderquantity"}
+            for key in source_option_values
+        ):
+            source_option_values = {
+                **source_option_values,
+                "起订数": str(sku.default_moq),
+            }
         sku_translation = sku_translations.get(sku.id)
         product_translation = product_translations.get(product.id)
         localized_options = _localized_public_option_values(
@@ -3944,7 +3982,11 @@ def create_public_quote_draft(
             ),
             tags_snapshot=list(dict.fromkeys(tags)),
             image_url_snapshot=image_url,
-            minimum_order_quantity=Decimal("1"),
+            minimum_order_quantity=(
+                sku.default_moq
+                if sku.default_moq is not None and sku.default_moq > 0
+                else Decimal("1")
+            ),
             unit_code_snapshot=product.default_unit or "piece",
             currency_snapshot=currency,
             unit_price_snapshot=unit_price,
@@ -4003,6 +4045,7 @@ def create_public_quote_draft(
         "estimated_total": str(subtotal),
         "expires_at": expires_at.isoformat(),
         "disclaimer_version": PUBLIC_DRAFT_DISCLAIMER_VERSION,
+        "extra_information": [],
         "items": snapshot_items,
     }
     content_hash = hashlib.sha256(
@@ -4900,6 +4943,12 @@ def update_tenant_quote_draft_settings(
     draft.quotation_number = quote_number
     if request.visible_columns is not None:
         draft.quote_visible_columns = list(dict.fromkeys(request.visible_columns)) or None
+    if request.extra_information is not None:
+        snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
+        snapshot["extra_information"] = [
+            entry.model_dump(mode="json") for entry in request.extra_information
+        ]
+        draft.snapshot = snapshot
     draft.updated_at = utcnow()
     session.commit()
     session.refresh(draft)

@@ -165,6 +165,21 @@ export interface Storefront {
   announcements?: PublicAnnouncement[];
   support_widget?: PublicSupportWidget;
   footer_sections?: StorefrontFooterSection[];
+  custom_pages?: StorefrontCustomPageLink[];
+}
+
+export interface StorefrontCustomPageLink {
+  title: string;
+  slug: string;
+  path: string;
+}
+
+export interface StorefrontCustomPageDocument {
+  title: string;
+  slug: string;
+  html: string;
+  content_sha256: string;
+  updated_at: string;
 }
 
 export interface StorefrontFooterLink {

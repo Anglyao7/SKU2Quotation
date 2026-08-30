@@ -66,6 +66,11 @@ DEFAULT_QUOTE_WIDTHS = (
     17,
     17,
     18,
+    38,
+    32,
+    26,
+    28,
+    18,
 )
 
 _LOGISTICS_OPTION_ALIASES: dict[str, tuple[str, ...]] = {
@@ -101,6 +106,15 @@ _LOGISTICS_OPTION_ALIASES: dict[str, tuple[str, ...]] = {
         "箱体积",
         "cbm",
         "cartonvolume",
+    ),
+    "minimum_order_quantity": (
+        "起订数",
+        "起订量",
+        "最低起订量",
+        "最小起订量",
+        "moq",
+        "minimumorderquantity",
+        "minimumquantity",
     ),
 }
 
@@ -212,6 +226,7 @@ def _logistics_values(item: object) -> dict[str, object | None]:
     dimensions_raw = _option_value(item, "carton_dimensions")
     gross_raw = _option_value(item, "gross_weight")
     volume_raw = _option_value(item, "carton_volume")
+    moq_raw = _option_value(item, "minimum_order_quantity")
     packing = _positive_decimal(packing_raw)
     gross_weight = _gross_weight_kg(gross_raw)
     carton_volume = _carton_volume_m3(volume_raw) or _dimensions_volume_m3(
@@ -243,6 +258,11 @@ def _logistics_values(item: object) -> dict[str, object | None]:
             float(gross_weight * carton_factor)
             if gross_weight is not None and carton_factor is not None
             else None
+        ),
+        "minimum_order_quantity": (
+            float(moq)
+            if (moq := _positive_decimal(moq_raw)) is not None
+            else _xlsx_value(moq_raw)
         ),
     }
 
@@ -365,7 +385,7 @@ def _configure_default_quote_printing(
     sheet.page_margins.bottom = 0.35
     sheet.print_options.horizontalCentered = True
     sheet.print_title_rows = f"1:{header_row}"
-    sheet.print_area = f"A1:N{last_row}"
+    sheet.print_area = f"A1:{get_column_letter(max(sheet.max_column, 1))}{last_row}"
 
 
 def _template_item_value(field: str, document: PublicQuoteDocument, item) -> object:
@@ -472,6 +492,43 @@ def _replace_placeholders(workbook, document: PublicQuoteDocument) -> None:
                     if replacement is not None:
                         text = text.replace(match.group(0), str(replacement))
                 cell.value = _xlsx_text(text)
+
+
+def _append_quote_extra_information(sheet: object, quote: object) -> None:
+    """Append merchant-authored key/value notes without changing item rows.
+
+    Custom quote templates are intentionally left intact above this section;
+    the small block at the bottom gives merchants a safe place for delivery,
+    payment, or lead-time notes without requiring another mapped column.
+    """
+
+    entries = getattr(quote, "extra_information", None) or []
+    normalized: list[tuple[str, str]] = []
+    for entry in entries:
+        title = str(getattr(entry, "title", "") or "").strip()
+        content = str(getattr(entry, "content", "") or "").strip()
+        if title and content:
+            normalized.append((title, content))
+    if not normalized:
+        return
+    last_column = max(int(getattr(sheet, "max_column", 2) or 2), 2)
+    sheet.append([])
+    for title, content in normalized:
+        sheet.append(
+            [_xlsx_text(title), _xlsx_text(content)]
+            + [None] * max(0, last_column - 2)
+        )
+        row_number = sheet.max_row
+        if last_column > 2:
+            sheet.merge_cells(
+                start_row=row_number,
+                start_column=2,
+                end_row=row_number,
+                end_column=last_column,
+            )
+        sheet.cell(row_number, 1).font = Font(bold=True)
+        for cell in sheet[row_number]:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
 
 
 def _copy_template_row(sheet, *, source_row: int, target_row: int) -> None:
@@ -725,6 +782,7 @@ def _render_custom_quote_xlsx(
                     document.quote.locale,
                 )
         _replace_placeholders(workbook, document)
+        _append_quote_extra_information(sheet, document.quote)
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True
         buffer = BytesIO()
@@ -791,6 +849,7 @@ def _pdf_localized_text(value: object | None, locale: str) -> str:
 _PUBLIC_QUOTE_TABLE_FIELDS = frozenset(
     {
         "serial_number",
+        "sku_code",
         "product_name",
         "description",
         "specification",
@@ -803,6 +862,7 @@ _PUBLIC_QUOTE_TABLE_FIELDS = frozenset(
         "carton_dimensions",
         "gross_weight",
         "carton_volume",
+        "minimum_order_quantity",
         "unit_price",
         "line_total",
         "total_volume",
@@ -812,14 +872,26 @@ _PUBLIC_QUOTE_TABLE_FIELDS = frozenset(
 )
 _PUBLIC_QUOTE_DEFAULT_FIELDS = (
     "serial_number",
+    "sku_code",
     "product_name",
+    "description",
+    "specification",
+    "category",
+    "tags",
+    "product_image",
     "quantity",
     "unit_code",
+    "packing_quantity",
+    "carton_dimensions",
+    "gross_weight",
+    "carton_volume",
+    "minimum_order_quantity",
     "unit_price",
     "line_total",
 )
 _PUBLIC_QUOTE_COLUMN_WIDTHS_MM = {
     "serial_number": 10,
+    "sku_code": 32,
     "product_name": 42,
     "description": 38,
     "specification": 32,
@@ -832,28 +904,18 @@ _PUBLIC_QUOTE_COLUMN_WIDTHS_MM = {
     "carton_dimensions": 30,
     "gross_weight": 22,
     "carton_volume": 22,
+    "minimum_order_quantity": 18,
     "unit_price": 25,
     "line_total": 28,
     "total_volume": 24,
     "total_gross_weight": 26,
     "currency": 18,
 }
-_PUBLIC_QUOTE_TEXT_LIMITS = {
-    "product_name": 120,
-    "description": 180,
-    "specification": 100,
-    "category": 80,
-    "tags": 100,
-    "carton_dimensions": 80,
-}
-
-
 def _clip_quote_table_text(value: object | None, field: str) -> str:
-    text = " ".join(str(value if value is not None else "").split())
-    limit = _PUBLIC_QUOTE_TEXT_LIMITS.get(field, 64)
-    if len(text) <= limit:
-        return text
-    return text[: max(1, limit - 1)].rstrip() + "…"
+    # Paragraph cells wrap naturally in the PDF.  Keep the complete imported
+    # value instead of clipping it, otherwise logistics/specification details
+    # disappear from an otherwise valid quotation.
+    return str(value if value is not None else "").strip()
 
 
 def _public_quote_table_fields(document: PublicQuoteDocument) -> list[str]:
@@ -870,10 +932,11 @@ def _public_quote_table_fields(document: PublicQuoteDocument) -> list[str]:
             if field:
                 template_fields.append(str(field))
     candidates = configured or template_fields or list(_PUBLIC_QUOTE_DEFAULT_FIELDS)
-    # Customer-facing PDFs never expose internal SKU codes or other metadata.
+    # The merchant controls the visible columns. SKU and logistics fields are
+    # ordinary catalog data and are available when the default template is used.
     fields: list[str] = []
     for field in candidates:
-        if field not in _PUBLIC_QUOTE_TABLE_FIELDS or field == "sku_code":
+        if field not in _PUBLIC_QUOTE_TABLE_FIELDS:
             continue
         if field not in fields:
             fields.append(field)
@@ -908,7 +971,7 @@ def _quote_table_value(field: str, document: PublicQuoteDocument, item: object) 
     value = _template_item_value(field, document, item)
     if value in (None, ""):
         return ""
-    if field in {"quantity", "packing_quantity"}:
+    if field in {"quantity", "packing_quantity", "minimum_order_quantity"}:
         try:
             return f"{Decimal(str(value)):f}".rstrip("0").rstrip(".")
         except (InvalidOperation, ValueError):
@@ -1060,6 +1123,7 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
             "packing_quantity",
             "gross_weight",
             "carton_volume",
+            "minimum_order_quantity",
             "unit_price",
             "line_total",
             "total_volume",
@@ -1098,6 +1162,20 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
     if quote.notes:
         story.extend(
             [Spacer(1, 7 * mm), Paragraph(_pdf_localized_text(f"{quote_text(locale, 'notes')}: {quote.notes}", locale), body_style)]
+        )
+    for entry in getattr(quote, "extra_information", None) or []:
+        title = str(getattr(entry, "title", "") or "").strip()
+        content = str(getattr(entry, "content", "") or "").strip()
+        if not title or not content:
+            continue
+        story.extend(
+            [
+                Spacer(1, 3 * mm),
+                Paragraph(
+                    _pdf_localized_text(f"{title}: {content}", locale),
+                    body_style,
+                ),
+            ]
         )
     story.extend(
         [
@@ -1139,7 +1217,9 @@ def render_public_quote_draft_xlsx(
     light_fill = PatternFill("solid", fgColor="EEF2F7")
     white_font = Font(color="FFFFFF", bold=True)
 
-    sheet.merge_cells("A1:N1")
+    column_count = len(DEFAULT_QUOTE_HEADERS)
+    last_column = get_column_letter(column_count)
+    sheet.merge_cells(f"A1:{last_column}1")
     sheet["A1"] = quote_text(locale, "document_title")
     sheet["A1"].font = Font(size=18, bold=True)
     sheet["A1"].alignment = Alignment(horizontal="center")
@@ -1157,6 +1237,11 @@ def render_public_quote_draft_xlsx(
             "",
             quote_text(locale, "currency"),
             quote.currency,
+            "",
+            "",
+            "",
+            "",
+            "",
             "",
             "",
             "",
@@ -1179,6 +1264,11 @@ def render_public_quote_draft_xlsx(
             "",
             "",
             "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ]
     )
     sheet.append(
@@ -1197,12 +1287,17 @@ def render_public_quote_draft_xlsx(
             "",
             "",
             "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ]
     )
     for row_number in (2, 3, 4):
         sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=4)
         sheet.merge_cells(start_row=row_number, start_column=6, end_row=row_number, end_column=8)
-        sheet.merge_cells(start_row=row_number, start_column=10, end_row=row_number, end_column=14)
+        sheet.merge_cells(start_row=row_number, start_column=10, end_row=row_number, end_column=column_count)
     sheet.append([])
     sheet.append(list(quote_headers(locale)))
     header_row = sheet.max_row
@@ -1234,6 +1329,11 @@ def render_public_quote_draft_xlsx(
                 float(item.line_total),
                 logistics["total_volume"],
                 logistics["total_gross_weight"],
+                _xlsx_text(item.description_snapshot),
+                _xlsx_text(item.specification_snapshot),
+                _xlsx_text(item.category_snapshot),
+                _xlsx_text(quote_text(locale, "separator").join(item.tags_snapshot or [])),
+                logistics["minimum_order_quantity"],
             ]
         )
         row_number = sheet.max_row
@@ -1268,6 +1368,11 @@ def render_public_quote_draft_xlsx(
             float(quote.total),
             float(total_volume) if has_total_volume else None,
             float(total_gross_weight) if has_total_gross_weight else None,
+            "",
+            "",
+            "",
+            "",
+            "",
         ]
     )
     total_row = sheet.max_row
@@ -1281,17 +1386,19 @@ def render_public_quote_draft_xlsx(
             start_row=sheet.max_row,
             start_column=2,
             end_row=sheet.max_row,
-            end_column=14,
+            end_column=column_count,
         )
+
+    _append_quote_extra_information(sheet, quote)
 
     for index, width in enumerate(DEFAULT_QUOTE_WIDTHS, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = f"A{header_row + 1}"
-    sheet.auto_filter.ref = f"A{header_row}:N{max(header_row, total_row - 1)}"
+    sheet.auto_filter.ref = f"A{header_row}:{last_column}{max(header_row, total_row - 1)}"
     for row in sheet.iter_rows(min_row=header_row + 1, max_row=total_row):
         row[4].number_format = "#,##0.######"
         row[6].number_format = "#,##0.######"
-        for column_index in (8, 9, 10, 11, 12, 13):
+        for column_index in (8, 9, 10, 11, 12, 13, 18):
             row[column_index].number_format = "#,##0.00####"
     _configure_default_quote_printing(
         sheet,
@@ -1314,7 +1421,9 @@ def render_default_quote_template_xlsx() -> bytes:
     sheet.sheet_view.showGridLines = False
     dark_fill = PatternFill("solid", fgColor="172033")
     light_fill = PatternFill("solid", fgColor="EEF2F7")
-    sheet.merge_cells("A1:N1")
+    column_count = len(DEFAULT_QUOTE_HEADERS)
+    last_column = get_column_letter(column_count)
+    sheet.merge_cells(f"A1:{last_column}1")
     sheet["A1"] = "报价单 / QUOTATION"
     sheet["A1"].font = Font(size=18, bold=True)
     sheet["A1"].alignment = Alignment(horizontal="center")
@@ -1331,6 +1440,11 @@ def render_default_quote_template_xlsx() -> bytes:
             "",
             "币种",
             "{{币种}}",
+            "",
+            "",
+            "",
+            "",
+            "",
             "",
             "",
             "",
@@ -1353,6 +1467,11 @@ def render_default_quote_template_xlsx() -> bytes:
             "",
             "",
             "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ]
     )
     sheet.append(
@@ -1371,12 +1490,17 @@ def render_default_quote_template_xlsx() -> bytes:
             "",
             "",
             "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ]
     )
     for row_number in (2, 3, 4):
         sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=4)
         sheet.merge_cells(start_row=row_number, start_column=6, end_row=row_number, end_column=8)
-        sheet.merge_cells(start_row=row_number, start_column=10, end_row=row_number, end_column=14)
+        sheet.merge_cells(start_row=row_number, start_column=10, end_row=row_number, end_column=column_count)
     sheet.append([])
     sheet.append(list(DEFAULT_QUOTE_HEADERS))
     header_row = sheet.max_row
@@ -1392,21 +1516,21 @@ def render_default_quote_template_xlsx() -> bytes:
         [
             "说明",
             "系统无法提供或商家选择不填充的列会保留为空。",
-            *([None] * 12),
+            *([None] * (column_count - 2)),
         ]
     )
     sheet.merge_cells(
         start_row=sheet.max_row,
         start_column=2,
         end_row=sheet.max_row,
-        end_column=14,
+        end_column=column_count,
     )
     for cell in sheet[sheet.max_row]:
         cell.fill = light_fill
     for index, width in enumerate(DEFAULT_QUOTE_WIDTHS, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = f"A{header_row + 1}"
-    sheet.auto_filter.ref = f"A{header_row}:N{header_row + 1}"
+    sheet.auto_filter.ref = f"A{header_row}:{last_column}{header_row + 1}"
     _configure_default_quote_printing(
         sheet,
         header_row=header_row,

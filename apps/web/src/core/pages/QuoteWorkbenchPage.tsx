@@ -28,6 +28,7 @@ import {
   FloppyDisk,
   ImageSquare,
   Info,
+  BookOpen,
   Package,
   LockKey,
   Palette,
@@ -69,6 +70,7 @@ import type {
   ProductDetail,
   PublicQuoteDraft,
   PublicQuoteDraftItem,
+  QuoteExtraInformation,
   QuoteExcelTemplate,
   QuoteTemplateField,
   DashboardSnapshot,
@@ -85,6 +87,7 @@ type QuoteSettingsPayload = {
   templateId: string | null;
   quoteNumber: string;
   visibleColumns: QuoteTemplateField[];
+  extraInformation: QuoteExtraInformation[];
 };
 
 function quoteSettingsEqual(left: QuoteSettingsPayload | undefined, right: QuoteSettingsPayload) {
@@ -94,7 +97,12 @@ function quoteSettingsEqual(left: QuoteSettingsPayload | undefined, right: Quote
     && left.templateId === right.templateId
     && left.quoteNumber === right.quoteNumber
     && left.visibleColumns.length === right.visibleColumns.length
-    && left.visibleColumns.every((field, index) => field === right.visibleColumns[index]));
+    && left.visibleColumns.every((field, index) => field === right.visibleColumns[index])
+    && left.extraInformation.length === right.extraInformation.length
+    && left.extraInformation.every((entry, index) => (
+      entry.title === right.extraInformation[index]?.title
+      && entry.content === right.extraInformation[index]?.content
+    )));
 }
 
 const locales: Array<{ value: StorefrontLocale; label: string; flag: string }> = [
@@ -118,6 +126,7 @@ const styles: Array<{ value: QuoteDocumentStyle; label: string; color: string }>
 
 const tableFieldMeta: Array<{ value: QuoteTemplateField; label: string }> = [
   { value: "serial_number", label: "序号" },
+  { value: "sku_code", label: "SKU 编码" },
   { value: "product_name", label: "商品名称" },
   { value: "description", label: "商品描述" },
   { value: "specification", label: "商品规格" },
@@ -130,6 +139,7 @@ const tableFieldMeta: Array<{ value: QuoteTemplateField; label: string }> = [
   { value: "carton_dimensions", label: "装箱尺寸" },
   { value: "gross_weight", label: "毛重（kg）" },
   { value: "carton_volume", label: "立方（m³）" },
+  { value: "minimum_order_quantity", label: "起订数" },
   { value: "unit_price", label: "单价" },
   { value: "line_total", label: "总价" },
   { value: "total_volume", label: "总立方（m³）" },
@@ -139,12 +149,48 @@ const tableFieldMeta: Array<{ value: QuoteTemplateField; label: string }> = [
 
 const defaultTableFields: QuoteTemplateField[] = [
   "serial_number",
+  "sku_code",
   "product_name",
+  "description",
+  "specification",
+  "category",
+  "tags",
+  "product_image",
   "quantity",
   "unit_code",
+  "packing_quantity",
+  "carton_dimensions",
+  "gross_weight",
+  "carton_volume",
+  "minimum_order_quantity",
   "unit_price",
   "line_total",
+  "total_volume",
+  "total_gross_weight",
 ];
+
+const previewColumnWidths: Partial<Record<QuoteTemplateField, string>> = {
+  serial_number: "64px",
+  sku_code: "148px",
+  product_name: "200px",
+  description: "240px",
+  specification: "180px",
+  category: "140px",
+  tags: "160px",
+  product_image: "110px",
+  quantity: "100px",
+  unit_code: "100px",
+  packing_quantity: "120px",
+  carton_dimensions: "160px",
+  gross_weight: "120px",
+  carton_volume: "120px",
+  minimum_order_quantity: "120px",
+  unit_price: "130px",
+  line_total: "140px",
+  total_volume: "130px",
+  total_gross_weight: "150px",
+  currency: "100px",
+};
 
 function localeLabel(value: StorefrontLocale) {
   const option = locales.find((row) => row.value === value);
@@ -192,6 +238,7 @@ const FIELD_LABEL_FIELDS = new Set<QuoteTemplateField>([
   "carton_dimensions",
   "gross_weight",
   "carton_volume",
+  "minimum_order_quantity",
   "unit_price",
   "line_total",
   "total_volume",
@@ -242,6 +289,7 @@ function displayOptionValue(value: unknown, separator = "、") {
 function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField, locale: StorefrontLocale) {
   switch (field) {
     case "serial_number": return String(item.position);
+    case "sku_code": return item.skuCode;
     case "product_name": return item.name;
     case "description": return item.description ?? "";
     case "specification": return item.specification ?? optionValue(item, quoteOptionAliases.specification, locale);
@@ -254,6 +302,7 @@ function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField, loc
     case "carton_dimensions": return optionValue(item, quoteOptionAliases.carton_dimensions, locale);
     case "gross_weight": return optionValue(item, quoteOptionAliases.gross_weight, locale);
     case "carton_volume": return optionValue(item, quoteOptionAliases.carton_volume, locale);
+    case "minimum_order_quantity": return optionValue(item, quoteOptionAliases.minimum_order_quantity, locale);
     case "unit_price": return money(item.unitPrice, item.currency);
     case "line_total": return money(item.lineTotal, item.currency);
     case "total_volume": return optionValue(item, quoteOptionAliases.total_volume, locale);
@@ -275,6 +324,8 @@ export function QuoteWorkbenchPage() {
   const [templateId, setTemplateId] = useState<string>("");
   const [quoteNumber, setQuoteNumber] = useState("");
   const [visibleColumns, setVisibleColumns] = useState<QuoteTemplateField[]>(defaultTableFields);
+  const [extraInformation, setExtraInformation] = useState<QuoteExtraInformation[]>([]);
+  const [manualOpen, setManualOpen] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState<"pdf" | "xlsx" | null>(null);
@@ -324,8 +375,16 @@ export function QuoteWorkbenchPage() {
     templateId: templateId || null,
     quoteNumber: quoteNumber.trim(),
     visibleColumns: [...activeColumns],
-  }), [activeColumns, locale, quoteNumber, style, templateId]);
-  const previewGrid = useMemo(() => `repeat(${Math.max(activeColumns.length, 1)}, minmax(0, 1fr))`, [activeColumns.length]);
+    // Empty rows are kept locally while the merchant is typing, but are not
+    // sent to the API until both fields are complete (the API validates them).
+    extraInformation: extraInformation
+      .filter((entry) => entry.title.trim() && entry.content.trim())
+      .map((entry) => ({ title: entry.title.trim(), content: entry.content.trim() })),
+  }), [activeColumns, extraInformation, locale, quoteNumber, style, templateId]);
+  const previewGrid = useMemo(
+    () => activeColumns.map((field) => previewColumnWidths[field] ?? "132px").join(" "),
+    [activeColumns],
+  );
   // A parent account can inspect a child-owned inquiry, but the child remains
   // the only operator allowed to edit, confirm, or otherwise advance it.
   // Keep this flag at the UI boundary as well as enforcing it in the API so a
@@ -374,12 +433,14 @@ export function QuoteWorkbenchPage() {
       setTemplateId(nextDraft.quoteTemplateId ?? "");
       setQuoteNumber(nextDraft.quoteNumber);
       setVisibleColumns(nextActiveColumns);
+      setExtraInformation(nextDraft.extraInformation ?? []);
       savedSettingsRef.current = {
         locale: nextDraft.locale,
         style: nextDraft.documentStyle,
         templateId: nextDraft.quoteTemplateId ?? null,
         quoteNumber: nextDraft.quoteNumber.trim(),
         visibleColumns: [...nextActiveColumns],
+        extraInformation: (nextDraft.extraInformation ?? []).map((entry) => ({ ...entry })),
       };
       loadedDraftIdRef.current = nextDraft.id;
       void getDashboard().then((dashboard) => setMarket(dashboard.market)).catch(() => undefined);
@@ -499,14 +560,17 @@ export function QuoteWorkbenchPage() {
         templateId: payload.templateId,
         quoteNumber: payload.quoteNumber,
         visibleColumns: payload.visibleColumns,
+        extraInformation: payload.extraInformation,
       });
       setDraft(next);
       setQuoteNumber(next.quoteNumber);
       setVisibleColumns(next.visibleColumns.length ? next.visibleColumns : payload.visibleColumns);
+      setExtraInformation(next.extraInformation ?? payload.extraInformation);
       savedSettingsRef.current = {
         ...payload,
         quoteNumber: next.quoteNumber.trim(),
         visibleColumns: next.visibleColumns.length ? [...next.visibleColumns] : [...payload.visibleColumns],
+        extraInformation: (next.extraInformation ?? payload.extraInformation).map((entry) => ({ ...entry })),
       };
       return next;
     } catch (reason) {
@@ -631,6 +695,8 @@ export function QuoteWorkbenchPage() {
 
   const selectedDrawerItemBase = draft?.items.find((item) => item.id === selectedItemId);
   const selectedDrawerItem = selectedDrawerItemBase ? effectiveItem(selectedDrawerItemBase) : undefined;
+  const selectedEditorItem = draft?.items.find((item) => item.id === selectedItemId) ?? draft?.items[0];
+  const selectedEditorItemEffective = selectedEditorItem ? effectiveItem(selectedEditorItem) : undefined;
 
   const updateItemEdit = (itemId: string, field: QuoteItemEditField, value: string) => {
     setItemEdits((current) => ({
@@ -706,6 +772,22 @@ export function QuoteWorkbenchPage() {
     setSyncItem(item);
   };
 
+  const addExtraInformation = () => {
+    if (isReadOnly) return;
+    setExtraInformation((current) => [...current, { title: "", content: "" }]);
+  };
+
+  const updateExtraInformation = (index: number, field: keyof QuoteExtraInformation, value: string) => {
+    setExtraInformation((current) => current.map((entry, entryIndex) => (
+      entryIndex === index ? { ...entry, [field]: value } : entry
+    )));
+  };
+
+  const removeExtraInformation = (index: number) => {
+    if (isReadOnly) return;
+    setExtraInformation((current) => current.filter((_, entryIndex) => entryIndex !== index));
+  };
+
   const applyBulkPriceAdjustment = async () => {
     if (!draft || !canEditPrices) return;
     const percentage = Number(bulkPercentage.trim());
@@ -762,6 +844,11 @@ export function QuoteWorkbenchPage() {
   const renderPreviewCell = (item: PublicQuoteDraftItem, field: QuoteTemplateField) => {
     const effective = effectiveItem(item);
     const edit = itemEdits[item.id] ?? {};
+    if (field === "product_image") {
+      return effective.imageUrl
+        ? <img className="quote-preview-product-image" src={effective.imageUrl} alt={effective.name} loading="lazy" />
+        : <span className="quote-preview-cell">—</span>;
+    }
     const editableFields: QuoteTemplateField[] = [
       "product_name",
       "description",
@@ -773,7 +860,7 @@ export function QuoteWorkbenchPage() {
     ];
     if (!canEditPrices || !editableFields.includes(field)) {
       const value = previewValue(effective, field, locale);
-      return <span className={`quote-preview-cell ${field === "product_name" || field === "description" || field === "specification" ? "quote-preview-cell--multiline" : ""}`} title={value}>{value}</span>;
+      return <span className={`quote-preview-cell ${field === "product_name" || field === "description" || field === "specification" || field === "category" ? "quote-preview-cell--multiline" : ""}`} title={value}>{value}</span>;
     }
     const isNumeric = field === "quantity" || field === "unit_price";
     const editField: QuoteItemEditField = field === "product_name" ? "name" : field === "unit_price" ? "unitPrice" : field === "quantity" ? "quantity" : field === "unit_code" ? "unitCode" : field === "description" ? "description" : field === "specification" ? "specification" : "category";
@@ -786,8 +873,89 @@ export function QuoteWorkbenchPage() {
                 : field === "unit_code" ? item.unitCode
                   : item.unitPrice.toFixed(2)
     );
+    const multiline = field === "product_name"
+      || field === "description"
+      || field === "specification"
+      || field === "category"
+      || field === "unit_code";
+    if (multiline) {
+      return <textarea className="quote-preview-editor-field quote-preview-editor-textarea" rows={2} value={value} aria-label={fieldLabel(field, t, selectedTemplate, locale)} title={String(value)} onChange={(event) => updateItemEdit(item.id, editField, event.target.value)} />;
+    }
     return <TextField.Root className="quote-preview-editor-field" size="1" type={isNumeric ? "number" : "text"} min={field === "quantity" ? "0.000001" : field === "unit_price" ? "0" : undefined} step={field === "quantity" ? "0.000001" : field === "unit_price" ? "0.01" : undefined} value={value} aria-label={fieldLabel(field, t, selectedTemplate, locale)} title={String(value)} onChange={(event) => updateItemEdit(item.id, editField, event.target.value)}>{field === "unit_price" ? <TextField.Slot side="left">{item.currency}</TextField.Slot> : null}</TextField.Root>;
   };
+
+  const renderEditorPanel = () => (
+    <Card className="quote-editor-panel">
+      <div className="quote-editor-panel-heading">
+        <div>
+          <Text size="1" color="gray">{t("报价内容")}</Text>
+          <Heading size="4">{t("编辑商品")}</Heading>
+        </div>
+        <Badge color={saving || savingItems ? "amber" : "jade"}>{saving || savingItems ? t("保存中") : t("自动保存")}</Badge>
+      </div>
+      <div className="quote-editor-item-list">
+        {draft?.items.map((sourceItem) => {
+          const item = effectiveItem(sourceItem);
+          const active = item.id === selectedEditorItem?.id;
+          return (
+            <button
+              type="button"
+              className={`quote-editor-item ${active ? "is-active" : ""}`}
+              key={item.id}
+              onClick={() => { setSelectedItemId(item.id); void openItemDetails(sourceItem); }}
+            >
+              {item.imageUrl ? <img src={item.imageUrl} alt="" /> : <span className="quote-item-image-placeholder"><ImageSquare size={20} /></span>}
+              <span className="quote-editor-item-copy"><strong>{item.name}</strong><small>{item.skuCode}</small></span>
+              <span className="quote-editor-item-index">{item.position}</span>
+            </button>
+          );
+        })}
+      </div>
+      {selectedEditorItemEffective ? (
+        <div className="quote-editor-fields">
+          <div className="quote-editor-fields-heading"><Text size="2" weight="medium">{t("当前商品")}</Text><Text size="1" color="gray">{selectedEditorItemEffective.skuCode}</Text></div>
+          <label><span>{t("商品名称")}</span><TextField.Root value={selectedEditorItemEffective.name} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "name", event.target.value)} /></label>
+          <div className="quote-editor-field-grid">
+            <label><span>{t("数量")}</span><TextField.Root type="number" min="0.000001" step="0.000001" value={String(selectedEditorItemEffective.quantity)} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "quantity", event.target.value)} /></label>
+            <label><span>{t("单价")}</span><TextField.Root type="number" min="0" step="0.01" value={priceDrafts[selectedEditorItemEffective.id] ?? selectedEditorItemEffective.unitPrice.toFixed(2)} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "unitPrice", event.target.value)}><TextField.Slot side="left">{selectedEditorItemEffective.currency}</TextField.Slot></TextField.Root></label>
+          </div>
+          <label><span>{t("商品描述")}</span><textarea className="quote-editor-textarea" rows={3} value={selectedEditorItemEffective.description ?? ""} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "description", event.target.value)} /></label>
+          <label><span>{t("商品规格")}</span><textarea className="quote-editor-textarea" rows={2} value={selectedEditorItemEffective.specification ?? ""} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "specification", event.target.value)} /></label>
+          <label><span>{t("商品分类")}</span><TextField.Root value={selectedEditorItemEffective.category ?? ""} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "category", event.target.value)} /></label>
+        </div>
+      ) : null}
+      <section className="quote-editor-extra">
+        <div className="quote-editor-extra-heading"><div><Text size="2" weight="medium">{t("额外信息")}</Text><Text size="1" color="gray">{t("显示在商品信息下方")}</Text></div><Button size="1" variant="soft" color="blue" disabled={isReadOnly || extraInformation.length >= 20} onClick={addExtraInformation}>＋ {t("添加")}</Button></div>
+        {extraInformation.map((entry, index) => (
+          <div className="quote-extra-row" key={`extra-${index}`}>
+            <TextField.Root placeholder={t("标题，例如 Deliver")} value={entry.title} disabled={isReadOnly} onChange={(event) => updateExtraInformation(index, "title", event.target.value)} />
+            <textarea className="quote-editor-textarea" rows={2} placeholder={t("内容，例如 7 Days after receipt of deposit")} value={entry.content} disabled={isReadOnly} onChange={(event) => updateExtraInformation(index, "content", event.target.value)} />
+            <IconButton size="1" variant="soft" color="red" disabled={isReadOnly} aria-label={t("删除额外信息")} onClick={() => removeExtraInformation(index)}><X size={15} /></IconButton>
+          </div>
+        ))}
+      </section>
+    </Card>
+  );
+
+  const renderManual = () => (
+    <aside className={`quote-workbench-manual ${manualOpen ? "" : "is-collapsed"}`}>
+      <button type="button" className="quote-manual-toggle" onClick={() => setManualOpen((open) => !open)} aria-expanded={manualOpen}>
+        <span><BookOpen size={18} />{t("使用手册")}</span><CaretDown className={manualOpen ? "is-open" : ""} />
+      </button>
+      {manualOpen ? (
+        <div className="quote-manual-content">
+          <Text size="2" weight="medium">{t("报价单工作台")}</Text>
+          <ul>
+            <li>{t("左侧选择商品并编辑名称、数量、价格和规格。")}</li>
+            <li>{t("中间预览会实时反映报价单内容，变更会自动保存。")}</li>
+            <li>{t("商品表格列可在顶部菜单中选择，空值会保留为空。")}</li>
+            <li>{t("额外信息会显示在商品明细下方。")}</li>
+            <li>{t("完成后可导出 PDF 或 Excel，或通过并通知客户。")}</li>
+          </ul>
+        </div>
+      ) : null}
+    </aside>
+  );
 
   if (loading) return <div className="core-workspace"><CoreLoading label={t("正在打开报价工作台")} /></div>;
   if (error && !draft) return <div className="core-workspace"><CoreError message={error} onRetry={() => void load()} /></div>;
@@ -803,6 +971,10 @@ export function QuoteWorkbenchPage() {
       actions={<Button asChild variant="soft" color="gray"><Link to="/console/quotes"><ArrowLeft />{t("返回询价列表")}</Link></Button>}
     />
     {error ? <ToastNotice kind="error" message={error} /> : null}
+
+    <div className="quote-workbench-grid">
+      {renderEditorPanel()}
+      <section className="quote-workbench-main">
 
     <Card className="quote-status-card">
       <div className="quote-status-main"><Text size="1" color="gray">{t("当前订单状态")}</Text><Badge color={draft.status === "CONFIRMED" || draft.status === "COMPLETED" ? "jade" : draft.status === "CANCELLED" ? "gray" : "amber"}>{t(draft.status)}</Badge></div>
@@ -966,19 +1138,27 @@ export function QuoteWorkbenchPage() {
       </Tabs.List>
       <Tabs.Content value="quotation">
         <Card className="quote-preview-card" style={{ "--quote-accent": selectedStyle.color } as React.CSSProperties}>
-          <div className="quote-preview-header"><div><Text size="1" color="gray">{localeLabel(locale)}</Text><Heading size="7">{quoteText(locale, "document_title")}</Heading><Text size="2" color="gray">{quoteNumber} · {coreDate(draft.createdAt)}</Text></div><Badge style={{ background: selectedStyle.color, color: "white" }}>{t(selectedStyle.label)}</Badge></div>
+          <div className="quote-preview-header"><div><Heading size="7">{quoteText(locale, "document_title")}</Heading><Text size="2" color="gray">{quoteNumber} · {coreDate(draft.createdAt)}</Text></div><Badge style={{ background: selectedStyle.color, color: "white" }}>{t(selectedStyle.label)}</Badge></div>
           <div className="quote-preview-meta"><div><span>{quoteText(locale, "customer")}</span><strong>{draft.customerCompany || draft.customerName}</strong></div><div><span>{quoteText(locale, "contact")}</span><strong>{draft.customerName}</strong></div><div><span>{quoteText(locale, "valid_until")}</span><strong>{coreDate(draft.validUntil)}</strong></div><div><span>{quoteText(locale, "currency")}</span><strong>{draft.currency}</strong></div></div>
-          <div className="quote-preview-editor-toolbar"><div><Text size="2" weight="medium">{quoteText(locale, "document_title")}</Text><Text size="1" color="gray">{canEditPrices ? t("直接编辑表格中的价格、数量、名称等字段，系统会自动保存。") : t("报价已确认，当前预览为只读。")}</Text></div><div className="quote-preview-editor-actions">{hasPendingItemEdits ? <Badge color="amber">{savingItems ? t("正在自动保存…") : t("等待自动保存")}</Badge> : null}</div></div>
           <div className="quote-preview-table">
             <div className="quote-preview-row quote-preview-head" style={{ gridTemplateColumns: previewGrid }}>{activeColumns.map((field) => <span className="quote-preview-cell" key={field}>{fieldLabel(field, t, selectedTemplate, locale)}</span>)}</div>
             {draft.items.map((item) => <div className="quote-preview-row" style={{ gridTemplateColumns: previewGrid }} key={item.id}>{activeColumns.map((field) => <span className="quote-preview-cell" key={`${item.id}-${field}`}>{renderPreviewCell(item, field)}</span>)}</div>)}
             <div className="quote-preview-total"><span>{quoteText(locale, "total")}</span><strong>{money(previewTotal, draft.currency)}</strong></div>
           </div>
           {draft.notes ? <Card className="quote-preview-notes"><ClipboardText /><div><Text size="1" color="gray">{quoteText(locale, "notes")}</Text><Text as="div">{draft.notes}</Text></div></Card> : null}
-          <div className="quote-preview-footer"><Text size="1" color="gray">{draft.disclaimer}</Text><span>{quoteText(locale, "language")}: {localeLabel(locale)}</span></div>
+          {extraInformation.filter((entry) => entry.title.trim() && entry.content.trim()).length ? (
+            <div className="quote-preview-extra-info">
+              {extraInformation.filter((entry) => entry.title.trim() && entry.content.trim()).map((entry, index) => (
+                <div className="quote-preview-extra-row" key={`${entry.title}-${index}`}><strong>{entry.title}</strong><span>{entry.content}</span></div>
+              ))}
+            </div>
+          ) : null}
         </Card>
       </Tabs.Content>
       {(["proforma", "sales-contract", "commercial-invoice", "packing-list"] as const).map((value) => <Tabs.Content value={value} key={value}><Card className="quote-coming-soon"><LockKey size={28} /><Heading size="4">{t("该单证将在后续版本开放")}</Heading><Text size="2" color="gray">{t("当前先完成报价单的制作、样式设置和文件导出。")}</Text></Card></Tabs.Content>)}
     </Tabs.Root>
+      </section>
+      {renderManual()}
+    </div>
   </div>;
 }

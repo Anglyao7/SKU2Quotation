@@ -1,8 +1,7 @@
 import { Button, Text } from "@radix-ui/themes";
 import {
-  ArrowSquareOut,
   ArrowClockwise,
-  CheckCircle,
+  ArrowSquareOut,
   LinkSimple,
   Plus,
   Trash,
@@ -13,6 +12,7 @@ import { getMerchantSettings, updateMerchantSettings } from "../api";
 import { CoreError, CoreLoading } from "../CoreUi";
 import { useCoreAuth } from "../AuthContext";
 import { useLocale } from "../LocaleContext";
+import { useToast } from "../ToastContext";
 import type {
   MerchantSettings,
   StorefrontFooterSection,
@@ -49,24 +49,24 @@ function normalizedSections(sections: StorefrontFooterSection[]) {
 export function StorefrontFooterSettings() {
   const { hasPermission } = useCoreAuth();
   const { t } = useLocale();
+  const { notify } = useToast();
   const canManage = hasPermission("system.settings_manage");
   const [merchant, setMerchant] = useState<MerchantSettings>();
   const [sections, setSections] = useState<StorefrontFooterSection[]>([]);
   const [loading, setLoading] = useState(canManage);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   const load = useCallback(async () => {
     if (!canManage) return;
     setLoading(true);
-    setError("");
+    setLoadError("");
     try {
       const settings = await getMerchantSettings();
       setMerchant(settings);
       setSections(settings.storefrontFooterSections);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("前台页脚设置加载失败"));
+      setLoadError(caught instanceof Error ? caught.message : t("前台页脚设置加载失败"));
     } finally {
       setLoading(false);
     }
@@ -79,7 +79,6 @@ export function StorefrontFooterSettings() {
   if (!canManage) return null;
 
   const updateSection = (index: number, patch: Partial<StorefrontFooterSection>) => {
-    setSaved(false);
     setSections((current) => current.map((section, sectionIndex) => (
       sectionIndex === index ? { ...section, ...patch } : section
     )));
@@ -90,7 +89,6 @@ export function StorefrontFooterSettings() {
     linkIndex: number,
     patch: { label?: string; url?: string },
   ) => {
-    setSaved(false);
     setSections((current) => current.map((section, currentSectionIndex) => (
       currentSectionIndex === sectionIndex
         ? {
@@ -105,12 +103,10 @@ export function StorefrontFooterSettings() {
 
   const addSection = () => {
     if (sections.length >= MAX_SECTIONS) return;
-    setSaved(false);
     setSections((current) => [...current, { title: "", links: [] }]);
   };
 
   const removeSection = (sectionIndex: number) => {
-    setSaved(false);
     setSections((current) => current.filter((_, index) => index !== sectionIndex));
   };
 
@@ -154,21 +150,22 @@ export function StorefrontFooterSettings() {
     if (busy) return;
     const validation = validate();
     if (validation) {
-      setError(validation);
+      notify(validation, { kind: "error" });
       return;
     }
     setBusy(true);
-    setError("");
-    setSaved(false);
     try {
       const updated = await updateMerchantSettings({
         storefrontFooterSections: normalizedSections(sections),
       });
       setMerchant(updated);
       setSections(updated.storefrontFooterSections);
-      setSaved(true);
+      notify(t("已保存并更新前台"), { kind: "success" });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("前台页脚设置保存失败"));
+      notify(
+        caught instanceof Error ? caught.message : t("前台页脚设置保存失败"),
+        { kind: "error" },
+      );
     } finally {
       setBusy(false);
     }
@@ -197,7 +194,7 @@ export function StorefrontFooterSettings() {
       </div>
 
       {loading ? <CoreLoading label={t("正在加载前台页脚设置")} /> : null}
-      {error ? <CoreError message={error} /> : null}
+      {loadError ? <CoreError message={loadError} /> : null}
 
       {!loading && merchant ? (
         <>
@@ -305,7 +302,6 @@ export function StorefrontFooterSettings() {
               <Plus />{t("新增分区")}
             </Button>
             <div>
-              {saved ? <span><CheckCircle weight="fill" />{t("已保存并更新前台")}</span> : null}
               <Button size="3" disabled={busy} onClick={() => void save()}>
                 {busy ? t("保存中") : t("保存页脚")}
               </Button>

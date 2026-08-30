@@ -68,6 +68,7 @@ import type {
   QuoteExcelTemplate,
   QuoteExcelTemplateUpdate,
   QuoteTemplateField,
+  QuoteExtraInformation,
   QwenImageEmbeddingDimension,
   QuotationRecord,
   QuotationSummary,
@@ -77,6 +78,8 @@ import type {
   SkuListItem,
   SkuListPage,
   StorefrontAnalyticsSnapshot,
+  StorefrontCustomPage,
+  StorefrontCustomPageList,
   StorefrontOrderStatistics,
   StorefrontProductRankingPage,
   PopularCategoryAssignResult,
@@ -754,6 +757,116 @@ export async function uploadMerchantLogo(logo: File): Promise<MerchantSettings> 
   });
   bumpPublicCatalogRevision();
   return mapMerchantSettings(row);
+}
+
+interface ApiStorefrontCustomPage {
+  id: string;
+  title: string;
+  slug: string;
+  path: string;
+  enabled: boolean;
+  sort_order: number;
+  original_filename: string;
+  byte_size: number;
+  content_sha256: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapStorefrontCustomPage(row: ApiStorefrontCustomPage): StorefrontCustomPage {
+  return {
+    id: row.id,
+    title: row.title,
+    slug: row.slug,
+    path: row.path,
+    enabled: row.enabled,
+    sortOrder: row.sort_order,
+    originalFilename: row.original_filename,
+    byteSize: row.byte_size,
+    contentSha256: row.content_sha256,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function listStorefrontCustomPages(): Promise<StorefrontCustomPageList> {
+  const row = await request<{
+    items: ApiStorefrontCustomPage[];
+    total: number;
+    max_pages: number;
+  }>("/storefront/pages", { cache: "no-store" });
+  return {
+    items: row.items.map(mapStorefrontCustomPage),
+    total: row.total,
+    maxPages: row.max_pages,
+  };
+}
+
+export async function createStorefrontCustomPage(input: {
+  title: string;
+  slug: string;
+  htmlFile: File;
+}): Promise<StorefrontCustomPage> {
+  const body = new FormData();
+  body.append("title", input.title);
+  body.append("slug", input.slug);
+  body.append("html_file", input.htmlFile, input.htmlFile.name);
+  const row = await request<ApiStorefrontCustomPage>("/storefront/pages", {
+    method: "POST",
+    body,
+  });
+  bumpPublicCatalogRevision();
+  return mapStorefrontCustomPage(row);
+}
+
+export async function updateStorefrontCustomPage(
+  page: StorefrontCustomPage,
+  input: {
+    title?: string;
+    slug?: string;
+    enabled?: boolean;
+    sortOrder?: number;
+  },
+): Promise<StorefrontCustomPage> {
+  const row = await request<ApiStorefrontCustomPage>(
+    `/storefront/pages/${encodeURIComponent(page.id)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        title: input.title,
+        slug: input.slug,
+        enabled: input.enabled,
+        sort_order: input.sortOrder,
+        expected_version: page.version,
+      }),
+    },
+  );
+  bumpPublicCatalogRevision();
+  return mapStorefrontCustomPage(row);
+}
+
+export async function replaceStorefrontCustomPageHtml(
+  page: StorefrontCustomPage,
+  htmlFile: File,
+): Promise<StorefrontCustomPage> {
+  const body = new FormData();
+  body.append("expected_version", String(page.version));
+  body.append("html_file", htmlFile, htmlFile.name);
+  const row = await request<ApiStorefrontCustomPage>(
+    `/storefront/pages/${encodeURIComponent(page.id)}/html`,
+    { method: "PUT", body },
+  );
+  bumpPublicCatalogRevision();
+  return mapStorefrontCustomPage(row);
+}
+
+export async function deleteStorefrontCustomPage(pageId: string): Promise<void> {
+  await request<void>(`/storefront/pages/${encodeURIComponent(pageId)}`, {
+    method: "DELETE",
+  });
+  bumpPublicCatalogRevision();
 }
 
 export async function updateUserPreferences(locale: UiLocale): Promise<UiLocale> {
@@ -6095,7 +6208,7 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
 }
 
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; product_id?: string | null; position: number; quantity: number | string; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; visitor_country_code?: string | null; read_only?: boolean; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; items: ApiPublicQuoteDraftItem[] }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; visitor_country_code?: string | null; read_only?: boolean; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; extra_information?: Array<{ title: string; content: string }>; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; visitor_country_code?: string | null; read_only?: boolean; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
 interface ApiStorefrontOrderPeriodStatistics { start_at: string; end_at: string; order_count: number; completed_order_count: number; cancelled_order_count: number; amounts: Array<{ currency: string; total_amount: number | string; completed_amount: number | string; order_count: number }> }
 interface ApiStorefrontOrderStatistics { timezone: string; current_month: ApiStorefrontOrderPeriodStatistics; current_year: ApiStorefrontOrderPeriodStatistics }
@@ -6127,6 +6240,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     readOnly: Boolean(row.read_only),
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
+    extraInformation: (row.extra_information ?? []).map((entry) => ({ title: entry.title, content: entry.content })),
     items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, productId: item.product_id ?? item.sku_id, position: item.position, quantity: Number(item.quantity), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
   };
 }
@@ -6148,6 +6262,7 @@ export async function updatePublicQuoteDraftSettings(
     templateId?: string | null;
     quoteNumber?: string;
     visibleColumns?: QuoteTemplateField[];
+    extraInformation?: QuoteExtraInformation[];
   },
 ): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
@@ -6160,6 +6275,7 @@ export async function updatePublicQuoteDraftSettings(
         template_id: input.templateId ?? null,
         quote_number: input.quoteNumber?.trim() || undefined,
         visible_columns: input.visibleColumns ?? [],
+        extra_information: input.extraInformation ?? [],
       }),
     },
   ));

@@ -75,6 +75,27 @@ export interface StorefrontFooterSection {
   links: StorefrontFooterLink[];
 }
 
+export interface StorefrontCustomPage {
+  id: string;
+  title: string;
+  slug: string;
+  path: string;
+  enabled: boolean;
+  sortOrder: number;
+  originalFilename: string;
+  byteSize: number;
+  contentSha256: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StorefrontCustomPageList {
+  items: StorefrontCustomPage[];
+  total: number;
+  maxPages: number;
+}
+
 export interface PermissionSet {
   membershipId: string;
   permissionVersion: number;
@@ -1769,7 +1790,13 @@ export interface PublicQuoteDraft {
   readOnly?: boolean;
   disclaimer: string;
   disclaimerVersion: string;
+  extraInformation: QuoteExtraInformation[];
   items: PublicQuoteDraftItem[];
+}
+
+export interface QuoteExtraInformation {
+  title: string;
+  content: string;
 }
 
 export interface PublicQuoteDraftSummary {
@@ -1825,6 +1852,7 @@ export type QuoteTemplateField =
   | "carton_dimensions"
   | "gross_weight"
   | "carton_volume"
+  | "minimum_order_quantity"
   | "unit_price"
   | "line_total"
   | "total_volume"
