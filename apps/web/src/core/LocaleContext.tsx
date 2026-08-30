@@ -1942,6 +1942,42 @@ const english: Record<string, string> = {
   "多语言": "Languages",
   "管理商品前台可用语言，并更新各语言的商品内容。":
     "Manage storefront languages and update product content for each language.",
+  "管理员统一执行翻译任务，并查看、微调各语言的商品译文。":
+    "Run translation jobs and review or fine-tune product wording for each language.",
+  "管理员工具": "Administrator tools",
+  "商品译文微调": "Product translation review",
+  "按语言查看当前前台商品；人工修改保存后立即发布新语言包，并优先于自动译文。":
+    "Review current storefront products by language. Manual edits publish a new language package immediately and take precedence over automatic translations.",
+  "正在读取商品译文列表": "Loading product translations",
+  "商品译文读取失败。": "Could not load product translations.",
+  "商品原文": "Source product",
+  "当前译文": "Current translation",
+  "自动译文": "Automatic translation",
+  "缺少译文": "Translation missing",
+  "原文已变更": "Source changed",
+  "人工微调": "Manually reviewed",
+  "尚无译文": "No translation yet",
+  "微调": "Review",
+  "当前列表只显示已发布到客户前台的商品。":
+    "This list only includes products currently published to the storefront.",
+  "语言包未配置": "Language package not configured",
+  "微调 {language} 译文": "Review {language} translation",
+  "中文原文": "Chinese source",
+  "无商品描述": "No product description",
+  "分类译文": "Translated category",
+  "标签（逗号分隔）": "Tags (comma-separated)",
+  "规格名称": "Specification labels",
+  "选项名称": "Option labels",
+  "选项值": "Option values",
+  "SKU 译文": "SKU translations",
+  "规格译文": "Translated specification",
+  "SKU 描述": "SKU description",
+  "商品下的 SKU 名称与规格也会一并写入语言包。":
+    "SKU names and specifications for this product are saved to the language package as well.",
+  "保存并发布语言包": "Save and publish language package",
+  "人工译文已保存并发布为语言包 v{version}。":
+    "Manual translations saved and published as language package v{version}.",
+  "人工译文保存失败。": "Could not save manual translations.",
   "每分钟最大请求数（RPM）": "Maximum requests per minute (RPM)",
   "达到上限后请求会排队等待，已完成的翻译和断点不会丢失。":
     "Requests wait in a queue after the limit is reached; completed translations and checkpoints are preserved.",
@@ -1970,6 +2006,12 @@ const english: Record<string, string> = {
   "翻译内容已更新，前台将自动使用最新版本。":
     "Translations updated. The storefront will use the latest version automatically.",
   "前台语言": "Storefront languages",
+  "选择访客可以使用的语言；只有管理员已发布语言包的语言才可以启用。":
+    "Choose the languages available to visitors. A language can only be enabled after an administrator publishes its language package.",
+  "已启用 {count} 种": "{count} enabled",
+  "正在读取语言包配置": "Loading language-package settings",
+  "该语言包未配置，请联系管理员。":
+    "This language package is not configured. Contact an administrator.",
   "勾选后会出现在访客语言菜单；简体中文始终保留。翻译与是否展示分开管理。":
     "Selected languages appear in the visitor menu. Simplified Chinese is always retained, while publication and translation are managed independently.",
   "选择访客可以使用的语言；简体中文固定保留。翻译任务在下方单独管理。":

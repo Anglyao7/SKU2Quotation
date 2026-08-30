@@ -317,6 +317,7 @@ export function ProductsPage() {
   const { locale, t } = useLocale();
   const { notify } = useToast();
   const canEdit = hasPermission("product.edit");
+  const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const canDelete = canEdit;
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
@@ -841,7 +842,7 @@ export function ProductsPage() {
   }, [setParams]);
 
   const translateProduct = async (product: CoreProduct) => {
-    if (!canEdit || translatingProductId) return;
+    if (!canEdit || !isPlatformAdmin || translatingProductId) return;
     setTranslatingProductId(product.id);
     try {
       const job = await retryCatalogTranslationProduct(product.id, translationLocale);
@@ -1430,7 +1431,7 @@ export function ProductsPage() {
                       >
                         {t("商品详情")}
                       </Button>
-                      {canEdit ? (
+                      {canEdit && isPlatformAdmin ? (
                         <Button
                           size="1"
                           variant="soft"
@@ -2379,7 +2380,7 @@ function ProductDetailPanel({ product, selectedSkuId, categories, managedTags, o
   onChanged: () => Promise<void>;
   onClose: () => void;
 }) {
-  const { hasPermission } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const imageInputRef = useRef<HTMLInputElement>(null);
   const imageDragDepthRef = useRef(0);
@@ -2393,6 +2394,7 @@ function ProductDetailPanel({ product, selectedSkuId, categories, managedTags, o
   const [categorySaving, setCategorySaving] = useState(false);
   const [categoryError, setCategoryError] = useState("");
   const canEdit = hasPermission("product.edit");
+  const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const canEnhanceImages = canEdit;
 
   const categoryOptions = useMemo(
@@ -2511,7 +2513,7 @@ function ProductDetailPanel({ product, selectedSkuId, categories, managedTags, o
           <Dialog.Description>{product.productCode ?? t("未设置商品编码")} · {primaryCategoryLabel(product.category) || t("未分类")}</Dialog.Description>
         </div>
         <span className="core-product-detail-heading-actions">
-          {canEdit ? (
+          {canEdit && isPlatformAdmin ? (
             <Button
               size="2"
               variant="soft"

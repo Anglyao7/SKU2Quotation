@@ -493,18 +493,24 @@ def _available_storefront_locales(
     tenant: object,
     profile: object,
 ) -> list[str]:
-    del session
     source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
-    # Visibility is a merchant setting, not a translation-runtime capability.
-    # A selected language must remain available even before its package is
-    # published or when live translation is temporarily unavailable; catalog
-    # responses already mark untranslated content as FALLBACK and return the
-    # source text. Hiding it here made the frontend remove the language switch
-    # despite the merchant having explicitly enabled multiple languages.
-    return effective_storefront_locales(
+    selected = effective_storefront_locales(
         getattr(profile, "storefront_locales", None),
         source_locale=source_locale,
     )
+    configured = set(
+        catalog_translation_repository.available_language_pack_locales(
+            session,
+            tenant_id=getattr(tenant, "id"),
+        )
+    )
+    # A visitor may only select a language backed by an immutable published
+    # package. The source language remains available without a package.
+    return [
+        locale
+        for locale in selected
+        if locale == source_locale or locale in configured
+    ]
 
 
 def _requested_storefront_locale(

@@ -394,7 +394,7 @@ const router = createBrowserRouter([{
         { path: "products", element: <ConsoleProductsRoute /> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
-        { path: "languages", element: <PermissionGate anyOf={["product.view"]}><LanguagePackagesPage /></PermissionGate> },
+        { path: "languages", element: <PlatformAdminGate><PermissionGate anyOf={["product.view"]}><LanguagePackagesPage /></PermissionGate></PlatformAdminGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
         { path: "supply-chain", element: <PermissionGate anyOf={["supplier.view", "supplier.manage"]}><SupplyChainPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },

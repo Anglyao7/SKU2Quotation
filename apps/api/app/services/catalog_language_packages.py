@@ -266,6 +266,161 @@ def catalog_sku_package_source_hash(row: object) -> str:
     return str(_sku_source(row)["source_hash"])
 
 
+def catalog_language_pack_source_entries(
+    rows: list[object],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Expose the canonical package sources for administration workflows."""
+
+    groups = _group_rows(rows)
+    return (
+        [_product_source(group) for group in groups],
+        [_sku_source(row) for row in rows],
+    )
+
+
+def catalog_language_pack_source_cutoff(rows: list[object]) -> datetime:
+    return max((_row_updated_at(row) for row in rows), default=utcnow())
+
+
+def catalog_language_pack_product_entry(source: dict[str, Any]) -> dict[str, Any]:
+    """Build a source-language fallback entry with the current identity."""
+
+    tags = list(source["tags"])
+    return {
+        "source_hash": source["source_hash"],
+        "source_updated_at": source["source_updated_at"],
+        "product_version": source["product_version"],
+        "name": source["name"],
+        "description": source["description"],
+        "category_label": source["category"],
+        "tags": tags,
+        "display_tag": source["display_tag"],
+        "specifications": {value: value for value in source["specifications"]},
+        "option_labels": {value: value for value in source["option_labels"]},
+        "option_values": {value: value for value in source["option_values"]},
+    }
+
+
+def catalog_language_pack_sku_entry(source: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source_hash": source["source_hash"],
+        "source_updated_at": source["source_updated_at"],
+        "product_version": source["product_version"],
+        "sku_version": source["sku_version"],
+        "product_id": source["product_id"],
+        "name": source["name"],
+        "description": source["description"],
+        "category_label": source["category"],
+        "tags": list(source["tags"]),
+        "display_tag": source["display_tag"],
+        "specification": source["specification"],
+    }
+
+
+def _apply_entry_override(
+    entry: dict[str, Any],
+    *,
+    source_hash: str,
+    override: dict[str, Any] | None,
+    allowed_fields: frozenset[str],
+) -> bool:
+    if not isinstance(override, dict) or override.get("source_hash") != source_hash:
+        return False
+    values = override.get("values")
+    if not isinstance(values, dict):
+        return False
+    for field in allowed_fields:
+        if field in values:
+            entry[field] = values[field]
+    # Identity always belongs to the source snapshot, never the override.
+    entry["source_hash"] = source_hash
+    return True
+
+
+def apply_catalog_language_pack_overrides(
+    *,
+    products: dict[str, dict[str, Any]],
+    skus: dict[str, dict[str, Any]],
+    product_sources: list[dict[str, Any]],
+    sku_sources: list[dict[str, Any]],
+    product_overrides: dict[str, dict[str, Any]] | None,
+    sku_overrides: dict[str, dict[str, Any]] | None,
+) -> tuple[set[str], set[str]]:
+    """Apply exact-source manual wording after automatic translation."""
+
+    applied_products: set[str] = set()
+    applied_skus: set[str] = set()
+    product_overrides = product_overrides or {}
+    sku_overrides = sku_overrides or {}
+    product_fields = frozenset(
+        {
+            "name",
+            "description",
+            "category_label",
+            "tags",
+            "display_tag",
+            "specifications",
+            "option_labels",
+            "option_values",
+        }
+    )
+    sku_fields = frozenset(
+        {
+            "name",
+            "description",
+            "category_label",
+            "tags",
+            "display_tag",
+            "specification",
+        }
+    )
+    for source in product_sources:
+        entry_id = source["product_id"]
+        entry = products.get(entry_id)
+        if entry is not None and _apply_entry_override(
+            entry,
+            source_hash=source["source_hash"],
+            override=product_overrides.get(entry_id),
+            allowed_fields=product_fields,
+        ):
+            applied_products.add(entry_id)
+    for source in sku_sources:
+        entry_id = source["sku_id"]
+        entry = skus.get(entry_id)
+        if entry is not None and _apply_entry_override(
+            entry,
+            source_hash=source["source_hash"],
+            override=sku_overrides.get(entry_id),
+            allowed_fields=sku_fields,
+        ):
+            applied_skus.add(entry_id)
+    return applied_products, applied_skus
+
+
+def catalog_language_pack_payload_matches_rows(
+    payload: dict[str, Any],
+    rows: list[object],
+) -> bool:
+    product_sources, sku_sources = catalog_language_pack_source_entries(rows)
+    products = payload.get("products")
+    skus = payload.get("skus")
+    if not isinstance(products, dict) or not isinstance(skus, dict):
+        return False
+    if set(products) != {source["product_id"] for source in product_sources}:
+        return False
+    if set(skus) != {source["sku_id"] for source in sku_sources}:
+        return False
+    return all(
+        isinstance(products.get(source["product_id"]), dict)
+        and products[source["product_id"]].get("source_hash") == source["source_hash"]
+        for source in product_sources
+    ) and all(
+        isinstance(skus.get(source["sku_id"]), dict)
+        and skus[source["sku_id"]].get("source_hash") == source["source_hash"]
+        for source in sku_sources
+    )
+
+
 def _translatable(value: str) -> bool:
     return bool(_CJK_TEXT.search(value) or _LATIN_WORD.search(value))
 
@@ -650,6 +805,8 @@ def build_catalog_language_pack(
     reuse_previous: bool = False,
     full_rebuild: bool,
     force_rebuild_sku_ids: set[UUID] | None = None,
+    product_overrides: dict[str, dict[str, Any]] | None = None,
+    sku_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> CatalogLanguagePackBuild:
     groups = _group_rows(rows)
     product_sources = [_product_source(group) for group in groups]
@@ -788,6 +945,15 @@ def build_catalog_language_pack(
             "specification": _localized_value(source["specification"], translations),
         }
 
+    apply_catalog_language_pack_overrides(
+        products=products,
+        skus=skus,
+        product_sources=product_sources,
+        sku_sources=sku_sources,
+        product_overrides=product_overrides,
+        sku_overrides=sku_overrides,
+    )
+
     categories = {
         source["category"]: products[source["product_id"]].get("category_label")
         or source["category"]
@@ -823,6 +989,45 @@ def build_catalog_language_pack(
         payload=payload,
         compressed=gzip.compress(raw, compresslevel=6, mtime=0),
         content_sha256=content_sha256,
+        source_digest=source_digest,
+        source_cutoff_at=source_cutoff_at,
+        product_count=len(products),
+        sku_count=len(skus),
+        category_count=len(categories),
+    )
+
+
+def repack_catalog_language_pack_payload(
+    payload: dict[str, Any],
+    *,
+    version: int,
+    source_digest: str,
+    source_cutoff_at: datetime,
+) -> CatalogLanguagePackBuild:
+    """Create a new immutable package version from reviewed administrator edits."""
+
+    payload["version"] = version
+    payload["generated_at"] = _iso(utcnow())
+    payload["source_cutoff_at"] = _iso(source_cutoff_at)
+    products = payload.get("products")
+    skus = payload.get("skus")
+    categories = payload.get("categories")
+    products = products if isinstance(products, dict) else {}
+    skus = skus if isinstance(skus, dict) else {}
+    categories = categories if isinstance(categories, dict) else {}
+    payload["products"] = products
+    payload["skus"] = skus
+    payload["categories"] = categories
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return CatalogLanguagePackBuild(
+        payload=payload,
+        compressed=gzip.compress(raw, compresslevel=6, mtime=0),
+        content_sha256=hashlib.sha256(raw).hexdigest(),
         source_digest=source_digest,
         source_cutoff_at=source_cutoff_at,
         product_count=len(products),

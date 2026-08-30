@@ -4,6 +4,8 @@
   gap: 18px;
 }
 
+.storefront-language-settings { display: grid; gap: 0; }
+
 .storefront-custom-pages {
   display: grid;
   gap: 16px;

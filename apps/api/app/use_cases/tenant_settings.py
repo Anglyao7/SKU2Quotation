@@ -14,6 +14,7 @@ from ..domain.errors import ApplicationError
 from ..identity_models import TenantRow
 from ..inventory_models import WarehouseRow
 from ..public_catalog_models import TenantPublicProfileRow
+from ..repositories import catalog_translation_repository
 from ..services.auth.dependencies import RequestContext
 from ..services.storefront_branding import (
     MAX_MERCHANT_LOGO_BYTES,
@@ -40,13 +41,27 @@ def _require_settings_permission(context: RequestContext) -> None:
 
 
 def _response(
+    session: Session,
     tenant: TenantRow,
     profile: TenantPublicProfileRow | None,
 ) -> MerchantSettingsResponse:
-    storefront_locales = effective_storefront_locales(
+    selected_storefront_locales = effective_storefront_locales(
         profile.storefront_locales if profile is not None else None,
         source_locale=tenant.default_locale,
     )
+    configured_storefront_locales = effective_storefront_locales(
+        catalog_translation_repository.available_language_pack_locales(
+            session,
+            tenant_id=tenant.id,
+        ),
+        source_locale=tenant.default_locale,
+    )
+    configured_locale_set = set(configured_storefront_locales)
+    storefront_locales = [
+        locale
+        for locale in selected_storefront_locales
+        if locale in configured_locale_set
+    ]
     storefront_default_locale = (
         normalize_storefront_locale(
             profile.storefront_default_locale if profile is not None else None
@@ -69,6 +84,7 @@ def _response(
         ),
         default_currency=tenant.default_currency.upper(),
         storefront_locales=storefront_locales,
+        configured_storefront_locales=configured_storefront_locales,
         storefront_default_locale=storefront_default_locale,
         hot_products_enabled=(
             bool(profile.hot_products_enabled) if profile is not None else False
@@ -180,7 +196,7 @@ def get_merchant_settings(
             TenantPublicProfileRow.deleted_at.is_(None),
         )
     )
-    return _response(tenant, profile)
+    return _response(session, tenant, profile)
 
 
 def update_merchant_settings(
@@ -259,10 +275,29 @@ def update_merchant_settings(
 
     if request.storefront_locales is not None:
         assert profile is not None
-        profile.storefront_locales = effective_storefront_locales(
+        requested_locales = effective_storefront_locales(
             request.storefront_locales,
             source_locale=tenant.default_locale,
         )
+        source_locale = normalize_storefront_locale(tenant.default_locale) or "zh-CN"
+        configured_locales = set(
+            catalog_translation_repository.available_language_pack_locales(
+                session,
+                tenant_id=tenant.id,
+            )
+        )
+        unavailable = [
+            locale
+            for locale in requested_locales
+            if locale != source_locale and locale not in configured_locales
+        ]
+        if unavailable:
+            raise ApplicationError(
+                "STOREFRONT_LANGUAGE_PACKAGE_NOT_CONFIGURED",
+                "该语言包未配置，请联系管理员。",
+                kind="conflict",
+            )
+        profile.storefront_locales = requested_locales
         current_default = normalize_storefront_locale(
             profile.storefront_default_locale
         )
@@ -334,7 +369,7 @@ def update_merchant_settings(
             "Merchant settings could not be updated because they conflict.",
             kind="conflict",
         ) from exc
-    return _response(tenant, profile)
+    return _response(session, tenant, profile)
 
 
 def upload_merchant_logo(
@@ -425,4 +460,4 @@ def upload_merchant_logo(
         except Exception:
             # The current logo is already durable; stale-object cleanup is best effort.
             pass
-    return _response(tenant, profile)
+    return _response(session, tenant, profile)

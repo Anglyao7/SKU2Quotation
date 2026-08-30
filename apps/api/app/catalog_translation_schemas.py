@@ -4,7 +4,11 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+CatalogTargetLocale = Literal["en-US", "es", "tr", "ar", "ja", "ko", "pt"]
+
 
 class CatalogTranslationFailure(BaseModel):
     sku_id: UUID | None = None
@@ -56,7 +60,7 @@ class CatalogTranslationBatchResponse(BaseModel):
 
 
 class CatalogTranslationJobStartRequest(BaseModel):
-    target_locale: Literal["en-US", "es", "tr", "ar", "ja", "ko", "pt"] = "en-US"
+    target_locale: CatalogTargetLocale = "en-US"
     mode: Literal["INCREMENTAL", "FULL_REBUILD"] = "INCREMENTAL"
     execution_mode: Literal["REALTIME", "QWEN_BATCH"] | None = None
     confirm_full_rebuild: bool = False
@@ -65,7 +69,162 @@ class CatalogTranslationJobStartRequest(BaseModel):
 class CatalogTranslationProductRetryRequest(BaseModel):
     """Request a fresh translation for every public SKU of one product."""
 
-    target_locale: Literal["en-US", "es", "tr", "ar", "ja", "ko", "pt"] = "en-US"
+    target_locale: CatalogTargetLocale = "en-US"
+
+
+class CatalogLocalizedProductContent(BaseModel):
+    name: str = Field(min_length=1, max_length=1000)
+    description: str | None = Field(default=None, max_length=100_000)
+    category_label: str | None = Field(default=None, max_length=1000)
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    display_tag: str | None = Field(default=None, max_length=500)
+    specifications: dict[str, str] = Field(default_factory=dict)
+    option_labels: dict[str, str] = Field(default_factory=dict)
+    option_values: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("translated product name is required")
+        return normalized
+
+    @field_validator("description", "category_label", "display_tag", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags(cls, value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return list(
+            dict.fromkeys(
+                normalized
+                for item in value
+                if (normalized := str(item).strip())
+            )
+        )[:100]
+
+    @field_validator("specifications", "option_labels", "option_values", mode="before")
+    @classmethod
+    def normalize_mappings(cls, value: object) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, str] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key).strip()
+            translated = str(raw_value).strip()
+            if key and translated:
+                result[key] = translated
+        return result
+
+
+class CatalogLocalizedSkuContent(BaseModel):
+    sku_id: UUID
+    name: str = Field(min_length=1, max_length=1000)
+    description: str | None = Field(default=None, max_length=100_000)
+    category_label: str | None = Field(default=None, max_length=1000)
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    display_tag: str | None = Field(default=None, max_length=500)
+    specification: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("translated SKU name is required")
+        return normalized
+
+    @field_validator(
+        "description",
+        "category_label",
+        "display_tag",
+        "specification",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags(cls, value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return list(
+            dict.fromkeys(
+                normalized
+                for item in value
+                if (normalized := str(item).strip())
+            )
+        )[:100]
+
+
+class CatalogTranslationProductListItem(BaseModel):
+    id: UUID
+    product_code: str | None = None
+    source_name: str
+    source_category: str | None = None
+    translated_name: str | None = None
+    translated_category: str | None = None
+    status: Literal["TRANSLATED", "MISSING", "STALE", "MANUAL"]
+    sku_count: int = Field(ge=0)
+
+
+class CatalogTranslationProductListResponse(BaseModel):
+    items: list[CatalogTranslationProductListItem]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total: int = Field(ge=0)
+    pages: int = Field(ge=0)
+    package_version: int | None = Field(default=None, ge=1)
+
+
+class CatalogTranslationSkuDetail(BaseModel):
+    id: UUID
+    sku_code: str
+    source_hash: str = Field(min_length=64, max_length=64)
+    status: Literal["TRANSLATED", "MISSING", "STALE", "MANUAL"]
+    source: CatalogLocalizedSkuContent
+    translation: CatalogLocalizedSkuContent
+
+
+class CatalogTranslationProductDetail(BaseModel):
+    id: UUID
+    product_code: str | None = None
+    source_hash: str = Field(min_length=64, max_length=64)
+    target_locale: CatalogTargetLocale
+    status: Literal["TRANSLATED", "MISSING", "STALE", "MANUAL"]
+    package_version: int | None = Field(default=None, ge=1)
+    source: CatalogLocalizedProductContent
+    translation: CatalogLocalizedProductContent
+    skus: list[CatalogTranslationSkuDetail] = Field(default_factory=list)
+
+
+class CatalogTranslationProductUpdateRequest(BaseModel):
+    target_locale: CatalogTargetLocale
+    source_hash: str = Field(min_length=64, max_length=64)
+    sku_source_hashes: dict[UUID, str] = Field(default_factory=dict)
+    product: CatalogLocalizedProductContent
+    skus: list[CatalogLocalizedSkuContent] = Field(
+        default_factory=list,
+        max_length=5000,
+    )
+
+    @field_validator("sku_source_hashes")
+    @classmethod
+    def validate_sku_source_hashes(cls, value: dict[UUID, str]) -> dict[UUID, str]:
+        if any(len(source_hash) != 64 for source_hash in value.values()):
+            raise ValueError("SKU source hashes must be SHA-256 values")
+        return value
 
 
 class CatalogTranslationJobResponse(BaseModel):

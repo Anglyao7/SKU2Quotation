@@ -9,6 +9,9 @@ from ..catalog_translation_schemas import (
     CatalogTranslationBatchResponse,
     CatalogTranslationJobResponse,
     CatalogTranslationProductRetryRequest,
+    CatalogTranslationProductUpdateRequest,
+    CatalogTranslationProductDetail,
+    CatalogTranslationProductListResponse,
     CatalogTranslationJobStartRequest,
     CatalogTranslationStatusResponse,
 )
@@ -25,6 +28,15 @@ router = APIRouter(
 )
 
 
+def _require_platform_admin(context: object) -> None:
+    if not getattr(context, "is_platform_admin", False):
+        raise ApplicationError(
+            "PLATFORM_ADMIN_REQUIRED",
+            "该功能仅限平台管理员使用。",
+            kind="forbidden",
+        )
+
+
 @router.get("/status", response_model=CatalogTranslationStatusResponse)
 def get_translation_status(
     target_locale: str = Query(default="en-US", max_length=20),
@@ -39,6 +51,7 @@ def get_translation_status(
 ) -> CatalogTranslationStatusResponse:
     context = current_context(session)
     try:
+        _require_platform_admin(context)
         return use_cases.get_translation_status(
             session,
             tenant_id=context.tenant_id,
@@ -61,6 +74,10 @@ def start_translation_job(
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
+    try:
+        _require_platform_admin(context)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
     enforce_rate_limit(
         request,
         scope="catalog-translation-jobs",
@@ -92,6 +109,7 @@ def latest_translation_job(
 ) -> CatalogTranslationJobResponse | None:
     context = current_context(session)
     try:
+        _require_platform_admin(context)
         return use_cases.latest_translation_job(
             session,
             tenant_id=context.tenant_id,
@@ -112,6 +130,7 @@ def get_translation_job(
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
+        _require_platform_admin(context)
         return use_cases.get_translation_job(
             session,
             tenant_id=context.tenant_id,
@@ -149,6 +168,7 @@ def list_translation_batches(
 ) -> list[CatalogTranslationBatchResponse]:
     context = current_context(session)
     try:
+        _require_platform_admin(context)
         return use_cases.list_translation_batches(
             session,
             tenant_id=context.tenant_id,
@@ -174,6 +194,7 @@ def retry_translation_batch(
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
+        _require_platform_admin(context)
         return use_cases.retry_translation_batch(
             session,
             context=context,
@@ -196,7 +217,78 @@ def retry_translation_product(
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
+        _require_platform_admin(context)
         return use_cases.retry_translation_product(
+            session,
+            context=context,
+            product_id=product_id,
+            request=payload,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/products",
+    response_model=CatalogTranslationProductListResponse,
+)
+def list_translation_products(
+    target_locale: str = Query(default="en-US", max_length=20),
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=30, ge=1, le=100),
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogTranslationProductListResponse:
+    context = current_context(session)
+    try:
+        _require_platform_admin(context)
+        return use_cases.list_translation_products(
+            session,
+            context=context,
+            target_locale=target_locale,
+            query=q,
+            page=page,
+            page_size=page_size,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/products/{product_id}",
+    response_model=CatalogTranslationProductDetail,
+)
+def get_translation_product(
+    product_id: UUID,
+    target_locale: str = Query(default="en-US", max_length=20),
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogTranslationProductDetail:
+    context = current_context(session)
+    try:
+        _require_platform_admin(context)
+        return use_cases.get_translation_product(
+            session,
+            context=context,
+            product_id=product_id,
+            target_locale=target_locale,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/products/{product_id}/translation",
+    response_model=CatalogTranslationProductDetail,
+)
+def update_translation_product(
+    product_id: UUID,
+    payload: CatalogTranslationProductUpdateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogTranslationProductDetail:
+    context = current_context(session)
+    try:
+        _require_platform_admin(context)
+        return use_cases.update_translation_product(
             session,
             context=context,
             product_id=product_id,
@@ -216,6 +308,7 @@ def pause_translation_job(
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
+        _require_platform_admin(context)
         return use_cases.pause_translation_job(
             session,
             context=context,
@@ -235,6 +328,7 @@ def resume_translation_job(
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
+        _require_platform_admin(context)
         return use_cases.resume_translation_job(
             session,
             context=context,

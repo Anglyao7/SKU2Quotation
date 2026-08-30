@@ -398,6 +398,128 @@ def test_language_package_seeds_sku_translation_from_any_provider(
     assert build.payload["skus"][str(first_id)]["name"] == "OLD:红色水杯"
 
 
+def test_language_package_applies_exact_manual_overrides_after_translation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id, first_id, _second_id, rows = _catalog_rows()
+    monkeypatch.setattr(
+        packages,
+        "translate_values_with_memory",
+        _translation_stub([]),
+    )
+    product_sources, sku_sources = packages.catalog_language_pack_source_entries(rows)
+    product_source = product_sources[0]
+    first_source = next(
+        source for source in sku_sources if source["sku_id"] == str(first_id)
+    )
+
+    build = build_catalog_language_pack(
+        tenant_id=tenant_id,
+        rows=rows,
+        source_locale="zh-CN",
+        target_locale="en-US",
+        version=1,
+        translator=_PackageTranslator(),
+        sku_translations={},
+        previous_payload=None,
+        full_rebuild=True,
+        product_overrides={
+            product_source["product_id"]: {
+                "source_hash": product_source["source_hash"],
+                "values": {"name": "Reviewed travel cup"},
+            }
+        },
+        sku_overrides={
+            first_source["sku_id"]: {
+                "source_hash": first_source["source_hash"],
+                "values": {
+                    "name": "Reviewed red cup",
+                    "specification": "Standard edition",
+                },
+            }
+        },
+    )
+
+    assert build.payload["products"][product_source["product_id"]]["name"] == (
+        "Reviewed travel cup"
+    )
+    assert build.payload["skus"][str(first_id)]["name"] == "Reviewed red cup"
+    assert build.payload["skus"][str(first_id)]["specification"] == (
+        "Standard edition"
+    )
+
+
+def test_language_package_ignores_manual_override_after_source_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id, _first_id, _second_id, rows = _catalog_rows()
+    monkeypatch.setattr(
+        packages,
+        "translate_values_with_memory",
+        _translation_stub([]),
+    )
+    product_source = packages.catalog_language_pack_source_entries(rows)[0][0]
+    rows[0][2].name = "全新宠物饮水杯"
+    rows[0][2].current_version += 1
+
+    build = build_catalog_language_pack(
+        tenant_id=tenant_id,
+        rows=rows,
+        source_locale="zh-CN",
+        target_locale="en-US",
+        version=2,
+        translator=_PackageTranslator(),
+        sku_translations={},
+        previous_payload=None,
+        full_rebuild=True,
+        product_overrides={
+            product_source["product_id"]: {
+                "source_hash": product_source["source_hash"],
+                "values": {"name": "Outdated manual wording"},
+            }
+        },
+    )
+
+    product = build.payload["products"][product_source["product_id"]]
+    assert product["name"] == "EN:全新宠物饮水杯"
+    assert product["name"] != "Outdated manual wording"
+
+
+def test_language_package_snapshot_match_rejects_removed_catalog_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id, _first_id, _second_id, rows = _catalog_rows()
+    monkeypatch.setattr(
+        packages,
+        "translate_values_with_memory",
+        _translation_stub([]),
+    )
+    build = build_catalog_language_pack(
+        tenant_id=tenant_id,
+        rows=rows,
+        source_locale="zh-CN",
+        target_locale="en-US",
+        version=1,
+        translator=_PackageTranslator(),
+        sku_translations={},
+        previous_payload=None,
+        full_rebuild=True,
+    )
+
+    assert packages.catalog_language_pack_payload_matches_rows(
+        build.payload,
+        rows,
+    )
+    payload_with_removed_sku = {
+        **build.payload,
+        "skus": {**build.payload["skus"], "00000000-removed": {}},
+    }
+    assert not packages.catalog_language_pack_payload_matches_rows(
+        payload_with_removed_sku,
+        rows,
+    )
+
+
 def test_local_language_package_storage_is_atomic_and_path_safe(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

@@ -134,6 +134,57 @@ class CatalogTextTranslationRow(AuditTimestampMixin, Base):
     )
 
 
+class CatalogTranslationOverrideRow(AuditTimestampMixin, Base):
+    """Administrator-authored wording that survives automatic retranslation."""
+
+    __tablename__ = "catalog_translation_overrides"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_type IN ('PRODUCT', 'SKU')",
+            name="entity_type_allowed",
+        ),
+        CheckConstraint(
+            "length(source_hash) = 64",
+            name="source_hash_sha256_length",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_catalog_translation_overrides_tenant_identity",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "target_locale",
+            "entity_type",
+            "entity_id",
+            name="uq_catalog_translation_overrides_tenant_locale_entity",
+        ),
+        Index(
+            "ix_catalog_translation_overrides_tenant_locale",
+            "tenant_id",
+            "target_locale",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    target_locale: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity_id: Mapped[UUID] = mapped_column(nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    values: Mapped[dict[str, object]] = mapped_column(
+        JSON_DOCUMENT,
+        default=dict,
+        nullable=False,
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+
 class CatalogLanguagePackRow(AuditTimestampMixin, Base):
     """Currently published immutable storefront language package."""
 

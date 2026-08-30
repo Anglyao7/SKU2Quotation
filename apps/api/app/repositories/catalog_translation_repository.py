@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..catalog_translation_models import (
     CatalogLanguagePackRow,
     CatalogSkuTranslationRow,
+    CatalogTranslationOverrideRow,
 )
 from ..services.catalog_translation import (
     CatalogTranslationResult,
@@ -125,6 +126,66 @@ def available_language_pack_locales(
             .order_by(CatalogLanguagePackRow.target_locale)
         ).all()
     )
+
+
+def translation_override_map(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+    entity_types: tuple[str, ...] = ("PRODUCT", "SKU"),
+    entity_ids: set[UUID] | None = None,
+) -> dict[tuple[str, UUID], CatalogTranslationOverrideRow]:
+    statement = select(CatalogTranslationOverrideRow).where(
+        CatalogTranslationOverrideRow.tenant_id == tenant_id,
+        CatalogTranslationOverrideRow.target_locale == target_locale,
+        CatalogTranslationOverrideRow.entity_type.in_(entity_types),
+    )
+    if entity_ids is not None:
+        if not entity_ids:
+            return {}
+        statement = statement.where(
+            CatalogTranslationOverrideRow.entity_id.in_(entity_ids)
+        )
+    rows = session.scalars(statement).all()
+    return {(row.entity_type, row.entity_id): row for row in rows}
+
+
+def save_translation_override(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+    entity_type: str,
+    entity_id: UUID,
+    source_hash: str,
+    values: dict[str, object],
+    updated_by_user_id: UUID,
+) -> CatalogTranslationOverrideRow:
+    row = session.scalar(
+        select(CatalogTranslationOverrideRow).where(
+            CatalogTranslationOverrideRow.tenant_id == tenant_id,
+            CatalogTranslationOverrideRow.target_locale == target_locale,
+            CatalogTranslationOverrideRow.entity_type == entity_type,
+            CatalogTranslationOverrideRow.entity_id == entity_id,
+        )
+    )
+    if row is None:
+        row = CatalogTranslationOverrideRow(
+            tenant_id=tenant_id,
+            target_locale=target_locale,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            source_hash=source_hash,
+            values=dict(values),
+            updated_by_user_id=updated_by_user_id,
+        )
+        session.add(row)
+        return row
+    row.source_hash = source_hash
+    row.values = dict(values)
+    row.updated_by_user_id = updated_by_user_id
+    return row
 
 
 def save_language_pack(

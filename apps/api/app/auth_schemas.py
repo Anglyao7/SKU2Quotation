@@ -236,6 +236,7 @@ class MerchantSettingsResponse(BaseModel):
     business_mode: Literal["DOMESTIC", "EXPORT"]
     default_currency: str
     storefront_locales: list[StorefrontLocale]
+    configured_storefront_locales: list[StorefrontLocale]
     storefront_default_locale: StorefrontLocale
     hot_products_enabled: bool
     storefront_exchange_rates_enabled: bool

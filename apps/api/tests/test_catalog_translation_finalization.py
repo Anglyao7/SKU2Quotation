@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from app.catalog_translation_schemas import CatalogTranslationJobStartRequest
+from app.domain.errors import ApplicationError
 from app.services import translation_memory
 from app.services.translation import TranslationIdentity, TranslationProviderError
 from app.use_cases import catalog_translations
@@ -23,6 +24,15 @@ class _Session:
 
 class _Translator:
     identity = TranslationIdentity(provider="test", version="v1")
+
+
+def test_translation_administration_requires_platform_admin() -> None:
+    with pytest.raises(ApplicationError) as caught:
+        catalog_translations._require_platform_admin(
+            SimpleNamespace(is_platform_admin=False)
+        )
+
+    assert caught.value.code == "PLATFORM_ADMIN_REQUIRED"
 
 
 def test_translation_buttons_can_explicitly_select_execution_mode(
@@ -229,6 +239,7 @@ def test_explicit_batch_action_resumes_hidden_batch_checkpoint(
         organization_id=uuid4(),
         user_id=uuid4(),
         membership_id=uuid4(),
+        is_platform_admin=True,
     )
     request = CatalogTranslationJobStartRequest(
         target_locale="es",

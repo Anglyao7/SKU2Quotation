@@ -11,10 +11,7 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowsClockwise,
-  Check,
   CheckCircle,
-  GlobeHemisphereWest,
-  LockSimple,
   Package,
   Pause,
   Play,
@@ -30,12 +27,10 @@ import {
   getCatalogTranslationBatches,
   getCatalogTranslationStatus,
   getLatestCatalogTranslationJob,
-  getMerchantSettings,
   pauseCatalogTranslationJob,
   resumeCatalogTranslationJob,
   retryCatalogTranslationBatch,
   startCatalogTranslationJob,
-  updateMerchantSettings,
 } from "../api";
 import type {
   CatalogTranslationJob,
@@ -49,6 +44,7 @@ import {
   storefrontLanguage,
 } from "../../lib/storefrontLocale";
 import type { StorefrontLocale } from "../../types";
+import { CatalogTranslationEditor } from "./CatalogTranslationEditor";
 
 const TARGET_LANGUAGES = STOREFRONT_LANGUAGE_OPTIONS.filter(
   (language) => language.code !== "zh-CN",
@@ -89,17 +85,6 @@ export function LanguagePackagesPage() {
   const { hasPermission } = useCoreAuth();
   const { t } = useLocale();
   const canEditProducts = hasPermission("product.edit");
-  const canManageSettings = hasPermission("system.settings_manage");
-  const [enabledLocales, setEnabledLocales] = useState<StorefrontLocale[]>([
-    "zh-CN",
-    "en-US",
-  ]);
-  const [savedLocales, setSavedLocales] = useState<StorefrontLocale[]>([
-    "zh-CN",
-    "en-US",
-  ]);
-  const [defaultLocale, setDefaultLocale] = useState<StorefrontLocale>("zh-CN");
-  const [savedDefaultLocale, setSavedDefaultLocale] = useState<StorefrontLocale>("zh-CN");
   const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>("en-US");
   const [status, setStatus] = useState<CatalogTranslationStatus>();
   const [job, setJob] = useState<CatalogTranslationJob>();
@@ -109,7 +94,6 @@ export function LanguagePackagesPage() {
   const [coverageLoading, setCoverageLoading] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [batchHistoryLoading, setBatchHistoryLoading] = useState(false);
-  const [savingLanguages, setSavingLanguages] = useState(false);
   const [startingJob, setStartingJob] = useState(false);
   const [controllingJob, setControllingJob] = useState(false);
   const [error, setError] = useState("");
@@ -117,8 +101,6 @@ export function LanguagePackagesPage() {
   const selectedLocaleRef = useRef<StorefrontLocale>(selectedLocale);
   const localeRequestIdRef = useRef(0);
 
-  const languagesChanged = enabledLocales.join(",") !== savedLocales.join(",")
-    || defaultLocale !== savedDefaultLocale;
   const selectedStatus = status?.targetLocale === selectedLocale
     ? status
     : undefined;
@@ -255,30 +237,6 @@ export function LanguagePackagesPage() {
   };
 
   useEffect(() => {
-    let active = true;
-    void getMerchantSettings()
-      .then((settings) => {
-        if (!active) return;
-        setEnabledLocales(settings.storefrontLocales);
-        setSavedLocales(settings.storefrontLocales);
-        const nextDefault = settings.storefrontDefaultLocale
-          && settings.storefrontLocales.includes(settings.storefrontDefaultLocale)
-          ? settings.storefrontDefaultLocale
-          : settings.storefrontLocales[0] || "zh-CN";
-        setDefaultLocale(nextDefault);
-        setSavedDefaultLocale(nextDefault);
-      })
-      .catch((caught) => {
-        if (active) {
-          setError(caught instanceof Error ? caught.message : t("语言设置读取失败。"));
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
     selectedLocaleRef.current = selectedLocale;
     const requestId = ++localeRequestIdRef.current;
     setError("");
@@ -404,45 +362,6 @@ export function LanguagePackagesPage() {
     void refreshBatches(selectedJob.id, selectedJob.targetLocale).catch(() => undefined);
   }, [selectedJob?.id, pollableJob, batchesJobId]);
 
-  const toggleLanguage = (locale: StorefrontLocale, checked: boolean) => {
-    setEnabledLocales((current) => {
-      const values = new Set(current);
-      if (checked) values.add(locale);
-      else values.delete(locale);
-      values.add("zh-CN");
-      return STOREFRONT_LANGUAGE_OPTIONS
-        .map((language) => language.code)
-        .filter((code) => values.has(code));
-    });
-    if (!checked && defaultLocale === locale) {
-      setDefaultLocale("zh-CN");
-    }
-    setError("");
-    setSuccess("");
-  };
-
-  const saveLanguages = async () => {
-    if (!canManageSettings || !languagesChanged || savingLanguages) return;
-    setSavingLanguages(true);
-    setError("");
-    setSuccess("");
-    try {
-      const updated = await updateMerchantSettings({
-        storefrontLocales: enabledLocales,
-        storefrontDefaultLocale: defaultLocale,
-      });
-      setEnabledLocales(updated.storefrontLocales);
-      setSavedLocales(updated.storefrontLocales);
-      setDefaultLocale(updated.storefrontDefaultLocale);
-      setSavedDefaultLocale(updated.storefrontDefaultLocale);
-      setSuccess(t("前台语言已更新。尚未完成翻译的内容会暂时显示原文。"));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("前台语言保存失败。"));
-    } finally {
-      setSavingLanguages(false);
-    }
-  };
-
   const startJob = async (fullRebuild: boolean) => {
     if (
       !canEditProducts
@@ -551,95 +470,13 @@ export function LanguagePackagesPage() {
           <Text size="2" color="gray">{t("商品资料")}</Text>
           <Heading size="8">{t("多语言")}</Heading>
           <Text size="2" color="gray">
-            {t("管理商品前台可用语言，并更新各语言的商品内容。")}
+            {t("管理员统一执行翻译任务，并查看、微调各语言的商品译文。")}
           </Text>
         </div>
       </div>
 
       {error ? <ToastNotice kind="error" message={error} /> : null}
       {success ? <ToastNotice kind="success" message={success} /> : null}
-
-      <Card className="language-selection-card">
-        <div className="language-card-heading language-selection-heading">
-          <span><GlobeHemisphereWest weight="duotone" /></span>
-          <div className="language-heading-copy">
-            <Heading size="5">{t("前台语言")}</Heading>
-            <Text size="2" color="gray">
-              {t("选择访客可以使用的语言；简体中文固定保留。翻译任务在下方单独管理。")}
-            </Text>
-          </div>
-          <div className="language-selection-toolbar">
-            <Text size="1" color="gray">
-              {t("已启用 {count} 种", { count: enabledLocales.length })}
-            </Text>
-            <Button
-              variant={languagesChanged ? "solid" : "soft"}
-              onClick={() => void saveLanguages()}
-              loading={savingLanguages}
-              disabled={!canManageSettings || !languagesChanged || savingLanguages}
-            >
-              {t(languagesChanged ? "保存更改" : "已保存")}
-            </Button>
-          </div>
-        </div>
-        <div className="language-package-options">
-          {STOREFRONT_LANGUAGE_OPTIONS.map((language) => {
-            const enabled = enabledLocales.includes(language.code);
-            const source = language.code === "zh-CN";
-            const localeCode = source
-              ? t("源语言")
-              : language.code.split("-")[0].toUpperCase();
-            return (
-              <button
-                type="button"
-                key={language.code}
-                className={`language-package-option${enabled ? " is-enabled" : ""}${source ? " is-source" : ""}`}
-                onClick={() => toggleLanguage(language.code, !enabled)}
-                disabled={source || !canManageSettings}
-                aria-pressed={enabled}
-                aria-label={source
-                  ? t("{language} 始终启用", { language: language.label })
-                  : t("展示 {language}", { language: language.label })}
-              >
-                <span className="language-option-flag" aria-hidden="true">{language.flag}</span>
-                <span className="language-option-copy">
-                  <strong lang={language.code} dir={language.direction}>{language.label}</strong>
-                  <small>{localeCode}</small>
-                </span>
-                <span className="language-option-indicator" aria-hidden="true">
-                  {source ? <LockSimple weight="bold" /> : enabled ? <Check weight="bold" /> : null}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="language-default-row">
-          <div>
-            <Text size="2" weight="bold">{t("默认语言")}</Text>
-            <Text size="1" color="gray">{t("访客首次打开商品前台时使用；访客主动切换后以选择为准。")}</Text>
-          </div>
-          <Select.Root
-            value={defaultLocale}
-            onValueChange={(value) => {
-              setDefaultLocale(value as StorefrontLocale);
-              setError("");
-              setSuccess("");
-            }}
-            disabled={!canManageSettings}
-          >
-            <Select.Trigger aria-label={t("选择默认语言")} />
-            <Select.Content position="popper">
-              {STOREFRONT_LANGUAGE_OPTIONS
-                .filter((language) => enabledLocales.includes(language.code))
-                .map((language) => (
-                  <Select.Item key={language.code} value={language.code}>
-                    {language.flag} {language.label}
-                  </Select.Item>
-                ))}
-            </Select.Content>
-          </Select.Root>
-        </div>
-      </Card>
 
       <div className="language-pack-grid">
         <Card className="language-pack-status-card">
@@ -807,6 +644,11 @@ export function LanguagePackagesPage() {
           )}
         </Card>
       </div>
+
+      <CatalogTranslationEditor
+        locale={selectedLocale}
+        packageVersion={selectedStatus?.package?.version}
+      />
 
       {historyLoading ? (
         <Card className="language-job-card">

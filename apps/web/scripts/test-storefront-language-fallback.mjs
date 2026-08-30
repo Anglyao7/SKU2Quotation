@@ -47,15 +47,15 @@ for (const [name, catalogSource] of [
 }
 
 assert.ok(
-  productDetail.includes("storeProductPath(slug, productId);"),
+  productDetail.includes("storeProductPath(slug, productId, undefined, accountId);"),
   "Product details must request source data before applying a language package",
 );
 assert.ok(
-  skuDetail.includes("storeSkuPath(slug, skuId);"),
+  skuDetail.includes("storeSkuPath(slug, skuId, undefined, accountId);"),
   "SKU details must request source data before applying a language package",
 );
 assert.ok(
-  source.includes("storePath(slug, locale)"),
+  source.includes("storePath(slug, locale, accountId)"),
   "Store metadata must preserve the visitor's selected locale",
 );
 assert.ok(

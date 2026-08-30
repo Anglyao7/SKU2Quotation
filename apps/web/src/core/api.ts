@@ -130,6 +130,12 @@ import type {
   CatalogTranslationBatch,
   CatalogTranslationBatchAttempt,
   CatalogTranslationJob,
+  CatalogLocalizedProductContent,
+  CatalogLocalizedSkuContent,
+  CatalogTranslationProductDetail,
+  CatalogTranslationProductListItem,
+  CatalogTranslationProductListPage,
+  CatalogTranslationSkuDetail,
   CatalogTranslationStatus,
   UiLocale,
   Warehouse,
@@ -677,6 +683,7 @@ interface ApiMerchantSettings {
   business_mode: "DOMESTIC" | "EXPORT";
   default_currency: string;
   storefront_locales: MerchantSettings["storefrontLocales"];
+  configured_storefront_locales: MerchantSettings["configuredStorefrontLocales"];
   storefront_default_locale: MerchantSettings["storefrontDefaultLocale"];
   hot_products_enabled: boolean;
   storefront_exchange_rates_enabled: boolean;
@@ -697,6 +704,7 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
     businessMode: row.business_mode,
     defaultCurrency: row.default_currency,
     storefrontLocales: row.storefront_locales,
+    configuredStorefrontLocales: row.configured_storefront_locales,
     storefrontDefaultLocale: row.storefront_default_locale,
     hotProductsEnabled: row.hot_products_enabled,
     exchangeRatesEnabled: row.storefront_exchange_rates_enabled,
@@ -3286,6 +3294,68 @@ interface ApiCatalogTranslationStatus {
   latest_job?: ApiCatalogTranslationJob | null;
 }
 
+interface ApiCatalogLocalizedProductContent {
+  name: string;
+  description?: string | null;
+  category_label?: string | null;
+  tags: string[];
+  display_tag?: string | null;
+  specifications: Record<string, string>;
+  option_labels: Record<string, string>;
+  option_values: Record<string, string>;
+}
+
+interface ApiCatalogLocalizedSkuContent {
+  sku_id: string;
+  name: string;
+  description?: string | null;
+  category_label?: string | null;
+  tags: string[];
+  display_tag?: string | null;
+  specification?: string | null;
+}
+
+interface ApiCatalogTranslationProductListItem {
+  id: string;
+  product_code?: string | null;
+  source_name: string;
+  source_category?: string | null;
+  translated_name?: string | null;
+  translated_category?: string | null;
+  status: CatalogTranslationProductListItem["status"];
+  sku_count: number;
+}
+
+interface ApiCatalogTranslationProductListPage {
+  items: ApiCatalogTranslationProductListItem[];
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
+  package_version?: number | null;
+}
+
+interface ApiCatalogTranslationSkuDetail {
+  id: string;
+  sku_code: string;
+  source_hash: string;
+  status: CatalogTranslationSkuDetail["status"];
+  source: ApiCatalogLocalizedSkuContent;
+  translation: ApiCatalogLocalizedSkuContent;
+}
+
+interface ApiCatalogTranslationProductDetail {
+  id: string;
+  product_code?: string | null;
+  source_hash: string;
+  target_locale: StorefrontLocale;
+  status: CatalogTranslationProductDetail["status"];
+  package_version?: number | null;
+  source: ApiCatalogLocalizedProductContent;
+  translation: ApiCatalogLocalizedProductContent;
+  skus: ApiCatalogTranslationSkuDetail[];
+}
+
 function mapCatalogLanguagePack(row: ApiCatalogLanguagePack): CatalogLanguagePackInfo {
   return {
     sourceLocale: row.source_locale,
@@ -3542,6 +3612,153 @@ export async function retryCatalogTranslationProduct(
       {
         method: "POST",
         body: JSON.stringify({ target_locale: targetLocale }),
+      },
+    ),
+  );
+}
+
+function mapCatalogLocalizedProductContent(
+  row: ApiCatalogLocalizedProductContent,
+): CatalogLocalizedProductContent {
+  return {
+    name: row.name,
+    description: defined(row.description),
+    categoryLabel: defined(row.category_label),
+    tags: row.tags,
+    displayTag: defined(row.display_tag),
+    specifications: row.specifications,
+    optionLabels: row.option_labels,
+    optionValues: row.option_values,
+  };
+}
+
+function mapCatalogLocalizedSkuContent(
+  row: ApiCatalogLocalizedSkuContent,
+): CatalogLocalizedSkuContent {
+  return {
+    skuId: row.sku_id,
+    name: row.name,
+    description: defined(row.description),
+    categoryLabel: defined(row.category_label),
+    tags: row.tags,
+    displayTag: defined(row.display_tag),
+    specification: defined(row.specification),
+  };
+}
+
+function mapCatalogTranslationProductDetail(
+  row: ApiCatalogTranslationProductDetail,
+): CatalogTranslationProductDetail {
+  return {
+    id: row.id,
+    productCode: defined(row.product_code),
+    sourceHash: row.source_hash,
+    targetLocale: row.target_locale,
+    status: row.status,
+    packageVersion: row.package_version ?? undefined,
+    source: mapCatalogLocalizedProductContent(row.source),
+    translation: mapCatalogLocalizedProductContent(row.translation),
+    skus: row.skus.map((sku): CatalogTranslationSkuDetail => ({
+      id: sku.id,
+      skuCode: sku.sku_code,
+      sourceHash: sku.source_hash,
+      status: sku.status,
+      source: mapCatalogLocalizedSkuContent(sku.source),
+      translation: mapCatalogLocalizedSkuContent(sku.translation),
+    })),
+  };
+}
+
+export async function listCatalogTranslationProducts(input: {
+  targetLocale: StorefrontLocale;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<CatalogTranslationProductListPage> {
+  const query = new URLSearchParams({ target_locale: input.targetLocale });
+  if (input.q) query.set("q", input.q);
+  if (input.page) query.set("page", String(input.page));
+  if (input.pageSize) query.set("page_size", String(input.pageSize));
+  const row = await request<ApiCatalogTranslationProductListPage>(
+    `/catalog/translations/products?${query.toString()}`,
+    { cache: "no-store" },
+  );
+  return {
+    items: row.items.map((item): CatalogTranslationProductListItem => ({
+      id: item.id,
+      productCode: defined(item.product_code),
+      sourceName: item.source_name,
+      sourceCategory: defined(item.source_category),
+      translatedName: defined(item.translated_name),
+      translatedCategory: defined(item.translated_category),
+      status: item.status,
+      skuCount: item.sku_count,
+    })),
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    pages: row.pages,
+    packageVersion: row.package_version ?? undefined,
+  };
+}
+
+export async function getCatalogTranslationProduct(
+  productId: string,
+  targetLocale: StorefrontLocale,
+): Promise<CatalogTranslationProductDetail> {
+  return mapCatalogTranslationProductDetail(
+    await request<ApiCatalogTranslationProductDetail>(
+      `/catalog/translations/products/${encodeURIComponent(productId)}?target_locale=${encodeURIComponent(targetLocale)}`,
+      { cache: "no-store" },
+    ),
+  );
+}
+
+function apiCatalogProductContent(value: CatalogLocalizedProductContent) {
+  return {
+    name: value.name,
+    description: value.description ?? null,
+    category_label: value.categoryLabel ?? null,
+    tags: value.tags,
+    display_tag: value.displayTag ?? null,
+    specifications: value.specifications,
+    option_labels: value.optionLabels,
+    option_values: value.optionValues,
+  };
+}
+
+function apiCatalogSkuContent(value: CatalogLocalizedSkuContent) {
+  return {
+    sku_id: value.skuId,
+    name: value.name,
+    description: value.description ?? null,
+    category_label: value.categoryLabel ?? null,
+    tags: value.tags,
+    display_tag: value.displayTag ?? null,
+    specification: value.specification ?? null,
+  };
+}
+
+export async function updateCatalogTranslationProduct(
+  productId: string,
+  targetLocale: StorefrontLocale,
+  sourceHash: string,
+  skuSourceHashes: Record<string, string>,
+  product: CatalogLocalizedProductContent,
+  skus: CatalogLocalizedSkuContent[],
+): Promise<CatalogTranslationProductDetail> {
+  return mapCatalogTranslationProductDetail(
+    await request<ApiCatalogTranslationProductDetail>(
+      `/catalog/translations/products/${encodeURIComponent(productId)}/translation`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          target_locale: targetLocale,
+          source_hash: sourceHash,
+          sku_source_hashes: skuSourceHashes,
+          product: apiCatalogProductContent(product),
+          skus: skus.map(apiCatalogSkuContent),
+        }),
       },
     ),
   );

@@ -78,6 +78,7 @@ from app.catalog_translation_models import (
     CatalogLanguagePackRow,
     CatalogSkuTranslationRow,
     CatalogTextTranslationRow,
+    CatalogTranslationOverrideRow,
     CatalogTranslationBatchRow,
     CatalogTranslationJobRow,
 )
@@ -120,7 +121,7 @@ from app.product_supplier_models import (
     SupplierScoreRow,
 )
 from app.models import PriceCalculationRequest
-from app.repositories import public_catalog_repository
+from app.repositories import catalog_translation_repository, public_catalog_repository
 from app.saas_seed import (
     DEFAULT_MEMBERSHIP_ID,
     DEFAULT_ORGANIZATION_ID,
@@ -856,7 +857,7 @@ def test_merchant_business_mode_switches_default_currency_safely() -> None:
             session.commit()
 
 
-def test_merchant_controls_languages_visible_on_the_storefront(
+def test_merchant_only_enables_languages_with_published_packages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -873,8 +874,29 @@ def test_merchant_controls_languages_visible_on_the_storefront(
         profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
         assert profile is not None
         original_locales = list(profile.storefront_locales or [])
+        profile.storefront_locales = ["zh-CN", "es"]
+        session.commit()
 
     try:
+        sanitized = client.get("/api/v1/me/merchant")
+        assert sanitized.status_code == 200, sanitized.text
+        assert sanitized.json()["storefront_locales"] == ["zh-CN"]
+        assert sanitized.json()["configured_storefront_locales"] == ["zh-CN"]
+
+        unavailable = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_locales": ["es", "ar", "ja", "pt"]},
+        )
+        assert unavailable.status_code == 409, unavailable.text
+        assert unavailable.json()["detail"]["code"] == (
+            "STOREFRONT_LANGUAGE_PACKAGE_NOT_CONFIGURED"
+        )
+
+        monkeypatch.setattr(
+            catalog_translation_repository,
+            "available_language_pack_locales",
+            lambda *_args, **_kwargs: ["es", "ar", "ja", "pt"],
+        )
         response = client.patch(
             "/api/v1/me/merchant",
             json={"storefront_locales": ["es", "ar", "ja", "pt"]},
@@ -926,7 +948,9 @@ def test_merchant_controls_languages_visible_on_the_storefront(
             session.commit()
 
 
-def test_merchant_default_storefront_language_is_used_for_first_visit() -> None:
+def test_merchant_default_storefront_language_is_used_for_first_visit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with SessionLocal() as session:
         profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
         assert profile is not None
@@ -934,6 +958,11 @@ def test_merchant_default_storefront_language_is_used_for_first_visit() -> None:
         original_default = profile.storefront_default_locale
 
     try:
+        monkeypatch.setattr(
+            catalog_translation_repository,
+            "available_language_pack_locales",
+            lambda *_args, **_kwargs: ["en-US"],
+        )
         response = client.patch(
             "/api/v1/me/merchant",
             json={
@@ -18165,8 +18194,73 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         )
         switched_workbook.close()
 
+        translation_products = client.get(
+            "/api/v1/catalog/translations/products",
+            params={"target_locale": "en-US", "page": 1, "page_size": 30},
+        )
+        assert translation_products.status_code == 200, translation_products.text
+        reviewed_product_id = translation_products.json()["items"][0]["id"]
+        translation_detail = client.get(
+            f"/api/v1/catalog/translations/products/{reviewed_product_id}",
+            params={"target_locale": "en-US"},
+        )
+        assert translation_detail.status_code == 200, translation_detail.text
+        review_payload = translation_detail.json()
+        review_payload["translation"]["name"] = "Administrator reviewed product"
+        stale_review = client.put(
+            f"/api/v1/catalog/translations/products/{reviewed_product_id}/translation",
+            json={
+                "target_locale": "en-US",
+                "source_hash": "0" * 64,
+                "sku_source_hashes": {
+                    sku["id"]: sku["source_hash"]
+                    for sku in review_payload["skus"]
+                },
+                "product": review_payload["translation"],
+                "skus": [sku["translation"] for sku in review_payload["skus"]],
+            },
+        )
+        assert stale_review.status_code == 409, stale_review.text
+        assert stale_review.json()["detail"]["code"] == (
+            "CATALOG_TRANSLATION_SOURCE_CHANGED"
+        )
+        reviewed = client.put(
+            f"/api/v1/catalog/translations/products/{reviewed_product_id}/translation",
+            json={
+                "target_locale": "en-US",
+                "source_hash": review_payload["source_hash"],
+                "sku_source_hashes": {
+                    sku["id"]: sku["source_hash"]
+                    for sku in review_payload["skus"]
+                },
+                "product": review_payload["translation"],
+                "skus": [sku["translation"] for sku in review_payload["skus"]],
+            },
+        )
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["status"] == "MANUAL"
+        assert reviewed.json()["package_version"] == 2
+
+        reviewed_manifest = client.get(
+            "/api/store/demo/language-packages/en-US"
+        )
+        assert reviewed_manifest.status_code == 200, reviewed_manifest.text
+        assert reviewed_manifest.json()["version"] == 2
+        reviewed_package = client.get(
+            reviewed_manifest.json()["download_url"]
+        )
+        assert reviewed_package.status_code == 200, reviewed_package.text
+        assert reviewed_package.json()["products"][reviewed_product_id]["name"] == (
+            "Administrator reviewed product"
+        )
+
     finally:
         with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTranslationOverrideRow).where(
+                    CatalogTranslationOverrideRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
             session.execute(
                 delete(CatalogLanguagePackRow).where(
                     CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID
@@ -21778,6 +21872,7 @@ def test_catalog_translation_migration_is_reversible_on_sqlite(
         "catalog_sku_translations",
         "catalog_text_translations",
         "catalog_translation_jobs",
+        "catalog_translation_overrides",
     }.issubset(tables)
     translation_columns = {
         column["name"]
@@ -21818,6 +21913,7 @@ def test_catalog_translation_migration_is_reversible_on_sqlite(
         "catalog_sku_translations",
         "catalog_text_translations",
         "catalog_translation_jobs",
+        "catalog_translation_overrides",
     }.isdisjoint(inspect(downgraded_engine).get_table_names())
     downgraded_engine.dispose()
 

@@ -59,6 +59,7 @@ export interface MerchantSettings {
   businessMode: BusinessMode;
   defaultCurrency: string;
   storefrontLocales: StorefrontLocale[];
+  configuredStorefrontLocales: StorefrontLocale[];
   storefrontDefaultLocale: StorefrontLocale;
   hotProductsEnabled: boolean;
   exchangeRatesEnabled: boolean;
@@ -1641,6 +1642,70 @@ export interface CatalogTranslationStatus {
   availableLocales: StorefrontLocale[];
   package?: CatalogLanguagePackInfo;
   latestJob?: CatalogTranslationJob;
+}
+
+export type CatalogTranslationEntryStatus = "TRANSLATED" | "MISSING" | "STALE" | "MANUAL";
+
+export interface CatalogLocalizedProductContent {
+  name: string;
+  description?: string;
+  categoryLabel?: string;
+  tags: string[];
+  displayTag?: string;
+  specifications: Record<string, string>;
+  optionLabels: Record<string, string>;
+  optionValues: Record<string, string>;
+}
+
+export interface CatalogLocalizedSkuContent {
+  skuId: string;
+  name: string;
+  description?: string;
+  categoryLabel?: string;
+  tags: string[];
+  displayTag?: string;
+  specification?: string;
+}
+
+export interface CatalogTranslationProductListItem {
+  id: string;
+  productCode?: string;
+  sourceName: string;
+  sourceCategory?: string;
+  translatedName?: string;
+  translatedCategory?: string;
+  status: CatalogTranslationEntryStatus;
+  skuCount: number;
+}
+
+export interface CatalogTranslationProductListPage {
+  items: CatalogTranslationProductListItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  pages: number;
+  packageVersion?: number;
+}
+
+export interface CatalogTranslationSkuDetail {
+  id: string;
+  skuCode: string;
+  sourceHash: string;
+  status: CatalogTranslationEntryStatus;
+  source: CatalogLocalizedSkuContent;
+  translation: CatalogLocalizedSkuContent;
+}
+
+export interface CatalogTranslationProductDetail {
+  id: string;
+  productCode?: string;
+  sourceHash: string;
+  targetLocale: StorefrontLocale;
+  status: CatalogTranslationEntryStatus;
+  packageVersion?: number;
+  source: CatalogLocalizedProductContent;
+  translation: CatalogLocalizedProductContent;
+  skus: CatalogTranslationSkuDetail[];
 }
 
 export interface InquiryItem {

@@ -8,6 +8,8 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
+from types import SimpleNamespace
 from urllib.parse import quote
 from uuid import UUID
 
@@ -29,6 +31,13 @@ from ..catalog_translation_schemas import (
     CatalogTranslationFailure,
     CatalogTranslationJobResponse,
     CatalogTranslationProductRetryRequest,
+    CatalogTranslationProductUpdateRequest,
+    CatalogTranslationProductDetail,
+    CatalogTranslationProductListItem,
+    CatalogTranslationProductListResponse,
+    CatalogTranslationSkuDetail,
+    CatalogLocalizedProductContent,
+    CatalogLocalizedSkuContent,
     CatalogTranslationJobStartRequest,
     CatalogLanguagePackResponse,
     CatalogTranslationStatusResponse,
@@ -51,12 +60,19 @@ from ..services.catalog_translation import (
     catalog_translation_value_is_complete,
 )
 from ..services.catalog_language_packages import (
+    apply_catalog_language_pack_overrides,
     build_catalog_language_pack,
+    catalog_language_pack_payload_matches_rows,
+    catalog_language_pack_product_entry,
+    catalog_language_pack_sku_entry,
+    catalog_language_pack_source_cutoff,
+    catalog_language_pack_source_entries,
     catalog_language_pack_translatable_values,
     catalog_language_pack_translation_seed,
     catalog_rows_source_digest,
     language_pack_object_key,
     load_language_pack_payload,
+    repack_catalog_language_pack_payload,
 )
 from ..services.language_package_storage import (
     configured_language_package_storage,
@@ -163,6 +179,15 @@ def _require(permissions: frozenset[str], code: str) -> None:
         raise ApplicationError(
             "PERMISSION_DENIED",
             f"Permission is required: {code}",
+            kind="forbidden",
+        )
+
+
+def _require_platform_admin(context: RequestContext) -> None:
+    if not getattr(context, "is_platform_admin", False):
+        raise ApplicationError(
+            "PLATFORM_ADMIN_REQUIRED",
+            "该功能仅限平台管理员使用。",
             kind="forbidden",
         )
 
@@ -934,6 +959,33 @@ def _status_rows(
     )
 
 
+def _language_pack_override_values(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+    entity_ids: set[UUID] | None = None,
+) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
+    rows = translation_repository.translation_override_map(
+        session,
+        tenant_id=tenant_id,
+        target_locale=target_locale,
+        entity_ids=entity_ids,
+    )
+    products: dict[str, dict[str, object]] = {}
+    skus: dict[str, dict[str, object]] = {}
+    for (entity_type, entity_id), row in rows.items():
+        value = {
+            "source_hash": row.source_hash,
+            "values": dict(row.values or {}),
+        }
+        if entity_type == "PRODUCT":
+            products[str(entity_id)] = value
+        elif entity_type == "SKU":
+            skus[str(entity_id)] = value
+    return products, skus
+
+
 def _pending_sources(
     session: Session,
     *,
@@ -1434,6 +1486,7 @@ def retry_translation_batch(
     job_id: UUID,
     batch_id: UUID,
 ) -> CatalogTranslationJobResponse:
+    _require_platform_admin(context)
     _require(context.permissions, "product.edit")
     batch = session.scalar(
         select(CatalogTranslationBatchRow).where(
@@ -1501,6 +1554,7 @@ def retry_translation_product(
 ) -> CatalogTranslationJobResponse:
     """Retranslate all customer-visible SKUs belonging to one product."""
 
+    _require_platform_admin(context)
     _require(context.permissions, "product.edit")
     rows = _all_rows(session, tenant_id=context.tenant_id)
     sources = [
@@ -1658,6 +1712,495 @@ def get_translation_status(
             if include_latest_job
             else None
         ),
+    )
+
+
+def _admin_target_locale(value: str) -> str:
+    locale = normalize_storefront_locale(value)
+    if locale is None or locale == _SOURCE_LOCALE:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_LOCALE_INVALID",
+            "请选择需要维护的目标语言。",
+        )
+    return locale
+
+
+def _localized_entry_status(
+    entry: object,
+    *,
+    source_hash: str,
+    override: dict[str, object] | None,
+) -> str:
+    if not isinstance(entry, dict):
+        return "MISSING"
+    if entry.get("source_hash") != source_hash:
+        return "STALE"
+    if override and override.get("source_hash") == source_hash:
+        return "MANUAL"
+    return "TRANSLATED"
+
+
+def _product_content(
+    entry: object,
+    *,
+    source: dict[str, object],
+) -> CatalogLocalizedProductContent:
+    value = (
+        entry
+        if isinstance(entry, dict)
+        else catalog_language_pack_product_entry(source)
+    )
+    return CatalogLocalizedProductContent(
+        name=str(value.get("name") or source["name"]),
+        description=value.get("description"),
+        category_label=value.get("category_label"),
+        tags=list(value.get("tags") or []),
+        display_tag=value.get("display_tag"),
+        specifications=dict(value.get("specifications") or {}),
+        option_labels=dict(value.get("option_labels") or {}),
+        option_values=dict(value.get("option_values") or {}),
+    )
+
+
+def _sku_content(
+    entry: object,
+    *,
+    source: dict[str, object],
+    sku_id: UUID,
+) -> CatalogLocalizedSkuContent:
+    value = entry if isinstance(entry, dict) else catalog_language_pack_sku_entry(source)
+    return CatalogLocalizedSkuContent(
+        sku_id=sku_id,
+        name=str(value.get("name") or source["name"]),
+        description=value.get("description"),
+        category_label=value.get("category_label"),
+        tags=list(value.get("tags") or []),
+        display_tag=value.get("display_tag"),
+        specification=value.get("specification"),
+    )
+
+
+@lru_cache(maxsize=16)
+def _cached_admin_language_pack_payload(
+    object_key: str,
+    content_sha256: str,
+    target_locale: str,
+    storage_fingerprint: str,
+) -> dict[str, object]:
+    del storage_fingerprint  # Part of the cache identity when storage changes.
+    payload = load_language_pack_payload(
+        configured_language_package_storage(),
+        SimpleNamespace(
+            object_key=object_key,
+            content_sha256=content_sha256,
+            target_locale=target_locale,
+        ),
+    )
+    if not isinstance(payload, dict):
+        # Exceptions are not retained by lru_cache, so a transient storage
+        # failure can recover on the next request.
+        raise RuntimeError("catalog language package could not be loaded")
+    return payload
+
+
+def _language_pack_payload(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+) -> tuple[CatalogLanguagePackRow | None, dict[str, object]]:
+    pack = translation_repository.language_pack(
+        session,
+        tenant_id=tenant_id,
+        target_locale=target_locale,
+    )
+    if pack is None:
+        return None, {}
+    storage = configured_language_package_storage()
+    try:
+        payload = _cached_admin_language_pack_payload(
+            pack.object_key,
+            pack.content_sha256,
+            pack.target_locale,
+            storage.status.fingerprint,
+        )
+    except RuntimeError:
+        return pack, {}
+    return pack, payload
+
+
+def list_translation_products(
+    session: Session,
+    *,
+    context: RequestContext,
+    target_locale: str,
+    query: str,
+    page: int,
+    page_size: int,
+) -> CatalogTranslationProductListResponse:
+    _require_platform_admin(context)
+    locale = _admin_target_locale(target_locale)
+    normalized_query = query.strip()
+    total = public_catalog_repository.count_public_catalog_products(
+        session,
+        tenant_id=context.tenant_id,
+        now=utcnow(),
+        query=normalized_query,
+        category=None,
+        tags=set(),
+    )
+    product_ids = public_catalog_repository.list_public_product_ids_page(
+        session,
+        tenant_id=context.tenant_id,
+        now=utcnow(),
+        query=normalized_query,
+        category=None,
+        tags=set(),
+        page=page,
+        page_size=page_size,
+    )
+    rows = public_catalog_repository.list_public_catalog_rows_for_products(
+        session,
+        tenant_id=context.tenant_id,
+        now=utcnow(),
+        product_ids=product_ids,
+    )
+    product_sources, sku_sources = catalog_language_pack_source_entries(rows)
+    source_by_product = {
+        UUID(source["product_id"]): source for source in product_sources
+    }
+    product_rows = {row[2].id: row[2] for row in rows}
+    sku_counts: dict[UUID, int] = {}
+    for source in sku_sources:
+        product_id = UUID(source["product_id"])
+        sku_counts[product_id] = sku_counts.get(product_id, 0) + 1
+    pack, payload = _language_pack_payload(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+    )
+    payload_products = payload.get("products")
+    payload_products = payload_products if isinstance(payload_products, dict) else {}
+    product_overrides, _sku_overrides = _language_pack_override_values(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+        entity_ids=set(product_ids),
+    )
+    items: list[CatalogTranslationProductListItem] = []
+    for product_id in product_ids:
+        source = source_by_product.get(product_id)
+        product = product_rows.get(product_id)
+        if source is None or product is None:
+            continue
+        entry = payload_products.get(str(product_id))
+        entry_dict = entry if isinstance(entry, dict) else {}
+        items.append(
+            CatalogTranslationProductListItem(
+                id=product_id,
+                product_code=product.product_code,
+                source_name=str(source["name"]),
+                source_category=(
+                    str(source["category"]) if source.get("category") else None
+                ),
+                translated_name=(
+                    str(entry_dict.get("name")) if entry_dict.get("name") else None
+                ),
+                translated_category=(
+                    str(entry_dict.get("category_label"))
+                    if entry_dict.get("category_label")
+                    else None
+                ),
+                status=_localized_entry_status(
+                    entry,
+                    source_hash=str(source["source_hash"]),
+                    override=product_overrides.get(str(product_id)),
+                ),
+                sku_count=sku_counts.get(product_id, 0),
+            )
+        )
+    return CatalogTranslationProductListResponse(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=(total + page_size - 1) // page_size,
+        package_version=pack.version if pack is not None else None,
+    )
+
+
+def get_translation_product(
+    session: Session,
+    *,
+    context: RequestContext,
+    product_id: UUID,
+    target_locale: str,
+) -> CatalogTranslationProductDetail:
+    _require_platform_admin(context)
+    locale = _admin_target_locale(target_locale)
+    rows = public_catalog_repository.list_public_catalog_rows_for_products(
+        session,
+        tenant_id=context.tenant_id,
+        now=utcnow(),
+        product_ids=[product_id],
+    )
+    if not rows:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_PRODUCT_NOT_FOUND",
+            "前台商品不存在或尚未发布。",
+            kind="not_found",
+        )
+    product_sources, sku_sources = catalog_language_pack_source_entries(rows)
+    product_source = product_sources[0]
+    pack, payload = _language_pack_payload(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+    )
+    payload_products = payload.get("products")
+    payload_skus = payload.get("skus")
+    payload_products = payload_products if isinstance(payload_products, dict) else {}
+    payload_skus = payload_skus if isinstance(payload_skus, dict) else {}
+    sku_ids = {UUID(source["sku_id"]) for source in sku_sources}
+    product_overrides, sku_overrides = _language_pack_override_values(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+        entity_ids={product_id, *sku_ids},
+    )
+    product_entry = payload_products.get(str(product_id))
+    sku_rows = {row[1].id: row[1] for row in rows}
+    sku_details: list[CatalogTranslationSkuDetail] = []
+    for source in sku_sources:
+        sku_id = UUID(source["sku_id"])
+        sku_entry = payload_skus.get(str(sku_id))
+        sku_details.append(
+            CatalogTranslationSkuDetail(
+                id=sku_id,
+                sku_code=sku_rows[sku_id].sku_code,
+                source_hash=str(source["source_hash"]),
+                status=_localized_entry_status(
+                    sku_entry,
+                    source_hash=str(source["source_hash"]),
+                    override=sku_overrides.get(str(sku_id)),
+                ),
+                source=_sku_content(
+                    catalog_language_pack_sku_entry(source),
+                    source=source,
+                    sku_id=sku_id,
+                ),
+                translation=_sku_content(sku_entry, source=source, sku_id=sku_id),
+            )
+        )
+    product = rows[0][2]
+    return CatalogTranslationProductDetail(
+        id=product_id,
+        product_code=product.product_code,
+        source_hash=str(product_source["source_hash"]),
+        target_locale=locale,
+        status=_localized_entry_status(
+            product_entry,
+            source_hash=str(product_source["source_hash"]),
+            override=product_overrides.get(str(product_id)),
+        ),
+        package_version=pack.version if pack is not None else None,
+        source=_product_content(
+            catalog_language_pack_product_entry(product_source),
+            source=product_source,
+        ),
+        translation=_product_content(product_entry, source=product_source),
+        skus=sku_details,
+    )
+
+
+def update_translation_product(
+    session: Session,
+    *,
+    context: RequestContext,
+    product_id: UUID,
+    request: CatalogTranslationProductUpdateRequest,
+) -> CatalogTranslationProductDetail:
+    _require_platform_admin(context)
+    locale = _admin_target_locale(request.target_locale)
+    rows = public_catalog_repository.list_public_catalog_rows_for_products(
+        session,
+        tenant_id=context.tenant_id,
+        now=utcnow(),
+        product_ids=[product_id],
+    )
+    if not rows:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_PRODUCT_NOT_FOUND",
+            "前台商品不存在或尚未发布。",
+            kind="not_found",
+        )
+    current_pack, payload = _language_pack_payload(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+    )
+    if current_pack is None or not payload:
+        raise ApplicationError(
+            "CATALOG_LANGUAGE_PACKAGE_NOT_CONFIGURED",
+            "该语言包未配置，请先由管理员执行全量翻译。",
+            kind="conflict",
+        )
+    product_sources, sku_sources = catalog_language_pack_source_entries(rows)
+    product_source = product_sources[0]
+    source_sku_ids = {UUID(source["sku_id"]) for source in sku_sources}
+    source_hashes = {
+        UUID(source["sku_id"]): str(source["source_hash"])
+        for source in sku_sources
+    }
+    if (
+        request.source_hash != str(product_source["source_hash"])
+        or set(request.sku_source_hashes) != source_sku_ids
+        or any(
+            request.sku_source_hashes[sku_id] != source_hashes[sku_id]
+            for sku_id in source_sku_ids
+        )
+    ):
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_SOURCE_CHANGED",
+            "商品原文已发生变化，请刷新后重新微调译文。",
+            kind="conflict",
+        )
+    requested_sku_ids = [item.sku_id for item in request.skus]
+    if (
+        len(requested_sku_ids) != len(set(requested_sku_ids))
+        or set(requested_sku_ids) != source_sku_ids
+    ):
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_SKUS_CHANGED",
+            "商品 SKU 已发生变化，请刷新后重新保存译文。",
+            kind="conflict",
+        )
+
+    translation_repository.save_translation_override(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+        entity_type="PRODUCT",
+        entity_id=product_id,
+        source_hash=str(product_source["source_hash"]),
+        values=request.product.model_dump(),
+        updated_by_user_id=context.user_id,
+    )
+    source_by_sku_id = {UUID(source["sku_id"]): source for source in sku_sources}
+    for item in request.skus:
+        translation_repository.save_translation_override(
+            session,
+            tenant_id=context.tenant_id,
+            target_locale=locale,
+            entity_type="SKU",
+            entity_id=item.sku_id,
+            source_hash=str(source_by_sku_id[item.sku_id]["source_hash"]),
+            values=item.model_dump(exclude={"sku_id"}),
+            updated_by_user_id=context.user_id,
+        )
+    session.flush()
+
+    next_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+    products = next_payload.get("products")
+    skus = next_payload.get("skus")
+    categories = next_payload.get("categories")
+    products = products if isinstance(products, dict) else {}
+    skus = skus if isinstance(skus, dict) else {}
+    categories = categories if isinstance(categories, dict) else {}
+    next_payload["products"] = products
+    next_payload["skus"] = skus
+    next_payload["categories"] = categories
+
+    existing_product = products.get(str(product_id))
+    if (
+        not isinstance(existing_product, dict)
+        or existing_product.get("source_hash") != product_source["source_hash"]
+    ):
+        products[str(product_id)] = catalog_language_pack_product_entry(product_source)
+    for source in sku_sources:
+        sku_id = str(source["sku_id"])
+        existing_sku = skus.get(sku_id)
+        if (
+            not isinstance(existing_sku, dict)
+            or existing_sku.get("source_hash") != source["source_hash"]
+        ):
+            skus[sku_id] = catalog_language_pack_sku_entry(source)
+
+    product_overrides, sku_overrides = _language_pack_override_values(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+        entity_ids={product_id, *source_sku_ids},
+    )
+    apply_catalog_language_pack_overrides(
+        products=products,
+        skus=skus,
+        product_sources=product_sources,
+        sku_sources=sku_sources,
+        product_overrides=product_overrides,
+        sku_overrides=sku_overrides,
+    )
+    source_category = product_source.get("category")
+    if source_category:
+        categories[str(source_category)] = (
+            products[str(product_id)].get("category_label") or source_category
+        )
+
+    all_rows = _status_rows(session, tenant_id=context.tenant_id)
+    payload_is_current = catalog_language_pack_payload_matches_rows(next_payload, all_rows)
+    source_digest = (
+        catalog_rows_source_digest(all_rows)
+        if payload_is_current
+        else current_pack.source_digest
+    )
+    source_cutoff_at = (
+        catalog_language_pack_source_cutoff(all_rows)
+        if payload_is_current
+        else current_pack.source_cutoff_at
+    )
+    next_version = current_pack.version + 1
+    build = repack_catalog_language_pack_payload(
+        next_payload,
+        version=next_version,
+        source_digest=source_digest,
+        source_cutoff_at=source_cutoff_at,
+    )
+    storage = configured_language_package_storage()
+    object_key = language_pack_object_key(
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+        version=next_version,
+        content_sha256=build.content_sha256,
+    )
+    stored = storage.put(build.compressed, object_key=object_key)
+    published_at = utcnow()
+    translation_repository.save_language_pack(
+        session,
+        tenant_id=context.tenant_id,
+        source_locale=current_pack.source_locale,
+        target_locale=locale,
+        version=next_version,
+        object_key=stored.object_key,
+        public_url=stored.public_url,
+        content_sha256=build.content_sha256,
+        source_digest=build.source_digest,
+        storage_fingerprint=storage.status.fingerprint,
+        byte_size=stored.byte_size,
+        product_count=build.product_count,
+        sku_count=build.sku_count,
+        category_count=build.category_count,
+        provider=current_pack.provider,
+        provider_version=current_pack.provider_version,
+        source_cutoff_at=build.source_cutoff_at,
+        published_at=published_at,
+        full_rebuild=False,
+    )
+    session.commit()
+    return get_translation_product(
+        session,
+        context=context,
+        product_id=product_id,
+        target_locale=locale,
     )
 
 
@@ -3318,6 +3861,11 @@ def _run_qwen_batch_translation_job(
         sku_ids=[source.sku_id for source in sources],
         target_locale=job.target_locale,
     )
+    product_overrides, sku_overrides = _language_pack_override_values(
+        session,
+        tenant_id=job.tenant_id,
+        target_locale=job.target_locale,
+    )
     next_version = (current_pack.version if current_pack else 0) + 1
     build = build_catalog_language_pack(
         tenant_id=job.tenant_id,
@@ -3331,6 +3879,8 @@ def _run_qwen_batch_translation_job(
         reuse_previous=bool(current_pack),
         full_rebuild=job.mode == "FULL_REBUILD",
         force_rebuild_sku_ids=set(_forced_sku_ids(job)),
+        product_overrides=product_overrides,
+        sku_overrides=sku_overrides,
     )
     object_key = language_pack_object_key(
         tenant_id=job.tenant_id,
@@ -3638,6 +4188,11 @@ def _run_translation_job(
             if _pause_at_safe_checkpoint(session, job):
                 return
 
+            product_overrides, sku_overrides = _language_pack_override_values(
+                session,
+                tenant_id=tenant_id,
+                target_locale=job.target_locale,
+            )
             next_version = (current_pack.version if current_pack else 0) + 1
             build = build_catalog_language_pack(
                 tenant_id=tenant_id,
@@ -3657,6 +4212,8 @@ def _run_translation_job(
                 reuse_previous=bool(current_pack),
                 full_rebuild=job.mode == "FULL_REBUILD",
                 force_rebuild_sku_ids=set(forced_ids),
+                product_overrides=product_overrides,
+                sku_overrides=sku_overrides,
             )
             object_key = language_pack_object_key(
                 tenant_id=tenant_id,
@@ -3909,6 +4466,7 @@ def pause_translation_job(
     context: RequestContext,
     job_id: UUID,
 ) -> CatalogTranslationJobResponse:
+    _require_platform_admin(context)
     _require(context.permissions, "product.edit")
     job = _managed_job(
         session,
@@ -3948,6 +4506,7 @@ def resume_translation_job(
     context: RequestContext,
     job_id: UUID,
 ) -> CatalogTranslationJobResponse:
+    _require_platform_admin(context)
     _require(context.permissions, "product.edit")
     job = _managed_job(
         session,
@@ -4065,6 +4624,7 @@ def start_translation_job(
     context: RequestContext,
     request: CatalogTranslationJobStartRequest,
 ) -> CatalogTranslationJobResponse:
+    _require_platform_admin(context)
     _require(context.permissions, "product.edit")
     if request.mode == "FULL_REBUILD" and not request.confirm_full_rebuild:
         raise ApplicationError(
