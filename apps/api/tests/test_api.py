@@ -3527,6 +3527,125 @@ def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
         assert all(token.revoked_at is None for token in current_tokens)
 
 
+def test_customer_subaccount_can_change_its_local_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.auth.local_credentials import verify_local_password
+
+    suffix = uuid4().hex[:10]
+    original_password = "135790"
+    updated_password = "246801"
+    identifier = f"password-child-{suffix}"
+    created = client.post(
+        "/api/v1/customer-accounts",
+        json={
+            "display_name": f"Password Child {suffix}",
+            "login_identifier": identifier,
+            "password": original_password,
+            "email": f"password-child-{suffix}@subaccount.test",
+            "modules": ["products"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    membership_id = UUID(created.json()["id"])
+
+    with SessionLocal() as session:
+        membership = session.get(MembershipRow, membership_id)
+        assert membership is not None
+        child_user_id = membership.user_id
+
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        auth_environment.setattr(
+            "app.routers.auth.enforce_rate_limit",
+            lambda _request, **_kwargs: None,
+        )
+        with TestClient(app) as password_client:
+            current_login = password_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": identifier,
+                    "password": original_password,
+                },
+            )
+            peer_login = password_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": identifier,
+                    "password": original_password,
+                },
+            )
+            assert current_login.status_code == 200, current_login.text
+            assert peer_login.status_code == 200, peer_login.text
+            current_data = current_login.json()["data"]
+            peer_data = peer_login.json()["data"]
+
+            changed = password_client.put(
+                "/api/v1/auth/password",
+                headers={
+                    "Authorization": f"Bearer {current_data['access_token']}",
+                    "X-CSRF-Token": current_data["csrf_token"],
+                },
+                json={
+                    "current_password": original_password,
+                    "new_password": updated_password,
+                },
+            )
+            assert changed.status_code == 204, changed.text
+            assert password_client.get(
+                "/api/v1/me",
+                headers={"Authorization": f"Bearer {current_data['access_token']}"},
+            ).status_code == 200
+            assert password_client.get(
+                "/api/v1/me",
+                headers={"Authorization": f"Bearer {peer_data['access_token']}"},
+            ).status_code == 401
+            assert password_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": identifier,
+                    "password": original_password,
+                },
+            ).status_code == 401
+            new_login = password_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": identifier,
+                    "password": updated_password,
+                },
+            )
+            assert new_login.status_code == 200, new_login.text
+
+    with SessionLocal() as session:
+        credential = session.scalar(
+            select(LocalAccountCredentialRow).where(
+                LocalAccountCredentialRow.user_id == child_user_id
+            )
+        )
+        assert credential is not None
+        assert not verify_local_password(
+            password=original_password,
+            salt=credential.password_salt,
+            password_hash=credential.password_hash,
+        )
+        assert verify_local_password(
+            password=updated_password,
+            salt=credential.password_salt,
+            password_hash=credential.password_hash,
+        )
+        peer_session = session.get(AuthSessionRow, UUID(peer_data["session_id"]))
+        assert peer_session is not None
+        assert peer_session.revoked_at is not None
+        assert peer_session.revocation_reason == "PASSWORD_CHANGED"
+
+    deleted = client.delete(f"/api/v1/customer-accounts/{membership_id}")
+    assert deleted.status_code == 204, deleted.text
+
+
 @pytest.mark.parametrize(
     ("new_password", "expected_code"),
     [
@@ -22323,6 +22442,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             child_permissions = set(login_data["permissions"])
             assert {"product.view", "catalog.view"}.issubset(child_permissions)
             assert child_permissions.isdisjoint(product_write_permissions)
+            assert "support.settings_manage" not in child_permissions
             headers = {"Authorization": f"Bearer {token}"}
 
             portal = child_client.get("/api/v1/customer-portal/overview", headers=headers)

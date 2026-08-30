@@ -96,6 +96,7 @@ export function AccountSettingsPage() {
   const strength = strengthCopy[passwordStrength(newPassword, rules)];
   const activeMembership = memberships.find((membership) => membership.id === profile?.context.membershipId);
   const displayName = user?.displayName || user?.email || t("当前成员");
+  const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
   const canManageMerchant = hasPermission("system.settings_manage");
   const storefrontUrl = merchantSlug
     ? `${window.location.origin}/${encodeURIComponent(merchantSlug)}`
@@ -107,7 +108,11 @@ export function AccountSettingsPage() {
   }, [profile?.context.tenantName, profile?.context.tenantSlug]);
 
   useEffect(() => {
-    if (!profile?.context.tenantId) return;
+    if (!profile?.context.tenantId || !canManageMerchant) {
+      setMerchantSettingsLoading(false);
+      setMerchantSettingsReady(false);
+      return;
+    }
     let active = true;
     setMerchantSettingsLoading(true);
     setMerchantSettingsReady(false);
@@ -132,7 +137,7 @@ export function AccountSettingsPage() {
     return () => {
       active = false;
     };
-  }, [profile?.context.tenantId, t]);
+  }, [canManageMerchant, profile?.context.tenantId, t]);
 
   const hotProductsChanged = hotProductsEnabled !== savedHotProductsEnabled;
   const shareCardSubtitleChanged = shareCardSubtitle.trim() !== savedShareCardSubtitle;
@@ -266,8 +271,10 @@ export function AccountSettingsPage() {
     <div className="core-workspace account-settings-page">
       <CorePageHeading
         eyebrow={t("账户与安全")}
-        title={t("账户与商家资料")}
-        description={t("管理当前商家名称、公开前台地址与登录密码。")}
+        title={t(isCustomerSubaccount ? "账户与安全" : "账户与商家资料")}
+        description={t(isCustomerSubaccount
+          ? "查看当前账户资料并修改登录密码。"
+          : "管理当前商家名称、公开前台地址与登录密码。")}
       />
 
       <div className="account-settings-grid">
@@ -279,7 +286,7 @@ export function AccountSettingsPage() {
                 <Text size="1" color="gray">{t("当前登录账户")}</Text>
                 <Heading size="4">{displayName}</Heading>
                 <Badge color={user?.isPlatformAdmin ? "amber" : "gray"}>
-                  {t(user?.isPlatformAdmin ? "平台管理员" : "商家成员")}
+                  {t(user?.isPlatformAdmin ? "平台管理员" : isCustomerSubaccount ? "子账号" : "商家成员")}
                 </Badge>
               </div>
 
@@ -317,7 +324,7 @@ export function AccountSettingsPage() {
         </aside>
 
         <div className="account-settings-content">
-          <Card className="account-merchant-card">
+          {canManageMerchant ? <Card className="account-merchant-card">
             <div className="account-section-heading">
               <span className="account-section-icon"><Buildings size={22} aria-hidden="true" /></span>
               <div>
@@ -481,7 +488,7 @@ export function AccountSettingsPage() {
                 </Button>
               </div>
             </form>
-          </Card>
+          </Card> : null}
 
           <Card className="account-password-card">
           <div className="account-section-heading">
@@ -611,8 +618,10 @@ export function AccountSettingsPage() {
               {fieldErrors.confirmation ? <Text id="account-confirm-password-error" size="1" color="red" role="alert">{t(fieldErrors.confirmation)}</Text> : null}
             </div>
 
-            {requestError ? <ToastNotice kind="error" message={requestError} /> : null}
-            {success ? <ToastNotice kind="success" message={success} /> : null}
+            <div aria-live="polite">
+              {requestError ? <ToastNotice kind="error" message={requestError} /> : null}
+              {success ? <ToastNotice kind="success" message={success} /> : null}
+            </div>
 
             <div className="account-password-actions">
               <div className="account-session-note">

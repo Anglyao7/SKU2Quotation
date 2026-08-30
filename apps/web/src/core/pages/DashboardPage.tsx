@@ -42,9 +42,11 @@ const metricIcons: Record<string, typeof Cube> = {
 };
 
 export function CoreDashboardPage() {
-  const { hasPermission } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { locale, t } = useLocale();
   const canViewProducts = hasPermission("product.view");
+  const canViewOwnOrders = hasPermission("customer_portal.order_view_self") || hasPermission("quotation.view");
+  const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
   const [data, setData] = useState<DashboardSnapshot>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -59,8 +61,15 @@ export function CoreDashboardPage() {
 
   const metrics = useMemo(
     () => (data?.metrics ?? [])
-      .filter((metric) => metric.key !== "pending_product_reviews"),
-    [data],
+      .filter((metric) => (
+        metric.key !== "pending_product_reviews"
+        && (
+          !isCustomerSubaccount
+          || metric.key === "active_skus"
+          || (metric.key === "pending_quotations" && canViewOwnOrders)
+        )
+      )),
+    [canViewOwnOrders, data, isCustomerSubaccount],
   );
   const market = data?.market;
   if (loading && !data) return <div className="core-workspace"><CoreLoading label={t("正在读取实时经营数据")} /></div>;
@@ -71,7 +80,10 @@ export function CoreDashboardPage() {
         eyebrow={t(data?.dataScope === "SELF" ? "我的工作台" : "当前商家 · 实时数据")}
         title={t("工作台")}
         description={t("商品、询盘与报价的关键统计。")}
-        actions={canViewProducts ? <><Button asChild variant="soft"><Link to="/console/ai-search"><Sparkle />{t("AI 查找")}</Link></Button><Button asChild><Link to="/console/products"><Cube />{t("管理 SKU")}</Link></Button></> : undefined}
+        actions={canViewProducts ? isCustomerSubaccount
+          ? <Button asChild><Link to="/console/products"><Cube />{t("浏览商品")}</Link></Button>
+          : <><Button asChild variant="soft"><Link to="/console/ai-search"><Sparkle />{t("AI 查找")}</Link></Button><Button asChild><Link to="/console/products"><Cube />{t("管理 SKU")}</Link></Button></>
+          : undefined}
       />
       {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
 

@@ -65,8 +65,8 @@ const navigationGroups = [
       { to: "/console", label: "概览", mobileLabel: "概览", icon: ChartDonut, end: true, permissions: [], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/analytics", label: "网站监测", mobileLabel: "网站监测", icon: ChartLineUp, permissions: ["analytics.view"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/ai-search", label: "AI 搜索", mobileLabel: "AI 搜索", icon: Sparkle, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
-      { to: "/console/ai-search/manage", label: "AI 搜索管理", mobileLabel: "搜索管理", icon: Database, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
-      { to: "/console/image-search/manage", label: "图片搜索管理", mobileLabel: "图搜管理", icon: ImageSquare, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/ai-search/manage", label: "AI 搜索管理", mobileLabel: "搜索管理", icon: Database, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/image-search/manage", label: "图片搜索管理", mobileLabel: "图搜管理", icon: ImageSquare, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {
@@ -205,10 +205,9 @@ export function ConsoleLayout() {
     .map((group) => ({
       ...group,
       items: group.items.filter((item) => (
-        // A child account is an operator, not a guest: it receives the same
-        // workspace navigation as the parent. Only owner-only relationship
-        // management remains hidden; sensitive product fields are redacted by
-        // the API response rather than by removing the whole module.
+        // Permission-gated actions are omitted entirely for child accounts.
+        // Their product and order routes render dedicated read-only pages;
+        // sensitive merchant management controls are never mounted.
         (!item.platformAdminOnly || profile?.user.isPlatformAdmin)
         && (
           item.permissions.length === 0
@@ -531,20 +530,18 @@ export function ConsoleLayout() {
             tenantId={activeTenantId}
             enabled={hasPermission("support.view")}
           />
-          <Button
+          {canManageSettings ? <Button
             className={`business-mode-trigger ${businessMode === "EXPORT" ? "export" : ""}`}
             variant="soft"
             color={businessMode === "EXPORT" ? "amber" : "gray"}
             aria-label={t("设置前台币种")}
-            title={!canManageSettings
-              ? t("当前成员没有修改商家设置的权限。")
-              : t("设置前台币种")}
-            disabled={!canManageSettings || modeBusy}
+            title={t("设置前台币种")}
+            disabled={modeBusy}
             onClick={openCurrencyDialog}
           >
             <GlobeHemisphereWest size={17} weight="duotone" />
             <span>{t("币种")} · {defaultCurrency}</span>
-          </Button>
+          </Button> : null}
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>
               <Button className="locale-trigger" variant="ghost" color="gray" aria-label={t("切换语言")} title={t("切换语言")}>
@@ -564,7 +561,7 @@ export function ConsoleLayout() {
             </DropdownMenu.Content>
           </DropdownMenu.Root>
           <ThemeToggle />
-          {activeTenantId ? (
+          {activeTenantId && !isCustomerSubaccount ? (
             <Badge
               className={`subscription-level-badge is-${subscriptionTier.toLowerCase()}`}
               color={subscriptionPresentation.color}

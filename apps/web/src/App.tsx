@@ -150,17 +150,28 @@ function ConsoleHomeRoute() {
 }
 
 function ConsoleProductsRoute() {
-  return <PermissionGate anyOf={["product.view", "customer_portal.access"]}><ProductsPage /></PermissionGate>;
+  const { profile } = useCoreAuth();
+  const page = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
+    ? <ResellerProductsPage />
+    : <ProductsPage />;
+  return <PermissionGate anyOf={["product.view", "customer_portal.access"]}>{page}</PermissionGate>;
 }
 
 function ConsoleQuotesRoute() {
-  return <PermissionGate anyOf={["quotation.view", "customer_portal.order_view_self"]}><QuotesPage /></PermissionGate>;
+  const { profile } = useCoreAuth();
+  const page = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
+    ? <ResellerOrdersPage />
+    : <QuotesPage />;
+  return <PermissionGate anyOf={["quotation.view", "customer_portal.order_view_self"]}>{page}</PermissionGate>;
 }
 
 function PermissionGate({ anyOf, children }: { anyOf: string[]; children: ReactNode }) {
-  const { hasAnyPermission } = useCoreAuth();
+  const { hasAnyPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   if (hasAnyPermission(...anyOf)) return children;
+  if (profile?.context.accountScope === "CUSTOMER_SUBACCOUNT") {
+    return <Navigate to="/console" replace />;
+  }
   return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("无法访问此页面")}</Heading><Text size="2" color="gray">{t("当前账户未开通此功能，如需使用请联系账户负责人。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
 }
 
@@ -168,6 +179,9 @@ function PlatformAdminGate({ children }: { children: ReactNode }) {
   const { profile } = useCoreAuth();
   const { t } = useLocale();
   if (profile?.user.isPlatformAdmin) return children;
+  if (profile?.context.accountScope === "CUSTOMER_SUBACCOUNT") {
+    return <Navigate to="/console" replace />;
+  }
   return <div className="core-workspace"><Card className="core-state"><ShieldWarning size={36} /><Heading size="5">{t("无法访问此页面")}</Heading><Text size="2" color="gray">{t("当前账户未开通此功能，如需使用请联系账户负责人。")}</Text><Button asChild variant="soft"><a href="/console">{t("返回仪表盘")}</a></Button></Card></div>;
 }
 
@@ -389,8 +403,8 @@ const router = createBrowserRouter([{
         { index: true, element: <ConsoleHomeRoute /> },
         { path: "dashboard", element: <Navigate to="/console" replace /> },
         { path: "ai-search", element: <PermissionGate anyOf={["product.view"]}><AiSearchPage /></PermissionGate> },
-        { path: "ai-search/manage", element: <PermissionGate anyOf={["product.view"]}><AiSearchManagementPage /></PermissionGate> },
-        { path: "image-search/manage", element: <PermissionGate anyOf={["product.view"]}><ImageSearchManagementPage /></PermissionGate> },
+        { path: "ai-search/manage", element: <PermissionGate anyOf={["product.edit"]}><AiSearchManagementPage /></PermissionGate> },
+        { path: "image-search/manage", element: <PermissionGate anyOf={["product.edit"]}><ImageSearchManagementPage /></PermissionGate> },
         { path: "products", element: <ConsoleProductsRoute /> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },

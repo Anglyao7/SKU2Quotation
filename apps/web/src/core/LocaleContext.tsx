@@ -1085,6 +1085,7 @@ const english: Record<string, string> = {
   "权限": "Access",
   "更多": "More",
   "账户与安全": "Account & Security",
+  "查看当前账户资料并修改登录密码。": "View your account details and change your sign-in password.",
   "查看商品前台": "View Storefront",
   "退出登录": "Sign out",
   "当前工作区": "Current workspace",

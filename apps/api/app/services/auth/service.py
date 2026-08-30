@@ -485,7 +485,7 @@ def change_password(
     access_token: str,
     csrf_token: str,
 ) -> None:
-    """Verify the old secret, revoke peer sessions, and update Keycloak only."""
+    """Verify the old secret, revoke peer sessions, and update its owner."""
 
     auth_session, user, _claims = session_from_access_token(
         session,
@@ -513,6 +513,42 @@ def change_password(
         new_password=new_password,
         user=user,
     )
+
+    local_credential = session.scalar(
+        select(LocalAccountCredentialRow)
+        .where(LocalAccountCredentialRow.user_id == user.id)
+        .with_for_update()
+    )
+    if (
+        local_credential is not None
+        and user.identity_provider in {"local-password", "local-subaccount"}
+    ):
+        if not verify_local_password(
+            password=current_password,
+            salt=local_credential.password_salt,
+            password_hash=local_credential.password_hash,
+        ):
+            raise AuthError(
+                "CURRENT_PASSWORD_INVALID",
+                "current password is invalid",
+            )
+        password_salt, password_hash = new_local_password_material(new_password)
+        local_credential.password_salt = password_salt
+        local_credential.password_hash = password_hash
+        peer_sessions = session.scalars(
+            select(AuthSessionRow)
+            .where(
+                AuthSessionRow.user_id == user.id,
+                AuthSessionRow.id != auth_session.id,
+                AuthSessionRow.revoked_at.is_(None),
+            )
+            .with_for_update()
+        ).all()
+        for peer_session in peer_sessions:
+            _revoke_family(session, peer_session, "PASSWORD_CHANGED")
+        session.commit()
+        return
+
     if not user.email_normalized or not user.identity_provider.startswith("oidc:"):
         raise AuthError(
             "PASSWORD_CHANGE_UNAVAILABLE",

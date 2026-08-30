@@ -47,6 +47,10 @@ CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES = frozenset(
         "system.role_manage",
         "system.settings_manage",
         "customer_portal.subaccount_manage",
+        # Children may reply to conversations when the support module is
+        # enabled, but storefront floating actions and welcome content belong
+        # exclusively to the merchant account.
+        "support.settings_manage",
         # These modules aggregate the merchant workspace rather than a
         # child account's own queue. A reseller may still browse products and
         # operate its own quote workflow, but must not infer the owner's

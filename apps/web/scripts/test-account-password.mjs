@@ -109,9 +109,14 @@ assert.match(apiSource, /"X-CSRF-Token":\s*csrfToken/);
 assert.match(pageSource, /autoComplete="current-password"/);
 assert.match(pageSource, /autoComplete="new-password"/);
 assert.match(pageSource, /aria-live="polite"/);
+assert.match(pageSource, /isCustomerSubaccount/);
+assert.match(pageSource, /\{canManageMerchant \? <Card className="account-merchant-card">/);
 assert.match(layoutSource, /<DropdownMenu\.Root>/);
 assert.match(layoutSource, /to="\/console\/account"/);
 assert.match(layoutSource, /退出登录/);
 assert.match(appSource, /path:\s*"account",\s*element:\s*<AccountSettingsPage \/>/);
+assert.match(appSource, /profile\?\.context\.accountScope === "CUSTOMER_SUBACCOUNT"[\s\S]*?<ResellerProductsPage \/>/);
+assert.match(appSource, /profile\?\.context\.accountScope === "CUSTOMER_SUBACCOUNT"[\s\S]*?<ResellerOrdersPage \/>/);
+assert.match(appSource, /return <Navigate to="\/console" replace \/>/);
 
 console.log("Account settings route and API contract tests passed");
