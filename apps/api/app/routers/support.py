@@ -22,7 +22,6 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
@@ -31,7 +30,6 @@ from ..domain.errors import ApplicationError
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.storefront_analytics import request_visitor_ip, request_visitor_location
-from ..support_ai_models import SupportAIRunRow
 from ..support_schemas import (
     PublicChatConversationCreate,
     PublicChatConversationResponse,
@@ -100,14 +98,9 @@ def _load_public_support_stream_state(
             slug=tenant_slug,
             token=token,
         )
-        run = session.scalar(
-            select(SupportAIRunRow)
-            .where(
-                SupportAIRunRow.conversation_id == conversation.id,
-                SupportAIRunRow.trigger_type == "CHAT",
-            )
-            .order_by(SupportAIRunRow.created_at.desc())
-            .limit(1)
+        run = use_cases.latest_public_chat_run(
+            session,
+            conversation_id=conversation.id,
         )
         return _PublicSupportStreamState(
             conversation=conversation,

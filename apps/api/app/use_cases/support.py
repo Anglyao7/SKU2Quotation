@@ -802,6 +802,24 @@ def get_public_conversation(
     return _public_conversation_response(session, row)
 
 
+def latest_public_chat_run(
+    session: Session,
+    *,
+    conversation_id: UUID,
+) -> SupportAIRunRow | None:
+    """Return the newest chat run for an already authorized public conversation."""
+
+    return session.scalar(
+        select(SupportAIRunRow)
+        .where(
+            SupportAIRunRow.conversation_id == conversation_id,
+            SupportAIRunRow.trigger_type == "CHAT",
+        )
+        .order_by(SupportAIRunRow.created_at.desc())
+        .limit(1)
+    )
+
+
 def send_public_message(
     session: Session,
     *,
