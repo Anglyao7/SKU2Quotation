@@ -683,7 +683,8 @@ export function SubaccountPricingDialog({
       <Dialog.Description>{t("最终价格按 SKU 计算：SKU 特价 > 商品规则 > 分类规则 > 统一加价。子账号只会看到最终销售价。")}</Dialog.Description>
       <section className="subaccount-pricing-policy">
         <label><Text size="2" weight="medium">{t("统一加价（%）")}</Text><TextField.Root type="number" min="0" max="100000" step="0.1" value={markup} onChange={(event) => setMarkupDraft(event.target.value)} /></label>
-        <Text size="1" color="gray">{t("当前已有 {count} 个单品规则、{skuCount} 个 SKU 特价；整体和分类改动由底部统一保存。", { count: data?.policy.overrideCount ?? account.overrideCount, skuCount: data?.policy.skuOverrideCount ?? 0 })}</Text>
+        <Text size="1" color="gray">{t("当前已有 {count} 个单品规则、{skuCount} 个 SKU 特价；整体和分类改动统一保存。", { count: data?.policy.overrideCount ?? account.overrideCount, skuCount: data?.policy.skuOverrideCount ?? 0 })}</Text>
+        <Button loading={saving} disabled={loading || !hasPricingChanges} onClick={() => void savePriceSettings()}><CurrencyDollar />{t("应用价格设置")}</Button>
       </section>
       <section className="subaccount-category-pricing">
         <div className="subaccount-category-pricing-heading">
@@ -764,7 +765,7 @@ export function SubaccountPricingDialog({
           <Button size="1" variant="soft" color="gray" disabled={loading || data.page >= Math.ceil(data.total / data.pageSize)} onClick={() => setPage((current) => Math.min(Math.ceil(data.total / data.pageSize), current + 1))}>{t("下一页")}<CaretRight /></Button>
         </div>
       </div> : null}
-      <div className="core-dialog-actions"><Button variant="soft" color="gray" disabled={saving} onClick={onClose}>{t("关闭")}</Button><Button loading={saving} disabled={loading || !hasPricingChanges} onClick={() => void savePriceSettings()}><CurrencyDollar />{t("应用价格设置")}</Button></div>
+      <div className="core-dialog-actions"><Button variant="soft" color="gray" disabled={saving} onClick={onClose}>{t("关闭")}</Button></div>
     </Dialog.Content>
   </Dialog.Root>;
 }
