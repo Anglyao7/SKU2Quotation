@@ -21828,6 +21828,30 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     ]
     assert account["login_count_30d"] == 0
 
+    product_write_permissions = {
+        "product.create",
+        "product.edit",
+        "product.import",
+        "product.review",
+        "product.cost.read",
+        "product.cost.write",
+        "catalog.publish",
+    }
+    with SessionLocal() as session:
+        membership = session.get(MembershipRow, UUID(account["id"]))
+        assert membership is not None
+        assert membership.permission_overrides is not None
+        assert set(membership.permission_overrides).isdisjoint(product_write_permissions)
+        # Simulate a pre-fix or hand-edited account. Runtime RBAC must still
+        # enforce read-only product access before the PostgreSQL cleanup
+        # migration removes these stale values permanently.
+        membership.permission_overrides = [
+            *membership.permission_overrides,
+            *sorted(product_write_permissions),
+        ]
+        membership.permission_version += 1
+        session.commit()
+
     listing = client.get("/api/store/demo/skus", params={"page_size": 1})
     assert listing.status_code == 200, listing.text
     sku_id = listing.json()["items"][0]["id"]
@@ -21844,14 +21868,41 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 },
             )
             assert login.status_code == 200, login.text
-            token = login.json()["data"]["access_token"]
-            assert login.json()["data"]["context"]["account_scope"] == "CUSTOMER_SUBACCOUNT"
+            login_data = login.json()["data"]
+            token = login_data["access_token"]
+            assert login_data["context"]["account_scope"] == "CUSTOMER_SUBACCOUNT"
+            child_permissions = set(login_data["permissions"])
+            assert {"product.view", "catalog.view"}.issubset(child_permissions)
+            assert child_permissions.isdisjoint(product_write_permissions)
             headers = {"Authorization": f"Bearer {token}"}
 
             portal = child_client.get("/api/v1/customer-portal/overview", headers=headers)
             assert portal.status_code == 200, portal.text
             assert portal.json()["display_name"] == f"Downstream Customer {suffix}"
             assert child_client.get("/api/v1/customer-accounts", headers=headers).status_code == 403
+
+            product_listing = child_client.get(
+                "/api/v1/product-center/products",
+                headers=headers,
+                params={"page_size": 1},
+            )
+            assert product_listing.status_code == 200, product_listing.text
+            assert product_listing.json()["items"]
+            assert child_client.post(
+                "/api/v1/products",
+                headers=headers,
+                json={"name": "Child accounts must not create products"},
+            ).status_code == 403
+            assert child_client.patch(
+                f"/api/v1/products/{uuid4()}/category",
+                headers=headers,
+                json={"expected_version": 1, "category_id": None},
+            ).status_code == 403
+            assert child_client.post(
+                "/api/v1/imports/detect",
+                headers=headers,
+                files={"file": ("products.xlsx", b"not-an-xlsx", "application/octet-stream")},
+            ).status_code == 403
 
             submitted = child_client.post(
                 "/api/store/demo/quotes",

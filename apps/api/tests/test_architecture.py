@@ -316,6 +316,35 @@ def test_customer_subaccount_provisioning_preserves_the_postgres_role_boundary()
     assert "public.atc_provision_customer_subaccount(" in grant_source
 
 
+def test_customer_subaccount_product_permissions_are_read_only_by_default() -> None:
+    migration_source = (
+        API_ROOT
+        / "migrations"
+        / "versions"
+        / "20260829_0119_subaccount_product_read_only.py"
+    ).read_text(encoding="utf-8")
+    rbac_source = (APP_ROOT / "services" / "rbac.py").read_text(encoding="utf-8")
+    use_case_source = (
+        APP_ROOT / "use_cases" / "customer_accounts.py"
+    ).read_text(encoding="utf-8")
+
+    for permission in (
+        "product.create",
+        "product.edit",
+        "product.import",
+        "product.review",
+        "product.cost.read",
+        "product.cost.write",
+        "catalog.publish",
+    ):
+        assert permission in migration_source
+        assert permission in rbac_source
+    assert "product.view" in rbac_source
+    assert "catalog.view" in rbac_source
+    assert "CUSTOMER_SUBACCOUNT_PRODUCT_READ_PERMISSION_CODES" in use_case_source
+    assert "ck_memberships_subaccount_products_read_only" in migration_source
+
+
 def test_postgres_oidc_binding_qualifies_the_tenant_loop_variable() -> None:
     source = (
         API_ROOT

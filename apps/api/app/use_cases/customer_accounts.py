@@ -77,6 +77,8 @@ from ..services.subaccount_pricing import (
     subaccount_sku_price_rules,
 )
 from ..services.rbac import (
+    CUSTOMER_SUBACCOUNT_PRODUCT_PERMISSION_MODULES,
+    CUSTOMER_SUBACCOUNT_PRODUCT_READ_PERMISSION_CODES,
     CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES,
     PLATFORM_ADMIN_ONLY_PERMISSION_CODES,
 )
@@ -186,6 +188,10 @@ def _permissions_from_modules(
         row.code
         for row in rows
         if row.module in allowed_permission_modules
+        and (
+            row.module not in CUSTOMER_SUBACCOUNT_PRODUCT_PERMISSION_MODULES
+            or row.code in CUSTOMER_SUBACCOUNT_PRODUCT_READ_PERMISSION_CODES
+        )
         and row.code not in CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES
         and row.code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
     }

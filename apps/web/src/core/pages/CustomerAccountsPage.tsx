@@ -73,7 +73,7 @@ const SUBACCOUNT_MODULES: Array<{
   label: string;
   description: string;
 }> = [
-  { code: "products", label: "商品与目录", description: "商品、SKU 与前台目录" },
+  { code: "products", label: "商品与目录", description: "只读查看商品、SKU 与前台目录" },
   { code: "inquiries", label: "询盘", description: "客户需求与询盘处理" },
   { code: "quotations", label: "报价", description: "报价制作与订单跟进" },
   { code: "announcements", label: "公告", description: "发布前台公告" },

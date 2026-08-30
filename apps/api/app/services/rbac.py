@@ -15,15 +15,32 @@ from ..identity_models import (
 from ..tenant_modules import effective_tenant_modules, enabled_permission_modules
 
 
-# A child account is an operator of the same storefront, not a public guest.
-# These records are the owner-only data that must never be granted by the
-# child-account role.  Product selling prices are intentionally not listed:
+# A child account can browse the merchant's products, but it cannot mutate the
+# merchant product library or publish the storefront catalog.  Keep the two
+# read permissions explicit so a future product/catalog permission is denied
+# by default instead of silently becoming available to every child account.
+CUSTOMER_SUBACCOUNT_PRODUCT_READ_PERMISSION_CODES = frozenset(
+    {
+        "product.view",
+        "catalog.view",
+    }
+)
+CUSTOMER_SUBACCOUNT_PRODUCT_PERMISSION_MODULES = frozenset({"product", "catalog"})
+
+
+# These owner-only records and actions must never be granted by the
+# child-account role. Product selling prices are intentionally not listed:
 # they are the child account's effective prices and are redacted separately by
 # the product read use cases.
 CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
+        "product.create",
+        "product.edit",
+        "product.import",
+        "product.review",
         "product.cost.read",
         "product.cost.write",
+        "catalog.publish",
         "supplier.view",
         "supplier.manage",
         "system.user_manage",
@@ -31,9 +48,9 @@ CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES = frozenset(
         "system.settings_manage",
         "customer_portal.subaccount_manage",
         # These modules aggregate the merchant workspace rather than a
-        # child account's own queue.  A reseller may still operate products
-        # and quotes, but must not infer the owner's traffic, stock, or
-        # warehouse activity from a shared tenant-level report.
+        # child account's own queue. A reseller may still browse products and
+        # operate its own quote workflow, but must not infer the owner's
+        # traffic, stock, or warehouse activity from a shared tenant report.
         "analytics.view",
         "inventory.view",
         "inventory.adjust",
@@ -54,6 +71,15 @@ PLATFORM_ADMIN_ONLY_PERMISSION_CODES = frozenset(
         "knowledge.approve",
     }
 )
+
+
+def _customer_subaccount_permission_is_allowed(code: str, module: str) -> bool:
+    if module in CUSTOMER_SUBACCOUNT_PRODUCT_PERMISSION_MODULES:
+        return code in CUSTOMER_SUBACCOUNT_PRODUCT_READ_PERMISSION_CODES
+    return (
+        code not in CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES
+        and code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+    )
 
 
 def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> frozenset[str]:
@@ -121,12 +147,23 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
         else ()
     )
     allowed_permission_modules = enabled_permission_modules(tenant_modules)
+    is_customer_subaccount = (
+        membership_row is not None
+        and membership_row.account_scope == "CUSTOMER_SUBACCOUNT"
+    )
     resolved = {
         code
         for code, permission_module in session.execute(statement).all()
         if (
             permission_module in allowed_permission_modules
             and code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+            and (
+                not is_customer_subaccount
+                or _customer_subaccount_permission_is_allowed(
+                    code,
+                    permission_module,
+                )
+            )
             and (
                 account_permission_ceiling is None
                 or code in account_permission_ceiling
@@ -161,8 +198,7 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
             code
             for code, permission_module in available
             if permission_module in allowed_permission_modules
-            and code not in CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES
-            and code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+            and _customer_subaccount_permission_is_allowed(code, permission_module)
         )
 
     # Newer child accounts store a concrete, parent-selected permission
@@ -185,8 +221,7 @@ def list_permissions(session: Session, *, tenant_id: UUID, user_id: UUID) -> fro
             for code, permission_module in available
             if code in account_permission_ceiling
             and permission_module in allowed_permission_modules
-            and code not in CUSTOMER_SUBACCOUNT_SENSITIVE_PERMISSION_CODES
-            and code not in PLATFORM_ADMIN_ONLY_PERMISSION_CODES
+            and _customer_subaccount_permission_is_allowed(code, permission_module)
         )
 
     # Enforce the boundary even if a legacy role or a hand-edited permission

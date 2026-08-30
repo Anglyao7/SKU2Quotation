@@ -49,6 +49,27 @@ const initialState: AuthState = {
 
 const CoreAuthContext = createContext<CoreAuthContextValue | null>(null);
 const SESSION_RESTORE_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000, 5_000];
+const CUSTOMER_SUBACCOUNT_PRODUCT_WRITE_PERMISSIONS = new Set([
+  "product.create",
+  "product.edit",
+  "product.import",
+  "product.review",
+  "product.cost.read",
+  "product.cost.write",
+  "catalog.publish",
+]);
+
+function visiblePermissions(
+  permissions: Iterable<string>,
+  accountScope?: "STAFF" | "CUSTOMER_SUBACCOUNT",
+) {
+  if (accountScope !== "CUSTOMER_SUBACCOUNT") return new Set(permissions);
+  return new Set(
+    Array.from(permissions).filter(
+      (permission) => !CUSTOMER_SUBACCOUNT_PRODUCT_WRITE_PERMISSIONS.has(permission),
+    ),
+  );
+}
 
 function errorMessage(reason: unknown) {
   return reason instanceof Error ? reason.message : "认证服务暂时不可用";
@@ -84,7 +105,7 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
           memberships,
         },
         memberships,
-        permissions: new Set(session.permissions),
+        permissions: visiblePermissions(session.permissions, session.context.accountScope),
       });
       return;
     }
@@ -95,7 +116,7 @@ export function CoreAuthProvider({ children }: { children: ReactNode }) {
       session,
       profile,
       memberships: profile.memberships,
-      permissions: new Set(permissionSet.permissions),
+      permissions: visiblePermissions(permissionSet.permissions, profile.context.accountScope),
     });
   }, []);
 
