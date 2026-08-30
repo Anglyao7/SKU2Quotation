@@ -221,8 +221,12 @@ def _language_pack_download_url(
     *,
     tenant_slug: str,
 ) -> str:
-    if pack.public_url:
-        return pack.public_url
+    # Always let browsers download through the storefront origin. R2 custom
+    # domains need an independently managed bucket CORS policy; when that
+    # policy is absent, a perfectly valid package becomes unreadable to
+    # ``fetch`` and the whole storefront silently falls back to source text.
+    # The versioned endpoint keeps the same immutable caching contract while
+    # the API reads the object from R2 server-side.
     return (
         f"/api/store/{quote(tenant_slug, safe='')}/language-packages/"
         f"{quote(pack.target_locale, safe='')}/versions/{pack.version}"
@@ -270,14 +274,17 @@ def _job_qwen_batch_counts(job: CatalogTranslationJobRow) -> tuple[int, int]:
         _qwen_request_value_count(request) for request in requests
     )
     try:
-        total = max(
-            0,
-            int(
-                progress.get("total_values")
-                or current_request_total
-                or payload.get("value_count", 0)
-            ),
+        # ``value_count`` describes the complete de-duplicated catalog corpus,
+        # not the values submitted by this job. In particular, a packaging
+        # retry can legitimately have zero requests after every value was
+        # recovered from translation memory. Falling back to ``value_count``
+        # made that state look like 0 / 27,927 untranslated fields.
+        raw_total = (
+            progress.get("total_values")
+            if "total_values" in progress
+            else current_request_total
         )
+        total = max(0, int(raw_total or 0))
         processed = max(0, int(progress.get("processed_values", 0)))
     except (TypeError, ValueError):
         return 0, 0
@@ -4015,6 +4022,7 @@ def _latest_resumable_job_for_mode(
     tenant_id: UUID,
     target_locale: str,
     execution_mode: str,
+    mode: str,
 ) -> CatalogTranslationJobRow | None:
     return session.scalar(
         select(CatalogTranslationJobRow)
@@ -4022,10 +4030,32 @@ def _latest_resumable_job_for_mode(
             CatalogTranslationJobRow.tenant_id == tenant_id,
             CatalogTranslationJobRow.target_locale == target_locale,
             CatalogTranslationJobRow.execution_mode == execution_mode,
+            CatalogTranslationJobRow.mode == mode,
             CatalogTranslationJobRow.status.in_(("PAUSED", "FAILED")),
         )
         .order_by(CatalogTranslationJobRow.created_at.desc())
         .limit(1)
+    )
+
+
+def _should_resume_hidden_checkpoint(
+    request: CatalogTranslationJobStartRequest,
+    *,
+    execution_mode: str,
+) -> bool:
+    """Only the explicit Batch rebuild action adopts a hidden checkpoint.
+
+    The incremental real-time button is a reconciliation action for the
+    current catalog snapshot. Resuming an arbitrary historical failed
+    real-time job carries obsolete totals, candidates and errors into a new
+    update. A user-visible paused/failed real-time job can still be resumed by
+    its dedicated resume endpoint.
+    """
+
+    return bool(
+        request.execution_mode is not None
+        and request.mode == "FULL_REBUILD"
+        and execution_mode == "QWEN_BATCH"
     )
 
 
@@ -4081,15 +4111,19 @@ def start_translation_job(
         ):
             return _job_response(existing)
 
-    # A task from the other engine may be newer than a saved checkpoint.  An
-    # explicitly selected action must resume the matching engine's checkpoint
-    # instead of silently submitting duplicate Batch work.
-    if request.execution_mode is not None:
+    # The explicit full-Batch action may be newer than the Batch checkpoint
+    # currently visible in the page. Adopt that matching rebuild checkpoint
+    # instead of silently submitting duplicate paid work.
+    if _should_resume_hidden_checkpoint(
+        request,
+        execution_mode=execution_mode,
+    ):
         resumable = _latest_resumable_job_for_mode(
             session,
             tenant_id=context.tenant_id,
             target_locale=request.target_locale,
             execution_mode=execution_mode,
+            mode=request.mode,
         )
         if resumable is not None:
             return resume_translation_job(

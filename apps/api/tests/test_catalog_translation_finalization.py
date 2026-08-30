@@ -55,6 +55,60 @@ def test_translation_buttons_can_explicitly_select_execution_mode(
     ) == "QWEN_BATCH"
 
 
+def test_only_explicit_batch_rebuild_adopts_hidden_checkpoint() -> None:
+    incremental = CatalogTranslationJobStartRequest(
+        target_locale="en-US",
+        mode="INCREMENTAL",
+        execution_mode="REALTIME",
+    )
+    full_rebuild = CatalogTranslationJobStartRequest(
+        target_locale="en-US",
+        mode="FULL_REBUILD",
+        execution_mode="QWEN_BATCH",
+        confirm_full_rebuild=True,
+    )
+
+    assert catalog_translations._should_resume_hidden_checkpoint(
+        incremental,
+        execution_mode="REALTIME",
+    ) is False
+    assert catalog_translations._should_resume_hidden_checkpoint(
+        full_rebuild,
+        execution_mode="QWEN_BATCH",
+    ) is True
+
+
+def test_zero_request_batch_does_not_report_full_corpus_as_pending() -> None:
+    job = SimpleNamespace(
+        batch_request_payload={
+            "requests": [],
+            "value_count": 27_927,
+            "qwen_batch_progress": {
+                "total_values": 0,
+                "processed_values": 0,
+            },
+        }
+    )
+
+    assert catalog_translations._job_qwen_batch_counts(job) == (0, 0)
+
+
+def test_language_package_manifest_uses_same_origin_download() -> None:
+    pack = SimpleNamespace(
+        public_url=(
+            "https://resources.example.test/translations/tenant/en-US/"
+            "catalog-v7.json.gz"
+        ),
+        target_locale="en-US",
+        version=7,
+    )
+
+    assert catalog_translations._language_pack_download_url(
+        pack,
+        tenant_slug="yoyo-pets",
+    ) == "/api/store/yoyo-pets/language-packages/en-US/versions/7"
+
+
 def test_switching_mode_preserves_and_releases_a_paused_checkpoint() -> None:
     session = _Session()
     checkpoint = {"requests": [{"custom_id": "kept"}]}
