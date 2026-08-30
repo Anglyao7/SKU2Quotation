@@ -76,6 +76,13 @@ function formatDate(value?: string) {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
 }
 
+function completedSkuCount(job?: CatalogTranslationJob) {
+  if (!job) return 0;
+  return job.executionMode === "QWEN_BATCH"
+    ? job.translationProcessedSkus
+    : job.processedSkus;
+}
+
 export function LanguagePackagesPage() {
   const { hasPermission } = useCoreAuth();
   const { t } = useLocale();
@@ -118,6 +125,32 @@ export function LanguagePackagesPage() {
   const jobIsPublishing = Boolean(
     activeJob && ["PACKAGING", "UPLOADING"].includes(activeJob.stage),
   );
+  const statusMatchesSelection = status?.targetLocale === selectedLocale;
+  const jobMatchesSelection = job?.targetLocale === selectedLocale;
+  const displayedTotalSkus = statusMatchesSelection
+    ? status.totalSkus
+    : jobMatchesSelection
+      ? job.totalSkus
+      : 0;
+  const checkpointTranslatedSkus = jobMatchesSelection
+    ? completedSkuCount(job)
+    : 0;
+  const displayedTranslatedSkus = Math.min(
+    displayedTotalSkus,
+    Math.max(
+      statusMatchesSelection ? status.translatedSkus : 0,
+      checkpointTranslatedSkus,
+    ),
+  );
+  const displayedPendingSkus = Math.max(
+    0,
+    displayedTotalSkus - displayedTranslatedSkus,
+  );
+  const displayedRemainingJobSkus = job
+    ? job.executionMode === "QWEN_BATCH"
+      ? Math.max(0, job.totalSkus - completedSkuCount(job))
+      : job.remainingSkus
+    : 0;
 
   const refreshStatus = async (locale = selectedLocale) => {
     const next = await getCatalogTranslationStatus(locale);
@@ -192,7 +225,7 @@ export function LanguagePackagesPage() {
     let cancelled = false;
     let requestInFlight = false;
     let lastObservedStage = pollableJob.stage;
-    let lastObservedProcessed = pollableJob.processedSkus;
+    let lastObservedProcessed = completedSkuCount(pollableJob);
     let lastCoverageRefreshAt = Date.now();
     let lastBatchRefreshAt = 0;
     const poll = () => {
@@ -203,7 +236,8 @@ export function LanguagePackagesPage() {
           if (cancelled) return;
           const now = Date.now();
           const stageChanged = next.stage !== lastObservedStage;
-          const processedChanged = next.processedSkus !== lastObservedProcessed;
+          const nextProcessed = completedSkuCount(next);
+          const processedChanged = nextProcessed !== lastObservedProcessed;
           setJob(next);
           if (
             now - lastBatchRefreshAt >= 5_000
@@ -227,7 +261,7 @@ export function LanguagePackagesPage() {
               .catch(() => undefined);
           }
           lastObservedStage = next.stage;
-          lastObservedProcessed = next.processedSkus;
+          lastObservedProcessed = nextProcessed;
           if (!["QUEUED", "RUNNING"].includes(next.status)) {
             window.clearInterval(timer);
             if (next.status === "PAUSED") {
@@ -367,9 +401,9 @@ export function LanguagePackagesPage() {
   };
 
   const coverage = useMemo(() => {
-    if (!status?.totalSkus) return 0;
-    return Math.round(status.translatedSkus / status.totalSkus * 100);
-  }, [status?.totalSkus, status?.translatedSkus]);
+    if (!displayedTotalSkus) return 0;
+    return Math.round(displayedTranslatedSkus / displayedTotalSkus * 100);
+  }, [displayedTotalSkus, displayedTranslatedSkus]);
 
   return (
     <div className="core-workspace language-pack-page">
@@ -499,9 +533,9 @@ export function LanguagePackagesPage() {
             </div>
           </div>
           <div className="language-pack-metrics">
-            <div><strong>{status?.totalSkus ?? 0}</strong><span>{t("公开 SKU")}</span></div>
-            <div><strong>{status?.translatedSkus ?? 0}</strong><span>{t("已翻译")}</span></div>
-            <div><strong>{status?.pendingSkus ?? 0}</strong><span>{t("新增或变更")}</span></div>
+            <div><strong>{displayedTotalSkus}</strong><span>{t("公开 SKU")}</span></div>
+            <div><strong>{displayedTranslatedSkus}</strong><span>{t("已翻译")}</span></div>
+            <div><strong>{displayedPendingSkus}</strong><span>{t("新增或变更")}</span></div>
             <div><strong>{coverage}%</strong><span>{t("翻译覆盖")}</span></div>
           </div>
           <Progress value={coverage} size="3" color={coverage === 100 ? "green" : "blue"} />
@@ -658,7 +692,7 @@ export function LanguagePackagesPage() {
             {job.resumable ? (
               <span>
                 {t("剩余 {remaining} 个 SKU · 断点 {time}", {
-                  remaining: job.remainingSkus,
+                  remaining: displayedRemainingJobSkus,
                   time: formatDate(job.checkpointAt),
                 })}
               </span>

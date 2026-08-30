@@ -1988,6 +1988,12 @@ const english: Record<string, string> = {
   "任务失败": "Job failed",
   "任务中断，断点已保存": "Interrupted — checkpoint saved",
   "已处理 {done} / {total} 个 SKU": "Processed {done} / {total} SKUs",
+  "已完成 {done} / {total} 个翻译字段":
+    "Completed {done} / {total} translation fields",
+  "已有完整译文 {done} / {total} 个 SKU":
+    "Complete translations available for {done} / {total} SKUs",
+  "Qwen Batch · {status} · 上游完成 {done} / {total} 个请求":
+    "Qwen Batch · {status} · upstream completed {done} / {total} requests",
   "Qwen Batch · {status} · {done} / {total} 个请求":
     "Qwen Batch · {status} · {done} / {total} requests",
   "准备中": "Preparing",
