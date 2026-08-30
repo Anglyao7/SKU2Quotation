@@ -30,6 +30,11 @@ import {
 } from "./lib/storefrontViewState";
 import { parseStorefrontLocale } from "./lib/storefrontLocale";
 import {
+  storefrontAccountMembershipId,
+  storefrontBasePath,
+  storefrontStorageScope,
+} from "./lib/storefrontAccount";
+import {
   importWithChunkRecovery,
   isChunkLoadFailure,
   reloadLatestBundle,
@@ -172,15 +177,19 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   const currentUrl = new URL(request.url);
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
   const pathShareId = params.shareId?.trim();
+  const accountKey = params.accountKey?.trim();
+  const accountId = accountKey ? storefrontAccountMembershipId(accountKey) : undefined;
+  if (accountKey && !accountId) throw new Response("Not found", { status: 404 });
   const shareToken = pathShareId || currentUrl.searchParams.get("share")?.trim() || undefined;
+  const storageScope = storefrontStorageScope(tenantSlug, accountId);
   const storefrontPath = (slug: string) => pathShareId
     ? `/${encodeURIComponent(slug)}/share/${encodeURIComponent(pathShareId)}`
-    : `/${encodeURIComponent(slug)}`;
+    : storefrontBasePath(slug, accountKey);
   try {
-    const savedView = shareToken ? undefined : readStorefrontViewState(tenantSlug);
-    const catalogSnapshot = shareToken || !locale
+    const savedView = shareToken ? undefined : readStorefrontViewState(storageScope);
+    const catalogSnapshot = shareToken || accountId || !locale
       ? null
-      : readStorefrontCatalogSnapshot(tenantSlug, locale);
+      : readStorefrontCatalogSnapshot(storageScope, locale);
     if (catalogSnapshot) {
       const cachedStore = catalogSnapshot.store;
       if (cachedStore.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
@@ -191,7 +200,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
       return cachedStore;
     }
     const category = savedView?.secondaryCategory || savedView?.primaryCategory;
-    void api.prefetchStoreProducts(tenantSlug, {
+    const catalogWarmup = api.prefetchStoreProducts(tenantSlug, {
       q: savedView?.search.trim() || undefined,
       category: category || undefined,
       semantic: Boolean(savedView?.search.trim()),
@@ -199,7 +208,10 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
       page: savedView?.page || 1,
       locale,
       shareToken,
-    }).catch(() => undefined);
+      accountId,
+    });
+    if (accountId) await catalogWarmup;
+    else void catalogWarmup.catch(() => undefined);
     const store = await api.getStore(tenantSlug, locale);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(`${storefrontPath(store.slug)}${currentUrl.search}${currentUrl.hash}`);
@@ -220,6 +232,9 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
 async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   const productId = params.productId;
+  const accountKey = params.accountKey?.trim();
+  const accountId = accountKey ? storefrontAccountMembershipId(accountKey) : undefined;
+  if (accountKey && !accountId) throw new Response("Not found", { status: 404 });
   if (!tenantSlug || !productId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
@@ -227,11 +242,11 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   try {
     const [store, product] = await Promise.all([
       api.getStore(tenantSlug, locale),
-      api.getStoreProduct(tenantSlug, productId, locale, shareToken),
+      api.getStoreProduct(tenantSlug, productId, locale, shareToken, accountId),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
-        `/${encodeURIComponent(store.slug)}/products/${encodeURIComponent(product.id)}${currentUrl.search}${currentUrl.hash}`,
+        `${storefrontBasePath(store.slug, accountKey)}/products/${encodeURIComponent(product.id)}${currentUrl.search}${currentUrl.hash}`,
       );
     }
     return { store, product };
@@ -241,7 +256,7 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
       return redirect(
-        `/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(productId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+        `${storefrontBasePath(tenantSlug, accountKey)}/products/${encodeURIComponent(productId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
       );
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
@@ -252,6 +267,8 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
 async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   const pageSlug = params.pageSlug;
+  const accountKey = params.accountKey?.trim();
+  if (accountKey && !storefrontAccountMembershipId(accountKey)) throw new Response("Not found", { status: 404 });
   if (!tenantSlug || !pageSlug) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
@@ -262,7 +279,7 @@ async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArg
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
-        `/${encodeURIComponent(store.slug)}/pages/${encodeURIComponent(page.slug)}${currentUrl.search}${currentUrl.hash}`,
+        `${storefrontBasePath(store.slug, accountKey)}/pages/${encodeURIComponent(page.slug)}${currentUrl.search}${currentUrl.hash}`,
       );
     }
     return { store, page };
@@ -271,7 +288,7 @@ async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArg
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
       return redirect(
-        `/${encodeURIComponent(tenantSlug)}/pages/${encodeURIComponent(pageSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+        `${storefrontBasePath(tenantSlug, accountKey)}/pages/${encodeURIComponent(pageSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`,
       );
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
@@ -284,6 +301,9 @@ async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArg
 async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   const tenantSlug = params.tenantSlug;
   const skuId = params.skuId;
+  const accountKey = params.accountKey?.trim();
+  const accountId = accountKey ? storefrontAccountMembershipId(accountKey) : undefined;
+  if (accountKey && !accountId) throw new Response("Not found", { status: 404 });
   if (!tenantSlug || !skuId) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
@@ -291,11 +311,11 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   try {
     const [store, sku] = await Promise.all([
       api.getStore(tenantSlug, locale),
-      api.getStoreSku(tenantSlug, skuId, locale, shareToken),
+      api.getStoreSku(tenantSlug, skuId, locale, shareToken, accountId),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
-        `/${encodeURIComponent(store.slug)}/skus/${encodeURIComponent(sku.id)}${currentUrl.search}${currentUrl.hash}`,
+        `${storefrontBasePath(store.slug, accountKey)}/skus/${encodeURIComponent(sku.id)}${currentUrl.search}${currentUrl.hash}`,
       );
     }
     return { store, sku };
@@ -305,7 +325,7 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
       return redirect(
-        `/${encodeURIComponent(tenantSlug)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+        `${storefrontBasePath(tenantSlug, accountKey)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
       );
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
@@ -426,6 +446,36 @@ const router = createBrowserRouter([{
   { path: "/account", element: <Navigate to="/console/account" replace /> },
   {
     path: "/:tenantSlug/share/:shareId",
+    loader: storefrontLoader,
+    element: <StorePage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/account/:accountKey/me",
+    loader: storefrontLoader,
+    element: <StorefrontVisitorCenterPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/account/:accountKey/pages/:pageSlug",
+    loader: storefrontCustomPageLoader,
+    element: <StorefrontCustomPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/account/:accountKey/products/:productId",
+    loader: storefrontProductLoader,
+    element: <ProductDetailPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/account/:accountKey/skus/:skuId",
+    loader: storefrontSkuLoader,
+    element: <SkuDetailPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/account/:accountKey",
     loader: storefrontLoader,
     element: <StorePage />,
     errorElement: <StorefrontRouteError />,

@@ -22,6 +22,7 @@ import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import { api } from "../../lib/api";
 import { money } from "../../lib/format";
+import { storefrontAccountKey, storefrontBasePath } from "../../lib/storefrontAccount";
 import type { Sku, StoreProduct, StoreProductDetail, StoreProductList } from "../../types";
 
 const PAGE_SIZE = 24;
@@ -30,6 +31,9 @@ export function ResellerProductsPage() {
   const { profile } = useCoreAuth();
   const { t } = useLocale();
   const tenantSlug = profile?.context.tenantSlug || "";
+  const accountId = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
+    ? profile.context.membershipId
+    : undefined;
   const [query, setQuery] = useState("");
   const [draftQuery, setDraftQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -50,13 +54,14 @@ export function ResellerProductsPage() {
         q: query || undefined,
         page,
         includeFacets: false,
+        accountId,
       }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("商品目录加载失败"));
     } finally {
       setLoading(false);
     }
-  }, [page, query, t, tenantSlug]);
+  }, [accountId, page, query, t, tenantSlug]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -66,7 +71,7 @@ export function ResellerProductsPage() {
     setDetailError("");
     setDetailLoading(true);
     try {
-      setSelected(await api.getStoreProduct(tenantSlug, product.id));
+      setSelected(await api.getStoreProduct(tenantSlug, product.id, undefined, undefined, accountId));
     } catch (caught) {
       setDetailError(caught instanceof Error ? caught.message : t("商品详情加载失败"));
     } finally {
@@ -81,7 +86,14 @@ export function ResellerProductsPage() {
   };
 
   const totalPages = Math.max(1, result?.pages || Math.ceil((result?.total || 0) / PAGE_SIZE));
-  const storefrontPath = tenantSlug ? `/${encodeURIComponent(tenantSlug)}` : "/";
+  const storefrontPath = tenantSlug
+    ? storefrontBasePath(
+        tenantSlug,
+        accountId
+          ? storefrontAccountKey(profile?.user.displayName || "account", accountId)
+          : undefined,
+      )
+    : "/";
 
   return (
     <div className="core-workspace reseller-products-page">

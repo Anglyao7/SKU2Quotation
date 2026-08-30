@@ -78,6 +78,7 @@ import "./QuoteWorkbenchPage.css";
 type QuoteDocumentStyle = PublicQuoteDraft["documentStyle"];
 type QuoteItemEditField = "unitPrice" | "quantity" | "name" | "description" | "specification" | "category" | "unitCode";
 type QuoteItemEdit = Partial<Record<QuoteItemEditField, string>>;
+type PreviewPan = { x: number; y: number };
 type QuoteSettingsPayload = {
   locale: StorefrontLocale;
   style: QuoteDocumentStyle;
@@ -86,6 +87,14 @@ type QuoteSettingsPayload = {
   visibleColumns: QuoteTemplateField[];
   extraInformation: QuoteExtraInformation[];
 };
+
+const PREVIEW_SCALE_MIN = 40;
+const PREVIEW_SCALE_MAX = 150;
+const PREVIEW_SCALE_STEP = 5;
+
+function normalizedPreviewScale(value: number) {
+  return Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, Math.round(value / PREVIEW_SCALE_STEP) * PREVIEW_SCALE_STEP));
+}
 
 function quoteSettingsEqual(left: QuoteSettingsPayload | undefined, right: QuoteSettingsPayload) {
   return Boolean(left
@@ -352,7 +361,9 @@ export function QuoteWorkbenchPage() {
   const [syncItem, setSyncItem] = useState<PublicQuoteDraftItem>();
   const [productDetails, setProductDetails] = useState<Record<string, ProductDetail | null>>({});
   const [detailLoadingId, setDetailLoadingId] = useState<string>();
-  const [previewScale, setPreviewScale] = useState(100);
+  const [previewScale, setPreviewScale] = useState(75);
+  const [previewPan, setPreviewPan] = useState<PreviewPan>({ x: 0, y: 0 });
+  const [previewDragging, setPreviewDragging] = useState(false);
   const [market, setMarket] = useState<DashboardSnapshot["market"]>();
   const [conversionOpen, setConversionOpen] = useState(false);
   const [converting, setConverting] = useState(false);
@@ -360,6 +371,15 @@ export function QuoteWorkbenchPage() {
   const autoItemsTimer = useRef<number | undefined>(undefined);
   const savedSettingsRef = useRef<QuoteSettingsPayload | undefined>(undefined);
   const loadedDraftIdRef = useRef<string | undefined>(undefined);
+  const previewViewportRef = useRef<HTMLDivElement>(null);
+  const previewSheetRef = useRef<HTMLDivElement>(null);
+  const previewDragRef = useRef<{
+    pointerId: number;
+    pointerX: number;
+    pointerY: number;
+    panX: number;
+    panY: number;
+  } | undefined>(undefined);
 
   const enabledLocales = useMemo(() => {
     const allowed = settings?.storefrontLocales;
@@ -416,6 +436,120 @@ export function QuoteWorkbenchPage() {
   const conversionRateLabel = conversionRate
     ? conversionRate.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")
     : "";
+
+  const clampPreviewPan = useCallback((next: PreviewPan, scale = previewScale): PreviewPan => {
+    const viewport = previewViewportRef.current;
+    const sheet = previewSheetRef.current;
+    if (!viewport || !sheet) return next;
+    const scaleFactor = scale / 100;
+    const horizontalOverflow = Math.max(0, (sheet.offsetWidth * scaleFactor - viewport.clientWidth) / 2);
+    const verticalOverflow = Math.max(0, (sheet.offsetHeight * scaleFactor - viewport.clientHeight) / 2);
+    const edgeAllowance = 28;
+    const maxX = horizontalOverflow > 0 ? horizontalOverflow + edgeAllowance : 0;
+    const maxY = verticalOverflow > 0 ? verticalOverflow + edgeAllowance : 0;
+    return {
+      x: Math.min(maxX, Math.max(-maxX, next.x)),
+      y: Math.min(maxY, Math.max(-maxY, next.y)),
+    };
+  }, [previewScale]);
+
+  const changePreviewScale = useCallback((value: number) => {
+    const nextScale = normalizedPreviewScale(value);
+    setPreviewScale(nextScale);
+    window.requestAnimationFrame(() => {
+      setPreviewPan((current) => clampPreviewPan(current, nextScale));
+    });
+  }, [clampPreviewPan]);
+
+  const fitPreviewToViewport = useCallback(() => {
+    const viewport = previewViewportRef.current;
+    const sheet = previewSheetRef.current;
+    if (!viewport || !sheet) return;
+    const horizontalScale = (viewport.clientWidth - 64) / sheet.offsetWidth;
+    const verticalScale = (viewport.clientHeight - 64) / sheet.offsetHeight;
+    const nextScale = normalizedPreviewScale(Math.min(horizontalScale, verticalScale, 1) * 100);
+    setPreviewScale(nextScale);
+    setPreviewPan({ x: 0, y: 0 });
+  }, []);
+
+  const startPreviewPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const interactive = (event.target as HTMLElement).closest("button, input, a, select, textarea");
+    if (interactive) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    previewDragRef.current = {
+      pointerId: event.pointerId,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      panX: previewPan.x,
+      panY: previewPan.y,
+    };
+    setPreviewDragging(true);
+  }, [previewPan.x, previewPan.y]);
+
+  const movePreviewPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = previewDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    setPreviewPan(clampPreviewPan({
+      x: drag.panX + event.clientX - drag.pointerX,
+      y: drag.panY + event.clientY - drag.pointerY,
+    }));
+  }, [clampPreviewPan]);
+
+  const endPreviewPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (previewDragRef.current?.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    previewDragRef.current = undefined;
+    setPreviewDragging(false);
+  }, []);
+
+  const handlePreviewWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    changePreviewScale(previewScale + (event.deltaY < 0 ? PREVIEW_SCALE_STEP : -PREVIEW_SCALE_STEP));
+  }, [changePreviewScale, previewScale]);
+
+  const handlePreviewKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const panDelta = event.shiftKey ? 72 : 32;
+    if (event.key === "+" || event.key === "=") {
+      event.preventDefault();
+      changePreviewScale(previewScale + PREVIEW_SCALE_STEP);
+      return;
+    }
+    if (event.key === "-") {
+      event.preventDefault();
+      changePreviewScale(previewScale - PREVIEW_SCALE_STEP);
+      return;
+    }
+    if (event.key === "0" || event.key === "Home") {
+      event.preventDefault();
+      fitPreviewToViewport();
+      return;
+    }
+    const directions: Partial<Record<string, PreviewPan>> = {
+      ArrowLeft: { x: panDelta, y: 0 },
+      ArrowRight: { x: -panDelta, y: 0 },
+      ArrowUp: { x: 0, y: panDelta },
+      ArrowDown: { x: 0, y: -panDelta },
+    };
+    const direction = directions[event.key];
+    if (!direction) return;
+    event.preventDefault();
+    setPreviewPan((current) => clampPreviewPan({
+      x: current.x + direction.x,
+      y: current.y + direction.y,
+    }));
+  }, [changePreviewScale, clampPreviewPan, fitPreviewToViewport, previewScale]);
+
+  useEffect(() => {
+    const handleResize = () => setPreviewPan((current) => clampPreviewPan(current));
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [clampPreviewPan]);
 
   const load = useCallback(async () => {
     if (!quoteDraftId) return;
@@ -1179,9 +1313,24 @@ export function QuoteWorkbenchPage() {
 
       <Tabs.Content value="quotation">
         <div className="quote-preview-stage">
-          <div className="quote-preview-viewport">
-            <div className="quote-preview-sheet" style={{ "--quote-preview-scale": previewScale / 100 } as React.CSSProperties}>
-              <Card className="quote-preview-card" style={{ "--quote-accent": selectedStyle.color } as React.CSSProperties}>
+          <div
+            ref={previewViewportRef}
+            className={`quote-preview-viewport${previewDragging ? " is-dragging" : ""}`}
+            tabIndex={0}
+            aria-label={t("报价单预览，按住拖动查看，使用缩放控件调整大小")}
+            onPointerDown={startPreviewPan}
+            onPointerMove={movePreviewPan}
+            onPointerUp={endPreviewPan}
+            onPointerCancel={endPreviewPan}
+            onWheel={handlePreviewWheel}
+            onKeyDown={handlePreviewKeyDown}
+          >
+            <div
+              className="quote-preview-pan-layer"
+              style={{ "--quote-preview-pan-x": `${previewPan.x}px`, "--quote-preview-pan-y": `${previewPan.y}px` } as React.CSSProperties}
+            >
+              <div ref={previewSheetRef} className="quote-preview-sheet" style={{ "--quote-preview-scale": previewScale / 100 } as React.CSSProperties}>
+                <Card className="quote-preview-card" style={{ "--quote-accent": selectedStyle.color } as React.CSSProperties}>
                 <div className="quote-preview-header"><div><Heading size="7">{quoteText(locale, "document_title")}</Heading><Text size="2" color="gray">{quoteNumber} · {coreDate(draft.createdAt)}</Text></div></div>
                 <div className="quote-preview-meta"><div><span>{quoteText(locale, "customer")}</span><strong>{draft.customerCompany || draft.customerName}</strong></div><div><span>{quoteText(locale, "contact")}</span><strong>{draft.customerName}</strong></div><div><span>{quoteText(locale, "date")}</span><strong>{quoteDateOnly(draft.createdAt)}</strong></div><div><span>{quoteText(locale, "currency")}</span><strong>{draft.currency}</strong></div></div>
                 <div className="quote-preview-table">
@@ -1197,13 +1346,17 @@ export function QuoteWorkbenchPage() {
                   </div>
                 ) : null}
                 {draft.notes ? <Card className="quote-preview-notes"><ClipboardText /><div><Text size="1" color="gray">{quoteText(locale, "notes")}</Text><Text as="div">{draft.notes}</Text></div></Card> : null}
-              </Card>
+                </Card>
+              </div>
             </div>
           </div>
           <div className="quote-preview-zoom" aria-label={t("预览大小")}>
-            <Text size="1" color="gray">{t("预览大小")}</Text>
-            <input type="range" min="70" max="130" step="5" value={previewScale} aria-label={t("预览大小")} onChange={(event) => setPreviewScale(Number(event.target.value))} />
+            <Text size="1" color="gray" className="quote-preview-drag-hint">{t("拖动查看")}</Text>
+            <button type="button" className="quote-preview-zoom-step" aria-label={t("缩小预览")} onClick={() => changePreviewScale(previewScale - PREVIEW_SCALE_STEP)}>−</button>
+            <input type="range" min={PREVIEW_SCALE_MIN} max={PREVIEW_SCALE_MAX} step={PREVIEW_SCALE_STEP} value={previewScale} aria-label={t("预览大小")} onChange={(event) => changePreviewScale(Number(event.target.value))} />
+            <button type="button" className="quote-preview-zoom-step" aria-label={t("放大预览")} onClick={() => changePreviewScale(previewScale + PREVIEW_SCALE_STEP)}>+</button>
             <output>{previewScale}%</output>
+            <button type="button" className="quote-preview-fit" onClick={fitPreviewToViewport}>{t("适合窗口")}</button>
           </div>
         </div>
       </Tabs.Content>

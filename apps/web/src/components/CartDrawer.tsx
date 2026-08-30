@@ -28,6 +28,7 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { money, quoteNumber } from "../lib/format";
+import { storefrontBasePath } from "../lib/storefrontAccount";
 import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
 import { notifyStorefrontQuotesChanged } from "../lib/storefrontVisitor";
 import { ToastNotice } from "../core/ToastContext";
@@ -46,6 +47,8 @@ export interface CartLine {
 
 interface CartDrawerProps {
   slug: string;
+  accountId?: string;
+  accountKey?: string;
   storeName: string;
   contactEmail?: string | null;
   contactImages?: Array<Pick<StorefrontSupportAction, "image_url" | "label">>;
@@ -123,7 +126,7 @@ function CartLineImage({ sku }: { sku: Sku }) {
   );
 }
 
-export function CartDrawer({ slug, storeName, contactEmail, contactImages, lines, onQuantity, onClear, locale }: CartDrawerProps) {
+export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmail, contactImages, lines, onQuantity, onClear, locale }: CartDrawerProps) {
   const [open, setOpen] = useState(false);
   const [reviewReminderOpen, setReviewReminderOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -137,7 +140,7 @@ export function CartDrawer({ slug, storeName, contactEmail, contactImages, lines
   );
   const currency = lines[0]?.sku.currency || "CNY";
   const isChinese = locale === "zh-CN";
-  const visitorCenterHref = `/${encodeURIComponent(slug)}/me${storefrontLocaleQuery(locale)}`;
+  const visitorCenterHref = `${storefrontBasePath(slug, accountKey)}/me${storefrontLocaleQuery(locale)}`;
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
@@ -195,7 +198,7 @@ export function CartDrawer({ slug, storeName, contactEmail, contactImages, lines
       items: lines.map((line) => ({ sku_id: line.sku.id, quantity: line.quantity })),
     };
     try {
-      const createdQuote = await api.createStoreQuote(slug, payload);
+      const createdQuote = await api.createStoreQuote(slug, payload, accountId);
       setQuote(createdQuote);
       onClear();
       notifyStorefrontQuotesChanged(slug);

@@ -22135,7 +22135,24 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             portal = child_client.get("/api/v1/customer-portal/overview", headers=headers)
             assert portal.status_code == 200, portal.text
             assert portal.json()["display_name"] == f"Downstream Customer {suffix}"
+            assert portal.json()["membership_id"] == account["id"]
             assert child_client.get("/api/v1/customer-accounts", headers=headers).status_code == 403
+
+            dedicated_catalog = child_client.get(
+                "/api/store/demo/skus",
+                headers=headers,
+                params={"page_size": 1, "account": account["id"]},
+            )
+            assert dedicated_catalog.status_code == 200, dedicated_catalog.text
+            assert child_client.get(
+                "/api/store/demo/skus",
+                params={"page_size": 1, "account": account["id"]},
+            ).status_code == 401
+            assert child_client.get(
+                "/api/store/demo/skus",
+                headers=headers,
+                params={"page_size": 1, "account": str(uuid4())},
+            ).status_code == 403
 
             product_listing = child_client.get(
                 "/api/v1/product-center/products",
@@ -22163,6 +22180,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             submitted = child_client.post(
                 "/api/store/demo/quotes",
                 headers=headers,
+                params={"account": account["id"]},
                 json={
                     "customer_name": f"Downstream Customer {suffix}",
                     "privacy_acknowledged": True,

@@ -15,7 +15,8 @@ import {
   Storefront as StoreIcon,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLoaderData, useLocation, useNavigate, useParams } from "react-router-dom";
+import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
@@ -26,6 +27,7 @@ import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
+import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
 import { money } from "../lib/format";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
@@ -62,6 +64,13 @@ function storefrontViewEventId(locationKey: string, skuId: string) {
 
 export function SkuDetailPage() {
   const { store, sku } = useLoaderData() as SkuDetailLoaderData;
+  const { profile } = useCoreAuth();
+  const { accountKey } = useParams<{ accountKey?: string }>();
+  const accountId = storefrontAccountMembershipId(accountKey);
+  const storageScope = storefrontStorageScope(store.slug, accountId);
+  const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId
+    ? profile.user.displayName
+    : undefined;
   const locale: StorefrontLocale = normalizeStorefrontLocale(store.locale);
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
@@ -71,10 +80,10 @@ export function SkuDetailPage() {
   const localeQuery = storefrontLocaleQuery(locale);
   const storefrontHome = shareToken
     ? `/${encodeURIComponent(store.slug)}/share/${encodeURIComponent(shareToken)}${localeQuery}`
-    : `/${encodeURIComponent(store.slug)}${localeQuery}`;
+    : `${storefrontBasePath(store.slug, accountKey)}${localeQuery}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
-    () => readStoreCart(store.slug),
+    () => readStoreCart(storageScope),
   );
   const [imageFailed, setImageFailed] = useState(!sku.image_url);
   const [announcements, setAnnouncements] = useState(store.announcements || []);
@@ -87,8 +96,8 @@ export function SkuDetailPage() {
   );
 
   useEffect(() => {
-    writeStoreCart(store.slug, cart);
-  }, [cart, store.slug]);
+    writeStoreCart(storageScope, cart);
+  }, [cart, storageScope]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -179,8 +188,8 @@ export function SkuDetailPage() {
                   </span>
                 )}
                 <span>
-                  <strong>{store.name}</strong>
-                  <small>{t("SKU 商品目录")}</small>
+                  <strong>{accountName ? `${store.name} / ${accountName}` : store.name}</strong>
+                  <small>{accountName ? t("子账号专属商品目录") : t("SKU 商品目录")}</small>
                 </span>
               </Link>
               <span className="powered-by">{t("由智贸云提供")}</span>
@@ -196,9 +205,11 @@ export function SkuDetailPage() {
                   toLight: t("切换浅色模式"),
                 }}
               />
-              <StorefrontVisitorEntry tenantSlug={store.slug} locale={locale} />
+              <StorefrontVisitorEntry tenantSlug={store.slug} accountKey={accountKey} locale={locale} />
               <CartDrawer
                 slug={store.slug}
+                accountId={accountId}
+                accountKey={accountKey}
                 storeName={store.name}
                 contactEmail={store.contact_email}
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
@@ -212,7 +223,7 @@ export function SkuDetailPage() {
         </Container>
       </header>
 
-      <StorefrontTopNavigation store={store} locale={locale} />
+      <StorefrontTopNavigation store={store} accountKey={accountKey} locale={locale} />
 
       <StorefrontAnnouncements
         announcements={announcements}
@@ -312,6 +323,8 @@ export function SkuDetailPage() {
 
       <StorefrontSupportWidget
         tenantSlug={store.slug}
+        accountId={accountId}
+        accountKey={accountKey}
         storeName={store.name}
         locale={locale}
         config={store.support_widget}

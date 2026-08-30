@@ -42,6 +42,7 @@ import { preloadConsoleRoute } from "../../core/routePreload";
 import { useLocale } from "../../core/LocaleContext";
 import { pollingBackoffMs } from "../../core/pollingBackoff";
 import { initials } from "../../lib/format";
+import { storefrontAccountKey, storefrontBasePath } from "../../lib/storefrontAccount";
 import {
   SUBSCRIPTION_TIER_PRESENTATION,
   subscriptionTierLabel,
@@ -234,7 +235,14 @@ export function ConsoleLayout() {
   const mobileMore = visibleNavigation.filter((item) => !item.mobilePrimary);
   const mobileMoreActive = mobileMore.some((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
     || location.pathname.startsWith("/console/account");
-  const storefrontPath = activeTenantSlug ? `/${encodeURIComponent(activeTenantSlug)}` : "/";
+  const storefrontPath = activeTenantSlug
+    ? storefrontBasePath(
+        activeTenantSlug,
+        isCustomerSubaccount && activeMembershipId
+          ? storefrontAccountKey(displayName, activeMembershipId)
+          : undefined,
+      )
+    : "/";
   const activeTenant = useMemo<Tenant | undefined>(() => activeTenantId ? {
     id: activeTenantId,
     name: profile?.context.tenantName ?? t("当前工作区"),

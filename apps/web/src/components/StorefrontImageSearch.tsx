@@ -168,6 +168,7 @@ export const StorefrontImageSearch = forwardRef<
   StorefrontImageSearchHandle,
   {
     tenantSlug: string;
+    accountId?: string;
     locale: StorefrontLocale;
     shareToken: string;
     active: boolean;
@@ -176,6 +177,7 @@ export const StorefrontImageSearch = forwardRef<
   }
 >(function StorefrontImageSearch({
   tenantSlug,
+  accountId,
   locale,
   shareToken,
   active,
@@ -235,6 +237,8 @@ export const StorefrontImageSearch = forwardRef<
         file,
         locale,
         shareToken || undefined,
+        12,
+        accountId,
       );
       if (requestSequence.current !== sequence) return;
       onStateChange({

@@ -79,6 +79,7 @@ interface StoreSkuFilters {
   page?: number;
   locale?: StorefrontLocale;
   shareToken?: string;
+  accountId?: string;
 }
 
 const publicRequestCache = new Map<string, PublicCacheEntry>();
@@ -258,16 +259,18 @@ function storePath(slug: string, locale?: StorefrontLocale) {
   return `/api/store/${encodeURIComponent(slug)}${query ? `?${query}` : ""}`;
 }
 
-function storeSkuPath(slug: string, skuId: string, locale?: StorefrontLocale) {
+function storeSkuPath(slug: string, skuId: string, locale?: StorefrontLocale, accountId?: string) {
   const params = new URLSearchParams();
   if (locale) params.set("locale", locale);
+  if (accountId) params.set("account", accountId);
   const query = params.toString();
   return `/api/store/${encodeURIComponent(slug)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}`;
 }
 
-function storeProductPath(slug: string, productId: string, locale?: StorefrontLocale) {
+function storeProductPath(slug: string, productId: string, locale?: StorefrontLocale, accountId?: string) {
   const params = new URLSearchParams();
   if (locale) params.set("locale", locale);
+  if (accountId) params.set("account", accountId);
   const query = params.toString();
   return `/api/store/${encodeURIComponent(slug)}/products/${encodeURIComponent(productId)}${query ? `?${query}` : ""}`;
 }
@@ -276,6 +279,13 @@ function publicCatalogAuthScope() {
   return getCoreAccessToken()
     ? `#account-scope=${getCoreAuthGeneration()}`
     : "#account-scope=anonymous";
+}
+
+async function requireStorefrontAccountSession(accountId?: string) {
+  if (!accountId) return;
+  if (await ensureFreshCoreAccessToken()) return;
+  window.dispatchEvent(new CustomEvent("atc:auth-expired"));
+  throw new ApiError("会话已失效，请重新登录。", 401);
 }
 
 function normalizeList<T>(payload: unknown): { items: T[]; total: number } {
@@ -361,6 +371,7 @@ async function getCachedStoreSkus(
   slug: string,
   filters: StoreSkuFilters = {},
 ): Promise<SkuList> {
+  await requireStorefrontAccountSession(filters.accountId);
   const languagePack = await storefrontLanguagePack(slug, filters.locale);
   const params = new URLSearchParams();
   if (filters.q) params.set("q", filters.q);
@@ -369,6 +380,7 @@ async function getCachedStoreSkus(
   if (filters.semantic) params.set("semantic", "true");
   if (filters.includeFacets === false) params.set("include_facets", "false");
   if (filters.shareToken) params.set("share", filters.shareToken);
+  if (filters.accountId) params.set("account", filters.accountId);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
   params.sort();
@@ -378,7 +390,7 @@ async function getCachedStoreSkus(
     ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
     : path}${publicCatalogAuthScope()}`;
   return cachedPublicRequest(publicCatalogCacheKey("catalog", cachePath), PUBLIC_CATALOG_CACHE_TTL_MS, async () => {
-    const raw = await request<unknown>(path, {}, Boolean(getCoreAccessToken()));
+    const raw = await request<unknown>(path, {}, Boolean(filters.accountId || getCoreAccessToken()));
     const list = normalizeList<Sku>(raw);
     const meta = raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
@@ -416,7 +428,7 @@ async function getCachedStoreSkus(
     for (const sku of result.items) {
       if (languagePack) continue;
       if (!hasCompleteStorefrontTranslation(sku)) continue;
-      const detailPath = storeSkuPath(slug, sku.id);
+      const detailPath = storeSkuPath(slug, sku.id, undefined, filters.accountId);
       primePublicRequestCache(
         publicCatalogCacheKey("sku", `${detailPath}${publicCatalogAuthScope()}`),
         PUBLIC_SKU_CACHE_TTL_MS,
@@ -447,6 +459,7 @@ async function getCachedStoreProducts(
   slug: string,
   filters: StoreSkuFilters = {},
 ): Promise<StoreProductList> {
+  await requireStorefrontAccountSession(filters.accountId);
   const languagePack = await storefrontLanguagePack(slug, filters.locale);
   const params = new URLSearchParams();
   if (filters.q) params.set("q", filters.q);
@@ -455,6 +468,7 @@ async function getCachedStoreProducts(
   if (filters.semantic) params.set("semantic", "true");
   if (filters.includeFacets === false) params.set("include_facets", "false");
   if (filters.shareToken) params.set("share", filters.shareToken);
+  if (filters.accountId) params.set("account", filters.accountId);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
   params.sort();
@@ -467,7 +481,7 @@ async function getCachedStoreProducts(
     publicCatalogCacheKey("products", cachePath),
     PUBLIC_CATALOG_CACHE_TTL_MS,
     async () => {
-      const raw = await request<unknown>(path, {}, Boolean(getCoreAccessToken()));
+      const raw = await request<unknown>(path, {}, Boolean(filters.accountId || getCoreAccessToken()));
       const list = normalizeList<StoreProduct>(raw);
       const meta = raw && typeof raw === "object" && !Array.isArray(raw)
         ? (raw as Record<string, unknown>)
@@ -639,9 +653,11 @@ export const api = {
     productId: string,
     locale?: StorefrontLocale,
     shareToken?: string,
+    accountId?: string,
   ): Promise<StoreProductDetail> {
+    await requireStorefrontAccountSession(accountId);
     const languagePack = await storefrontLanguagePack(slug, locale);
-    const sourcePath = storeProductPath(slug, productId);
+    const sourcePath = storeProductPath(slug, productId, undefined, accountId);
     const path = shareToken
       ? `${sourcePath}${sourcePath.includes("?") ? "&" : "?"}share=${encodeURIComponent(shareToken)}`
       : sourcePath;
@@ -655,7 +671,7 @@ export const api = {
         const product = await request<StoreProductDetail>(
           path,
           {},
-          Boolean(getCoreAccessToken()),
+          Boolean(accountId || getCoreAccessToken()),
         );
         const normalized = {
           ...normalizeStoreProduct(product),
@@ -676,8 +692,9 @@ export const api = {
     productId: string,
     locale?: StorefrontLocale,
     shareToken?: string,
+    accountId?: string,
   ) => {
-    await api.getStoreProduct(slug, productId, locale, shareToken);
+    await api.getStoreProduct(slug, productId, locale, shareToken, accountId);
   },
   async getStoreProducts(
     slug: string,
@@ -691,10 +708,12 @@ export const api = {
     locale?: StorefrontLocale,
     shareToken?: string,
     limit = 12,
+    accountId?: string,
   ): Promise<StoreImageSearchResponse> {
     const params = new URLSearchParams();
     params.set("limit", String(limit));
     if (shareToken) params.set("share", shareToken);
+    if (accountId) params.set("account", accountId);
     const form = new FormData();
     form.append("file", file, file.name || "image-search.jpg");
     const [response, languagePack] = await Promise.all([
@@ -705,7 +724,7 @@ export const api = {
           body: form,
           signal: AbortSignal.timeout(120_000),
         },
-        Boolean(getCoreAccessToken()),
+        Boolean(accountId || getCoreAccessToken()),
       ),
       storefrontLanguagePack(slug, locale),
     ]);
@@ -725,9 +744,10 @@ export const api = {
   ) => {
     await getCachedStoreProducts(slug, filters);
   },
-  async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale, shareToken?: string): Promise<Sku> {
+  async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale, shareToken?: string, accountId?: string): Promise<Sku> {
+    await requireStorefrontAccountSession(accountId);
     const languagePack = await storefrontLanguagePack(slug, locale);
-    const sourcePath = storeSkuPath(slug, skuId);
+    const sourcePath = storeSkuPath(slug, skuId, undefined, accountId);
     const path = shareToken
       ? `${sourcePath}${sourcePath.includes("?") ? "&" : "?"}share=${encodeURIComponent(shareToken)}`
       : sourcePath;
@@ -739,7 +759,7 @@ export const api = {
       PUBLIC_SKU_CACHE_TTL_MS,
       async () => {
         const sku = normalizeSku(
-          await request<Sku>(path, {}, Boolean(getCoreAccessToken())),
+          await request<Sku>(path, {}, Boolean(accountId || getCoreAccessToken())),
         );
         return languagePack ? localizeSku(sku, languagePack) : sku;
       },
@@ -773,14 +793,14 @@ export const api = {
   prefetchStoreSkus: async (slug: string, filters: StoreSkuFilters = {}) => {
     await getCachedStoreSkus(slug, filters);
   },
-  createStoreQuote: async (slug: string, payload: CreateQuoteInput) =>
-    normalizeQuote(await request<Quote>(`/api/store/${encodeURIComponent(slug)}/quotes`, {
+  createStoreQuote: async (slug: string, payload: CreateQuoteInput, accountId?: string) =>
+    normalizeQuote(await request<Quote>(`/api/store/${encodeURIComponent(slug)}/quotes${accountId ? `?account=${encodeURIComponent(accountId)}` : ""}`, {
       method: "POST",
       body: JSON.stringify(payload),
       headers: {
         "X-Storefront-Visitor-Token": ensureStorefrontVisitorToken(slug),
       },
-    }, Boolean(getCoreAccessToken()))),
+    }, Boolean(accountId || getCoreAccessToken()))),
   listStorefrontVisitorQuotes: (slug: string) =>
     request<StorefrontVisitorQuote[]>(
       `/api/store/${encodeURIComponent(slug)}/visitor/quotes`,

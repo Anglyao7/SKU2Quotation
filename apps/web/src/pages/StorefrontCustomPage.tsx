@@ -1,7 +1,8 @@
 import { Container } from "@radix-ui/themes";
 import { Storefront as StoreIcon } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLoaderData } from "react-router-dom";
+import { Link, useLoaderData, useParams } from "react-router-dom";
+import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
 import { StorefrontFooter } from "../components/StorefrontFooter";
@@ -11,6 +12,7 @@ import { StorefrontTopNavigation } from "../components/StorefrontTopNavigation";
 import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { prepareStorefrontCustomPageHtml } from "../lib/storefrontCustomPage";
+import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import {
   normalizeStorefrontLocale,
@@ -107,13 +109,20 @@ function ResponsiveHtmlFrame({
 
 export function StorefrontCustomPage() {
   const { store, page } = useLoaderData() as StorefrontCustomPageLoaderData;
+  const { profile } = useCoreAuth();
+  const { accountKey } = useParams<{ accountKey?: string }>();
+  const accountId = storefrontAccountMembershipId(accountKey);
+  const storageScope = storefrontStorageScope(store.slug, accountId);
+  const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId
+    ? profile.user.displayName
+    : undefined;
   const locale: StorefrontLocale = normalizeStorefrontLocale(store.locale);
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
-  const storefrontHome = `/${encodeURIComponent(store.slug)}${storefrontLocaleQuery(locale)}`;
+  const storefrontHome = `${storefrontBasePath(store.slug, accountKey)}${storefrontLocaleQuery(locale)}`;
   const [cart, setCart] = useState<Record<string, CartLine>>(
-    () => readStoreCart(store.slug),
+    () => readStoreCart(storageScope),
   );
   const cartLines = useMemo(() => Object.values(cart), [cart]);
 
@@ -124,8 +133,8 @@ export function StorefrontCustomPage() {
   }, [page.title, store.name]);
 
   useEffect(() => {
-    writeStoreCart(store.slug, cart);
-  }, [cart, store.slug]);
+    writeStoreCart(storageScope, cart);
+  }, [cart, storageScope]);
 
   const updateQuantity = (skuId: string, quantity: number) => setCart((current) => {
     const next = { ...current };
@@ -142,15 +151,17 @@ export function StorefrontCustomPage() {
             <div className="store-header-branding">
               <Link to={storefrontHome} className="store-identity" aria-label={t("{store} 商品目录首页", { store: store.name })}>
                 {store.logo_url ? <img src={store.logo_url} alt="" /> : <span className="store-identity-mark"><StoreIcon size={21} weight="duotone" /></span>}
-                <span><strong>{store.name}</strong><small>{page.title}</small></span>
+                <span><strong>{accountName ? `${store.name} / ${accountName}` : store.name}</strong><small>{page.title}</small></span>
               </Link>
             </div>
             <div className="header-actions">
               <StorefrontLanguageSwitch locale={locale} availableLocales={store.available_locales} />
               <ThemeToggle labels={{ toDark: t("切换深色模式"), toLight: t("切换浅色模式") }} />
-              <StorefrontVisitorEntry tenantSlug={store.slug} locale={locale} />
+              <StorefrontVisitorEntry tenantSlug={store.slug} accountKey={accountKey} locale={locale} />
               <CartDrawer
                 slug={store.slug}
+                accountId={accountId}
+                accountKey={accountKey}
                 storeName={store.name}
                 contactEmail={store.contact_email}
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
@@ -163,14 +174,14 @@ export function StorefrontCustomPage() {
           </div>
         </Container>
       </header>
-      <StorefrontTopNavigation store={store} locale={locale} activePageSlug={page.slug} />
+      <StorefrontTopNavigation store={store} accountKey={accountKey} locale={locale} activePageSlug={page.slug} />
       {page.exchange_rates_enabled ? (
         <StorefrontExchangeRates tenantSlug={store.slug} locale={locale} />
       ) : null}
       <main className="storefront-custom-page-main">
         <ResponsiveHtmlFrame html={page.html} title={page.title} />
       </main>
-      <StorefrontSupportWidget tenantSlug={store.slug} storeName={store.name} locale={locale} config={store.support_widget} />
+      <StorefrontSupportWidget tenantSlug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} locale={locale} config={store.support_widget} />
       <StorefrontFooter store={store} t={t} />
     </div>
   );

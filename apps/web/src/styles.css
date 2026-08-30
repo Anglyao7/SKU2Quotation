@@ -2195,7 +2195,7 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .console-shell { min-height: 100dvh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); overflow-x: clip; background: var(--page); }
 .console-shell--quote-workbench { display: block; }
 .console-shell--quote-workbench .console-sidebar { display: none; }
-.console-shell--quote-workbench .console-content { max-width: none; padding: 28px clamp(24px, 4vw, 64px) 72px; }
+.console-shell--quote-workbench .console-content { max-width: none; padding: 22px clamp(14px, 1.4vw, 26px) 48px; }
 .console-sidebar { position: sticky; top: 0; height: 100dvh; padding: 18px 12px 14px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface); }
 .sidebar-brand { padding: 4px 10px 23px; }
 .desktop-console-nav {

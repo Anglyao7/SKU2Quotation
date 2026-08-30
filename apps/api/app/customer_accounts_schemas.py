@@ -296,6 +296,7 @@ class CustomerSubaccountOrderPage(BaseModel):
 
 
 class CustomerPortalOverview(BaseModel):
+    membership_id: UUID
     display_name: str
     tenant_name: str
     tenant_slug: str

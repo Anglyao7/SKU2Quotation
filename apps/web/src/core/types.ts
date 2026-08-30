@@ -240,6 +240,7 @@ export interface CustomerSubaccountOrderPage {
 }
 
 export interface CustomerPortalOverview {
+  membershipId: string;
   displayName: string;
   tenantName: string;
   tenantSlug: string;

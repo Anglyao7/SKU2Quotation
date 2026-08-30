@@ -1825,6 +1825,7 @@ def get_customer_portal_overview(
     else:
         count, last_order = 0, None
     return CustomerPortalOverview(
+        membership_id=membership.id,
         display_name=user.display_name,
         tenant_name=tenant.name,
         tenant_slug=tenant.slug,

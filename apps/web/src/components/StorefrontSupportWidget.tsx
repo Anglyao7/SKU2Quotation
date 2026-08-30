@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { money } from "../lib/format";
+import { storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
 import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
 import type {
   PublicSupportConversation,
@@ -26,6 +27,8 @@ import "./StorefrontSupportWidget.css";
 
 interface StorefrontSupportWidgetProps {
   tenantSlug: string;
+  accountId?: string;
+  accountKey?: string;
   storeName: string;
   locale: StorefrontLocale;
   config?: PublicSupportWidget;
@@ -127,10 +130,14 @@ function SupportProductCard({
 
 export function StorefrontSupportWidget({
   tenantSlug,
+  accountId,
+  accountKey,
   storeName,
   locale,
   config,
 }: StorefrontSupportWidgetProps) {
+  const storageScope = storefrontStorageScope(tenantSlug, accountId);
+  const storefrontRoot = storefrontBasePath(tenantSlug, accountKey);
   const t = useCallback(
     (source: string, values?: Record<string, string | number>) =>
       storefrontText(locale, source, values),
@@ -144,7 +151,7 @@ export function StorefrontSupportWidget({
   const [supportProducts, setSupportProducts] = useState<
     Record<string, StoreProduct | null>
   >({});
-  const [token, setToken] = useState(() => storedToken(tenantSlug));
+  const [token, setToken] = useState(() => storedToken(storageScope));
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -280,7 +287,7 @@ export function StorefrontSupportWidget({
   }, [enqueueStreamingDelta, resetStreamingPlayback]);
 
   useEffect(() => {
-    const next = storedToken(tenantSlug);
+    const next = storedToken(storageScope);
     setToken(next);
     setConversation(undefined);
     setStreamingMessage(undefined);
@@ -289,17 +296,17 @@ export function StorefrontSupportWidget({
     awaitingAIResponseRef.current = false;
     setActiveActionSlot(null);
     setHoveredActionSlot(null);
-  }, [resetStreamingPlayback, tenantSlug]);
+  }, [resetStreamingPlayback, storageScope]);
 
   useEffect(() => {
-    productScopeRef.current = `${tenantSlug}:${locale}`;
+    productScopeRef.current = `${storageScope}:${locale}`;
     requestedProductIdsRef.current.clear();
     setSupportProducts({});
-  }, [locale, tenantSlug]);
+  }, [locale, storageScope]);
 
   useEffect(() => {
     if (!open) return;
-    const scope = `${tenantSlug}:${locale}`;
+    const scope = `${storageScope}:${locale}`;
     const productIds = Array.from(new Set(
       (conversation?.messages || []).flatMap((message) => (
         message.sender_type === "AI"
@@ -312,7 +319,7 @@ export function StorefrontSupportWidget({
     for (const productId of productIds) {
       if (requestedProductIdsRef.current.has(productId)) continue;
       requestedProductIdsRef.current.add(productId);
-      void api.getStoreProduct(tenantSlug, productId, locale)
+      void api.getStoreProduct(tenantSlug, productId, locale, undefined, accountId)
         .then((product) => {
           if (productScopeRef.current !== scope) return;
           setSupportProducts((current) => ({ ...current, [productId]: product }));
@@ -322,7 +329,7 @@ export function StorefrontSupportWidget({
           setSupportProducts((current) => ({ ...current, [productId]: null }));
         });
     }
-  }, [conversation?.messages, locale, open, tenantSlug]);
+  }, [accountId, conversation?.messages, locale, open, storageScope, tenantSlug]);
 
   const refreshConversation = useCallback(async (quiet = false) => {
     if (!token) return;
@@ -333,7 +340,7 @@ export function StorefrontSupportWidget({
       setError("");
     } catch (caught) {
       if (caught instanceof ApiError && [401, 404].includes(caught.status)) {
-        saveToken(tenantSlug, "");
+        saveToken(storageScope, "");
         setToken("");
         setConversation(undefined);
       } else if (!quiet) {
@@ -342,7 +349,7 @@ export function StorefrontSupportWidget({
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [applyConversationSnapshot, tenantSlug, t, token]);
+  }, [applyConversationSnapshot, storageScope, tenantSlug, t, token]);
 
   useEffect(() => {
     if (!open || !token) return;
@@ -399,7 +406,7 @@ export function StorefrontSupportWidget({
       } catch (caught) {
         if (stopped || controller.signal.aborted) return;
         if (caught instanceof ApiError && [401, 404].includes(caught.status)) {
-          saveToken(tenantSlug, "");
+          saveToken(storageScope, "");
           setToken("");
           setConversation(undefined);
           setStreamingMessage(undefined);
@@ -427,6 +434,7 @@ export function StorefrontSupportWidget({
     refreshConversation,
     resetStreamingPlayback,
     settleStreamingEnd,
+    storageScope,
     tenantSlug,
     token,
   ]);
@@ -491,7 +499,7 @@ export function StorefrontSupportWidget({
       const nextToken = next.access_token || token;
       if (nextToken && nextToken !== token) {
         setToken(nextToken);
-        saveToken(tenantSlug, nextToken);
+        saveToken(storageScope, nextToken);
       }
       setConversation(next);
       awaitingAIResponseRef.current = Boolean(next.ai_processing);
@@ -524,7 +532,7 @@ export function StorefrontSupportWidget({
   };
 
   const startNewConversation = () => {
-    saveToken(tenantSlug, "");
+    saveToken(storageScope, "");
     setToken("");
     setConversation(undefined);
     setStreamingMessage(undefined);
@@ -650,7 +658,7 @@ export function StorefrontSupportWidget({
                             product={product}
                             citationNumber={citation.citation_number}
                             detailsHref={
-                              `/${encodeURIComponent(tenantSlug)}/products/`
+                              `${storefrontRoot}/products/`
                               + encodeURIComponent(product.id)
                               + storefrontLocaleQuery(locale)
                             }

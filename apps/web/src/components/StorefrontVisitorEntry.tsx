@@ -12,6 +12,7 @@ import {
   STOREFRONT_VISITOR_EVENT,
 } from "../lib/storefrontVisitor";
 import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
+import { storefrontBasePath } from "../lib/storefrontAccount";
 import type { StorefrontLocale, StorefrontVisitorQuote } from "../types";
 
 function isMerchantUpdate(quote: StorefrontVisitorQuote) {
@@ -20,9 +21,11 @@ function isMerchantUpdate(quote: StorefrontVisitorQuote) {
 
 export function StorefrontVisitorEntry({
   tenantSlug,
+  accountKey,
   locale,
 }: {
   tenantSlug: string;
+  accountKey?: string;
   locale: StorefrontLocale;
 }) {
   const [quotes, setQuotes] = useState<StorefrontVisitorQuote[]>([]);
@@ -76,7 +79,7 @@ export function StorefrontVisitorEntry({
     };
   }, [load, tenantSlug]);
 
-  const centerHref = `/${encodeURIComponent(tenantSlug)}/me${storefrontLocaleQuery(locale)}`;
+  const centerHref = `${storefrontBasePath(tenantSlug, accountKey)}/me${storefrontLocaleQuery(locale)}`;
   const noticeTab = notice?.status === "COMPLETED"
     ? "completed"
     : notice?.status === "CANCELLED" || notice?.status === "EXPIRED"

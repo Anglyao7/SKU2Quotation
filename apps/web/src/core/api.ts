@@ -1341,6 +1341,7 @@ export async function deleteCustomerSubaccount(
 
 export async function getCustomerPortalOverview(): Promise<CustomerPortalOverview> {
   const row = await request<{
+    membership_id: string;
     display_name: string;
     tenant_name: string;
     tenant_slug: string;
@@ -1349,6 +1350,7 @@ export async function getCustomerPortalOverview(): Promise<CustomerPortalOvervie
     last_order_at?: string | null;
   }>("/customer-portal/overview");
   return {
+    membershipId: row.membership_id,
     displayName: row.display_name,
     tenantName: row.tenant_name,
     tenantSlug: row.tenant_slug,

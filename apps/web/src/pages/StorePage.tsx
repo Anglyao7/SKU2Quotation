@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { Link, useLoaderData, useLocation, useParams } from "react-router-dom";
 import { BRAND_NAME_ZH } from "../brand";
+import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
@@ -46,6 +47,11 @@ import {
 } from "../components/StorefrontImageSearch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
+import {
+  storefrontAccountMembershipId,
+  storefrontBasePath,
+  storefrontStorageScope,
+} from "../lib/storefrontAccount";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import {
@@ -114,6 +120,7 @@ function catalogRequestKey(
   shareToken: string,
   search: string,
   category: string,
+  accountId = "",
 ) {
   return JSON.stringify([
     slug.toLocaleLowerCase(),
@@ -121,6 +128,7 @@ function catalogRequestKey(
     shareToken,
     search.trim(),
     category,
+    accountId,
   ]);
 }
 
@@ -225,8 +233,10 @@ function CategoryScrollTrack({
 
 export function StorePage() {
   const loadedStore = useLoaderData() as Storefront;
+  const { profile } = useCoreAuth();
   const location = useLocation();
-  const { shareId } = useParams<{ shareId?: string }>();
+  const { shareId, accountKey } = useParams<{ shareId?: string; accountKey?: string }>();
+  const accountId = storefrontAccountMembershipId(accountKey);
   const tenantSlug = loadedStore.slug;
   const locale: StorefrontLocale = normalizeStorefrontLocale(loadedStore.locale);
   const t = useCallback(
@@ -246,17 +256,22 @@ export function StorePage() {
     const value = query.toString();
     return value ? `?${value}` : "";
   }, [locale, shareToken]);
+  const storefrontRoot = storefrontBasePath(tenantSlug, accountKey);
   const storefrontHome = shareId && shareToken
     ? `/${encodeURIComponent(tenantSlug)}/share/${encodeURIComponent(shareToken)}${storefrontLocaleQuery(locale)}`
-    : `/${encodeURIComponent(tenantSlug)}${sharedQuery}`;
+    : `${storefrontRoot}${sharedQuery}`;
+  const storageScope = storefrontStorageScope(tenantSlug, accountId);
+  const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId
+    ? profile.user.displayName
+    : undefined;
   const [initialCatalogSnapshot] = useState(() => (
-    shareToken
+    shareToken || accountId
       ? null
-      : readStorefrontCatalogSnapshot(loadedStore.slug, locale)
+      : readStorefrontCatalogSnapshot(storageScope, locale)
   ));
   const [initialView] = useState(() => (
     initialCatalogSnapshot?.view
-      ?? (shareToken ? undefined : readStorefrontViewState(loadedStore.slug))
+      ?? (shareToken ? undefined : readStorefrontViewState(storageScope))
   ));
   const [store, setStore] = useState<Storefront>(() => ({
     ...(initialCatalogSnapshot?.store ?? loadedStore),
@@ -291,9 +306,9 @@ export function StorePage() {
     () => new Set(initialView?.expandedCategories ?? []),
   );
   const [cart, setCart] = useState<Record<string, CartLine>>(
-    () => readStoreCart(loadedStore.slug),
+    () => readStoreCart(storageScope),
   );
-  const [cartTenant, setCartTenant] = useState(loadedStore.slug);
+  const [cartTenant, setCartTenant] = useState(storageScope);
   const requestId = useRef(0);
   const imageSearchRef = useRef<StorefrontImageSearchHandle>(null);
   const hasCatalogResultsRef = useRef(Boolean(initialCatalogSnapshot?.products.length));
@@ -302,6 +317,7 @@ export function StorePage() {
   const activeTenantRef = useRef(loadedStore.slug);
   const activeLocaleRef = useRef<StorefrontLocale>(locale);
   const activeShareTokenRef = useRef(shareToken);
+  const activeAccountRef = useRef(accountId);
   const facetsLoadedRef = useRef(Boolean(
     !initialCatalogSnapshot && loadedStore.categories?.length,
   ));
@@ -318,6 +334,7 @@ export function StorePage() {
           shareToken,
           initialView?.search ?? "",
           initialView?.secondaryCategory || initialView?.primaryCategory || "",
+          accountId,
         )
       : null,
   );
@@ -332,15 +349,17 @@ export function StorePage() {
     const tenantChanged = activeTenantRef.current !== loadedStore.slug;
     const localeChanged = activeLocaleRef.current !== locale;
     const shareChanged = activeShareTokenRef.current !== shareToken;
-    if (!tenantChanged && !localeChanged && !shareChanged) return;
+    const accountChanged = activeAccountRef.current !== accountId;
+    if (!tenantChanged && !localeChanged && !shareChanged && !accountChanged) return;
     activeTenantRef.current = loadedStore.slug;
     activeLocaleRef.current = locale;
     activeShareTokenRef.current = shareToken;
+    activeAccountRef.current = accountId;
     facetsLoadedRef.current = false;
-    const nextView = shareToken ? undefined : readStorefrontViewState(loadedStore.slug);
-    const nextSnapshot = shareToken
+    const nextView = shareToken ? undefined : readStorefrontViewState(storageScope);
+    const nextSnapshot = shareToken || accountId
       ? null
-      : readStorefrontCatalogSnapshot(loadedStore.slug, locale);
+      : readStorefrontCatalogSnapshot(storageScope, locale);
     const restoredView = nextSnapshot?.view ?? nextView;
     setStore(nextSnapshot ? {
       ...nextSnapshot.store,
@@ -354,9 +373,9 @@ export function StorePage() {
     setImageSearchState(EMPTY_IMAGE_SEARCH_STATE);
     setCategoryLayout(restoredView?.categoryLayout ?? "horizontal");
     setExpandedCategories(new Set(restoredView?.expandedCategories ?? []));
-    if (tenantChanged) {
-      setCart(readStoreCart(loadedStore.slug));
-      setCartTenant(loadedStore.slug);
+    if (tenantChanged || accountChanged) {
+      setCart(readStoreCart(storageScope));
+      setCartTenant(storageScope);
     }
     restoredCatalogQueryRef.current = nextSnapshot
       ? catalogRequestKey(
@@ -365,6 +384,7 @@ export function StorePage() {
           shareToken,
           restoredView?.search ?? "",
           restoredView?.secondaryCategory || restoredView?.primaryCategory || "",
+          accountId,
         )
       : null;
     facetsLoadedRef.current = Boolean(
@@ -380,7 +400,7 @@ export function StorePage() {
     hasCatalogResultsRef.current = Boolean(nextSnapshot?.products.length);
     setPageTransitioning(false);
     setPageTransitionError("");
-  }, [loadedStore, locale, shareToken]);
+  }, [accountId, loadedStore, locale, shareToken, storageScope]);
 
   useEffect(() => {
     // Keep one marker per browser tab/session. The server deduplicates the
@@ -420,8 +440,8 @@ export function StorePage() {
   }, [shareToken, t, tenantSlug]);
 
   useEffect(() => {
-    if (cartTenant === tenantSlug) writeStoreCart(tenantSlug, cart);
-  }, [cart, cartTenant, tenantSlug]);
+    if (cartTenant === storageScope) writeStoreCart(storageScope, cart);
+  }, [cart, cartTenant, storageScope]);
 
   const category = secondaryCategory || primaryCategory;
   const currentCatalogRequestKey = catalogRequestKey(
@@ -430,6 +450,7 @@ export function StorePage() {
     shareToken,
     deferredSearch,
     category,
+    accountId,
   );
 
   useEffect(() => {
@@ -471,6 +492,7 @@ export function StorePage() {
         page: targetPage,
         locale,
         shareToken: shareToken || undefined,
+        accountId,
       });
       if (currentRequest !== requestId.current) return;
       if (includeFacets) facetsLoadedRef.current = true;
@@ -515,7 +537,7 @@ export function StorePage() {
         setPageTransitioning(false);
       }
     }
-  }, [tenantSlug, deferredSearch, category, locale, shareToken, t]);
+  }, [accountId, tenantSlug, deferredSearch, category, locale, shareToken, t]);
 
   useEffect(() => {
     if (restoredCatalogQueryRef.current === currentCatalogRequestKey) {
@@ -573,6 +595,7 @@ export function StorePage() {
         page: page + 1,
         locale,
         shareToken: shareToken || undefined,
+        accountId,
       }).catch(() => undefined);
     };
     const target = paginationRef.current;
@@ -600,6 +623,7 @@ export function StorePage() {
     pageTransitioning,
     pages,
     shareToken,
+    accountId,
     tenantSlug,
   ]);
 
@@ -622,10 +646,10 @@ export function StorePage() {
   const prefetchProductDetails = useCallback(
     (productId: string) => {
       void preloadProductDetailModule().catch(() => undefined);
-      void api.prefetchStoreProduct(tenantSlug, productId, locale, shareToken || undefined)
+      void api.prefetchStoreProduct(tenantSlug, productId, locale, shareToken || undefined, accountId)
         .catch(() => undefined);
     },
-    [locale, shareToken, tenantSlug],
+    [accountId, locale, shareToken, tenantSlug],
   );
 
   useEffect(() => {
@@ -644,7 +668,7 @@ export function StorePage() {
     const timer = window.setTimeout(() => {
       void Promise.allSettled(
         products.slice(0, 3).map((product) => (
-          api.prefetchStoreProduct(tenantSlug, product.id, locale, shareToken || undefined)
+          api.prefetchStoreProduct(tenantSlug, product.id, locale, shareToken || undefined, accountId)
         )),
       );
     }, 280);
@@ -656,6 +680,7 @@ export function StorePage() {
     pageTransitioning,
     products,
     shareToken,
+    accountId,
     store.source_locale,
     tenantSlug,
   ]);
@@ -849,9 +874,9 @@ export function StorePage() {
       categoryLayout,
       expandedCategories: Array.from(expandedCategories),
     };
-    writeStorefrontViewState(tenantSlug, viewState);
-    if (!loading && !error && products.length > 0) {
-      writeStorefrontCatalogSnapshot(tenantSlug, locale, {
+    writeStorefrontViewState(storageScope, viewState);
+    if (!accountId && !loading && !error && products.length > 0) {
+      writeStorefrontCatalogSnapshot(storageScope, locale, {
         store,
         products,
         total,
@@ -908,8 +933,8 @@ export function StorePage() {
                   <span className="store-identity-mark"><StoreIcon size={21} weight="duotone" /></span>
                 )}
                 <span>
-                  <strong>{store.name}</strong>
-                  <small>{t("商品目录")}</small>
+                  <strong>{accountName ? `${store.name} / ${accountName}` : store.name}</strong>
+                  <small>{accountName ? t("子账号专属商品目录") : t("商品目录")}</small>
                 </span>
               </Link>
               <span className="powered-by">{t("由智贸云提供")}</span>
@@ -926,9 +951,11 @@ export function StorePage() {
                   toLight: t("切换浅色模式"),
                 }}
               />
-              <StorefrontVisitorEntry tenantSlug={tenantSlug} locale={locale} />
+              <StorefrontVisitorEntry tenantSlug={tenantSlug} accountKey={accountKey} locale={locale} />
               <CartDrawer
                 slug={tenantSlug}
+                accountId={accountId}
+                accountKey={accountKey}
                 storeName={store.name}
                 contactEmail={store.contact_email}
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
@@ -942,7 +969,7 @@ export function StorePage() {
         </Container>
       </header>
 
-      <StorefrontTopNavigation store={store} locale={locale} />
+      <StorefrontTopNavigation store={store} accountKey={accountKey} locale={locale} />
 
       <StorefrontAnnouncements
         announcements={store.announcements || []}
@@ -1045,6 +1072,7 @@ export function StorePage() {
                 <StorefrontImageSearch
                   ref={imageSearchRef}
                   tenantSlug={tenantSlug}
+                  accountId={accountId}
                   locale={locale}
                   shareToken={shareToken}
                   active={imageSearchActive}
@@ -1335,8 +1363,8 @@ export function StorePage() {
                           <ProductCard
                             key={product.id}
                             product={product}
-                            tenantSlug={tenantSlug}
-                            detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
+                            tenantSlug={storageScope}
+                            detailsHref={`${storefrontRoot}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
                             onOpenDetails={rememberCatalogPosition}
                             onPrefetchDetails={() => prefetchProductDetails(product.id)}
                             locale={locale}
@@ -1421,8 +1449,8 @@ export function StorePage() {
                       <ProductCard
                         key={product.id}
                         product={product}
-                        tenantSlug={tenantSlug}
-                        detailsHref={`/${encodeURIComponent(tenantSlug)}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
+                        tenantSlug={storageScope}
+                        detailsHref={`${storefrontRoot}/products/${encodeURIComponent(product.id)}${sharedQuery}`}
                         onOpenDetails={rememberCatalogPosition}
                         onPrefetchDetails={() => prefetchProductDetails(product.id)}
                         locale={locale}
@@ -1535,6 +1563,8 @@ export function StorePage() {
       </main>
       <StorefrontSupportWidget
         tenantSlug={tenantSlug}
+        accountId={accountId}
+        accountKey={accountKey}
         storeName={store.name}
         locale={locale}
         config={store.support_widget}

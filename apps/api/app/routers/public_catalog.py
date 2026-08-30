@@ -85,6 +85,41 @@ _PUBLIC_QUOTE_MEDIA_PATTERN = re.compile(
 )
 
 
+def _bearer_access_token(
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str | None:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+    return credentials.credentials
+
+
+def _catalog_subaccount(
+    identity_session: Session,
+    *,
+    credentials: HTTPAuthorizationCredentials | None,
+    expected_membership_id: UUID | None,
+):
+    submitter = use_cases.optional_customer_subaccount_membership(
+        identity_session,
+        access_token=_bearer_access_token(credentials),
+    )
+    if expected_membership_id is None:
+        return submitter
+    if submitter is None:
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_SESSION_REQUIRED",
+            "请先登录对应子账号后再打开该专属前台。",
+            kind="unauthorized",
+        )
+    if submitter[0].id != expected_membership_id:
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_SESSION_MISMATCH",
+            "当前登录账号与该子账号前台不一致。",
+            kind="forbidden",
+        )
+    return submitter
+
+
 def _schedule_search_term_record(
     background_tasks: BackgroundTasks,
     *,
@@ -203,6 +238,7 @@ def list_public_skus(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=24, ge=1, le=100),
     locale: str | None = Query(default=None, max_length=20),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
@@ -231,13 +267,10 @@ def list_public_skus(
             ),
         )
     try:
-        submitter = use_cases.optional_customer_subaccount_membership(
+        submitter = _catalog_subaccount(
             identity_session,
-            access_token=(
-                credentials.credentials
-                if credentials is not None and credentials.scheme.lower() == "bearer"
-                else None
-            ),
+            credentials=credentials,
+            expected_membership_id=account,
         )
         result = use_cases.list_public_skus(
             session,
@@ -281,6 +314,7 @@ def list_public_products(
     page_size: int = Query(default=24, ge=1, le=100),
     locale: str | None = Query(default=None, max_length=20),
     share: str | None = Query(default=None, min_length=8, max_length=64),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
@@ -315,13 +349,10 @@ def list_public_products(
             ),
         )
     try:
-        submitter = use_cases.optional_customer_subaccount_membership(
+        submitter = _catalog_subaccount(
             identity_session,
-            access_token=(
-                credentials.credentials
-                if credentials is not None and credentials.scheme.lower() == "bearer"
-                else None
-            ),
+            credentials=credentials,
+            expected_membership_id=account,
         )
         result = use_cases.list_public_products(
             session,
@@ -360,6 +391,7 @@ def search_public_products_by_image(
     limit: int = Query(default=12, ge=1, le=24),
     locale: str | None = Query(default=None, max_length=20),
     share: str | None = Query(default=None, min_length=8, max_length=64),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
@@ -387,14 +419,10 @@ def search_public_products_by_image(
     filename_content_type = file.content_type or "application/octet-stream"
     file.file.close()
     try:
-        submitter = use_cases.optional_customer_subaccount_membership(
+        submitter = _catalog_subaccount(
             identity_session,
-            access_token=(
-                credentials.credentials
-                if credentials is not None
-                and credentials.scheme.lower() == "bearer"
-                else None
-            ),
+            credentials=credentials,
+            expected_membership_id=account,
         )
         result = use_cases.search_public_products_by_image(
             session,
@@ -440,6 +468,7 @@ def get_public_product(
     response: Response,
     locale: str | None = Query(default=None, max_length=20),
     share: str | None = Query(default=None, min_length=8, max_length=64),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
@@ -464,13 +493,10 @@ def get_public_product(
             ),
         )
     try:
-        submitter = use_cases.optional_customer_subaccount_membership(
+        submitter = _catalog_subaccount(
             identity_session,
-            access_token=(
-                credentials.credentials
-                if credentials is not None and credentials.scheme.lower() == "bearer"
-                else None
-            ),
+            credentials=credentials,
+            expected_membership_id=account,
         )
         return use_cases.get_public_product(
             session,
@@ -495,6 +521,7 @@ def get_public_sku(
     response: Response,
     locale: str | None = Query(default=None, max_length=20),
     share: str | None = Query(default=None, min_length=8, max_length=64),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
@@ -512,13 +539,10 @@ def get_public_sku(
             ),
         )
     try:
-        submitter = use_cases.optional_customer_subaccount_membership(
+        submitter = _catalog_subaccount(
             identity_session,
-            access_token=(
-                credentials.credentials
-                if credentials is not None and credentials.scheme.lower() == "bearer"
-                else None
-            ),
+            credentials=credentials,
+            expected_membership_id=account,
         )
         return use_cases.get_public_sku(
             session,
@@ -609,6 +633,7 @@ def submit_public_quote_draft(
     payload: PublicQuoteDraftCreate,
     request: Request,
     response: Response,
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
@@ -631,12 +656,21 @@ def submit_public_quote_draft(
         )
         submitter = use_cases.optional_customer_quote_submitter(
             identity_session,
-            access_token=(
-                credentials.credentials
-                if credentials is not None and credentials.scheme.lower() == "bearer"
-                else None
-            ),
+            access_token=_bearer_access_token(credentials),
         )
+        if account is not None:
+            if submitter is None:
+                raise ApplicationError(
+                    "STOREFRONT_ACCOUNT_SESSION_REQUIRED",
+                    "请先登录对应子账号后再提交询价。",
+                    kind="unauthorized",
+                )
+            if submitter.membership_id != account:
+                raise ApplicationError(
+                    "STOREFRONT_ACCOUNT_SESSION_MISMATCH",
+                    "当前登录账号与该子账号前台不一致。",
+                    kind="forbidden",
+                )
         return use_cases.create_public_quote_draft(
             session,
             slug=tenant_slug,

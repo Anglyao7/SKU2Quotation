@@ -16,6 +16,7 @@ from urllib.parse import quote
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..adapters.object_storage import get_object_storage

@@ -20,7 +20,8 @@ import {
   Trash,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLoaderData, useLocation, useNavigate, useParams } from "react-router-dom";
+import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
@@ -31,6 +32,7 @@ import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
+import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
 import { money } from "../lib/format";
 import {
   buildProductVariantModel,
@@ -81,6 +83,13 @@ function productViewEventId(locationKey: string, productId: string) {
 
 export function ProductDetailPage() {
   const { store, product } = useLoaderData() as ProductDetailLoaderData;
+  const { profile } = useCoreAuth();
+  const { accountKey } = useParams<{ accountKey?: string }>();
+  const accountId = storefrontAccountMembershipId(accountKey);
+  const storageScope = storefrontStorageScope(store.slug, accountId);
+  const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId
+    ? profile.user.displayName
+    : undefined;
   const locale: StorefrontLocale = normalizeStorefrontLocale(store.locale);
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
@@ -92,10 +101,10 @@ export function ProductDetailPage() {
   const storefrontSearch = storefrontQuery.toString();
   const storefrontHome = shareToken
     ? `/${encodeURIComponent(store.slug)}/share/${encodeURIComponent(shareToken)}${storefrontSearch ? `?${storefrontSearch}` : ""}`
-    : `/${encodeURIComponent(store.slug)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
+    : `${storefrontBasePath(store.slug, accountKey)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
-    () => readStoreCart(store.slug),
+    () => readStoreCart(storageScope),
   );
   const variantModel = useMemo(
     () => buildProductVariantModel(product.skus, {
@@ -120,7 +129,7 @@ export function ProductDetailPage() {
   const selectedImageUrl = selectedSku?.image_url || product.image_url;
   const [imageFailed, setImageFailed] = useState(!selectedImageUrl);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
-  const [favorite, setFavorite] = useState(() => isStorefrontFavorite(store.slug, product.id));
+  const [favorite, setFavorite] = useState(() => isStorefrontFavorite(storageScope, product.id));
   const [announcements, setAnnouncements] = useState(store.announcements || []);
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const description = product.description?.trim();
@@ -137,14 +146,14 @@ export function ProductDetailPage() {
   );
 
   useEffect(() => {
-    writeStoreCart(store.slug, cart);
-  }, [cart, store.slug]);
+    writeStoreCart(storageScope, cart);
+  }, [cart, storageScope]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-    rememberStorefrontProduct(store.slug, product);
-    setFavorite(isStorefrontFavorite(store.slug, product.id));
-  }, [product, store.slug]);
+    rememberStorefrontProduct(storageScope, product);
+    setFavorite(isStorefrontFavorite(storageScope, product.id));
+  }, [product, storageScope]);
 
   useEffect(() => {
     setSelectedSkuId(product.skus[0]?.id || "");
@@ -250,8 +259,8 @@ export function ProductDetailPage() {
                   </span>
                 )}
                 <span>
-                  <strong>{store.name}</strong>
-                  <small>{t("商品目录")}</small>
+                  <strong>{accountName ? `${store.name} / ${accountName}` : store.name}</strong>
+                  <small>{accountName ? t("子账号专属商品目录") : t("商品目录")}</small>
                 </span>
               </Link>
               <span className="powered-by">{t("由智贸云提供")}</span>
@@ -267,9 +276,11 @@ export function ProductDetailPage() {
                   toLight: t("切换浅色模式"),
                 }}
               />
-              <StorefrontVisitorEntry tenantSlug={store.slug} locale={locale} />
+              <StorefrontVisitorEntry tenantSlug={store.slug} accountKey={accountKey} locale={locale} />
               <CartDrawer
                 slug={store.slug}
+                accountId={accountId}
+                accountKey={accountKey}
                 storeName={store.name}
                 contactEmail={store.contact_email}
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
@@ -283,7 +294,7 @@ export function ProductDetailPage() {
         </Container>
       </header>
 
-      <StorefrontTopNavigation store={store} locale={locale} />
+      <StorefrontTopNavigation store={store} accountKey={accountKey} locale={locale} />
 
       <StorefrontAnnouncements
         announcements={announcements}
@@ -526,6 +537,8 @@ export function ProductDetailPage() {
 
       <StorefrontSupportWidget
         tenantSlug={store.slug}
+        accountId={accountId}
+        accountKey={accountKey}
         storeName={store.name}
         locale={locale}
         config={store.support_widget}

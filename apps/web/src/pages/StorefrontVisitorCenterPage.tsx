@@ -20,13 +20,15 @@ import {
   UserCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useLoaderData, useSearchParams } from "react-router-dom";
+import { Link, useLoaderData, useParams, useSearchParams } from "react-router-dom";
+import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { StorefrontFooter } from "../components/StorefrontFooter";
 import { StorefrontTopNavigation } from "../components/StorefrontTopNavigation";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
+import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
 import { money } from "../lib/format";
 import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import {
@@ -53,12 +55,14 @@ function ProductRows({
   locale,
   removable,
   onRemove,
+  basePath,
 }: {
   items: StorefrontVisitorProduct[];
   store: Storefront;
   locale: StorefrontLocale;
   removable?: boolean;
   onRemove?: (item: StorefrontVisitorProduct) => void;
+  basePath: string;
 }) {
   const t = (source: string, values?: Record<string, string | number>) => storefrontText(locale, source, values);
   if (!items.length) {
@@ -66,11 +70,11 @@ function ProductRows({
   }
   return <div className="visitor-product-list">{items.map((item) => (
     <Card className="visitor-product-row" key={item.id}>
-      <Link to={`/${encodeURIComponent(store.slug)}/products/${encodeURIComponent(item.id)}${storefrontLocaleQuery(locale)}`} className="visitor-product-image">
+      <Link to={`${basePath}/products/${encodeURIComponent(item.id)}${storefrontLocaleQuery(locale)}`} className="visitor-product-image">
         {item.imageUrl ? <img src={item.imageUrl} alt="" loading="lazy" /> : <Package weight="duotone" />}
       </Link>
       <div>
-        <Link to={`/${encodeURIComponent(store.slug)}/products/${encodeURIComponent(item.id)}${storefrontLocaleQuery(locale)}`}><strong>{item.name}</strong></Link>
+        <Link to={`${basePath}/products/${encodeURIComponent(item.id)}${storefrontLocaleQuery(locale)}`}><strong>{item.name}</strong></Link>
         <Text size="1" color="gray">{item.category || t("未分类")}</Text>
         <Text size="2" weight="bold" color="blue">{money(item.priceFrom, item.currency)}</Text>
       </div>
@@ -119,17 +123,25 @@ function QuoteRows({ quotes, locale, slug }: { quotes: StorefrontVisitorQuote[];
 
 export function StorefrontVisitorCenterPage() {
   const store = useLoaderData() as Storefront;
+  const { profile } = useCoreAuth();
+  const { accountKey } = useParams<{ accountKey?: string }>();
+  const accountId = storefrontAccountMembershipId(accountKey);
+  const basePath = storefrontBasePath(store.slug, accountKey);
+  const storageScope = storefrontStorageScope(store.slug, accountId);
+  const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId
+    ? profile.user.displayName
+    : undefined;
   const locale = normalizeStorefrontLocale(store.locale);
   const t = (source: string, values?: Record<string, string | number>) => storefrontText(locale, source, values);
   const [searchParams] = useSearchParams();
-  const [history, setHistory] = useState(() => readStorefrontHistory(store.slug));
-  const [favorites, setFavorites] = useState(() => readStorefrontFavorites(store.slug));
+  const [history, setHistory] = useState(() => readStorefrontHistory(storageScope));
+  const [favorites, setFavorites] = useState(() => readStorefrontFavorites(storageScope));
   const [quotes, setQuotes] = useState<StorefrontVisitorQuote[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [cart, setCart] = useState<Record<string, CartLine>>(() => readStoreCart(store.slug));
+  const [cart, setCart] = useState<Record<string, CartLine>>(() => readStoreCart(storageScope));
   const cartLines = useMemo(() => Object.values(cart), [cart]);
-  const storefrontHome = `/${encodeURIComponent(store.slug)}${storefrontLocaleQuery(locale)}`;
+  const storefrontHome = `${basePath}${storefrontLocaleQuery(locale)}`;
 
   const loadQuotes = useCallback(async () => {
     setLoading(true);
@@ -153,14 +165,14 @@ export function StorefrontVisitorCenterPage() {
     const update = (event: Event) => {
       const detail = (event as CustomEvent<{ slug?: string; scope?: string }>).detail;
       if (detail?.slug && detail.slug.toLocaleLowerCase() !== store.slug.toLocaleLowerCase()) return;
-      setHistory(readStorefrontHistory(store.slug));
-      setFavorites(readStorefrontFavorites(store.slug));
+      setHistory(readStorefrontHistory(storageScope));
+      setFavorites(readStorefrontFavorites(storageScope));
       if (detail?.scope === "quotes") void loadQuotes();
     };
     window.addEventListener(STOREFRONT_VISITOR_EVENT, update);
     return () => window.removeEventListener(STOREFRONT_VISITOR_EVENT, update);
-  }, [loadQuotes, store.slug]);
-  useEffect(() => { writeStoreCart(store.slug, cart); }, [cart, store.slug]);
+  }, [loadQuotes, storageScope, store.slug]);
+  useEffect(() => { writeStoreCart(storageScope, cart); }, [cart, storageScope]);
 
   const pending = quotes.filter((quote) => quote.status === "PENDING_CONFIRMATION");
   const confirmed = quotes.filter((quote) => quote.status === "CONFIRMED");
@@ -189,16 +201,16 @@ export function StorefrontVisitorCenterPage() {
       <Container size="4" className="store-header-container"><div className="header-inner">
         <div className="store-header-branding"><Link to={storefrontHome} className="store-identity">
           {store.logo_url ? <img src={store.logo_url} alt="" /> : <span className="store-identity-mark"><StoreIcon size={21} weight="duotone" /></span>}
-          <span><strong>{store.name}</strong><small>{t("个人中心")}</small></span>
+          <span><strong>{accountName ? `${store.name} / ${accountName}` : store.name}</strong><small>{t("个人中心")}</small></span>
         </Link></div>
         <div className="header-actions">
           <StorefrontLanguageSwitch locale={locale} availableLocales={store.available_locales} />
           <ThemeToggle labels={{ toDark: t("切换深色模式"), toLight: t("切换浅色模式") }} />
-          <CartDrawer slug={store.slug} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} lines={cartLines} onQuantity={updateQuantity} onClear={() => setCart({})} locale={locale} />
+          <CartDrawer slug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} lines={cartLines} onQuantity={updateQuantity} onClear={() => setCart({})} locale={locale} />
         </div>
       </div></Container>
     </header>
-    <StorefrontTopNavigation store={store} locale={locale} />
+    <StorefrontTopNavigation store={store} accountKey={accountKey} locale={locale} />
     <main className="visitor-center-main"><Container size="4">
       <Link to={storefrontHome} className="sku-detail-back"><ArrowLeft weight="bold" />{t("返回商品目录")}</Link>
       <section className="visitor-center-hero">
@@ -216,8 +228,8 @@ export function StorefrontVisitorCenterPage() {
           <Tabs.Trigger value="closed">{t("已关闭")} <Badge>{closed.length}</Badge></Tabs.Trigger>
         </Tabs.List>
         <div className="visitor-center-panel">
-          <Tabs.Content value="history"><div className="visitor-panel-heading"><Heading size="5">{t("浏览记录")}</Heading>{history.length ? <Button size="2" variant="ghost" color="gray" onClick={() => clearStorefrontHistory(store.slug)}><Trash />{t("清空")}</Button> : null}</div><ProductRows items={history} store={store} locale={locale} /></Tabs.Content>
-          <Tabs.Content value="favorites"><div className="visitor-panel-heading"><Heading size="5">{t("我的收藏")}</Heading></div><ProductRows items={favorites} store={store} locale={locale} removable onRemove={(item) => { toggleStorefrontFavorite(store.slug, { id: item.id, name: item.name, image_url: item.imageUrl, price_from: item.priceFrom, price_to: item.priceTo, currency: item.currency, category: item.category, tags: [], unit_code: "piece", sku_count: 0, product_version: 1 }); }} /></Tabs.Content>
+          <Tabs.Content value="history"><div className="visitor-panel-heading"><Heading size="5">{t("浏览记录")}</Heading>{history.length ? <Button size="2" variant="ghost" color="gray" onClick={() => clearStorefrontHistory(storageScope)}><Trash />{t("清空")}</Button> : null}</div><ProductRows items={history} store={store} locale={locale} basePath={basePath} /></Tabs.Content>
+          <Tabs.Content value="favorites"><div className="visitor-panel-heading"><Heading size="5">{t("我的收藏")}</Heading></div><ProductRows items={favorites} store={store} locale={locale} basePath={basePath} removable onRemove={(item) => { toggleStorefrontFavorite(storageScope, { id: item.id, name: item.name, image_url: item.imageUrl, price_from: item.priceFrom, price_to: item.priceTo, currency: item.currency, category: item.category, tags: [], unit_code: "piece", sku_count: 0, product_version: 1 }); }} /></Tabs.Content>
           <Tabs.Content value="pending"><div className="visitor-panel-heading"><Heading size="5">{t("待确认询价单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={pending} locale={locale} slug={store.slug} />}</Tabs.Content>
           <Tabs.Content value="confirmed"><div className="visitor-panel-heading"><Heading size="5">{t("已确认询价单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={confirmed} locale={locale} slug={store.slug} />}</Tabs.Content>
           <Tabs.Content value="completed"><div className="visitor-panel-heading"><Heading size="5">{t("已成交订单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={completed} locale={locale} slug={store.slug} />}</Tabs.Content>
