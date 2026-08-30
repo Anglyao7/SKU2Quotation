@@ -210,6 +210,63 @@ def test_incremental_language_package_reuses_unchanged_entries(
     assert "宠物饮水杯" not in translated_values
 
 
+def test_incremental_package_reuses_exact_text_from_unchanged_sku(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id, first_id, _second_id, rows = _catalog_rows()
+    rows[0][1].name = rows[0][2].name
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        packages,
+        "translate_values_with_memory",
+        _translation_stub(calls),
+    )
+    initial = build_catalog_language_pack(
+        tenant_id=tenant_id,
+        rows=rows,
+        source_locale="zh-CN",
+        target_locale="en-US",
+        version=1,
+        translator=_PackageTranslator(),
+        sku_translations={},
+        previous_payload=None,
+        full_rebuild=True,
+    )
+
+    first_source = packages._sku_source(rows[0])
+    unchanged_translation = SimpleNamespace(
+        source_hash=first_source["translation_source_hash"],
+        name="Pet Drinking Cup",
+        description="Portable and foldable\nSuitable for travel",
+        category="Pet Supplies/Drinking Supplies",
+        tags=["Portable", "Travel"],
+        display_tag="Portable",
+    )
+    rows[1][1].version = 2
+    rows[1][1].option_values["规格名称"] = "升级款"
+    rows[1][1].updated_at += timedelta(minutes=20)
+    calls.clear()
+
+    incremental = build_catalog_language_pack(
+        tenant_id=tenant_id,
+        rows=rows,
+        source_locale="zh-CN",
+        target_locale="en-US",
+        version=2,
+        translator=_PackageTranslator(),
+        sku_translations={first_id: unchanged_translation},
+        previous_payload=initial.payload,
+        reuse_previous=True,
+        full_rebuild=False,
+    )
+
+    translated_values = {value for batch in calls for value in batch}
+    product = next(iter(incremental.payload["products"].values()))
+    assert product["name"] == "Pet Drinking Cup"
+    assert "宠物饮水杯" not in translated_values
+    assert "升级款" in translated_values
+
+
 def test_incremental_package_detects_specification_changes_without_version_bump(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

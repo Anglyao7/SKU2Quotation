@@ -705,7 +705,12 @@ def build_catalog_language_pack(
         str(sku_id): translation
         for sku_id, translation in sku_translations.items()
     }
-    seed = _translation_seed(changed_skus, rows_by_sku_id)
+    # Exact text can be shared by multiple SKUs and products. Seed from the
+    # complete current catalog, not only entries whose package hash changed.
+    # Otherwise an updated product can lose a name/specification that already
+    # has a valid translation on an unchanged sibling or duplicate SKU, and
+    # packaging incorrectly asks the provider to translate it again.
+    seed = _translation_seed(sku_sources, rows_by_sku_id)
     values = _all_translatable_values(changed_products, changed_skus)
     translations = _translate_missing_values(
         tenant_id=tenant_id,
