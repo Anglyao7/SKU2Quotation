@@ -27,6 +27,31 @@ AUTH_TABLE_GRANTS: dict[str, tuple[str, ...]] = {
     # Development-only credential hashes stay on the identity connection and
     # are never readable by the business application role.
     "local_account_credentials": ("SELECT", "INSERT", "UPDATE", "DELETE"),
+    # Password login records a child-account access event on the isolated
+    # identity connection. Account summaries also read the same audit trail.
+    "customer_account_access_events": ("SELECT", "INSERT"),
+    # Permanently removing a child login revokes its identity session and
+    # soft-deletes its pricing rules in one transaction. Keep this narrower
+    # than the application role: identity may read/update, never create or
+    # physically delete, pricing records.
+    "subaccount_pricing_policies": ("SELECT", "UPDATE"),
+    "subaccount_product_price_overrides": ("SELECT", "UPDATE"),
+    "subaccount_sku_price_overrides": ("SELECT", "UPDATE"),
+    "subaccount_category_price_overrides": ("SELECT", "UPDATE"),
+}
+AUTH_COLUMN_UPDATE_GRANTS: dict[str, tuple[str, ...]] = {
+    # Child-account status, access and tombstoning share the identity
+    # transaction, but the identity role must never be able to move a member
+    # between tenants, change ownership, or grant platform administration.
+    "memberships": (
+        "status",
+        "deleted_at",
+        "permission_overrides",
+        "permission_version",
+        "login_identifier",
+        "updated_at",
+    ),
+    "users": ("status", "updated_at"),
 }
 WORKER_TABLES = {
     "worker_jobs",
@@ -158,6 +183,16 @@ def grant_runtime_roles() -> dict[str, object]:
                     role_name=auth_role,
                     tables=(table_name,),
                     privileges=privileges,
+                )
+            for table_name, columns in AUTH_COLUMN_UPDATE_GRANTS.items():
+                cursor.execute(
+                    sql.SQL("GRANT UPDATE ({}) ON TABLE {} TO {}").format(
+                        sql.SQL(", ").join(
+                            sql.Identifier(column) for column in columns
+                        ),
+                        sql.Identifier("public", table_name),
+                        sql.Identifier(auth_role),
+                    )
                 )
             cursor.execute(
                 sql.SQL(

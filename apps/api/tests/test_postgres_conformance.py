@@ -10,7 +10,10 @@ from sqlalchemy.exc import DBAPIError
 
 from scripts.verify_postgres_rls import verify_postgres_rls
 from scripts.verify_postgres_worker_role import verify_postgres_worker_role
-from scripts.grant_runtime_roles import AUTH_TABLE_GRANTS
+from scripts.grant_runtime_roles import (
+    AUTH_COLUMN_UPDATE_GRANTS,
+    AUTH_TABLE_GRANTS,
+)
 
 
 OWNER_URL = os.environ.get("ATC_POSTGRES_OWNER_URL")
@@ -24,6 +27,29 @@ API_ROOT = Path(__file__).resolve().parents[1]
 def test_identity_role_has_no_direct_user_or_membership_update_grant() -> None:
     assert AUTH_TABLE_GRANTS["users"] == ("SELECT",)
     assert AUTH_TABLE_GRANTS["memberships"] == ("SELECT",)
+    assert AUTH_COLUMN_UPDATE_GRANTS["users"] == ("status", "updated_at")
+    assert AUTH_COLUMN_UPDATE_GRANTS["memberships"] == (
+        "status",
+        "deleted_at",
+        "permission_overrides",
+        "permission_version",
+        "login_identifier",
+        "updated_at",
+    )
+
+
+def test_identity_role_has_minimal_customer_subaccount_transaction_grants() -> None:
+    assert AUTH_TABLE_GRANTS["customer_account_access_events"] == (
+        "SELECT",
+        "INSERT",
+    )
+    for table_name in (
+        "subaccount_pricing_policies",
+        "subaccount_product_price_overrides",
+        "subaccount_sku_price_overrides",
+        "subaccount_category_price_overrides",
+    ):
+        assert AUTH_TABLE_GRANTS[table_name] == ("SELECT", "UPDATE")
 
 
 @pytest.mark.skipif(
