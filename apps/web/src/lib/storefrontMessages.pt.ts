@@ -44,7 +44,7 @@ export const portugueseStorefrontMessages: Record<string, string> = {
   "横向展示": "Apresentação horizontal",
   "竖向展示": "Apresentação vertical",
   "分类展示方式": "Disposição das categorias",
-  "推荐问题": "Perguntas sugeridas",
+  "热门搜索词": "Pesquisas populares",
   "清除筛选": "Limpar filtros",
   "搜索 SKU、名称、规格或使用场景": "Pesquisar por SKU, nome, especificação ou finalidade",
   "清除搜索": "Limpar pesquisa",

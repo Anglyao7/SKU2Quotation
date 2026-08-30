@@ -31,7 +31,14 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    Image as ReportLabImage,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from ..public_catalog_schemas import PublicQuoteDocument
 from .public_catalog_privacy import public_specification
@@ -1013,7 +1020,56 @@ def _quote_table_widths(fields: list[str]) -> list[float]:
     return [width * mm for width in scaled]
 
 
-def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
+def _quote_pdf_image(
+    image_url: str | None,
+    image_loader: QuoteImageLoader | None,
+    *,
+    max_width: float,
+    max_height: float,
+) -> ReportLabImage | str:
+    """Build a proportional thumbnail flowable for a PDF table cell.
+
+    Images are loaded through the route-provided callback so private catalog
+    media can be resolved with the same authorization as the quote download.
+    The normalized in-memory copy keeps generated PDFs small and prevents a
+    large source image from changing the table layout.
+    """
+
+    if not image_url or image_loader is None:
+        return ""
+    try:
+        content = image_loader(image_url)
+        if not content:
+            return ""
+        normalized = _normalized_quote_image(content)
+        image_buffer = BytesIO(normalized)
+        with PillowImage.open(image_buffer) as image_source:
+            source_width, source_height = image_source.size
+        if source_width <= 0 or source_height <= 0:
+            return ""
+        scale = min(
+            max_width / source_width,
+            max_height / source_height,
+        )
+        image_buffer.seek(0)
+        image = ReportLabImage(
+            image_buffer,
+            width=max(1.0, source_width * scale),
+            height=max(1.0, source_height * scale),
+            hAlign="CENTER",
+        )
+        # Keep the BytesIO alive until reportlab has finished building the PDF.
+        image._quote_image_buffer = image_buffer
+        return image
+    except Exception:
+        return ""
+
+
+def render_public_quote_draft_pdf(
+    document: PublicQuoteDocument,
+    *,
+    image_loader: QuoteImageLoader | None = None,
+) -> bytes:
     quote = document.quote
     locale = quote_locale(quote.locale)
     font_name = _register_quote_pdf_font(locale)
@@ -1100,15 +1156,34 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
         alignment=TA_CENTER,
     )
     table_headers = _public_quote_table_headers(document, table_fields, locale)
+    table_widths = _quote_table_widths(table_fields)
     rows: list[list[object]] = [[
         Paragraph(_pdf_localized_text(header, locale), table_header_style)
         for header in table_headers
     ]]
     for item in quote.items:
-        rows.append([
-            Paragraph(_pdf_localized_text(_quote_table_value(field, document, item), locale), table_body_style)
-            for field in table_fields
-        ])
+        row: list[object] = []
+        for index, field in enumerate(table_fields):
+            if field == "product_image":
+                row.append(
+                    _quote_pdf_image(
+                        item.image_url_snapshot,
+                        image_loader,
+                        max_width=max(4 * mm, table_widths[index] - 2 * mm),
+                        max_height=18 * mm,
+                    )
+                )
+            else:
+                row.append(
+                    Paragraph(
+                        _pdf_localized_text(
+                            _quote_table_value(field, document, item),
+                            locale,
+                        ),
+                        table_body_style,
+                    )
+                )
+        rows.append(row)
     total_row = [""] * len(table_fields)
     total_row[max(0, len(table_fields) - 2)] = Paragraph(
         _pdf_localized_text(quote_text(locale, "total"), locale),
@@ -1143,7 +1218,7 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
     table = Table(
         rows,
         repeatRows=1,
-        colWidths=_quote_table_widths(table_fields),
+        colWidths=table_widths,
     )
     table.setStyle(
         TableStyle(

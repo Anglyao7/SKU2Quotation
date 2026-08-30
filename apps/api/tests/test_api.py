@@ -8943,7 +8943,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "api_key": raw_api_key,
                 "model_name": "translation-test-model",
-                "timeout_seconds": 25,
+                "timeout_seconds": 300,
                 "max_tokens": 8192,
                 "requests_per_minute": 12,
                 "max_retry_count": 4,
@@ -8959,6 +8959,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
         assert payload["enabled"] is True
         assert payload["api_key_configured"] is True
         assert payload["api_key_hint"] == "••••4321"
+        assert payload["timeout_seconds"] == 300
         assert payload["requests_per_minute"] == 12
         assert payload["max_retry_count"] == 4
         assert payload["catalog_batch_size"] == 50
@@ -8977,6 +8978,7 @@ def test_platform_admin_manages_encrypted_translation_configuration(
             )
             assert row is not None
             assert row.api_key_ciphertext is not None
+            assert row.timeout_seconds == 300
             assert row.requests_per_minute == 12
             assert row.max_retry_count == 4
             assert row.catalog_batch_size == 50
@@ -21317,7 +21319,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-            ).scalar() == "20260830_0122"
+            ).scalar() == "20260830_0123"
     upgraded_engine.dispose()
     command.check(config)
 

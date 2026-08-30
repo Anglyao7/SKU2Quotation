@@ -709,7 +709,10 @@ def download_storefront_visitor_quote_pdf(
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return Response(
-        content=render_public_quote_draft_pdf(document),
+        content=render_public_quote_draft_pdf(
+            document,
+            image_loader=_quote_image_loader(session),
+        ),
         media_type="application/pdf",
         headers=_document_headers(
             quote_number=document.quote.quote_number, extension="pdf"
@@ -1094,7 +1097,10 @@ def download_public_quote_draft_pdf(
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return Response(
-        content=render_public_quote_draft_pdf(document),
+        content=render_public_quote_draft_pdf(
+            document,
+            image_loader=_quote_image_loader(session),
+        ),
         media_type="application/pdf",
         headers=_document_headers(
             quote_number=document.quote.quote_number, extension="pdf"
@@ -1163,7 +1169,10 @@ def download_tenant_quote_draft_pdf(
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return Response(
-        content=render_public_quote_draft_pdf(document),
+        content=render_public_quote_draft_pdf(
+            document,
+            image_loader=_quote_image_loader(session),
+        ),
         media_type="application/pdf",
         headers=_document_headers(
             quote_number=document.quote.quote_number, extension="pdf"

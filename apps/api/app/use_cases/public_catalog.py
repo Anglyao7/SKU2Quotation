@@ -63,6 +63,7 @@ from ..public_catalog_schemas import (
 from ..repositories import public_catalog_repository as repository
 from ..repositories import catalog_translation_repository
 from ..repositories import quote_template_repository
+from ..repositories import search_analytics_repository
 from ..services.catalog_translation import (
     CatalogTranslationResult,
     catalog_translation_source,
@@ -87,6 +88,7 @@ from ..services.hybrid_search import (
     hybrid_product_search,
 )
 from ..services.rbac import list_permissions
+from ..services.search_analytics import popular_search_window
 from ..services.storefront_branding import storefront_logo_url
 from ..services.translation import (
     TranslationProvider,
@@ -171,6 +173,36 @@ def _public_ai_search_questions(value: object) -> list[str]:
         seen.add(key)
         normalized.append(question)
     return normalized[:5] or list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
+
+
+def _public_popular_search_terms(
+    session: Session,
+    *,
+    tenant_id: UUID,
+) -> list[str]:
+    """Return storefront-safe search trends without making the store depend on analytics."""
+
+    try:
+        start_date, end_date = popular_search_window(days=30)
+        rows = search_analytics_repository.list_popular_search_terms(
+            session,
+            tenant_id=tenant_id,
+            start_date=start_date,
+            end_date=end_date,
+            limit=5,
+        )
+    except Exception:
+        logger.warning(
+            "storefront popular search terms could not be loaded for tenant %s",
+            tenant_id,
+            exc_info=True,
+        )
+        return []
+    return [
+        str(row["term_display"] or row["term_normalized"]).strip()
+        for row in rows
+        if str(row["term_display"] or row["term_normalized"]).strip()
+    ]
 
 
 _NONLINGUISTIC_ENGLISH_FRAGMENTS = frozenset(
@@ -786,6 +818,10 @@ def get_store(
         exchange_rates_enabled=bool(profile.storefront_exchange_rates_enabled),
         ai_search_questions=_public_ai_search_questions(
             getattr(profile, "ai_search_questions", None),
+        ),
+        popular_search_terms=_public_popular_search_terms(
+            session,
+            tenant_id=tenant.id,
         ),
         announcements=announcement_use_cases.public_announcements(
             session,

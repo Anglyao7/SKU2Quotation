@@ -781,41 +781,35 @@ img { display: block; max-width: 100%; }
   background: color-mix(in srgb, var(--surface) 72%, transparent);
 }
 .category-layout-toggle .rt-Button { margin: 0 !important; }
-.store-recommended-questions {
-  margin-top: 14px;
-  display: grid;
-  gap: 8px;
-}
-.store-recommended-questions > .rt-Text { padding-inline: 4px; }
-.store-recommended-question-list {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-.store-recommended-question {
+.store-popular-searches { margin-top: 12px; display: flex; align-items: center; gap: 9px; }
+.store-popular-searches > .rt-Text { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.store-popular-searches > .rt-Text svg { color: #b7791f; }
+.store-popular-search-list { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.store-popular-search {
   min-width: 0;
-  min-height: 42px;
-  padding: 9px 11px;
+  max-width: 280px;
+  min-height: 34px;
+  padding: 6px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
-  border-radius: 11px;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
   color: var(--text-soft);
-  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+  background: color-mix(in srgb, var(--surface) 84%, var(--page-soft));
   font: inherit;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.35;
   text-align: left;
   cursor: pointer;
   transition: border-color 160ms ease, color 160ms ease, background 160ms ease, transform 120ms ease;
 }
-.store-recommended-question span { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.store-recommended-question svg { flex: 0 0 auto; color: var(--accent); }
-.store-recommended-question:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
-.store-recommended-question:active { transform: translateY(1px); }
-.store-recommended-question:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.store-popular-search span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.store-popular-search svg { flex: 0 0 auto; color: var(--accent); }
+.store-popular-search:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.store-popular-search:active { transform: translateY(1px); }
+.store-popular-search:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .search-row {
   min-width: 0;
   display: grid;
@@ -2756,8 +2750,10 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .filter-panel-heading { padding-bottom: 10px; }
   .filter-panel-heading > div > .rt-Text:last-child { display: none; }
   .category-layout-toggle .rt-Button { padding-inline: 8px !important; }
-  .store-recommended-question-list { grid-template-columns: 1fr; gap: 6px; }
-  .store-recommended-question { min-height: 38px; }
+  .store-popular-searches { display: grid; gap: 6px; }
+  .store-popular-search-list { margin-inline: -13px; padding-inline: 13px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .store-popular-search-list::-webkit-scrollbar { display: none; }
+  .store-popular-search { flex: 0 0 auto; max-width: min(76vw, 260px); }
   .search-row { grid-template-columns: minmax(0, 1fr) 46px; gap: 8px; }
   .store-search { --text-field-height: 46px; height: 46px; }
   .store-image-search-button { width: 46px !important; min-width: 46px !important; height: 46px !important; min-height: 46px !important; border-radius: 11px !important; }
@@ -3399,19 +3395,49 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .subaccount-pricing-dialog > .rt-TextFieldRoot,
 .subaccount-pricing-table,
 .subaccount-pricing-pagination { margin-top: 14px; }
-.subaccount-pricing-policy { display: grid; grid-template-columns: minmax(170px, 220px) auto minmax(200px, 1fr); align-items: end; gap: 14px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--page-soft); }
+.subaccount-pricing-policy { display: grid; grid-template-columns: minmax(170px, 220px) minmax(200px, 1fr); align-items: end; gap: 14px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--page-soft); }
 .subaccount-pricing-policy > * { min-width: 0; }
 .subaccount-pricing-policy label { display: grid; gap: 7px; }
 .subaccount-pricing-policy > .rt-Text { align-self: center; }
-.subaccount-category-pricing { display: grid; grid-template-columns: minmax(210px, .9fr) minmax(0, 1.1fr) minmax(0, 1fr); align-items: center; gap: 14px; min-width: 0; padding: 16px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--accent-soft) 45%, var(--page-soft)); }
+.subaccount-category-pricing { min-width: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--accent-soft) 26%, var(--surface)); }
 .subaccount-category-pricing > * { min-width: 0; }
+.subaccount-category-pricing-heading { min-height: 66px; padding: 13px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent-soft) 48%, var(--page-soft)); }
 .subaccount-category-pricing-copy { display: grid; gap: 4px; }
 .subaccount-category-pricing-copy .rt-Text { min-width: 0; line-height: 1.4; }
-.subaccount-category-pricing-controls { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(105px, .65fr); align-items: center; gap: 8px; min-width: 0; }
-.subaccount-category-pricing select { width: 100%; height: 34px; min-width: 0; border: 1px solid var(--line-strong); border-radius: 9px; padding: 0 9px; color: var(--text); background: var(--surface); }
-.subaccount-category-pricing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; grid-column: 1 / -1; }
+.subaccount-category-pricing-layout { min-height: 314px; display: grid; grid-template-columns: minmax(320px, 1.15fr) minmax(260px, .85fr); background: var(--line); gap: 1px; }
+.subaccount-category-pricing-tree { min-width: 0; max-height: 380px; padding: 8px; overflow-y: auto; overscroll-behavior: contain; background: var(--surface); scrollbar-width: thin; }
+.subaccount-category-pricing-branch + .subaccount-category-pricing-branch { margin-top: 4px; }
+.subaccount-category-pricing-node { min-width: 0; min-height: 52px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 5px; border-radius: 11px; transition: background-color 160ms ease, box-shadow 160ms ease, transform 120ms ease; }
+.subaccount-category-pricing-node:hover { background: var(--page-soft); }
+.subaccount-category-pricing-node.is-selected { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+.subaccount-category-pricing-toggle, .subaccount-category-pricing-toggle-placeholder { width: 28px; height: 34px; flex: 0 0 auto; }
+.subaccount-category-pricing-toggle { display: grid; place-items: center; border: 0; border-radius: 8px; color: var(--text-soft); background: transparent; cursor: pointer; transition: color 140ms ease, background-color 140ms ease, transform 100ms ease; }
+.subaccount-category-pricing-toggle:hover { color: var(--accent); background: var(--accent-soft); }
+.subaccount-category-pricing-toggle:active { transform: scale(.92); }
+.subaccount-category-pricing-toggle:focus-visible, .subaccount-category-pricing-node-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.subaccount-category-pricing-toggle svg { width: 14px; height: 14px; }
+.subaccount-category-pricing-node-main { min-width: 0; height: 100%; padding: 7px 6px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; border: 0; border-radius: 9px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.subaccount-category-pricing-node-main > span:last-child { min-width: 0; display: grid; gap: 2px; }
+.subaccount-category-pricing-node-main strong, .subaccount-category-pricing-node-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subaccount-category-pricing-node-main small { color: var(--text-soft); font-size: 10px; font-variant-numeric: tabular-nums; }
+.subaccount-category-pricing-node-main > svg { width: 16px; height: 16px; color: var(--accent); opacity: .76; }
+.subaccount-category-pricing-node.child { min-height: 44px; margin-left: 34px; grid-template-columns: minmax(0, 1fr) auto; }
+.subaccount-category-pricing-node.child .subaccount-category-pricing-node-main { padding-block: 5px; }
+.subaccount-category-price-state { max-width: 118px; margin-right: 8px; padding: 4px 7px; overflow: hidden; border-radius: 7px; color: var(--accent-strong); background: var(--accent-soft); font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.subaccount-category-price-state.is-inherited { color: var(--text-soft); background: var(--page-soft); font-weight: 550; }
+.subaccount-category-pricing-editor { min-width: 0; padding: 18px; display: grid; align-content: start; gap: 14px; background: var(--surface); }
+.subaccount-category-pricing-editor-heading { min-width: 0; display: grid; gap: 2px; }
+.subaccount-category-pricing-editor-heading .rt-Heading { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subaccount-category-pricing-editor > label { min-width: 0; display: grid; gap: 7px; }
+.subaccount-category-pricing-help { min-height: 36px; line-height: 1.5; }
+.subaccount-category-pricing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .subaccount-category-pricing-actions .rt-Button { white-space: nowrap; }
-.subaccount-category-pricing-count { justify-self: end; text-align: right; }
+.subaccount-category-pricing-count { flex: 0 0 auto; text-align: right; }
+.subaccount-category-pricing-empty { min-height: 240px; display: grid; place-content: center; justify-items: center; gap: 6px; color: var(--text-soft); text-align: center; }
+.subaccount-category-pricing-empty.is-editor { min-height: 278px; }
+.subaccount-category-pricing-empty > svg { color: var(--accent); }
+.subaccount-category-pricing-empty > strong { color: var(--text); font-size: 13px; }
+.subaccount-category-pricing-empty > small { max-width: 28ch; line-height: 1.45; }
 .subaccount-pricing-table { display: grid; gap: 0; max-height: min(56vh, 620px); min-width: 0; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; border: 1px solid var(--line); border-radius: 16px; }
 .subaccount-pricing-table::-webkit-scrollbar { width: 7px; height: 0; }
 .subaccount-pricing-table::-webkit-scrollbar-track { background: transparent; }
@@ -3546,9 +3572,11 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .customer-order-table { margin-inline: -5px; padding-inline: 5px; }
   .customer-order-pagination { align-items: flex-start; flex-direction: column; }
   .customer-order-pagination > div { width: 100%; justify-content: space-between; }
-  .subaccount-category-pricing { grid-template-columns: 1fr; align-items: stretch; }
-  .subaccount-category-pricing-controls { grid-template-columns: minmax(0, 1fr) minmax(92px, .48fr); }
-  .subaccount-category-pricing-count { justify-self: start; text-align: left; }
+  .subaccount-category-pricing-heading { align-items: flex-start; }
+  .subaccount-category-pricing-layout { grid-template-columns: 1fr; }
+  .subaccount-category-pricing-tree { max-height: 290px; }
+  .subaccount-category-pricing-editor { min-height: 245px; border-top: 1px solid var(--line); }
+  .subaccount-category-pricing-count { text-align: right; }
   .customer-portal-header, .customer-portal-main { width: min(100% - 32px, 1080px); }
   .customer-portal-header { min-height: 67px; }
   .customer-portal-header .brand-copy { display: none; }
@@ -3584,6 +3612,11 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .subaccount-access-options { grid-template-columns: 1fr; }
   .subaccount-pricing-dialog { width: calc(100vw - 20px) !important; }
   .subaccount-pricing-policy { grid-template-columns: 1fr; align-items: stretch; }
+  .subaccount-category-pricing-heading { display: grid; gap: 5px; }
+  .subaccount-category-pricing-count { text-align: left; }
+  .subaccount-category-pricing-node.child { margin-left: 22px; }
+  .subaccount-category-price-state { max-width: 96px; margin-right: 5px; }
+  .subaccount-category-pricing-editor { padding: 15px; }
   .subaccount-pricing-table { max-height: none; overflow: visible; border: 0; }
   .subaccount-pricing-table-head { display: none; }
   .subaccount-pricing-table-row { grid-template-columns: 1fr; gap: 8px; padding: 14px 0; }

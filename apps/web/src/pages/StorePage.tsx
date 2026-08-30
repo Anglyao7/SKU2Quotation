@@ -64,12 +64,6 @@ import type { CatalogSharePublic, StoreProduct, Storefront, StorefrontCategoryOp
 
 type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
 
-const DEFAULT_RECOMMENDED_QUESTIONS = [
-  "适合巴西市场的小型防水狗玩具有哪些？",
-  "请推荐一款适合户外使用、容易收纳的商品。",
-  "有哪些商品支持定制，并且 MOQ 比较友好？",
-];
-
 const EMPTY_IMAGE_SEARCH_STATE: StorefrontImageSearchState = {
   phase: "idle",
   previewUrl: "",
@@ -266,8 +260,8 @@ export function StorePage() {
   ));
   const [store, setStore] = useState<Storefront>(() => ({
     ...(initialCatalogSnapshot?.store ?? loadedStore),
-    ai_search_questions: loadedStore.ai_search_questions
-      ?? initialCatalogSnapshot?.store.ai_search_questions,
+    popular_search_terms: loadedStore.popular_search_terms
+      ?? initialCatalogSnapshot?.store.popular_search_terms,
   }));
   const [products, setProducts] = useState<StoreProduct[]>(
     initialCatalogSnapshot?.products ?? [],
@@ -350,8 +344,8 @@ export function StorePage() {
     const restoredView = nextSnapshot?.view ?? nextView;
     setStore(nextSnapshot ? {
       ...nextSnapshot.store,
-      ai_search_questions: loadedStore.ai_search_questions
-        ?? nextSnapshot.store.ai_search_questions,
+      popular_search_terms: loadedStore.popular_search_terms
+        ?? nextSnapshot.store.popular_search_terms,
     } : loadedStore);
     setSearch(restoredView?.search ?? "");
     setDeferredSearch(restoredView?.search.trim() ?? "");
@@ -503,8 +497,8 @@ export function StorePage() {
         category_showcase_enabled: data.category_showcase_enabled
           ?? current.category_showcase_enabled
           ?? true,
-        ai_search_questions: loadedStore.ai_search_questions
-          ?? current.ai_search_questions,
+        popular_search_terms: loadedStore.popular_search_terms
+          ?? current.popular_search_terms,
       } : current);
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
@@ -767,19 +761,11 @@ export function StorePage() {
     || imageSearchState.phase === "searching"
   );
   const imageSearchResults = imageSearchState.result?.results ?? [];
-  const recommendedQuestions = useMemo(
-    () => {
-      const configured = (store.ai_search_questions ?? [])
-        .map((question) => question.trim())
-        .filter(Boolean)
-        .slice(0, 5);
-      const values = configured.length
-        ? configured
-        : DEFAULT_RECOMMENDED_QUESTIONS;
-      return values.map((question) => t(question));
-    },
-    [store.ai_search_questions, t],
-  );
+  const popularSearchTerms = useMemo(() => Array.from(new Set(
+    (store.popular_search_terms ?? [])
+      .map((term) => term.trim())
+      .filter(Boolean),
+  )).slice(0, 5), [store.popular_search_terms]);
   const categoryShowcaseEnabled = store.category_showcase_enabled !== false;
   const showCategoryShowcase = Boolean(
     !shareToken
@@ -1066,22 +1052,22 @@ export function StorePage() {
                   onStateChange={handleImageSearchState}
                 />
               </div>
-              {!shareToken && !imageSearchActive && !search.trim() && recommendedQuestions.length ? (
-                <div className="store-recommended-questions" aria-label={t("推荐问题")}>
-                  <Text size="1" color="gray">{t("推荐问题")}</Text>
-                  <div className="store-recommended-question-list">
-                    {recommendedQuestions.map((question) => (
+              {!shareToken && !imageSearchActive && !search.trim() && popularSearchTerms.length ? (
+                <div className="store-popular-searches" aria-label={t("热门搜索词")}>
+                  <Text size="1" color="gray"><Fire size={13} weight="fill" />{t("热门搜索词")}</Text>
+                  <div className="store-popular-search-list">
+                    {popularSearchTerms.map((term) => (
                       <button
                         type="button"
-                        className="store-recommended-question"
-                        key={question}
+                        className="store-popular-search"
+                        key={term}
                         onClick={() => {
                           setPrimaryCategory("");
                           setSecondaryCategory("");
-                          setSearch(question);
+                          setSearch(term);
                         }}
                       >
-                        <span>{question}</span>
+                        <span>{term}</span>
                         <CaretRight size={14} weight="bold" />
                       </button>
                     ))}

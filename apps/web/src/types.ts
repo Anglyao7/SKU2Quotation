@@ -162,7 +162,7 @@ export interface Storefront {
   hot_products_enabled?: boolean;
   category_showcase_enabled?: boolean;
   exchange_rates_enabled?: boolean;
-  ai_search_questions?: string[];
+  popular_search_terms?: string[];
   announcements?: PublicAnnouncement[];
   support_widget?: PublicSupportWidget;
   footer_sections?: StorefrontFooterSection[];

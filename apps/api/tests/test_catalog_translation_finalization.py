@@ -452,3 +452,183 @@ def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
     assert catalog_translations._job_realtime_translation_counts(job) == (2, 2)
     assert catalog_translations._job_finalization_counts(job) == (2, 2)
     assert job.current_sku_name is None
+
+
+def test_realtime_text_batch_retries_and_preserves_upstream_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def translate_values(**kwargs):
+        nonlocal calls
+        calls += 1
+        value = kwargs["values"][0]
+        if calls < 3:
+            kwargs["failure_sink"][value] = TranslationProviderError(
+                "上游翻译服务返回 HTTP 429：RateLimitExceeded",
+                category="UPSTREAM_HTTP",
+                retryable=True,
+                upstream_status_code=429,
+            )
+            return {}
+        return {value: "Translated"}
+
+    monkeypatch.setattr(
+        catalog_translations,
+        "translate_values_with_memory",
+        translate_values,
+    )
+    monkeypatch.setattr(catalog_translations.time, "sleep", lambda _delay: None)
+
+    outcome = catalog_translations._translate_realtime_text_outcome(
+        _Translator(),
+        tenant_id=uuid4(),
+        values=["待翻译字段"],
+        forced_values=set(),
+        source_locale="zh-CN",
+        target_locale="es",
+        batch_items=1,
+        batch_characters=100,
+        max_retry_count=2,
+    )
+
+    assert calls == 3
+    assert outcome.translations == {"待翻译字段": "Translated"}
+    assert outcome.error is None
+    assert [event.status for event in outcome.attempts] == [
+        "FAILED",
+        "FAILED",
+        "SUCCEEDED",
+    ]
+    assert "HTTP 429" in (outcome.attempts[0].error_message or "")
+
+
+def test_realtime_translation_skips_failed_batch_and_finishes_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = ["失败字段", "正常字段甲", "正常字段乙"]
+    translated_memory: set[str] = set()
+    attempted: list[str] = []
+
+    monkeypatch.setattr(
+        catalog_translations,
+        "resolved_catalog_translation_batch_limits",
+        lambda _session: (1, 100),
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "resolved_catalog_translation_concurrency",
+        lambda _session: 1,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "resolved_catalog_translation_retry_count",
+        lambda _session: 0,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "catalog_language_pack_translatable_values",
+        lambda _rows: values,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "catalog_language_pack_translation_seed",
+        lambda *_args, **_kwargs: {},
+    )
+
+    def availability(**_kwargs):
+        missing = [value for value in values if value not in translated_memory]
+        available = {
+            value: f"translated-{value}" for value in translated_memory
+        }
+        return available, {"zh-CN": missing} if missing else {}
+
+    def translate_outcome(_translator, **kwargs):
+        value = kwargs["values"][0]
+        attempted.append(value)
+        now = catalog_translations.utcnow()
+        if value == "失败字段":
+            error = TranslationProviderError(
+                "上游翻译服务返回 HTTP 503：ServiceUnavailable",
+                category="UPSTREAM_HTTP",
+                retryable=True,
+                upstream_status_code=503,
+            )
+            return catalog_translations._TextTranslationOutcome(
+                {},
+                error,
+                [
+                    catalog_translations._BatchAttemptEvent(
+                        attempt_no=1,
+                        request_started_at=now,
+                        first_byte_at=now,
+                        completed_at=now,
+                        status="FAILED",
+                        processed_skus=0,
+                        failed_skus=1,
+                        error_message=str(error),
+                    )
+                ],
+            )
+        translated_memory.add(value)
+        return catalog_translations._TextTranslationOutcome(
+            {value: f"translated-{value}"},
+            None,
+            [
+                catalog_translations._BatchAttemptEvent(
+                    attempt_no=1,
+                    request_started_at=now,
+                    first_byte_at=now,
+                    completed_at=now,
+                    status="SUCCEEDED",
+                    processed_skus=1,
+                    failed_skus=0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        catalog_translations,
+        "_batch_translation_availability",
+        availability,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "_translate_realtime_text_outcome",
+        translate_outcome,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "_pause_at_safe_checkpoint",
+        lambda _session, _job: False,
+    )
+
+    job = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        target_locale="es",
+        source_locale="zh-CN",
+        total_skus=0,
+        processed_skus=0,
+        batch_request_payload={},
+        current_sku_id=None,
+        current_sku_name=None,
+        updated_at=None,
+    )
+
+    with pytest.raises(TranslationProviderError) as error:
+        catalog_translations._prepare_realtime_language_pack_values(
+            _Session(),
+            job=job,
+            translator=_Translator(),
+            rows=[],
+            sku_translations={},
+            previous_payload=None,
+            reuse_previous=False,
+        )
+
+    assert attempted == values
+    assert translated_memory == {"正常字段甲", "正常字段乙"}
+    assert catalog_translations._job_realtime_translation_counts(job) == (3, 2)
+    assert "已跳过 1 个失败批次" in str(error.value)
+    assert "HTTP 503" in str(error.value)

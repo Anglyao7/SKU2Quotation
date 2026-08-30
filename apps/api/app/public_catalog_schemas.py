@@ -41,6 +41,7 @@ class PublicStoreResponse(BaseModel):
     category_showcase_enabled: bool = True
     exchange_rates_enabled: bool = True
     ai_search_questions: list[str] = Field(default_factory=list)
+    popular_search_terms: list[str] = Field(default_factory=list)
     announcements: list[PublicAnnouncementResponse] = Field(default_factory=list)
     support_widget: PublicSupportWidgetResponse
     footer_sections: list[StorefrontFooterSection] = Field(default_factory=list)

@@ -514,9 +514,20 @@ def validate_catalog_translation_values(
             )
         ]
         if incomplete:
+            previews = [
+                " ".join(values[index].split())[:60]
+                for index in incomplete[:3]
+            ]
+            preview_suffix = (
+                f"（{len(incomplete)} 项：{'、'.join(previews)}"
+                f"{'…' if len(incomplete) > len(previews) else ''}）"
+            )
             raise TranslationProviderError(
-                "translation provider left source-language catalog text untranslated",
+                "上游翻译结果仍包含源语言文本"
+                f"{preview_suffix}",
                 recover_with_smaller_batches=True,
+                category="CONTENT_VALIDATION",
+                retryable=True,
             )
     return results
 

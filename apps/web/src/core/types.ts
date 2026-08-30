@@ -222,6 +222,10 @@ export interface SubaccountProductPricingItem {
 
 export interface SubaccountPricingPage {
   policy: SubaccountPricingPolicy;
+  categoryRules: Array<{
+    categoryId: string;
+    markupPercent: number;
+  }>;
   items: SubaccountProductPricingItem[];
   total: number;
   page: number;
@@ -1024,10 +1028,6 @@ export interface HybridSearchResponse {
   query: string;
   degraded: boolean;
   results: HybridSearchResult[];
-}
-
-export interface AISearchRecommendedQuestions {
-  questions: string[];
 }
 
 export interface PopularSearchTerm {

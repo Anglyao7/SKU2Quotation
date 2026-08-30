@@ -437,7 +437,7 @@ def test_openai_compatible_adapter_marks_truncation_as_batch_recoverable() -> No
     assert error.value.recover_with_smaller_batches is True
 
 
-def test_openai_compatible_adapter_marks_structured_timeout_as_recoverable() -> None:
+def test_openai_compatible_adapter_retries_timeout_without_sequential_split() -> None:
     def timeout(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("upstream timeout", request=request)
 
@@ -456,7 +456,10 @@ def test_openai_compatible_adapter_marks_structured_timeout_as_recoverable() -> 
             target_locale="en-US",
         )
 
-    assert error.value.recover_with_smaller_batches is True
+    assert error.value.recover_with_smaller_batches is False
+    assert error.value.category == "UPSTREAM_TIMEOUT"
+    assert error.value.retryable is True
+    assert "20 秒" in str(error.value)
 
 
 def test_openai_compatible_adapter_marks_structured_http_400_as_recoverable() -> None:
@@ -480,6 +483,41 @@ def test_openai_compatible_adapter_marks_structured_http_400_as_recoverable() ->
         )
 
     assert error.value.recover_with_smaller_batches is True
+
+
+def test_openai_compatible_adapter_exposes_safe_upstream_error_detail() -> None:
+    translator = OpenAICompatibleTranslator(
+        base_url="https://translation.example",
+        api_key="private-test-key",
+        model="catalog-translation-model",
+        timeout_seconds=300,
+        production=True,
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    429,
+                    json={
+                        "error": {
+                            "code": "RateLimitExceeded",
+                            "message": "Too many requests",
+                        }
+                    },
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(TranslationProviderError) as error:
+        translator.translate(
+            "商品",
+            source_locale="zh-CN",
+            target_locale="en-US",
+        )
+
+    assert error.value.category == "UPSTREAM_HTTP"
+    assert error.value.upstream_status_code == 429
+    assert error.value.retryable is True
+    assert "RateLimitExceeded: Too many requests" in str(error.value)
 
 
 def test_openai_compatible_adapter_never_exposes_credentials_on_failure() -> None:

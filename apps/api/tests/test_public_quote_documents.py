@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from openpyxl import Workbook, load_workbook
 from PIL import Image as PillowImage
+from pypdf import PdfReader
 
 from app.public_catalog_schemas import (
     PublicQuoteDocument,
@@ -20,6 +21,7 @@ from app.quote_template_schemas import (
 from app.services.public_quote_documents import (
     DEFAULT_QUOTE_HEADERS,
     render_default_quote_template_xlsx,
+    render_public_quote_draft_pdf,
     render_public_quote_draft_xlsx,
 )
 
@@ -126,6 +128,22 @@ def test_default_quote_xlsx_embeds_image_and_calculates_logistics_totals() -> No
         for cell in row
     )
     workbook.close()
+
+
+def test_quote_pdf_embeds_item_thumbnail() -> None:
+    content = render_public_quote_draft_pdf(
+        _document(),
+        image_loader=lambda _url: _image_bytes(),
+    )
+
+    reader = PdfReader(BytesIO(content))
+    assert len(reader.pages) == 1
+    page = reader.pages[0]
+    xobjects = page.get("/Resources", {}).get("/XObject", {})
+    assert any(
+        obj.get_object().get("/Subtype") == "/Image"
+        for obj in xobjects.values()
+    )
 
 
 def test_custom_quote_xlsx_can_embed_image_and_leave_unmapped_column_blank(

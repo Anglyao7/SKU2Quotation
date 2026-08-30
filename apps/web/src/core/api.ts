@@ -1,6 +1,5 @@
 import type {
   AttributeDefinition,
-  AISearchRecommendedQuestions,
   AnnouncementContentBlock,
   AnnouncementPayload,
   AuthTokenData,
@@ -1123,6 +1122,7 @@ export async function getCustomerSubaccountPricing(
 ): Promise<SubaccountPricingPage> {
   const row = await request<{
     policy: { membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number; category_override_count?: number; sku_override_count?: number };
+    category_rules?: Array<{ category_id: string; markup_percent: number | string }>;
     items: ApiSubaccountPricingItem[];
     total: number;
     page: number;
@@ -1130,6 +1130,10 @@ export async function getCustomerSubaccountPricing(
   }>(`/customer-accounts/${encodeURIComponent(membershipId)}/pricing?query=${encodeURIComponent(query)}&page=${page}&page_size=${pageSize}`);
   return {
     policy: mapSubaccountPricingPolicy(row.policy),
+    categoryRules: (row.category_rules || []).map((rule) => ({
+      categoryId: rule.category_id,
+      markupPercent: Number(rule.markup_percent || 0),
+    })),
     items: row.items.map(mapSubaccountPricingItem),
     total: Number(row.total || 0),
     page: Number(row.page || page),
@@ -6134,10 +6138,6 @@ export async function searchProducts(query: string, limit = 10): Promise<HybridS
   return { query: row.query, degraded: row.degraded, results };
 }
 
-interface ApiAISearchRecommendedQuestions {
-  questions: string[];
-}
-
 interface ApiPopularSearchTerms {
   days: number;
   items: Array<{
@@ -6145,14 +6145,6 @@ interface ApiPopularSearchTerms {
     count: number;
     last_searched_at: string;
   }>;
-}
-
-export async function getAISearchRecommendedQuestions(): Promise<AISearchRecommendedQuestions> {
-  const row = await request<ApiAISearchRecommendedQuestions>(
-    "/ai/search/recommended-questions",
-    { cache: "no-store" },
-  );
-  return { questions: row.questions };
 }
 
 export async function getAISearchPopularTerms(
@@ -6175,20 +6167,6 @@ export async function getAISearchPopularTerms(
       lastSearchedAt: item.last_searched_at,
     })),
   };
-}
-
-export async function updateAISearchRecommendedQuestions(
-  questions: string[],
-): Promise<AISearchRecommendedQuestions> {
-  const row = await request<ApiAISearchRecommendedQuestions>(
-    "/ai/search/recommended-questions",
-    {
-      method: "PUT",
-      body: JSON.stringify({ questions }),
-    },
-  );
-  bumpPublicCatalogRevision();
-  return { questions: row.questions };
 }
 
 interface ApiInquiryItem { id: string; line_number: number; raw_requirement: string; normalized_requirement: Record<string, unknown>; quantity?: number | null; unit_code?: string | null; image_search_id?: string | null; status: string; version: number }

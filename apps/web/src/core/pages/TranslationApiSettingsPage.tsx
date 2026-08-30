@@ -49,6 +49,7 @@ const ALIYUN_EDITION = "translate_standard";
 const DEEPLX_MODEL = "DeepLX";
 const QWEN_BATCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const QWEN_BATCH_MODEL = "qwen3.7-flash-2026-07-15";
+const MAX_TRANSLATION_TIMEOUT_SECONDS = 600;
 
 
 export function TranslationApiSettingsPage({ embedded = false }: { embedded?: boolean } = {}) {
@@ -213,7 +214,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
       && (isAliyun ? input.regionId : (isDeepLX || input.modelName))
       && Number.isInteger(input.timeoutSeconds)
       && input.timeoutSeconds >= 1
-      && input.timeoutSeconds <= 120
+      && input.timeoutSeconds <= MAX_TRANSLATION_TIMEOUT_SECONDS
       && validRpm
       && validRetryCount
       && validBatchSize
@@ -635,7 +636,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 <TextField.Root
                   type="number"
                   min="1"
-                  max="120"
+                  max={MAX_TRANSLATION_TIMEOUT_SECONDS}
                   value={timeoutSeconds}
                   onChange={(event) => {
                     clearResult();
@@ -643,6 +644,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                   }}
                   required
                 />
+                <Text size="1" color="gray">
+                  {t("可设置 1–600 秒；实时请求与 Batch 管理请求共用此超时。")}
+                </Text>
               </label>
 
               <label>

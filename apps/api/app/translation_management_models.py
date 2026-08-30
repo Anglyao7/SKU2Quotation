@@ -13,6 +13,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
 from .model_mixins import AuditTimestampMixin
+from .translation_constants import MAX_TRANSLATION_TIMEOUT_SECONDS
 
 
 class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
@@ -25,7 +26,8 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
             name="provider_supported",
         ),
         CheckConstraint(
-            "timeout_seconds >= 1 AND timeout_seconds <= 120",
+            f"timeout_seconds >= 1 AND timeout_seconds <= "
+            f"{MAX_TRANSLATION_TIMEOUT_SECONDS}",
             name="timeout_supported",
         ),
         CheckConstraint(

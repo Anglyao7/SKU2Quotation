@@ -254,8 +254,14 @@ class SubaccountProductPricingItem(BaseModel):
     updated_at: datetime
 
 
+class SubaccountCategoryPricingRule(BaseModel):
+    category_id: UUID
+    markup_percent: Decimal = Field(ge=0, le=100000)
+
+
 class SubaccountPricingPage(BaseModel):
     policy: SubaccountPricingPolicyResponse
+    category_rules: list[SubaccountCategoryPricingRule] = Field(default_factory=list)
     items: list[SubaccountProductPricingItem]
     total: int = Field(ge=0)
     page: int = Field(ge=1)

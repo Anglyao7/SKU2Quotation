@@ -17,6 +17,8 @@ from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_tea_util import models as util_models
 from Tea.exceptions import TeaException
 
+from ..translation_constants import MAX_TRANSLATION_TIMEOUT_SECONDS
+
 
 SUPPORTED_LOCALE_CODES = {
     "auto": "auto",
@@ -118,9 +120,58 @@ class TranslationProviderError(ValueError):
         message: str,
         *,
         recover_with_smaller_batches: bool = False,
+        category: str = "PROVIDER",
+        retryable: bool | None = None,
+        upstream_status_code: int | None = None,
     ) -> None:
         super().__init__(message)
         self.recover_with_smaller_batches = recover_with_smaller_batches
+        self.category = category
+        self.retryable = (
+            recover_with_smaller_batches
+            if retryable is None
+            else retryable
+        )
+        self.upstream_status_code = upstream_status_code
+
+
+_UPSTREAM_SECRET_PATTERN = re.compile(
+    r"(?i)(bearer\s+|(?:api[_ -]?key|access[_ -]?key|token|secret)"
+    r"\s*[:=]\s*)\S+"
+)
+_UPSTREAM_BARE_SECRET_PATTERN = re.compile(
+    r"(?i)\b(?:sk[-_][a-z0-9_-]{10,}|cfat_[a-z0-9_-]{10,}|"
+    r"LTAI[a-z0-9]{10,})\b"
+)
+
+
+def _safe_upstream_text(value: object, *, maximum: int = 300) -> str | None:
+    if not isinstance(value, (str, int, float)):
+        return None
+    compact = " ".join(str(value).split())
+    if not compact:
+        return None
+    redacted = _UPSTREAM_SECRET_PATTERN.sub(r"\1[redacted]", compact)
+    redacted = _UPSTREAM_BARE_SECRET_PATTERN.sub("[redacted]", redacted)
+    return redacted[:maximum]
+
+
+def _upstream_response_error_detail(response: httpx.Response) -> str | None:
+    """Extract a short operator diagnostic without exposing request secrets."""
+
+    try:
+        body = response.json()
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(body, Mapping):
+        return None
+    error = body.get("error")
+    source = error if isinstance(error, Mapping) else body
+    code = _safe_upstream_text(source.get("code") or source.get("type"))
+    message = _safe_upstream_text(source.get("message") or source.get("detail"))
+    if code and message and code.casefold() != message.casefold():
+        return f"{code}: {message}"
+    return message or code
 
 
 def _deeplx_endpoint(value: str, *, production: bool) -> str:
@@ -281,9 +332,13 @@ class DeepLXTranslator:
         production: bool = False,
         client: httpx.Client | None = None,
     ) -> None:
-        if timeout_seconds <= 0 or timeout_seconds > 120:
+        if (
+            timeout_seconds <= 0
+            or timeout_seconds > MAX_TRANSLATION_TIMEOUT_SECONDS
+        ):
             raise TranslationProviderError(
-                "DEEPLX_TIMEOUT_SECONDS must be between 0 and 120"
+                "DEEPLX_TIMEOUT_SECONDS must be between 1 and "
+                f"{MAX_TRANSLATION_TIMEOUT_SECONDS}"
             )
         self._endpoint = _deeplx_endpoint(endpoint, production=production)
         self._timeout_seconds = timeout_seconds
@@ -315,15 +370,35 @@ class DeepLXTranslator:
             )
         except httpx.TimeoutException as exc:
             raise TranslationProviderError(
-                "translation provider request timed out"
+                "上游 DeepLX 翻译请求超时"
+                f"（等待 {self._timeout_seconds:g} 秒）",
+                category="UPSTREAM_TIMEOUT",
+                retryable=True,
             ) from exc
         except httpx.HTTPError as exc:
             raise TranslationProviderError(
-                "translation provider request failed"
+                "无法连接上游 DeepLX 翻译服务"
+                f"（{type(exc).__name__}）",
+                category="UPSTREAM_NETWORK",
+                retryable=True,
             ) from exc
         if response.status_code < 200 or response.status_code >= 300:
+            detail = _upstream_response_error_detail(response)
+            detail_suffix = f"：{detail}" if detail else ""
             raise TranslationProviderError(
-                f"translation provider returned HTTP {response.status_code}"
+                f"上游 DeepLX 返回 HTTP {response.status_code}"
+                f"{detail_suffix}",
+                category="UPSTREAM_HTTP",
+                retryable=response.status_code in {
+                    408,
+                    425,
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                },
+                upstream_status_code=response.status_code,
             )
         try:
             body = response.json()
@@ -331,16 +406,22 @@ class DeepLXTranslator:
             translated = body["data"]
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise TranslationProviderError(
-                "translation provider returned an invalid response"
+                "上游 DeepLX 返回的数据格式无效（缺少 code 或 data）",
+                category="UPSTREAM_RESPONSE",
+                retryable=True,
             ) from exc
         if code != 200 or not isinstance(translated, str):
             raise TranslationProviderError(
-                "translation provider returned an invalid response"
+                f"上游 DeepLX 返回业务错误 code={code}",
+                category="UPSTREAM_RESPONSE",
+                retryable=True,
             )
         normalized = translated.strip()
         if not normalized:
             raise TranslationProviderError(
-                "translation provider returned an empty translation"
+                "上游 DeepLX 返回了空译文",
+                category="UPSTREAM_RESPONSE",
+                retryable=True,
             )
         return normalized
 
@@ -390,9 +471,13 @@ class AliyunAlimtTranslator:
         timeout_seconds: float = 20.0,
         client: object | None = None,
     ) -> None:
-        if timeout_seconds <= 0 or timeout_seconds > 120:
+        if (
+            timeout_seconds <= 0
+            or timeout_seconds > MAX_TRANSLATION_TIMEOUT_SECONDS
+        ):
             raise TranslationProviderError(
-                "Aliyun translation timeout must be between 1 and 120 seconds"
+                "Aliyun translation timeout must be between 1 and "
+                f"{MAX_TRANSLATION_TIMEOUT_SECONDS} seconds"
             )
         normalized_access_key_id = access_key_id.strip()
         normalized_access_key_secret = access_key_secret.strip()
@@ -669,9 +754,13 @@ class OpenAICompatibleTranslator:
         production: bool = False,
         client: httpx.Client | None = None,
     ) -> None:
-        if timeout_seconds <= 0 or timeout_seconds > 120:
+        if (
+            timeout_seconds <= 0
+            or timeout_seconds > MAX_TRANSLATION_TIMEOUT_SECONDS
+        ):
             raise TranslationProviderError(
-                "OPENAI_TRANSLATION_TIMEOUT_SECONDS must be between 0 and 120"
+                "OPENAI_TRANSLATION_TIMEOUT_SECONDS must be between 1 and "
+                f"{MAX_TRANSLATION_TIMEOUT_SECONDS}"
             )
         if max_tokens < 512 or max_tokens > 32_768:
             raise TranslationProviderError(
@@ -843,12 +932,17 @@ class OpenAICompatibleTranslator:
             content = message["content"]
         except (AttributeError, IndexError, KeyError, TypeError) as exc:
             raise TranslationProviderError(
-                "translation provider returned an invalid response"
+                "上游翻译服务返回的数据格式无效"
+                "（缺少 choices[0].message.content）",
+                category="UPSTREAM_RESPONSE",
+                retryable=True,
             ) from exc
         if finish_reason == "length":
             raise TranslationProviderError(
-                "translation provider response was truncated",
+                "上游翻译结果因输出长度限制被截断",
                 recover_with_smaller_batches=structured,
+                category="UPSTREAM_TRUNCATED",
+                retryable=True,
             )
         if isinstance(content, list):
             content = "".join(
@@ -858,33 +952,58 @@ class OpenAICompatibleTranslator:
             )
         if not isinstance(content, str):
             raise TranslationProviderError(
-                "translation provider returned an invalid response"
+                "上游翻译服务返回了非文本 content",
+                category="UPSTREAM_RESPONSE",
+                retryable=True,
             )
         normalized = _strip_outer_markdown_fence(content)
         if not normalized:
             raise TranslationProviderError(
-                "translation provider returned an empty translation",
+                "上游翻译服务返回了空译文",
                 recover_with_smaller_batches=structured,
+                category="UPSTREAM_RESPONSE",
+                retryable=True,
             )
         if structured:
             try:
                 translated_items = json.loads(normalized)
             except json.JSONDecodeError as exc:
                 raise TranslationProviderError(
-                    "translation provider returned invalid structured content",
+                    "上游翻译服务返回的结构化结果不是有效 JSON"
+                    f"（第 {exc.lineno} 行，第 {exc.colno} 列）",
                     recover_with_smaller_batches=True,
+                    category="UPSTREAM_RESPONSE",
+                    retryable=True,
                 ) from exc
-            if (
-                not isinstance(translated_items, list)
-                or len(translated_items) != len(marker_items)
-                or any(
-                    not isinstance(item, str) or not item.strip()
-                    for item in translated_items
-                )
-            ):
+            if not isinstance(translated_items, list):
                 raise TranslationProviderError(
-                    "translation provider returned invalid structured content",
+                    "上游翻译服务返回的结构化结果类型错误"
+                    f"（期望数组，实际 {type(translated_items).__name__}）",
                     recover_with_smaller_batches=True,
+                    category="UPSTREAM_RESPONSE",
+                    retryable=True,
+                )
+            if len(translated_items) != len(marker_items):
+                raise TranslationProviderError(
+                    "上游翻译服务返回的结构化结果数量不一致"
+                    f"（期望 {len(marker_items)} 项，实际 "
+                    f"{len(translated_items)} 项）",
+                    recover_with_smaller_batches=True,
+                    category="UPSTREAM_RESPONSE",
+                    retryable=True,
+                )
+            invalid_count = sum(
+                1
+                for item in translated_items
+                if not isinstance(item, str) or not item.strip()
+            )
+            if invalid_count:
+                raise TranslationProviderError(
+                    "上游翻译服务返回的结构化结果包含"
+                    f" {invalid_count} 个空值或非文本值",
+                    recover_with_smaller_batches=True,
+                    category="UPSTREAM_RESPONSE",
+                    retryable=True,
                 )
             return "\n".join(
                 f"{marker}\n{translated.strip()}"
@@ -927,31 +1046,54 @@ class OpenAICompatibleTranslator:
             )
         except httpx.TimeoutException as exc:
             raise TranslationProviderError(
-                "translation provider request timed out",
-                recover_with_smaller_batches=structured,
+                "上游翻译服务请求超时"
+                f"（等待 {self._timeout_seconds:g} 秒）",
+                category="UPSTREAM_TIMEOUT",
+                retryable=True,
             ) from exc
         except httpx.HTTPError as exc:
             raise TranslationProviderError(
-                "translation provider request failed",
-                recover_with_smaller_batches=structured,
+                "无法连接上游翻译服务"
+                f"（{type(exc).__name__}）",
+                category="UPSTREAM_NETWORK",
+                retryable=True,
             ) from exc
         if response.status_code < 200 or response.status_code >= 300:
+            detail = _upstream_response_error_detail(response)
+            detail_suffix = f"：{detail}" if detail else ""
+            retryable = response.status_code in {
+                408,
+                425,
+                429,
+                500,
+                502,
+                503,
+                504,
+            }
             raise TranslationProviderError(
-                f"translation provider returned HTTP {response.status_code}",
+                f"上游翻译服务返回 HTTP {response.status_code}"
+                f"{detail_suffix}",
                 recover_with_smaller_batches=(
                     structured
-                    and response.status_code in {400, 408, 500, 502, 503, 504}
+                    and response.status_code in {400, 413, 422}
                 ),
+                category="UPSTREAM_HTTP",
+                retryable=retryable,
+                upstream_status_code=response.status_code,
             )
         try:
             body = response.json()
         except (TypeError, ValueError) as exc:
             raise TranslationProviderError(
-                "translation provider returned an invalid response"
+                "上游翻译服务返回的 HTTP 响应不是有效 JSON",
+                category="UPSTREAM_RESPONSE",
+                retryable=True,
             ) from exc
         if not isinstance(body, Mapping):
             raise TranslationProviderError(
-                "translation provider returned an invalid response"
+                "上游翻译服务返回的 JSON 顶层不是对象",
+                category="UPSTREAM_RESPONSE",
+                retryable=True,
             )
         return self.translated_response(body, source_text=text)
 

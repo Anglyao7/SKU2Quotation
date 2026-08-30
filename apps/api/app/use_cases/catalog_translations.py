@@ -2219,6 +2219,7 @@ def _translate_realtime_text_outcome(
     last_error: TranslationProviderError | None = None
     for attempt in range(max_retry_count + 1):
         started = utcnow()
+        failures: dict[str, TranslationProviderError] = {}
         result = translate_values_with_memory(
             tenant_id=tenant_id,
             translator=translator,
@@ -2229,6 +2230,7 @@ def _translate_realtime_text_outcome(
             batch_characters=batch_characters,
             concurrency=1,
             force_refresh_values=forced_values.intersection(pending),
+            failure_sink=failures,
         )
         translated.update(result)
         pending = [value for value in pending if value not in result]
@@ -2246,9 +2248,43 @@ def _translate_realtime_text_outcome(
                 )
             )
             return _TextTranslationOutcome(translated, None, events)
+        first_failure = next(
+            (failures[value] for value in pending if value in failures),
+            None,
+        )
+        reason = (
+            str(first_failure)
+            if first_failure is not None
+            else "上游翻译服务未返回这些字段的有效译文"
+        ).rstrip("。")
+        previews = [" ".join(value.split())[:48] for value in pending[:3]]
+        preview = "、".join(previews)
+        retry_summary = (
+            f"第 {attempt + 1} 次请求后，本批次仍有 {len(pending)} 个字段失败"
+            f"（{preview}{'…' if len(pending) > len(previews) else ''}）"
+        )
         last_error = TranslationProviderError(
-            f"translation provider left {len(pending)} catalog fields incomplete",
-            recover_with_smaller_batches=True,
+            f"{reason}；{retry_summary}",
+            recover_with_smaller_batches=(
+                first_failure.recover_with_smaller_batches
+                if first_failure is not None
+                else True
+            ),
+            category=(
+                first_failure.category
+                if first_failure is not None
+                else "UPSTREAM_RESPONSE"
+            ),
+            retryable=(
+                first_failure.retryable
+                if first_failure is not None
+                else True
+            ),
+            upstream_status_code=(
+                first_failure.upstream_status_code
+                if first_failure is not None
+                else None
+            ),
         )
         events.append(
             _BatchAttemptEvent(
@@ -2267,7 +2303,11 @@ def _translate_realtime_text_outcome(
     return _TextTranslationOutcome(
         translated,
         last_error
-        or TranslationProviderError("translation provider request failed"),
+        or TranslationProviderError(
+            "上游翻译服务请求失败",
+            category="UPSTREAM_UNKNOWN",
+            retryable=True,
+        ),
         events,
     )
 
@@ -2428,7 +2468,7 @@ def _prepare_realtime_translation_values(
         session.commit()
 
     request_index = 0
-    first_error: TranslationProviderError | None = None
+    batch_errors: list[TranslationProviderError] = []
     with ThreadPoolExecutor(
         max_workers=provider_concurrency,
         thread_name_prefix="catalog-translation-text",
@@ -2483,7 +2523,10 @@ def _prepare_realtime_translation_values(
                 except Exception as exc:  # pragma: no cover - defensive
                     now = utcnow()
                     error = TranslationProviderError(
-                        "translation provider request failed"
+                        "翻译任务处理批次时发生内部错误"
+                        f"（{type(exc).__name__}）",
+                        category="INTERNAL",
+                        retryable=True,
                     )
                     outcome = _TextTranslationOutcome(
                         {},
@@ -2517,10 +2560,9 @@ def _prepare_realtime_translation_values(
                             str(outcome.error) if outcome.error is not None else None
                         ),
                     )
-                if succeeded:
-                    processed += len(batch)
-                elif first_error is None:
-                    first_error = outcome.error
+                processed = min(total, processed + translated_count)
+                if not succeeded and outcome.error is not None:
+                    batch_errors.append(outcome.error)
 
             _save_realtime_translation_progress(
                 job,
@@ -2545,8 +2587,6 @@ def _prepare_realtime_translation_values(
             session.commit()
 
             request_index += len(window)
-            if first_error is not None:
-                raise first_error
             if _pause_at_safe_checkpoint(session, job):
                 return True, {}
 
@@ -2559,8 +2599,28 @@ def _prepare_realtime_translation_values(
     )
     unresolved_count = sum(len(group) for group in still_missing.values())
     if unresolved_count:
+        first_error = batch_errors[0] if batch_errors else None
+        failure_count = len(batch_errors)
+        reason = (
+            str(first_error).rstrip("。")
+            if first_error is not None
+            else "翻译记忆中缺少有效译文"
+        )
         raise TranslationProviderError(
-            f"语言包仍有 {unresolved_count} 个字段未完成翻译，请从断点继续。"
+            f"已跳过 {failure_count or 1} 个失败批次并完成其余请求；"
+            f"仍有 {unresolved_count} 个字段未完成。首个错误：{reason}。"
+            "可在失败批次中重新请求",
+            category=(
+                first_error.category
+                if first_error is not None
+                else "INCOMPLETE"
+            ),
+            retryable=True,
+            upstream_status_code=(
+                first_error.upstream_status_code
+                if first_error is not None
+                else None
+            ),
         )
     if record_batches:
         _reconcile_realtime_text_batches(

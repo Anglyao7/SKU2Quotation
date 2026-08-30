@@ -6,13 +6,11 @@ import {
   Heading,
   Progress,
   Text,
-  TextField,
 } from "@radix-ui/themes";
 import {
   ArrowClockwise,
   ArrowsClockwise,
   Database,
-  FloppyDisk,
   MagnifyingGlass,
   Pause,
   Play,
@@ -30,11 +28,9 @@ import {
   getKnowledgeIndexStatus,
   getLatestKnowledgeIndexJob,
   getAISearchPopularTerms,
-  getAISearchRecommendedQuestions,
   pauseKnowledgeIndexJob,
   resumeKnowledgeIndexJob,
   startKnowledgeIndexJob,
-  updateAISearchRecommendedQuestions,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
@@ -46,14 +42,6 @@ import type {
 } from "../types";
 
 const ACTIVE_JOB_STATUSES = new Set(["QUEUED", "RUNNING"]);
-const RECOMMENDED_QUESTION_SLOTS = 5;
-
-function padRecommendedQuestions(questions: string[]): string[] {
-  return [
-    ...questions.slice(0, RECOMMENDED_QUESTION_SLOTS),
-    ...Array(Math.max(0, RECOMMENDED_QUESTION_SLOTS - questions.length)).fill(""),
-  ];
-}
 
 function checkpointTime(value: string, locale: string) {
   return new Intl.DateTimeFormat(locale, {
@@ -76,27 +64,19 @@ export function AiSearchManagementPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [rebuildOpen, setRebuildOpen] = useState(false);
-  const [recommendedQuestions, setRecommendedQuestions] = useState(
-    () => Array(RECOMMENDED_QUESTION_SLOTS).fill(""),
-  );
-  const [savingQuestions, setSavingQuestions] = useState(false);
   const [popularTerms, setPopularTerms] = useState<PopularSearchTerm[]>([]);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [nextStatus, latestJob, questions, popular] = await Promise.all([
+      const [nextStatus, latestJob, popular] = await Promise.all([
         getKnowledgeIndexStatus(),
         getLatestKnowledgeIndexJob(),
-        getAISearchRecommendedQuestions().catch(() => undefined),
         getAISearchPopularTerms(30, 10).catch(() => undefined),
       ]);
       setStatus(nextStatus);
       setJob(latestJob);
-      if (questions?.questions) {
-        setRecommendedQuestions(padRecommendedQuestions(questions.questions));
-      }
       setPopularTerms(popular?.items ?? []);
     } catch (reason) {
       setError(
@@ -216,57 +196,6 @@ export function AiSearchManagementPage() {
     } finally {
       setControlling(false);
     }
-  };
-
-  const saveRecommendedQuestions = async () => {
-    if (!canManageIndex || savingQuestions) return;
-    const questions = recommendedQuestions
-      .map((question) => question.trim())
-      .filter(Boolean);
-    if (new Set(questions.map((question) => question.toLocaleLowerCase())).size !== questions.length) {
-      setError(t("推荐问题不能重复。"));
-      return;
-    }
-    setSavingQuestions(true);
-    setError("");
-    setMessage("");
-    try {
-      const saved = await updateAISearchRecommendedQuestions(questions);
-      setRecommendedQuestions(padRecommendedQuestions(saved.questions));
-      setMessage(t("前台推荐问题已保存。"));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("推荐问题保存失败。"));
-    } finally {
-      setSavingQuestions(false);
-    }
-  };
-
-  const addPopularTermToRecommendations = (term: string) => {
-    if (!canManageIndex) return;
-    const existingIndex = recommendedQuestions.findIndex(
-      (question) => question.trim().toLocaleLowerCase() === term.toLocaleLowerCase(),
-    );
-    if (existingIndex >= 0) {
-      setMessage(t("该热门搜索词已在推荐列表中。"));
-      return;
-    }
-    const emptyIndex = recommendedQuestions.findIndex((question) => !question.trim());
-    if (emptyIndex < 0) {
-      setError(t("推荐问题最多设置五条。"));
-      return;
-    }
-    setRecommendedQuestions((current) => current.map((question, index) => (
-      index === emptyIndex ? term : question
-    )));
-    setMessage(t("已填入推荐列表，保存后将在前台显示。"));
-  };
-
-  const useTopPopularTerms = () => {
-    if (!canManageIndex || !popularTerms.length) return;
-    setRecommendedQuestions(
-      padRecommendedQuestions(popularTerms.slice(0, RECOMMENDED_QUESTION_SLOTS).map((item) => item.term)),
-    );
-    setMessage(t("已用热门搜索词前五条填入推荐列表，保存后将在前台显示。"));
   };
 
   const indexedPercent = useMemo(() => {
@@ -510,92 +439,30 @@ export function AiSearchManagementPage() {
                 <Text size="1" color="gray">{t("搜索趋势")}</Text>
                 <Heading size="4">{t("热门搜索词")}</Heading>
                 <Text size="2" color="gray">
-                  {t("自动记录近30天前台搜索次数最多的前十个词，可一键填入下方推荐。")}
+                  {t("自动记录近30天前台搜索次数最多的前十个词，前五条会直接显示在前台商品搜索框下方。")}
                 </Text>
               </div>
               <Badge color="amber">{t("自动记录")}</Badge>
             </div>
             {popularTerms.length ? (
               <div className="core-ai-popular-term-list">
-                {popularTerms.map((item, index) => {
-                  const alreadyRecommended = recommendedQuestions.some(
-                    (question) => question.trim().toLocaleLowerCase() === item.term.toLocaleLowerCase(),
-                  );
-                  return (
-                    <div className="core-ai-popular-term" key={`${item.term}-${index}`}>
-                      <div className="core-ai-popular-term-copy">
-                        <Badge color={index < 3 ? "amber" : "gray"}>{index + 1}</Badge>
-                        <Text size="2" weight="medium">{item.term}</Text>
-                        <Text size="1" color="gray">
-                          {t("{count} 次", { count: item.count.toLocaleString(locale) })}
-                        </Text>
-                      </div>
-                      <Button
-                        size="1"
-                        variant="soft"
-                        color={alreadyRecommended ? "gray" : "jade"}
-                        disabled={!canManageIndex || alreadyRecommended || savingQuestions}
-                        onClick={() => addPopularTermToRecommendations(item.term)}
-                      >
-                        {alreadyRecommended ? t("已在推荐中") : t("填入推荐")}
-                      </Button>
+                {popularTerms.map((item, index) => (
+                  <div className="core-ai-popular-term" key={`${item.term}-${index}`}>
+                    <div className="core-ai-popular-term-copy">
+                      <Badge color={index < 3 ? "amber" : "gray"}>{index + 1}</Badge>
+                      <Text size="2" weight="medium">{item.term}</Text>
+                      <Text size="1" color="gray">
+                        {t("{count} 次", { count: item.count.toLocaleString(locale) })}
+                      </Text>
                     </div>
-                  );
-                })}
+                    {index < 5 ? <Badge color="jade" variant="soft">{t("前台展示")}</Badge> : null}
+                  </div>
+                ))}
               </div>
             ) : (
               <Text size="2" color="gray">
                 {t("暂未记录到搜索词，访客开始搜索后会自动汇总。")}
               </Text>
-            )}
-            {canManageIndex && popularTerms.length ? (
-              <Button
-                variant="soft"
-                color="amber"
-                onClick={useTopPopularTerms}
-                disabled={savingQuestions}
-              >
-                {t("用热门前五条填充推荐")}
-              </Button>
-            ) : null}
-          </Card>
-
-          <Card className="core-ai-recommended-questions">
-            <div className="core-ai-recommended-heading">
-              <div>
-                <Text size="1" color="gray">{t("前台商品查找")}</Text>
-                <Heading size="4">{t("推荐问题")}</Heading>
-                <Text size="2" color="gray">
-                  {t("设置最多五条常用搜索词，它们会显示在公开商品目录的“查找商品”下面。")}
-                </Text>
-              </div>
-              <Badge color="gray">{t("商家自定义 · 最多5条")}</Badge>
-            </div>
-            <div className="core-ai-recommended-list">
-              {recommendedQuestions.map((question, index) => (
-                <label key={index}>
-                  <Text size="1" color="gray">{t("推荐问题 {index}", { index: index + 1 })}</Text>
-                  <TextField.Root
-                    value={question}
-                    maxLength={200}
-                    disabled={!canManageIndex || savingQuestions}
-                    placeholder={t("例如：适合户外使用的轻便商品有哪些？")}
-                    onChange={(event) => setRecommendedQuestions((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}
-                  />
-                </label>
-              ))}
-            </div>
-            {canManageIndex ? (
-              <Button
-                variant="soft"
-                disabled={savingQuestions}
-                onClick={() => void saveRecommendedQuestions()}
-              >
-                <FloppyDisk />
-                {t(savingQuestions ? "保存中…" : "保存推荐问题")}
-              </Button>
-            ) : (
-              <Text size="1" color="gray">{t("当前账号没有商品编辑权限，无法修改推荐问题。")}</Text>
             )}
           </Card>
 

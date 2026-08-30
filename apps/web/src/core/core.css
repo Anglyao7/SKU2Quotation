@@ -233,12 +233,9 @@
 .core-ai-popular-term-copy { min-width: 0; display: flex; align-items: center; gap: 8px; }
 .core-ai-popular-term-copy > .rt-Text:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .core-ai-popular-term-copy > .rt-Badge { min-width: 23px; justify-content: center; }
-.core-ai-recommended-questions { padding: clamp(20px, 3vw, 30px) !important; display: grid; gap: 18px; }
 .core-ai-recommended-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .core-ai-recommended-heading > div { min-width: 0; display: grid; gap: 4px; }
 .core-ai-recommended-heading h2 { margin-top: 2px; }
-.core-ai-recommended-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
-.core-ai-recommended-list label { min-width: 0; display: grid; gap: 7px; }
 .core-translation-api-card { padding: clamp(20px, 3vw, 32px) !important; display: grid; gap: 24px; background:
   radial-gradient(circle at 96% 0%, color-mix(in srgb, var(--core-accent) 8%, transparent), transparent 32%),
   var(--core-surface); }
@@ -1247,7 +1244,6 @@
   .core-ai-index-details { grid-template-columns: 1fr; }
   .core-ai-index-details > section + section { border-top: 1px solid var(--core-line); border-left: 0; }
   .core-ai-popular-term-list { grid-template-columns: 1fr; }
-  .core-ai-recommended-list { grid-template-columns: 1fr; }
   .core-translation-api-form { grid-template-columns: 1fr; }
   .core-translation-api-wide, .core-translation-api-switch, .core-translation-api-actions { grid-column: auto; }
   .core-translation-batch-fields { grid-template-columns: 1fr; }

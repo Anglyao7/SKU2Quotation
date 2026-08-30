@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
+from .translation_constants import MAX_TRANSLATION_TIMEOUT_SECONDS
+
 
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
 TranslationProviderKind = Literal[
@@ -20,7 +22,10 @@ class TranslationSettingsResponse(BaseModel):
     base_url: str | None = None
     model_name: str | None = None
     region_id: str | None = None
-    timeout_seconds: int = Field(ge=1, le=120)
+    timeout_seconds: int = Field(
+        ge=1,
+        le=MAX_TRANSLATION_TIMEOUT_SECONDS,
+    )
     max_tokens: int = Field(ge=512, le=32768)
     requests_per_minute: int = Field(ge=1, le=10_000)
     max_retry_count: int = Field(ge=0, le=10)
@@ -47,7 +52,11 @@ class TranslationProviderParameters(BaseModel):
     access_key_id: SecretStr | None = Field(default=None, max_length=4096)
     model_name: str = Field(min_length=1, max_length=300)
     region_id: str | None = Field(default=None, max_length=100)
-    timeout_seconds: int = Field(default=20, ge=1, le=120)
+    timeout_seconds: int = Field(
+        default=20,
+        ge=1,
+        le=MAX_TRANSLATION_TIMEOUT_SECONDS,
+    )
     max_tokens: int = Field(default=16384, ge=512, le=32768)
     requests_per_minute: int = Field(default=60, ge=1, le=10_000)
     max_retry_count: int = Field(default=3, ge=0, le=10)

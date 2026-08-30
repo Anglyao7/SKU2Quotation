@@ -652,11 +652,14 @@ def translate_values_with_memory(
     batch_characters: int | None = None,
     concurrency: int | None = None,
     force_refresh_values: set[str] | None = None,
+    failure_sink: dict[str, TranslationProviderError] | None = None,
 ) -> dict[str, str]:
     """Return available translations and cache only text users actually requested.
 
     Individual failed provider batches are omitted, allowing callers to fall
-    back only those fields while successful batches remain translated.
+    back only those fields while successful batches remain translated. When
+    supplied, ``failure_sink`` receives the user-safe provider reason for each
+    omitted source value so background jobs can show and retry exact failures.
     """
 
     normalized_by_original = {
@@ -804,11 +807,22 @@ def translate_values_with_memory(
                 if _INFLIGHT_TRANSLATIONS.get(key) is future:
                     del _INFLIGHT_TRANSLATIONS[key]
 
+    failures_by_source: dict[str, TranslationProviderError] = {}
     for source, future in futures_by_source.items():
         try:
             translations[source] = future.result()
-        except TranslationProviderError:
+        except TranslationProviderError as exc:
+            failures_by_source[source] = exc
             continue
+
+    if failure_sink is not None:
+        failure_sink.update(
+            {
+                original: failures_by_source[normalized]
+                for original, normalized in normalized_by_original.items()
+                if normalized in failures_by_source
+            }
+        )
 
     return {
         original: translations[normalized]

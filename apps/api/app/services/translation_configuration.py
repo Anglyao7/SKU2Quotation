@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..model_mixins import utcnow
 from ..translation_management_models import TranslationProviderSettingsRow
+from ..translation_constants import MAX_TRANSLATION_TIMEOUT_SECONDS
 from .translation import (
     DEFAULT_ALIYUN_ALIMT_ENDPOINT,
     DEFAULT_ALIYUN_ALIMT_REGION,
@@ -686,9 +687,13 @@ def resolved_qwen_batch_configuration(
         raise TranslationProviderError("Qwen Batch API key is not configured")
     if not configuration.model_name.strip():
         raise TranslationProviderError("Qwen Batch model is not configured")
-    if configuration.timeout_seconds < 1 or configuration.timeout_seconds > 120:
+    if (
+        configuration.timeout_seconds < 1
+        or configuration.timeout_seconds > MAX_TRANSLATION_TIMEOUT_SECONDS
+    ):
         raise TranslationProviderError(
-            "Qwen Batch timeout must be between 1 and 120 seconds"
+            "Qwen Batch timeout must be between 1 and "
+            f"{MAX_TRANSLATION_TIMEOUT_SECONDS} seconds"
         )
     qwen_batch_api_base_url(
         configuration.base_url,

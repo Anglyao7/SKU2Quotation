@@ -16,14 +16,17 @@ import {
   Eye,
   EyeSlash,
   CurrencyDollar,
+  Folder,
+  FolderOpen,
   Key,
   Plus,
   SlidersHorizontal,
+  TreeStructure,
   UserPlus,
   UsersThree,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   createCustomerSubaccount,
@@ -43,6 +46,7 @@ import {
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import { useToast } from "../ToastContext";
 import { money } from "../../lib/format";
 import type {
   CustomerSubaccount,
@@ -413,8 +417,9 @@ export function SubaccountPricingDialog({
   onSaved: (policy: { markupPercent: number; overrideCount: number; categoryOverrideCount?: number; skuOverrideCount?: number }) => void;
 }) {
   const { t } = useLocale();
+  const { notify } = useToast();
   const [data, setData] = useState<SubaccountPricingPage>();
-  const [markup, setMarkup] = useState(String(account.markupPercent || 0));
+  const [markupDraft, setMarkupDraft] = useState<string>();
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -424,8 +429,61 @@ export function SubaccountPricingDialog({
   const [editingSku, setEditingSku] = useState<string>();
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [categoryId, setCategoryId] = useState("");
-  const [categoryMarkup, setCategoryMarkup] = useState("");
-  const [editingCategory, setEditingCategory] = useState(false);
+  const [categoryDrafts, setCategoryDrafts] = useState<Record<string, string>>({});
+  const [expandedCategoryIds, setExpandedCategoryIds] = useState<Set<string>>(new Set());
+
+  const savedCategoryRulesById = useMemo(
+    () => new Map((data?.categoryRules || []).map((rule) => [rule.categoryId, rule.markupPercent])),
+    [data?.categoryRules],
+  );
+  const categoryRulesById = useMemo(() => {
+    const next = new Map(savedCategoryRulesById);
+    Object.entries(categoryDrafts).forEach(([draftCategoryId, rawValue]) => {
+      if (!rawValue.trim()) {
+        next.delete(draftCategoryId);
+        return;
+      }
+      const value = Number(rawValue);
+      if (Number.isFinite(value)) next.set(draftCategoryId, value);
+    });
+    return next;
+  }, [categoryDrafts, savedCategoryRulesById]);
+  const rootCategories = useMemo(
+    () => categories.filter((category) => !category.parentId).sort((left, right) => left.sortOrder - right.sortOrder),
+    [categories],
+  );
+  const childCategoriesByParent = useMemo(() => {
+    const result = new Map<string, ProductCategory[]>();
+    categories.forEach((category) => {
+      if (!category.parentId) return;
+      const children = result.get(category.parentId) || [];
+      children.push(category);
+      result.set(category.parentId, children);
+    });
+    result.forEach((children) => children.sort((left, right) => left.sortOrder - right.sortOrder));
+    return result;
+  }, [categories]);
+  const selectedCategory = categories.find((category) => category.id === categoryId);
+  const selectedCategoryHasRule = Boolean(categoryId && categoryRulesById.has(categoryId));
+  const selectedParentMarkup = selectedCategory?.parentId
+    ? categoryRulesById.get(selectedCategory.parentId)
+    : undefined;
+  const markup = markupDraft ?? String(data?.policy.markupPercent ?? account.markupPercent ?? 0);
+  const categoryMarkup = categoryId
+    ? Object.prototype.hasOwnProperty.call(categoryDrafts, categoryId)
+      ? categoryDrafts[categoryId]
+      : savedCategoryRulesById.has(categoryId)
+        ? String(savedCategoryRulesById.get(categoryId))
+        : ""
+    : "";
+  const hasGlobalPricingChange = markupDraft !== undefined
+    && (markupDraft.trim() === "" || Number(markupDraft) !== Number(data?.policy.markupPercent ?? account.markupPercent ?? 0));
+  const hasCategoryPricingChange = Object.entries(categoryDrafts).some(([draftCategoryId, rawValue]) => {
+    const savedValue = savedCategoryRulesById.get(draftCategoryId);
+    if (!rawValue.trim()) return savedValue != null;
+    return Number(rawValue) !== savedValue;
+  });
+  const hasPricingChanges = hasGlobalPricingChange || hasCategoryPricingChange;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -433,9 +491,10 @@ export function SubaccountPricingDialog({
     try {
       const next = await getCustomerSubaccountPricing(account.id, query, page, 30);
       setData(next);
-      setMarkup(String(next.policy.markupPercent));
+      return next;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("价格规则加载失败"));
+      return undefined;
     } finally {
       setLoading(false);
     }
@@ -446,7 +505,7 @@ export function SubaccountPricingDialog({
   useEffect(() => {
     let active = true;
     void listCategories().then((rows) => {
-      if (active) setCategories(rows.filter((row) => row.status === "ACTIVE"));
+      if (active) setCategories(rows);
     }).catch(() => {
       // Keep product-level pricing usable if the optional category list is
       // temporarily unavailable.
@@ -454,20 +513,70 @@ export function SubaccountPricingDialog({
     return () => { active = false; };
   }, []);
 
-  const saveMarkup = async () => {
-    const value = Number(markup);
-    if (!Number.isFinite(value) || value < 0 || value > 100000) {
+  const selectCategory = (category: ProductCategory) => {
+    setCategoryId(category.id);
+    if (category.parentId) {
+      setExpandedCategoryIds((previous) => new Set(previous).add(category.parentId as string));
+    }
+  };
+
+  const toggleCategory = (categoryIdToToggle: string) => {
+    setExpandedCategoryIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(categoryIdToToggle)) next.delete(categoryIdToToggle);
+      else next.add(categoryIdToToggle);
+      return next;
+    });
+  };
+
+  const savePriceSettings = async () => {
+    const globalValue = Number(markup);
+    if (!markup.trim() || !Number.isFinite(globalValue) || globalValue < 0 || globalValue > 100000) {
       setError(t("统一加价必须是 0 到 100000 之间的数字"));
       return;
+    }
+    const categoryUpdates: Array<{ categoryId: string; value?: number }> = [];
+    for (const [draftCategoryId, rawValue] of Object.entries(categoryDrafts)) {
+      const savedValue = savedCategoryRulesById.get(draftCategoryId);
+      if (!rawValue.trim()) {
+        if (savedValue != null) categoryUpdates.push({ categoryId: draftCategoryId });
+        continue;
+      }
+      const value = Number(rawValue);
+      if (!Number.isFinite(value) || value < 0 || value > 100000) {
+        const categoryName = categories.find((category) => category.id === draftCategoryId)?.name;
+        setError(categoryName
+          ? t("{name} 的分类加价必须是 0 到 100000 之间的数字", { name: categoryName })
+          : t("分类加价必须是 0 到 100000 之间的数字"));
+        return;
+      }
+      if (value !== savedValue) categoryUpdates.push({ categoryId: draftCategoryId, value });
     }
     setSaving(true);
     setError("");
     try {
-      const policy = await updateCustomerSubaccountPricing(account.id, value);
-      setData((current) => current ? { ...current, policy } : current);
-      onSaved(policy);
+      let policy = data?.policy;
+      if (markupDraft !== undefined && globalValue !== Number(data?.policy.markupPercent ?? account.markupPercent ?? 0)) {
+        policy = await updateCustomerSubaccountPricing(account.id, globalValue);
+      }
+      for (const update of categoryUpdates) {
+        if (update.value == null) {
+          await clearCustomerSubaccountCategoryPricing(account.id, update.categoryId);
+        } else {
+          policy = await updateCustomerSubaccountCategoryPricing(account.id, update.categoryId, update.value);
+        }
+      }
+      const refreshed = await load();
+      setMarkupDraft(undefined);
+      setCategoryDrafts({});
+      if (refreshed) onSaved(refreshed.policy);
+      else if (policy) onSaved(policy);
+      notify(t("价格设置已保存"), { kind: "success" });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("价格规则保存失败"));
+      await load();
+      const message = caught instanceof Error ? caught.message : t("价格规则保存失败");
+      setError(message);
+      notify(message, { kind: "error" });
     } finally {
       setSaving(false);
     }
@@ -489,7 +598,7 @@ export function SubaccountPricingDialog({
         items: current.items.map((row) => row.productId === item.productId ? item : row),
         policy: { ...current.policy, overrideCount: current.items.some((row) => row.productId === item.productId && row.overrideMode) ? current.policy.overrideCount : current.policy.overrideCount + 1 },
       } : current);
-      onSaved({ ...data?.policy, markupPercent: Number(markup) || 0, overrideCount: (data?.policy.overrideCount || 0) + (data?.items.find((row) => row.productId === productId)?.overrideMode ? 0 : 1), categoryOverrideCount: data?.policy.categoryOverrideCount });
+      onSaved({ ...data?.policy, markupPercent: data?.policy.markupPercent ?? account.markupPercent ?? 0, overrideCount: (data?.policy.overrideCount || 0) + (data?.items.find((row) => row.productId === productId)?.overrideMode ? 0 : 1), categoryOverrideCount: data?.policy.categoryOverrideCount });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("单品价格保存失败"));
     } finally {
@@ -508,7 +617,7 @@ export function SubaccountPricingDialog({
           : row),
         policy: { ...current.policy, overrideCount: Math.max(0, current.policy.overrideCount - 1) },
       } : current);
-      onSaved({ ...data?.policy, markupPercent: Number(markup) || 0, overrideCount: Math.max(0, (data?.policy.overrideCount || 1) - 1), categoryOverrideCount: data?.policy.categoryOverrideCount });
+      onSaved({ ...data?.policy, markupPercent: data?.policy.markupPercent ?? account.markupPercent ?? 0, overrideCount: Math.max(0, (data?.policy.overrideCount || 1) - 1), categoryOverrideCount: data?.policy.categoryOverrideCount });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("单品价格清除失败"));
     } finally {
@@ -516,44 +625,10 @@ export function SubaccountPricingDialog({
     }
   };
 
-  const saveCategoryRule = async () => {
-    const value = Number(categoryMarkup);
-    if (!categoryId) {
-      setError(t("请选择一个分类。"));
-      return;
-    }
-    if (!Number.isFinite(value) || value < 0 || value > 100000) {
-      setError(t("分类加价必须是 0 到 100000 之间的数字"));
-      return;
-    }
-    setEditingCategory(true);
-    setError("");
-    try {
-      const policy = await updateCustomerSubaccountCategoryPricing(account.id, categoryId, value);
-      await load();
-      onSaved(policy);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("分类价格保存失败"));
-    } finally {
-      setEditingCategory(false);
-    }
-  };
-
-  const clearCategoryRule = async () => {
+  const clearCategoryRule = () => {
     if (!categoryId) return;
-    setEditingCategory(true);
     setError("");
-    try {
-      await clearCustomerSubaccountCategoryPricing(account.id, categoryId);
-      setCategoryMarkup("");
-      const previousCount = data?.policy.categoryOverrideCount ?? 0;
-      await load();
-      if (data) onSaved({ ...data.policy, categoryOverrideCount: Math.max(0, previousCount - 1) });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("分类价格清除失败"));
-    } finally {
-      setEditingCategory(false);
-    }
+    setCategoryDrafts((current) => ({ ...current, [categoryId]: "" }));
   };
 
   const saveSkuRule = async (
@@ -607,29 +682,74 @@ export function SubaccountPricingDialog({
       <Dialog.Title>{t("{name} 的价格设置", { name: account.displayName })}</Dialog.Title>
       <Dialog.Description>{t("最终价格按 SKU 计算：SKU 特价 > 商品规则 > 分类规则 > 统一加价。子账号只会看到最终销售价。")}</Dialog.Description>
       <section className="subaccount-pricing-policy">
-        <label><Text size="2" weight="medium">{t("统一加价（%）")}</Text><TextField.Root type="number" min="0" max="100000" step="0.1" value={markup} onChange={(event) => setMarkup(event.target.value)} /></label>
-        <Button loading={saving} onClick={() => void saveMarkup()}><CurrencyDollar />{t("应用到所有商品")}</Button>
-        <Text size="1" color="gray">{t("当前已有 {count} 个单品规则、{skuCount} 个 SKU 特价", { count: data?.policy.overrideCount ?? account.overrideCount, skuCount: data?.policy.skuOverrideCount ?? 0 })}</Text>
+        <label><Text size="2" weight="medium">{t("统一加价（%）")}</Text><TextField.Root type="number" min="0" max="100000" step="0.1" value={markup} onChange={(event) => setMarkupDraft(event.target.value)} /></label>
+        <Text size="1" color="gray">{t("当前已有 {count} 个单品规则、{skuCount} 个 SKU 特价；整体和分类改动由底部统一保存。", { count: data?.policy.overrideCount ?? account.overrideCount, skuCount: data?.policy.skuOverrideCount ?? 0 })}</Text>
       </section>
       <section className="subaccount-category-pricing">
-        <div className="subaccount-category-pricing-copy"><Text size="2" weight="medium">{t("分类加价（%）")}</Text><Text size="1" color="gray">{t("分类规则按每个 SKU 原价分别计算；单品规则优先。")}</Text></div>
-        <div className="subaccount-category-pricing-controls">
-          <select value={categoryId} onChange={(event) => {
-            const nextId = event.target.value;
-            setCategoryId(nextId);
-            const current = data?.items.find((row) => row.categoryId === nextId)?.categoryMarkupPercent;
-            setCategoryMarkup(current == null ? "" : String(current));
-          }} aria-label={t("选择加价分类")}>
-            <option value="">{t("选择分类")}</option>
-            {categories.map((category) => <option value={category.id} key={category.id}>{category.path || category.name}</option>)}
-          </select>
-          <TextField.Root type="number" min="0" max="100000" step="0.1" value={categoryMarkup} onChange={(event) => setCategoryMarkup(event.target.value)} placeholder={t("加价百分比")} aria-label={t("分类加价百分比")} />
-          <div className="subaccount-category-pricing-actions">
-            <Button size="2" loading={editingCategory} disabled={!categoryId} onClick={() => void saveCategoryRule()}>{t("应用分类规则")}</Button>
-            <Button size="2" variant="ghost" color="gray" loading={editingCategory} disabled={!categoryId || !categoryMarkup} onClick={() => void clearCategoryRule()}>{t("清除")}</Button>
+        <div className="subaccount-category-pricing-heading">
+          <div className="subaccount-category-pricing-copy">
+            <Text size="2" weight="medium">{t("分类加价（%）")}</Text>
+            <Text size="1" color="gray">{t("一级分类规则会自动应用到未单独设置的二级分类；单品规则优先。")}</Text>
+          </div>
+          <Text className="subaccount-category-pricing-count" size="1" color="gray">{t("已设置 {count} 个分类规则", { count: data ? categoryRulesById.size : account.categoryOverrideCount ?? 0 })}</Text>
+        </div>
+        <div className="subaccount-category-pricing-layout">
+          <div className="subaccount-category-pricing-tree" role="tree" aria-label={t("选择加价分类")}>
+            {rootCategories.map((root) => {
+              const children = childCategoriesByParent.get(root.id) || [];
+              const expanded = expandedCategoryIds.has(root.id);
+              const rootMarkup = categoryRulesById.get(root.id);
+              const colorStyle = { "--tag-glass-color": root.displayColor || "#287d6e" } as CSSProperties;
+              return <div className="subaccount-category-pricing-branch" key={root.id}>
+                <div className={`subaccount-category-pricing-node root${categoryId === root.id ? " is-selected" : ""}`} role="treeitem" aria-selected={categoryId === root.id} aria-expanded={children.length ? expanded : undefined}>
+                  {children.length ? <button type="button" className="subaccount-category-pricing-toggle" onClick={() => toggleCategory(root.id)} aria-label={t(expanded ? "收起 {name}" : "展开 {name}", { name: root.name })}>{expanded ? <CaretDown weight="bold" /> : <CaretRight weight="bold" />}</button> : <span className="subaccount-category-pricing-toggle-placeholder" />}
+                  <button type="button" className="subaccount-category-pricing-node-main" onClick={() => selectCategory(root)}>
+                    <span className="core-category-color-mark" style={colorStyle}>{expanded ? <FolderOpen weight="duotone" /> : <Folder weight="duotone" />}</span>
+                    <span><strong>{root.name}</strong><small>{children.length ? t("{count} 个二级分类", { count: children.length }) : t("暂无二级分类")}{root.status !== "ACTIVE" ? ` · ${t("停用")}` : ""}</small></span>
+                  </button>
+                  {rootMarkup == null ? <span className="subaccount-category-price-state is-inherited">{t("统一 +{value}%", { value: markup || "0" })}</span> : <span className="subaccount-category-price-state">+{rootMarkup}%</span>}
+                </div>
+                {children.length && expanded ? <div className="subaccount-category-pricing-children" role="group">
+                  {children.map((child) => {
+                    const childMarkup = categoryRulesById.get(child.id);
+                    return <div className={`subaccount-category-pricing-node child${categoryId === child.id ? " is-selected" : ""}`} role="treeitem" aria-selected={categoryId === child.id} key={child.id}>
+                      <button type="button" className="subaccount-category-pricing-node-main" onClick={() => selectCategory(child)}>
+                        <Folder weight="duotone" />
+                        <span><strong>{child.name}</strong><small>{t("{count} 个商品", { count: child.productCount })}{child.status !== "ACTIVE" ? ` · ${t("停用")}` : ""}</small></span>
+                      </button>
+                      {childMarkup == null ? <span className="subaccount-category-price-state is-inherited">{rootMarkup == null ? t("统一 +{value}%", { value: markup || "0" }) : t("继承 +{value}%", { value: rootMarkup })}</span> : <span className="subaccount-category-price-state">+{childMarkup}%</span>}
+                    </div>;
+                  })}
+                </div> : null}
+              </div>;
+            })}
+            {!rootCategories.length ? <div className="subaccount-category-pricing-empty"><TreeStructure size={26} /><strong>{t("还没有分类")}</strong><small>{t("请先在分类管理中创建分类。")}</small></div> : null}
+          </div>
+          <div className="subaccount-category-pricing-editor">
+            {selectedCategory ? <>
+              <div className="subaccount-category-pricing-editor-heading">
+                <Text size="1" color="gray">{t(selectedCategory.parentId ? "二级分类" : "一级分类")}</Text>
+                <Heading size="4">{selectedCategory.name}</Heading>
+              </div>
+              <label>
+                <Text size="2" weight="medium">{t("加价百分比")}</Text>
+                <TextField.Root type="number" min="0" max="100000" step="0.1" value={categoryMarkup} onChange={(event) => setCategoryDrafts((current) => ({ ...current, [categoryId]: event.target.value }))} placeholder={selectedCategory.parentId && selectedParentMarkup != null ? t("当前继承 +{value}%", { value: selectedParentMarkup }) : t("使用统一加价") } aria-label={t("分类加价百分比")} />
+              </label>
+              <Text className="subaccount-category-pricing-help" size="1" color="gray">
+                {selectedCategory.parentId
+                  ? selectedCategoryHasRule
+                    ? t("该二级分类使用自己的规则，不再继承一级分类。")
+                    : selectedParentMarkup == null
+                      ? t("未单独设置时，使用子账号的统一加价。")
+                      : t("当前继承一级分类的 +{value}% 加价。", { value: selectedParentMarkup })
+                  : t("保存后，该规则会应用到本分类以及未单独设置的全部二级分类。")}
+              </Text>
+              <div className="subaccount-category-pricing-actions">
+                <Button size="2" variant="ghost" color="gray" disabled={!selectedCategoryHasRule} onClick={clearCategoryRule}>{t("恢复继承")}</Button>
+              </div>
+            </> : <div className="subaccount-category-pricing-empty is-editor"><TreeStructure size={26} /><strong>{t("选择一个分类")}</strong><small>{t("点击左侧一级或二级分类设置加价。")}</small></div>}
           </div>
         </div>
-        <Text className="subaccount-category-pricing-count" size="1" color="gray">{t("已设置 {count} 个分类规则", { count: data?.policy.categoryOverrideCount ?? account.categoryOverrideCount ?? 0 })}</Text>
       </section>
       <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={t("搜索商品名称或编码") } />
       {error ? <Text color="red" size="2">{error}</Text> : null}
@@ -644,7 +764,7 @@ export function SubaccountPricingDialog({
           <Button size="1" variant="soft" color="gray" disabled={loading || data.page >= Math.ceil(data.total / data.pageSize)} onClick={() => setPage((current) => Math.min(Math.ceil(data.total / data.pageSize), current + 1))}>{t("下一页")}<CaretRight /></Button>
         </div>
       </div> : null}
-      <div className="core-dialog-actions"><Button variant="soft" color="gray" onClick={onClose}>{t("关闭")}</Button><Button onClick={() => { if (data) onSaved(data.policy); onClose(); }}>{t("完成")}</Button></div>
+      <div className="core-dialog-actions"><Button variant="soft" color="gray" disabled={saving} onClick={onClose}>{t("关闭")}</Button><Button loading={saving} disabled={loading || !hasPricingChanges} onClick={() => void savePriceSettings()}><CurrencyDollar />{t("应用价格设置")}</Button></div>
     </Dialog.Content>
   </Dialog.Root>;
 }

@@ -2,16 +2,10 @@ import { Badge, Button, Card, Heading, Progress, Text, TextArea } from "@radix-u
 import { ArrowRight, CaretDown, CaretUp, MagnifyingGlass, ShieldCheck, Sparkle, WarningCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { getAISearchRecommendedQuestions, searchProducts } from "../api";
+import { getAISearchPopularTerms, searchProducts } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, percent } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type { HybridSearchResponse } from "../types";
-
-const defaultExamples = [
-  "适合巴西市场的小型防水狗玩具",
-  "食品级硅胶水瓶，目标价低于 20 元",
-  "适合欧洲市场的环保旅行收纳包",
-];
 
 const scoreLabels: Record<string, string> = { keyword: "关键词", semantic: "语义", attribute: "属性", tag: "标签", supplier: "供应商" };
 
@@ -23,13 +17,13 @@ export function AiSearchPage() {
   const [expanded, setExpanded] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [examples, setExamples] = useState(defaultExamples);
+  const [examples, setExamples] = useState<string[]>([]);
 
   useEffect(() => {
     let active = true;
-    void getAISearchRecommendedQuestions()
+    void getAISearchPopularTerms(30, 5)
       .then((result) => {
-        if (active && result.questions.length === 3) setExamples(result.questions);
+        if (active) setExamples(result.items.map((item) => item.term));
       })
       .catch(() => undefined);
     return () => { active = false; };
@@ -65,7 +59,7 @@ export function AiSearchPage() {
           <TextArea value={query} onChange={(event) => setQuery(event.target.value)} rows={2} placeholder={t("例如：适合巴西市场的小型防水狗玩具，目标价低于 3 美元…")} aria-label={t("描述产品需求")} />
           <Button size="3" disabled={!query.trim() || loading}>{loading ? t("搜索中") : <><MagnifyingGlass />{t("开始搜索")}</>}</Button>
         </form>
-        {!response && !loading ? <div className="core-example-list">{examples.map((example) => <Button key={example} variant="soft" color="gray" onClick={() => void runSearch(t(example))}>{t(example)}<ArrowRight /></Button>)}</div> : null}
+        {!response && !loading && examples.length ? <div className="core-example-list">{examples.map((example) => <Button key={example} variant="soft" color="gray" onClick={() => void runSearch(example)}>{example}<ArrowRight /></Button>)}</div> : null}
       </Card>
       {loading ? <CoreLoading label={t("正在综合产品知识与供应商信号")} /> : null}
       {error ? <CoreError message={error} onRetry={() => void runSearch()} /> : null}

@@ -27,6 +27,7 @@ from ..customer_accounts_schemas import (
     CustomerSubaccountSummary,
     normalize_capabilities,
     normalize_modules,
+    SubaccountCategoryPricingRule,
     SubaccountPricingPage,
     SubaccountPricingPolicyResponse,
     SubaccountPricingPolicyUpdate,
@@ -1446,6 +1447,15 @@ def get_subaccount_pricing(
                 membership_id=child.id,
             ),
         ),
+        category_rules=[
+            SubaccountCategoryPricingRule(
+                category_id=category_id,
+                markup_percent=Decimal(override.markup_percent),
+            )
+            for category_id, override in sorted(
+                category_overrides.items(), key=lambda item: str(item[0])
+            )
+        ],
         items=items,
         total=total,
         page=page,

@@ -13,6 +13,8 @@ from uuid import UUID
 
 import httpx
 
+from ..translation_constants import MAX_TRANSLATION_TIMEOUT_SECONDS
+
 from .catalog_translation import (
     catalog_translation_values_payload,
     parse_catalog_translation_values,
@@ -23,6 +25,7 @@ from .translation import (
     TranslationIdentity,
     TranslationProviderError,
     _openai_chat_completions_endpoint,
+    _safe_upstream_text,
 )
 
 
@@ -223,9 +226,13 @@ class QwenBatchClient:
             raise TranslationProviderError("Qwen Batch API key is required")
         if not configuration.model_name.strip():
             raise TranslationProviderError("Qwen Batch model is required")
-        if configuration.timeout_seconds < 1 or configuration.timeout_seconds > 120:
+        if (
+            configuration.timeout_seconds < 1
+            or configuration.timeout_seconds > MAX_TRANSLATION_TIMEOUT_SECONDS
+        ):
             raise TranslationProviderError(
-                "Qwen Batch timeout must be between 1 and 120 seconds"
+                "Qwen Batch timeout must be between 1 and "
+                f"{MAX_TRANSLATION_TIMEOUT_SECONDS} seconds"
             )
         self.configuration = configuration
         self._base_url = qwen_batch_api_base_url(
@@ -284,7 +291,11 @@ class QwenBatchClient:
                     )
                     continue
                 raise TranslationProviderError(
-                    "Qwen Batch request timed out"
+                    "上游 Qwen Batch 请求超时"
+                    f"（等待 {self.configuration.timeout_seconds} 秒，"
+                    f"{method} {path}）",
+                    category="UPSTREAM_TIMEOUT",
+                    retryable=True,
                 ) from exc
             except httpx.HTTPError as exc:
                 if self._retryable_transport_error(
@@ -301,7 +312,10 @@ class QwenBatchClient:
                     )
                     continue
                 raise TranslationProviderError(
-                    "Qwen Batch request failed"
+                    "无法连接上游 Qwen Batch 服务"
+                    f"（{type(exc).__name__}，{method} {path}）",
+                    category="UPSTREAM_NETWORK",
+                    retryable=True,
                 ) from exc
             if response.status_code < 200 or response.status_code >= 300:
                 if (
@@ -320,7 +334,14 @@ class QwenBatchClient:
                 message = self._response_error_message(response)
                 suffix = f": {message}" if message else ""
                 raise TranslationProviderError(
-                    f"Qwen Batch returned HTTP {response.status_code}{suffix}"
+                    f"上游 Qwen Batch 返回 HTTP "
+                    f"{response.status_code}{suffix}",
+                    category="UPSTREAM_HTTP",
+                    retryable=(
+                        response.status_code
+                        in _QWEN_BATCH_RETRYABLE_STATUS_CODES
+                    ),
+                    upstream_status_code=response.status_code,
                 )
             return response
         raise AssertionError("Qwen Batch transport retry loop did not return")
@@ -379,16 +400,22 @@ class QwenBatchClient:
         if not isinstance(body, Mapping):
             return None
         error = body.get("error")
-        if isinstance(error, Mapping):
-            message = error.get("message") or error.get("code")
-        else:
-            message = body.get("message") or body.get("code")
-        if not isinstance(message, str):
+        source = error if isinstance(error, Mapping) else body
+        raw_code = source.get("code") or source.get("type")
+        raw_message = source.get("message") or source.get("detail")
+        code = raw_code if isinstance(raw_code, str) else None
+        message = raw_message if isinstance(raw_message, str) else None
+        combined = (
+            f"{code}: {message}"
+            if code and message and code.casefold() != message.casefold()
+            else message or code
+        )
+        if not combined:
             return None
         # Upstream messages are useful for operators but may echo payloads.
         # Keep a short, single-line diagnostic and never include request URLs
         # or the Authorization header.
-        return " ".join(message.split())[:300] or None
+        return _safe_upstream_text(combined)
 
     def jsonl_content(
         self,

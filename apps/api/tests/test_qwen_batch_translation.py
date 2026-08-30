@@ -333,7 +333,10 @@ def test_qwen_batch_creation_does_not_blindly_retry_ambiguous_timeout() -> None:
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    with pytest.raises(TranslationProviderError, match="timed out"):
+    with pytest.raises(
+        TranslationProviderError,
+        match="上游 Qwen Batch 请求超时",
+    ):
         client.create_batch(
             "file-batch-input",
             name="test",

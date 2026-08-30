@@ -53,7 +53,7 @@ const localizedStorefrontMessagesBase: Record<
   "横向展示": { es: "Horizontal", tr: "Yatay", ar: "أفقي", ja: "横表示", ko: "가로 표시" },
   "竖向展示": { es: "Vertical", tr: "Dikey", ar: "عمودي", ja: "縦表示", ko: "세로 표시" },
   "分类展示方式": { es: "Diseño de categorías", tr: "Kategori düzeni", ar: "تخطيط الفئات", ja: "カテゴリレイアウト", ko: "카테고리 레이아웃" },
-  "推荐问题": { es: "Preguntas sugeridas", tr: "Önerilen sorular", ar: "أسئلة مقترحة", ja: "おすすめの質問", ko: "추천 질문" },
+  "热门搜索词": { es: "Búsquedas populares", tr: "Popüler aramalar", ar: "عمليات البحث الشائعة", ja: "人気の検索", ko: "인기 검색어" },
   "清除筛选": { es: "Borrar filtros", tr: "Filtreleri temizle", ar: "مسح عوامل التصفية", ja: "絞り込みを解除", ko: "필터 지우기" },
   "搜索 SKU、名称、规格或使用场景": { es: "Buscar SKU, nombre, especificación o uso", tr: "SKU, ad, özellik veya kullanım alanı ara", ar: "ابحث عن SKU أو الاسم أو المواصفات أو الاستخدام", ja: "SKU・名称・仕様・用途を検索", ko: "SKU, 이름, 사양 또는 사용 용도 검색" },
   "清除搜索": { es: "Borrar búsqueda", tr: "Aramayı temizle", ar: "مسح البحث", ja: "検索をクリア", ko: "검색 지우기" },
