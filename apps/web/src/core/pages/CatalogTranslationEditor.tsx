@@ -89,9 +89,11 @@ function MappingEditor({
 }
 
 export function CatalogTranslationEditor({
+  tenantId,
   locale,
   packageVersion,
 }: {
+  tenantId: string;
   locale: StorefrontLocale;
   packageVersion?: number;
 }) {
@@ -127,6 +129,7 @@ export function CatalogTranslationEditor({
     try {
       setResult(await listCatalogTranslationProducts({
         targetLocale: locale,
+        tenantId,
         q: debouncedQuery || undefined,
         page,
         pageSize: 30,
@@ -141,13 +144,13 @@ export function CatalogTranslationEditor({
   useEffect(() => {
     setDetail(undefined);
     setPage(1);
-  }, [locale]);
+  }, [locale, tenantId]);
 
   useEffect(() => {
     void load();
     // A published package version invalidates the visible wording snapshot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locale, debouncedQuery, page, packageVersion]);
+  }, [locale, tenantId, debouncedQuery, page, packageVersion]);
 
   const editProduct = async (productId: string) => {
     setDetailLoading(true);
@@ -155,7 +158,7 @@ export function CatalogTranslationEditor({
     setError("");
     setSuccess("");
     try {
-      const next = await getCatalogTranslationProduct(productId, locale);
+      const next = await getCatalogTranslationProduct(productId, locale, tenantId);
       setDetail(next);
       setProductDraft({
         ...next.translation,
@@ -195,6 +198,7 @@ export function CatalogTranslationEditor({
         Object.fromEntries(detail.skus.map((sku) => [sku.id, sku.sourceHash])),
         productDraft,
         skuDrafts,
+        tenantId,
       );
       setDetail(updated);
       setProductDraft({ ...updated.translation });

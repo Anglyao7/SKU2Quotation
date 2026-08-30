@@ -3493,9 +3493,10 @@ function mapCatalogTranslationStatus(
 
 export async function getCatalogTranslationStatus(
   targetLocale: StorefrontLocale,
-  options: { includeLatestJob?: boolean } = {},
+  options: { includeLatestJob?: boolean; tenantId?: string } = {},
 ): Promise<CatalogTranslationStatus> {
   const query = new URLSearchParams({ target_locale: targetLocale });
+  if (options.tenantId) query.set("tenant_id", options.tenantId);
   if (options.includeLatestJob === false) {
     query.set("include_latest_job", "false");
   }
@@ -3511,9 +3512,13 @@ export async function startCatalogTranslationJob(
   targetLocale: StorefrontLocale,
   fullRebuild = false,
   executionMode?: CatalogTranslationExecutionMode,
+  tenantId?: string,
 ): Promise<CatalogTranslationJob> {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("tenant_id", tenantId);
+  const suffix = query.size ? `?${query.toString()}` : "";
   return mapCatalogTranslationJob(
-    await request<ApiCatalogTranslationJob>("/catalog/translations/jobs", {
+    await request<ApiCatalogTranslationJob>(`/catalog/translations/jobs${suffix}`, {
       method: "POST",
       body: JSON.stringify({
         target_locale: targetLocale,
@@ -3527,9 +3532,12 @@ export async function startCatalogTranslationJob(
 
 export async function getLatestCatalogTranslationJob(
   targetLocale: StorefrontLocale,
+  tenantId?: string,
 ): Promise<CatalogTranslationJob | undefined> {
+  const query = new URLSearchParams({ target_locale: targetLocale });
+  if (tenantId) query.set("tenant_id", tenantId);
   const row = await request<ApiCatalogTranslationJob | null>(
-    `/catalog/translations/jobs/latest?target_locale=${encodeURIComponent(targetLocale)}`,
+    `/catalog/translations/jobs/latest?${query.toString()}`,
     { cache: "no-store" },
   );
   return row ? mapCatalogTranslationJob(row) : undefined;
@@ -3537,10 +3545,14 @@ export async function getLatestCatalogTranslationJob(
 
 export async function getCatalogTranslationJob(
   jobId: string,
+  tenantId?: string,
 ): Promise<CatalogTranslationJob> {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("tenant_id", tenantId);
+  const suffix = query.size ? `?${query.toString()}` : "";
   return mapCatalogTranslationJob(
     await request<ApiCatalogTranslationJob>(
-      `/catalog/translations/jobs/${encodeURIComponent(jobId)}`,
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}${suffix}`,
       { cache: "no-store" },
     ),
   );
@@ -3548,10 +3560,14 @@ export async function getCatalogTranslationJob(
 
 export async function pauseCatalogTranslationJob(
   jobId: string,
+  tenantId?: string,
 ): Promise<CatalogTranslationJob> {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("tenant_id", tenantId);
+  const suffix = query.size ? `?${query.toString()}` : "";
   return mapCatalogTranslationJob(
     await request<ApiCatalogTranslationJob>(
-      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/pause`,
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/pause${suffix}`,
       { method: "POST" },
     ),
   );
@@ -3559,10 +3575,14 @@ export async function pauseCatalogTranslationJob(
 
 export async function resumeCatalogTranslationJob(
   jobId: string,
+  tenantId?: string,
 ): Promise<CatalogTranslationJob> {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("tenant_id", tenantId);
+  const suffix = query.size ? `?${query.toString()}` : "";
   return mapCatalogTranslationJob(
     await request<ApiCatalogTranslationJob>(
-      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/resume`,
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/resume${suffix}`,
       { method: "POST" },
     ),
   );
@@ -3574,9 +3594,11 @@ export async function getCatalogTranslationBatches(
     includeSkus?: boolean;
     limit?: number;
     includeFailed?: boolean;
+    tenantId?: string;
   } = {},
 ): Promise<CatalogTranslationBatch[]> {
   const query = new URLSearchParams();
+  if (options.tenantId) query.set("tenant_id", options.tenantId);
   if (options.includeSkus === false) query.set("include_skus", "false");
   if (options.limit !== undefined) query.set("limit", String(options.limit));
   if (options.includeFailed !== undefined) {
@@ -3593,10 +3615,14 @@ export async function getCatalogTranslationBatches(
 export async function retryCatalogTranslationBatch(
   jobId: string,
   batchId: string,
+  tenantId?: string,
 ): Promise<CatalogTranslationJob> {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("tenant_id", tenantId);
+  const suffix = query.size ? `?${query.toString()}` : "";
   return mapCatalogTranslationJob(
     await request<ApiCatalogTranslationJob>(
-      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/batches/${encodeURIComponent(batchId)}/retry`,
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/batches/${encodeURIComponent(batchId)}/retry${suffix}`,
       { method: "POST" },
     ),
   );
@@ -3605,10 +3631,14 @@ export async function retryCatalogTranslationBatch(
 export async function retryCatalogTranslationProduct(
   productId: string,
   targetLocale: StorefrontLocale,
+  tenantId?: string,
 ): Promise<CatalogTranslationJob> {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("tenant_id", tenantId);
+  const suffix = query.size ? `?${query.toString()}` : "";
   return mapCatalogTranslationJob(
     await request<ApiCatalogTranslationJob>(
-      `/catalog/translations/products/${encodeURIComponent(productId)}/retry`,
+      `/catalog/translations/products/${encodeURIComponent(productId)}/retry${suffix}`,
       {
         method: "POST",
         body: JSON.stringify({ target_locale: targetLocale }),
@@ -3671,11 +3701,13 @@ function mapCatalogTranslationProductDetail(
 
 export async function listCatalogTranslationProducts(input: {
   targetLocale: StorefrontLocale;
+  tenantId?: string;
   q?: string;
   page?: number;
   pageSize?: number;
 }): Promise<CatalogTranslationProductListPage> {
   const query = new URLSearchParams({ target_locale: input.targetLocale });
+  if (input.tenantId) query.set("tenant_id", input.tenantId);
   if (input.q) query.set("q", input.q);
   if (input.page) query.set("page", String(input.page));
   if (input.pageSize) query.set("page_size", String(input.pageSize));
@@ -3705,10 +3737,13 @@ export async function listCatalogTranslationProducts(input: {
 export async function getCatalogTranslationProduct(
   productId: string,
   targetLocale: StorefrontLocale,
+  tenantId?: string,
 ): Promise<CatalogTranslationProductDetail> {
+  const query = new URLSearchParams({ target_locale: targetLocale });
+  if (tenantId) query.set("tenant_id", tenantId);
   return mapCatalogTranslationProductDetail(
     await request<ApiCatalogTranslationProductDetail>(
-      `/catalog/translations/products/${encodeURIComponent(productId)}?target_locale=${encodeURIComponent(targetLocale)}`,
+      `/catalog/translations/products/${encodeURIComponent(productId)}?${query.toString()}`,
       { cache: "no-store" },
     ),
   );
@@ -3746,10 +3781,14 @@ export async function updateCatalogTranslationProduct(
   skuSourceHashes: Record<string, string>,
   product: CatalogLocalizedProductContent,
   skus: CatalogLocalizedSkuContent[],
+  tenantId?: string,
 ): Promise<CatalogTranslationProductDetail> {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("tenant_id", tenantId);
+  const suffix = query.size ? `?${query.toString()}` : "";
   return mapCatalogTranslationProductDetail(
     await request<ApiCatalogTranslationProductDetail>(
-      `/catalog/translations/products/${encodeURIComponent(productId)}/translation`,
+      `/catalog/translations/products/${encodeURIComponent(productId)}/translation${suffix}`,
       {
         method: "PUT",
         body: JSON.stringify({

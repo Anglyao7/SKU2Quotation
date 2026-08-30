@@ -19,6 +19,7 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../../lib/api";
 import { useCoreAuth } from "../AuthContext";
 import { ToastNotice } from "../ToastContext";
 import {
@@ -43,12 +44,13 @@ import {
   STOREFRONT_LANGUAGE_OPTIONS,
   storefrontLanguage,
 } from "../../lib/storefrontLocale";
-import type { StorefrontLocale } from "../../types";
+import type { StorefrontLocale, Tenant } from "../../types";
 import { CatalogTranslationEditor } from "./CatalogTranslationEditor";
 
 const TARGET_LANGUAGES = STOREFRONT_LANGUAGE_OPTIONS.filter(
   (language) => language.code !== "zh-CN",
 );
+const TRANSLATION_TENANT_STORAGE_KEY = "atc.admin.catalog-translation-tenant";
 
 const stageCopy: Record<CatalogTranslationJobStage, string> = {
   QUEUED: "等待开始",
@@ -85,6 +87,10 @@ export function LanguagePackagesPage() {
   const { hasPermission } = useCoreAuth();
   const { t } = useLocale();
   const canEditProducts = hasPermission("product.edit");
+  const [merchants, setMerchants] = useState<Tenant[]>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState("");
+  const [merchantsLoading, setMerchantsLoading] = useState(true);
+  const [merchantsError, setMerchantsError] = useState("");
   const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>("en-US");
   const [status, setStatus] = useState<CatalogTranslationStatus>();
   const [job, setJob] = useState<CatalogTranslationJob>();
@@ -98,8 +104,45 @@ export function LanguagePackagesPage() {
   const [controllingJob, setControllingJob] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const selectedTenantIdRef = useRef(selectedTenantId);
   const selectedLocaleRef = useRef<StorefrontLocale>(selectedLocale);
   const localeRequestIdRef = useRef(0);
+
+  const selectedMerchant = merchants.find(
+    (merchant) => merchant.id === selectedTenantId,
+  );
+
+  useEffect(() => {
+    let active = true;
+    void api.getTenants()
+      .then((rows) => {
+        if (!active) return;
+        const available = rows.filter((tenant) => (
+          tenant.identity_code !== "ADMIN" && tenant.status !== "archived"
+        ));
+        setMerchants(available);
+        const remembered = window.localStorage.getItem(
+          TRANSLATION_TENANT_STORAGE_KEY,
+        );
+        const initial = available.find((tenant) => tenant.id === remembered)
+          ?? available.find((tenant) => tenant.status === "active")
+          ?? available[0];
+        setSelectedTenantId(initial?.id ?? "");
+      })
+      .catch((reason) => {
+        if (active) {
+          setMerchantsError(
+            reason instanceof Error ? reason.message : t("商家列表加载失败。"),
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setMerchantsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [t]);
 
   const selectedStatus = status?.targetLocale === selectedLocale
     ? status
@@ -176,35 +219,40 @@ export function LanguagePackagesPage() {
 
   const localeRequestIsCurrent = (
     locale: StorefrontLocale,
+    tenantId: string,
     requestId?: number,
   ) => selectedLocaleRef.current === locale
+    && selectedTenantIdRef.current === tenantId
     && (requestId === undefined || localeRequestIdRef.current === requestId);
 
   const refreshStatus = async (
     locale = selectedLocaleRef.current,
+    tenantId = selectedTenantIdRef.current,
     requestId?: number,
   ) => {
     const next = await getCatalogTranslationStatus(locale, {
       includeLatestJob: false,
+      tenantId,
     });
-    if (localeRequestIsCurrent(locale, requestId)) setStatus(next);
+    if (localeRequestIsCurrent(locale, tenantId, requestId)) setStatus(next);
     return next;
   };
 
   const refreshBatches = async (
     jobId: string | undefined,
     locale = selectedLocaleRef.current,
+    tenantId = selectedTenantIdRef.current,
     requestId?: number,
   ) => {
     if (!jobId) {
-      if (localeRequestIsCurrent(locale, requestId)) {
+      if (localeRequestIsCurrent(locale, tenantId, requestId)) {
         setBatches([]);
         setBatchesJobId(undefined);
         setBatchHistoryLoading(false);
       }
       return;
     }
-    if (localeRequestIsCurrent(locale, requestId)) {
+    if (localeRequestIsCurrent(locale, tenantId, requestId)) {
       setBatchHistoryLoading(true);
     }
     try {
@@ -212,13 +260,14 @@ export function LanguagePackagesPage() {
         includeSkus: false,
         limit: 100,
         includeFailed: true,
+        tenantId,
       });
-      if (localeRequestIsCurrent(locale, requestId)) {
+      if (localeRequestIsCurrent(locale, tenantId, requestId)) {
         setBatches(next);
         setBatchesJobId(jobId);
       }
     } finally {
-      if (localeRequestIsCurrent(locale, requestId)) {
+      if (localeRequestIsCurrent(locale, tenantId, requestId)) {
         setBatchHistoryLoading(false);
       }
     }
@@ -226,17 +275,21 @@ export function LanguagePackagesPage() {
 
   const refreshHistory = async (
     locale = selectedLocaleRef.current,
+    tenantId = selectedTenantIdRef.current,
     requestId?: number,
   ) => {
-    const next = await getLatestCatalogTranslationJob(locale);
-    if (!localeRequestIsCurrent(locale, requestId)) return next;
+    const next = await getLatestCatalogTranslationJob(locale, tenantId);
+    if (!localeRequestIsCurrent(locale, tenantId, requestId)) return next;
     setJob(next);
     setHistoryLoading(false);
-    await refreshBatches(next?.id, locale, requestId).catch(() => undefined);
+    await refreshBatches(next?.id, locale, tenantId, requestId).catch(
+      () => undefined,
+    );
     return next;
   };
 
   useEffect(() => {
+    selectedTenantIdRef.current = selectedTenantId;
     selectedLocaleRef.current = selectedLocale;
     const requestId = ++localeRequestIdRef.current;
     setError("");
@@ -248,29 +301,39 @@ export function LanguagePackagesPage() {
     setCoverageLoading(true);
     setHistoryLoading(true);
     setBatchHistoryLoading(false);
+    if (!selectedTenantId) {
+      setCoverageLoading(false);
+      setHistoryLoading(false);
+      return;
+    }
+    window.localStorage.setItem(
+      TRANSLATION_TENANT_STORAGE_KEY,
+      selectedTenantId,
+    );
 
-    void refreshStatus(selectedLocale, requestId)
+    void refreshStatus(selectedLocale, selectedTenantId, requestId)
       .catch((caught) => {
-        if (localeRequestIsCurrent(selectedLocale, requestId)) {
+        if (localeRequestIsCurrent(selectedLocale, selectedTenantId, requestId)) {
           setError(caught instanceof Error ? caught.message : t("翻译状态读取失败。"));
         }
       })
       .finally(() => {
-        if (localeRequestIsCurrent(selectedLocale, requestId)) {
+        if (localeRequestIsCurrent(selectedLocale, selectedTenantId, requestId)) {
           setCoverageLoading(false);
         }
       });
-    void refreshHistory(selectedLocale, requestId)
+    void refreshHistory(selectedLocale, selectedTenantId, requestId)
       .catch((caught) => {
-        if (localeRequestIsCurrent(selectedLocale, requestId)) {
+        if (localeRequestIsCurrent(selectedLocale, selectedTenantId, requestId)) {
           setHistoryLoading(false);
           setError(caught instanceof Error ? caught.message : t("翻译历史记录读取失败。"));
         }
       });
-  }, [selectedLocale]);
+  }, [selectedLocale, selectedTenantId]);
 
   useEffect(() => {
-    if (!pollableJob) return;
+    if (!pollableJob || !selectedTenantId) return;
+    const pollTenantId = selectedTenantId;
     let cancelled = false;
     let requestInFlight = false;
     let lastObservedStage = pollableJob.stage;
@@ -281,21 +344,28 @@ export function LanguagePackagesPage() {
     const poll = () => {
       if (requestInFlight) return;
       requestInFlight = true;
-      void getCatalogTranslationJob(pollableJob.id)
+      void getCatalogTranslationJob(pollableJob.id, pollTenantId)
         .then((next) => {
           if (cancelled) return;
           const now = Date.now();
           const stageChanged = next.stage !== lastObservedStage;
           const nextProcessed = completedSkuCount(next);
           const processedChanged = nextProcessed !== lastObservedProcessed;
-          if (next.targetLocale !== selectedLocaleRef.current) return;
+          if (
+            next.targetLocale !== selectedLocaleRef.current
+            || pollTenantId !== selectedTenantIdRef.current
+          ) return;
           setJob(next);
           if (
             now - lastBatchRefreshAt >= 5_000
             || !["QUEUED", "RUNNING"].includes(next.status)
           ) {
             lastBatchRefreshAt = now;
-            void refreshBatches(next.id, next.targetLocale).catch(() => undefined);
+            void refreshBatches(
+              next.id,
+              next.targetLocale,
+              pollTenantId,
+            ).catch(() => undefined);
           }
           if (
             next.targetLocale === selectedLocaleRef.current
@@ -309,11 +379,13 @@ export function LanguagePackagesPage() {
             coverageRefreshInFlight = true;
             void getCatalogTranslationStatus(next.targetLocale, {
               includeLatestJob: false,
+              tenantId: pollTenantId,
             })
               .then((latest) => {
                 if (
                   !cancelled
                   && latest.targetLocale === selectedLocaleRef.current
+                  && pollTenantId === selectedTenantIdRef.current
                 ) setStatus(latest);
               })
               .catch(() => undefined)
@@ -328,14 +400,14 @@ export function LanguagePackagesPage() {
             if (next.status === "PAUSED") {
               setSuccess(t("翻译已暂停，已完成的内容会保留。"));
               void Promise.all([
-                refreshStatus(next.targetLocale),
-                refreshHistory(next.targetLocale),
+                refreshStatus(next.targetLocale, pollTenantId),
+                refreshHistory(next.targetLocale, pollTenantId),
               ]).catch(() => undefined);
               return;
             }
             void Promise.all([
-              refreshStatus(next.targetLocale),
-              refreshHistory(next.targetLocale),
+              refreshStatus(next.targetLocale, pollTenantId),
+              refreshHistory(next.targetLocale, pollTenantId),
             ]).then(([latest]) => {
               if (cancelled) return;
               if (next.status === "SUCCEEDED" && latest.package) {
@@ -355,16 +427,31 @@ export function LanguagePackagesPage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [pollableJob?.id, pollableJob?.pauseRequested, selectedLocale]);
+  }, [
+    pollableJob?.id,
+    pollableJob?.pauseRequested,
+    selectedLocale,
+    selectedTenantId,
+  ]);
 
   useEffect(() => {
-    if (!selectedJob?.id || pollableJob || batchesJobId === selectedJob.id) return;
-    void refreshBatches(selectedJob.id, selectedJob.targetLocale).catch(() => undefined);
-  }, [selectedJob?.id, pollableJob, batchesJobId]);
+    if (
+      !selectedTenantId
+      || !selectedJob?.id
+      || pollableJob
+      || batchesJobId === selectedJob.id
+    ) return;
+    void refreshBatches(
+      selectedJob.id,
+      selectedJob.targetLocale,
+      selectedTenantId,
+    ).catch(() => undefined);
+  }, [selectedJob?.id, pollableJob, batchesJobId, selectedTenantId]);
 
   const startJob = async (fullRebuild: boolean) => {
     if (
       !canEditProducts
+      || !selectedTenantId
       || startingJob
       || (activeJob && activeJob.status !== "PAUSED")
     ) return;
@@ -373,26 +460,32 @@ export function LanguagePackagesPage() {
       ? resumableBatchJob
       : resumableRealtimeJob;
     const actionLocale = selectedLocale;
+    const actionTenantId = selectedTenantId;
     setStartingJob(true);
     setError("");
     setSuccess("");
     try {
       const next = resumeCandidate
-        ? await resumeCatalogTranslationJob(resumeCandidate.id)
+        ? await resumeCatalogTranslationJob(resumeCandidate.id, actionTenantId)
         : await startCatalogTranslationJob(
             actionLocale,
             fullRebuild,
             executionMode,
+            actionTenantId,
           );
-      if (!localeRequestIsCurrent(actionLocale)) return;
+      if (!localeRequestIsCurrent(actionLocale, actionTenantId)) return;
       setJob(next);
       setBatches([]);
       setBatchesJobId(undefined);
-      void refreshBatches(next.id, next.targetLocale).catch(() => undefined);
+      void refreshBatches(
+        next.id,
+        next.targetLocale,
+        actionTenantId,
+      ).catch(() => undefined);
       if (next.status === "SUCCEEDED") {
         await Promise.all([
-          refreshStatus(actionLocale),
-          refreshHistory(actionLocale),
+          refreshStatus(actionLocale, actionTenantId),
+          refreshHistory(actionLocale, actionTenantId),
         ]);
         setSuccess(t("当前翻译内容已经是最新版本。"));
       } else if (resumeCandidate) {
@@ -406,23 +499,33 @@ export function LanguagePackagesPage() {
       const message = caught instanceof CoreApiError || caught instanceof Error
         ? caught.message
         : t("翻译任务启动失败。");
-      if (localeRequestIsCurrent(actionLocale)) setError(message);
+      if (localeRequestIsCurrent(actionLocale, actionTenantId)) setError(message);
     } finally {
       setStartingJob(false);
     }
   };
 
   const controlTranslationJob = async (action: "pause" | "resume") => {
-    if (!canEditProducts || !controllableJob || controllingJob) return;
+    if (
+      !canEditProducts
+      || !selectedTenantId
+      || !controllableJob
+      || controllingJob
+    ) return;
+    const actionTenantId = selectedTenantId;
     setControllingJob(true);
     setError("");
     setSuccess("");
     try {
       const next = action === "pause"
-        ? await pauseCatalogTranslationJob(controllableJob.id)
-        : await resumeCatalogTranslationJob(controllableJob.id);
+        ? await pauseCatalogTranslationJob(controllableJob.id, actionTenantId)
+        : await resumeCatalogTranslationJob(controllableJob.id, actionTenantId);
       setJob(next);
-      void refreshBatches(next.id, next.targetLocale).catch(() => undefined);
+      void refreshBatches(
+        next.id,
+        next.targetLocale,
+        actionTenantId,
+      ).catch(() => undefined);
       if (action === "pause") {
         setSuccess(next.status === "PAUSED"
           ? t("翻译已暂停，已完成的内容会保留。")
@@ -442,14 +545,19 @@ export function LanguagePackagesPage() {
   };
 
   const retryBatch = async (batch: CatalogTranslationBatch) => {
-    if (!selectedJob || retryingBatchId) return;
+    if (!selectedTenantId || !selectedJob || retryingBatchId) return;
+    const actionTenantId = selectedTenantId;
     setRetryingBatchId(batch.id);
     setError("");
     setSuccess("");
     try {
-      const next = await retryCatalogTranslationBatch(selectedJob.id, batch.id);
+      const next = await retryCatalogTranslationBatch(
+        selectedJob.id,
+        batch.id,
+        actionTenantId,
+      );
       setJob(next);
-      await refreshBatches(next.id, next.targetLocale);
+      await refreshBatches(next.id, next.targetLocale, actionTenantId);
       setSuccess(t("已重新提交第 {batch} 批，正在从该批次重新翻译。", { batch: batch.sequenceNo }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("批次重新请求失败。"));
@@ -473,10 +581,37 @@ export function LanguagePackagesPage() {
             {t("管理员统一执行翻译任务，并查看、微调各语言的商品译文。")}
           </Text>
         </div>
+        <div className="language-merchant-selector">
+          <Text size="1" color="gray">{t("当前翻译商家")}</Text>
+          <Select.Root
+            value={selectedTenantId}
+            onValueChange={setSelectedTenantId}
+            disabled={merchantsLoading || !merchants.length}
+          >
+            <Select.Trigger
+              placeholder={t(merchantsLoading ? "正在读取商家" : "选择要翻译的商家")}
+              aria-label={t("选择要翻译的商家")}
+            />
+            <Select.Content position="popper">
+              {merchants.map((merchant) => (
+                <Select.Item key={merchant.id} value={merchant.id}>
+                  {merchant.name} · {merchant.sku_count ?? 0} SKU
+                </Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+          {selectedMerchant ? (
+            <Text size="1" color="gray">/{selectedMerchant.slug}</Text>
+          ) : null}
+        </div>
       </div>
 
+      {merchantsError ? <ToastNotice kind="error" message={merchantsError} /> : null}
       {error ? <ToastNotice kind="error" message={error} /> : null}
       {success ? <ToastNotice kind="success" message={success} /> : null}
+      {!merchantsLoading && !merchants.length && !merchantsError ? (
+        <ToastNotice kind="info" message={t("当前没有可翻译的商家。")} />
+      ) : null}
 
       <div className="language-pack-grid">
         <Card className="language-pack-status-card">
@@ -540,6 +675,7 @@ export function LanguagePackagesPage() {
               loading={startingJob}
               disabled={
                 !canEditProducts
+                || !selectedTenantId
                 || coverageLoading
                 || historyLoading
                 || startingJob
@@ -557,6 +693,7 @@ export function LanguagePackagesPage() {
                   color="gray"
                   disabled={
                     !canEditProducts
+                    || !selectedTenantId
                     || coverageLoading
                     || historyLoading
                     || startingJob
@@ -645,10 +782,14 @@ export function LanguagePackagesPage() {
         </Card>
       </div>
 
-      <CatalogTranslationEditor
-        locale={selectedLocale}
-        packageVersion={selectedStatus?.package?.version}
-      />
+      {selectedTenantId ? (
+        <CatalogTranslationEditor
+          key={`${selectedTenantId}:${selectedLocale}`}
+          tenantId={selectedTenantId}
+          locale={selectedLocale}
+          packageVersion={selectedStatus?.package?.version}
+        />
+      ) : null}
 
       {historyLoading ? (
         <Card className="language-job-card">

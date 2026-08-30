@@ -9,6 +9,7 @@ import pytest
 
 from app.catalog_translation_schemas import CatalogTranslationJobStartRequest
 from app.domain.errors import ApplicationError
+from app.services.auth.dependencies import RequestContext
 from app.services import translation_memory
 from app.services.translation import TranslationIdentity, TranslationProviderError
 from app.use_cases import catalog_translations
@@ -33,6 +34,54 @@ def test_translation_administration_requires_platform_admin() -> None:
         )
 
     assert caught.value.code == "PLATFORM_ADMIN_REQUIRED"
+
+
+def test_platform_admin_can_scope_translation_to_a_merchant_without_impersonation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_tenant_id = uuid4()
+    merchant_tenant_id = uuid4()
+    admin_organization_id = uuid4()
+    merchant_organization_id = uuid4()
+    context = RequestContext(
+        user_id=uuid4(),
+        membership_id=uuid4(),
+        tenant_id=admin_tenant_id,
+        organization_id=admin_organization_id,
+        locale="zh-CN",
+        permission_version=1,
+        permissions=frozenset({"product.view", "product.edit"}),
+        is_platform_admin=True,
+    )
+    tenant = SimpleNamespace(
+        id=merchant_tenant_id,
+        organization_id=merchant_organization_id,
+        deleted_at=None,
+    )
+    session = SimpleNamespace(get=lambda _model, _tenant_id: tenant)
+    bindings: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        catalog_translations,
+        "set_request_context",
+        lambda _session, *, organization_id, tenant_id, user_id: bindings.append(
+            (organization_id, tenant_id, user_id)
+        ),
+    )
+
+    with catalog_translations.platform_admin_translation_scope(
+        session,
+        context=context,
+        tenant_id=merchant_tenant_id,
+    ) as (scoped_context, requester_membership_id):
+        assert scoped_context.tenant_id == merchant_tenant_id
+        assert scoped_context.organization_id == merchant_organization_id
+        assert scoped_context.is_platform_admin is True
+        assert requester_membership_id is None
+
+    assert bindings == [
+        (merchant_organization_id, merchant_tenant_id, context.user_id),
+        (admin_organization_id, admin_tenant_id, context.user_id),
+    ]
 
 
 def test_translation_buttons_can_explicitly_select_execution_mode(

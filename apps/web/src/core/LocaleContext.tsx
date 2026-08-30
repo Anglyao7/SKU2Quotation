@@ -1945,6 +1945,10 @@ const english: Record<string, string> = {
     "Manage storefront languages and update product content for each language.",
   "管理员统一执行翻译任务，并查看、微调各语言的商品译文。":
     "Run translation jobs and review or fine-tune product wording for each language.",
+  "当前翻译商家": "Merchant being translated",
+  "正在读取商家": "Loading merchants",
+  "选择要翻译的商家": "Choose a merchant to translate",
+  "当前没有可翻译的商家。": "There are no merchants available for translation.",
   "管理员工具": "Administrator tools",
   "商品译文微调": "Product translation review",
   "按语言查看当前前台商品；人工修改保存后立即发布新语言包，并优先于自动译文。":

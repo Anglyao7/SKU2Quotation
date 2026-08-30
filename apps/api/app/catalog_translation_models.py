@@ -332,7 +332,11 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
     tenant_id: Mapped[UUID] = mapped_column(
         ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
-    requested_by_membership_id: Mapped[UUID] = mapped_column(nullable=False)
+    # Platform administrators can run a translation for a merchant without
+    # impersonating one of that merchant's memberships. In that case the
+    # global user remains the audit actor and this tenant-bound membership is
+    # intentionally absent.
+    requested_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
     requested_by_user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )

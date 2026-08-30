@@ -268,6 +268,9 @@
 .language-pack-heading { align-items: end; }
 .language-pack-heading > div:first-child { display: grid; gap: 5px; }
 .language-pack-heading > div:first-child > .rt-Text:last-child { max-width: 760px; line-height: 1.65; }
+.language-merchant-selector { min-width: min(340px, 100%); display: grid; justify-items: stretch; gap: 5px; }
+.language-merchant-selector > .rt-SelectTrigger { width: 100%; min-height: 42px; justify-content: space-between; background: var(--core-surface); }
+.language-merchant-selector > .rt-Text:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .language-selection-card, .language-pack-status-card, .language-package-release-card, .language-job-card, .language-batch-history-card { padding: clamp(18px, 2.5vw, 26px) !important; }
 .language-selection-card { overflow: hidden; }
 .language-card-heading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 13px; }
@@ -395,6 +398,7 @@
   .catalog-translation-editor-heading { grid-template-columns: auto minmax(0, 1fr); }
   .catalog-translation-search { grid-column: 1 / -1; }
   .catalog-translation-mapping-grid { grid-template-columns: 1fr; }
+  .language-merchant-selector { width: 100%; }
 }
 
 @media (max-width: 640px) {

@@ -28,15 +28,6 @@ router = APIRouter(
 )
 
 
-def _require_platform_admin(context: object) -> None:
-    if not getattr(context, "is_platform_admin", False):
-        raise ApplicationError(
-            "PLATFORM_ADMIN_REQUIRED",
-            "该功能仅限平台管理员使用。",
-            kind="forbidden",
-        )
-
-
 @router.get("/status", response_model=CatalogTranslationStatusResponse)
 def get_translation_status(
     target_locale: str = Query(default="en-US", max_length=20),
@@ -47,18 +38,23 @@ def get_translation_status(
             "load /jobs/latest in parallel for a faster history-first UI."
         ),
     ),
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationStatusResponse:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.get_translation_status(
+        with use_cases.platform_admin_translation_scope(
             session,
-            tenant_id=context.tenant_id,
-            permissions=context.permissions,
-            target_locale=target_locale,
-            include_latest_job=include_latest_job,
-        )
+            context=context,
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.get_translation_status(
+                session,
+                tenant_id=scoped_context.tenant_id,
+                permissions=scoped_context.permissions,
+                target_locale=target_locale,
+                include_latest_job=include_latest_job,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -71,30 +67,36 @@ def get_translation_status(
 def start_translation_job(
     payload: CatalogTranslationJobStartRequest,
     request: Request,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-    except ApplicationError as exc:
-        raise application_http_error(exc) from exc
-    enforce_rate_limit(
-        request,
-        scope="catalog-translation-jobs",
-        limit=configured_limit("RATE_LIMIT_CATALOG_TRANSLATION_JOBS", 12),
-        window_seconds=configured_limit(
-            "RATE_LIMIT_CATALOG_TRANSLATION_JOB_WINDOW_SECONDS",
-            3_600,
-            maximum=86_400,
-        ),
-        token=request.headers.get("authorization"),
-    )
-    try:
-        return use_cases.start_translation_job(
+        with use_cases.platform_admin_translation_scope(
             session,
             context=context,
-            request=payload,
-        )
+            tenant_id=tenant_id,
+        ) as (scoped_context, requester_membership_id):
+            enforce_rate_limit(
+                request,
+                scope="catalog-translation-jobs",
+                limit=configured_limit(
+                    "RATE_LIMIT_CATALOG_TRANSLATION_JOBS",
+                    12,
+                ),
+                window_seconds=configured_limit(
+                    "RATE_LIMIT_CATALOG_TRANSLATION_JOB_WINDOW_SECONDS",
+                    3_600,
+                    maximum=86_400,
+                ),
+                token=request.headers.get("authorization"),
+            )
+            return use_cases.start_translation_job(
+                session,
+                context=scoped_context,
+                request=payload,
+                requested_by_membership_id=requester_membership_id,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -105,17 +107,22 @@ def start_translation_job(
 )
 def latest_translation_job(
     target_locale: str = Query(default="en-US", max_length=20),
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationJobResponse | None:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.latest_translation_job(
+        with use_cases.platform_admin_translation_scope(
             session,
-            tenant_id=context.tenant_id,
-            permissions=context.permissions,
-            target_locale=target_locale,
-        )
+            context=context,
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.latest_translation_job(
+                session,
+                tenant_id=scoped_context.tenant_id,
+                permissions=scoped_context.permissions,
+                target_locale=target_locale,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -126,17 +133,22 @@ def latest_translation_job(
 )
 def get_translation_job(
     job_id: UUID,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.get_translation_job(
+        with use_cases.platform_admin_translation_scope(
             session,
-            tenant_id=context.tenant_id,
-            permissions=context.permissions,
-            job_id=job_id,
-        )
+            context=context,
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.get_translation_job(
+                session,
+                tenant_id=scoped_context.tenant_id,
+                permissions=scoped_context.permissions,
+                job_id=job_id,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -164,20 +176,25 @@ def list_translation_batches(
         default=True,
         description="Keep older failed batches when a newest-batch limit is used.",
     ),
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> list[CatalogTranslationBatchResponse]:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.list_translation_batches(
+        with use_cases.platform_admin_translation_scope(
             session,
-            tenant_id=context.tenant_id,
-            permissions=context.permissions,
-            job_id=job_id,
-            include_skus=include_skus,
-            limit=limit,
-            include_failed=include_failed,
-        )
+            context=context,
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.list_translation_batches(
+                session,
+                tenant_id=scoped_context.tenant_id,
+                permissions=scoped_context.permissions,
+                job_id=job_id,
+                include_skus=include_skus,
+                limit=limit,
+                include_failed=include_failed,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -190,17 +207,23 @@ def list_translation_batches(
 def retry_translation_batch(
     job_id: UUID,
     batch_id: UUID,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.retry_translation_batch(
+        with use_cases.platform_admin_translation_scope(
             session,
             context=context,
-            job_id=job_id,
-            batch_id=batch_id,
-        )
+            tenant_id=tenant_id,
+        ) as (scoped_context, requester_membership_id):
+            return use_cases.retry_translation_batch(
+                session,
+                context=scoped_context,
+                job_id=job_id,
+                batch_id=batch_id,
+                requested_by_membership_id=requester_membership_id,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -213,17 +236,23 @@ def retry_translation_batch(
 def retry_translation_product(
     product_id: UUID,
     payload: CatalogTranslationProductRetryRequest,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.retry_translation_product(
+        with use_cases.platform_admin_translation_scope(
             session,
             context=context,
-            product_id=product_id,
-            request=payload,
-        )
+            tenant_id=tenant_id,
+        ) as (scoped_context, requester_membership_id):
+            return use_cases.retry_translation_product(
+                session,
+                context=scoped_context,
+                product_id=product_id,
+                request=payload,
+                requested_by_membership_id=requester_membership_id,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -237,19 +266,24 @@ def list_translation_products(
     q: str = Query(default="", max_length=200),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationProductListResponse:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.list_translation_products(
+        with use_cases.platform_admin_translation_scope(
             session,
             context=context,
-            target_locale=target_locale,
-            query=q,
-            page=page,
-            page_size=page_size,
-        )
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.list_translation_products(
+                session,
+                context=scoped_context,
+                target_locale=target_locale,
+                query=q,
+                page=page,
+                page_size=page_size,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -261,17 +295,22 @@ def list_translation_products(
 def get_translation_product(
     product_id: UUID,
     target_locale: str = Query(default="en-US", max_length=20),
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationProductDetail:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.get_translation_product(
+        with use_cases.platform_admin_translation_scope(
             session,
             context=context,
-            product_id=product_id,
-            target_locale=target_locale,
-        )
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.get_translation_product(
+                session,
+                context=scoped_context,
+                product_id=product_id,
+                target_locale=target_locale,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -283,17 +322,22 @@ def get_translation_product(
 def update_translation_product(
     product_id: UUID,
     payload: CatalogTranslationProductUpdateRequest,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationProductDetail:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.update_translation_product(
+        with use_cases.platform_admin_translation_scope(
             session,
             context=context,
-            product_id=product_id,
-            request=payload,
-        )
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.update_translation_product(
+                session,
+                context=scoped_context,
+                product_id=product_id,
+                request=payload,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -304,16 +348,21 @@ def update_translation_product(
 )
 def pause_translation_job(
     job_id: UUID,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.pause_translation_job(
+        with use_cases.platform_admin_translation_scope(
             session,
             context=context,
-            job_id=job_id,
-        )
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.pause_translation_job(
+                session,
+                context=scoped_context,
+                job_id=job_id,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -324,15 +373,20 @@ def pause_translation_job(
 )
 def resume_translation_job(
     job_id: UUID,
+    tenant_id: UUID | None = Query(default=None),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationJobResponse:
     context = current_context(session)
     try:
-        _require_platform_admin(context)
-        return use_cases.resume_translation_job(
+        with use_cases.platform_admin_translation_scope(
             session,
             context=context,
-            job_id=job_id,
-        )
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.resume_translation_job(
+                session,
+                context=scoped_context,
+                job_id=job_id,
+            )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

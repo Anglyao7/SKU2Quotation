@@ -5,8 +5,10 @@ import json
 import logging
 import os
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from types import SimpleNamespace
@@ -124,6 +126,18 @@ _qwen_batch_executor = ThreadPoolExecutor(
     max_workers=16,
     thread_name_prefix="catalog-qwen-batch",
 )
+_CONTEXT_REQUESTER_MEMBERSHIP = object()
+
+
+def _resolved_requester_membership_id(
+    context: RequestContext,
+    value: UUID | None | object,
+) -> UUID | None:
+    if value is _CONTEXT_REQUESTER_MEMBERSHIP:
+        return context.membership_id
+    if value is None or isinstance(value, UUID):
+        return value
+    raise TypeError("invalid translation requester membership")
 _stale_job_after = timedelta(minutes=30)
 _SOURCE_LOCALE = "zh-CN"
 _FAILURE_DETAIL_LIMIT = 100
@@ -189,6 +203,52 @@ def _require_platform_admin(context: RequestContext) -> None:
             "PLATFORM_ADMIN_REQUIRED",
             "该功能仅限平台管理员使用。",
             kind="forbidden",
+        )
+
+
+@contextmanager
+def platform_admin_translation_scope(
+    session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID | None,
+) -> Iterator[tuple[RequestContext, UUID | None]]:
+    """Bind one merchant without impersonating a merchant membership."""
+
+    _require_platform_admin(context)
+    target_tenant_id = tenant_id or context.tenant_id
+    if target_tenant_id == context.tenant_id:
+        yield context, context.membership_id
+        return
+
+    tenant = session.get(TenantRow, target_tenant_id)
+    if tenant is None or tenant.deleted_at is not None:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_TENANT_NOT_FOUND",
+            "要翻译的商家不存在。",
+            kind="not_found",
+        )
+    scoped_context = replace(
+        context,
+        tenant_id=tenant.id,
+        organization_id=tenant.organization_id,
+    )
+    set_request_context(
+        session,
+        organization_id=tenant.organization_id,
+        tenant_id=tenant.id,
+        user_id=context.user_id,
+    )
+    try:
+        # The platform administrator is the actor, but is not represented as
+        # an employee/member of the merchant workspace.
+        yield scoped_context, None
+    finally:
+        set_request_context(
+            session,
+            organization_id=context.organization_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
         )
 
 
@@ -1176,6 +1236,9 @@ def _start_forced_translation_job(
     source_ids: list[UUID],
     reason: str,
     source_locale: str = _SOURCE_LOCALE,
+    requested_by_membership_id: UUID | None | object = (
+        _CONTEXT_REQUESTER_MEMBERSHIP
+    ),
 ) -> CatalogTranslationJobResponse:
     """Start a translation job for an explicit, stable set of SKU IDs.
 
@@ -1228,9 +1291,13 @@ def _start_forced_translation_job(
             "语言包存储尚未配置，请联系平台管理员。",
         )
 
+    requester_membership_id = _resolved_requester_membership_id(
+        context,
+        requested_by_membership_id,
+    )
     job = CatalogTranslationJobRow(
         tenant_id=context.tenant_id,
-        requested_by_membership_id=context.membership_id,
+        requested_by_membership_id=requester_membership_id,
         requested_by_user_id=context.user_id,
         source_locale=source_locale,
         target_locale=target_locale,
@@ -1485,6 +1552,9 @@ def retry_translation_batch(
     context: RequestContext,
     job_id: UUID,
     batch_id: UUID,
+    requested_by_membership_id: UUID | None | object = (
+        _CONTEXT_REQUESTER_MEMBERSHIP
+    ),
 ) -> CatalogTranslationJobResponse:
     _require_platform_admin(context)
     _require(context.permissions, "product.edit")
@@ -1542,6 +1612,7 @@ def retry_translation_batch(
         source_locale=original_job.source_locale,
         source_ids=source_ids,
         reason=f"重试翻译批次 #{batch.sequence_no}",
+        requested_by_membership_id=requested_by_membership_id,
     )
 
 
@@ -1551,6 +1622,9 @@ def retry_translation_product(
     context: RequestContext,
     product_id: UUID,
     request: CatalogTranslationProductRetryRequest,
+    requested_by_membership_id: UUID | None | object = (
+        _CONTEXT_REQUESTER_MEMBERSHIP
+    ),
 ) -> CatalogTranslationJobResponse:
     """Retranslate all customer-visible SKUs belonging to one product."""
 
@@ -1590,6 +1664,7 @@ def retry_translation_product(
             if product_name
             else "重新翻译指定商品"
         ),
+        requested_by_membership_id=requested_by_membership_id,
     )
 
 
@@ -4623,6 +4698,9 @@ def start_translation_job(
     *,
     context: RequestContext,
     request: CatalogTranslationJobStartRequest,
+    requested_by_membership_id: UUID | None | object = (
+        _CONTEXT_REQUESTER_MEMBERSHIP
+    ),
 ) -> CatalogTranslationJobResponse:
     _require_platform_admin(context)
     _require(context.permissions, "product.edit")
@@ -4718,9 +4796,13 @@ def start_translation_job(
         or not package_current
     )
     now = utcnow()
+    requester_membership_id = _resolved_requester_membership_id(
+        context,
+        requested_by_membership_id,
+    )
     job = CatalogTranslationJobRow(
         tenant_id=context.tenant_id,
-        requested_by_membership_id=context.membership_id,
+        requested_by_membership_id=requester_membership_id,
         requested_by_user_id=context.user_id,
         source_locale=_SOURCE_LOCALE,
         target_locale=request.target_locale,

@@ -21623,9 +21623,12 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         }
     )
     with upgraded_engine.connect() as connection:
-        assert connection.exec_driver_sql(
-            "SELECT version_num FROM alembic_version"
-            ).scalar() == "20260830_0125"
+        assert (
+            connection.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar()
+            == "20260830_0126"
+        )
     upgraded_engine.dispose()
     command.check(config)
 
@@ -22024,6 +22027,13 @@ def test_catalog_translation_migration_is_reversible_on_sqlite(
         "provider_version",
         "last_accessed_at",
     }.issubset(memory_columns)
+    job_columns = {
+        column["name"]: column
+        for column in inspect(upgraded_engine).get_columns(
+            "catalog_translation_jobs"
+        )
+    }
+    assert job_columns["requested_by_membership_id"]["nullable"] is True
     upgraded_engine.dispose()
 
     command.downgrade(config, "20260729_0039")
