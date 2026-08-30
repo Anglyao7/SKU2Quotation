@@ -252,9 +252,12 @@ ATC_IMAGE_DIGEST="$(docker image inspect "atc-api:${ATC_COMMIT_SHA}" --format '{
 if [[ "${had_previous_release}" == "true" ]]; then
   [[ "${ATC_CONFIRMED_EXPAND_CONTRACT:-false}" == "true" ]] \
     || die "set ATC_CONFIRMED_EXPAND_CONTRACT=true only after confirming this migration is backward compatible"
-  info "creating a verified backup and retaining the stopped-writer migration window"
-  ATC_BACKUP_QUIESCE_WRITERS=true \
-    ATC_BACKUP_LEAVE_WRITERS_STOPPED=true \
+  info "creating a verified online backup while the current release remains available"
+  # Expand-only migrations are explicitly confirmed above, so the old API can
+  # safely keep serving requests until the final container replacement. This
+  # keeps the backup and migration duration out of the public downtime window.
+  ATC_BACKUP_QUIESCE_WRITERS=false \
+    ATC_BACKUP_LEAVE_WRITERS_STOPPED=false \
     ATC_OPERATION_LOCK_HELD=true "${SCRIPT_DIR}/backup.sh"
 fi
 

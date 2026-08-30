@@ -725,8 +725,12 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     assert "acquire_global_operation_lock" in deploy
     assert deploy.index('"${SCRIPT_DIR}/backup.sh"') < deploy.index("db-migrate")
     assert "ATC_CONFIRMED_EXPAND_CONTRACT" in deploy
-    assert "ATC_BACKUP_QUIESCE_WRITERS=true" in deploy
-    assert "ATC_BACKUP_LEAVE_WRITERS_STOPPED=true" in deploy
+    assert (
+        "creating a verified online backup while the current release remains available"
+        in deploy
+    )
+    assert "ATC_BACKUP_QUIESCE_WRITERS=false" in deploy
+    assert "ATC_BACKUP_LEAVE_WRITERS_STOPPED=false" in deploy
     assert "database_migration_head" in rollback
     assert "migration_head_for_commit" in rollback
     assert 'actual_migration_head="$(database_migration_head)"' in rollback
