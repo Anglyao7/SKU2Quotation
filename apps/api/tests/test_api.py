@@ -18102,6 +18102,69 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         )
         localized_workbook.close()
 
+        switched_to_source = client.patch(
+            f"/api/v1/public-quote-drafts/{localized_draft['id']}/settings",
+            json={"locale": "zh-CN", "style": "indigo"},
+        )
+        assert switched_to_source.status_code == 200, switched_to_source.text
+        assert switched_to_source.json()["items"][0]["name_snapshot"] == (
+            quote_sku["name"]
+        )
+
+        source_quote = client.post(
+            "/api/store/demo/quotes",
+            json={
+                "locale": "zh-CN",
+                "customer_name": "Language Switch Buyer",
+                "privacy_acknowledged": True,
+                "items": [{"sku_id": quote_sku["id"], "quantity": 1}],
+            },
+        )
+        assert source_quote.status_code == 201, source_quote.text
+        source_draft = source_quote.json()
+        assert source_draft["items"][0]["name_snapshot"] != (
+            language_payload["skus"][quote_sku["id"]]["name"]
+        )
+        switched = client.patch(
+            f"/api/v1/public-quote-drafts/{source_draft['id']}/settings",
+            json={
+                "locale": "en-US",
+                "style": "indigo",
+                "visible_columns": [
+                    "product_image",
+                    "product_name",
+                    "specification",
+                    "quantity",
+                    "unit_price",
+                ],
+                "extra_information": [],
+            },
+        )
+        assert switched.status_code == 200, switched.text
+        switched_draft = switched.json()
+        assert switched_draft["locale"] == "en-US"
+        assert switched_draft["items"][0]["name_snapshot"] == (
+            language_payload["skus"][quote_sku["id"]]["name"]
+        )
+        assert switched_draft["items"][0]["category_snapshot"] == (
+            language_payload["skus"][quote_sku["id"]]["category_label"]
+        )
+        switched_xlsx = client.get(
+            f"/api/v1/public-quote-drafts/{source_draft['id']}/xlsx"
+        )
+        assert switched_xlsx.status_code == 200, switched_xlsx.text
+        switched_workbook = load_workbook(BytesIO(switched_xlsx.content))
+        switched_sheet = switched_workbook["Quotation"]
+        switched_header_row = next(
+            row_index
+            for row_index in range(1, switched_sheet.max_row + 1)
+            if switched_sheet.cell(row_index, 1).value == "No."
+        )
+        assert switched_sheet.cell(switched_header_row + 1, 4).value == (
+            language_payload["skus"][quote_sku["id"]]["name"]
+        )
+        switched_workbook.close()
+
     finally:
         with SessionLocal() as session:
             session.execute(
@@ -20723,7 +20786,7 @@ def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
     assert system_template.status_code == 200, system_template.text
     assert system_template.headers["cache-control"] == "no-store"
     default_workbook = load_workbook(BytesIO(system_template.content))
-    default_sheet = default_workbook["报价单"]
+    default_sheet = default_workbook["商品明细模板"]
     default_header_row = next(
         row_index
         for row_index in range(1, default_sheet.max_row + 1)
@@ -20832,25 +20895,28 @@ def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
         )
         assert created.status_code == 201, created.text
         draft = created.json()
+        assert draft["quote_template_id"] == template_id
         downloaded = client.get(
             draft["xlsx_url"],
             headers={"X-Quote-Download-Token": draft["download_token"]},
         )
         assert downloaded.status_code == 200, downloaded.text
         rendered = load_workbook(BytesIO(downloaded.content), data_only=False)
-        rendered_sheet = rendered["商家报价单"]
-        assert rendered_sheet["A1"].value == f"报价单 {draft['quote_number']}"
-        assert rendered_sheet["B2"].value == "'=Formula Customer"
-        assert rendered_sheet["A5"].value == skus[0]["sku_code"]
-        assert rendered_sheet["A6"].value == skus[1]["sku_code"]
-        assert rendered_sheet["B5"].value == skus[0]["name"]
-        assert rendered_sheet["D5"].value == 2
-        assert rendered_sheet["D6"].value == 3
-        assert rendered_sheet["G7"].value == "=SUM(G5:G6)"
-        assert rendered_sheet["H5"].value is None
-        assert rendered_sheet["H6"].value is None
-        assert rendered_sheet["A5"].fill.fgColor.rgb.endswith("F4EFFA")
-        assert rendered_sheet["A6"].fill.fgColor.rgb.endswith("F4EFFA")
+        rendered_sheet = rendered["报价单"]
+        assert rendered_sheet["A1"].value == "报价单"
+        assert rendered_sheet["F2"].value == draft["quote_number"]
+        assert rendered_sheet["B3"].value == "'=Formula Customer"
+        assert rendered_sheet["A8"].value == skus[0]["sku_code"]
+        assert rendered_sheet["A9"].value == skus[1]["sku_code"]
+        assert rendered_sheet["B8"].value == skus[0]["name"]
+        assert rendered_sheet["D8"].value == 2
+        assert rendered_sheet["D9"].value == 3
+        assert Decimal(str(rendered_sheet["G10"].value)) == Decimal(str(draft["total"]))
+        assert rendered_sheet["H8"].value is None
+        assert rendered_sheet["H9"].value is None
+        assert rendered_sheet["A7"].fill.fgColor.rgb.endswith("2D1B69")
+        assert rendered_sheet["A8"].fill.fgColor.rgb.endswith("F4EFFA")
+        assert rendered_sheet["A9"].fill.fgColor.rgb.endswith("F4EFFA")
         assert all(
             "待人工确认" not in str(cell.value or "")
             for row in rendered_sheet.iter_rows()
@@ -22138,6 +22204,10 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     listing = client.get("/api/store/demo/skus", params={"page_size": 1})
     assert listing.status_code == 200, listing.text
     sku_id = listing.json()["items"][0]["id"]
+    merchant_statistics_before = client.get(
+        "/api/v1/storefront-orders/statistics"
+    )
+    assert merchant_statistics_before.status_code == 200
 
     with monkeypatch.context() as auth_environment:
         auth_environment.setenv("AUTH_TEST_BYPASS", "false")
@@ -22271,6 +22341,18 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             own_orders = child_client.get("/api/v1/customer-portal/orders", headers=headers)
             assert own_orders.status_code == 200, own_orders.text
             assert [row["id"] for row in own_orders.json()] == [quote_id]
+            confirmed = child_client.patch(
+                f"/api/v1/public-quote-drafts/{quote_id}/status",
+                headers=headers,
+                json={"status": "CONFIRMED"},
+            )
+            assert confirmed.status_code == 200, confirmed.text
+            child_statistics = child_client.get(
+                "/api/v1/storefront-orders/statistics",
+                headers=headers,
+            )
+            assert child_statistics.status_code == 200, child_statistics.text
+            assert child_statistics.json()["current_month"]["order_count"] >= 1
 
     owner_dashboard = client.get("/api/v1/customer-accounts")
     assert owner_dashboard.status_code == 200, owner_dashboard.text
@@ -22296,6 +22378,22 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     assert owner_orders.status_code == 200, owner_orders.text
     assert owner_orders.json()["total"] >= 1
     assert quote_id in {row["id"] for row in owner_orders.json()["items"]}
+    merchant_quote_inbox = client.get("/api/v1/public-quote-drafts")
+    assert merchant_quote_inbox.status_code == 200, merchant_quote_inbox.text
+    assert quote_id not in {row["id"] for row in merchant_quote_inbox.json()}
+    assert client.get(f"/api/v1/public-quote-drafts/{quote_id}").status_code == 404
+    merchant_statistics_after = client.get(
+        "/api/v1/storefront-orders/statistics"
+    )
+    assert merchant_statistics_after.status_code == 200
+    assert (
+        merchant_statistics_after.json()["current_month"]
+        == merchant_statistics_before.json()["current_month"]
+    )
+    assert (
+        merchant_statistics_after.json()["current_year"]
+        == merchant_statistics_before.json()["current_year"]
+    )
 
     restricted = client.patch(
         f"/api/v1/customer-accounts/{account['id']}/access",

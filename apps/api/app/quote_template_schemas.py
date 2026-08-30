@@ -38,6 +38,36 @@ QuoteTemplateField = Literal[
 ]
 
 
+# Merchant-uploaded Excel templates describe the product-detail region only.
+# Quote-level metadata (merchant, quote number, customer, date and contacts)
+# is always rendered by the system so every exported quotation remains a
+# complete, recognizable business document.
+QUOTE_PRODUCT_TEMPLATE_FIELDS = frozenset(
+    {
+        "serial_number",
+        "sku_code",
+        "product_name",
+        "description",
+        "specification",
+        "category",
+        "tags",
+        "product_image",
+        "quantity",
+        "unit_code",
+        "packing_quantity",
+        "carton_dimensions",
+        "gross_weight",
+        "carton_volume",
+        "minimum_order_quantity",
+        "unit_price",
+        "line_total",
+        "total_volume",
+        "total_gross_weight",
+        "currency",
+    }
+)
+
+
 class QuoteExcelColumn(BaseModel):
     key: str = Field(min_length=1, max_length=3)
     index: int = Field(ge=1, le=16_384)
@@ -94,6 +124,14 @@ class QuoteExcelTemplateUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def default_requires_mapping(self) -> "QuoteExcelTemplateUpdateRequest":
+        invalid_fields = sorted(
+            set(self.column_mappings.values()) - QUOTE_PRODUCT_TEMPLATE_FIELDS
+        )
+        if invalid_fields:
+            raise ValueError(
+                "quote templates only map product-detail fields: "
+                + ", ".join(invalid_fields)
+            )
         if self.is_default and not self.column_mappings:
             raise ValueError("a default quote template requires at least one mapped column")
         return self

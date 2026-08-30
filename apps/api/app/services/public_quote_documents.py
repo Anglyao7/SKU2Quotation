@@ -18,10 +18,7 @@ import reportlab
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.formula.translate import Translator
 from openpyxl.utils import get_column_letter
-from openpyxl.utils.cell import range_boundaries
-from openpyxl.worksheet.cell_range import CellRange
 from PIL import Image as PillowImage
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
@@ -43,12 +40,10 @@ from reportlab.platypus import (
 from ..public_catalog_schemas import PUBLIC_QUOTE_PDF_MAX_COLUMNS, PublicQuoteDocument
 from .public_catalog_privacy import public_specification
 from .quote_localization import (
-    localize_known_quote_template_label,
     localize_quote_unit,
     quote_field_label,
     quote_headers,
     quote_is_rtl,
-    quote_label_aliases,
     quote_locale,
     quote_text,
 )
@@ -425,85 +420,6 @@ def _template_item_value(field: str, document: PublicQuoteDocument, item) -> obj
     return _xlsx_value(values.get(field))
 
 
-def _placeholder_values(document: PublicQuoteDocument) -> dict[str, object]:
-    quote = document.quote
-    values: dict[str, object] = {
-        "quote_number": quote.quote_number,
-        "报价单号": quote.quote_number,
-        "quote_date": quote.created_at.date(),
-        "报价日期": quote.created_at.date(),
-        "date": quote.created_at.date(),
-        "日期": quote.created_at.date(),
-        "valid_until": quote.valid_until.date(),
-        "有效期": quote.valid_until.date(),
-        "customer_name": quote.customer_name,
-        "客户姓名": quote.customer_name,
-        "customer_company": quote.customer_company or "",
-        "客户公司": quote.customer_company or "",
-        "customer_email": quote.customer_email or "",
-        "客户邮箱": quote.customer_email or "",
-        "customer_phone": quote.customer_phone or "",
-        "客户电话": quote.customer_phone or "",
-        "merchant_name": document.tenant_name,
-        "商家名称": document.tenant_name,
-        "currency": quote.currency,
-        "币种": quote.currency,
-        "subtotal": float(quote.subtotal),
-        "total": float(quote.total),
-        "合计": float(quote.total),
-        "notes": quote.notes or "",
-        "备注": quote.notes or "",
-    }
-    localized_values = {
-        "quote_number": quote.quote_number,
-        "date": quote.created_at.date(),
-        "quote_date": quote.created_at.date(),
-        "valid_until": quote.valid_until.date(),
-        "customer": quote.customer_name,
-        "company": quote.customer_company or "",
-        "email": quote.customer_email or "",
-        "phone": quote.customer_phone or "",
-        "merchant": document.tenant_name,
-        "currency": quote.currency,
-        "total": float(quote.total),
-        "notes": quote.notes or "",
-    }
-    for label_key, value in localized_values.items():
-        for alias in quote_label_aliases(label_key):
-            values.setdefault(alias, value)
-    return values
-
-
-_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
-_CELL_RANGE_PATTERN = re.compile(
-    r"(?P<first_col>\$?[A-Z]{1,3})(?P<first_row>\$?\d+):"
-    r"(?P<last_col>\$?[A-Z]{1,3})(?P<last_row>\$?\d+)"
-)
-
-
-def _replace_placeholders(workbook, document: PublicQuoteDocument) -> None:
-    values = _placeholder_values(document)
-    for sheet in workbook.worksheets:
-        for row in sheet.iter_rows():
-            for cell in row:
-                if cell.data_type == "f" or not isinstance(cell.value, str):
-                    continue
-                matches = list(_PLACEHOLDER_PATTERN.finditer(cell.value))
-                if not matches:
-                    continue
-                if len(matches) == 1 and matches[0].span() == (0, len(cell.value)):
-                    replacement = values.get(matches[0].group(1).strip())
-                    if replacement is not None:
-                        cell.value = _xlsx_value(replacement)
-                    continue
-                text = cell.value
-                for match in matches:
-                    replacement = values.get(match.group(1).strip())
-                    if replacement is not None:
-                        text = text.replace(match.group(0), str(replacement))
-                cell.value = _xlsx_text(text)
-
-
 def _append_quote_extra_information(sheet: object, quote: object) -> None:
     """Append merchant-authored key/value notes without changing item rows.
 
@@ -541,121 +457,141 @@ def _append_quote_extra_information(sheet: object, quote: object) -> None:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
 
-def _copy_template_row(sheet, *, source_row: int, target_row: int) -> None:
-    source_dimension = sheet.row_dimensions[source_row]
-    target_dimension = sheet.row_dimensions[target_row]
-    target_dimension.height = source_dimension.height
-    target_dimension.hidden = source_dimension.hidden
-    target_dimension.outlineLevel = source_dimension.outlineLevel
-    for column in range(1, sheet.max_column + 1):
-        source = sheet.cell(source_row, column)
-        target = sheet.cell(target_row, column)
-        if source.data_type == "f" and isinstance(source.value, str):
-            try:
-                target.value = Translator(
-                    source.value,
-                    origin=source.coordinate,
-                ).translate_formula(target.coordinate)
-            except Exception:
-                target.value = source.value
-        else:
-            target.value = source.value
-        if source.has_style:
-            target._style = copy(source._style)
-        if source.number_format:
-            target.number_format = source.number_format
-        target.font = copy(source.font)
-        target.fill = copy(source.fill)
-        target.border = copy(source.border)
-        target.alignment = copy(source.alignment)
-        target.protection = copy(source.protection)
+def _copy_quote_template_cell_format(source: object, target: object) -> None:
+    if getattr(source, "has_style", False):
+        target._style = copy(source._style)
+    target.font = copy(source.font)
+    target.fill = copy(source.fill)
+    target.border = copy(source.border)
+    target.alignment = copy(source.alignment)
+    target.protection = copy(source.protection)
+    target.number_format = source.number_format
 
 
-def _shifted_merge_ranges(
-    ranges: list[CellRange],
-    *,
-    data_start: int,
-    data_end: int,
-    item_count: int,
-) -> list[str]:
-    delta = item_count - (data_end - data_start + 1)
-    new_end = data_start + item_count - 1
-    result: list[str] = []
-    for merged in ranges:
-        if merged.max_row < data_start:
-            result.append(str(merged))
-        elif merged.min_row > data_end:
-            shifted = CellRange(str(merged))
-            shifted.shift(row_shift=delta)
-            result.append(str(shifted))
-        elif merged.min_row >= data_start and merged.max_row <= data_end:
-            if merged.min_row == merged.max_row == data_start:
-                for row_number in range(data_start, new_end + 1):
-                    result.append(
-                        str(
-                            CellRange(
-                                min_col=merged.min_col,
-                                min_row=row_number,
-                                max_col=merged.max_col,
-                                max_row=row_number,
-                            )
-                        )
-                    )
-        else:
-            adjusted = CellRange(str(merged))
-            if adjusted.max_row >= data_end:
-                adjusted.max_row = max(adjusted.min_row, adjusted.max_row + delta)
-            result.append(str(adjusted))
-    return result
-
-
-def _rewrite_data_formula_ranges(
-    formula: str,
-    *,
-    data_start: int,
-    data_end: int,
-    new_end: int,
-) -> str:
-    def replace(match: re.Match[str]) -> str:
-        first_raw = match.group("first_row")
-        last_raw = match.group("last_row")
-        first = int(first_raw.replace("$", ""))
-        last = int(last_raw.replace("$", ""))
-        if data_start <= first <= data_end and data_start <= last <= data_end:
-            first = data_start if first == data_start else min(first, new_end)
-            last = new_end if last == data_end else min(last, new_end)
-            first_prefix = "$" if first_raw.startswith("$") else ""
-            last_prefix = "$" if last_raw.startswith("$") else ""
-            return (
-                f"{match.group('first_col')}{first_prefix}{first}:"
-                f"{match.group('last_col')}{last_prefix}{last}"
-            )
-        return match.group(0)
-
-    return _CELL_RANGE_PATTERN.sub(replace, formula)
-
-
-def _remove_template_data_images(
+def _merge_quote_value(
     sheet: object,
     *,
-    data_start: int,
-    data_end: int,
-    image_columns: set[int],
+    row: int,
+    start_column: int,
+    end_column: int,
+    value: object,
 ) -> None:
-    if not image_columns:
-        return
-    retained = []
-    for image in getattr(sheet, "_images", []):
-        marker = getattr(getattr(image, "anchor", None), "_from", None)
-        if marker is None:
-            retained.append(image)
+    cell = sheet.cell(row, start_column)
+    cell.value = _xlsx_value(value)
+    if end_column > start_column:
+        sheet.merge_cells(
+            start_row=row,
+            start_column=start_column,
+            end_row=row,
+            end_column=end_column,
+        )
+
+
+def _compose_system_quote_header(
+    sheet: object,
+    document: PublicQuoteDocument,
+    *,
+    column_count: int,
+) -> int:
+    """Render the system-owned document header above any product template."""
+
+    quote = document.quote
+    locale = quote_locale(quote.locale)
+    column_count = max(4, column_count)
+    last_column = get_column_letter(column_count)
+    sheet.merge_cells(f"A1:{last_column}1")
+    sheet["A1"] = quote_text(locale, "document_title")
+    sheet["A1"].font = Font(size=18, bold=True, color="172033")
+    sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    sheet.row_dimensions[1].height = 32
+
+    split_column = max(2, column_count // 2)
+    right_label_column = split_column + 1
+    right_value_column = min(column_count, right_label_column + 1)
+    rows = (
+        (
+            quote_text(locale, "merchant"),
+            document.tenant_name,
+            quote_text(locale, "quote_number"),
+            quote.quote_number,
+        ),
+        (
+            quote_text(locale, "customer"),
+            quote.customer_name,
+            quote_text(locale, "date"),
+            quote.created_at.date(),
+        ),
+        (
+            quote_text(locale, "company"),
+            quote.customer_company or "-",
+            quote_text(locale, "currency"),
+            quote.currency,
+        ),
+        (
+            quote_text(locale, "email"),
+            quote.customer_email or "-",
+            quote_text(locale, "phone"),
+            quote.customer_phone or "-",
+        ),
+    )
+    for row_number, (left_label, left_value, right_label, right_value) in enumerate(
+        rows,
+        start=2,
+    ):
+        left_label_cell = sheet.cell(row_number, 1, left_label)
+        left_label_cell.font = Font(bold=True, color="475569")
+        left_label_cell.fill = PatternFill("solid", fgColor="F1F5F9")
+        left_label_cell.alignment = Alignment(vertical="center")
+        _merge_quote_value(
+            sheet,
+            row=row_number,
+            start_column=2,
+            end_column=split_column,
+            value=left_value,
+        )
+        right_label_cell = sheet.cell(row_number, right_label_column, right_label)
+        right_label_cell.font = Font(bold=True, color="475569")
+        right_label_cell.fill = PatternFill("solid", fgColor="F1F5F9")
+        right_label_cell.alignment = Alignment(vertical="center")
+        _merge_quote_value(
+            sheet,
+            row=row_number,
+            start_column=right_value_column,
+            end_column=column_count,
+            value=right_value,
+        )
+        for cell in sheet[row_number]:
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        sheet.row_dimensions[row_number].height = 24
+    sheet.cell(3, right_value_column).number_format = "yyyy-mm-dd"
+    # One quiet spacer row separates document metadata from the product area.
+    sheet.row_dimensions[6].height = 9
+    return 7
+
+
+def _copy_single_row_merges(
+    source_sheet: object,
+    target_sheet: object,
+    *,
+    source_row: int,
+    target_row: int,
+    source_to_target_columns: dict[int, int],
+) -> None:
+    for merged in source_sheet.merged_cells.ranges:
+        if merged.min_row != source_row or merged.max_row != source_row:
             continue
-        row_number = int(marker.row) + 1
-        column_number = int(marker.col) + 1
-        if data_start <= row_number <= data_end and column_number in image_columns:
+        mapped_columns = [
+            source_to_target_columns.get(column)
+            for column in range(merged.min_col, merged.max_col + 1)
+        ]
+        if not mapped_columns or any(column is None for column in mapped_columns):
             continue
-        retained.append(image)
-    sheet._images = retained
+        target_sheet.merge_cells(
+            start_row=target_row,
+            start_column=min(mapped_columns),
+            end_row=target_row,
+            end_column=max(mapped_columns),
+        )
 
 
 def _render_custom_quote_xlsx(
@@ -667,72 +603,105 @@ def _render_custom_quote_xlsx(
     spec = document.excel_template
     if spec is None:
         raise ValueError("custom quote template configuration is missing")
-    workbook = load_workbook(
+    source_workbook = load_workbook(
         template_path,
         data_only=False,
         keep_links=False,
     )
     try:
-        if spec.sheet_name not in workbook.sheetnames:
+        if spec.sheet_name not in source_workbook.sheetnames:
             raise ValueError("configured quote worksheet is missing")
-        sheet = workbook[spec.sheet_name]
+        source_sheet = source_workbook[spec.sheet_name]
+        columns = sorted(spec.columns, key=lambda column: column.index)
+        if not columns:
+            raise ValueError("configured quote template has no product columns")
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = quote_text(
+            quote_locale(document.quote.locale),
+            "sheet_name",
+        )[:31]
+        sheet.sheet_view.showGridLines = False
         sheet.sheet_view.rightToLeft = quote_is_rtl(document.quote.locale)
-        item_count = max(1, len(document.quote.items))
-        data_start = spec.data_start_row
-        data_end = max(data_start, spec.data_end_row)
-        old_count = data_end - data_start + 1
-        original_merges = [CellRange(str(item)) for item in sheet.merged_cells.ranges]
-        columns_by_key = {column.key: column for column in spec.columns}
-        image_columns = {
-            column.index
-            for key, column in columns_by_key.items()
-            if spec.column_mappings.get(key) == "product_image"
-        }
-        _remove_template_data_images(
+        product_column_count = len(columns)
+        sheet_column_count = max(4, product_column_count)
+        product_header_row = _compose_system_quote_header(
             sheet,
-            data_start=data_start,
-            data_end=data_end,
-            image_columns=image_columns,
+            document,
+            column_count=sheet_column_count,
         )
-        for merged in list(sheet.merged_cells.ranges):
-            sheet.unmerge_cells(str(merged))
+        source_to_target_columns = {
+            column.index: target_index
+            for target_index, column in enumerate(columns, start=1)
+        }
 
-        for key, column in columns_by_key.items():
-            field = spec.column_mappings.get(key)
-            if field:
-                sheet.cell(spec.header_row, column.index).value = quote_field_label(
-                    document.quote.locale,
-                    field,
-                )
+        for target_index, column in enumerate(columns, start=1):
+            source_letter = get_column_letter(column.index)
+            target_letter = get_column_letter(target_index)
+            source_dimension = source_sheet.column_dimensions[source_letter]
+            target_dimension = sheet.column_dimensions[target_letter]
+            target_dimension.width = source_dimension.width or 14
+            target_dimension.hidden = source_dimension.hidden
+            target_dimension.bestFit = source_dimension.bestFit
 
-        if old_count > 1:
-            sheet.delete_rows(data_start + 1, old_count - 1)
-        if item_count > 1:
-            sheet.insert_rows(data_start + 1, item_count - 1)
-            for row_number in range(data_start + 1, data_start + item_count):
-                _copy_template_row(
-                    sheet,
-                    source_row=data_start,
-                    target_row=row_number,
-                )
+            source_header = source_sheet.cell(spec.header_row, column.index)
+            target_header = sheet.cell(product_header_row, target_index)
+            _copy_quote_template_cell_format(source_header, target_header)
+            field = spec.column_mappings.get(column.key)
+            target_header.value = (
+                quote_field_label(document.quote.locale, field)
+                if field
+                else column.header
+            )
+            if not source_header.has_style:
+                target_header.fill = PatternFill("solid", fgColor="172033")
+                target_header.font = Font(color="FFFFFF", bold=True)
+            target_header.alignment = copy(source_header.alignment)
+            target_header.alignment = Alignment(
+                horizontal=target_header.alignment.horizontal or "center",
+                vertical=target_header.alignment.vertical or "center",
+                wrap_text=True,
+            )
+        source_header_dimension = source_sheet.row_dimensions[spec.header_row]
+        sheet.row_dimensions[product_header_row].height = (
+            source_header_dimension.height or 28
+        )
+        _copy_single_row_merges(
+            source_sheet,
+            sheet,
+            source_row=spec.header_row,
+            target_row=product_header_row,
+            source_to_target_columns=source_to_target_columns,
+        )
 
+        data_start_row = product_header_row + 1
+        source_data_dimension = source_sheet.row_dimensions[spec.data_start_row]
+        total_volume = Decimal("0")
+        total_gross_weight = Decimal("0")
+        has_total_volume = False
+        has_total_gross_weight = False
+        item_count = max(1, len(document.quote.items))
         for offset in range(item_count):
             item = document.quote.items[offset] if document.quote.items else None
-            row_number = data_start + offset
-            for key, column in columns_by_key.items():
-                cell = sheet.cell(row_number, column.index)
-                field = spec.column_mappings.get(key)
+            row_number = data_start_row + offset
+            sheet.row_dimensions[row_number].height = source_data_dimension.height
+            for target_index, column in enumerate(columns, start=1):
+                source_cell = source_sheet.cell(spec.data_start_row, column.index)
+                target_cell = sheet.cell(row_number, target_index)
+                _copy_quote_template_cell_format(source_cell, target_cell)
+                field = spec.column_mappings.get(column.key)
                 if field == "product_image" and item is not None:
-                    cell.value = None
+                    target_cell.value = None
                     _place_quote_image(
                         sheet,
                         row_number=row_number,
-                        column_number=column.index,
+                        column_number=target_index,
                         image_url=item.image_url_snapshot,
                         image_loader=image_loader,
                     )
                 elif field and item is not None:
-                    cell.value = _template_item_value(field, document, item)
+                    target_cell.value = _template_item_value(field, document, item)
                     if field in {
                         "unit_price",
                         "line_total",
@@ -740,66 +709,95 @@ def _render_custom_quote_xlsx(
                         "carton_volume",
                         "total_volume",
                         "total_gross_weight",
-                    } and cell.number_format == "General":
-                        cell.number_format = "#,##0.00"
-                elif cell.data_type != "f":
-                    cell.value = None
-
-        new_end = data_start + item_count - 1
-        for row in sheet.iter_rows():
-            for cell in row:
-                if cell.data_type == "f" and isinstance(cell.value, str):
-                    cell.value = _rewrite_data_formula_ranges(
-                        cell.value,
-                        data_start=data_start,
-                        data_end=data_end,
-                        new_end=new_end,
+                    } and target_cell.number_format == "General":
+                        target_cell.number_format = "#,##0.00"
+                else:
+                    target_cell.value = None
+                target_cell.alignment = Alignment(
+                    horizontal=target_cell.alignment.horizontal,
+                    vertical=target_cell.alignment.vertical or "center",
+                    wrap_text=True,
+                )
+            _copy_single_row_merges(
+                source_sheet,
+                sheet,
+                source_row=spec.data_start_row,
+                target_row=row_number,
+                source_to_target_columns=source_to_target_columns,
+            )
+            if item is not None:
+                logistics = _logistics_values(item)
+                if isinstance(logistics["total_volume"], (int, float)):
+                    total_volume += Decimal(str(logistics["total_volume"]))
+                    has_total_volume = True
+                if isinstance(logistics["total_gross_weight"], (int, float)):
+                    total_gross_weight += Decimal(
+                        str(logistics["total_gross_weight"])
                     )
+                    has_total_gross_weight = True
 
-        delta = item_count - old_count
-        for table in sheet.tables.values():
-            min_col, min_row, max_col, max_row = range_boundaries(table.ref)
-            if min_row <= data_start <= max_row and max_row >= data_end:
-                table.ref = (
-                    f"{get_column_letter(min_col)}{min_row}:"
-                    f"{get_column_letter(max_col)}{max_row + delta}"
-                )
-        if sheet.auto_filter.ref:
-            min_col, min_row, max_col, max_row = range_boundaries(sheet.auto_filter.ref)
-            if min_row <= data_start <= max_row and max_row >= data_end:
-                sheet.auto_filter.ref = (
-                    f"{get_column_letter(min_col)}{min_row}:"
-                    f"{get_column_letter(max_col)}{max_row + delta}"
-                )
-
-        for merged in _shifted_merge_ranges(
-            original_merges,
-            data_start=data_start,
-            data_end=data_end,
-            item_count=item_count,
+        total_row = data_start_row + item_count
+        field_columns = {
+            spec.column_mappings.get(column.key): target_index
+            for target_index, column in enumerate(columns, start=1)
+            if spec.column_mappings.get(column.key)
+        }
+        for column_number in range(1, product_column_count + 1):
+            cell = sheet.cell(total_row, column_number)
+            cell.fill = PatternFill("solid", fgColor="EEF2F7")
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        total_value_column = field_columns.get("line_total", product_column_count)
+        label_column = max(1, total_value_column - 1)
+        sheet.cell(total_row, label_column).value = quote_text(
+            document.quote.locale,
+            "total",
+        )
+        sheet.cell(total_row, total_value_column).value = float(document.quote.total)
+        sheet.cell(total_row, total_value_column).number_format = "#,##0.00"
+        if has_total_volume and (column := field_columns.get("total_volume")):
+            sheet.cell(total_row, column).value = float(total_volume)
+            sheet.cell(total_row, column).number_format = "#,##0.00####"
+        if has_total_gross_weight and (
+            column := field_columns.get("total_gross_weight")
         ):
-            sheet.merge_cells(merged)
-        for row in sheet.iter_rows():
-            for cell in row:
-                if (
-                    data_start <= cell.row <= new_end
-                    or cell.data_type == "f"
-                    or not isinstance(cell.value, str)
-                ):
-                    continue
-                cell.value = localize_known_quote_template_label(
-                    cell.value,
-                    document.quote.locale,
+            sheet.cell(total_row, column).value = float(total_gross_weight)
+            sheet.cell(total_row, column).number_format = "#,##0.00####"
+
+        if document.quote.notes:
+            sheet.append([])
+            sheet.append(
+                [
+                    quote_text(document.quote.locale, "notes"),
+                    _xlsx_text(document.quote.notes),
+                ]
+            )
+            if sheet_column_count > 2:
+                sheet.merge_cells(
+                    start_row=sheet.max_row,
+                    start_column=2,
+                    end_row=sheet.max_row,
+                    end_column=sheet_column_count,
                 )
-        _replace_placeholders(workbook, document)
         _append_quote_extra_information(sheet, document.quote)
+        product_last_column = get_column_letter(product_column_count)
+        sheet.freeze_panes = f"A{data_start_row}"
+        sheet.auto_filter.ref = (
+            f"A{product_header_row}:{product_last_column}{data_start_row + item_count - 1}"
+        )
+        _configure_default_quote_printing(
+            sheet,
+            header_row=product_header_row,
+            last_row=sheet.max_row,
+        )
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True
         buffer = BytesIO()
         workbook.save(buffer)
+        workbook.close()
         return buffer.getvalue()
     finally:
-        workbook.close()
+        source_workbook.close()
 
 
 def _register_quote_pdf_font(locale: str) -> str:
@@ -1480,97 +1478,23 @@ def render_public_quote_draft_xlsx(
 
 
 def render_default_quote_template_xlsx() -> bytes:
-    """Return the downloadable system template used when no custom template exists."""
+    """Return a product-region template merchants can map or customize.
+
+    The final quotation header is system-owned and therefore intentionally
+    absent from this workbook.  Uploading this file (or a merchant variant)
+    only changes the columns and styling of the product-detail table.
+    """
 
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "报价单"
+    sheet.title = "商品明细模板"
     sheet.sheet_view.showGridLines = False
     dark_fill = PatternFill("solid", fgColor="172033")
     light_fill = PatternFill("solid", fgColor="EEF2F7")
     column_count = len(DEFAULT_QUOTE_HEADERS)
     last_column = get_column_letter(column_count)
-    sheet.merge_cells(f"A1:{last_column}1")
-    sheet["A1"] = "报价单 / QUOTATION"
-    sheet["A1"].font = Font(size=18, bold=True)
-    sheet["A1"].alignment = Alignment(horizontal="center")
-    sheet.row_dimensions[1].height = 30
-    sheet.append(
-        [
-            "商家",
-            "{{商家名称}}",
-            "",
-            "",
-            "报价单号",
-            "{{报价单号}}",
-            "",
-            "",
-            "币种",
-            "{{币种}}",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    sheet.append(
-        [
-            "客户",
-            "{{客户姓名}}",
-            "",
-            "",
-            "客户公司",
-            "{{客户公司}}",
-            "",
-            "",
-            "日期",
-            "{{日期}}",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    sheet.append(
-        [
-            "邮箱",
-            "{{客户邮箱}}",
-            "",
-            "",
-            "电话",
-            "{{客户电话}}",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    for row_number in (2, 3, 4):
-        sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=4)
-        sheet.merge_cells(start_row=row_number, start_column=6, end_row=row_number, end_column=8)
-        sheet.merge_cells(start_row=row_number, start_column=10, end_row=row_number, end_column=column_count)
-    sheet.append([])
     sheet.append(list(DEFAULT_QUOTE_HEADERS))
-    header_row = sheet.max_row
+    header_row = 1
     for cell in sheet[header_row]:
         cell.fill = dark_fill
         cell.font = Font(color="FFFFFF", bold=True)
@@ -1582,7 +1506,7 @@ def render_default_quote_template_xlsx() -> bytes:
     sheet.append(
         [
             "说明",
-            "系统无法提供或商家选择不填充的列会保留为空。",
+            "该模板只决定报价单的商品明细区域；商家、单号、客户、日期和币种等顶部信息由系统统一生成。未映射列会保留为空。",
             *([None] * (column_count - 2)),
         ]
     )

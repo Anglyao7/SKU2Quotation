@@ -3478,6 +3478,72 @@ def _pack_sku_translation(
     )
 
 
+def _stored_quote_sku_translation(
+    translated: object,
+    row: object,
+) -> CatalogTranslationResult | None:
+    """Return a safe quote translation from the per-SKU translation table.
+
+    The catalog source hash also includes offer metadata such as tags. Older
+    translation jobs therefore become hash-stale when a merchant only changes
+    a tag or display label, even though the translated product/SKU text and its
+    version are still valid. Quote rendering must prefer an exact hash match,
+    but can retain backwards compatibility when both product and SKU versions
+    still match. A real product or SKU edit increments one of those versions
+    and continues to invalidate the saved translation.
+    """
+
+    if translated is None:
+        return None
+    _offer, sku, product, _category = row
+    source = catalog_translation_source(row)
+    if (
+        int(getattr(translated, "product_version", 0) or 0)
+        != int(product.current_version)
+        or int(getattr(translated, "sku_version", 0) or 0)
+        != int(sku.version)
+    ):
+        return None
+    exact = str(getattr(translated, "source_hash", "") or "") == source.source_hash
+    source_category = str(source.category or "").strip()
+    translated_source_category = str(
+        getattr(translated, "source_category", "") or ""
+    ).strip()
+    category_unchanged = source_category == translated_source_category
+    translated_tags = tuple(
+        str(tag).strip()
+        for tag in (getattr(translated, "tags", None) or [])
+        if str(tag).strip()
+    )
+    return CatalogTranslationResult(
+        sku_id=source.sku_id,
+        source_hash=source.source_hash,
+        name=str(getattr(translated, "name", "") or "").strip() or source.name,
+        description=(
+            str(getattr(translated, "description", "")).strip()
+            if getattr(translated, "description", None) not in (None, "")
+            else source.description
+        ),
+        category=(
+            str(getattr(translated, "category", "") or "").strip()
+            if exact or category_unchanged
+            else source.category
+        )
+        or source.category,
+        # Tags are offer metadata and can change without incrementing the
+        # product/SKU version. Only reuse translated tags for an exact source;
+        # otherwise expose the current source tags instead of stale content.
+        tags=translated_tags if exact else source.tags,
+        display_tag=(
+            str(getattr(translated, "display_tag", "") or "").strip() or None
+            if exact
+            else source.display_tag
+        ),
+        specification=None,
+        complete=exact,
+    )
+
+
 def _quote_translation_maps(
     session: Session,
     *,
@@ -3533,14 +3599,11 @@ def _quote_translation_maps(
             target_locale=target_locale,
         )
         for row in missing_rows:
-            source = catalog_translation_source(row)
-            translated = stored.get(row[1].id)
-            if (
-                translated is not None
-                and translated.source_hash == source.source_hash
-                and translated.product_version == row[2].current_version
-                and translated.sku_version == row[1].version
-            ):
+            translated = _stored_quote_sku_translation(
+                stored.get(row[1].id),
+                row,
+            )
+            if translated is not None:
                 sku_translations[row[1].id] = translated
 
     missing_rows = [row for row in rows if row[1].id not in sku_translations]
@@ -3694,7 +3757,25 @@ def _localized_quote_response(
         if isinstance(snapshot_source_locale, str) and snapshot_source_locale.strip()
         else getattr(tenant, "default_locale", None)
     )
-    if target_locale == source_locale or not items:
+    snapshot_document_locale = _normalized_locale(
+        snapshot_payload.get("document_locale")
+        if isinstance(snapshot_payload.get("document_locale"), str)
+        else source_locale,
+        default=source_locale,
+    )
+    # Item rows are snapshots in the visitor's submission language, not
+    # necessarily in the catalog source language. Switching an English quote
+    # back to Chinese must therefore re-read the source catalog as well; an
+    # early return here would leave the original English snapshot on screen.
+    # A quote originally submitted in the source language remains immutable:
+    # later catalog edits must not rewrite its historical line-item snapshot.
+    if (
+        not items
+        or (
+            target_locale == source_locale
+            and snapshot_document_locale == source_locale
+        )
+    ):
         return response
     sku_ids = [item.sku_id for item in items]
     rows = repository.list_public_catalog_rows_by_sku_ids(
@@ -4139,6 +4220,16 @@ def create_public_quote_draft(
         if visitor_token is not None
         else None
     )
+    default_quote_template = quote_template_repository.get_default(
+        session,
+        tenant_id=tenant.id,
+    )
+    default_quote_template_id = (
+        default_quote_template.id
+        if default_quote_template is not None
+        and bool(default_quote_template.column_mappings)
+        else None
+    )
     draft = PublicQuoteDraftRow(
         id=draft_id,
         tenant_id=tenant.id,
@@ -4162,6 +4253,7 @@ def create_public_quote_draft(
         customer_phone=request.customer_phone,
         notes=request.notes,
         document_locale=requested_locale,
+        quote_template_id=default_quote_template_id,
         currency=currency,
         subtotal_amount=subtotal,
         estimated_total=subtotal,
@@ -4379,15 +4471,16 @@ def _ensure_quote_draft_access(
     membership_id: UUID | None,
     mutate: bool,
 ) -> bool:
-    """Keep child-account inquiries private and immutable to the parent.
+    """Keep child-account inquiries outside the merchant quote workbench.
 
     A child account is a full operator of its own storefront view, but its
-    customer inquiries are its own work queue.  The parent can still read the
-    inquiry through the account-management report; it cannot edit or advance
-    the quote status.  Returning ``not_found`` for another child's request
-    also avoids leaking quote existence to a child that guesses an id.
+    customer inquiries are its own work queue. The parent reads them through
+    the dedicated account-detail API, never through the merchant quote API.
+    Returning ``not_found`` also prevents a workbench URL from bypassing the
+    list boundary by guessing a child quote UUID.
     """
 
+    del mutate
     owner_membership_id = draft.submitted_by_membership_id
     if account_scope == "CUSTOMER_SUBACCOUNT":
         if membership_id is None or owner_membership_id != membership_id:
@@ -4400,47 +4493,29 @@ def _ensure_quote_draft_access(
     if owner_membership_id is None:
         return False
 
-    owner = session.execute(
-        select(
-            MembershipRow.account_scope,
-            MembershipRow.parent_membership_id,
-        ).where(
+    owner_scope = session.scalar(
+        select(MembershipRow.account_scope).where(
             MembershipRow.tenant_id == tenant_id,
             MembershipRow.id == owner_membership_id,
             MembershipRow.deleted_at.is_(None),
         )
-    ).one_or_none()
-    if owner is None:
+    )
+    if owner_scope is None:
         raise ApplicationError(
             "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
             "Public quote draft was not found.",
             kind="not_found",
         )
-    owner_scope, owner_parent_membership_id = owner
     if owner_scope != "CUSTOMER_SUBACCOUNT":
         # Owner/staff-created drafts remain available to staff members in the
         # same workspace.  The child branch above already prevents a child
         # from opening another account's draft.
         return False
-    if owner_membership_id == membership_id:
-        return False
-    # A parent may inspect a direct child's quote, but no other staff member
-    # should be able to discover it by guessing the UUID.  Mutations by the
-    # direct parent use the explicit read-only error so the UI can explain why
-    # the action is unavailable.
-    if owner_parent_membership_id != membership_id:
-        raise ApplicationError(
-            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
-            "Public quote draft was not found.",
-            kind="not_found",
-        )
-    if mutate:
-        raise ApplicationError(
-            "CHILD_QUOTE_READ_ONLY",
-            "子账号询价只能由提交该询价的子账号处理。",
-            kind="forbidden",
-        )
-    return True
+    raise ApplicationError(
+        "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+        "Public quote draft was not found.",
+        kind="not_found",
+    )
 
 
 def list_tenant_quote_drafts(
@@ -4463,39 +4538,8 @@ def list_tenant_quote_drafts(
         owner_membership_id=(
             membership_id if account_scope == "CUSTOMER_SUBACCOUNT" else None
         ),
-        parent_membership_id=(
-            membership_id if account_scope == "STAFF" else None
-        ),
+        merchant_storefront_only=(account_scope == "STAFF"),
     )
-    owner_ids = {
-        row.submitted_by_membership_id
-        for row in rows
-        if row.submitted_by_membership_id is not None
-    }
-    owner_details = {
-        owner_id: (scope, parent_membership_id)
-        for owner_id, scope, parent_membership_id in session.execute(
-            select(
-                MembershipRow.id,
-                MembershipRow.account_scope,
-                MembershipRow.parent_membership_id,
-            ).where(
-                MembershipRow.tenant_id == tenant_id,
-                MembershipRow.id.in_(owner_ids),
-                MembershipRow.deleted_at.is_(None),
-            )
-        ).all()
-    } if owner_ids else {}
-    if account_scope == "STAFF" and membership_id is not None:
-        rows = [
-            row
-            for row in rows
-            if row.submitted_by_membership_id is None
-            or owner_details.get(row.submitted_by_membership_id, (None, None))[0]
-            != "CUSTOMER_SUBACCOUNT"
-            or owner_details.get(row.submitted_by_membership_id, (None, None))[1]
-            == membership_id
-        ]
     return [
         PublicQuoteDraftSummary(
             id=row.id,
@@ -4504,11 +4548,7 @@ def list_tenant_quote_drafts(
             customer_name=row.customer_name,
             customer_company=row.customer_company,
             visitor_country_code=getattr(row, "visitor_country_code", None),
-            read_only=(
-                account_scope == "STAFF"
-                and owner_details.get(row.submitted_by_membership_id, (None, None))[0]
-                == "CUSTOMER_SUBACCOUNT"
-            ),
+            read_only=False,
             locale=_normalized_locale(
                 getattr(row, "document_locale", None),
                 default="zh-CN",
@@ -4804,6 +4844,7 @@ def _order_period_statistics(
     start_at: datetime,
     end_at: datetime,
     submitted_by_membership_id: UUID | None = None,
+    merchant_storefront_only: bool = False,
 ) -> StorefrontOrderPeriodStatistics:
     by_currency: dict[str, dict[str, Decimal | int]] = {}
     completed_count = 0
@@ -4814,6 +4855,7 @@ def _order_period_statistics(
         start_at=start_at,
         end_at=end_at,
         submitted_by_membership_id=submitted_by_membership_id,
+        merchant_storefront_only=merchant_storefront_only,
     ):
         count = int(count)
         amount = Decimal(amount)
@@ -4865,6 +4907,7 @@ def get_tenant_order_statistics(
     scoped_membership_id = (
         membership_id if account_scope == "CUSTOMER_SUBACCOUNT" else None
     )
+    merchant_storefront_only = account_scope == "STAFF"
     tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
     timezone = _reporting_timezone(tenant.timezone if tenant is not None else None)
     local_now = (now or utcnow()).astimezone(timezone)
@@ -4896,6 +4939,7 @@ def get_tenant_order_statistics(
             start_at=month_start,
             end_at=month_end,
             submitted_by_membership_id=scoped_membership_id,
+            merchant_storefront_only=merchant_storefront_only,
         ),
         current_year=_order_period_statistics(
             session,
@@ -4903,6 +4947,7 @@ def get_tenant_order_statistics(
             start_at=year_start,
             end_at=year_end,
             submitted_by_membership_id=scoped_membership_id,
+            merchant_storefront_only=merchant_storefront_only,
         ),
     )
 
@@ -5556,9 +5601,8 @@ def get_tenant_quote_document(
             "Public quote draft was not found.",
             kind="not_found",
         )
-    # Keep document downloads on the same ownership path as the quote
-    # workbench.  A parent may download a child's document as a read-only
-    # audit view, while a child may download only its own customer request.
+    # Keep document downloads on the same ownership path as the workbench.
+    # Parent-side child documents are available only from account details.
     _ensure_quote_draft_access(
         session,
         draft=draft,

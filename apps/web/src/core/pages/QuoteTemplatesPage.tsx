@@ -62,13 +62,6 @@ const systemFields: Array<{ value: QuoteTemplateField; label: string; group: str
   { value: "total_volume", label: "总立方（m³）", group: "包装物流" },
   { value: "total_gross_weight", label: "总毛重（kg）", group: "包装物流" },
   { value: "currency", label: "币种", group: "报价数据" },
-  { value: "quote_number", label: "报价单号", group: "报价信息" },
-  { value: "quote_date", label: "报价日期", group: "报价信息" },
-  { value: "customer_name", label: "客户姓名", group: "客户信息" },
-  { value: "customer_company", label: "客户公司", group: "客户信息" },
-  { value: "customer_email", label: "客户邮箱", group: "客户信息" },
-  { value: "customer_phone", label: "客户电话", group: "客户信息" },
-  { value: "notes", label: "报价备注", group: "报价信息" },
 ];
 
 interface EditorDraft {
@@ -234,7 +227,7 @@ export function QuoteTemplatesPage() {
     <CorePageHeading
       eyebrow={t("报价设置")}
       title={t("报价单模板")}
-      description={t("上传商家自己的 Excel 报价单，确认表头后把模板列映射到系统字段。客户下载时会自动沿用默认模板的原始版式。")}
+      description={t("上传商品明细区域的 Excel 样式并映射列。最终报价单的商家、单号、客户与日期等顶部信息由系统统一生成。")}
       actions={<>
         <input
           ref={inputRef}
@@ -258,7 +251,7 @@ export function QuoteTemplatesPage() {
     {!loading && !templates.length ? <Card className="quote-template-empty-card">
       <CoreEmpty
         title={t("还没有自定义报价单")}
-        description={t("上传一份现有 .xlsx 报价单，系统会识别工作表、表头和示例数据，并预先匹配常见字段。")}
+        description={t("上传包含商品表头和示例行的 .xlsx，系统会识别列并保留商品区域样式。")}
         action={<Button size="3" onClick={() => inputRef.current?.click()}><FileXls />{t("上传第一份模板")}</Button>}
       />
     </Card> : null}
@@ -323,7 +316,7 @@ export function QuoteTemplatesPage() {
           </Card>
 
           <div className="quote-template-map-heading">
-            <div><Heading size="4">{t("列映射")}</Heading><Text size="2" color="gray">{t("左侧是模板中的原列，右侧选择导出时要写入的系统数据。未映射列会保持为空。")}</Text></div>
+            <div><Heading size="4">{t("商品区域列映射")}</Heading><Text size="2" color="gray">{t("模板只控制商品明细区域；商家、单号、客户、日期与币种等顶部信息由系统统一生成。未映射列会保持为空。")}</Text></div>
             <Badge color={mappedCount ? "jade" : "gray"} size="2"><Table />{t("已映射 {count} 列", { count: mappedCount })}</Badge>
           </div>
 

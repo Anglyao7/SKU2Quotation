@@ -458,7 +458,7 @@ export function QuoteWorkbenchPage() {
 
   const readyTemplates = useMemo(() => templates.filter((row) => row.isReady), [templates]);
   const selectedTemplate = useMemo(
-    () => readyTemplates.find((template) => template.id === templateId) ?? readyTemplates.find((template) => template.isDefault),
+    () => readyTemplates.find((template) => template.id === templateId),
     [readyTemplates, templateId],
   );
   const availableColumns = useMemo(() => templateTableFields(selectedTemplate), [selectedTemplate]);
@@ -491,7 +491,9 @@ export function QuoteWorkbenchPage() {
         .map((column, index) => {
           const field = selectedTemplate.columnMappings[column.key];
           return {
-            key: column.key || spreadsheetColumnName(index + 1),
+            // The uploaded sheet contributes its product-region columns only;
+            // the composed quotation rebases that region to column A.
+            key: spreadsheetColumnName(index + 1),
             header: field
               ? fieldLabel(field, t, selectedTemplate, locale)
               : column.header?.trim() || column.key || spreadsheetColumnName(index + 1),
@@ -1123,7 +1125,7 @@ export function QuoteWorkbenchPage() {
     const extraRows = extraInformation.filter((entry) => entry.title.trim() && entry.content.trim());
     const itemStartRow = 5;
     const totalRow = itemStartRow + draft.items.length;
-    const sheetName = selectedTemplate?.sheetName?.trim() || t("报价单");
+    const sheetName = quoteText(locale, "sheet_name");
     return (
       <div className="quote-excel-preview-stage">
         <div className="quote-excel-formula-bar" aria-hidden="true">

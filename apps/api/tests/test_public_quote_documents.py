@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -20,6 +21,7 @@ from app.public_catalog_schemas import (
 from app.quote_template_schemas import (
     QuoteExcelColumn,
     QuoteExcelTemplateRenderSpec,
+    QuoteExcelTemplateUpdateRequest,
 )
 from app.services.public_quote_documents import (
     DEFAULT_QUOTE_HEADERS,
@@ -27,6 +29,7 @@ from app.services.public_quote_documents import (
     render_public_quote_draft_pdf,
     render_public_quote_draft_xlsx,
 )
+from app.use_cases import public_catalog as public_catalog_use_cases
 
 
 def _image_bytes() -> bytes:
@@ -36,6 +39,59 @@ def _image_bytes() -> bytes:
         format="PNG",
     )
     return output.getvalue()
+
+
+def test_quote_reuses_version_compatible_sku_translation_after_offer_metadata_change() -> None:
+    """Changing a tag must not make the translated quote name fall back to Chinese."""
+
+    tenant_id = uuid4()
+    sku_id = uuid4()
+    product_id = uuid4()
+    row = (
+        SimpleNamespace(tags=["新品"], display_tag="新品"),
+        SimpleNamespace(
+            id=sku_id,
+            tenant_id=tenant_id,
+            product_id=product_id,
+            sku_code="SKU-001",
+            name="大型犬牵引绳",
+            option_values={"规格名称": "白色"},
+            version=2,
+        ),
+        SimpleNamespace(
+            id=product_id,
+            tenant_id=tenant_id,
+            name="大型犬牵引绳",
+            description="适用大型犬",
+            current_version=3,
+        ),
+        SimpleNamespace(path="宠物用品/牵引绳", name="牵引绳", code="LEASH"),
+    )
+    stored = SimpleNamespace(
+        source_hash="0" * 64,
+        source_category="宠物用品/牵引绳",
+        name="Large Dog Leash",
+        description="For large dogs",
+        category="Pet Supplies/Leashes",
+        tags=["Featured"],
+        display_tag="Featured",
+        product_version=3,
+        sku_version=2,
+    )
+
+    translated = public_catalog_use_cases._stored_quote_sku_translation(stored, row)
+
+    assert translated is not None
+    assert translated.name == "Large Dog Leash"
+    assert translated.description == "For large dogs"
+    assert translated.category == "Pet Supplies/Leashes"
+    # Tags belong to the changed offer metadata and must not be copied from the
+    # stale translation row.
+    assert translated.tags == ("新品",)
+    assert translated.complete is False
+
+    row[1].version = 3
+    assert public_catalog_use_cases._stored_quote_sku_translation(stored, row) is None
 
 
 def _document(
@@ -174,6 +230,20 @@ def test_quote_pdf_settings_limit_visible_columns_to_five() -> None:
         )
 
 
+def test_quote_excel_template_only_maps_product_region_fields() -> None:
+    accepted = QuoteExcelTemplateUpdateRequest(
+        name="商品区域",
+        column_mappings={"A": "product_image", "B": "product_name"},
+    )
+    assert accepted.column_mappings["B"] == "product_name"
+
+    with pytest.raises(ValidationError):
+        QuoteExcelTemplateUpdateRequest(
+            name="错误的整单模板",
+            column_mappings={"A": "quote_number"},
+        )
+
+
 def test_custom_quote_xlsx_can_embed_image_and_leave_unmapped_column_blank(
     tmp_path,
 ) -> None:
@@ -217,11 +287,13 @@ def test_custom_quote_xlsx_can_embed_image_and_leave_unmapped_column_blank(
     )
 
     rendered = load_workbook(BytesIO(content), data_only=False)
-    rendered_sheet = rendered["客户模板"]
-    assert rendered_sheet["B2"].value == 20
-    assert rendered_sheet["C2"].value is None
-    assert rendered_sheet["D2"].value == 0.12
-    assert rendered_sheet["E2"].value == 25
+    rendered_sheet = rendered["报价单"]
+    assert rendered_sheet["A1"].value == "报价单"
+    assert rendered_sheet["B2"].value == "示例商家"
+    assert rendered_sheet["B8"].value == 20
+    assert rendered_sheet["C8"].value is None
+    assert rendered_sheet["D8"].value == 0.12
+    assert rendered_sheet["E8"].value == 25
     assert len(rendered_sheet._images) == 1
     rendered.close()
 
@@ -231,7 +303,7 @@ def test_downloadable_system_template_exposes_all_default_columns() -> None:
         BytesIO(render_default_quote_template_xlsx()),
         data_only=False,
     )
-    sheet = workbook["报价单"]
+    sheet = workbook["商品明细模板"]
     header_row = next(
         row
         for row in range(1, sheet.max_row + 1)
@@ -239,6 +311,11 @@ def test_downloadable_system_template_exposes_all_default_columns() -> None:
     )
     assert tuple(cell.value for cell in sheet[header_row]) == DEFAULT_QUOTE_HEADERS
     assert "保留为空" in str(sheet.cell(header_row + 3, 2).value)
+    assert not any(
+        cell.value == "商家"
+        for row in sheet.iter_rows()
+        for cell in row
+    )
     assert all(
         cell.data_type != "f"
         for row in sheet.iter_rows()

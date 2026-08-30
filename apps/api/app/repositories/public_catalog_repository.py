@@ -8,7 +8,7 @@ from sqlalchemy import Text, case, cast, exists, func, or_, select, update
 from sqlalchemy.orm import Load, Session, aliased
 
 from ..catalog_merchandising import POPULAR_CATEGORY_CODE
-from ..identity_models import MembershipRow, TenantRow
+from ..identity_models import TenantRow
 from ..product_center_models import SkuRow
 from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
 from ..public_catalog_models import (
@@ -1140,6 +1140,7 @@ def storefront_order_statistics_rows(
     start_at: datetime,
     end_at: datetime,
     submitted_by_membership_id: UUID | None = None,
+    merchant_storefront_only: bool = False,
 ) -> list[tuple[str, str, int, Decimal]]:
     statement = select(
         StorefrontOrderRecordRow.currency,
@@ -1156,6 +1157,10 @@ def storefront_order_statistics_rows(
         statement = statement.where(
             StorefrontOrderRecordRow.submitted_by_membership_id
             == submitted_by_membership_id
+        )
+    elif merchant_storefront_only:
+        statement = statement.where(
+            StorefrontOrderRecordRow.submitted_by_membership_id.is_(None)
         )
     return list(
         session.execute(
@@ -1176,15 +1181,14 @@ def list_quote_drafts(
     tenant_id: UUID,
     limit: int,
     owner_membership_id: UUID | None = None,
-    parent_membership_id: UUID | None = None,
+    merchant_storefront_only: bool = False,
 ) -> list[PublicQuoteDraftRow]:
     """Load the quote inbox with ownership filtering before pagination.
 
-    A child account must only receive its own queue.  A parent receives
-    merchant-created drafts plus drafts created by direct children, but never a
-    sibling child’s draft.  Applying the predicate in SQL avoids the old
-    ``limit -> filter`` hole where a page could be empty even though visible
-    records existed later in the inbox.
+    A child account receives only its own queue. The merchant quote workbench
+    receives only drafts submitted through the merchant storefront; child
+    drafts belong exclusively to the matching account-detail view. Applying
+    the predicate before ``LIMIT`` keeps pagination and counts consistent.
     """
 
     statement = select(PublicQuoteDraftRow).where(
@@ -1193,23 +1197,8 @@ def list_quote_drafts(
     owner_column = PublicQuoteDraftRow.submitted_by_membership_id
     if owner_membership_id is not None:
         statement = statement.where(owner_column == owner_membership_id)
-    elif parent_membership_id is not None:
-        child_ids = select(MembershipRow.id).where(
-            MembershipRow.tenant_id == tenant_id,
-            MembershipRow.account_scope == "CUSTOMER_SUBACCOUNT",
-            MembershipRow.status.in_(("active", "suspended")),
-            MembershipRow.deleted_at.is_(None),
-        )
-        direct_child_ids = child_ids.where(
-            MembershipRow.parent_membership_id == parent_membership_id
-        )
-        statement = statement.where(
-            or_(
-                owner_column.is_(None),
-                ~owner_column.in_(child_ids),
-                owner_column.in_(direct_child_ids),
-            )
-        )
+    elif merchant_storefront_only:
+        statement = statement.where(owner_column.is_(None))
     return list(
         session.scalars(
             statement.order_by(

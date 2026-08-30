@@ -10,6 +10,7 @@ from ..domain.errors import ApplicationError
 from ..model_mixins import mark_deleted
 from ..quote_template_models import QuoteExcelTemplateRow
 from ..quote_template_schemas import (
+    QUOTE_PRODUCT_TEMPLATE_FIELDS,
     QuoteExcelColumn,
     QuoteExcelTemplateListResponse,
     QuoteExcelTemplateRenderSpec,
@@ -53,7 +54,7 @@ def _response(row: QuoteExcelTemplateRow) -> QuoteExcelTemplateResponse:
     mappings = {
         str(key).upper(): value
         for key, value in (row.column_mappings or {}).items()
-        if value
+        if value in QUOTE_PRODUCT_TEMPLATE_FIELDS
     }
     columns = [
         QuoteExcelColumn(
@@ -154,7 +155,7 @@ async def upload_template(
         suggested_mappings = {
             column.key: column.suggested_field
             for column in inspection.columns
-            if column.suggested_field
+            if column.suggested_field in QUOTE_PRODUCT_TEMPLATE_FIELDS
         }
         row = QuoteExcelTemplateRow(
             id=template_id,
@@ -246,10 +247,13 @@ def reparse_template(
     mappings = {
         key: field
         for key, field in old_mappings.items()
-        if key in valid_keys
+        if key in valid_keys and field in QUOTE_PRODUCT_TEMPLATE_FIELDS
     }
     for column in inspection.columns:
-        if column.key not in mappings and column.suggested_field:
+        if (
+            column.key not in mappings
+            and column.suggested_field in QUOTE_PRODUCT_TEMPLATE_FIELDS
+        ):
             mappings[column.key] = column.suggested_field
     row.sheet_names = inspection.sheet_names
     row.sheet_name = inspection.sheet_name
@@ -360,19 +364,18 @@ def render_spec_for_template(
     tenant_id: UUID,
     template_id: UUID | None,
 ) -> QuoteExcelTemplateRenderSpec | None:
-    """Return a tenant-owned render spec, falling back to the default template.
+    """Return the product-region spec explicitly selected for this quote.
 
-    A quote stores the selected template id so future exports remain stable
-    even if the merchant later changes which template is marked as default.
+    ``None`` deliberately means the system product table. New quotes snapshot
+    the merchant's current default template id when they are created, so a
+    later workbench choice of "system default" remains explicit and stable.
     """
-    row = (
-        repository.get_for_tenant(
-            session,
-            tenant_id=tenant_id,
-            template_id=template_id,
-        )
-        if template_id is not None
-        else repository.get_default(session, tenant_id=tenant_id)
+    if template_id is None:
+        return None
+    row = repository.get_for_tenant(
+        session,
+        tenant_id=tenant_id,
+        template_id=template_id,
     )
     if row is None or not row.column_mappings:
         return None
