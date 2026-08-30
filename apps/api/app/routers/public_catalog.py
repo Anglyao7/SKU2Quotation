@@ -96,6 +96,7 @@ def _bearer_access_token(
 def _catalog_subaccount(
     identity_session: Session,
     *,
+    permission_session: Session,
     credentials: HTTPAuthorizationCredentials | None,
     expected_membership_id: UUID | None,
 ):
@@ -118,6 +119,17 @@ def _catalog_subaccount(
         raise ApplicationError(
             "STOREFRONT_ACCOUNT_SESSION_MISMATCH",
             "当前登录账号与该子账号前台不一致。",
+            kind="forbidden",
+        )
+    if "customer_portal.access" not in use_cases.customer_subaccount_permissions(
+        identity_session,
+        permission_session=permission_session,
+        membership=submitter[0],
+        user=submitter[1],
+    ):
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_ACCESS_DENIED",
+            "当前子账号未开通商品前台权限。",
             kind="forbidden",
         )
     return submitter
@@ -160,6 +172,7 @@ def get_public_store(
     try:
         subaccount = _catalog_subaccount(
             identity_session,
+            permission_session=session,
             credentials=credentials,
             expected_membership_id=account,
         )
@@ -287,6 +300,7 @@ def list_public_skus(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            permission_session=session,
             credentials=credentials,
             expected_membership_id=account,
         )
@@ -369,6 +383,7 @@ def list_public_products(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            permission_session=session,
             credentials=credentials,
             expected_membership_id=account,
         )
@@ -439,6 +454,7 @@ def search_public_products_by_image(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            permission_session=session,
             credentials=credentials,
             expected_membership_id=account,
         )
@@ -513,6 +529,7 @@ def get_public_product(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            permission_session=session,
             credentials=credentials,
             expected_membership_id=account,
         )
@@ -559,6 +576,7 @@ def get_public_sku(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            permission_session=session,
             credentials=credentials,
             expected_membership_id=account,
         )
@@ -674,6 +692,7 @@ def submit_public_quote_draft(
         )
         submitter = use_cases.optional_customer_quote_submitter(
             identity_session,
+            permission_session=session,
             access_token=_bearer_access_token(credentials),
         )
         if account is not None:

@@ -22478,6 +22478,8 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     assert merchant_quote_inbox.status_code == 200, merchant_quote_inbox.text
     assert quote_id not in {row["id"] for row in merchant_quote_inbox.json()}
     assert client.get(f"/api/v1/public-quote-drafts/{quote_id}").status_code == 404
+
+
     merchant_statistics_after = client.get(
         "/api/v1/storefront-orders/statistics"
     )
@@ -22566,6 +22568,54 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 },
             )
             assert login.status_code == 401, login.text
+
+
+def test_customer_subaccount_permission_resolution_uses_business_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public child storefront RBAC must never run on the identity connection."""
+
+    from app.use_cases import public_catalog as public_catalog_use_cases
+
+    with SessionLocal() as identity_session, SessionLocal() as permission_session:
+        membership = identity_session.get(MembershipRow, DEFAULT_MEMBERSHIP_ID)
+        user = identity_session.get(UserRow, DEFAULT_OWNER_USER_ID)
+        assert membership is not None
+        assert user is not None
+
+        observed: dict[str, object] = {}
+
+        def fake_list_permissions(
+            session: object,
+            *,
+            tenant_id: UUID,
+            user_id: UUID,
+        ) -> frozenset[str]:
+            observed.update(
+                session=session,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+            return frozenset({"customer_portal.access"})
+
+        monkeypatch.setattr(
+            public_catalog_use_cases,
+            "list_permissions",
+            fake_list_permissions,
+        )
+        permissions = public_catalog_use_cases.customer_subaccount_permissions(
+            identity_session,
+            permission_session=permission_session,
+            membership=membership,
+            user=user,
+        )
+
+    assert permissions == frozenset({"customer_portal.access"})
+    assert observed == {
+        "session": permission_session,
+        "tenant_id": DEFAULT_TENANT_ID,
+        "user_id": DEFAULT_OWNER_USER_ID,
+    }
 
 
 def test_product_template_import_requires_edit_and_publish_permissions(

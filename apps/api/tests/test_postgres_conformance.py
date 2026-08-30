@@ -52,6 +52,17 @@ def test_identity_role_has_minimal_customer_subaccount_transaction_grants() -> N
         assert AUTH_TABLE_GRANTS[table_name] == ("SELECT", "UPDATE")
 
 
+def test_identity_role_cannot_read_business_rbac_configuration() -> None:
+    for table_name in (
+        "permissions",
+        "roles",
+        "role_permissions",
+        "membership_roles",
+        "merchant_identity_profiles",
+    ):
+        assert table_name not in AUTH_TABLE_GRANTS
+
+
 @pytest.mark.skipif(
     not SCHEDULER_URL,
     reason="real PostgreSQL scheduler conformance URL is not configured",

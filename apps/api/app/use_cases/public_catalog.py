@@ -22,7 +22,12 @@ from sqlalchemy.orm import Session
 from ..adapters.object_storage import get_object_storage
 from ..database import set_public_tenant_context, set_request_context
 from ..domain.errors import ApplicationError
-from ..identity_models import CustomerAccountAccessEventRow, MembershipRow
+from ..identity_models import (
+    CustomerAccountAccessEventRow,
+    MembershipRow,
+    TenantRow,
+    UserRow,
+)
 from ..knowledge_embedding_schemas import DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS
 from ..model_mixins import utcnow
 from ..public_catalog_models import (
@@ -340,6 +345,7 @@ class PublicProductTranslation:
 def optional_customer_quote_submitter(
     identity_session: Session,
     *,
+    permission_session: Session,
     access_token: str | None,
 ) -> CustomerQuoteSubmitter | None:
     """Return an active child-account context for an otherwise public quote."""
@@ -353,8 +359,11 @@ def optional_customer_quote_submitter(
     if member_context is None:
         return None
     membership, user = member_context
-    if "customer_portal.order_create" not in list_permissions(
-        identity_session, tenant_id=membership.tenant_id, user_id=user.id
+    if "customer_portal.order_create" not in customer_subaccount_permissions(
+        identity_session,
+        permission_session=permission_session,
+        membership=membership,
+        user=user,
     ):
         raise ApplicationError(
             "CUSTOMER_ORDER_CREATE_DENIED",
@@ -372,7 +381,7 @@ def optional_customer_subaccount_membership(
     identity_session: Session,
     *,
     access_token: str | None,
-) -> tuple[MembershipRow, object] | None:
+) -> tuple[MembershipRow, UserRow] | None:
     """Resolve a child-account bearer token for public catalog pricing.
 
     Public visitors remain anonymous.  A valid child-account session enriches
@@ -399,13 +408,37 @@ def optional_customer_subaccount_membership(
         or membership.account_scope != "CUSTOMER_SUBACCOUNT"
     ):
         return None
-    if "customer_portal.access" not in list_permissions(
-        identity_session,
+    return membership, user
+
+
+def customer_subaccount_permissions(
+    identity_session: Session,
+    *,
+    permission_session: Session,
+    membership: MembershipRow,
+    user: UserRow,
+) -> frozenset[str]:
+    """Resolve child permissions on the tenant-scoped business connection.
+
+    The identity connection only validates the bearer session and reloads the
+    trusted user/membership pair. RBAC configuration is business data and must
+    remain behind the normal application role and tenant RLS context.
+    """
+
+    tenant = identity_session.get(TenantRow, membership.tenant_id)
+    if tenant is None or tenant.status != "active":
+        return frozenset()
+    set_request_context(
+        permission_session,
+        organization_id=tenant.organization_id,
+        tenant_id=tenant.id,
+        user_id=user.id,
+    )
+    return list_permissions(
+        permission_session,
         tenant_id=membership.tenant_id,
         user_id=user.id,
-    ):
-        return None
-    return membership, user
+    )
 
 
 def _money(value: Decimal) -> Decimal:
