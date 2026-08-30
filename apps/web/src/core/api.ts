@@ -3241,10 +3241,15 @@ function mapCatalogTranslationStatus(
 
 export async function getCatalogTranslationStatus(
   targetLocale: StorefrontLocale,
+  options: { includeLatestJob?: boolean } = {},
 ): Promise<CatalogTranslationStatus> {
+  const query = new URLSearchParams({ target_locale: targetLocale });
+  if (options.includeLatestJob === false) {
+    query.set("include_latest_job", "false");
+  }
   return mapCatalogTranslationStatus(
     await request<ApiCatalogTranslationStatus>(
-      `/catalog/translations/status?target_locale=${encodeURIComponent(targetLocale)}`,
+      `/catalog/translations/status?${query.toString()}`,
       { cache: "no-store" },
     ),
   );
@@ -3253,6 +3258,7 @@ export async function getCatalogTranslationStatus(
 export async function startCatalogTranslationJob(
   targetLocale: StorefrontLocale,
   fullRebuild = false,
+  executionMode?: CatalogTranslationExecutionMode,
 ): Promise<CatalogTranslationJob> {
   return mapCatalogTranslationJob(
     await request<ApiCatalogTranslationJob>("/catalog/translations/jobs", {
@@ -3260,10 +3266,21 @@ export async function startCatalogTranslationJob(
       body: JSON.stringify({
         target_locale: targetLocale,
         mode: fullRebuild ? "FULL_REBUILD" : "INCREMENTAL",
+        execution_mode: executionMode,
         confirm_full_rebuild: fullRebuild,
       }),
     }),
   );
+}
+
+export async function getLatestCatalogTranslationJob(
+  targetLocale: StorefrontLocale,
+): Promise<CatalogTranslationJob | undefined> {
+  const row = await request<ApiCatalogTranslationJob | null>(
+    `/catalog/translations/jobs/latest?target_locale=${encodeURIComponent(targetLocale)}`,
+    { cache: "no-store" },
+  );
+  return row ? mapCatalogTranslationJob(row) : undefined;
 }
 
 export async function getCatalogTranslationJob(
@@ -3301,11 +3318,21 @@ export async function resumeCatalogTranslationJob(
 
 export async function getCatalogTranslationBatches(
   jobId: string,
-  options: { includeSkus?: boolean } = {},
+  options: {
+    includeSkus?: boolean;
+    limit?: number;
+    includeFailed?: boolean;
+  } = {},
 ): Promise<CatalogTranslationBatch[]> {
-  const query = options.includeSkus === false ? "?include_skus=false" : "";
+  const query = new URLSearchParams();
+  if (options.includeSkus === false) query.set("include_skus", "false");
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.includeFailed !== undefined) {
+    query.set("include_failed", String(options.includeFailed));
+  }
+  const suffix = query.size ? `?${query.toString()}` : "";
   const rows = await request<ApiCatalogTranslationBatch[]>(
-    `/catalog/translations/jobs/${encodeURIComponent(jobId)}/batches${query}`,
+    `/catalog/translations/jobs/${encodeURIComponent(jobId)}/batches${suffix}`,
     { cache: "no-store" },
   );
   return rows.map(mapCatalogTranslationBatch);

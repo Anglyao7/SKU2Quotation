@@ -1947,6 +1947,8 @@ const english: Record<string, string> = {
   "默认 10,000，超出后自动拆分，不会丢失断点。":
     "Default: 10,000. Oversized batches are split without losing the checkpoint.",
   "翻译状态读取失败。": "Could not load translation status.",
+  "语言设置读取失败。": "Could not load language settings.",
+  "翻译历史记录读取失败。": "Could not load translation history.",
   "翻译内容已更新，前台将自动使用最新版本。":
     "Translations updated. The storefront will use the latest version automatically.",
   "前台语言": "Storefront languages",
@@ -1967,26 +1969,52 @@ const english: Record<string, string> = {
   "有内容待更新": "Content needs updating",
   "内容已是最新": "Content is up to date",
   "尚未翻译": "Not translated",
+  "正在同步": "Syncing",
+  "SKU 翻译覆盖": "SKU translation coverage",
+  "正在核对翻译覆盖情况": "Checking translation coverage",
+  "正在统计已翻译、待更新和新增的 SKU，请稍候。":
+    "Counting translated, changed, and new SKUs. Please wait.",
   "公开 SKU": "Public SKUs",
   "已翻译": "Translated",
   "新增或变更": "New or changed",
   "全量翻译": "Full translation",
+  "更新翻译（并发 AI）": "Update translations (concurrent AI)",
+  "全量翻译（Batch）": "Full translation (Batch)",
+  "继续 Batch 全量翻译": "Resume full Batch translation",
+  "更新翻译按配置中心的模型与并发，只处理新增或变更；全量翻译使用 Batch，并优先延续已有断点。":
+    "Update translation uses the configured model and concurrency for new or changed content only. Full translation uses Batch and resumes an existing checkpoint first.",
   "全量重新翻译 {language}？": "Fully retranslate {language}?",
+  "从 Batch 断点继续翻译 {language}？":
+    "Resume {language} from its Batch checkpoint?",
   "系统会重新翻译全部商品。完成前，前台会继续使用现有翻译内容。":
     "All products will be translated again. Existing translations remain available until the job finishes.",
+  "系统会通过 Batch 翻译全部商品。完成前，前台会继续使用现有翻译内容。":
+    "All products will be translated through Batch. Existing translations remain available until the job finishes.",
+  "系统会继续原 Batch 任务及失败重试，不会重新提交已成功的内容。":
+    "The existing Batch job and its failed subsets will resume; successful content will not be submitted again.",
   "确认全量翻译": "Confirm full translation",
+  "确认从断点继续": "Confirm checkpoint resume",
   "当前发布版本": "Current release",
+  "正在读取当前发布版本": "Loading the current release",
   "发布时间": "Published at",
   "源数据截止": "Source data cutoff",
   "内容大小": "Content size",
   "包含内容": "Contents",
   "最近任务": "Latest job",
+  "正在读取翻译历史记录": "Loading translation history",
+  "任务进度与批次记录会在读取完成后同步显示。":
+    "Job progress and batch history will appear together when loaded.",
+  "正在读取翻译批次记录": "Loading translation batch history",
+  "显示最近 {shown} 批；失败批次始终保留。":
+    "Showing the latest {shown} batches; failed batches are always retained.",
   "核对变更": "Checking changes",
   "整理翻译内容": "Preparing translations",
   "正在发布": "Publishing",
   "发布完成": "Published",
   "任务失败": "Job failed",
   "任务中断，断点已保存": "Interrupted — checkpoint saved",
+  "SKU 已翻译，语言包仍待补全":
+    "SKUs translated — language package still needs completion",
   "已处理 {done} / {total} 个 SKU": "Processed {done} / {total} SKUs",
   "已完成 {done} / {total} 个翻译字段":
     "Completed {done} / {total} translation fields",
@@ -2005,6 +2033,16 @@ const english: Record<string, string> = {
     "Maximum 25 MB. Files are stored and parsed asynchronously after upload.",
   "翻译任务已从断点继续，只会处理剩余商品。":
     "Translation resumed from its checkpoint. Only remaining products will be processed.",
+  "Batch 全量翻译已从原断点继续。":
+    "Full Batch translation resumed from its existing checkpoint.",
+  "正在核对断点并补齐未完成的语言包字段。":
+    "Checking the checkpoint and completing unfinished language-package fields.",
+  "并发翻译已从原断点继续。":
+    "Concurrent translation resumed from its existing checkpoint.",
+  "继续后将核对并补齐未完成字段":
+    "Resuming will check and complete unfinished fields",
+  "语言包仍有 {count} 个字段未完成翻译，SKU 译文不会丢失。":
+    "The language package still has {count} untranslated fields; completed SKU translations are preserved.",
   "已发布版本 v{version}": "Published version v{version}",
   "当前翻译内容已经是最新版本。": "Translations are already up to date.",
   "翻译任务启动失败。": "Could not start the translation job.",

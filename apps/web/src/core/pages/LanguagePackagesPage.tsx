@@ -6,6 +6,7 @@ import {
   Heading,
   Progress,
   Select,
+  Spinner,
   Text,
 } from "@radix-ui/themes";
 import {
@@ -20,7 +21,7 @@ import {
   Translate,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useCoreAuth } from "../AuthContext";
 import { ToastNotice } from "../ToastContext";
 import {
@@ -28,6 +29,7 @@ import {
   getCatalogTranslationJob,
   getCatalogTranslationBatches,
   getCatalogTranslationStatus,
+  getLatestCatalogTranslationJob,
   getMerchantSettings,
   pauseCatalogTranslationJob,
   resumeCatalogTranslationJob,
@@ -102,43 +104,55 @@ export function LanguagePackagesPage() {
   const [status, setStatus] = useState<CatalogTranslationStatus>();
   const [job, setJob] = useState<CatalogTranslationJob>();
   const [batches, setBatches] = useState<CatalogTranslationBatch[]>([]);
+  const [batchesJobId, setBatchesJobId] = useState<string>();
   const [retryingBatchId, setRetryingBatchId] = useState<string>();
-  const [loading, setLoading] = useState(true);
+  const [coverageLoading, setCoverageLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [batchHistoryLoading, setBatchHistoryLoading] = useState(false);
   const [savingLanguages, setSavingLanguages] = useState(false);
   const [startingJob, setStartingJob] = useState(false);
   const [controllingJob, setControllingJob] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const selectedLocaleRef = useRef<StorefrontLocale>(selectedLocale);
+  const localeRequestIdRef = useRef(0);
 
   const languagesChanged = enabledLocales.join(",") !== savedLocales.join(",")
     || defaultLocale !== savedDefaultLocale;
-  const activeJob = job && ["QUEUED", "RUNNING", "PAUSED"].includes(job.status)
+  const selectedStatus = status?.targetLocale === selectedLocale
+    ? status
+    : undefined;
+  const selectedJob = job?.targetLocale === selectedLocale
     ? job
     : undefined;
+  const selectedBatches = selectedJob && batchesJobId === selectedJob.id
+    ? batches
+    : [];
+  const activeJob = selectedJob && ["QUEUED", "RUNNING", "PAUSED"].includes(selectedJob.status)
+    ? selectedJob
+    : undefined;
   const controllableJob = activeJob ?? (
-    job?.status === "FAILED" && job.resumable ? job : undefined
+    selectedJob?.status === "FAILED" && selectedJob.resumable ? selectedJob : undefined
   );
-  const pollableJob = job && (
-    ["QUEUED", "RUNNING"].includes(job.status) || job.pauseRequested
-  ) ? job : undefined;
+  const pollableJob = selectedJob && (
+    ["QUEUED", "RUNNING"].includes(selectedJob.status) || selectedJob.pauseRequested
+  ) ? selectedJob : undefined;
   const selectedLanguage = storefrontLanguage(selectedLocale);
   const jobIsPublishing = Boolean(
     activeJob && ["PACKAGING", "UPLOADING"].includes(activeJob.stage),
   );
-  const statusMatchesSelection = status?.targetLocale === selectedLocale;
-  const jobMatchesSelection = job?.targetLocale === selectedLocale;
-  const displayedTotalSkus = statusMatchesSelection
-    ? status.totalSkus
-    : jobMatchesSelection
-      ? job.totalSkus
+  const displayedTotalSkus = selectedStatus
+    ? selectedStatus.totalSkus
+    : selectedJob
+      ? selectedJob.totalSkus
       : 0;
-  const checkpointTranslatedSkus = jobMatchesSelection
-    ? completedSkuCount(job)
+  const checkpointTranslatedSkus = selectedJob?.executionMode === "QWEN_BATCH"
+    ? completedSkuCount(selectedJob)
     : 0;
   const displayedTranslatedSkus = Math.min(
     displayedTotalSkus,
     Math.max(
-      statusMatchesSelection ? status.translatedSkus : 0,
+      selectedStatus?.translatedSkus ?? 0,
       checkpointTranslatedSkus,
     ),
   );
@@ -146,38 +160,105 @@ export function LanguagePackagesPage() {
     0,
     displayedTotalSkus - displayedTranslatedSkus,
   );
-  const displayedRemainingJobSkus = job
-    ? job.executionMode === "QWEN_BATCH"
-      ? Math.max(0, job.totalSkus - completedSkuCount(job))
-      : job.remainingSkus
+  const displayedRemainingJobSkus = selectedJob
+    ? selectedJob.executionMode === "QWEN_BATCH"
+      ? Math.max(0, selectedJob.totalSkus - completedSkuCount(selectedJob))
+      : selectedStatus?.pendingSkus ?? selectedJob.remainingSkus
     : 0;
-
-  const refreshStatus = async (locale = selectedLocale) => {
-    const next = await getCatalogTranslationStatus(locale);
-    setStatus(next);
-    setJob(next.latestJob);
-    if (next.latestJob) {
-      setBatches(await getCatalogTranslationBatches(next.latestJob.id, { includeSkus: false }));
-    } else {
-      setBatches([]);
+  const resumableRealtimeJob = selectedJob?.resumable
+    && selectedJob.executionMode === "REALTIME"
+    ? selectedJob
+    : undefined;
+  const resumableBatchJob = selectedJob?.resumable
+    && selectedJob.executionMode === "QWEN_BATCH"
+    ? selectedJob
+    : undefined;
+  const jobOnlyNeedsPackageFields = Boolean(
+    selectedJob?.status === "FAILED"
+    && selectedStatus
+    && selectedStatus.pendingSkus === 0
+    && selectedStatus.packageOutdated,
+  );
+  const displayedJobError = (() => {
+    const message = selectedJob?.errorMessage;
+    if (!message) return "";
+    const incomplete = message.match(
+      /^language package translation left (\d+) fields incomplete/i,
+    );
+    if (incomplete) {
+      return t("语言包仍有 {count} 个字段未完成翻译，SKU 译文不会丢失。", {
+        count: incomplete[1],
+      });
     }
+    return message;
+  })();
+
+  const localeRequestIsCurrent = (
+    locale: StorefrontLocale,
+    requestId?: number,
+  ) => selectedLocaleRef.current === locale
+    && (requestId === undefined || localeRequestIdRef.current === requestId);
+
+  const refreshStatus = async (
+    locale = selectedLocaleRef.current,
+    requestId?: number,
+  ) => {
+    const next = await getCatalogTranslationStatus(locale, {
+      includeLatestJob: false,
+    });
+    if (localeRequestIsCurrent(locale, requestId)) setStatus(next);
     return next;
   };
 
-  const refreshBatches = async (jobId = job?.id) => {
+  const refreshBatches = async (
+    jobId: string | undefined,
+    locale = selectedLocaleRef.current,
+    requestId?: number,
+  ) => {
     if (!jobId) {
-      setBatches([]);
+      if (localeRequestIsCurrent(locale, requestId)) {
+        setBatches([]);
+        setBatchesJobId(undefined);
+        setBatchHistoryLoading(false);
+      }
       return;
     }
-    setBatches(await getCatalogTranslationBatches(jobId, { includeSkus: false }));
+    if (localeRequestIsCurrent(locale, requestId)) {
+      setBatchHistoryLoading(true);
+    }
+    try {
+      const next = await getCatalogTranslationBatches(jobId, {
+        includeSkus: false,
+        limit: 100,
+        includeFailed: true,
+      });
+      if (localeRequestIsCurrent(locale, requestId)) {
+        setBatches(next);
+        setBatchesJobId(jobId);
+      }
+    } finally {
+      if (localeRequestIsCurrent(locale, requestId)) {
+        setBatchHistoryLoading(false);
+      }
+    }
+  };
+
+  const refreshHistory = async (
+    locale = selectedLocaleRef.current,
+    requestId?: number,
+  ) => {
+    const next = await getLatestCatalogTranslationJob(locale);
+    if (!localeRequestIsCurrent(locale, requestId)) return next;
+    setJob(next);
+    setHistoryLoading(false);
+    await refreshBatches(next?.id, locale, requestId).catch(() => undefined);
+    return next;
   };
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError("");
-    Promise.all([getMerchantSettings(), getCatalogTranslationStatus(selectedLocale)])
-      .then(([settings, translationStatus]) => {
+    void getMerchantSettings()
+      .then((settings) => {
         if (!active) return;
         setEnabledLocales(settings.storefrontLocales);
         setSavedLocales(settings.storefrontLocales);
@@ -187,21 +268,11 @@ export function LanguagePackagesPage() {
           : settings.storefrontLocales[0] || "zh-CN";
         setDefaultLocale(nextDefault);
         setSavedDefaultLocale(nextDefault);
-        setStatus(translationStatus);
-        setJob(translationStatus.latestJob);
-        if (translationStatus.latestJob) {
-          void getCatalogTranslationBatches(translationStatus.latestJob.id, { includeSkus: false })
-            .then(setBatches)
-            .catch(() => undefined);
-        }
       })
       .catch((caught) => {
         if (active) {
-          setError(caught instanceof Error ? caught.message : t("翻译状态读取失败。"));
+          setError(caught instanceof Error ? caught.message : t("语言设置读取失败。"));
         }
-      })
-      .finally(() => {
-        if (active) setLoading(false);
       });
     return () => {
       active = false;
@@ -209,15 +280,36 @@ export function LanguagePackagesPage() {
   }, []);
 
   useEffect(() => {
-    if (loading) return;
-    let active = true;
+    selectedLocaleRef.current = selectedLocale;
+    const requestId = ++localeRequestIdRef.current;
     setError("");
-    void refreshStatus(selectedLocale).catch((caught) => {
-      if (active) setError(caught instanceof Error ? caught.message : t("翻译状态读取失败。"));
-    });
-    return () => {
-      active = false;
-    };
+    setSuccess("");
+    setStatus(undefined);
+    setJob(undefined);
+    setBatches([]);
+    setBatchesJobId(undefined);
+    setCoverageLoading(true);
+    setHistoryLoading(true);
+    setBatchHistoryLoading(false);
+
+    void refreshStatus(selectedLocale, requestId)
+      .catch((caught) => {
+        if (localeRequestIsCurrent(selectedLocale, requestId)) {
+          setError(caught instanceof Error ? caught.message : t("翻译状态读取失败。"));
+        }
+      })
+      .finally(() => {
+        if (localeRequestIsCurrent(selectedLocale, requestId)) {
+          setCoverageLoading(false);
+        }
+      });
+    void refreshHistory(selectedLocale, requestId)
+      .catch((caught) => {
+        if (localeRequestIsCurrent(selectedLocale, requestId)) {
+          setHistoryLoading(false);
+          setError(caught instanceof Error ? caught.message : t("翻译历史记录读取失败。"));
+        }
+      });
   }, [selectedLocale]);
 
   useEffect(() => {
@@ -228,6 +320,7 @@ export function LanguagePackagesPage() {
     let lastObservedProcessed = completedSkuCount(pollableJob);
     let lastCoverageRefreshAt = Date.now();
     let lastBatchRefreshAt = 0;
+    let coverageRefreshInFlight = false;
     const poll = () => {
       if (requestInFlight) return;
       requestInFlight = true;
@@ -238,27 +331,38 @@ export function LanguagePackagesPage() {
           const stageChanged = next.stage !== lastObservedStage;
           const nextProcessed = completedSkuCount(next);
           const processedChanged = nextProcessed !== lastObservedProcessed;
+          if (next.targetLocale !== selectedLocaleRef.current) return;
           setJob(next);
           if (
             now - lastBatchRefreshAt >= 5_000
             || !["QUEUED", "RUNNING"].includes(next.status)
           ) {
             lastBatchRefreshAt = now;
-            void refreshBatches(next.id).catch(() => undefined);
+            void refreshBatches(next.id, next.targetLocale).catch(() => undefined);
           }
           if (
-            next.targetLocale === selectedLocale
+            next.targetLocale === selectedLocaleRef.current
+            && !coverageRefreshInFlight
             && (
               stageChanged
               || (processedChanged && now - lastCoverageRefreshAt >= 8_000)
             )
           ) {
             lastCoverageRefreshAt = now;
-            void getCatalogTranslationStatus(next.targetLocale)
+            coverageRefreshInFlight = true;
+            void getCatalogTranslationStatus(next.targetLocale, {
+              includeLatestJob: false,
+            })
               .then((latest) => {
-                if (!cancelled) setStatus(latest);
+                if (
+                  !cancelled
+                  && latest.targetLocale === selectedLocaleRef.current
+                ) setStatus(latest);
               })
-              .catch(() => undefined);
+              .catch(() => undefined)
+              .finally(() => {
+                coverageRefreshInFlight = false;
+              });
           }
           lastObservedStage = next.stage;
           lastObservedProcessed = nextProcessed;
@@ -266,10 +370,16 @@ export function LanguagePackagesPage() {
             window.clearInterval(timer);
             if (next.status === "PAUSED") {
               setSuccess(t("翻译已暂停，已完成的内容会保留。"));
-              void refreshStatus(next.targetLocale).catch(() => undefined);
+              void Promise.all([
+                refreshStatus(next.targetLocale),
+                refreshHistory(next.targetLocale),
+              ]).catch(() => undefined);
               return;
             }
-            void refreshStatus(next.targetLocale).then((latest) => {
+            void Promise.all([
+              refreshStatus(next.targetLocale),
+              refreshHistory(next.targetLocale),
+            ]).then(([latest]) => {
               if (cancelled) return;
               if (next.status === "SUCCEEDED" && latest.package) {
                 setSuccess(t("翻译内容已更新，前台将自动使用最新版本。"));
@@ -291,9 +401,9 @@ export function LanguagePackagesPage() {
   }, [pollableJob?.id, pollableJob?.pauseRequested, selectedLocale]);
 
   useEffect(() => {
-    if (!job?.id || pollableJob) return;
-    void refreshBatches(job.id).catch(() => undefined);
-  }, [job?.id, pollableJob]);
+    if (!selectedJob?.id || pollableJob || batchesJobId === selectedJob.id) return;
+    void refreshBatches(selectedJob.id, selectedJob.targetLocale).catch(() => undefined);
+  }, [selectedJob?.id, pollableJob, batchesJobId]);
 
   const toggleLanguage = (locale: StorefrontLocale, checked: boolean) => {
     setEnabledLocales((current) => {
@@ -335,22 +445,50 @@ export function LanguagePackagesPage() {
   };
 
   const startJob = async (fullRebuild: boolean) => {
-    if (!canEditProducts || startingJob || activeJob) return;
+    if (
+      !canEditProducts
+      || startingJob
+      || (activeJob && activeJob.status !== "PAUSED")
+    ) return;
+    const executionMode = fullRebuild ? "QWEN_BATCH" : "REALTIME";
+    const resumeCandidate = fullRebuild
+      ? resumableBatchJob
+      : resumableRealtimeJob;
+    const actionLocale = selectedLocale;
     setStartingJob(true);
     setError("");
     setSuccess("");
     try {
-      const next = await startCatalogTranslationJob(selectedLocale, fullRebuild);
+      const next = resumeCandidate
+        ? await resumeCatalogTranslationJob(resumeCandidate.id)
+        : await startCatalogTranslationJob(
+            actionLocale,
+            fullRebuild,
+            executionMode,
+          );
+      if (!localeRequestIsCurrent(actionLocale)) return;
       setJob(next);
+      setBatches([]);
+      setBatchesJobId(undefined);
+      void refreshBatches(next.id, next.targetLocale).catch(() => undefined);
       if (next.status === "SUCCEEDED") {
-        await refreshStatus(selectedLocale);
+        await Promise.all([
+          refreshStatus(actionLocale),
+          refreshHistory(actionLocale),
+        ]);
         setSuccess(t("当前翻译内容已经是最新版本。"));
+      } else if (resumeCandidate) {
+        setSuccess(t(fullRebuild
+          ? "Batch 全量翻译已从原断点继续。"
+          : displayedRemainingJobSkus === 0
+            ? "正在核对断点并补齐未完成的语言包字段。"
+            : "并发翻译已从原断点继续。"));
       }
     } catch (caught) {
       const message = caught instanceof CoreApiError || caught instanceof Error
         ? caught.message
-        : t("翻译任务启动失败。" );
-      setError(message);
+        : t("翻译任务启动失败。");
+      if (localeRequestIsCurrent(actionLocale)) setError(message);
     } finally {
       setStartingJob(false);
     }
@@ -366,13 +504,15 @@ export function LanguagePackagesPage() {
         ? await pauseCatalogTranslationJob(controllableJob.id)
         : await resumeCatalogTranslationJob(controllableJob.id);
       setJob(next);
-      void refreshBatches(next.id).catch(() => undefined);
+      void refreshBatches(next.id, next.targetLocale).catch(() => undefined);
       if (action === "pause") {
         setSuccess(next.status === "PAUSED"
           ? t("翻译已暂停，已完成的内容会保留。")
           : t("正在完成当前翻译批次，随后会安全暂停。"));
       } else {
-        setSuccess(t("翻译任务已从断点继续，只会处理剩余商品。"));
+        setSuccess(t(displayedRemainingJobSkus === 0
+          ? "正在核对断点并补齐未完成的语言包字段。"
+          : "翻译任务已从断点继续，只会处理剩余商品。"));
       }
     } catch (caught) {
       setError(caught instanceof Error
@@ -384,14 +524,14 @@ export function LanguagePackagesPage() {
   };
 
   const retryBatch = async (batch: CatalogTranslationBatch) => {
-    if (!job || retryingBatchId) return;
+    if (!selectedJob || retryingBatchId) return;
     setRetryingBatchId(batch.id);
     setError("");
     setSuccess("");
     try {
-      const next = await retryCatalogTranslationBatch(job.id, batch.id);
+      const next = await retryCatalogTranslationBatch(selectedJob.id, batch.id);
       setJob(next);
-      await refreshBatches(next.id);
+      await refreshBatches(next.id, next.targetLocale);
       setSuccess(t("已重新提交第 {batch} 批，正在从该批次重新翻译。", { batch: batch.sequenceNo }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("批次重新请求失败。"));
@@ -508,7 +648,7 @@ export function LanguagePackagesPage() {
             <span><Translate weight="duotone" /></span>
             <div>
               <Text size="1" color="gray">{selectedLanguage.flag} {selectedLanguage.label}</Text>
-              <Heading size="5">{t("翻译覆盖")}</Heading>
+              <Heading size="5">{t("SKU 翻译覆盖")}</Heading>
             </div>
             <div className="language-status-controls">
               <Select.Root
@@ -527,27 +667,51 @@ export function LanguagePackagesPage() {
                   ))}
                 </Select.Content>
               </Select.Root>
-              <Badge color={status?.packageOutdated ? "amber" : status?.package ? "green" : "gray"}>
-                {t(status?.packageOutdated ? "有内容待更新" : status?.package ? "内容已是最新" : "尚未翻译")}
+              <Badge color={coverageLoading ? "gray" : selectedStatus?.packageOutdated ? "amber" : selectedStatus?.package ? "green" : "gray"}>
+                {t(coverageLoading
+                  ? "正在同步"
+                  : selectedStatus?.packageOutdated
+                    ? "有内容待更新"
+                    : selectedStatus?.package
+                      ? "内容已是最新"
+                      : "尚未翻译")}
               </Badge>
             </div>
           </div>
-          <div className="language-pack-metrics">
-            <div><strong>{displayedTotalSkus}</strong><span>{t("公开 SKU")}</span></div>
-            <div><strong>{displayedTranslatedSkus}</strong><span>{t("已翻译")}</span></div>
-            <div><strong>{displayedPendingSkus}</strong><span>{t("新增或变更")}</span></div>
-            <div><strong>{coverage}%</strong><span>{t("翻译覆盖")}</span></div>
-          </div>
-          <Progress value={coverage} size="3" color={coverage === 100 ? "green" : "blue"} />
+          {coverageLoading ? (
+            <div className="language-history-loading">
+              <Spinner size="3" />
+              <div>
+                <Text weight="bold">{t("正在核对翻译覆盖情况")}</Text>
+                <Text size="1" color="gray">{t("正在统计已翻译、待更新和新增的 SKU，请稍候。")}</Text>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="language-pack-metrics">
+                <div><strong>{displayedTotalSkus}</strong><span>{t("公开 SKU")}</span></div>
+                <div><strong>{displayedTranslatedSkus}</strong><span>{t("已翻译")}</span></div>
+                <div><strong>{displayedPendingSkus}</strong><span>{t("新增或变更")}</span></div>
+                <div><strong>{coverage}%</strong><span>{t("SKU 翻译覆盖")}</span></div>
+              </div>
+              <Progress value={coverage} size="3" color={coverage === 100 ? "green" : "blue"} />
+            </>
+          )}
           <div className="language-pack-actions">
             <Button
               size="3"
               onClick={() => void startJob(false)}
-              loading={startingJob && !activeJob}
-              disabled={!canEditProducts || Boolean(activeJob)}
+              loading={startingJob}
+              disabled={
+                !canEditProducts
+                || coverageLoading
+                || historyLoading
+                || startingJob
+                || Boolean(activeJob && activeJob.status !== "PAUSED")
+              }
             >
               <ArrowsClockwise />
-              {t("翻译新增与变更")}
+              {t("更新翻译（并发 AI）")}
             </Button>
             <AlertDialog.Root>
               <AlertDialog.Trigger>
@@ -555,19 +719,29 @@ export function LanguagePackagesPage() {
                   size="3"
                   variant="soft"
                   color="gray"
-                  disabled={!canEditProducts || Boolean(activeJob)}
+                  disabled={
+                    !canEditProducts
+                    || coverageLoading
+                    || historyLoading
+                    || startingJob
+                    || Boolean(activeJob && activeJob.status !== "PAUSED")
+                  }
                 >
-                  {t("全量翻译")}
+                  {t(resumableBatchJob ? "继续 Batch 全量翻译" : "全量翻译（Batch）")}
                 </Button>
               </AlertDialog.Trigger>
               <AlertDialog.Content maxWidth="480px">
-                <AlertDialog.Title>{t("全量重新翻译 {language}？", { language: selectedLanguage.label })}</AlertDialog.Title>
+                <AlertDialog.Title>{t(resumableBatchJob
+                  ? "从 Batch 断点继续翻译 {language}？"
+                  : "全量重新翻译 {language}？", { language: selectedLanguage.label })}</AlertDialog.Title>
                 <AlertDialog.Description>
-                  {t("系统会重新翻译全部商品。完成前，前台会继续使用现有翻译内容。")}
+                  {t(resumableBatchJob
+                    ? "系统会继续原 Batch 任务及失败重试，不会重新提交已成功的内容。"
+                    : "系统会通过 Batch 翻译全部商品。完成前，前台会继续使用现有翻译内容。")}
                 </AlertDialog.Description>
                 <div className="language-pack-dialog-actions">
                   <AlertDialog.Cancel><Button variant="soft" color="gray">{t("取消")}</Button></AlertDialog.Cancel>
-                  <AlertDialog.Action><Button color="red" onClick={() => void startJob(true)}>{t("确认全量翻译")}</Button></AlertDialog.Action>
+                  <AlertDialog.Action><Button color="red" onClick={() => void startJob(true)}>{t(resumableBatchJob ? "确认从断点继续" : "确认全量翻译")}</Button></AlertDialog.Action>
                 </div>
               </AlertDialog.Content>
             </AlertDialog.Root>
@@ -596,6 +770,9 @@ export function LanguagePackagesPage() {
               </Button>
             ) : null}
           </div>
+          <Text size="1" color="gray" className="language-action-note">
+            {t("更新翻译按配置中心的模型与并发，只处理新增或变更；全量翻译使用 Batch，并优先延续已有断点。")}
+          </Text>
           {activeJob?.pauseRequested && activeJob.status !== "PAUSED" ? (
             <Text size="1" color="gray" className="language-pause-note">
               {t("系统会先保存当前批次，再进入暂停状态，不会丢失已完成的翻译。")}
@@ -613,109 +790,146 @@ export function LanguagePackagesPage() {
             <span><Package weight="duotone" /></span>
             <div>
               <Text size="1" color="gray">{t("当前发布版本")}</Text>
-              <Heading size="5">{status?.package ? `v${status.package.version}` : "—"}</Heading>
+              <Heading size="5">{selectedStatus?.package ? `v${selectedStatus.package.version}` : "—"}</Heading>
             </div>
           </div>
-          <dl className="language-package-details">
-            <div><dt>{t("发布时间")}</dt><dd>{formatDate(status?.package?.publishedAt)}</dd></div>
-            <div><dt>{t("源数据截止")}</dt><dd>{formatDate(status?.package?.sourceCutoffAt)}</dd></div>
-            <div><dt>{t("内容大小")}</dt><dd>{formatBytes(status?.package?.byteSize)}</dd></div>
-            <div><dt>{t("包含内容")}</dt><dd>{status?.package ? `${status.package.productCount} Products · ${status.package.skuCount} SKUs` : "—"}</dd></div>
-          </dl>
+          {coverageLoading ? (
+            <div className="language-history-loading is-compact">
+              <Spinner size="2" />
+              <Text size="2" color="gray">{t("正在读取当前发布版本")}</Text>
+            </div>
+          ) : (
+            <dl className="language-package-details">
+              <div><dt>{t("发布时间")}</dt><dd>{formatDate(selectedStatus?.package?.publishedAt)}</dd></div>
+              <div><dt>{t("源数据截止")}</dt><dd>{formatDate(selectedStatus?.package?.sourceCutoffAt)}</dd></div>
+              <div><dt>{t("内容大小")}</dt><dd>{formatBytes(selectedStatus?.package?.byteSize)}</dd></div>
+              <div><dt>{t("包含内容")}</dt><dd>{selectedStatus?.package ? `${selectedStatus.package.productCount} Products · ${selectedStatus.package.skuCount} SKUs` : "—"}</dd></div>
+            </dl>
+          )}
         </Card>
       </div>
 
-      {job ? (
-        <Card className={`language-job-card is-${job.status.toLocaleLowerCase()}`}>
+      {historyLoading ? (
+        <Card className="language-job-card">
+          <div className="language-history-loading">
+            <Spinner size="3" />
+            <div>
+              <Text weight="bold">{t("正在读取翻译历史记录")}</Text>
+              <Text size="1" color="gray">{t("任务进度与批次记录会在读取完成后同步显示。")}</Text>
+            </div>
+          </div>
+        </Card>
+      ) : selectedJob ? (
+        <Card className={`language-job-card is-${selectedJob.status.toLocaleLowerCase()}`}>
           <div className="language-job-header">
             <div>
               <Text size="1" color="gray">{t("最近任务")}</Text>
               <Heading size="4">
-                {t(job.status === "FAILED" && job.resumable
-                  ? "任务中断，断点已保存"
-                  : stageCopy[job.stage])}
+                {t(jobOnlyNeedsPackageFields
+                  ? "SKU 已翻译，语言包仍待补全"
+                  : selectedJob.status === "FAILED" && selectedJob.resumable
+                    ? "任务中断，断点已保存"
+                    : stageCopy[selectedJob.stage])}
               </Heading>
             </div>
-            <Badge color={job.status === "FAILED"
+            <Badge color={selectedJob.status === "FAILED"
               ? "red"
-              : job.status === "SUCCEEDED"
+              : selectedJob.status === "SUCCEEDED"
                 ? "green"
-                : job.status === "PAUSED" || job.pauseRequested
+                : selectedJob.status === "PAUSED" || selectedJob.pauseRequested
                   ? "amber"
                   : "blue"}>
-              {job.progressPercent.toFixed(1)}%
+              {selectedJob.progressPercent.toFixed(1)}%
             </Badge>
           </div>
           <Progress
-            value={job.progressPercent}
+            value={selectedJob.progressPercent}
             size="3"
-            color={job.status === "FAILED"
+            color={selectedJob.status === "FAILED"
               ? "red"
-              : job.status === "PAUSED" || job.pauseRequested
+              : selectedJob.status === "PAUSED" || selectedJob.pauseRequested
                 ? "amber"
                 : "blue"}
           />
           <div className="language-job-copy">
-            {job.executionMode === "QWEN_BATCH" ? (
+            {selectedJob.executionMode === "QWEN_BATCH" ? (
               <>
                 <span>
                   {t("已完成 {done} / {total} 个翻译字段", {
-                    done: job.translationProcessedValues,
-                    total: job.translationTotalValues,
+                    done: selectedJob.translationProcessedValues,
+                    total: selectedJob.translationTotalValues,
                   })}
                 </span>
                 <span>
                   {t("已有完整译文 {done} / {total} 个 SKU", {
-                    done: job.translationProcessedSkus,
-                    total: job.totalSkus,
+                    done: selectedJob.translationProcessedSkus,
+                    total: selectedJob.totalSkus,
                   })}
                 </span>
                 <span>
                   {t("Qwen Batch · {status} · 上游完成 {done} / {total} 个请求", {
-                    status: job.externalBatchStatus ?? t("准备中"),
-                    done: job.externalCompletedRequests,
-                    total: job.externalTotalRequests,
+                    status: selectedJob.externalBatchStatus ?? t("准备中"),
+                    done: selectedJob.externalCompletedRequests,
+                    total: selectedJob.externalTotalRequests,
                   })}
                 </span>
               </>
             ) : (
-              <span>{t("已处理 {done} / {total} 个 SKU", { done: job.processedSkus, total: job.totalSkus })}</span>
+              <span>{t("已处理 {done} / {total} 个 SKU", { done: selectedJob.processedSkus, total: selectedJob.totalSkus })}</span>
             )}
-            {job.finalizationTotalValues > 0 ? (
+            {selectedJob.finalizationTotalValues > 0 ? (
               <span>
                 {t("语言包字段 {done} / {total} 项", {
-                  done: job.finalizationProcessedValues,
-                  total: job.finalizationTotalValues,
+                  done: selectedJob.finalizationProcessedValues,
+                  total: selectedJob.finalizationTotalValues,
                 })}
               </span>
             ) : null}
-            {job.resumable ? (
+            {selectedJob.resumable ? (
               <span>
                 {t("剩余 {remaining} 个 SKU · 断点 {time}", {
                   remaining: displayedRemainingJobSkus,
-                  time: formatDate(job.checkpointAt),
+                  time: formatDate(selectedJob.checkpointAt),
                 })}
               </span>
             ) : null}
-            {job.currentSkuName ? <span>{job.currentSkuName}</span> : null}
-            {job.status === "PAUSED" ? <span>{t("继续后将从剩余商品开始")}</span> : null}
-            {job.packagePublished ? <span>{t("已发布版本 v{version}", { version: job.packageVersion ?? "—" })}</span> : null}
+            {selectedJob.currentSkuName ? <span>{selectedJob.currentSkuName}</span> : null}
+            {selectedJob.status === "PAUSED" ? (
+              <span>{t(displayedRemainingJobSkus === 0
+                ? "继续后将核对并补齐未完成字段"
+                : "继续后将从剩余商品开始")}</span>
+            ) : null}
+            {selectedJob.packagePublished ? <span>{t("已发布版本 v{version}", { version: selectedJob.packageVersion ?? "—" })}</span> : null}
           </div>
-          {job.errorMessage ? <Text color="red" size="2">{job.errorMessage}</Text> : null}
+          {displayedJobError ? <Text color="red" size="2">{displayedJobError}</Text> : null}
         </Card>
       ) : null}
 
-      {job && batches.length ? (
+      {batchHistoryLoading && selectedJob ? (
+        <Card className="language-batch-history-card">
+          <div className="language-history-loading is-compact">
+            <Spinner size="2" />
+            <Text size="2" color="gray">{t("正在读取翻译批次记录")}</Text>
+          </div>
+        </Card>
+      ) : selectedJob && selectedBatches.length ? (
         <Card className="language-batch-history-card">
           <div className="language-job-header">
             <div>
               <Text size="1" color="gray">{t("请求记录")}</Text>
               <Heading size="4">{t("翻译批次")}</Heading>
             </div>
-            <Badge color="gray">{t("{count} 批", { count: batches.length })}</Badge>
+            <Badge color="gray">{t("{count} 批", { count: selectedJob.batchCount })}</Badge>
           </div>
+          {selectedJob.batchCount > selectedBatches.length ? (
+            <Text size="1" color="gray">
+              {t("显示最近 {shown} 批；失败批次始终保留。", {
+                shown: selectedBatches.length,
+              })}
+            </Text>
+          ) : null}
           <div className="language-batch-list">
-            {batches.map((batch) => {
+            {selectedBatches.map((batch) => {
               const latestAttempt = batch.attempts[batch.attempts.length - 1];
               const failedAttemptCount = batch.attempts.filter(
                 (attempt) => attempt.status === "FAILED",
@@ -725,7 +939,7 @@ export function LanguagePackagesPage() {
               const recoveredAfterRetry = batch.status === "SUCCEEDED"
                 && failedAttemptCount > 0;
               const retryAvailable = batch.status === "FAILED"
-                && job.status === "FAILED"
+                && selectedJob.status === "FAILED"
                 && !activeJob;
               const batchStatusLabel = automaticRetrying
                 ? "自动重试中"

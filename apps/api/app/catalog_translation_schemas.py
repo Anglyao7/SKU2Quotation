@@ -58,6 +58,7 @@ class CatalogTranslationBatchResponse(BaseModel):
 class CatalogTranslationJobStartRequest(BaseModel):
     target_locale: Literal["en-US", "es", "tr", "ar", "ja", "ko", "pt"] = "en-US"
     mode: Literal["INCREMENTAL", "FULL_REBUILD"] = "INCREMENTAL"
+    execution_mode: Literal["REALTIME", "QWEN_BATCH"] | None = None
     confirm_full_rebuild: bool = False
 
 

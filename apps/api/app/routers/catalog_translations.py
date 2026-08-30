@@ -28,6 +28,13 @@ router = APIRouter(
 @router.get("/status", response_model=CatalogTranslationStatusResponse)
 def get_translation_status(
     target_locale: str = Query(default="en-US", max_length=20),
+    include_latest_job: bool = Query(
+        default=True,
+        description=(
+            "Include the latest job in the coverage response. Clients may "
+            "load /jobs/latest in parallel for a faster history-first UI."
+        ),
+    ),
     session: Session = Depends(get_authenticated_session),
 ) -> CatalogTranslationStatusResponse:
     context = current_context(session)
@@ -37,6 +44,7 @@ def get_translation_status(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             target_locale=target_locale,
+            include_latest_job=include_latest_job,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -127,6 +135,16 @@ def list_translation_batches(
             "polling; the response keeps a three-SKU preview."
         ),
     ),
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=500,
+        description="Return only the newest logical batches.",
+    ),
+    include_failed: bool = Query(
+        default=True,
+        description="Keep older failed batches when a newest-batch limit is used.",
+    ),
     session: Session = Depends(get_authenticated_session),
 ) -> list[CatalogTranslationBatchResponse]:
     context = current_context(session)
@@ -137,6 +155,8 @@ def list_translation_batches(
             permissions=context.permissions,
             job_id=job_id,
             include_skus=include_skus,
+            limit=limit,
+            include_failed=include_failed,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

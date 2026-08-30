@@ -5,7 +5,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import Text, case, cast, exists, func, or_, select, update
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Load, Session, aliased
 
 from ..catalog_merchandising import POPULAR_CATEGORY_CODE
 from ..identity_models import MembershipRow, TenantRow
@@ -707,6 +707,54 @@ def list_all_public_catalog_rows(
             _ordered_public_catalog_statement(statement, query="")
         ).all()
     )
+
+
+def list_all_public_catalog_translation_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+):
+    """Load only the public catalog fields used by translation hashing."""
+
+    statement = _public_catalog_statement(
+        tenant_id=tenant_id,
+        now=now,
+        query="",
+        category=None,
+    ).options(
+        Load(PublicCatalogOfferRow).load_only(
+            PublicCatalogOfferRow.id,
+            PublicCatalogOfferRow.tags,
+            PublicCatalogOfferRow.display_tag,
+            PublicCatalogOfferRow.updated_at,
+        ),
+        Load(SkuRow).load_only(
+            SkuRow.id,
+            SkuRow.sku_code,
+            SkuRow.name,
+            SkuRow.option_values,
+            SkuRow.version,
+            SkuRow.updated_at,
+        ),
+        Load(ProductRow).load_only(
+            ProductRow.id,
+            ProductRow.name,
+            ProductRow.description,
+            ProductRow.current_version,
+            ProductRow.updated_at,
+        ),
+        Load(ProductCategoryRow).load_only(
+            ProductCategoryRow.id,
+            ProductCategoryRow.code,
+            ProductCategoryRow.name,
+            ProductCategoryRow.path,
+            ProductCategoryRow.updated_at,
+        ),
+    )
+    # Hashes sort their own identities, so the storefront's merchandising
+    # order is unnecessary for this administrative calculation.
+    return list(session.execute(statement.order_by(ProductRow.id, SkuRow.id)).all())
 
 
 def list_public_catalog_product_ids(

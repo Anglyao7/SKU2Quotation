@@ -7,8 +7,9 @@ from uuid import uuid4
 
 import pytest
 
+from app.catalog_translation_schemas import CatalogTranslationJobStartRequest
 from app.services import translation_memory
-from app.services.translation import TranslationIdentity
+from app.services.translation import TranslationIdentity, TranslationProviderError
 from app.use_cases import catalog_translations
 
 
@@ -22,6 +23,218 @@ class _Session:
 
 class _Translator:
     identity = TranslationIdentity(provider="test", version="v1")
+
+
+def test_translation_buttons_can_explicitly_select_execution_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session()
+    monkeypatch.setattr(
+        catalog_translations,
+        "catalog_translation_execution_mode",
+        lambda _session: "QWEN_BATCH",
+    )
+
+    incremental = CatalogTranslationJobStartRequest(
+        target_locale="es",
+        mode="INCREMENTAL",
+        execution_mode="REALTIME",
+    )
+    configured_default = CatalogTranslationJobStartRequest(
+        target_locale="es",
+        mode="INCREMENTAL",
+    )
+
+    assert catalog_translations._requested_job_execution_mode(
+        session,
+        incremental,
+    ) == "REALTIME"
+    assert catalog_translations._requested_job_execution_mode(
+        session,
+        configured_default,
+    ) == "QWEN_BATCH"
+
+
+def test_switching_mode_preserves_and_releases_a_paused_checkpoint() -> None:
+    session = _Session()
+    checkpoint = {"requests": [{"custom_id": "kept"}]}
+    job = SimpleNamespace(
+        status="PAUSED",
+        stage="PAUSED",
+        execution_mode="QWEN_BATCH",
+        pause_requested_at=None,
+        completed_at=None,
+        error_message=None,
+        batch_request_payload=checkpoint,
+    )
+
+    replaced = catalog_translations._supersede_paused_job_for_mode(
+        session,
+        job=job,
+        execution_mode="REALTIME",
+        explicitly_requested=True,
+    )
+
+    assert replaced is True
+    assert job.status == "FAILED"
+    assert job.stage == "FAILED"
+    assert job.batch_request_payload is checkpoint
+    assert "断点" in job.error_message
+    assert session.commits == 1
+
+
+def test_empty_materialized_locale_uses_fast_exact_status_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = SimpleNamespace(slug="tenant")
+
+    class _StatusSession:
+        def get(self, _model, _identity):
+            return tenant
+
+    session = _StatusSession()
+    monkeypatch.setattr(
+        catalog_translations,
+        "catalog_translation_execution_mode",
+        lambda _session: "REALTIME",
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "translation_provider_is_configured",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        catalog_translations.translation_repository,
+        "language_pack",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        catalog_translations.translation_repository,
+        "count_translations",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        catalog_translations.translation_repository,
+        "available_target_locales",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        catalog_translations.translation_repository,
+        "available_language_pack_locales",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        catalog_translations.public_catalog_repository,
+        "count_public_catalog_rows",
+        lambda *_args, **_kwargs: 11_863,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "language_package_storage_status",
+        lambda: SimpleNamespace(configured=True, fingerprint="storage"),
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "_all_rows",
+        lambda *_args, **_kwargs: pytest.fail("full catalog should not load"),
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "_status_rows",
+        lambda *_args, **_kwargs: pytest.fail("catalog rows should not load"),
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "latest_translation_job",
+        lambda *_args, **_kwargs: pytest.fail("history should load separately"),
+    )
+
+    result = catalog_translations.get_translation_status(
+        session,
+        tenant_id=uuid4(),
+        permissions=frozenset({"product.view"}),
+        target_locale="pt",
+        include_latest_job=False,
+    )
+
+    assert result.total_skus == 11_863
+    assert result.translated_skus == 0
+    assert result.pending_skus == 11_863
+    assert result.latest_job is None
+
+
+def test_explicit_batch_action_resumes_hidden_batch_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session()
+    tenant_id = uuid4()
+    candidate = SimpleNamespace(id=uuid4())
+    context = SimpleNamespace(
+        permissions=frozenset({"product.edit"}),
+        tenant_id=tenant_id,
+        organization_id=uuid4(),
+        user_id=uuid4(),
+        membership_id=uuid4(),
+    )
+    request = CatalogTranslationJobStartRequest(
+        target_locale="es",
+        mode="FULL_REBUILD",
+        execution_mode="QWEN_BATCH",
+        confirm_full_rebuild=True,
+    )
+    resumed: list[object] = []
+
+    monkeypatch.setattr(
+        catalog_translations,
+        "resolved_qwen_batch_configuration",
+        lambda _session: SimpleNamespace(
+            identity=TranslationIdentity(provider="qwen", version="flash")
+        ),
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "language_package_storage_status",
+        lambda: SimpleNamespace(configured=True),
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "_expire_stale_job",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "_active_job",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "_latest_resumable_job_for_mode",
+        lambda *_args, **_kwargs: candidate,
+    )
+
+    def resume(_session, *, context, job_id):
+        resumed.extend([context, job_id])
+        return "resumed"
+
+    monkeypatch.setattr(catalog_translations, "resume_translation_job", resume)
+
+    result = catalog_translations.start_translation_job(
+        session,
+        context=context,
+        request=request,
+    )
+
+    assert result == "resumed"
+    assert resumed == [context, candidate.id]
+
+
+def test_safe_job_error_localizes_language_package_incomplete_message() -> None:
+    message = catalog_translations._safe_job_error(
+        TranslationProviderError(
+            "language package translation left 1 fields incomplete"
+        )
+    )
+    assert "仍有 1 个字段" in message
 
 
 def test_translation_memory_honors_explicit_managed_limits(

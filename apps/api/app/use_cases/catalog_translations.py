@@ -11,7 +11,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 import psycopg
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session
 
@@ -199,6 +199,38 @@ def _positive_environment(
     return max(1, min(value, maximum))
 
 
+def _requested_job_execution_mode(
+    session: Session,
+    request: CatalogTranslationJobStartRequest,
+) -> str:
+    return request.execution_mode or catalog_translation_execution_mode(session)
+
+
+def _supersede_paused_job_for_mode(
+    session: Session,
+    *,
+    job: CatalogTranslationJobRow,
+    execution_mode: str,
+    explicitly_requested: bool,
+) -> bool:
+    if (
+        not explicitly_requested
+        or job.status != "PAUSED"
+        or job.execution_mode == execution_mode
+    ):
+        return False
+    # Preserve the transport and translation checkpoints while releasing the
+    # one-active-job constraint for the deliberately selected execution mode.
+    now = utcnow()
+    job.status = "FAILED"
+    job.stage = "FAILED"
+    job.pause_requested_at = None
+    job.completed_at = now
+    job.error_message = "已切换翻译方式，原任务断点仍保留在历史记录中。"
+    session.commit()
+    return True
+
+
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
@@ -367,20 +399,28 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
     failed_batch_count = 0
     job_session = object_session(job)
     if job_session is not None:
-        batch_statuses = list(
-            job_session.scalars(
-                select(CatalogTranslationBatchRow.status).where(
+        batch_count, completed_batch_count, failed_batch_count = (
+            int(value or 0)
+            for value in job_session.execute(
+                select(
+                    func.count(CatalogTranslationBatchRow.id),
+                    func.sum(
+                        case(
+                            (CatalogTranslationBatchRow.status == "SUCCEEDED", 1),
+                            else_=0,
+                        )
+                    ),
+                    func.sum(
+                        case(
+                            (CatalogTranslationBatchRow.status == "FAILED", 1),
+                            else_=0,
+                        )
+                    ),
+                ).where(
                     CatalogTranslationBatchRow.tenant_id == job.tenant_id,
                     CatalogTranslationBatchRow.job_id == job.id,
                 )
-            ).all()
-        )
-        batch_count = len(batch_statuses)
-        completed_batch_count = sum(
-            status == "SUCCEEDED" for status in batch_statuses
-        )
-        failed_batch_count = sum(
-            status == "FAILED" for status in batch_statuses
+            ).one()
         )
     return CatalogTranslationJobResponse(
         id=job.id,
@@ -1076,6 +1116,18 @@ def _all_rows(
     )
 
 
+def _status_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+) -> list[object]:
+    return public_catalog_repository.list_all_public_catalog_translation_rows(
+        session,
+        tenant_id=tenant_id,
+        now=utcnow(),
+    )
+
+
 def _pending_sources(
     session: Session,
     *,
@@ -1174,6 +1226,8 @@ def list_translation_batches(
     permissions: frozenset[str],
     job_id: UUID,
     include_skus: bool = True,
+    limit: int | None = None,
+    include_failed: bool = True,
 ) -> list[CatalogTranslationBatchResponse]:
     _require(permissions, "product.view")
     job = session.scalar(
@@ -1188,16 +1242,44 @@ def list_translation_batches(
             "商品翻译任务不存在。",
             kind="not_found",
         )
-    batches = list(
-        session.scalars(
-            select(CatalogTranslationBatchRow)
-            .where(
-                CatalogTranslationBatchRow.tenant_id == tenant_id,
-                CatalogTranslationBatchRow.job_id == job_id,
-            )
-            .order_by(CatalogTranslationBatchRow.sequence_no.asc())
-        ).all()
+    batch_statement = select(CatalogTranslationBatchRow).where(
+        CatalogTranslationBatchRow.tenant_id == tenant_id,
+        CatalogTranslationBatchRow.job_id == job_id,
     )
+    if limit is None:
+        batches = list(
+            session.scalars(
+                batch_statement.order_by(CatalogTranslationBatchRow.sequence_no.asc())
+            ).all()
+        )
+    else:
+        recent = list(
+            session.scalars(
+                batch_statement
+                .order_by(CatalogTranslationBatchRow.sequence_no.desc())
+                .limit(limit)
+            ).all()
+        )
+        recent.reverse()
+        if include_failed:
+            recent_ids = [batch.id for batch in recent]
+            failed_statement = batch_statement.where(
+                CatalogTranslationBatchRow.status == "FAILED"
+            )
+            if recent_ids:
+                failed_statement = failed_statement.where(
+                    CatalogTranslationBatchRow.id.not_in(recent_ids)
+                )
+            failed = list(
+                session.scalars(
+                    failed_statement.order_by(
+                        CatalogTranslationBatchRow.sequence_no.asc()
+                    )
+                ).all()
+            )
+            batches = [*failed, *recent]
+        else:
+            batches = recent
     if not batches:
         return []
     attempts = list(
@@ -1623,6 +1705,7 @@ def get_translation_status(
     tenant_id: UUID,
     permissions: frozenset[str],
     target_locale: str = "en-US",
+    include_latest_job: bool = True,
 ) -> CatalogTranslationStatusResponse:
     _require(permissions, "product.view")
     tenant = session.get(TenantRow, tenant_id)
@@ -1653,36 +1736,60 @@ def get_translation_status(
             except TranslationProviderError:
                 configured = False
 
-    rows = _all_rows(session, tenant_id=tenant_id)
-    sources = [catalog_translation_source(row) for row in rows]
-    pending, stale = _pending_sources(
-        session,
-        tenant_id=tenant_id,
-        target_locale=target_locale,
-        sources=sources,
-        full_rebuild=False,
-    )
-    valid_count = max(0, len(sources) - len(pending))
     pack = translation_repository.language_pack(
         session,
         tenant_id=tenant_id,
         target_locale=target_locale,
     )
-    current_source_digest = catalog_rows_source_digest(rows)
     storage_status = language_package_storage_status()
-    package_outdated = bool(
-        pack is None
-        or pack.source_digest != current_source_digest
-        or pack.storage_fingerprint != storage_status.fingerprint
+    translation_count = translation_repository.count_translations(
+        session,
+        tenant_id=tenant_id,
+        target_locale=target_locale,
     )
+    if pack is None and translation_count == 0:
+        # A language that only has a Qwen text-memory checkpoint has no
+        # materialized per-SKU rows yet. A count query is exact here and avoids
+        # loading and hashing the full catalog merely to prove every SKU is
+        # pending; live Batch progress comes from /jobs/latest.
+        total_skus = public_catalog_repository.count_public_catalog_rows(
+            session,
+            tenant_id=tenant_id,
+            now=utcnow(),
+            query="",
+            category=None,
+            tags=set(),
+        )
+        valid_count = 0
+        pending_count = total_skus
+        stale = 0
+        package_outdated = True
+    else:
+        rows = _status_rows(session, tenant_id=tenant_id)
+        sources = [catalog_translation_source(row) for row in rows]
+        pending, stale = _pending_sources(
+            session,
+            tenant_id=tenant_id,
+            target_locale=target_locale,
+            sources=sources,
+            full_rebuild=False,
+        )
+        total_skus = len(sources)
+        pending_count = len(pending)
+        valid_count = max(0, total_skus - pending_count)
+        package_outdated = bool(
+            pack is None
+            or pack.source_digest != catalog_rows_source_digest(rows)
+            or pack.storage_fingerprint != storage_status.fingerprint
+        )
     return CatalogTranslationStatusResponse(
         source_locale=_SOURCE_LOCALE,
         target_locale=target_locale,
         provider_configured=configured,
-        total_skus=len(sources),
+        total_skus=total_skus,
         translated_skus=valid_count,
         stale_skus=stale,
-        pending_skus=len(pending),
+        pending_skus=pending_count,
         package_outdated=package_outdated,
         package_storage_configured=storage_status.configured,
         available_locales=list(
@@ -1701,11 +1808,15 @@ def get_translation_status(
             )
         ),
         package=_language_pack_response(pack, tenant_slug=tenant.slug),
-        latest_job=latest_translation_job(
-            session,
-            tenant_id=tenant_id,
-            permissions=permissions,
-            target_locale=target_locale,
+        latest_job=(
+            latest_translation_job(
+                session,
+                tenant_id=tenant_id,
+                permissions=permissions,
+                target_locale=target_locale,
+            )
+            if include_latest_job
+            else None
         ),
     )
 
@@ -1817,7 +1928,14 @@ def public_language_pack_content(
 
 def _safe_job_error(exc: Exception) -> str:
     if isinstance(exc, TranslationProviderError):
-        return f"{str(exc).rstrip('。')}。已保存翻译断点，可稍后继续。"
+        message = str(exc).rstrip("。")
+        prefix = "language package translation left "
+        suffix = " fields incomplete"
+        if message.startswith(prefix) and message.endswith(suffix):
+            count = message[len(prefix) : -len(suffix)]
+            if count.isdigit():
+                message = f"语言包仍有 {count} 个字段未完成翻译"
+        return f"{message}。已保存翻译断点，可稍后继续。"
     return "商品翻译任务执行中断，已保存翻译断点，可稍后继续。"
 
 
@@ -3691,6 +3809,26 @@ def resume_translation_job(
     return _job_response(job)
 
 
+def _latest_resumable_job_for_mode(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+    execution_mode: str,
+) -> CatalogTranslationJobRow | None:
+    return session.scalar(
+        select(CatalogTranslationJobRow)
+        .where(
+            CatalogTranslationJobRow.tenant_id == tenant_id,
+            CatalogTranslationJobRow.target_locale == target_locale,
+            CatalogTranslationJobRow.execution_mode == execution_mode,
+            CatalogTranslationJobRow.status.in_(("PAUSED", "FAILED")),
+        )
+        .order_by(CatalogTranslationJobRow.created_at.desc())
+        .limit(1)
+    )
+
+
 def start_translation_job(
     session: Session,
     *,
@@ -3703,7 +3841,7 @@ def start_translation_job(
             "CATALOG_TRANSLATION_REBUILD_CONFIRMATION_REQUIRED",
             "全量重新翻译需要明确确认。",
         )
-    execution_mode = catalog_translation_execution_mode(session)
+    execution_mode = _requested_job_execution_mode(session, request)
     try:
         if execution_mode == "QWEN_BATCH":
             identity = resolved_qwen_batch_configuration(session).identity
@@ -3735,7 +3873,30 @@ def start_translation_job(
         target_locale=request.target_locale,
     )
     if existing is not None:
-        return _job_response(existing)
+        if not _supersede_paused_job_for_mode(
+            session,
+            job=existing,
+            execution_mode=execution_mode,
+            explicitly_requested=request.execution_mode is not None,
+        ):
+            return _job_response(existing)
+
+    # A task from the other engine may be newer than a saved checkpoint.  An
+    # explicitly selected action must resume the matching engine's checkpoint
+    # instead of silently submitting duplicate Batch work.
+    if request.execution_mode is not None:
+        resumable = _latest_resumable_job_for_mode(
+            session,
+            tenant_id=context.tenant_id,
+            target_locale=request.target_locale,
+            execution_mode=execution_mode,
+        )
+        if resumable is not None:
+            return resume_translation_job(
+                session,
+                context=context,
+                job_id=resumable.id,
+            )
 
     rows = _all_rows(session, tenant_id=context.tenant_id)
     sources = [catalog_translation_source(row) for row in rows]
