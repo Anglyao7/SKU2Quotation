@@ -24,6 +24,7 @@ import { Link, useLoaderData, useSearchParams } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
+import { StorefrontFooter } from "../components/StorefrontFooter";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { money } from "../lib/format";
@@ -224,5 +225,6 @@ export function StorefrontVisitorCenterPage() {
         </div>
       </Tabs.Root>
     </Container></main>
+    <StorefrontFooter store={store} t={t} />
   </div>;
 }

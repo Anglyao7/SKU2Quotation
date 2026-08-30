@@ -34,6 +34,7 @@ import { ProductCard } from "../components/ProductCard";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
+import { StorefrontFooter } from "../components/StorefrontFooter";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
@@ -1547,14 +1548,7 @@ export function StorePage() {
         locale={locale}
         config={store.support_widget}
       />
-      <footer className="store-footer">
-        <Container size="4">
-          <div className="store-footer-inner">
-            <Text size="1" color="gray">{t("商品与报价由 {store} 提供，报价草稿须经商家确认。", { store: store.name })}</Text>
-            <Link to="/privacy">{t("隐私政策")}</Link>
-          </div>
-        </Container>
-      </footer>
+      <StorefrontFooter store={store} t={t} />
     </div>
   );
 }

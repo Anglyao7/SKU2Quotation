@@ -164,6 +164,18 @@ export interface Storefront {
   ai_search_questions?: string[];
   announcements?: PublicAnnouncement[];
   support_widget?: PublicSupportWidget;
+  footer_sections?: StorefrontFooterSection[];
+}
+
+export interface StorefrontFooterLink {
+  label: string;
+  url: string;
+}
+
+export interface StorefrontFooterSection {
+  title: string;
+  title_url?: string | null;
+  links: StorefrontFooterLink[];
 }
 
 export interface StorefrontExchangeRate {

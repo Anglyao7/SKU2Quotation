@@ -98,6 +98,10 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         default=dict,
         nullable=False,
     )
+    storefront_footer_config: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=True,
+    )
 
 
 class PublicCatalogOfferRow(AuditTimestampMixin, Base):

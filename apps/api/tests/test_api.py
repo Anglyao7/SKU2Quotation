@@ -1000,6 +1000,75 @@ def test_merchant_controls_hot_product_merchandising() -> None:
             session.commit()
 
 
+def test_merchant_customizes_public_storefront_footer_links() -> None:
+    sections = [
+        {
+            "title": "About YOYO PETS",
+            "title_url": "https://yoyo.example/about",
+            "links": [
+                {"label": "About Us", "url": "https://yoyo.example/about"},
+                {"label": "Privacy Policy", "url": "/privacy"},
+            ],
+        },
+        {
+            "title": "Contact Us",
+            "links": [
+                {"label": "WhatsApp", "url": "https://wa.me/15551234567"},
+                {"label": "Email", "url": "mailto:hello@yoyo.example"},
+                {"label": "Website", "url": "https://yoyo.example"},
+            ],
+        },
+    ]
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original = profile.storefront_footer_config
+
+    try:
+        updated = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_footer_sections": sections},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["storefront_footer_sections"] == [
+            {**sections[0]},
+            {**sections[1], "title_url": None},
+        ]
+
+        storefront = client.get("/api/store/demo")
+        assert storefront.status_code == 200, storefront.text
+        assert storefront.json()["footer_sections"] == updated.json()[
+            "storefront_footer_sections"
+        ]
+
+        unsafe = client.patch(
+            "/api/v1/me/merchant",
+            json={
+                "storefront_footer_sections": [
+                    {
+                        "title": "Unsafe",
+                        "links": [{"label": "Bad", "url": "javascript:alert(1)"}],
+                    }
+                ]
+            },
+        )
+        assert unsafe.status_code == 422
+
+        cleared = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_footer_sections": []},
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["storefront_footer_sections"] == []
+        assert client.get("/api/store/demo").json()["footer_sections"] == []
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.storefront_footer_config = original
+            session.commit()
+
+
 def test_merchant_controls_optional_share_card_subtitle() -> None:
     subtitle = f"专注精选商品 {uuid4().hex[:6]}"
     share_id: UUID | None = None
@@ -17203,7 +17272,7 @@ class _SplitRecoveryCatalogJobTestProvider:
         source_locale: str,
         target_locale: str,
     ) -> str:
-        item_ids = set(re.findall(r"\[\[ATCF_(\d{3})_\d{3}\]\]", text))
+        item_ids = set(re.findall(r"\[\[ATCV_(\d{3})\]\]", text))
         if len(item_ids) > 1:
             raise TranslationProviderError(
                 "damaged batch boundary",
@@ -17782,6 +17851,21 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         assert finished_payload["stage"] == "PUBLISHED"
         assert finished_payload["package_published"] is True
         assert finished_payload["package_version"] == 1
+        assert finished_payload["translation_total_values"] > 0
+        assert finished_payload["translation_processed_values"] == (
+            finished_payload["translation_total_values"]
+        )
+        assert finished_payload["translation_processed_skus"] == 3
+        assert finished_payload["finalization_total_values"] == 0
+        unified_batches = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert unified_batches.status_code == 200, unified_batches.text
+        assert unified_batches.json()
+        assert all(
+            batch["item_kind"] == "TEXT"
+            for batch in unified_batches.json()
+        )
 
         final = client.get("/api/v1/catalog/translations/status")
         assert final.status_code == 200, final.text
@@ -18507,11 +18591,14 @@ def test_catalog_translation_job_resumes_failed_provider_from_last_batch(
         assert interrupted.status_code == 200, interrupted.text
         interrupted_payload = interrupted.json()
         assert interrupted_payload["status"] == "FAILED"
-        assert interrupted_payload["processed_skus"] == 1
-        assert interrupted_payload["remaining_skus"] == 2
+        assert interrupted_payload["processed_skus"] == 0
+        assert 0 < interrupted_payload["translation_processed_values"] < (
+            interrupted_payload["translation_total_values"]
+        )
+        assert interrupted_payload["remaining_skus"] == 3
         assert interrupted_payload["resumable"] is True
         assert "断点" in interrupted_payload["error_message"]
-        assert provider.calls == 3
+        assert provider.calls >= 3
         interrupted_batches = client.get(
             f"/api/v1/catalog/translations/jobs/{job_id}/batches"
         )
@@ -18521,11 +18608,14 @@ def test_catalog_translation_job_resumes_failed_provider_from_last_batch(
             for batch in interrupted_batches.json()
             if batch["status"] == "FAILED"
         ]
-        assert len(failed_batches) == 1
-        assert failed_batches[0]["attempt_count"] == 2
-        assert [
-            attempt["status"] for attempt in failed_batches[0]["attempts"]
-        ] == ["FAILED", "FAILED"]
+        assert failed_batches
+        assert all(batch["item_kind"] == "TEXT" for batch in failed_batches)
+        assert all(batch["attempt_count"] == 2 for batch in failed_batches)
+        assert all(
+            [attempt["status"] for attempt in batch["attempts"]]
+            == ["FAILED", "FAILED"]
+            for batch in failed_batches
+        )
 
         provider.outage_after_first = False
         resumed = client.post(
@@ -18572,7 +18662,7 @@ def test_catalog_translation_job_resumes_failed_provider_from_last_batch(
             session.commit()
 
 
-def test_catalog_translation_split_recovery_syncs_parent_batch_status(
+def test_catalog_translation_text_batch_recovers_damaged_group(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -18624,12 +18714,9 @@ def test_catalog_translation_split_recovery_syncs_parent_batch_status(
         )
         assert batches.status_code == 200, batches.text
         payload = batches.json()
-        assert len(payload) > 1
+        assert payload
+        assert all(batch["item_kind"] == "TEXT" for batch in payload)
         assert all(batch["status"] == "SUCCEEDED" for batch in payload)
-        assert any(
-            any(attempt["status"] == "FAILED" for attempt in batch["attempts"])
-            for batch in payload
-        )
     finally:
         with SessionLocal() as session:
             session.execute(
@@ -20935,6 +21022,8 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert profile_columns["hot_products_enabled"]["nullable"] is False
     assert "support_widget_config" in profile_columns
     assert profile_columns["support_widget_config"]["nullable"] is False
+    assert "storefront_footer_config" in profile_columns
+    assert profile_columns["storefront_footer_config"]["nullable"] is True
     assert "logo_object_key" in profile_columns
     assert "category_showcase_enabled" in profile_columns
     assert profile_columns["category_showcase_enabled"]["nullable"] is False
@@ -21063,7 +21152,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-            ).scalar() == "20260823_0106"
+            ).scalar() == "20260830_0120"
     upgraded_engine.dispose()
     command.check(config)
 

@@ -892,10 +892,16 @@ def _public_quote_table_headers(
             header = str(column.header or "").strip()
             if field and header and field not in custom_headers:
                 custom_headers[str(field)] = header
-    return [
-        custom_headers.get(field) or quote_field_label(locale, field)
-        for field in fields
-    ]
+    headers: list[str] = []
+    for field in fields:
+        # System fields have one canonical translation dictionary.  Keeping a
+        # merchant's source-language header here would make a PDF disagree
+        # with the workbench and the generated/custom Excel document after the
+        # quote language is changed.  Unknown fields (if a future template
+        # exposes one) can still retain their custom header.
+        localized = quote_field_label(locale, field)
+        headers.append(localized or custom_headers.get(field) or field)
+    return headers
 
 
 def _quote_table_value(field: str, document: PublicQuoteDocument, item: object) -> str:

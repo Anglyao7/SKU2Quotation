@@ -57,6 +57,13 @@ import {
 import { CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import { ToastNotice, useToast } from "../ToastContext";
+import {
+  quoteFieldLabel,
+  quoteOptionAliases,
+  quoteSeparator,
+  quoteText,
+  quoteUnit,
+} from "../quoteLocalization";
 import type {
   MerchantSettings,
   ProductDetail,
@@ -154,52 +161,103 @@ function templateTableFields(template?: QuoteExcelTemplate): QuoteTemplateField[
   return unique.length ? unique : [...defaultTableFields];
 }
 
-function fieldLabel(field: QuoteTemplateField, t: (value: string) => string, template?: QuoteExcelTemplate) {
+function fieldLabel(
+  field: QuoteTemplateField,
+  t: (value: string) => string,
+  template: QuoteExcelTemplate | undefined,
+  locale: StorefrontLocale,
+) {
+  const fallback = t(tableFieldMeta.find((option) => option.value === field)?.label ?? field);
+  // Mapped system fields use the same localized labels as the generated PDF
+  // and Excel files.  A merchant's template header is a layout hint, not a
+  // second translation source, otherwise the preview and exported document
+  // would disagree when the quote language changes.
+  if (FIELD_LABEL_FIELDS.has(field)) return quoteFieldLabel(locale, field, fallback);
   const templateColumn = template?.columns.find((column) => template.columnMappings[column.key] === field);
-  if (templateColumn?.header?.trim()) return templateColumn.header.trim();
-  return t(tableFieldMeta.find((option) => option.value === field)?.label ?? field);
+  return templateColumn?.header?.trim() || fallback;
 }
 
-function optionValue(item: PublicQuoteDraftItem, keys: string[]) {
+const FIELD_LABEL_FIELDS = new Set<QuoteTemplateField>([
+  "serial_number",
+  "sku_code",
+  "product_name",
+  "description",
+  "specification",
+  "category",
+  "tags",
+  "product_image",
+  "quantity",
+  "unit_code",
+  "packing_quantity",
+  "carton_dimensions",
+  "gross_weight",
+  "carton_volume",
+  "unit_price",
+  "line_total",
+  "total_volume",
+  "total_gross_weight",
+  "currency",
+  "quote_number",
+  "quote_date",
+  "customer_name",
+  "customer_company",
+  "customer_email",
+  "customer_phone",
+  "notes",
+]);
+
+function optionValue(item: PublicQuoteDraftItem, keys: string[], locale?: StorefrontLocale) {
   const values = item.optionValues ?? {};
+  const aliases = Object.values(quoteOptionAliases).find((candidates) =>
+    keys.some((key) => candidates.some((candidate) => candidate.toLowerCase() === key.toLowerCase())),
+  );
+  const candidates = [...keys, ...(aliases ?? [])];
+  if (locale) {
+    for (const field of Object.keys(quoteOptionAliases)) {
+      const fieldAliases = quoteOptionAliases[field] ?? [];
+      if (keys.some((key) => fieldAliases.some((candidate) => candidate.toLowerCase() === key.toLowerCase()))) {
+        candidates.push(quoteFieldLabel(locale, field as QuoteTemplateField));
+      }
+    }
+  }
   const entry = Object.entries(values).find(([key, value]) => {
     if (key.startsWith("_")) return false;
     const normalized = key.replace(/[\s_\-:：]/g, "").toLowerCase();
-    return keys.some((candidate) => normalized === candidate.replace(/[\s_\-:：]/g, "").toLowerCase()) && value !== null && value !== undefined && value !== "";
+    return candidates.some((candidate) => normalized === candidate.replace(/[\s_\-:：]/g, "").toLowerCase()) && value !== null && value !== undefined && value !== "";
   });
   if (!entry) return "";
-  return Array.isArray(entry[1]) ? entry[1].join("、") : String(entry[1]);
+  return Array.isArray(entry[1]) ? entry[1].join(locale ? quoteSeparator(locale) : "、") : String(entry[1]);
 }
 
 function money(value: number, currency: string) {
   return `${currency} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function displayOptionValue(value: unknown) {
-  if (Array.isArray(value)) return value.map((entry) => String(entry)).join("、");
-  if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).map((entry) => String(entry)).join("、");
+function displayOptionValue(value: unknown, separator = "、") {
+  if (Array.isArray(value)) return value.map((entry) => String(entry)).join(separator);
+  if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).map((entry) => String(entry)).join(separator);
   return value == null ? "" : String(value);
 }
 
-function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField) {
+function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField, locale: StorefrontLocale) {
   switch (field) {
     case "serial_number": return String(item.position);
     case "product_name": return item.name;
     case "description": return item.description ?? "";
-    case "specification": return item.specification ?? optionValue(item, ["规格", "规格名称"]);
+    case "specification": return item.specification ?? optionValue(item, quoteOptionAliases.specification, locale);
     case "category": return item.category ?? "";
-    case "tags": return item.tags.join("、");
-    case "product_image": return item.imageUrl ? "已配置" : "";
+    case "tags": return item.tags.join(quoteSeparator(locale));
+    case "product_image": return item.imageUrl ? quoteText(locale, "configured") : "";
     case "quantity": return String(item.quantity);
-    case "unit_code": return item.unitCode;
-    case "packing_quantity": return optionValue(item, ["装箱数量", "装箱数", "一箱个数"]);
-    case "carton_dimensions": return optionValue(item, ["装箱尺寸", "外箱尺寸", "箱规"]);
-    case "gross_weight": return optionValue(item, ["毛重", "箱毛重"]);
-    case "carton_volume": return optionValue(item, ["立方", "箱体积", "cbm"]);
+    case "unit_code": return quoteUnit(locale, item.unitCode);
+    case "packing_quantity": return optionValue(item, quoteOptionAliases.packing_quantity, locale);
+    case "carton_dimensions": return optionValue(item, quoteOptionAliases.carton_dimensions, locale);
+    case "gross_weight": return optionValue(item, quoteOptionAliases.gross_weight, locale);
+    case "carton_volume": return optionValue(item, quoteOptionAliases.carton_volume, locale);
     case "unit_price": return money(item.unitPrice, item.currency);
     case "line_total": return money(item.lineTotal, item.currency);
-    case "total_volume": return optionValue(item, ["总立方", "总立方数", "total_volume"]);
-    case "total_gross_weight": return optionValue(item, ["总毛重", "总毛重kg", "total_gross_weight"]);
+    case "total_volume": return optionValue(item, quoteOptionAliases.total_volume, locale);
+    case "total_gross_weight": return optionValue(item, quoteOptionAliases.total_gross_weight, locale);
     case "currency": return item.currency;
     default: return "";
   }
@@ -714,7 +772,7 @@ export function QuoteWorkbenchPage() {
       "unit_price",
     ];
     if (!canEditPrices || !editableFields.includes(field)) {
-      const value = previewValue(effective, field);
+      const value = previewValue(effective, field, locale);
       return <span className={`quote-preview-cell ${field === "product_name" || field === "description" || field === "specification" ? "quote-preview-cell--multiline" : ""}`} title={value}>{value}</span>;
     }
     const isNumeric = field === "quantity" || field === "unit_price";
@@ -722,13 +780,13 @@ export function QuoteWorkbenchPage() {
     const value = edit[editField] ?? (
       field === "product_name" ? item.name
         : field === "description" ? item.description ?? ""
-          : field === "specification" ? item.specification ?? optionValue(item, ["规格", "规格名称"])
+          : field === "specification" ? item.specification ?? optionValue(item, quoteOptionAliases.specification, locale)
             : field === "category" ? item.category ?? ""
               : field === "quantity" ? String(item.quantity)
                 : field === "unit_code" ? item.unitCode
                   : item.unitPrice.toFixed(2)
     );
-    return <TextField.Root className="quote-preview-editor-field" size="1" type={isNumeric ? "number" : "text"} min={field === "quantity" ? "0.000001" : field === "unit_price" ? "0" : undefined} step={field === "quantity" ? "0.000001" : field === "unit_price" ? "0.01" : undefined} value={value} aria-label={fieldLabel(field, t, selectedTemplate)} title={String(value)} onChange={(event) => updateItemEdit(item.id, editField, event.target.value)}>{field === "unit_price" ? <TextField.Slot side="left">{item.currency}</TextField.Slot> : null}</TextField.Root>;
+    return <TextField.Root className="quote-preview-editor-field" size="1" type={isNumeric ? "number" : "text"} min={field === "quantity" ? "0.000001" : field === "unit_price" ? "0" : undefined} step={field === "quantity" ? "0.000001" : field === "unit_price" ? "0.01" : undefined} value={value} aria-label={fieldLabel(field, t, selectedTemplate, locale)} title={String(value)} onChange={(event) => updateItemEdit(item.id, editField, event.target.value)}>{field === "unit_price" ? <TextField.Slot side="left">{item.currency}</TextField.Slot> : null}</TextField.Root>;
   };
 
   if (loading) return <div className="core-workspace"><CoreLoading label={t("正在打开报价工作台")} /></div>;
@@ -767,7 +825,7 @@ export function QuoteWorkbenchPage() {
            </DropdownMenu.Trigger>
            <DropdownMenu.Content align="start" className="quote-column-menu">
              <DropdownMenu.Label>{t("选择客户可见列")}</DropdownMenu.Label>
-             {availableColumns.map((field) => <DropdownMenu.CheckboxItem key={field} checked={visibleColumns.includes(field)} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate)}</span>{visibleColumns.includes(field) ? <Check /> : null}</DropdownMenu.CheckboxItem>)}
+             {availableColumns.map((field) => <DropdownMenu.CheckboxItem key={field} checked={visibleColumns.includes(field)} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate, locale)}</span>{visibleColumns.includes(field) ? <Check /> : null}</DropdownMenu.CheckboxItem>)}
            </DropdownMenu.Content>
          </DropdownMenu.Root>
        </div>
@@ -849,7 +907,7 @@ export function QuoteWorkbenchPage() {
               <div className="quote-item-price-heading"><div><Text size="2" weight="medium">{t("本次报价价格")}</Text><Text size="1" color="gray">{t("只影响当前报价单，不会自动修改商品库。")}</Text></div><Text size="3" weight="bold" className="quote-item-price-total">{money(selectedDrawerItem.lineTotal, selectedDrawerItem.currency)}</Text></div>
               <div className="quote-item-price-editor">
                 <TextField.Root type="number" min="0" step="0.01" value={priceDrafts[selectedDrawerItem.id] ?? selectedDrawerItem.unitPrice.toFixed(2)} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedDrawerItem.id, "unitPrice", event.target.value)}><TextField.Slot side="left">{selectedDrawerItem.currency}</TextField.Slot></TextField.Root>
-                <Text size="1" color="gray">× {selectedDrawerItem.quantity} {selectedDrawerItem.unitCode}</Text>
+                <Text size="1" color="gray">× {selectedDrawerItem.quantity} {quoteUnit(locale, selectedDrawerItem.unitCode)}</Text>
               </div>
               <div className="quote-item-price-actions">
                 <Button size="2" color="amber" disabled={!canEditPrices || savingItemId === selectedDrawerItem.id || syncingItemId === selectedDrawerItem.id} loading={syncingItemId === selectedDrawerItem.id} onClick={() => requestItemPriceSync(selectedDrawerItem)}>{t("同步到商品库")}</Button>
@@ -859,13 +917,13 @@ export function QuoteWorkbenchPage() {
 
             <div className="quote-item-detail-grid">
               <div><Text size="1" color="gray">{t("商品编码")}</Text><strong className="mono-text">{selectedDrawerItem.skuCode}</strong></div>
-              <div><Text size="1" color="gray">{t("数量")}</Text><strong>{selectedDrawerItem.quantity} {selectedDrawerItem.unitCode}</strong></div>
+              <div><Text size="1" color="gray">{t("数量")}</Text><strong>{selectedDrawerItem.quantity} {quoteUnit(locale, selectedDrawerItem.unitCode)}</strong></div>
               <div><Text size="1" color="gray">{t("版本")}</Text><strong>v{selectedDrawerItem.productVersion} · SKU v{selectedDrawerItem.skuVersion}</strong></div>
             </div>
             {selectedDrawerItem.description ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品描述")}</Text><Text as="p">{selectedDrawerItem.description}</Text></div> : null}
             {selectedDrawerItem.specification ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品规格")}</Text><Text as="p">{selectedDrawerItem.specification}</Text></div> : null}
             {selectedDrawerItem.tags.length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品标签")}</Text><div className="quote-item-tags">{selectedDrawerItem.tags.map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</div></div> : null}
-            {Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("规格参数")}</Text><div className="quote-item-options">{Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).map(([key, value]) => <div key={key}><span>{key}</span><strong>{displayOptionValue(value)}</strong></div>)}</div></div> : null}
+            {Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("规格参数")}</Text><div className="quote-item-options">{Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).map(([key, value]) => <div key={key}><span>{key}</span><strong>{displayOptionValue(value, quoteSeparator(locale))}</strong></div>)}</div></div> : null}
             {detailLoadingId === selectedDrawerItem.productId ? <Text size="1" color="gray">{t("正在读取商品详情…")}</Text> : null}
             {selectedProductDetail ? <Card className="quote-live-product-card"><div className="quote-live-product-heading"><Info size={17} /><Text size="2" weight="medium">{t("商品库实时资料")}</Text></div><Text size="1" color="gray">{selectedProductDetail.productCode || selectedProductDetail.id}</Text>{selectedProductDetail.description ? <Text size="2">{selectedProductDetail.description}</Text> : null}{selectedLiveSku?.name ? <Text size="1" color="gray">{t("当前 SKU 名称")}: {selectedLiveSku.name}</Text> : null}</Card> : null}
           </div>
@@ -908,16 +966,16 @@ export function QuoteWorkbenchPage() {
       </Tabs.List>
       <Tabs.Content value="quotation">
         <Card className="quote-preview-card" style={{ "--quote-accent": selectedStyle.color } as React.CSSProperties}>
-          <div className="quote-preview-header"><div><Text size="1" color="gray">{localeLabel(locale)}</Text><Heading size="7">{t("报价单")}</Heading><Text size="2" color="gray">{quoteNumber} · {coreDate(draft.createdAt)}</Text></div><Badge style={{ background: selectedStyle.color, color: "white" }}>{t(selectedStyle.label)}</Badge></div>
-          <div className="quote-preview-meta"><div><span>{t("客户")}</span><strong>{draft.customerCompany || draft.customerName}</strong></div><div><span>{t("联系人")}</span><strong>{draft.customerName}</strong></div><div><span>{t("有效期")}</span><strong>{coreDate(draft.validUntil)}</strong></div><div><span>{t("币种")}</span><strong>{draft.currency}</strong></div></div>
-          <div className="quote-preview-editor-toolbar"><div><Text size="2" weight="medium">{t("客户 PDF 预览")}</Text><Text size="1" color="gray">{canEditPrices ? t("直接编辑表格中的价格、数量、名称等字段，系统会自动保存。") : t("报价已确认，当前预览为只读。")}</Text></div><div className="quote-preview-editor-actions">{hasPendingItemEdits ? <Badge color="amber">{savingItems ? t("正在自动保存…") : t("等待自动保存")}</Badge> : null}</div></div>
+          <div className="quote-preview-header"><div><Text size="1" color="gray">{localeLabel(locale)}</Text><Heading size="7">{quoteText(locale, "document_title")}</Heading><Text size="2" color="gray">{quoteNumber} · {coreDate(draft.createdAt)}</Text></div><Badge style={{ background: selectedStyle.color, color: "white" }}>{t(selectedStyle.label)}</Badge></div>
+          <div className="quote-preview-meta"><div><span>{quoteText(locale, "customer")}</span><strong>{draft.customerCompany || draft.customerName}</strong></div><div><span>{quoteText(locale, "contact")}</span><strong>{draft.customerName}</strong></div><div><span>{quoteText(locale, "valid_until")}</span><strong>{coreDate(draft.validUntil)}</strong></div><div><span>{quoteText(locale, "currency")}</span><strong>{draft.currency}</strong></div></div>
+          <div className="quote-preview-editor-toolbar"><div><Text size="2" weight="medium">{quoteText(locale, "document_title")}</Text><Text size="1" color="gray">{canEditPrices ? t("直接编辑表格中的价格、数量、名称等字段，系统会自动保存。") : t("报价已确认，当前预览为只读。")}</Text></div><div className="quote-preview-editor-actions">{hasPendingItemEdits ? <Badge color="amber">{savingItems ? t("正在自动保存…") : t("等待自动保存")}</Badge> : null}</div></div>
           <div className="quote-preview-table">
-            <div className="quote-preview-row quote-preview-head" style={{ gridTemplateColumns: previewGrid }}>{activeColumns.map((field) => <span className="quote-preview-cell" key={field}>{fieldLabel(field, t, selectedTemplate)}</span>)}</div>
+            <div className="quote-preview-row quote-preview-head" style={{ gridTemplateColumns: previewGrid }}>{activeColumns.map((field) => <span className="quote-preview-cell" key={field}>{fieldLabel(field, t, selectedTemplate, locale)}</span>)}</div>
             {draft.items.map((item) => <div className="quote-preview-row" style={{ gridTemplateColumns: previewGrid }} key={item.id}>{activeColumns.map((field) => <span className="quote-preview-cell" key={`${item.id}-${field}`}>{renderPreviewCell(item, field)}</span>)}</div>)}
-            <div className="quote-preview-total"><span>{t("报价合计")}</span><strong>{money(previewTotal, draft.currency)}</strong></div>
+            <div className="quote-preview-total"><span>{quoteText(locale, "total")}</span><strong>{money(previewTotal, draft.currency)}</strong></div>
           </div>
-          {draft.notes ? <Card className="quote-preview-notes"><ClipboardText /><div><Text size="1" color="gray">{t("客户备注")}</Text><Text as="div">{draft.notes}</Text></div></Card> : null}
-          <div className="quote-preview-footer"><Text size="1" color="gray">{draft.disclaimer}</Text><span>{t("当前语言")}: {localeLabel(locale)}</span></div>
+          {draft.notes ? <Card className="quote-preview-notes"><ClipboardText /><div><Text size="1" color="gray">{quoteText(locale, "notes")}</Text><Text as="div">{draft.notes}</Text></div></Card> : null}
+          <div className="quote-preview-footer"><Text size="1" color="gray">{draft.disclaimer}</Text><span>{quoteText(locale, "language")}: {localeLabel(locale)}</span></div>
         </Card>
       </Tabs.Content>
       {(["proforma", "sales-contract", "commercial-invoice", "packing-list"] as const).map((value) => <Tabs.Content value={value} key={value}><Card className="quote-coming-soon"><LockKey size={28} /><Heading size="4">{t("该单证将在后续版本开放")}</Heading><Text size="2" color="gray">{t("当前先完成报价单的制作、样式设置和文件导出。")}</Text></Card></Tabs.Content>)}

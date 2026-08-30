@@ -677,6 +677,11 @@ interface ApiMerchantSettings {
   storefront_locales: MerchantSettings["storefrontLocales"];
   storefront_default_locale: MerchantSettings["storefrontDefaultLocale"];
   hot_products_enabled: boolean;
+  storefront_footer_sections?: Array<{
+    title: string;
+    title_url?: string | null;
+    links: Array<{ label: string; url: string }>;
+  }>;
 }
 
 function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
@@ -691,6 +696,14 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
     storefrontLocales: row.storefront_locales,
     storefrontDefaultLocale: row.storefront_default_locale,
     hotProductsEnabled: row.hot_products_enabled,
+    storefrontFooterSections: row.storefront_footer_sections?.map((section) => ({
+      title: section.title,
+      titleUrl: defined(section.title_url),
+      links: section.links.map((link) => ({ ...link })),
+    })) ?? [{
+      title: `About ${row.name}`,
+      links: [{ label: "Privacy Policy", url: "/privacy" }],
+    }],
   };
 }
 
@@ -706,6 +719,7 @@ export async function updateMerchantSettings(input: {
   storefrontLocales?: MerchantSettings["storefrontLocales"];
   storefrontDefaultLocale?: MerchantSettings["storefrontDefaultLocale"];
   hotProductsEnabled?: boolean;
+  storefrontFooterSections?: MerchantSettings["storefrontFooterSections"];
 }): Promise<MerchantSettings> {
   const row = await request<ApiMerchantSettings>(
     "/me/merchant",
@@ -719,6 +733,11 @@ export async function updateMerchantSettings(input: {
         storefront_locales: input.storefrontLocales,
         storefront_default_locale: input.storefrontDefaultLocale,
         hot_products_enabled: input.hotProductsEnabled,
+        storefront_footer_sections: input.storefrontFooterSections?.map((section) => ({
+          title: section.title,
+          title_url: section.titleUrl || null,
+          links: section.links,
+        })),
       }),
     },
   );

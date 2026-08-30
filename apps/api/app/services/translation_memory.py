@@ -651,6 +651,7 @@ def translate_values_with_memory(
     batch_size: int | None = None,
     batch_characters: int | None = None,
     concurrency: int | None = None,
+    force_refresh_values: set[str] | None = None,
 ) -> dict[str, str]:
     """Return available translations and cache only text users actually requested.
 
@@ -666,6 +667,11 @@ def translate_values_with_memory(
     unique_sources = list(dict.fromkeys(normalized_by_original.values()))
     if not unique_sources or source_locale == target_locale:
         return {}
+    forced_sources = {
+        value.strip()
+        for value in (force_refresh_values or set())
+        if value and value.strip()
+    }
 
     identity = translator.identity
     memory_keys_by_source = {
@@ -679,7 +685,12 @@ def translate_values_with_memory(
         )
         for source in unique_sources
     }
-    translations = _redis_get_many(memory_keys_by_source)
+    reusable_memory_keys = {
+        source: key
+        for source, key in memory_keys_by_source.items()
+        if source not in forced_sources
+    }
+    translations = _redis_get_many(reusable_memory_keys)
     translations = {
         source: translated
         for source, translated in translations.items()
@@ -691,7 +702,9 @@ def translate_values_with_memory(
         )
     }
     database_sources = [
-        source for source in unique_sources if source not in translations
+        source
+        for source in unique_sources
+        if source not in translations and source not in forced_sources
     ]
     if database_sources:
         database_hits = _database_get_many(
@@ -722,10 +735,18 @@ def translate_values_with_memory(
         source for source in unique_sources if source not in translations
     ]
     futures_by_source: dict[str, Future[str]] = {}
+    flight_keys_by_source = {
+        source: (
+            (*memory_keys_by_source[source], "force-refresh")
+            if source in forced_sources
+            else memory_keys_by_source[source]
+        )
+        for source in missing_sources
+    }
     leader_sources: list[str] = []
     with _SINGLEFLIGHT_LOCK:
         for source in missing_sources:
-            key = memory_keys_by_source[source]
+            key = flight_keys_by_source[source]
             future = _INFLIGHT_TRANSLATIONS.get(key)
             if future is None:
                 future = Future()
@@ -779,7 +800,7 @@ def translate_values_with_memory(
                             ),
                         )
                     )
-                key = memory_keys_by_source[source]
+                key = flight_keys_by_source[source]
                 if _INFLIGHT_TRANSLATIONS.get(key) is future:
                     del _INFLIGHT_TRANSLATIONS[key]
 

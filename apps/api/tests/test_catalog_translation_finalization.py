@@ -286,6 +286,58 @@ def test_translation_memory_honors_explicit_managed_limits(
     assert maximum_active == 2
 
 
+def test_translation_memory_force_refresh_bypasses_existing_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "需要重新翻译的规格"
+    translated_batches: list[list[str]] = []
+    translation_memory._reset_translation_memory_for_tests()
+    monkeypatch.setattr(
+        translation_memory,
+        "_redis_get_many",
+        lambda keys: {value: "Old translation" for value in keys},
+    )
+    monkeypatch.setattr(
+        translation_memory,
+        "_database_get_many",
+        lambda **_kwargs: pytest.fail("forced text must bypass database memory"),
+    )
+
+    def translate_uncached(_translator, values, **_kwargs):
+        batch = list(values)
+        translated_batches.append(batch)
+        return ({value: "Fresh translation" for value in batch}, {})
+
+    monkeypatch.setattr(
+        translation_memory,
+        "_translate_uncached_values",
+        translate_uncached,
+    )
+    monkeypatch.setattr(
+        translation_memory,
+        "_database_store_many",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        translation_memory,
+        "_redis_store_many",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = translation_memory.translate_values_with_memory(
+        tenant_id=uuid4(),
+        translator=_Translator(),
+        values=[source],
+        source_locale="zh-CN",
+        target_locale="en-US",
+        force_refresh_values={source},
+    )
+
+    assert result == {source: "Fresh translation"}
+    assert translated_batches == [[source]]
+    translation_memory._reset_translation_memory_for_tests()
+
+
 def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -303,6 +355,11 @@ def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
         catalog_translations,
         "resolved_catalog_translation_concurrency",
         lambda _session: 1,
+    )
+    monkeypatch.setattr(
+        catalog_translations,
+        "resolved_catalog_translation_retry_count",
+        lambda _session: 0,
     )
     monkeypatch.setattr(
         catalog_translations,
@@ -353,6 +410,7 @@ def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
     )
 
     job = SimpleNamespace(
+        id=uuid4(),
         tenant_id=uuid4(),
         target_locale="en-US",
         batch_request_payload={},
@@ -372,6 +430,7 @@ def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
     )
     assert paused is True
     assert translated_requests == [["规格甲"]]
+    assert catalog_translations._job_realtime_translation_counts(job) == (2, 1)
     assert catalog_translations._job_finalization_counts(job) == (2, 1)
 
     monkeypatch.setattr(
@@ -390,5 +449,6 @@ def test_language_pack_field_translation_resumes_from_its_own_checkpoint(
     )
     assert resumed is False
     assert translated_requests == [["规格甲"], ["规格乙"]]
+    assert catalog_translations._job_realtime_translation_counts(job) == (2, 2)
     assert catalog_translations._job_finalization_counts(job) == (2, 2)
     assert job.current_sku_name is None

@@ -22,6 +22,7 @@ from ..services.storefront_branding import (
     storefront_logo_url,
 )
 from ..services.storefront_paths import allocate_storefront_slug
+from ..storefront_footer import storefront_footer_config, storefront_footer_sections
 from ..storefront_locales import (
     effective_storefront_locales,
     normalize_storefront_locale,
@@ -71,6 +72,11 @@ def _response(
         storefront_default_locale=storefront_default_locale,
         hot_products_enabled=(
             bool(profile.hot_products_enabled) if profile is not None else False
+        ),
+        storefront_footer_sections=storefront_footer_sections(
+            profile.storefront_footer_config if profile is not None else None,
+            merchant_name=tenant.name,
+            contact_email=profile.contact_email if profile is not None else None,
         ),
     )
 
@@ -201,6 +207,7 @@ def update_merchant_settings(
         or request.storefront_locales is not None
         or request.storefront_default_locale is not None
         or request.hot_products_enabled is not None
+        or request.storefront_footer_sections is not None
     ):
         profile = TenantPublicProfileRow(
             tenant_id=tenant.id,
@@ -282,6 +289,12 @@ def update_merchant_settings(
     if request.hot_products_enabled is not None:
         assert profile is not None
         profile.hot_products_enabled = request.hot_products_enabled
+
+    if request.storefront_footer_sections is not None:
+        assert profile is not None
+        profile.storefront_footer_config = storefront_footer_config(
+            request.storefront_footer_sections
+        )
 
     requested_currency = request.default_currency
     if request.business_mode is not None:

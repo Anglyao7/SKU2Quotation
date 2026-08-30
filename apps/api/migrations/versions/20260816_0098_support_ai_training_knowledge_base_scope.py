@@ -381,12 +381,11 @@ def downgrade() -> None:
         batch.drop_index("ix_support_ai_training_cases_knowledge_base_id")
         batch.drop_constraint("fk_support_ai_training_cases_knowledge_base", type_="foreignkey")
         batch.drop_column("knowledge_base_id")
-    with op.batch_alter_table("support_ai_knowledge_sources") as batch:
-        batch.drop_index("ix_support_ai_knowledge_sources_knowledge_base_id")
-        batch.drop_constraint("fk_support_ai_knowledge_sources_tenant_knowledge_base", type_="foreignkey")
-        batch.drop_column("knowledge_base_id")
-    op.drop_index("ix_support_ai_knowledge_bases_tenant_agent_status", table_name="support_ai_knowledge_bases")
-    op.drop_table("support_ai_knowledge_bases")
+    # Source-to-knowledge-base ownership also predates this migration (0087).
+    # Leave its column, index and tenant-safe foreign key intact for 0097.
+    # The knowledge-base table already exists at down_revision 0097 (it was
+    # introduced by 0087).  Keep it here so the earlier 0090/0088/0087
+    # downgrades can restore and finally remove that original schema in order.
     with op.batch_alter_table("support_ai_training_cases") as batch:
         batch.create_unique_constraint(
             "uq_support_ai_training_cases_external", ["agent_id", "external_id"]

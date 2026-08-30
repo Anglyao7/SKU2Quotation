@@ -61,6 +61,18 @@ export interface MerchantSettings {
   storefrontLocales: StorefrontLocale[];
   storefrontDefaultLocale: StorefrontLocale;
   hotProductsEnabled: boolean;
+  storefrontFooterSections: StorefrontFooterSection[];
+}
+
+export interface StorefrontFooterLink {
+  label: string;
+  url: string;
+}
+
+export interface StorefrontFooterSection {
+  title: string;
+  titleUrl?: string;
+  links: StorefrontFooterLink[];
 }
 
 export interface PermissionSet {

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .announcement_schemas import PublicAnnouncementResponse
 from .quote_template_schemas import QuoteExcelTemplateRenderSpec, QuoteTemplateField
 from .storefront_locales import StorefrontLocale
+from .storefront_footer import StorefrontFooterSection
 from .support_schemas import PublicSupportWidgetResponse
 
 PUBLIC_DRAFT_DISCLAIMER = (
@@ -40,6 +41,7 @@ class PublicStoreResponse(BaseModel):
     ai_search_questions: list[str] = Field(default_factory=list)
     announcements: list[PublicAnnouncementResponse] = Field(default_factory=list)
     support_widget: PublicSupportWidgetResponse
+    footer_sections: list[StorefrontFooterSection] = Field(default_factory=list)
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
 
 

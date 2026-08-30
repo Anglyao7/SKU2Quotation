@@ -31,7 +31,6 @@ from ..public_catalog_models import (
     StorefrontOrderRecordRow,
 )
 from ..public_catalog_schemas import (
-    PUBLIC_DRAFT_DISCLAIMER,
     PUBLIC_DRAFT_DISCLAIMER_VERSION,
     PUBLIC_PRIVACY_NOTICE_VERSION,
     PublicQuoteDocument,
@@ -102,6 +101,7 @@ from ..services.subaccount_pricing import (
     subaccount_sku_price_rules,
 )
 from ..services.platform_usage import increment_image_search
+from ..services.quote_localization import quote_text
 from ..services.translation_configuration import (
     resolved_catalog_translator,
     translation_provider_is_configured,
@@ -110,6 +110,7 @@ from ..services.world_market import (
     get_dashboard_market_snapshot,
     get_exchange_rate_snapshot,
 )
+from ..storefront_footer import storefront_footer_sections
 from ..storefront_locales import (
     effective_storefront_locales,
     normalize_storefront_locale,
@@ -788,6 +789,11 @@ def get_store(
             tenant_id=tenant.id,
         ),
         support_widget=support_use_cases.public_widget(session, profile),
+        footer_sections=storefront_footer_sections(
+            profile.storefront_footer_config,
+            merchant_name=tenant.name,
+            contact_email=profile.contact_email,
+        ),
     )
 
 
@@ -3375,6 +3381,7 @@ def _quote_translation_maps(
     target_locale: str,
     include_product_translations: bool = True,
     include_sku_options: bool = True,
+    allow_live_fallback: bool = True,
 ) -> tuple[
     dict[UUID, object],
     dict[UUID, PublicProductTranslation],
@@ -3443,6 +3450,13 @@ def _quote_translation_maps(
     if not missing_rows and not missing_groups:
         return sku_translations, product_translations
 
+    # Quote preparation and document export must be deterministic and fast.
+    # They consume the published language package (or validated database
+    # translation rows) only. Storefront browsing keeps the live fallback so a
+    # visitor can still see a best-effort translation before a package exists.
+    if not allow_live_fallback:
+        return sku_translations, product_translations
+
     translator = _live_translation_provider(
         session,
         source_locale=source_locale,
@@ -3502,6 +3516,10 @@ def _draft_response(
 ) -> PublicQuoteDraftResponse:
     base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
     document_base = f"{base}/api/quotes/{draft.id}" if base else f"/api/quotes/{draft.id}"
+    document_locale = _normalized_locale(
+        getattr(draft, "document_locale", None),
+        default="zh-CN",
+    )
     return PublicQuoteDraftResponse(
         id=draft.id,
         tenant_id=draft.tenant_id,
@@ -3515,10 +3533,7 @@ def _draft_response(
         visitor_country_code=getattr(draft, "visitor_country_code", None),
         read_only=read_only,
         notes=draft.notes,
-        locale=_normalized_locale(
-            getattr(draft, "document_locale", None),
-            default="zh-CN",
-        ),
+        locale=document_locale,
         document_style=(getattr(draft, "document_style", None) or "indigo"),
         quote_template_id=getattr(draft, "quote_template_id", None),
         visible_columns=[
@@ -3534,7 +3549,7 @@ def _draft_response(
         created_at=draft.created_at,
         updated_at=draft.updated_at,
         content_hash=draft.content_hash,
-        disclaimer=PUBLIC_DRAFT_DISCLAIMER,
+        disclaimer=quote_text(document_locale, "disclaimer"),
         disclaimer_version=draft.disclaimer_version,
         items=[_item_response(item) for item in items],
         download_token=raw_token,
@@ -3561,7 +3576,17 @@ def _localized_quote_response(
     """
     response = _draft_response(draft, items)
     target_locale = response.locale
-    source_locale = _normalized_locale(getattr(tenant, "default_locale", None))
+    snapshot_payload = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+    snapshot_source_locale = snapshot_payload.get("source_locale")
+    # A quote keeps the catalog language that was active when it was submitted.
+    # The merchant can change the storefront default later; using that current
+    # value here would incorrectly treat a translated quote as already being in
+    # the target language and skip the language-pack lookup.
+    source_locale = _normalized_locale(
+        snapshot_source_locale
+        if isinstance(snapshot_source_locale, str) and snapshot_source_locale.strip()
+        else getattr(tenant, "default_locale", None)
+    )
     if target_locale == source_locale or not items:
         return response
     sku_ids = [item.sku_id for item in items]
@@ -3581,6 +3606,7 @@ def _localized_quote_response(
             rows=rows,
             source_locale=source_locale,
             target_locale=target_locale,
+            allow_live_fallback=False,
         )
     except Exception:
         # Export must remain available when an upstream translation provider is
@@ -3800,6 +3826,7 @@ def create_public_quote_draft(
         rows=rows,
         source_locale=source_locale,
         target_locale=requested_locale,
+        allow_live_fallback=False,
     )
     images = repository.approved_image_map(
         session,

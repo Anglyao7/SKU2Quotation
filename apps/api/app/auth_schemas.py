@@ -11,6 +11,10 @@ from pydantic import (
 )
 
 from .localization import UiLocale
+from .storefront_footer import (
+    MAX_STOREFRONT_FOOTER_SECTIONS,
+    StorefrontFooterSection,
+)
 from .storefront_locales import StorefrontLocale, normalize_storefront_locale
 from .tenant_subscriptions import TenantSubscriptionTier
 
@@ -160,6 +164,10 @@ class MerchantSettingsUpdate(BaseModel):
         max_length=8,
     )
     storefront_default_locale: StorefrontLocale | None = None
+    storefront_footer_sections: list[StorefrontFooterSection] | None = Field(
+        default=None,
+        max_length=MAX_STOREFRONT_FOOTER_SECTIONS,
+    )
 
     @field_validator("name", mode="before")
     @classmethod
@@ -211,6 +219,7 @@ class MerchantSettingsUpdate(BaseModel):
             and self.hot_products_enabled is None
             and self.storefront_locales is None
             and self.storefront_default_locale is None
+            and self.storefront_footer_sections is None
         ):
             raise ValueError("at least one merchant setting is required")
         return self
@@ -227,6 +236,7 @@ class MerchantSettingsResponse(BaseModel):
     storefront_locales: list[StorefrontLocale]
     storefront_default_locale: StorefrontLocale
     hot_products_enabled: bool
+    storefront_footer_sections: list[StorefrontFooterSection]
 
 
 class UserPreferencesUpdate(BaseModel):

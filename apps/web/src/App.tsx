@@ -75,6 +75,7 @@ const SupportAIAgentDetailPage = recoverableLazy(() => import("./core/pages/Supp
 const SupportAITrainingPage = recoverableLazy(() => import("./core/pages/SupportAITrainingPage").then((module) => ({ default: module.SupportAITrainingPage })));
 const SupportAIKnowledgePage = recoverableLazy(() => import("./core/pages/SupportAIKnowledgePage").then((module) => ({ default: module.SupportAIKnowledgePage })));
 const PersonalCenterPage = recoverableLazy(() => import("./core/pages/PersonalCenterPage").then((module) => ({ default: module.PersonalCenterPage })));
+const StorefrontManagementPage = recoverableLazy(() => import("./core/pages/StorefrontManagementPage").then((module) => ({ default: module.StorefrontManagementPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
 const ResellerOrdersPage = recoverableLazy(() => import("./core/pages/ResellerOrdersPage").then((module) => ({ default: module.ResellerOrdersPage })));
@@ -350,6 +351,7 @@ const router = createBrowserRouter([{
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "personal-center", element: <PermissionGate anyOf={["support.settings_manage"]}><PersonalCenterPage /></PermissionGate> },
+        { path: "storefront", element: <PermissionGate anyOf={["system.settings_manage"]}><StorefrontManagementPage /></PermissionGate> },
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "system/usage", element: <PlatformAdminGate><PlatformUsageAnalyticsPage /></PlatformAdminGate> },
         { path: "system/configuration", element: <PlatformAdminGate><ConfigurationCenterPage /></PlatformAdminGate> },

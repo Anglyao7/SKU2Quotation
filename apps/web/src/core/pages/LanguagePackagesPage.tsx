@@ -146,9 +146,7 @@ export function LanguagePackagesPage() {
     : selectedJob
       ? selectedJob.totalSkus
       : 0;
-  const checkpointTranslatedSkus = selectedJob?.executionMode === "QWEN_BATCH"
-    ? completedSkuCount(selectedJob)
-    : 0;
+  const checkpointTranslatedSkus = completedSkuCount(selectedJob);
   const displayedTranslatedSkus = Math.min(
     displayedTotalSkus,
     Math.max(
@@ -175,6 +173,7 @@ export function LanguagePackagesPage() {
     : undefined;
   const jobOnlyNeedsPackageFields = Boolean(
     selectedJob?.status === "FAILED"
+    && selectedJob.translationTotalValues === 0
     && selectedStatus
     && selectedStatus.pendingSkus === 0
     && selectedStatus.packageOutdated,
@@ -852,7 +851,7 @@ export function LanguagePackagesPage() {
                 : "blue"}
           />
           <div className="language-job-copy">
-            {selectedJob.executionMode === "QWEN_BATCH" ? (
+            {selectedJob.translationTotalValues > 0 ? (
               <>
                 <span>
                   {t("已完成 {done} / {total} 个翻译字段", {
@@ -866,18 +865,23 @@ export function LanguagePackagesPage() {
                     total: selectedJob.totalSkus,
                   })}
                 </span>
-                <span>
-                  {t("Qwen Batch · {status} · 上游完成 {done} / {total} 个请求", {
-                    status: selectedJob.externalBatchStatus ?? t("准备中"),
-                    done: selectedJob.externalCompletedRequests,
-                    total: selectedJob.externalTotalRequests,
-                  })}
-                </span>
+                {selectedJob.executionMode === "QWEN_BATCH" ? (
+                  <span>
+                    {t("Qwen Batch · {status} · 上游完成 {done} / {total} 个请求", {
+                      status: selectedJob.externalBatchStatus ?? t("准备中"),
+                      done: selectedJob.externalCompletedRequests,
+                      total: selectedJob.externalTotalRequests,
+                    })}
+                  </span>
+                ) : (
+                  <span>{t("实时并发 · SKU 与语言包字段统一翻译")}</span>
+                )}
               </>
             ) : (
               <span>{t("已处理 {done} / {total} 个 SKU", { done: selectedJob.processedSkus, total: selectedJob.totalSkus })}</span>
             )}
-            {selectedJob.finalizationTotalValues > 0 ? (
+            {selectedJob.translationTotalValues === 0
+              && selectedJob.finalizationTotalValues > 0 ? (
               <span>
                 {t("语言包字段 {done} / {total} 项", {
                   done: selectedJob.finalizationProcessedValues,
@@ -895,9 +899,13 @@ export function LanguagePackagesPage() {
             ) : null}
             {selectedJob.currentSkuName ? <span>{selectedJob.currentSkuName}</span> : null}
             {selectedJob.status === "PAUSED" ? (
-              <span>{t(displayedRemainingJobSkus === 0
-                ? "继续后将核对并补齐未完成字段"
-                : "继续后将从剩余商品开始")}</span>
+              <span>{t(
+                selectedJob.translationTotalValues > selectedJob.translationProcessedValues
+                  ? "继续后将从未完成文本断点继续"
+                  : displayedRemainingJobSkus === 0
+                    ? "继续后将核对并补齐未完成字段"
+                    : "继续后将从剩余商品开始",
+              )}</span>
             ) : null}
             {selectedJob.packagePublished ? <span>{t("已发布版本 v{version}", { version: selectedJob.packageVersion ?? "—" })}</span> : null}
           </div>
