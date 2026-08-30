@@ -49,6 +49,7 @@ def _page_response(row: StorefrontCustomPageRow) -> StorefrontCustomPageResponse
         slug=row.slug,
         path=f"/pages/{row.slug}",
         enabled=row.enabled,
+        exchange_rates_enabled=row.exchange_rates_enabled,
         sort_order=row.sort_order,
         original_filename=row.original_filename,
         byte_size=row.byte_size,
@@ -229,6 +230,7 @@ def create_page(
         content_sha256=hashlib.sha256(content).hexdigest(),
         byte_size=len(content),
         enabled=True,
+        exchange_rates_enabled=False,
         sort_order=(int(max_order) + 1) if max_order is not None else 0,
         version=1,
         created_by_user_id=context.user_id,
@@ -270,6 +272,8 @@ def update_page(
         row.slug = request.slug
     if request.enabled is not None:
         row.enabled = request.enabled
+    if request.exchange_rates_enabled is not None:
+        row.exchange_rates_enabled = request.exchange_rates_enabled
     if request.sort_order is not None:
         row.sort_order = request.sort_order
     row.updated_by_user_id = context.user_id
@@ -379,6 +383,7 @@ def public_navigation_pages(
             title=row.title,
             slug=row.slug,
             path=f"{prefix}/{row.slug}",
+            exchange_rates_enabled=row.exchange_rates_enabled,
         )
         for row in rows
     ]
@@ -450,6 +455,7 @@ def public_page(
     return PublicStorefrontPageDocument(
         title=row.title,
         slug=row.slug,
+        exchange_rates_enabled=row.exchange_rates_enabled,
         html=html,
         content_sha256=row.content_sha256,
         updated_at=row.updated_at,

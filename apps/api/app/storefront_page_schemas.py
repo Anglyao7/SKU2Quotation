@@ -24,6 +24,7 @@ class StorefrontCustomPageResponse(BaseModel):
     slug: str
     path: str
     enabled: bool
+    exchange_rates_enabled: bool
     sort_order: int
     original_filename: str
     byte_size: int
@@ -43,6 +44,7 @@ class StorefrontCustomPageUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=80)
     slug: str | None = Field(default=None, min_length=1, max_length=80)
     enabled: bool | None = None
+    exchange_rates_enabled: bool | None = None
     sort_order: int | None = Field(default=None, ge=0)
     expected_version: int = Field(ge=1)
 
@@ -64,6 +66,7 @@ class StorefrontCustomPageUpdate(BaseModel):
             self.title is None
             and self.slug is None
             and self.enabled is None
+            and self.exchange_rates_enabled is None
             and self.sort_order is None
         ):
             raise ValueError("at least one page setting is required")
@@ -74,11 +77,13 @@ class PublicStorefrontPageLink(BaseModel):
     title: str
     slug: str
     path: str
+    exchange_rates_enabled: bool = False
 
 
 class PublicStorefrontPageDocument(BaseModel):
     title: str
     slug: str
+    exchange_rates_enabled: bool = False
     html: str
     content_sha256: str
     updated_at: datetime

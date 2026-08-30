@@ -12,6 +12,7 @@ import {
   ArrowUp,
   CheckCircle,
   Code,
+  CurrencyDollar,
   FileCode,
   PencilSimple,
   Plus,
@@ -29,6 +30,7 @@ import {
   listStorefrontCustomPages,
   replaceStorefrontCustomPageHtml,
   updateStorefrontCustomPage,
+  updateMerchantSettings,
 } from "../api";
 import { CoreError, CoreLoading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
@@ -195,6 +197,37 @@ export function StorefrontCustomPagesSettings() {
     }
   };
 
+  const toggleCatalogExchangeRates = async () => {
+    if (!merchant) return;
+    setBusyId("catalog-exchange-rates");
+    try {
+      const updated = await updateMerchantSettings({
+        exchangeRatesEnabled: !merchant.exchangeRatesEnabled,
+      });
+      setMerchant(updated);
+      notify(t(updated.exchangeRatesEnabled ? "商品首页已显示实时汇率" : "商品首页已隐藏实时汇率"), { kind: "success" });
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : t("商品首页组件设置保存失败"), { kind: "error" });
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const togglePageExchangeRates = async (page: StorefrontCustomPage) => {
+    setBusyId(page.id);
+    try {
+      const updated = await updateStorefrontCustomPage(page, {
+        exchangeRatesEnabled: !page.exchangeRatesEnabled,
+      });
+      setPages((current) => current.map((item) => item.id === page.id ? updated : item));
+      notify(t(updated.exchangeRatesEnabled ? "此路由已显示实时汇率" : "此路由已隐藏实时汇率"), { kind: "success" });
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : t("页面组件设置保存失败"), { kind: "error" });
+    } finally {
+      setBusyId("");
+    }
+  };
+
   const move = async (index: number, direction: -1 | 1) => {
     const nextIndex = index + direction;
     const page = orderedPages[index];
@@ -289,7 +322,7 @@ export function StorefrontCustomPagesSettings() {
         <div>
           <Text size="1" color="gray">{t("顶部导航")}</Text>
           <h2 id="storefront-custom-pages-title">{t("自定义导航与 HTML 页面")}</h2>
-          <p>{t("商品区始终是第一个入口；你可以上传独立 HTML 页面，作为品牌、合作伙伴、销售渠道或联系我们等栏目。")}</p>
+          <p>{t("商品区始终是第一个入口；你可以上传独立 HTML 页面，并为每个路由单独控制实时汇率等页面组件。")}</p>
         </div>
         <Button
           size="3"
@@ -313,6 +346,15 @@ export function StorefrontCustomPagesSettings() {
               <div><strong>{merchant.name}</strong><Badge color="green">{t("商品区 · 固定首页")}</Badge></div>
               <code>/{merchant.slug}</code>
             </div>
+            <label className="storefront-route-component-toggle">
+              <span><CurrencyDollar weight="duotone" /><span><strong>{t("实时汇率")}</strong><small>{t("仅在当前路由显示")}</small></span></span>
+              <Switch
+                checked={merchant.exchangeRatesEnabled}
+                disabled={Boolean(busyId)}
+                onCheckedChange={() => void toggleCatalogExchangeRates()}
+                aria-label={t("商品首页是否显示实时汇率")}
+              />
+            </label>
             <Button asChild variant="soft" color="gray">
               <Link to={merchant.storefrontPath} target="_blank" rel="noreferrer">
                 <ArrowSquareOut />{t("预览")}
@@ -347,6 +389,15 @@ export function StorefrontCustomPagesSettings() {
                   aria-label={t("下移")}
                 ><ArrowDown /></Button>
               </div>
+              <label className="storefront-route-component-toggle">
+                <span><CurrencyDollar weight="duotone" /><span><strong>{t("实时汇率")}</strong><small>{t("仅在当前路由显示")}</small></span></span>
+                <Switch
+                  checked={page.exchangeRatesEnabled}
+                  disabled={Boolean(busyId)}
+                  onCheckedChange={() => void togglePageExchangeRates(page)}
+                  aria-label={t("此路由是否显示实时汇率")}
+                />
+              </label>
               <div className="storefront-page-row-actions">
                 <label className="storefront-page-replace">
                   <input
@@ -370,14 +421,15 @@ export function StorefrontCustomPagesSettings() {
                     </Link>
                   </Button>
                 ) : null}
-                <div className="storefront-page-visibility">
+                <label className="storefront-page-visibility">
+                  <span>{t("导航显示")}</span>
                   <Switch
                     checked={page.enabled}
                     disabled={Boolean(busyId)}
                     onCheckedChange={() => void toggle(page)}
                     aria-label={t("是否在顶部导航显示")}
                   />
-                </div>
+                </label>
                 <Button variant="ghost" color="red" disabled={Boolean(busyId)} onClick={() => setDeleteTarget(page)} aria-label={t("删除页面")}>
                   <Trash />
                 </Button>

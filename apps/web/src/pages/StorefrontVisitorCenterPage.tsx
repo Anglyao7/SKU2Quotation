@@ -23,7 +23,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLoaderData, useSearchParams } from "react-router-dom";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
-import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
 import { StorefrontFooter } from "../components/StorefrontFooter";
 import { StorefrontTopNavigation } from "../components/StorefrontTopNavigation";
 import { ThemeToggle } from "../components/ThemeToggle";
@@ -200,7 +199,6 @@ export function StorefrontVisitorCenterPage() {
       </div></Container>
     </header>
     <StorefrontTopNavigation store={store} locale={locale} />
-    <StorefrontExchangeRates tenantSlug={store.slug} locale={locale} />
     <main className="visitor-center-main"><Container size="4">
       <Link to={storefrontHome} className="sku-detail-back"><ArrowLeft weight="bold" />{t("返回商品目录")}</Link>
       <section className="visitor-center-hero">

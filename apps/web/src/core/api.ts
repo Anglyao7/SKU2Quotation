@@ -680,6 +680,7 @@ interface ApiMerchantSettings {
   storefront_locales: MerchantSettings["storefrontLocales"];
   storefront_default_locale: MerchantSettings["storefrontDefaultLocale"];
   hot_products_enabled: boolean;
+  storefront_exchange_rates_enabled: boolean;
   storefront_footer_sections?: Array<{
     title: string;
     title_url?: string | null;
@@ -699,6 +700,7 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
     storefrontLocales: row.storefront_locales,
     storefrontDefaultLocale: row.storefront_default_locale,
     hotProductsEnabled: row.hot_products_enabled,
+    exchangeRatesEnabled: row.storefront_exchange_rates_enabled,
     storefrontFooterSections: row.storefront_footer_sections?.map((section) => ({
       title: section.title,
       titleUrl: defined(section.title_url),
@@ -722,6 +724,7 @@ export async function updateMerchantSettings(input: {
   storefrontLocales?: MerchantSettings["storefrontLocales"];
   storefrontDefaultLocale?: MerchantSettings["storefrontDefaultLocale"];
   hotProductsEnabled?: boolean;
+  exchangeRatesEnabled?: boolean;
   storefrontFooterSections?: MerchantSettings["storefrontFooterSections"];
 }): Promise<MerchantSettings> {
   const row = await request<ApiMerchantSettings>(
@@ -736,6 +739,7 @@ export async function updateMerchantSettings(input: {
         storefront_locales: input.storefrontLocales,
         storefront_default_locale: input.storefrontDefaultLocale,
         hot_products_enabled: input.hotProductsEnabled,
+        storefront_exchange_rates_enabled: input.exchangeRatesEnabled,
         storefront_footer_sections: input.storefrontFooterSections?.map((section) => ({
           title: section.title,
           title_url: section.titleUrl || null,
@@ -765,6 +769,7 @@ interface ApiStorefrontCustomPage {
   slug: string;
   path: string;
   enabled: boolean;
+  exchange_rates_enabled: boolean;
   sort_order: number;
   original_filename: string;
   byte_size: number;
@@ -781,6 +786,7 @@ function mapStorefrontCustomPage(row: ApiStorefrontCustomPage): StorefrontCustom
     slug: row.slug,
     path: row.path,
     enabled: row.enabled,
+    exchangeRatesEnabled: row.exchange_rates_enabled,
     sortOrder: row.sort_order,
     originalFilename: row.original_filename,
     byteSize: row.byte_size,
@@ -827,6 +833,7 @@ export async function updateStorefrontCustomPage(
     title?: string;
     slug?: string;
     enabled?: boolean;
+    exchangeRatesEnabled?: boolean;
     sortOrder?: number;
   },
 ): Promise<StorefrontCustomPage> {
@@ -838,6 +845,7 @@ export async function updateStorefrontCustomPage(
         title: input.title,
         slug: input.slug,
         enabled: input.enabled,
+        exchange_rates_enabled: input.exchangeRatesEnabled,
         sort_order: input.sortOrder,
         expected_version: page.version,
       }),

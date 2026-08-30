@@ -73,6 +73,11 @@ def _response(
         hot_products_enabled=(
             bool(profile.hot_products_enabled) if profile is not None else False
         ),
+        storefront_exchange_rates_enabled=(
+            bool(profile.storefront_exchange_rates_enabled)
+            if profile is not None
+            else True
+        ),
         storefront_footer_sections=storefront_footer_sections(
             profile.storefront_footer_config if profile is not None else None,
             merchant_name=tenant.name,
@@ -207,6 +212,7 @@ def update_merchant_settings(
         or request.storefront_locales is not None
         or request.storefront_default_locale is not None
         or request.hot_products_enabled is not None
+        or request.storefront_exchange_rates_enabled is not None
         or request.storefront_footer_sections is not None
     ):
         profile = TenantPublicProfileRow(
@@ -289,6 +295,12 @@ def update_merchant_settings(
     if request.hot_products_enabled is not None:
         assert profile is not None
         profile.hot_products_enabled = request.hot_products_enabled
+
+    if request.storefront_exchange_rates_enabled is not None:
+        assert profile is not None
+        profile.storefront_exchange_rates_enabled = (
+            request.storefront_exchange_rates_enabled
+        )
 
     if request.storefront_footer_sections is not None:
         assert profile is not None

@@ -783,6 +783,7 @@ def get_store(
         all_products_position=max(0, int(profile.all_products_position or 0)),
         hot_products_enabled=bool(profile.hot_products_enabled),
         category_showcase_enabled=bool(profile.category_showcase_enabled),
+        exchange_rates_enabled=bool(profile.storefront_exchange_rates_enabled),
         ai_search_questions=_public_ai_search_questions(
             getattr(profile, "ai_search_questions", None),
         ),

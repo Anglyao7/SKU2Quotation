@@ -164,7 +164,9 @@ export function StorefrontCustomPage() {
         </Container>
       </header>
       <StorefrontTopNavigation store={store} locale={locale} activePageSlug={page.slug} />
-      <StorefrontExchangeRates tenantSlug={store.slug} locale={locale} />
+      {page.exchange_rates_enabled ? (
+        <StorefrontExchangeRates tenantSlug={store.slug} locale={locale} />
+      ) : null}
       <main className="storefront-custom-page-main">
         <ResponsiveHtmlFrame html={page.html} title={page.title} />
       </main>

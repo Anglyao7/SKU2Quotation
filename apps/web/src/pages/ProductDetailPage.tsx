@@ -24,7 +24,6 @@ import { Link, useLoaderData, useLocation, useNavigate } from "react-router-dom"
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
-import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
 import { StorefrontFooter } from "../components/StorefrontFooter";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
 import { StorefrontTopNavigation } from "../components/StorefrontTopNavigation";
@@ -291,8 +290,6 @@ export function ProductDetailPage() {
         tenantSlug={store.slug}
         locale={locale}
       />
-
-      <StorefrontExchangeRates tenantSlug={store.slug} locale={locale} />
 
       <main className="sku-detail-main product-detail-main">
         <Container size="4">

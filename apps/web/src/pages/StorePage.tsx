@@ -964,7 +964,9 @@ export function StorePage() {
         locale={locale}
       />
 
-      <StorefrontExchangeRates tenantSlug={tenantSlug} locale={locale} />
+      {store.exchange_rates_enabled !== false ? (
+        <StorefrontExchangeRates tenantSlug={tenantSlug} locale={locale} />
+      ) : null}
 
       {shareToken ? (
         <Container size="4" className="store-share-banner-wrap">

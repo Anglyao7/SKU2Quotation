@@ -161,6 +161,7 @@ export interface Storefront {
   all_products_position?: number;
   hot_products_enabled?: boolean;
   category_showcase_enabled?: boolean;
+  exchange_rates_enabled?: boolean;
   ai_search_questions?: string[];
   announcements?: PublicAnnouncement[];
   support_widget?: PublicSupportWidget;
@@ -172,11 +173,13 @@ export interface StorefrontCustomPageLink {
   title: string;
   slug: string;
   path: string;
+  exchange_rates_enabled?: boolean;
 }
 
 export interface StorefrontCustomPageDocument {
   title: string;
   slug: string;
+  exchange_rates_enabled?: boolean;
   html: string;
   content_sha256: string;
   updated_at: string;

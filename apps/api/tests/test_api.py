@@ -1001,6 +1001,31 @@ def test_merchant_controls_hot_product_merchandising() -> None:
             session.commit()
 
 
+def test_merchant_controls_catalog_exchange_rate_component() -> None:
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original = bool(profile.storefront_exchange_rates_enabled)
+
+    try:
+        response = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_exchange_rates_enabled": not original},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["storefront_exchange_rates_enabled"] is (not original)
+
+        store = client.get("/api/store/demo")
+        assert store.status_code == 200, store.text
+        assert store.json()["exchange_rates_enabled"] is (not original)
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.storefront_exchange_rates_enabled = original
+            session.commit()
+
+
 def test_merchant_customizes_public_storefront_footer_links() -> None:
     sections = [
         {
@@ -1093,6 +1118,7 @@ def test_merchant_uploads_and_manages_public_storefront_html_page() -> None:
         created_id = created_data["id"]
         assert created_data["slug"] == slug
         assert created_data["enabled"] is True
+        assert created_data["exchange_rates_enabled"] is False
 
         with SessionLocal() as session:
             row = session.get(StorefrontCustomPageRow, UUID(created_id))
@@ -1114,18 +1140,21 @@ def test_merchant_uploads_and_manages_public_storefront_html_page() -> None:
         public_page = client.get(f"/api/store/demo/pages/{slug}")
         assert public_page.status_code == 200, public_page.text
         assert "Partner page" in public_page.json()["html"]
+        assert public_page.json()["exchange_rates_enabled"] is False
 
         updated = client.patch(
             f"/api/v1/storefront/pages/{created_id}",
             json={
                 "title": "Available Channel",
                 "slug": renamed_slug,
+                "exchange_rates_enabled": True,
                 "expected_version": created_data["version"],
             },
         )
         assert updated.status_code == 200, updated.text
         updated_data = updated.json()
         assert updated_data["version"] == created_data["version"] + 1
+        assert updated_data["exchange_rates_enabled"] is True
 
         replacement = client.put(
             f"/api/v1/storefront/pages/{created_id}/html",
@@ -1150,6 +1179,7 @@ def test_merchant_uploads_and_manages_public_storefront_html_page() -> None:
         current_page = client.get(f"/api/store/demo/pages/{renamed_slug}")
         assert current_page.status_code == 200, current_page.text
         assert "Available worldwide" in current_page.json()["html"]
+        assert current_page.json()["exchange_rates_enabled"] is True
 
         hidden = client.patch(
             f"/api/v1/storefront/pages/{created_id}",
@@ -21141,6 +21171,8 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert profile_columns["support_widget_config"]["nullable"] is False
     assert "storefront_footer_config" in profile_columns
     assert profile_columns["storefront_footer_config"]["nullable"] is True
+    assert "storefront_exchange_rates_enabled" in profile_columns
+    assert profile_columns["storefront_exchange_rates_enabled"]["nullable"] is False
     storefront_page_columns = {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("storefront_custom_pages")
@@ -21153,6 +21185,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         "content_sha256",
         "byte_size",
         "enabled",
+        "exchange_rates_enabled",
         "sort_order",
         "version",
     }.issubset(storefront_page_columns)
@@ -21284,7 +21317,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     with upgraded_engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-            ).scalar() == "20260830_0121"
+            ).scalar() == "20260830_0122"
     upgraded_engine.dispose()
     command.check(config)
 

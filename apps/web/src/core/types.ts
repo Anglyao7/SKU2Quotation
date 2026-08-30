@@ -61,6 +61,7 @@ export interface MerchantSettings {
   storefrontLocales: StorefrontLocale[];
   storefrontDefaultLocale: StorefrontLocale;
   hotProductsEnabled: boolean;
+  exchangeRatesEnabled: boolean;
   storefrontFooterSections: StorefrontFooterSection[];
 }
 
@@ -81,6 +82,7 @@ export interface StorefrontCustomPage {
   slug: string;
   path: string;
   enabled: boolean;
+  exchangeRatesEnabled: boolean;
   sortOrder: number;
   originalFilename: string;
   byteSize: number;

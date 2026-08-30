@@ -695,8 +695,6 @@ export function QuoteWorkbenchPage() {
 
   const selectedDrawerItemBase = draft?.items.find((item) => item.id === selectedItemId);
   const selectedDrawerItem = selectedDrawerItemBase ? effectiveItem(selectedDrawerItemBase) : undefined;
-  const selectedEditorItem = draft?.items.find((item) => item.id === selectedItemId) ?? draft?.items[0];
-  const selectedEditorItemEffective = selectedEditorItem ? effectiveItem(selectedEditorItem) : undefined;
 
   const updateItemEdit = (itemId: string, field: QuoteItemEditField, value: string) => {
     setItemEdits((current) => ({
@@ -884,48 +882,60 @@ export function QuoteWorkbenchPage() {
     return <TextField.Root className="quote-preview-editor-field" size="1" type={isNumeric ? "number" : "text"} min={field === "quantity" ? "0.000001" : field === "unit_price" ? "0" : undefined} step={field === "quantity" ? "0.000001" : field === "unit_price" ? "0.01" : undefined} value={value} aria-label={fieldLabel(field, t, selectedTemplate, locale)} title={String(value)} onChange={(event) => updateItemEdit(item.id, editField, event.target.value)}>{field === "unit_price" ? <TextField.Slot side="left">{item.currency}</TextField.Slot> : null}</TextField.Root>;
   };
 
+  const renderQuoteToolbar = () => {
+    if (!draft) return null;
+    return (
+      <Card className="quote-workbench-toolbar">
+      <div className="quote-workbench-fields">
+        <div className="quote-workbench-number">
+          <Text size="1" color="gray">{t("报价单 ID / 编号")}</Text>
+          <div className="quote-number-control"><TextField.Root value={quoteNumber} onChange={(event) => setQuoteNumber(event.target.value)} maxLength={80} disabled={isReadOnly} /><Button size="1" variant="soft" color="gray" onClick={() => void copyNumber()}><Copy />{copied ? t("已复制") : t("复制")}</Button></div>
+        </div>
+        <label className="quote-workbench-select"><Text size="1" color="gray">{t("商家报价模板")}</Text><Select.Root value={templateId || "default"} onValueChange={changeTemplate} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper"><Select.Item value="default">{t("系统默认模板")}</Select.Item>{readyTemplates.filter((template) => !template.isDefault).map((template) => <Select.Item key={template.id} value={template.id}>{template.name}</Select.Item>)}</Select.Content></Select.Root></label>
+        <div className="quote-workbench-select">
+          <Text size="1" color="gray"><Columns />{t("商品表格列")}</Text>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>
+              <Button variant="soft" color="gray" className="quote-column-trigger" disabled={isReadOnly}><Columns />{t("已选 {count} 列", { count: activeColumns.length })}<CaretDown /></Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content align="start" className="quote-column-menu">
+              <DropdownMenu.Label>{t("选择客户可见列")}</DropdownMenu.Label>
+              {availableColumns.map((field) => <DropdownMenu.CheckboxItem key={field} checked={visibleColumns.includes(field)} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate, locale)}</span>{visibleColumns.includes(field) ? <Check /> : null}</DropdownMenu.CheckboxItem>)}
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+        </div>
+        <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
+        <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
+      </div>
+      <div className="quote-workbench-actions">
+        <Button variant="soft" color="blue" disabled={!canConvertToUsd || hasPendingItemEdits || converting} loading={converting} onClick={() => setConversionOpen(true)}><CurrencyDollar />{draft.currency === "USD" ? t("已是 USD") : t("换算为 USD")}</Button>
+        {conversionRateLabel && draft.currency.toUpperCase() !== "USD" ? <Text size="1" color="gray" className="quote-fx-rate">1 {draft.currency} = {conversionRateLabel} USD</Text> : null}
+        <Button variant="soft" disabled={!canEditPrices || bulkSaving} onClick={() => setBulkPriceOpen(true)}><SlidersHorizontal />{t("一键调价")}</Button>
+        <Button variant="soft" onClick={() => { setItemsDrawerOpen(true); setSelectedItemId(undefined); }}><Package />{t("订单商品")}<Badge color="gray">{draft.items.length}</Badge></Button>
+        <Text size="1" color="gray" className="quote-autosave-status" aria-live="polite">{saving || savingItems ? t("正在自动保存…") : t("已自动保存")}</Text>
+        <Button color="blue" disabled={!canEditPrices || saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{t("保存报价单")}</Button>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger><Button variant="soft" loading={Boolean(downloading)}><DownloadSimple />{t("导出")}{downloading ? ` ${downloading.toUpperCase()}` : ""}<CaretDown /></Button></DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end"><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("pdf")}><FilePdf />{t("导出为 PDF")}</DropdownMenu.Item><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("xlsx")}><FileXls />{t("导出为 Excel")}</DropdownMenu.Item></DropdownMenu.Content>
+        </DropdownMenu.Root>
+        {draft.status === "PENDING_CONFIRMATION" && !isReadOnly ? <Button color="green" disabled={confirming || saving || savingItems} loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
+      </div>
+      </Card>
+    );
+  };
+
   const renderEditorPanel = () => (
     <Card className="quote-editor-panel">
       <div className="quote-editor-panel-heading">
         <div>
-          <Text size="1" color="gray">{t("报价内容")}</Text>
-          <Heading size="4">{t("编辑商品")}</Heading>
+          <Text size="1" color="gray">{t("报价单设置")}</Text>
+          <Heading size="4">{t("编辑报价单")}</Heading>
         </div>
         <Badge color={saving || savingItems ? "amber" : "jade"}>{saving || savingItems ? t("保存中") : t("自动保存")}</Badge>
       </div>
-      <div className="quote-editor-item-list">
-        {draft?.items.map((sourceItem) => {
-          const item = effectiveItem(sourceItem);
-          const active = item.id === selectedEditorItem?.id;
-          return (
-            <button
-              type="button"
-              className={`quote-editor-item ${active ? "is-active" : ""}`}
-              key={item.id}
-              onClick={() => { setSelectedItemId(item.id); void openItemDetails(sourceItem); }}
-            >
-              {item.imageUrl ? <img src={item.imageUrl} alt="" /> : <span className="quote-item-image-placeholder"><ImageSquare size={20} /></span>}
-              <span className="quote-editor-item-copy"><strong>{item.name}</strong><small>{item.skuCode}</small></span>
-              <span className="quote-editor-item-index">{item.position}</span>
-            </button>
-          );
-        })}
-      </div>
-      {selectedEditorItemEffective ? (
-        <div className="quote-editor-fields">
-          <div className="quote-editor-fields-heading"><Text size="2" weight="medium">{t("当前商品")}</Text><Text size="1" color="gray">{selectedEditorItemEffective.skuCode}</Text></div>
-          <label><span>{t("商品名称")}</span><TextField.Root value={selectedEditorItemEffective.name} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "name", event.target.value)} /></label>
-          <div className="quote-editor-field-grid">
-            <label><span>{t("数量")}</span><TextField.Root type="number" min="0.000001" step="0.000001" value={String(selectedEditorItemEffective.quantity)} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "quantity", event.target.value)} /></label>
-            <label><span>{t("单价")}</span><TextField.Root type="number" min="0" step="0.01" value={priceDrafts[selectedEditorItemEffective.id] ?? selectedEditorItemEffective.unitPrice.toFixed(2)} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "unitPrice", event.target.value)}><TextField.Slot side="left">{selectedEditorItemEffective.currency}</TextField.Slot></TextField.Root></label>
-          </div>
-          <label><span>{t("商品描述")}</span><textarea className="quote-editor-textarea" rows={3} value={selectedEditorItemEffective.description ?? ""} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "description", event.target.value)} /></label>
-          <label><span>{t("商品规格")}</span><textarea className="quote-editor-textarea" rows={2} value={selectedEditorItemEffective.specification ?? ""} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "specification", event.target.value)} /></label>
-          <label><span>{t("商品分类")}</span><TextField.Root value={selectedEditorItemEffective.category ?? ""} disabled={!canEditPrices} onChange={(event) => updateItemEdit(selectedEditorItemEffective.id, "category", event.target.value)} /></label>
-        </div>
-      ) : null}
+      {renderQuoteToolbar()}
       <section className="quote-editor-extra">
-        <div className="quote-editor-extra-heading"><div><Text size="2" weight="medium">{t("额外信息")}</Text><Text size="1" color="gray">{t("显示在商品信息下方")}</Text></div><Button size="1" variant="soft" color="blue" disabled={isReadOnly || extraInformation.length >= 20} onClick={addExtraInformation}>＋ {t("添加")}</Button></div>
+        <div className="quote-editor-extra-heading"><div><Text size="2" weight="medium">{t("额外信息")}</Text><Text size="1" color="gray">{t("显示在整张报价单的商品列表下方")}</Text></div><Button size="1" variant="soft" color="blue" disabled={isReadOnly || extraInformation.length >= 20} onClick={addExtraInformation}>＋ {t("添加")}</Button></div>
         {extraInformation.map((entry, index) => (
           <div className="quote-extra-row" key={`extra-${index}`}>
             <TextField.Root placeholder={t("标题，例如 Deliver")} value={entry.title} disabled={isReadOnly} onChange={(event) => updateExtraInformation(index, "title", event.target.value)} />
@@ -946,10 +956,10 @@ export function QuoteWorkbenchPage() {
         <div className="quote-manual-content">
           <Text size="2" weight="medium">{t("报价单工作台")}</Text>
           <ul>
-            <li>{t("左侧选择商品并编辑名称、数量、价格和规格。")}</li>
+            <li>{t("左侧设置报价单编号、模板、可见列、语言和样式。")}</li>
             <li>{t("中间预览会实时反映报价单内容，变更会自动保存。")}</li>
-            <li>{t("商品表格列可在顶部菜单中选择，空值会保留为空。")}</li>
-            <li>{t("额外信息会显示在商品明细下方。")}</li>
+            <li>{t("商品表格列可在左侧设置，空值会保留为空。")}</li>
+            <li>{t("额外信息会显示在整张商品列表下方。")}</li>
             <li>{t("完成后可导出 PDF 或 Excel，或通过并通知客户。")}</li>
           </ul>
         </div>
@@ -981,43 +991,6 @@ export function QuoteWorkbenchPage() {
       <div className="quote-status-meta"><span>{t("客户")}: {draft.customerCompany || draft.customerName}</span><span>{t("更新时间")}: {coreDate(draft.updatedAt)}</span><span>{t("有效期")}: {coreDate(draft.validUntil)}</span>{draft.visitorCountryCode ? <span>{t("客户国家")}: {draft.visitorCountryCode}</span> : null}</div>
     </Card>
     {isReadOnly ? <Card className="quote-readonly-notice"><ShieldCheck size={19} /><div><Text size="2" weight="medium">{t("当前为只读查看")}</Text><Text size="1" color="gray">{t("这是子账号提交的询价单，只能由提交该询价的子账号制作、确认和处理。")}</Text></div></Card> : null}
-
-    <Card className="quote-workbench-toolbar">
-      <div className="quote-workbench-fields">
-       <div className="quote-workbench-number">
-        <Text size="1" color="gray">{t("报价单 ID / 编号")}</Text>
-        <div className="quote-number-control"><TextField.Root value={quoteNumber} onChange={(event) => setQuoteNumber(event.target.value)} maxLength={80} disabled={isReadOnly} /><Button size="1" variant="soft" color="gray" onClick={() => void copyNumber()}><Copy />{copied ? t("已复制") : t("复制")}</Button></div>
-       </div>
-       <label className="quote-workbench-select"><Text size="1" color="gray">{t("商家报价模板")}</Text><Select.Root value={templateId || "default"} onValueChange={changeTemplate} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper"><Select.Item value="default">{t("系统默认模板")}</Select.Item>{readyTemplates.filter((template) => !template.isDefault).map((template) => <Select.Item key={template.id} value={template.id}>{template.name}</Select.Item>)}</Select.Content></Select.Root></label>
-       <div className="quote-workbench-select">
-         <Text size="1" color="gray"><Columns />{t("商品表格列")}</Text>
-         <DropdownMenu.Root>
-           <DropdownMenu.Trigger>
-             <Button variant="soft" color="gray" className="quote-column-trigger" disabled={isReadOnly}><Columns />{t("已选 {count} 列", { count: activeColumns.length })}<CaretDown /></Button>
-           </DropdownMenu.Trigger>
-           <DropdownMenu.Content align="start" className="quote-column-menu">
-             <DropdownMenu.Label>{t("选择客户可见列")}</DropdownMenu.Label>
-             {availableColumns.map((field) => <DropdownMenu.CheckboxItem key={field} checked={visibleColumns.includes(field)} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate, locale)}</span>{visibleColumns.includes(field) ? <Check /> : null}</DropdownMenu.CheckboxItem>)}
-           </DropdownMenu.Content>
-         </DropdownMenu.Root>
-       </div>
-       <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
-       <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
-      </div>
-      <div className="quote-workbench-actions">
-        <Button variant="soft" color="blue" disabled={!canConvertToUsd || hasPendingItemEdits || converting} loading={converting} onClick={() => setConversionOpen(true)}><CurrencyDollar />{draft.currency === "USD" ? t("已是 USD") : t("换算为 USD")}</Button>
-        {conversionRateLabel && draft.currency.toUpperCase() !== "USD" ? <Text size="1" color="gray" className="quote-fx-rate">1 {draft.currency} = {conversionRateLabel} USD</Text> : null}
-        <Button variant="soft" disabled={!canEditPrices || bulkSaving} onClick={() => setBulkPriceOpen(true)}><SlidersHorizontal />{t("一键调价")}</Button>
-        <Button variant="soft" onClick={() => { setItemsDrawerOpen(true); setSelectedItemId(undefined); }}><Package />{t("订单商品")}<Badge color="gray">{draft.items.length}</Badge></Button>
-        <Text size="1" color="gray" className="quote-autosave-status" aria-live="polite">{saving || savingItems ? t("正在自动保存…") : t("已自动保存")}</Text>
-        <Button color="blue" disabled={!canEditPrices || saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{t("保存报价单")}</Button>
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger><Button variant="soft" loading={Boolean(downloading)}><DownloadSimple />{t("导出")}{downloading ? ` ${downloading.toUpperCase()}` : ""}<CaretDown /></Button></DropdownMenu.Trigger>
-          <DropdownMenu.Content align="end"><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("pdf")}><FilePdf />{t("导出为 PDF")}</DropdownMenu.Item><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("xlsx")}><FileXls />{t("导出为 Excel")}</DropdownMenu.Item></DropdownMenu.Content>
-        </DropdownMenu.Root>
-        {draft.status === "PENDING_CONFIRMATION" && !isReadOnly ? <Button color="green" disabled={confirming || saving || savingItems} loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
-      </div>
-    </Card>
 
     <AlertDialog.Root open={conversionOpen} onOpenChange={(open) => { if (!converting) setConversionOpen(open); }}>
       <AlertDialog.Content maxWidth="500px">
@@ -1145,7 +1118,6 @@ export function QuoteWorkbenchPage() {
             {draft.items.map((item) => <div className="quote-preview-row" style={{ gridTemplateColumns: previewGrid }} key={item.id}>{activeColumns.map((field) => <span className="quote-preview-cell" key={`${item.id}-${field}`}>{renderPreviewCell(item, field)}</span>)}</div>)}
             <div className="quote-preview-total"><span>{quoteText(locale, "total")}</span><strong>{money(previewTotal, draft.currency)}</strong></div>
           </div>
-          {draft.notes ? <Card className="quote-preview-notes"><ClipboardText /><div><Text size="1" color="gray">{quoteText(locale, "notes")}</Text><Text as="div">{draft.notes}</Text></div></Card> : null}
           {extraInformation.filter((entry) => entry.title.trim() && entry.content.trim()).length ? (
             <div className="quote-preview-extra-info">
               {extraInformation.filter((entry) => entry.title.trim() && entry.content.trim()).map((entry, index) => (
@@ -1153,6 +1125,7 @@ export function QuoteWorkbenchPage() {
               ))}
             </div>
           ) : null}
+          {draft.notes ? <Card className="quote-preview-notes"><ClipboardText /><div><Text size="1" color="gray">{quoteText(locale, "notes")}</Text><Text as="div">{draft.notes}</Text></div></Card> : null}
         </Card>
       </Tabs.Content>
       {(["proforma", "sales-contract", "commercial-invoice", "packing-list"] as const).map((value) => <Tabs.Content value={value} key={value}><Card className="quote-coming-soon"><LockKey size={28} /><Heading size="4">{t("该单证将在后续版本开放")}</Heading><Text size="2" color="gray">{t("当前先完成报价单的制作、样式设置和文件导出。")}</Text></Card></Tabs.Content>)}

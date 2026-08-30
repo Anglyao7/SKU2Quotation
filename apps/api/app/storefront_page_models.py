@@ -56,6 +56,11 @@ class StorefrontCustomPageRow(AuditTimestampMixin, Base):
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    exchange_rates_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
     created_by_user_id: Mapped[UUID | None] = mapped_column(

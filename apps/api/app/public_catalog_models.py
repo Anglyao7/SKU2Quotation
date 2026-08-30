@@ -85,6 +85,11 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         default=True,
         nullable=False,
     )
+    storefront_exchange_rates_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
     ai_search_questions: Mapped[list[str]] = mapped_column(
         JSON_DOCUMENT,
         default=list,
