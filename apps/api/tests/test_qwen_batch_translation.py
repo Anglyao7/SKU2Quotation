@@ -6,6 +6,7 @@ from uuid import UUID
 import httpx
 import pytest
 
+from app.services import qwen_batch_translation as qwen_batch_module
 from app.services.qwen_batch_translation import (
     DEFAULT_QWEN_BATCH_MODEL,
     QWEN_BATCH_REQUEST_MAX_ITEMS,
@@ -255,6 +256,91 @@ def test_qwen_batch_empty_task_list_accepts_null_data() -> None:
     )
 
     assert client.find_batch("file-batch-without-task") is None
+
+
+def test_qwen_batch_upload_retries_transient_write_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    delays: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.WriteTimeout("temporary upload stall", request=request)
+        return httpx.Response(200, json={"id": "file-after-retry"})
+
+    monkeypatch.setattr(qwen_batch_module.time, "sleep", delays.append)
+    client = QwenBatchClient(
+        _configuration(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    file_id = client.upload_jsonl(b'{"custom_id":"one"}\n', filename="one.jsonl")
+
+    assert file_id == "file-after-retry"
+    assert attempts == 3
+    assert delays == [1, 2]
+
+
+def test_qwen_batch_status_retries_transient_read_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    delays: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("temporary status stall", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "batch-after-retry",
+                "status": "completed",
+                "input_file_id": "file-input",
+                "output_file_id": "file-output",
+                "error_file_id": None,
+                "request_counts": {"total": 2, "completed": 2, "failed": 0},
+            },
+        )
+
+    monkeypatch.setattr(qwen_batch_module.time, "sleep", delays.append)
+    client = QwenBatchClient(
+        _configuration(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    status = client.retrieve_batch("batch-after-retry")
+
+    assert status.status == "completed"
+    assert attempts == 2
+    assert delays == [1]
+
+
+def test_qwen_batch_creation_does_not_blindly_retry_ambiguous_timeout() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("ambiguous create response", request=request)
+
+    client = QwenBatchClient(
+        _configuration(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(TranslationProviderError, match="timed out"):
+        client.create_batch(
+            "file-batch-input",
+            name="test",
+            description="test batch",
+        )
+
+    assert attempts == 1
 
 
 def test_qwen_batch_rejects_unknown_result_identity() -> None:

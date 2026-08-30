@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
@@ -42,6 +44,18 @@ QWEN_BATCH_TERMINAL_STATUSES = {
     "expired",
     "cancelled",
 }
+_QWEN_BATCH_TRANSPORT_MAX_ATTEMPTS = 3
+_QWEN_BATCH_RETRYABLE_STATUS_CODES = {
+    408,
+    425,
+    429,
+    500,
+    502,
+    503,
+    504,
+}
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,31 +251,124 @@ class QwenBatchClient:
         self,
         method: str,
         path: str,
+        *,
+        retry_mode: Literal["none", "safe", "upload"] = "none",
         **kwargs: Any,
     ) -> httpx.Response:
-        try:
-            response = self._client.request(
-                method,
-                f"{self._base_url}{path}",
-                headers=self._headers,
-                timeout=float(self.configuration.timeout_seconds),
-                **kwargs,
-            )
-        except httpx.TimeoutException as exc:
-            raise TranslationProviderError(
-                "Qwen Batch request timed out"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise TranslationProviderError(
-                "Qwen Batch request failed"
-            ) from exc
-        if response.status_code < 200 or response.status_code >= 300:
-            message = self._response_error_message(response)
-            suffix = f": {message}" if message else ""
-            raise TranslationProviderError(
-                f"Qwen Batch returned HTTP {response.status_code}{suffix}"
-            )
-        return response
+        max_attempts = (
+            _QWEN_BATCH_TRANSPORT_MAX_ATTEMPTS
+            if retry_mode != "none"
+            else 1
+        )
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = self._client.request(
+                    method,
+                    f"{self._base_url}{path}",
+                    headers=self._headers,
+                    timeout=float(self.configuration.timeout_seconds),
+                    **kwargs,
+                )
+            except httpx.TimeoutException as exc:
+                if self._retryable_transport_error(
+                    exc,
+                    retry_mode=retry_mode,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                ):
+                    self._wait_before_transport_retry(
+                        method=method,
+                        path=path,
+                        attempt=attempt,
+                        reason=type(exc).__name__,
+                    )
+                    continue
+                raise TranslationProviderError(
+                    "Qwen Batch request timed out"
+                ) from exc
+            except httpx.HTTPError as exc:
+                if self._retryable_transport_error(
+                    exc,
+                    retry_mode=retry_mode,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                ):
+                    self._wait_before_transport_retry(
+                        method=method,
+                        path=path,
+                        attempt=attempt,
+                        reason=type(exc).__name__,
+                    )
+                    continue
+                raise TranslationProviderError(
+                    "Qwen Batch request failed"
+                ) from exc
+            if response.status_code < 200 or response.status_code >= 300:
+                if (
+                    retry_mode == "safe"
+                    and attempt < max_attempts
+                    and response.status_code
+                    in _QWEN_BATCH_RETRYABLE_STATUS_CODES
+                ):
+                    self._wait_before_transport_retry(
+                        method=method,
+                        path=path,
+                        attempt=attempt,
+                        reason=f"HTTP {response.status_code}",
+                    )
+                    continue
+                message = self._response_error_message(response)
+                suffix = f": {message}" if message else ""
+                raise TranslationProviderError(
+                    f"Qwen Batch returned HTTP {response.status_code}{suffix}"
+                )
+            return response
+        raise AssertionError("Qwen Batch transport retry loop did not return")
+
+    @staticmethod
+    def _retryable_transport_error(
+        exc: httpx.HTTPError,
+        *,
+        retry_mode: Literal["none", "safe", "upload"],
+        attempt: int,
+        max_attempts: int,
+    ) -> bool:
+        if retry_mode == "none" or attempt >= max_attempts:
+            return False
+        if retry_mode == "safe":
+            return isinstance(exc, httpx.TransportError)
+        # Retrying an upload is safe only while the connection or request
+        # write failed. A read failure is ambiguous because the provider may
+        # already have stored the file and only lost the response.
+        return isinstance(
+            exc,
+            (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.WriteError,
+                httpx.WriteTimeout,
+            ),
+        )
+
+    @staticmethod
+    def _wait_before_transport_retry(
+        *,
+        method: str,
+        path: str,
+        attempt: int,
+        reason: str,
+    ) -> None:
+        delay = min(2 ** (attempt - 1), 4)
+        logger.warning(
+            "Qwen Batch transport retry %s/%s in %ss after %s for %s %s",
+            attempt,
+            _QWEN_BATCH_TRANSPORT_MAX_ATTEMPTS - 1,
+            delay,
+            reason,
+            method,
+            path,
+        )
+        time.sleep(delay)
 
     @staticmethod
     def _response_error_message(response: httpx.Response) -> str | None:
@@ -329,6 +436,7 @@ class QwenBatchClient:
         response = self._request(
             "POST",
             "/files",
+            retry_mode="upload",
             data={"purpose": "batch"},
             files={"file": (filename, content, "application/jsonl")},
         )
@@ -367,7 +475,11 @@ class QwenBatchClient:
         return self._batch_status(response.json())
 
     def retrieve_batch(self, batch_id: str) -> QwenBatchStatus:
-        response = self._request("GET", f"/batches/{batch_id}")
+        response = self._request(
+            "GET",
+            f"/batches/{batch_id}",
+            retry_mode="safe",
+        )
         return self._batch_status(response.json())
 
     def cancel_batch(self, batch_id: str) -> QwenBatchStatus:
@@ -382,6 +494,7 @@ class QwenBatchClient:
         response = self._request(
             "GET",
             "/batches",
+            retry_mode="safe",
             params={"input_file_ids": input_file_id, "limit": 100},
         )
         try:
@@ -414,10 +527,18 @@ class QwenBatchClient:
         return matches[0] if matches else None
 
     def download_file(self, file_id: str) -> bytes:
-        return self._request("GET", f"/files/{file_id}/content").content
+        return self._request(
+            "GET",
+            f"/files/{file_id}/content",
+            retry_mode="safe",
+        ).content
 
     def delete_file(self, file_id: str) -> bool:
-        response = self._request("DELETE", f"/files/{file_id}")
+        response = self._request(
+            "DELETE",
+            f"/files/{file_id}",
+            retry_mode="safe",
+        )
         try:
             return bool(response.json().get("deleted"))
         except (AttributeError, TypeError, ValueError):
