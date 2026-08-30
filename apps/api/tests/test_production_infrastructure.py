@@ -725,6 +725,7 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     assert "acquire_global_operation_lock" in deploy
     assert deploy.index('"${SCRIPT_DIR}/backup.sh"') < deploy.index("db-migrate")
     assert "ATC_CONFIRMED_EXPAND_CONTRACT" in deploy
+    assert "ATC_BACKUP_QUIESCE_WRITERS=true" in deploy
     assert "ATC_BACKUP_LEAVE_WRITERS_STOPPED=true" in deploy
     assert "database_migration_head" in rollback
     assert "migration_head_for_commit" in rollback
@@ -746,6 +747,13 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     assert "compose stop caddy web api keycloak" in backup
     assert "resume_writers" in backup
     assert 'leave_writers_stopped="${ATC_BACKUP_LEAVE_WRITERS_STOPPED:-false}"' in backup
+    assert (
+        'quiesce_writers="${ATC_BACKUP_QUIESCE_WRITERS:-${leave_writers_stopped}}"'
+        in backup
+    )
+    assert 'if [[ "${quiesce_writers}" == "true" ]]; then' in backup
+    assert "creating an online backup; public services and background jobs remain running" in backup
+    assert "backup_mode=%s" in backup
     assert "leaving application writers stopped for the caller's migration window" in backup
     assert "worker_is_running tenant-worker" in backup
     assert "compose_with_workers stop tenant-worker product-event-consumer" in backup
@@ -760,6 +768,14 @@ def test_deploy_and_backup_contract_never_delete_persistent_volumes() -> None:
     )
     assert 'if [[ "${ATC_ENABLE_REMOTE_BACKUP}" == "true" ]]' in backup
     assert "backup-local-objects" in backup
+    backup_service = (
+        REPOSITORY_ROOT / "infra" / "production" / "systemd" / "atc-backup.service.in"
+    ).read_text(encoding="utf-8")
+    backup_cron = (
+        REPOSITORY_ROOT / "infra" / "production" / "cron" / "atc-backup.in"
+    ).read_text(encoding="utf-8")
+    assert "Environment=ATC_BACKUP_QUIESCE_WRITERS=false" in backup_service
+    assert "ATC_BACKUP_QUIESCE_WRITERS=false" in backup_cron
     assert "ATC_DEPLOYMENT_PROFILE" in deploy
     assert "compact production requires at least 3 GiB RAM" in deploy
     assert "COMPOSE_PARALLEL_LIMIT=1" in deploy

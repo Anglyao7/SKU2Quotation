@@ -9,6 +9,7 @@ Type=oneshot
 User=root
 Group=root
 WorkingDirectory=__ATC_INSTALL_DIR__
+Environment=ATC_BACKUP_QUIESCE_WRITERS=false
 ExecStart=__ATC_INSTALL_DIR__/infra/production/backup.sh
 UMask=0077
 Nice=10

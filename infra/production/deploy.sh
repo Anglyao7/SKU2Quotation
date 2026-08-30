@@ -253,7 +253,8 @@ if [[ "${had_previous_release}" == "true" ]]; then
   [[ "${ATC_CONFIRMED_EXPAND_CONTRACT:-false}" == "true" ]] \
     || die "set ATC_CONFIRMED_EXPAND_CONTRACT=true only after confirming this migration is backward compatible"
   info "creating a verified backup and retaining the stopped-writer migration window"
-  ATC_BACKUP_LEAVE_WRITERS_STOPPED=true \
+  ATC_BACKUP_QUIESCE_WRITERS=true \
+    ATC_BACKUP_LEAVE_WRITERS_STOPPED=true \
     ATC_OPERATION_LOCK_HELD=true "${SCRIPT_DIR}/backup.sh"
 fi
 

@@ -34,6 +34,19 @@ chmod 700 "${partial}"
 
 writers_stopped=false
 leave_writers_stopped="${ATC_BACKUP_LEAVE_WRITERS_STOPPED:-false}"
+quiesce_writers="${ATC_BACKUP_QUIESCE_WRITERS:-${leave_writers_stopped}}"
+case "${leave_writers_stopped}" in
+  true|false) ;;
+  *) die "ATC_BACKUP_LEAVE_WRITERS_STOPPED must be true or false" ;;
+esac
+case "${quiesce_writers}" in
+  true|false) ;;
+  *) die "ATC_BACKUP_QUIESCE_WRITERS must be true or false" ;;
+esac
+if [[ "${leave_writers_stopped}" == "true" && "${quiesce_writers}" != "true" ]]; then
+  die "ATC_BACKUP_LEAVE_WRITERS_STOPPED requires ATC_BACKUP_QUIESCE_WRITERS=true"
+fi
+backup_mode="online"
 tenant_worker_was_running=false
 product_event_consumer_was_running=false
 
@@ -79,16 +92,21 @@ cleanup_partial() {
 }
 trap cleanup_partial ERR INT TERM
 
-info "entering a bounded backup window so DB and object snapshots cannot diverge"
-# Mark the window before the first stop so an error halfway through stopping
-# services still triggers a best-effort resume in the trap.
-writers_stopped=true
-compose stop caddy web api keycloak
-if [[ "${ATC_DEPLOYMENT_PROFILE}" == "standard" ]]; then
-  worker_is_running tenant-worker && tenant_worker_was_running=true
-  worker_is_running product-event-consumer && product_event_consumer_was_running=true
-  compose_with_workers stop tenant-worker product-event-consumer
-  compose stop rabbitmq
+if [[ "${quiesce_writers}" == "true" ]]; then
+  backup_mode="quiesced"
+  info "entering an explicitly requested stopped-writer backup window"
+  # Mark the window before the first stop so an error halfway through stopping
+  # services still triggers a best-effort resume in the trap.
+  writers_stopped=true
+  compose stop caddy web api keycloak
+  if [[ "${ATC_DEPLOYMENT_PROFILE}" == "standard" ]]; then
+    worker_is_running tenant-worker && tenant_worker_was_running=true
+    worker_is_running product-event-consumer && product_event_consumer_was_running=true
+    compose_with_workers stop tenant-worker product-event-consumer
+    compose stop rabbitmq
+  fi
+else
+  info "creating an online backup; public services and background jobs remain running"
 fi
 
 info "dumping application PostgreSQL"
@@ -127,6 +145,7 @@ fi
   printf 'commit=%s\n' "${ATC_COMMIT_SHA}"
   printf 'migration_head=%s\n' "${ATC_MIGRATION_HEAD}"
   printf 'config_version=%s\n' "${ATC_CONFIG_VERSION}"
+  printf 'backup_mode=%s\n' "${backup_mode}"
 } >"${partial}/release.txt"
 
 (
