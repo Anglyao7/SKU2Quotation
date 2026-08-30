@@ -39,6 +39,7 @@ from ..customer_accounts_schemas import (
 from ..database import set_request_context
 from ..domain.errors import ApplicationError
 from ..identity_models import (
+    AuthSessionRow,
     CustomerAccountAccessEventRow,
     LocalAccountCredentialRow,
     MembershipRoleRow,
@@ -438,6 +439,8 @@ def _summary_rows(
                 MembershipRow.tenant_id == tenant_id,
                 MembershipRow.parent_membership_id == parent_membership_id,
                 MembershipRow.account_scope == _CUSTOMER_SCOPE,
+                MembershipRow.status.in_(("active", "suspended")),
+                MembershipRow.deleted_at.is_(None),
             )
             .order_by(MembershipRow.created_at.desc(), MembershipRow.id)
         ).all()
@@ -607,17 +610,53 @@ def get_customer_subaccount_dashboard(
     )
 
 
+def get_customer_subaccount(
+    session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+) -> CustomerSubaccountSummary:
+    """Return one direct child with its activity and commercial summary."""
+
+    _parent_child_membership(
+        session,
+        context=context,
+        membership_id=membership_id,
+    )
+    summaries = _summary_rows(
+        session,
+        tenant_id=context.tenant_id,
+        parent_membership_id=context.membership_id,
+    )
+    try:
+        return next(row for row in summaries if row.id == membership_id)
+    except StopIteration as exc:
+        raise ApplicationError(
+            "CUSTOMER_ACCOUNT_NOT_FOUND",
+            "Customer subaccount was not found.",
+            kind="not_found",
+        ) from exc
+
+
 def list_customer_subaccount_orders(
     session: Session,
     *,
     context: RequestContext,
     page: int,
     page_size: int,
+    membership_id: UUID | None = None,
 ) -> CustomerSubaccountOrderPage:
     """List every direct-child order through an owner-scoped read-only pager."""
 
     _require_parent(context)
     statement = _child_order_statement(context=context)
+    if membership_id is not None:
+        _parent_child_membership(
+            session,
+            context=context,
+            membership_id=membership_id,
+        )
+        statement = statement.where(MembershipRow.id == membership_id)
     total = int(
         session.scalar(
             select(func.count()).select_from(statement.order_by(None).subquery())
@@ -990,20 +1029,11 @@ def update_customer_subaccount_status(
         tenant_id=context.tenant_id,
         user_id=context.user_id,
     )
-    membership = identity_session.scalar(
-        select(MembershipRow).where(
-            MembershipRow.id == membership_id,
-            MembershipRow.tenant_id == context.tenant_id,
-            MembershipRow.parent_membership_id == context.membership_id,
-            MembershipRow.account_scope == _CUSTOMER_SCOPE,
-        )
+    membership = _parent_child_membership(
+        identity_session,
+        context=context,
+        membership_id=membership_id,
     )
-    if membership is None:
-        raise ApplicationError(
-            "CUSTOMER_ACCOUNT_NOT_FOUND",
-            "Customer subaccount was not found.",
-            kind="not_found",
-        )
     membership.status = request.status
     membership.permission_version += 1
     identity_session.commit()
@@ -1013,6 +1043,101 @@ def update_customer_subaccount_status(
         parent_membership_id=context.membership_id,
     )
     return next(summary for summary in summaries if summary.id == membership_id)
+
+
+def delete_customer_subaccount(
+    identity_session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+) -> None:
+    """Permanently remove a child login while preserving attributed orders.
+
+    Orders and access facts remain immutable audit records.  The membership is
+    tombstoned instead of physically deleted because confirmed orders retain a
+    restrictive foreign key to their submitting membership.
+    """
+
+    _require_parent(context)
+    set_request_context(
+        identity_session,
+        organization_id=context.organization_id,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+    )
+    membership = _parent_child_membership(
+        identity_session,
+        context=context,
+        membership_id=membership_id,
+    )
+    now = utcnow()
+
+    active_sessions = identity_session.scalars(
+        select(AuthSessionRow).where(
+            AuthSessionRow.active_membership_id == membership.id,
+            AuthSessionRow.revoked_at.is_(None),
+        )
+    ).all()
+    for auth_session in active_sessions:
+        auth_session.revoked_at = now
+        auth_session.revocation_reason = "CUSTOMER_SUBACCOUNT_DELETED"
+
+    for model in (
+        SubaccountProductPriceOverrideRow,
+        SubaccountSkuPriceOverrideRow,
+        SubaccountCategoryPriceOverrideRow,
+    ):
+        rows = identity_session.scalars(
+            select(model).where(
+                model.tenant_id == context.tenant_id,
+                model.membership_id == membership.id,
+                model.deleted_at.is_(None),
+            )
+        ).all()
+        for row in rows:
+            row.is_active = False
+            row.deleted_at = now
+
+    policies = identity_session.scalars(
+        select(SubaccountPricingPolicyRow).where(
+            SubaccountPricingPolicyRow.tenant_id == context.tenant_id,
+            SubaccountPricingPolicyRow.membership_id == membership.id,
+            SubaccountPricingPolicyRow.deleted_at.is_(None),
+        )
+    ).all()
+    for policy in policies:
+        policy.deleted_at = now
+
+    membership.status = "removed"
+    membership.deleted_at = now
+    membership.permission_overrides = []
+    membership.permission_version += 1
+    membership.login_identifier = f"deleted-{membership.id}"
+
+    remaining_memberships = int(
+        identity_session.scalar(
+            select(func.count(MembershipRow.id)).where(
+                MembershipRow.user_id == membership.user_id,
+                MembershipRow.id != membership.id,
+                MembershipRow.status.in_(("invited", "active", "suspended")),
+                MembershipRow.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+    if remaining_memberships == 0:
+        user = identity_session.get(UserRow, membership.user_id)
+        if user is not None:
+            user.status = "disabled"
+        credential = identity_session.get(
+            LocalAccountCredentialRow,
+            membership.user_id,
+        )
+        if credential is not None and credential.deleted_at is None:
+            credential.identifier_normalized = f"deleted-{membership.user_id}"
+            credential.deleted_at = now
+
+    identity_session.commit()
 
 
 def update_customer_subaccount_access(
@@ -1035,6 +1160,8 @@ def update_customer_subaccount_access(
             MembershipRow.tenant_id == context.tenant_id,
             MembershipRow.parent_membership_id == context.membership_id,
             MembershipRow.account_scope == _CUSTOMER_SCOPE,
+            MembershipRow.status.in_(("active", "suspended")),
+            MembershipRow.deleted_at.is_(None),
         )
     )
     if membership is None:

@@ -85,6 +85,7 @@ const QuoteWorkbenchPage = recoverableLazy(() => import("./core/pages/QuoteWorkb
 const QuoteTemplatesPage = recoverableLazy(() => import("./core/pages/QuoteTemplatesPage").then((module) => ({ default: module.QuoteTemplatesPage })));
 const TagManagementPage = recoverableLazy(() => import("./pages/console/TagManagementPage").then((module) => ({ default: module.TagManagementPage })));
 const CustomerAccountsPage = recoverableLazy(() => import("./core/pages/CustomerAccountsPage").then((module) => ({ default: module.CustomerAccountsPage })));
+const CustomerSubaccountDetailPage = recoverableLazy(() => import("./core/pages/CustomerSubaccountDetailPage").then((module) => ({ default: module.CustomerSubaccountDetailPage })));
 
 function ApplicationRouteError() {
   const error = useRouteError();
@@ -382,6 +383,7 @@ const router = createBrowserRouter([{
         { path: "quotes/:quoteDraftId/workbench", element: <PermissionGate anyOf={["quotation.create"]}><QuoteWorkbenchPage /></PermissionGate> },
         { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
+        { path: "customer-accounts/:membershipId", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerSubaccountDetailPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "personal-center", element: <PermissionGate anyOf={["support.settings_manage"]}><PersonalCenterPage /></PermissionGate> },
         { path: "storefront", element: <PermissionGate anyOf={["system.settings_manage"]}><StorefrontManagementPage /></PermissionGate> },

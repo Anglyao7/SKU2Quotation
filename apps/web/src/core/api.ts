@@ -1031,6 +1031,14 @@ export async function getCustomerSubaccountDashboard(): Promise<CustomerSubaccou
   };
 }
 
+export async function getCustomerSubaccount(
+  membershipId: string,
+): Promise<CustomerSubaccount> {
+  return mapCustomerSubaccount(await request<ApiCustomerSubaccount>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}`,
+  ));
+}
+
 interface ApiSubaccountPricingItem {
   product_id: string;
   product_code?: string | null;
@@ -1233,6 +1241,25 @@ export async function listCustomerSubaccountOrders(
   };
 }
 
+export async function listCustomerSubaccountOrdersByAccount(
+  membershipId: string,
+  page = 1,
+  pageSize = 20,
+): Promise<CustomerSubaccountOrderPage> {
+  const row = await request<{
+    items: ApiCustomerSubaccountOrder[];
+    total: number;
+    page: number;
+    page_size: number;
+  }>(`/customer-accounts/${encodeURIComponent(membershipId)}/orders?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`);
+  return {
+    items: row.items.map(mapCustomerSubaccountOrder),
+    total: Number(row.total || 0),
+    page: Number(row.page || page),
+    pageSize: Number(row.page_size || pageSize),
+  };
+}
+
 export async function getCustomerSubaccountOrder(
   quoteDraftId: string,
 ): Promise<CustomerSubaccountOrderDetail> {
@@ -1297,6 +1324,15 @@ export async function updateCustomerSubaccountStatus(
     { method: "PATCH", body: JSON.stringify({ status }) },
   );
   return mapCustomerSubaccount(row);
+}
+
+export async function deleteCustomerSubaccount(
+  membershipId: string,
+): Promise<void> {
+  await request<void>(
+    `/customer-accounts/${encodeURIComponent(membershipId)}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function getCustomerPortalOverview(): Promise<CustomerPortalOverview> {

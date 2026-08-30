@@ -22180,6 +22180,17 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     )
     assert owner_account["login_count_30d"] >= 1
     assert owner_account["order_count"] == 1
+    owner_detail = client.get(f"/api/v1/customer-accounts/{account['id']}")
+    assert owner_detail.status_code == 200, owner_detail.text
+    assert owner_detail.json()["id"] == account["id"]
+    assert owner_detail.json()["order_count"] == 1
+    account_orders = client.get(
+        f"/api/v1/customer-accounts/{account['id']}/orders",
+        params={"page": 1, "page_size": 100},
+    )
+    assert account_orders.status_code == 200, account_orders.text
+    assert account_orders.json()["total"] == 1
+    assert [row["id"] for row in account_orders.json()["items"]] == [quote_id]
     owner_orders = client.get(
         "/api/v1/customer-accounts/orders", params={"page": 1, "page_size": 100}
     )
@@ -22231,6 +22242,37 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     )
     assert suspended.status_code == 200, suspended.text
     assert suspended.json()["status"] == "suspended"
+
+    deleted = client.delete(f"/api/v1/customer-accounts/{account['id']}")
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/customer-accounts/{account['id']}").status_code == 404
+    remaining_accounts = client.get("/api/v1/customer-accounts")
+    assert remaining_accounts.status_code == 200, remaining_accounts.text
+    assert account["id"] not in {
+        row["id"] for row in remaining_accounts.json()["accounts"]
+    }
+    with SessionLocal() as session:
+        removed_membership = session.scalar(
+            select(MembershipRow)
+            .where(MembershipRow.id == UUID(account["id"]))
+            .execution_options(include_deleted=True)
+        )
+        assert removed_membership is not None
+        assert removed_membership.status == "removed"
+        assert removed_membership.deleted_at is not None
+
+    with monkeypatch.context() as auth_environment:
+        auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+        with TestClient(app) as deleted_client:
+            login = deleted_client.post(
+                "/api/v1/auth/login",
+                json={
+                    "grant_type": "password",
+                    "identifier": f"customer-{suffix}",
+                    "password": subaccount_password,
+                },
+            )
+            assert login.status_code == 401, login.text
 
 
 def test_product_template_import_requires_edit_and_publish_permissions(

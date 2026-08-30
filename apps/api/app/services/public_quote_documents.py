@@ -425,6 +425,8 @@ def _placeholder_values(document: PublicQuoteDocument) -> dict[str, object]:
         "报价单号": quote.quote_number,
         "quote_date": quote.created_at.date(),
         "报价日期": quote.created_at.date(),
+        "date": quote.created_at.date(),
+        "日期": quote.created_at.date(),
         "valid_until": quote.valid_until.date(),
         "有效期": quote.valid_until.date(),
         "customer_name": quote.customer_name,
@@ -447,6 +449,7 @@ def _placeholder_values(document: PublicQuoteDocument) -> dict[str, object]:
     }
     localized_values = {
         "quote_number": quote.quote_number,
+        "date": quote.created_at.date(),
         "quote_date": quote.created_at.date(),
         "valid_until": quote.valid_until.date(),
         "customer": quote.customer_name,
@@ -1063,11 +1066,11 @@ def render_public_quote_draft_pdf(document: PublicQuoteDocument) -> bytes:
         ],
         [
             Paragraph(_pdf_localized_text(f"{quote_text(locale, 'customer')}: {quote.customer_name}", locale), body_style),
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'submitted_date')}: {quote.created_at:%Y-%m-%d}", locale), right_style),
+            Paragraph("", right_style),
         ],
         [
             Paragraph(_pdf_localized_text(f"{quote_text(locale, 'company')}: {quote.customer_company or '-'}", locale), body_style),
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'valid_until')}: {quote.valid_until:%Y-%m-%d}", locale), right_style),
+            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'date')}: {quote.created_at:%Y-%m-%d}", locale), right_style),
         ],
         [
             Paragraph(_pdf_localized_text(f"{quote_text(locale, 'email')}: {quote.customer_email or '-'}", locale), body_style),
@@ -1258,8 +1261,8 @@ def render_public_quote_draft_xlsx(
             _xlsx_text(quote.customer_company),
             "",
             "",
-            quote_text(locale, "valid_until"),
-            quote.valid_until.date(),
+            quote_text(locale, "date"),
+            quote.created_at.date(),
             "",
             "",
             "",
@@ -1281,8 +1284,8 @@ def render_public_quote_draft_xlsx(
             _xlsx_text(quote.customer_phone),
             "",
             "",
-            quote_text(locale, "submitted_date"),
-            quote.created_at.date(),
+            "",
+            "",
             "",
             "",
             "",
@@ -1298,6 +1301,7 @@ def render_public_quote_draft_xlsx(
         sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=4)
         sheet.merge_cells(start_row=row_number, start_column=6, end_row=row_number, end_column=8)
         sheet.merge_cells(start_row=row_number, start_column=10, end_row=row_number, end_column=column_count)
+    sheet.cell(row=3, column=10).number_format = "yyyy-mm-dd"
     sheet.append([])
     sheet.append(list(quote_headers(locale)))
     header_row = sheet.max_row
@@ -1461,8 +1465,8 @@ def render_default_quote_template_xlsx() -> bytes:
             "{{客户公司}}",
             "",
             "",
-            "有效期",
-            "{{有效期}}",
+            "日期",
+            "{{日期}}",
             "",
             "",
             "",
@@ -1484,8 +1488,8 @@ def render_default_quote_template_xlsx() -> bytes:
             "{{客户电话}}",
             "",
             "",
-            "报价日期",
-            "{{报价日期}}",
+            "",
+            "",
             "",
             "",
             "",

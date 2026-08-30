@@ -15,26 +15,22 @@ import {
   CaretRight,
   Eye,
   EyeSlash,
-  FileText,
   CurrencyDollar,
   Key,
   Plus,
-  Power,
   SlidersHorizontal,
   UserPlus,
   UsersThree,
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import {
   createCustomerSubaccount,
   CoreApiError,
   getCustomerSubaccountDashboard,
-  listCustomerSubaccountOrders,
-  updateCustomerSubaccountStatus,
   updateCustomerSubaccountAccess,
   getCustomerSubaccountPricing,
-  getCustomerSubaccountOrder,
   listCategories,
   resetCustomerSubaccountPassword,
   updateCustomerSubaccountPricing,
@@ -52,7 +48,6 @@ import type {
   CustomerSubaccount,
   CustomerSubaccountDashboard,
   CustomerSubaccountModule,
-  CustomerSubaccountOrderPage,
   CustomerSubaccountOrderDetail,
   ProductCategory,
   SubaccountPricingMode,
@@ -67,7 +62,6 @@ const orderStatusLabel: Record<string, string> = {
   EXPIRED: "已过期",
 };
 
-const ORDER_PAGE_SIZE = 20;
 const SUBACCOUNT_MODULES: Array<{
   code: CustomerSubaccountModule;
   label: string;
@@ -103,28 +97,15 @@ function countryLabel(countryCode?: string) {
 export function CustomerAccountsPage() {
   const { t } = useLocale();
   const [data, setData] = useState<CustomerSubaccountDashboard>();
-  const [orders, setOrders] = useState<CustomerSubaccountOrderPage>();
   const [loading, setLoading] = useState(true);
-  const [ordersLoading, setOrdersLoading] = useState(false);
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
-  const [accessEditor, setAccessEditor] = useState<CustomerSubaccount>();
-  const [pricingEditor, setPricingEditor] = useState<CustomerSubaccount>();
-  const [passwordEditor, setPasswordEditor] = useState<CustomerSubaccount>();
-  const [orderDetail, setOrderDetail] = useState<CustomerSubaccountOrderDetail>();
-  const [orderDetailLoading, setOrderDetailLoading] = useState(false);
-  const [updatingId, setUpdatingId] = useState<string>();
 
-  const load = useCallback(async (page = 1) => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [dashboard, orderPage] = await Promise.all([
-        getCustomerSubaccountDashboard(),
-        listCustomerSubaccountOrders(page, ORDER_PAGE_SIZE),
-      ]);
-      setData(dashboard);
-      setOrders(orderPage);
+      setData(await getCustomerSubaccountDashboard());
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("客户账号数据加载失败"));
     } finally {
@@ -133,55 +114,6 @@ export function CustomerAccountsPage() {
   }, [t]);
 
   useEffect(() => { void load(); }, [load]);
-
-  const updateStatus = async (account: CustomerSubaccount) => {
-    if (updatingId) return;
-    setUpdatingId(account.id);
-    setError("");
-    try {
-      const updated = await updateCustomerSubaccountStatus(
-        account.id,
-        account.status === "active" ? "suspended" : "active",
-      );
-      setData((current) => current ? {
-        ...current,
-        activeCount: current.activeCount
-          + (updated.status === "active" ? 1 : -1),
-        suspendedCount: current.suspendedCount
-          + (updated.status === "suspended" ? 1 : -1),
-        accounts: current.accounts.map((row) => row.id === updated.id ? updated : row),
-      } : current);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("账号状态更新失败"));
-    } finally {
-      setUpdatingId(undefined);
-    }
-  };
-
-  const changeOrderPage = async (page: number) => {
-    if (!orders || ordersLoading || page < 1 || page === orders.page) return;
-    setOrdersLoading(true);
-    setError("");
-    try {
-      setOrders(await listCustomerSubaccountOrders(page, ORDER_PAGE_SIZE));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("订单数据加载失败"));
-    } finally {
-      setOrdersLoading(false);
-    }
-  };
-
-  const openOrder = async (orderId: string) => {
-    setOrderDetailLoading(true);
-    setError("");
-    try {
-      setOrderDetail(await getCustomerSubaccountOrder(orderId));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("订单详情加载失败"));
-    } finally {
-      setOrderDetailLoading(false);
-    }
-  };
 
   if (loading && !data) return <div className="core-workspace"><CoreLoading label={t("正在读取客户账号")} /></div>;
 
@@ -206,15 +138,15 @@ export function CustomerAccountsPage() {
     <section className="customer-account-grid">
       <Card className="customer-account-panel">
         <div className="customer-account-panel-heading">
-          <div><Text size="1" color="gray">{t("账号列表")}</Text><Heading size="5">{t("已开通的子账号")}</Heading></div>
-          <Text size="2" color="gray">{t("主账号可管理价格、启停和订单数据")}</Text>
+          <div><Text size="1" color="gray">{t("账号列表")}</Text><Heading size="5">{t("子账号列表")}</Heading></div>
+          <Text size="2" color="gray">{t("点击子账号进入详情，查看资料、价格和该账号订单")}</Text>
         </div>
         {data?.accounts.length ? <div className="customer-account-list">
           {data.accounts.map((account) => <article className="customer-account-row" key={account.id}>
-            <div className="customer-account-identity">
+            <Link className="customer-account-identity customer-account-primary-link" to={`/console/customer-accounts/${encodeURIComponent(account.id)}`}>
               <span className="customer-account-avatar">{account.displayName.slice(0, 2).toUpperCase()}</span>
               <span><strong>{account.displayName}</strong><small>{account.loginIdentifier}{account.email ? ` · ${account.email}` : ""}</small><small className="customer-account-pricing-summary">+{Number(account.markupPercent || 0).toLocaleString()}% · {t("{count} 个单品规则", { count: account.overrideCount })} · {t("{count} 个分类规则", { count: account.categoryOverrideCount ?? 0 })} · {t("{count} 个 SKU 特价", { count: account.skuOverrideCount ?? 0 })}</small></span>
-            </div>
+            </Link>
             <div className="customer-account-signal">
               <small>{t("最近访问")}</small><strong>{account.lastLoginAt ? coreDate(account.lastLoginAt) : t("尚未登录")}</strong>
               <span>{t("近 30 天 {count} 次", { count: account.loginCount30d })}</span>
@@ -229,16 +161,9 @@ export function CustomerAccountsPage() {
             </div>
             <Badge color={account.status === "active" ? "jade" : "gray"}>{t(account.status === "active" ? "已开通" : "已停用")}</Badge>
             <div className="customer-account-actions">
-              <Button size="1" variant="soft" color="gray" onClick={() => setAccessEditor(account)}><SlidersHorizontal />{t("权限")}</Button>
-              <Button size="1" variant="soft" color="gray" onClick={() => setPricingEditor(account)}><CurrencyDollar />{t("价格")}</Button>
-              <Button size="1" variant="soft" color="gray" onClick={() => setPasswordEditor(account)}><Key />{t("改密码")}</Button>
-              <Button
-                size="1"
-                variant="soft"
-                color={account.status === "active" ? "gray" : "jade"}
-                loading={updatingId === account.id}
-                onClick={() => void updateStatus(account)}
-              ><Power />{t(account.status === "active" ? "停用" : "重新开通")}</Button>
+              <Button asChild size="1" variant="soft" color="gray">
+                <Link to={`/console/customer-accounts/${encodeURIComponent(account.id)}`}><Eye />{t("查看详情")}<CaretRight /></Link>
+              </Button>
             </div>
           </article>)}
         </div> : <CoreEmpty
@@ -261,71 +186,9 @@ export function CustomerAccountsPage() {
       </Card>
     </section>
 
-    <Card className="customer-order-panel">
-      <div className="customer-account-panel-heading">
-        <div><Text size="1" color="gray">{t("只读订单数据")}</Text><Heading size="5">{t("全部子账号订单")}</Heading></div>
-        <Badge color="gray"><FileText />{t("共 {count} 笔 · 不支持修改", { count: orders?.total ?? 0 })}</Badge>
-      </div>
-      {orders?.items.length ? <div className={`customer-order-table${ordersLoading ? " is-loading" : ""}`} aria-busy={ordersLoading}>
-        <div className="customer-order-table-head"><span>{t("订单")}</span><span>{t("提交账号")}</span><span>{t("客户信息")}</span><span>{t("国家")}</span><span>{t("金额")}</span><span>{t("状态")}</span><span>{t("提交时间")}</span></div>
-        {orders.items.map((order) => <div className="customer-order-table-row" key={order.id} role="button" tabIndex={0} onClick={() => void openOrder(order.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openOrder(order.id); } }}>
-          <span className="mono-text">{order.quoteNumber}</span>
-          <span>{order.submittedByName}</span>
-          <span>{order.customerCompany || order.customerName}</span>
-          <span title={order.visitorCountryCode || undefined}>{countryLabel(order.visitorCountryCode)}</span>
-          <strong>{money(order.totalAmount, order.currency)}</strong>
-          <Badge color={order.status === "PENDING_CONFIRMATION" ? "amber" : order.status === "CONFIRMED" ? "jade" : "gray"}>{t(orderStatusLabel[order.status] ?? order.status)}</Badge>
-          <span>{coreDate(order.createdAt)}</span>
-        </div>)}
-      </div> : <CoreEmpty title={t("子账号尚未提交订单")} description={t("订单会在子账号从商品前台提交报价申请后自动显示在这里。")} />}
-      {orders && orders.total > orders.pageSize ? <div className="customer-order-pagination">
-        <Text size="2" color="gray">{t("第 {page} / {pages} 页", { page: orders.page, pages: Math.ceil(orders.total / orders.pageSize) })}</Text>
-        <div>
-          <Button size="1" variant="soft" color="gray" disabled={ordersLoading || orders.page <= 1} onClick={() => void changeOrderPage(orders.page - 1)}><CaretLeft />{t("上一页")}</Button>
-          <Button size="1" variant="soft" color="gray" disabled={ordersLoading || orders.page >= Math.ceil(orders.total / orders.pageSize)} onClick={() => void changeOrderPage(orders.page + 1)}>{t("下一页")}<CaretRight /></Button>
-        </div>
-      </div> : null}
-    </Card>
-
     {editorOpen ? <CustomerAccountCreateDialog
       onClose={() => setEditorOpen(false)}
-      onCreated={async () => { setEditorOpen(false); await load(1); }}
-    /> : null}
-    {accessEditor ? <CustomerAccountAccessDialog
-      account={accessEditor}
-      onClose={() => setAccessEditor(undefined)}
-      onSaved={(updated) => {
-        setData((current) => current ? {
-          ...current,
-          accounts: current.accounts.map((row) => row.id === updated.id ? updated : row),
-        } : current);
-        setAccessEditor(undefined);
-      }}
-    /> : null}
-    {passwordEditor ? <CustomerSubaccountPasswordDialog
-      account={passwordEditor}
-      onClose={() => setPasswordEditor(undefined)}
-    /> : null}
-    {orderDetail || orderDetailLoading ? <CustomerSubaccountOrderDetailDialog
-      detail={orderDetail}
-      loading={orderDetailLoading}
-      onClose={() => { setOrderDetail(undefined); setOrderDetailLoading(false); }}
-    /> : null}
-    {pricingEditor ? <SubaccountPricingDialog
-      account={pricingEditor}
-      onClose={() => setPricingEditor(undefined)}
-      onSaved={(policy) => {
-        setData((current) => current ? {
-          ...current,
-          accounts: current.accounts.map((row) => row.id === pricingEditor.id ? {
-            ...row,
-            markupPercent: policy.markupPercent,
-            overrideCount: policy.overrideCount,
-            categoryOverrideCount: policy.categoryOverrideCount,
-            skuOverrideCount: policy.skuOverrideCount,
-          } : row),
-        } : current);
-      }}
+      onCreated={async () => { setEditorOpen(false); await load(); }}
     /> : null}
   </div>;
 }
@@ -408,7 +271,7 @@ function CustomerAccountCreateDialog({ onClose, onCreated }: { onClose: () => vo
   </Dialog.Root>;
 }
 
-function CustomerSubaccountPasswordDialog({
+export function CustomerSubaccountPasswordDialog({
   account,
   onClose,
 }: {
@@ -455,7 +318,7 @@ function CustomerSubaccountPasswordDialog({
   </Dialog.Root>;
 }
 
-function CustomerSubaccountOrderDetailDialog({
+export function CustomerSubaccountOrderDetailDialog({
   detail,
   loading,
   onClose,
@@ -486,7 +349,7 @@ function CustomerSubaccountOrderDetailDialog({
   </Dialog.Root>;
 }
 
-function CustomerAccountAccessDialog({
+export function CustomerAccountAccessDialog({
   account,
   onClose,
   onSaved,
@@ -540,7 +403,7 @@ function CustomerAccountAccessDialog({
   </Dialog.Root>;
 }
 
-function SubaccountPricingDialog({
+export function SubaccountPricingDialog({
   account,
   onClose,
   onSaved,

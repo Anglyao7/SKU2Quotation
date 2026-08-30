@@ -126,6 +126,65 @@ def customer_account_order_detail(
         raise application_http_error(exc) from exc
 
 
+@router.get(
+    "/customer-accounts/{membership_id}",
+    response_model=CustomerSubaccountSummary,
+)
+def customer_account_detail(
+    membership_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> CustomerSubaccountSummary:
+    try:
+        return use_cases.get_customer_subaccount(
+            session,
+            context=current_context(session),
+            membership_id=membership_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/customer-accounts/{membership_id}/orders",
+    response_model=CustomerSubaccountOrderPage,
+)
+def customer_account_detail_orders(
+    membership_id: UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_authenticated_session),
+) -> CustomerSubaccountOrderPage:
+    try:
+        return use_cases.list_customer_subaccount_orders(
+            session,
+            context=current_context(session),
+            page=page,
+            page_size=page_size,
+            membership_id=membership_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/customer-accounts/{membership_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_customer_account(
+    membership_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+    identity_session: Session = Depends(get_auth_session),
+) -> None:
+    try:
+        use_cases.delete_customer_subaccount(
+            _identity_write_session(session, identity_session),
+            context=current_context(session),
+            membership_id=membership_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.patch(
     "/customer-accounts/{membership_id}/password",
     status_code=status.HTTP_204_NO_CONTENT,
