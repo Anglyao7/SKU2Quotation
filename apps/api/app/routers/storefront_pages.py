@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from ..database import get_session
+from ..database import get_auth_session, get_session
 from ..domain.errors import ApplicationError
-from ..services.auth.dependencies import current_context, get_authenticated_session
+from ..services.auth.dependencies import bearer, current_context, get_authenticated_session
 from ..storefront_page_schemas import (
     MAX_STOREFRONT_HTML_BYTES,
     PublicStorefrontPageDocument,
@@ -16,6 +17,7 @@ from ..storefront_page_schemas import (
     StorefrontCustomPageResponse,
     StorefrontCustomPageUpdate,
 )
+from ..use_cases import public_catalog as public_catalog_use_cases
 from ..use_cases import storefront_pages as use_cases
 from .errors import application_http_error
 
@@ -149,13 +151,48 @@ def get_public_storefront_page(
     tenant_slug: str,
     page_slug: str,
     response: Response,
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicStorefrontPageDocument:
     response.headers.update({
         "Cache-Control": "public, max-age=60, stale-while-revalidate=300",
         "X-Content-Type-Options": "nosniff",
     })
     try:
+        if account is not None:
+            token = (
+                credentials.credentials
+                if credentials is not None
+                and credentials.scheme.lower() == "bearer"
+                else None
+            )
+            subaccount = public_catalog_use_cases.optional_customer_subaccount_membership(
+                identity_session,
+                access_token=token,
+            )
+            if subaccount is None:
+                raise ApplicationError(
+                    "STOREFRONT_ACCOUNT_SESSION_REQUIRED",
+                    "请先登录对应子账号后再打开该专属前台。",
+                    kind="unauthorized",
+                )
+            if subaccount[0].id != account:
+                raise ApplicationError(
+                    "STOREFRONT_ACCOUNT_SESSION_MISMATCH",
+                    "当前登录账号与该子账号前台不一致。",
+                    kind="forbidden",
+                )
+            # Child accounts start with a product-only storefront. Merchant
+            # HTML pages are intentionally not inherited or addressable by a
+            # manually typed child URL.
+            response.headers.update(NO_STORE_HEADERS)
+            raise ApplicationError(
+                "STOREFRONT_PAGE_NOT_FOUND",
+                "前台页面不存在。",
+                kind="not_found",
+            )
         return use_cases.public_page(
             session,
             tenant_slug=tenant_slug,

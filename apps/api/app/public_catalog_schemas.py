@@ -22,6 +22,7 @@ PUBLIC_DRAFT_DISCLAIMER_VERSION = "public-draft-v1"
 PUBLIC_PRIVACY_NOTICE_VERSION = "privacy-v1"
 
 QuoteDocumentStyle = Literal["indigo", "emerald", "gold", "slate", "rose"]
+PUBLIC_QUOTE_PDF_MAX_COLUMNS = 5
 
 
 class PublicStoreResponse(BaseModel):
@@ -46,6 +47,8 @@ class PublicStoreResponse(BaseModel):
     support_widget: PublicSupportWidgetResponse
     footer_sections: list[StorefrontFooterSection] = Field(default_factory=list)
     custom_pages: list[PublicStorefrontPageLink] = Field(default_factory=list)
+    storefront_scope: Literal["MERCHANT", "CUSTOMER_SUBACCOUNT"] = "MERCHANT"
+    account_id: UUID | None = None
     quote_notice: str = PUBLIC_DRAFT_DISCLAIMER
 
 
@@ -298,7 +301,12 @@ class PublicQuoteDraftSettingsUpdate(BaseModel):
     style: QuoteDocumentStyle = "indigo"
     template_id: UUID | None = None
     quote_number: str | None = Field(default=None, max_length=80)
-    visible_columns: list[QuoteTemplateField] | None = Field(default=None, max_length=32)
+    # PDF is rendered on portrait A4. More than five independent columns make
+    # the content unreadable; Excel export keeps its complete mapped columns.
+    visible_columns: list[QuoteTemplateField] | None = Field(
+        default=None,
+        max_length=PUBLIC_QUOTE_PDF_MAX_COLUMNS,
+    )
     extra_information: list[PublicQuoteExtraInformation] | None = Field(
         default=None,
         max_length=20,

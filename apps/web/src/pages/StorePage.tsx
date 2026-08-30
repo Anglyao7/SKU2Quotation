@@ -558,12 +558,12 @@ export function StorePage() {
   useEffect(
     () => subscribePublicCatalogRevision(() => {
       facetsLoadedRef.current = false;
-      void api.getStore(tenantSlug, locale)
+      void api.getStore(tenantSlug, locale, accountId)
         .then((nextStore) => setStore(nextStore))
         .catch(() => undefined);
       void loadProducts(page);
     }),
-    [loadProducts, locale, page, tenantSlug],
+    [accountId, loadProducts, locale, page, tenantSlug],
   );
 
   useEffect(() => {
@@ -933,7 +933,7 @@ export function StorePage() {
                   <span className="store-identity-mark"><StoreIcon size={21} weight="duotone" /></span>
                 )}
                 <span>
-                  <strong>{accountName ? `${store.name} / ${accountName}` : store.name}</strong>
+                  <strong>{store.storefront_scope === "CUSTOMER_SUBACCOUNT" ? (accountName || store.name) : store.name}</strong>
                   <small>{accountName ? t("子账号专属商品目录") : t("商品目录")}</small>
                 </span>
               </Link>

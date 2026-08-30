@@ -252,9 +252,10 @@ function primePublicRequestCache<T>(key: string, ttlMs: number, value: T) {
   prunePublicRequestCache();
 }
 
-function storePath(slug: string, locale?: StorefrontLocale) {
+function storePath(slug: string, locale?: StorefrontLocale, accountId?: string) {
   const params = new URLSearchParams();
   if (locale) params.set("locale", locale);
+  if (accountId) params.set("account", accountId);
   const query = params.toString();
   return `/api/store/${encodeURIComponent(slug)}${query ? `?${query}` : ""}`;
 }
@@ -585,13 +586,14 @@ async function download(
 }
 
 export const api = {
-  getStore: async (slug: string, locale?: StorefrontLocale) => {
+  getStore: async (slug: string, locale?: StorefrontLocale, accountId?: string) => {
+    await requireStorefrontAccountSession(accountId);
     const languagePack = await storefrontLanguagePack(slug, locale);
     // Store metadata keeps the selected locale and language menu. Catalog
     // reads below always request source data: a published package is applied
     // locally, while a missing package immediately falls back to source text
     // instead of blocking the storefront on foreground AI translation.
-    const path = storePath(slug, locale);
+    const path = storePath(slug, locale, accountId);
     const cachePath = `${languagePack
       ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
       : path}${publicCatalogAuthScope()}`;
@@ -602,7 +604,7 @@ export const api = {
         const store = await request<Storefront>(
           path,
           {},
-          Boolean(getCoreAccessToken()),
+          Boolean(accountId || getCoreAccessToken()),
         );
         if (!languagePack) return store;
         return {
@@ -629,12 +631,16 @@ export const api = {
       )),
     );
   },
-  getStorefrontCustomPage: (slug: string, pageSlug: string) => {
-    const path = `/api/store/${encodeURIComponent(slug)}/pages/${encodeURIComponent(pageSlug)}`;
+  getStorefrontCustomPage: async (slug: string, pageSlug: string, accountId?: string) => {
+    await requireStorefrontAccountSession(accountId);
+    const params = new URLSearchParams();
+    if (accountId) params.set("account", accountId);
+    const query = params.toString();
+    const path = `/api/store/${encodeURIComponent(slug)}/pages/${encodeURIComponent(pageSlug)}${query ? `?${query}` : ""}`;
     return cachedPublicRequest(
-      publicCatalogCacheKey("storefront-custom-page", path),
+      publicCatalogCacheKey("storefront-custom-page", `${path}${publicCatalogAuthScope()}`),
       PUBLIC_STORE_CACHE_TTL_MS,
-      () => request<StorefrontCustomPageDocument>(path),
+      () => request<StorefrontCustomPageDocument>(path, {}, Boolean(accountId || getCoreAccessToken())),
     );
   },
   getCatalogShare: async (

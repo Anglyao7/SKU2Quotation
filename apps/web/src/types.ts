@@ -167,6 +167,8 @@ export interface Storefront {
   support_widget?: PublicSupportWidget;
   footer_sections?: StorefrontFooterSection[];
   custom_pages?: StorefrontCustomPageLink[];
+  storefront_scope?: "MERCHANT" | "CUSTOMER_SUBACCOUNT";
+  account_id?: string | null;
 }
 
 export interface StorefrontCustomPageLink {

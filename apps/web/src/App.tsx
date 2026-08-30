@@ -212,7 +212,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     });
     if (accountId) await catalogWarmup;
     else void catalogWarmup.catch(() => undefined);
-    const store = await api.getStore(tenantSlug, locale);
+    const store = await api.getStore(tenantSlug, locale, accountId);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(`${storefrontPath(store.slug)}${currentUrl.search}${currentUrl.hash}`);
     }
@@ -241,7 +241,7 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const [store, product] = await Promise.all([
-      api.getStore(tenantSlug, locale),
+      api.getStore(tenantSlug, locale, accountId),
       api.getStoreProduct(tenantSlug, productId, locale, shareToken, accountId),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
@@ -268,14 +268,15 @@ async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArg
   const tenantSlug = params.tenantSlug;
   const pageSlug = params.pageSlug;
   const accountKey = params.accountKey?.trim();
-  if (accountKey && !storefrontAccountMembershipId(accountKey)) throw new Response("Not found", { status: 404 });
+  const accountId = accountKey ? storefrontAccountMembershipId(accountKey) : undefined;
+  if (accountKey && !accountId) throw new Response("Not found", { status: 404 });
   if (!tenantSlug || !pageSlug) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
   try {
     const [store, page] = await Promise.all([
-      api.getStore(tenantSlug, locale),
-      api.getStorefrontCustomPage(tenantSlug, pageSlug),
+      api.getStore(tenantSlug, locale, accountId),
+      api.getStorefrontCustomPage(tenantSlug, pageSlug, accountId),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
@@ -310,7 +311,7 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
     const [store, sku] = await Promise.all([
-      api.getStore(tenantSlug, locale),
+      api.getStore(tenantSlug, locale, accountId),
       api.getStoreSku(tenantSlug, skuId, locale, shareToken, accountId),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {

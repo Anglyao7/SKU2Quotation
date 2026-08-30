@@ -940,6 +940,52 @@
   white-space: nowrap;
 }
 
+.quote-preview-mode-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 2px 2px 0;
+}
+
+.quote-preview-mode-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(92px, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--gray-a5);
+  border-radius: 10px;
+  background: var(--gray-a3);
+}
+
+.quote-preview-mode-switch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 5px 13px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--gray-10);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, box-shadow 150ms ease, transform 100ms ease;
+}
+
+.quote-preview-mode-switch button:hover { color: var(--gray-12); }
+.quote-preview-mode-switch button:active { transform: scale(.97); }
+.quote-preview-mode-switch button:focus-visible { outline: 2px solid color-mix(in srgb, var(--quote-accent) 48%, transparent); outline-offset: 1px; }
+.quote-preview-mode-switch button.is-active {
+  color: var(--quote-accent);
+  background: var(--color-panel);
+  box-shadow: 0 1px 4px rgb(15 23 42 / 10%);
+}
+
 .quote-preview-stage {
   position: relative;
   display: block;
@@ -955,6 +1001,198 @@
     color-mix(in srgb, var(--gray-a4) 72%, var(--color-background));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 46%);
   isolation: isolate;
+}
+
+.quote-excel-preview-stage {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr) 38px;
+  width: 100%;
+  height: min(920px, calc(100dvh - var(--topbar-height) - 188px));
+  min-height: 640px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--gray-a5);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--gray-a2) 82%, var(--color-panel));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 46%);
+}
+
+.quote-excel-formula-bar {
+  display: grid;
+  grid-template-columns: 68px 38px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid var(--gray-a5);
+  color: var(--gray-10);
+  background: color-mix(in srgb, var(--color-panel) 94%, var(--gray-a2));
+  font-size: 11px;
+}
+
+.quote-excel-formula-bar > span {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  padding: 0 10px;
+  overflow: hidden;
+  border-inline-end: 1px solid var(--gray-a5);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-excel-formula-bar > span:last-child { border-inline-end: 0; }
+.quote-excel-name-box { color: var(--gray-12); font-variant-numeric: tabular-nums; }
+.quote-excel-fx { justify-content: center; color: var(--gray-9); font-family: var(--font-serif); font-style: italic; }
+
+.quote-excel-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--gray-a7) transparent;
+  scrollbar-width: thin;
+  outline: none;
+}
+
+.quote-excel-scroll:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--quote-accent) 46%, transparent); }
+
+.quote-excel-sheet {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  color: var(--gray-12);
+  background: var(--color-panel);
+  font-size: 11px;
+}
+
+.quote-excel-row-number-column { width: 46px; }
+
+.quote-excel-sheet th,
+.quote-excel-sheet td {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 7px 9px;
+  overflow: hidden;
+  border-inline-end: 1px solid var(--gray-a5);
+  border-bottom: 1px solid var(--gray-a5);
+  text-align: start;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.quote-excel-sheet thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 28px;
+  padding: 4px 8px;
+  color: var(--gray-10);
+  background: color-mix(in srgb, var(--gray-a3) 92%, var(--color-panel));
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.quote-excel-sheet .quote-excel-corner {
+  left: 0;
+  z-index: 5;
+  background: color-mix(in srgb, var(--gray-a4) 92%, var(--color-panel));
+}
+
+.quote-excel-row-number {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: 46px;
+  color: var(--gray-9);
+  background: color-mix(in srgb, var(--gray-a3) 92%, var(--color-panel));
+  font-size: 10px;
+  font-weight: 500;
+  text-align: center !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.quote-excel-title-row td {
+  height: 54px;
+  color: white;
+  background: var(--quote-accent);
+  font-family: var(--font-serif);
+  font-size: 21px;
+  letter-spacing: .02em;
+  text-align: center;
+}
+
+.quote-excel-meta-row td { height: 72px; padding: 10px 14px; background: color-mix(in srgb, var(--quote-accent) 3%, var(--color-panel)); }
+.quote-excel-meta-grid { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 16px; }
+.quote-excel-meta-grid span { display: grid; min-width: 0; gap: 4px; }
+.quote-excel-meta-grid small { color: var(--gray-9); }
+.quote-excel-meta-grid strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quote-excel-blank-row td { height: 24px; background: var(--color-panel); }
+
+.quote-excel-header-row td {
+  height: 40px;
+  color: white;
+  background: color-mix(in srgb, var(--quote-accent) 90%, var(--gray-12));
+  font-weight: 700;
+  text-align: center;
+  white-space: normal;
+}
+
+.quote-excel-data-row td {
+  height: 76px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.quote-excel-data-row:nth-of-type(even) td { background: color-mix(in srgb, var(--quote-accent) 2.5%, var(--color-panel)); }
+.quote-excel-product-image { display: block; width: 72px; height: 58px; margin: auto; object-fit: contain; background: var(--gray-a3); }
+
+.quote-excel-total-row td {
+  height: 46px;
+  color: var(--quote-accent);
+  background: color-mix(in srgb, var(--quote-accent) 8%, var(--color-panel));
+  font-weight: 750;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.quote-excel-extra-row td,
+.quote-excel-notes-row td { min-height: 42px; white-space: normal; }
+.quote-excel-extra-row strong,
+.quote-excel-notes-row strong { margin-inline-end: 16px; color: var(--quote-accent); }
+.quote-excel-extra-row span,
+.quote-excel-notes-row span { color: var(--gray-11); white-space: pre-wrap; }
+
+.quote-excel-sheet-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 0 12px;
+  border-top: 1px solid var(--gray-a5);
+  color: var(--gray-9);
+  background: color-mix(in srgb, var(--gray-a3) 88%, var(--color-panel));
+  font-size: 10px;
+}
+
+.quote-excel-sheet-tabs button {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 7px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid var(--quote-accent);
+  color: var(--quote-accent);
+  background: var(--color-panel);
+  font: inherit;
+  font-weight: 650;
 }
 
 .quote-preview-viewport {
@@ -1147,8 +1385,9 @@
   display: grid;
   align-items: stretch;
   gap: 10px;
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 12px 14px;
   border-bottom: 1px solid var(--gray-a4);
 }
@@ -1301,7 +1540,7 @@
     overflow: hidden;
   }
 
-  .quote-preview-row { min-width: max-content; }
+  .quote-preview-row { min-width: 0; }
 
   .quote-preview-footer {
     flex-direction: column;
@@ -1339,7 +1578,8 @@
 }
 
 @media (max-width: 760px) {
-  .quote-preview-stage {
+  .quote-preview-stage,
+  .quote-excel-preview-stage {
     height: min(680px, calc(100dvh - var(--topbar-height) - 118px));
     min-height: 500px;
   }
@@ -1354,6 +1594,9 @@
 
 @media (max-width: 520px) {
   .quote-workbench-fields { grid-template-columns: 1fr; }
+
+  .quote-preview-mode-toolbar { align-items: stretch; flex-direction: column; }
+  .quote-preview-mode-switch { width: 100%; }
 
   .quote-editor-item-fields { grid-template-columns: 1fr; }
   .quote-editor-item-field--wide { grid-column: auto; }

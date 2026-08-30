@@ -5,14 +5,17 @@ from decimal import Decimal
 from io import BytesIO
 from uuid import uuid4
 
+import pytest
 from openpyxl import Workbook, load_workbook
 from PIL import Image as PillowImage
+from pydantic import ValidationError
 from pypdf import PdfReader
 
 from app.public_catalog_schemas import (
     PublicQuoteDocument,
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftResponse,
+    PublicQuoteDraftSettingsUpdate,
 )
 from app.quote_template_schemas import (
     QuoteExcelColumn,
@@ -144,6 +147,31 @@ def test_quote_pdf_embeds_item_thumbnail() -> None:
         obj.get_object().get("/Subtype") == "/Image"
         for obj in xobjects.values()
     )
+
+
+def test_quote_pdf_settings_limit_visible_columns_to_five() -> None:
+    accepted = PublicQuoteDraftSettingsUpdate(
+        visible_columns=[
+            "product_image",
+            "product_name",
+            "quantity",
+            "unit_price",
+            "line_total",
+        ],
+    )
+    assert len(accepted.visible_columns or []) == 5
+
+    with pytest.raises(ValidationError):
+        PublicQuoteDraftSettingsUpdate(
+            visible_columns=[
+                "serial_number",
+                "sku_code",
+                "product_name",
+                "quantity",
+                "unit_price",
+                "line_total",
+            ],
+        )
 
 
 def test_custom_quote_xlsx_can_embed_image_and_leave_unmapped_column_blank(

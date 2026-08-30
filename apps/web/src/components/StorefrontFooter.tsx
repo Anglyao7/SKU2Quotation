@@ -40,6 +40,7 @@ export function StorefrontFooter({
   store: Storefront;
   t: StorefrontTranslator;
 }) {
+  if (store.storefront_scope === "CUSTOMER_SUBACCOUNT") return null;
   const sections = store.footer_sections ?? fallbackSections(store);
   const merchantInitial = Array.from(store.name.trim())[0]?.toLocaleUpperCase() || "S";
 

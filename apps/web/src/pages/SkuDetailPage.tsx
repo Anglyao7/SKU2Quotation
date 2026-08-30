@@ -113,11 +113,11 @@ export function SkuDetailPage() {
 
   useEffect(
     () => subscribePublicCatalogRevision(() => {
-      void api.getStore(store.slug, locale)
+      void api.getStore(store.slug, locale, accountId)
         .then((nextStore) => setAnnouncements(nextStore.announcements || []))
         .catch(() => undefined);
     }),
-    [locale, store.slug],
+    [accountId, locale, store.slug],
   );
 
   useEffect(() => {
@@ -188,7 +188,7 @@ export function SkuDetailPage() {
                   </span>
                 )}
                 <span>
-                  <strong>{accountName ? `${store.name} / ${accountName}` : store.name}</strong>
+                  <strong>{store.storefront_scope === "CUSTOMER_SUBACCOUNT" ? (accountName || store.name) : store.name}</strong>
                   <small>{accountName ? t("子账号专属商品目录") : t("SKU 商品目录")}</small>
                 </span>
               </Link>

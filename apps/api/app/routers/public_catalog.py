@@ -99,12 +99,15 @@ def _catalog_subaccount(
     credentials: HTTPAuthorizationCredentials | None,
     expected_membership_id: UUID | None,
 ):
+    # A child storefront is activated only by its dedicated ``account`` URL.
+    # Merely having a child token in the browser must not personalize the
+    # merchant's ordinary public route or attach child pricing to it.
+    if expected_membership_id is None:
+        return None
     submitter = use_cases.optional_customer_subaccount_membership(
         identity_session,
         access_token=_bearer_access_token(credentials),
     )
-    if expected_membership_id is None:
-        return submitter
     if submitter is None:
         raise ApplicationError(
             "STOREFRONT_ACCOUNT_SESSION_REQUIRED",
@@ -148,11 +151,26 @@ def get_public_store(
     tenant_slug: str,
     response: Response,
     locale: str | None = Query(default=None, max_length=20),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicStoreResponse:
     response.headers.update(NO_STORE_HEADERS)
     try:
-        return use_cases.get_store(session, slug=tenant_slug, locale=locale)
+        subaccount = _catalog_subaccount(
+            identity_session,
+            credentials=credentials,
+            expected_membership_id=account,
+        )
+        if subaccount is not None:
+            response.headers.update(PRIVATE_DETAIL_CACHE_HEADERS)
+        return use_cases.get_store(
+            session,
+            slug=tenant_slug,
+            locale=locale,
+            subaccount=subaccount,
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

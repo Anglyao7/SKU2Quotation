@@ -76,9 +76,16 @@ import type { StorefrontLocale } from "../../types";
 import "./QuoteWorkbenchPage.css";
 
 type QuoteDocumentStyle = PublicQuoteDraft["documentStyle"];
+type QuotePreviewMode = "pdf" | "excel";
 type QuoteItemEditField = "unitPrice" | "quantity" | "name" | "description" | "specification" | "category" | "unitCode";
 type QuoteItemEdit = Partial<Record<QuoteItemEditField, string>>;
 type PreviewPan = { x: number; y: number };
+type ExcelPreviewColumn = {
+  key: string;
+  header: string;
+  field?: QuoteTemplateField;
+  width: number;
+};
 type QuoteSettingsPayload = {
   locale: StorefrontLocale;
   style: QuoteDocumentStyle;
@@ -91,6 +98,7 @@ type QuoteSettingsPayload = {
 const PREVIEW_SCALE_MIN = 40;
 const PREVIEW_SCALE_MAX = 150;
 const PREVIEW_SCALE_STEP = 5;
+const MAX_PDF_COLUMNS = 5;
 
 function normalizedPreviewScale(value: number) {
   return Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, Math.round(value / PREVIEW_SCALE_STEP) * PREVIEW_SCALE_STEP));
@@ -175,28 +183,88 @@ const defaultTableFields: QuoteTemplateField[] = [
   "total_gross_weight",
 ];
 
-const previewColumnWidths: Partial<Record<QuoteTemplateField, string>> = {
-  serial_number: "64px",
-  sku_code: "148px",
-  product_name: "200px",
-  description: "240px",
-  specification: "180px",
-  category: "140px",
-  tags: "160px",
-  product_image: "110px",
-  quantity: "100px",
-  unit_code: "100px",
-  packing_quantity: "120px",
-  carton_dimensions: "160px",
-  gross_weight: "120px",
-  carton_volume: "120px",
-  minimum_order_quantity: "120px",
-  unit_price: "130px",
-  line_total: "140px",
-  total_volume: "130px",
-  total_gross_weight: "150px",
-  currency: "100px",
+const defaultVisibleTableFields: QuoteTemplateField[] = [
+  "product_image",
+  "product_name",
+  "quantity",
+  "unit_price",
+  "line_total",
+];
+
+const defaultExcelTableFields: QuoteTemplateField[] = [
+  "serial_number",
+  "product_image",
+  "sku_code",
+  "product_name",
+  "quantity",
+  "unit_code",
+  "packing_quantity",
+  "carton_dimensions",
+  "gross_weight",
+  "carton_volume",
+  "unit_price",
+  "line_total",
+  "total_volume",
+  "total_gross_weight",
+  "description",
+  "specification",
+  "category",
+  "tags",
+  "minimum_order_quantity",
+];
+
+const previewColumnWeights: Partial<Record<QuoteTemplateField, number>> = {
+  serial_number: 0.55,
+  sku_code: 1.25,
+  product_name: 1.8,
+  description: 2,
+  specification: 1.55,
+  category: 1.2,
+  tags: 1.3,
+  product_image: 1.05,
+  quantity: 0.85,
+  unit_code: 0.8,
+  packing_quantity: 1,
+  carton_dimensions: 1.35,
+  gross_weight: 1,
+  carton_volume: 1,
+  minimum_order_quantity: 1,
+  unit_price: 1.15,
+  line_total: 1.25,
+  total_volume: 1.1,
+  total_gross_weight: 1.2,
+  currency: 0.85,
 };
+
+function preferredVisibleColumns(available: QuoteTemplateField[]): QuoteTemplateField[] {
+  const preferred = defaultVisibleTableFields.filter((field) => available.includes(field));
+  const remaining = available.filter((field) => !preferred.includes(field));
+  return [...preferred, ...remaining].slice(0, MAX_PDF_COLUMNS);
+}
+
+function spreadsheetColumnName(index: number) {
+  let value = Math.max(1, index);
+  let name = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    value = Math.floor((value - 1) / 26);
+  }
+  return name;
+}
+
+function excelPreviewColumnWidth(field?: QuoteTemplateField) {
+  if (field === "serial_number") return 64;
+  if (field === "product_image") return 104;
+  if (field === "product_name") return 220;
+  if (field === "description") return 260;
+  if (field === "specification") return 210;
+  if (field === "sku_code") return 180;
+  if (field === "category" || field === "tags") return 160;
+  if (field === "carton_dimensions") return 170;
+  if (field === "unit_price" || field === "line_total") return 138;
+  return 122;
+}
 
 function localeLabel(value: StorefrontLocale) {
   const option = locales.find((row) => row.value === value);
@@ -339,7 +407,8 @@ export function QuoteWorkbenchPage() {
   const [style, setStyle] = useState<QuoteDocumentStyle>("indigo");
   const [templateId, setTemplateId] = useState<string>("");
   const [quoteNumber, setQuoteNumber] = useState("");
-  const [visibleColumns, setVisibleColumns] = useState<QuoteTemplateField[]>(defaultTableFields);
+  const [previewMode, setPreviewMode] = useState<QuotePreviewMode>("pdf");
+  const [visibleColumns, setVisibleColumns] = useState<QuoteTemplateField[]>(defaultVisibleTableFields);
   const [extraInformation, setExtraInformation] = useState<QuoteExtraInformation[]>([]);
   const [collapsedExtraRows, setCollapsedExtraRows] = useState<Record<number, boolean>>({});
   const [manualOpen, setManualOpen] = useState(true);
@@ -394,8 +463,10 @@ export function QuoteWorkbenchPage() {
   );
   const availableColumns = useMemo(() => templateTableFields(selectedTemplate), [selectedTemplate]);
   const activeColumns = useMemo(() => {
-    const filtered = visibleColumns.filter((field) => availableColumns.includes(field));
-    return filtered.length ? filtered : availableColumns;
+    const filtered = visibleColumns
+      .filter((field) => availableColumns.includes(field))
+      .slice(0, MAX_PDF_COLUMNS);
+    return filtered.length ? filtered : preferredVisibleColumns(availableColumns);
   }, [availableColumns, visibleColumns]);
   const currentSettings = useMemo<QuoteSettingsPayload>(() => ({
     locale,
@@ -410,9 +481,32 @@ export function QuoteWorkbenchPage() {
       .map((entry) => ({ title: entry.title.trim(), content: entry.content.trim() })),
   }), [activeColumns, extraInformation, locale, quoteNumber, style, templateId]);
   const previewGrid = useMemo(
-    () => activeColumns.map((field) => previewColumnWidths[field] ?? "132px").join(" "),
+    () => activeColumns.map((field) => `minmax(0, ${previewColumnWeights[field] ?? 1}fr)`).join(" "),
     [activeColumns],
   );
+  const excelPreviewColumns = useMemo<ExcelPreviewColumn[]>(() => {
+    if (selectedTemplate?.columns.length) {
+      return [...selectedTemplate.columns]
+        .sort((left, right) => left.index - right.index)
+        .map((column, index) => {
+          const field = selectedTemplate.columnMappings[column.key];
+          return {
+            key: column.key || spreadsheetColumnName(index + 1),
+            header: field
+              ? fieldLabel(field, t, selectedTemplate, locale)
+              : column.header?.trim() || column.key || spreadsheetColumnName(index + 1),
+            field,
+            width: excelPreviewColumnWidth(field),
+          };
+        });
+    }
+    return defaultExcelTableFields.map((field, index) => ({
+      key: spreadsheetColumnName(index + 1),
+      header: fieldLabel(field, t, undefined, locale),
+      field,
+      width: excelPreviewColumnWidth(field),
+    }));
+  }, [locale, selectedTemplate, t]);
   // A parent account can inspect a child-owned inquiry, but the child remains
   // the only operator allowed to edit, confirm, or otherwise advance it.
   // Keep this flag at the UI boundary as well as enforcing it in the API so a
@@ -565,8 +659,10 @@ export function QuoteWorkbenchPage() {
       const nextReadyTemplates = nextTemplates.filter((template) => template.isReady);
       const nextTemplate = nextReadyTemplates.find((template) => template.id === (nextDraft.quoteTemplateId ?? "")) ?? nextReadyTemplates.find((template) => template.isDefault);
       const nextAvailable = templateTableFields(nextTemplate);
-      const nextVisible = (nextDraft.visibleColumns ?? []).filter((field) => nextAvailable.includes(field));
-      const nextActiveColumns = nextVisible.length ? nextVisible : nextAvailable;
+      const nextVisible = (nextDraft.visibleColumns ?? [])
+        .filter((field) => nextAvailable.includes(field))
+        .slice(0, MAX_PDF_COLUMNS);
+      const nextActiveColumns = nextVisible.length ? nextVisible : preferredVisibleColumns(nextAvailable);
       setDraft(nextDraft);
       setTemplates(nextTemplates);
       setSettings(merchantSettings);
@@ -707,12 +803,13 @@ export function QuoteWorkbenchPage() {
       });
       setDraft(next);
       setQuoteNumber(next.quoteNumber);
-      setVisibleColumns(next.visibleColumns.length ? next.visibleColumns : payload.visibleColumns);
+      const nextVisibleColumns = (next.visibleColumns.length ? next.visibleColumns : payload.visibleColumns).slice(0, MAX_PDF_COLUMNS);
+      setVisibleColumns(nextVisibleColumns);
       setExtraInformation(next.extraInformation ?? payload.extraInformation);
       savedSettingsRef.current = {
         ...payload,
         quoteNumber: next.quoteNumber.trim(),
-        visibleColumns: next.visibleColumns.length ? [...next.visibleColumns] : [...payload.visibleColumns],
+        visibleColumns: [...nextVisibleColumns],
         extraInformation: (next.extraInformation ?? payload.extraInformation).map((entry) => ({ ...entry })),
       };
       return next;
@@ -793,8 +890,12 @@ export function QuoteWorkbenchPage() {
   };
 
   const toggleColumn = (field: QuoteTemplateField, checked: boolean) => {
+    if (checked && !visibleColumns.includes(field) && activeColumns.length >= MAX_PDF_COLUMNS) {
+      notify(t("PDF 最多显示 {count} 列。", { count: MAX_PDF_COLUMNS }), { kind: "info" });
+      return;
+    }
     setVisibleColumns((current) => {
-      if (checked) return current.includes(field) ? current : [...current, field];
+      if (checked) return current.includes(field) ? current : [...current, field].slice(0, MAX_PDF_COLUMNS);
       if (current.length <= 1) return current;
       return current.filter((value) => value !== field);
     });
@@ -804,7 +905,7 @@ export function QuoteWorkbenchPage() {
     const nextId = value === "default" ? "" : value;
     const nextTemplate = readyTemplates.find((template) => template.id === nextId) ?? readyTemplates.find((template) => template.isDefault);
     setTemplateId(nextId);
-    setVisibleColumns(templateTableFields(nextTemplate));
+    setVisibleColumns(preferredVisibleColumns(templateTableFields(nextTemplate)));
   };
 
   const effectiveItem = useCallback((item: PublicQuoteDraftItem): PublicQuoteDraftItem => {
@@ -1003,6 +1104,104 @@ export function QuoteWorkbenchPage() {
     return <span className={`quote-preview-cell ${multiline ? "quote-preview-cell--multiline" : ""}`} title={value}>{value}</span>;
   };
 
+  const renderExcelPreviewCell = (item: PublicQuoteDraftItem, column: ExcelPreviewColumn) => {
+    const effective = effectiveItem(item);
+    if (!column.field) return null;
+    if (column.field === "product_image") {
+      return effective.imageUrl
+        ? <img className="quote-excel-product-image" src={effective.imageUrl} alt={effective.name} loading="lazy" />
+        : null;
+    }
+    if (column.field === "unit_price") return effective.unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (column.field === "line_total") return effective.lineTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return previewValue(effective, column.field, locale);
+  };
+
+  const renderExcelPreview = () => {
+    if (!draft) return null;
+    const columns = excelPreviewColumns;
+    const extraRows = extraInformation.filter((entry) => entry.title.trim() && entry.content.trim());
+    const itemStartRow = 5;
+    const totalRow = itemStartRow + draft.items.length;
+    const sheetName = selectedTemplate?.sheetName?.trim() || t("报价单");
+    return (
+      <div className="quote-excel-preview-stage">
+        <div className="quote-excel-formula-bar" aria-hidden="true">
+          <span className="quote-excel-name-box">A1</span>
+          <span className="quote-excel-fx">fx</span>
+          <span>{quoteText(locale, "document_title")} · {quoteNumber}</span>
+        </div>
+        <div className="quote-excel-scroll" tabIndex={0} aria-label={t("Excel 报价单预览，可横向和纵向滚动查看完整表格")}>
+          <table className="quote-excel-sheet">
+            <colgroup>
+              <col className="quote-excel-row-number-column" />
+              {columns.map((column) => <col key={column.key} style={{ width: `${column.width}px` }} />)}
+            </colgroup>
+            <thead>
+              <tr>
+                <th className="quote-excel-corner" aria-hidden="true" />
+                {columns.map((column, index) => <th className="quote-excel-column-name" key={column.key}>{column.key || spreadsheetColumnName(index + 1)}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="quote-excel-title-row">
+                <th className="quote-excel-row-number">1</th>
+                <td colSpan={columns.length}><strong>{quoteText(locale, "document_title")}</strong></td>
+              </tr>
+              <tr className="quote-excel-meta-row">
+                <th className="quote-excel-row-number">2</th>
+                <td colSpan={columns.length}>
+                  <div className="quote-excel-meta-grid">
+                    <span><small>{quoteText(locale, "merchant")}</small><strong>{settings?.name || "—"}</strong></span>
+                    <span><small>{quoteText(locale, "quote_number")}</small><strong>{quoteNumber}</strong></span>
+                    <span><small>{quoteText(locale, "customer")}</small><strong>{draft.customerCompany || draft.customerName}</strong></span>
+                    <span><small>{quoteText(locale, "date")}</small><strong>{quoteDateOnly(draft.createdAt)}</strong></span>
+                    <span><small>{quoteText(locale, "currency")}</small><strong>{draft.currency}</strong></span>
+                  </div>
+                </td>
+              </tr>
+              <tr className="quote-excel-blank-row">
+                <th className="quote-excel-row-number">3</th>
+                <td colSpan={columns.length} />
+              </tr>
+              <tr className="quote-excel-header-row">
+                <th className="quote-excel-row-number">4</th>
+                {columns.map((column) => <td key={column.key}>{column.header}</td>)}
+              </tr>
+              {draft.items.map((item, itemIndex) => (
+                <tr className="quote-excel-data-row" key={item.id}>
+                  <th className="quote-excel-row-number">{itemStartRow + itemIndex}</th>
+                  {columns.map((column) => <td key={`${item.id}-${column.key}`} title={column.field ? previewValue(effectiveItem(item), column.field, locale) : ""}>{renderExcelPreviewCell(item, column)}</td>)}
+                </tr>
+              ))}
+              <tr className="quote-excel-total-row">
+                <th className="quote-excel-row-number">{totalRow}</th>
+                {columns.length > 1 ? <td colSpan={columns.length - 1}>{quoteText(locale, "total")}</td> : null}
+                <td>{money(previewTotal, draft.currency)}</td>
+              </tr>
+              {extraRows.map((entry, index) => (
+                <tr className="quote-excel-extra-row" key={`${entry.title}-${index}`}>
+                  <th className="quote-excel-row-number">{totalRow + index + 1}</th>
+                  <td colSpan={columns.length}><strong>{entry.title}</strong><span>{entry.content}</span></td>
+                </tr>
+              ))}
+              {draft.notes ? (
+                <tr className="quote-excel-notes-row">
+                  <th className="quote-excel-row-number">{totalRow + extraRows.length + 1}</th>
+                  <td colSpan={columns.length}><strong>{quoteText(locale, "notes")}</strong><span>{draft.notes}</span></td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        <div className="quote-excel-sheet-tabs">
+          <button type="button" className="is-active"><FileXls />{sheetName}</button>
+          <span>{t("{count} 个商品 · {columns} 列", { count: draft.items.length, columns: columns.length })}</span>
+        </div>
+      </div>
+    );
+  };
+
   const renderOrderItemsEditor = () => {
     if (!draft) return null;
     return (
@@ -1095,11 +1294,14 @@ export function QuoteWorkbenchPage() {
           <Text size="1" color="gray"><Columns />{t("商品表格列")}</Text>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>
-              <Button variant="soft" color="gray" className="quote-column-trigger" disabled={isReadOnly}><Columns />{t("已选 {count} 列", { count: activeColumns.length })}<CaretDown /></Button>
+              <Button variant="soft" color="gray" className="quote-column-trigger" disabled={isReadOnly}><Columns />{t("已选 {count}/{max} 列", { count: activeColumns.length, max: MAX_PDF_COLUMNS })}<CaretDown /></Button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="start" className="quote-column-menu">
-              <DropdownMenu.Label>{t("选择客户可见列")}</DropdownMenu.Label>
-              {availableColumns.map((field) => <DropdownMenu.CheckboxItem key={field} checked={visibleColumns.includes(field)} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate, locale)}</span>{visibleColumns.includes(field) ? <Check /> : null}</DropdownMenu.CheckboxItem>)}
+              <DropdownMenu.Label>{t("选择 PDF 显示列，最多 {count} 列", { count: MAX_PDF_COLUMNS })}</DropdownMenu.Label>
+              {availableColumns.map((field) => {
+                const selected = visibleColumns.includes(field);
+                return <DropdownMenu.CheckboxItem key={field} checked={selected} disabled={!selected && activeColumns.length >= MAX_PDF_COLUMNS} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate, locale)}</span>{selected ? <Check /> : null}</DropdownMenu.CheckboxItem>;
+              })}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         </div>
@@ -1161,7 +1363,7 @@ export function QuoteWorkbenchPage() {
           <ul>
             <li>{t("左侧设置报价单编号、模板、可见列、语言和样式。")}</li>
             <li>{t("左侧订单商品可直接编辑，点击条目摘要可查看商品资料。")}</li>
-            <li>{t("中间预览只展示最终效果，变更会自动保存。")}</li>
+            <li>{t("中间可切换 PDF 与 Excel 预览，变更会同步并自动保存。")}</li>
             <li>{t("商品表格列可在左侧设置，空值会保留为空。")}</li>
             <li>{t("额外信息会显示在整张商品列表下方。")}</li>
             <li>{t("完成后可导出 PDF 或 Excel，或通过并通知客户。")}</li>
@@ -1312,6 +1514,18 @@ export function QuoteWorkbenchPage() {
     </AlertDialog.Root>
 
       <Tabs.Content value="quotation">
+        <div className="quote-preview-mode-toolbar">
+          <div className="quote-preview-mode-switch" role="group" aria-label={t("预览格式")}>
+            <button type="button" className={previewMode === "pdf" ? "is-active" : ""} aria-pressed={previewMode === "pdf"} onClick={() => setPreviewMode("pdf")}><FilePdf />PDF</button>
+            <button type="button" className={previewMode === "excel" ? "is-active" : ""} aria-pressed={previewMode === "excel"} onClick={() => setPreviewMode("excel")}><FileXls />Excel</button>
+          </div>
+          <Text size="1" color="gray">
+            {previewMode === "pdf"
+              ? t("PDF 使用已选择的 {count} 列。", { count: activeColumns.length })
+              : t("Excel 展示完整字段，并与当前编辑内容同步。")}
+          </Text>
+        </div>
+        {previewMode === "pdf" ? (
         <div className="quote-preview-stage">
           <div
             ref={previewViewportRef}
@@ -1359,6 +1573,7 @@ export function QuoteWorkbenchPage() {
             <button type="button" className="quote-preview-fit" onClick={fitPreviewToViewport}>{t("适合窗口")}</button>
           </div>
         </div>
+        ) : renderExcelPreview()}
       </Tabs.Content>
       {(["proforma", "sales-contract", "commercial-invoice", "packing-list", "customs-declaration"] as const).map((value) => <Tabs.Content value={value} key={value}><Card className="quote-coming-soon"><LockKey size={28} /><Heading size="4">{t("该单证将在后续版本开放")}</Heading><Text size="2" color="gray">{t("当前先完成报价单的制作、样式设置和文件导出。")}</Text></Card></Tabs.Content>)}
       </section>

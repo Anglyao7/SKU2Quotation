@@ -20487,7 +20487,9 @@ def test_supply_chain_partner_contact_crud_and_pagination() -> None:
     assert after_delete.json()["total"] == 0
 
 
-def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safety() -> None:
+def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safety(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     listing = client.get("/api/store/demo/skus", params={"q": "PF-8G01"})
     assert listing.status_code == 200
     sku_data = listing.json()["items"][0]
@@ -20544,6 +20546,23 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     assert "minimum_order_quantity" not in draft["items"][0]
     quote_id = UUID(draft["id"])
     download_headers = {"X-Quote-Download-Token": raw_token}
+    assert draft["items"][0]["image_url_snapshot"].startswith(
+        "/api/store/demo/media/"
+    )
+
+    # The seeded demo catalog intentionally points at a missing local SVG and
+    # lets the public media endpoint synthesize a browser placeholder.  Use a
+    # real raster response here so this endpoint-level test verifies that the
+    # downloaded workbook carries an actual embedded image object.
+    quote_image = BytesIO()
+    Image.new("RGB", (120, 80), (45, 27, 105)).save(quote_image, "PNG")
+    from app.routers import public_catalog as public_catalog_router
+
+    monkeypatch.setattr(
+        public_catalog_router.use_cases,
+        "get_public_media",
+        lambda _session, *, slug, image_id: (quote_image.getvalue(), "image/png"),
+    )
 
     with SessionLocal() as session:
         stored = session.scalar(
@@ -20621,7 +20640,9 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         ]
         assert sheet.cell(header_row + 1, 4).value == original_name
         assert Decimal(str(sheet.cell(header_row + 1, 11).value)) == original_price
+        assert len(sheet._images) == 1
         assert all(cell.data_type != "f" for row in sheet.iter_rows() for cell in row)
+        workbook.close()
 
         merchant_list = client.get("/api/v1/public-quote-drafts")
         assert merchant_list.status_code == 200
@@ -20649,6 +20670,12 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert merchant_xlsx.content.startswith(b"PK")
         assert merchant_xlsx.headers["cache-control"] == "private, no-store"
         assert merchant_xlsx.headers["pragma"] == "no-cache"
+        merchant_workbook = load_workbook(
+            BytesIO(merchant_xlsx.content),
+            data_only=False,
+        )
+        assert len(merchant_workbook.active._images) == 1
+        merchant_workbook.close()
     finally:
         with SessionLocal() as session:
             sku = session.get(SkuRow, UUID(sku_data["id"]))
@@ -22144,6 +22171,58 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 params={"page_size": 1, "account": account["id"]},
             )
             assert dedicated_catalog.status_code == 200, dedicated_catalog.text
+            dedicated_store = child_client.get(
+                "/api/store/demo",
+                headers=headers,
+                params={"account": account["id"]},
+            )
+            assert dedicated_store.status_code == 200, dedicated_store.text
+            dedicated_store_data = dedicated_store.json()
+            assert dedicated_store_data["storefront_scope"] == "CUSTOMER_SUBACCOUNT"
+            assert dedicated_store_data["account_id"] == account["id"]
+            assert dedicated_store_data["name"] == f"Downstream Customer {suffix}"
+            assert dedicated_store_data["description"] is None
+            assert dedicated_store_data["logo_url"] is None
+            assert dedicated_store_data["contact_email"] is None
+            assert dedicated_store_data["contact_phone"] is None
+            assert dedicated_store_data["hot_products_enabled"] is False
+            assert dedicated_store_data["exchange_rates_enabled"] is False
+            assert dedicated_store_data["ai_search_questions"] == []
+            assert dedicated_store_data["popular_search_terms"] == []
+            assert dedicated_store_data["announcements"] == []
+            assert dedicated_store_data["support_widget"] == {
+                "enabled": False,
+                "title": "AI 智能客服",
+                "welcome_message": "",
+                "ai_enabled": False,
+                "custom_actions": [],
+            }
+            assert dedicated_store_data["footer_sections"] == []
+            assert dedicated_store_data["custom_pages"] == []
+            assert dedicated_store.headers["cache-control"] == "private, no-store"
+
+            # A child token alone must not make the merchant's ordinary URL
+            # inherit child pricing or identity. The account UUID is the
+            # explicit boundary between the two storefronts.
+            merchant_store = child_client.get("/api/store/demo", headers=headers)
+            assert merchant_store.status_code == 200, merchant_store.text
+            assert merchant_store.json()["storefront_scope"] == "MERCHANT"
+            assert merchant_store.json()["account_id"] is None
+            assert merchant_store.json()["name"] != f"Downstream Customer {suffix}"
+            assert child_client.get(
+                "/api/store/demo",
+                params={"account": account["id"]},
+            ).status_code == 401
+            assert child_client.get(
+                "/api/store/demo",
+                headers=headers,
+                params={"account": str(uuid4())},
+            ).status_code == 403
+            assert child_client.get(
+                "/api/store/demo/pages/about-us",
+                headers=headers,
+                params={"account": account["id"]},
+            ).status_code == 404
             assert child_client.get(
                 "/api/store/demo/skus",
                 params={"page_size": 1, "account": account["id"]},

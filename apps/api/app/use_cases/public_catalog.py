@@ -34,6 +34,7 @@ from ..public_catalog_models import (
 from ..public_catalog_schemas import (
     PUBLIC_DRAFT_DISCLAIMER_VERSION,
     PUBLIC_PRIVACY_NOTICE_VERSION,
+    PUBLIC_QUOTE_PDF_MAX_COLUMNS,
     PublicQuoteDocument,
     PublicQuoteDraftCreate,
     PublicQuoteDraftCurrencyConversion,
@@ -61,6 +62,7 @@ from ..public_catalog_schemas import (
     PublicSkuResponse,
     PublicStoreResponse,
 )
+from ..support_schemas import PublicSupportWidgetResponse
 from ..repositories import public_catalog_repository as repository
 from ..repositories import catalog_translation_repository
 from ..repositories import quote_template_repository
@@ -791,8 +793,15 @@ def get_store(
     *,
     slug: str,
     locale: str | None = None,
+    subaccount: tuple[MembershipRow, object] | None = None,
 ) -> PublicStoreResponse:
     tenant, profile = _resolve_store(session, slug=slug)
+    if subaccount is not None and subaccount[0].tenant_id != tenant.id:
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_TENANT_MISMATCH",
+            "当前子账号不属于这个店铺。",
+            kind="forbidden",
+        )
     source_locale, requested_locale, available_locales = (
         _requested_storefront_locale(
             session,
@@ -801,6 +810,39 @@ def get_store(
             profile=profile,
         )
     )
+    if subaccount is not None:
+        membership, user = subaccount
+        account_name = str(getattr(user, "display_name", "") or "").strip()
+        return PublicStoreResponse(
+            id=tenant.id,
+            slug=tenant.slug,
+            name=account_name or "子账号",
+            description=None,
+            logo_url=None,
+            contact_email=None,
+            contact_phone=None,
+            default_currency=tenant.default_currency,
+            locale=requested_locale,
+            source_locale=source_locale,
+            available_locales=available_locales,
+            all_products_position=0,
+            hot_products_enabled=False,
+            category_showcase_enabled=True,
+            exchange_rates_enabled=False,
+            ai_search_questions=[],
+            popular_search_terms=[],
+            announcements=[],
+            support_widget=PublicSupportWidgetResponse(
+                enabled=False,
+                welcome_message="",
+                ai_enabled=False,
+                custom_actions=[],
+            ),
+            footer_sections=[],
+            custom_pages=[],
+            storefront_scope="CUSTOMER_SUBACCOUNT",
+            account_id=membership.id,
+        )
     return PublicStoreResponse(
         id=tenant.id,
         slug=tenant.slug,
@@ -839,6 +881,7 @@ def get_store(
             tenant_id=tenant.id,
             tenant_slug=tenant.slug,
         ),
+        storefront_scope="MERCHANT",
     )
 
 
@@ -3603,7 +3646,7 @@ def _draft_response(
             str(field)
             for field in (getattr(draft, "quote_visible_columns", None) or [])
             if str(field).strip()
-        ],
+        ][:PUBLIC_QUOTE_PDF_MAX_COLUMNS],
         currency=draft.currency,
         subtotal=draft.subtotal_amount,
         total=draft.estimated_total,

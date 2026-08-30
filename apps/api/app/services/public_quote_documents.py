@@ -40,7 +40,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from ..public_catalog_schemas import PublicQuoteDocument
+from ..public_catalog_schemas import PUBLIC_QUOTE_PDF_MAX_COLUMNS, PublicQuoteDocument
 from .public_catalog_privacy import public_specification
 from .quote_localization import (
     localize_known_quote_template_label,
@@ -881,21 +881,9 @@ _PUBLIC_QUOTE_TABLE_FIELDS = frozenset(
     }
 )
 _PUBLIC_QUOTE_DEFAULT_FIELDS = (
-    "serial_number",
-    "sku_code",
-    "product_name",
-    "description",
-    "specification",
-    "category",
-    "tags",
     "product_image",
+    "product_name",
     "quantity",
-    "unit_code",
-    "packing_quantity",
-    "carton_dimensions",
-    "gross_weight",
-    "carton_volume",
-    "minimum_order_quantity",
     "unit_price",
     "line_total",
 )
@@ -950,7 +938,7 @@ def _public_quote_table_fields(document: PublicQuoteDocument) -> list[str]:
             continue
         if field not in fields:
             fields.append(field)
-    return fields or list(_PUBLIC_QUOTE_DEFAULT_FIELDS)
+    return (fields or list(_PUBLIC_QUOTE_DEFAULT_FIELDS))[:PUBLIC_QUOTE_PDF_MAX_COLUMNS]
 
 
 def _public_quote_table_headers(
