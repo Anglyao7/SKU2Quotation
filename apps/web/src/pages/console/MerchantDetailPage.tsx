@@ -60,7 +60,7 @@ const STATUS_LABELS: Record<MerchantStatusMetric["status"], string> = {
   EXPIRED: "已过期",
 };
 
-const LOCALES = ["zh-CN", "en-US", "es", "pt", "tr", "ar", "ja", "ko"];
+const LOCALES = ["zh-CN", "en-US", "es", "pt", "tr", "ar", "ja", "ko", "fr", "fa"];
 const CURRENCIES = ["CNY", "USD", "EUR", "GBP", "JPY", "KRW", "AED", "TRY"];
 const TIMEZONES = [
   "Asia/Shanghai",

@@ -71,6 +71,24 @@ function FlagArtwork({ locale }: { locale: StorefrontLocale }) {
           <path d="M8.2 6.3h2.8v3.5H8.2Z" fill="#fff" stroke="#d21034" strokeWidth=".45" />
         </svg>
       );
+    case "fr":
+      return (
+        <svg viewBox="0 0 24 16" focusable="false">
+          <rect width="8" height="16" fill="#0055a4" />
+          <rect x="8" width="8" height="16" fill="#fff" />
+          <rect x="16" width="8" height="16" fill="#ef4135" />
+        </svg>
+      );
+    case "fa":
+      return (
+        <svg viewBox="0 0 24 16" focusable="false">
+          <rect width="24" height="5.34" fill="#239f40" />
+          <rect y="5.33" width="24" height="5.34" fill="#fff" />
+          <rect y="10.66" width="24" height="5.34" fill="#da0000" />
+          <path d="M12 5.95c1.2 1.08 1.55 2.17 1.05 3.25-.25.53-.6.88-1.05 1.05-.45-.17-.8-.52-1.05-1.05-.5-1.08-.15-2.17 1.05-3.25Z" fill="#da0000" />
+          <path d="M3 5.05h18M3 10.95h18" stroke="#fff" strokeWidth=".34" strokeDasharray=".65 .45" />
+        </svg>
+      );
     case "zh-CN":
     default:
       return (

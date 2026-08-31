@@ -18,6 +18,8 @@ export const STOREFRONT_LANGUAGE_OPTIONS: readonly StorefrontLanguageOption[] = 
   { code: "ja", label: "日本語", shortLabel: "日", flag: "🇯🇵", direction: "ltr" },
   { code: "ko", label: "한국어", shortLabel: "한", flag: "🇰🇷", direction: "ltr" },
   { code: "pt", label: "Português", shortLabel: "PT", flag: "🇵🇹", direction: "ltr" },
+  { code: "fr", label: "Français", shortLabel: "FR", flag: "🇫🇷", direction: "ltr" },
+  { code: "fa", label: "فارسی", shortLabel: "فا", flag: "🇮🇷", direction: "rtl" },
 ] as const;
 
 const languageByCode = new Map(
@@ -42,6 +44,10 @@ const localeAliases: Record<string, StorefrontLocale> = {
   pt: "pt",
   "pt-pt": "pt",
   "pt-br": "pt",
+  fr: "fr",
+  "fr-fr": "fr",
+  fa: "fa",
+  "fa-ir": "fa",
 };
 
 export function parseStorefrontLocale(value?: string | null): StorefrontLocale | undefined {

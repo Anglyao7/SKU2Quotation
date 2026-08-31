@@ -7,7 +7,17 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 
-CatalogTargetLocale = Literal["en-US", "es", "tr", "ar", "ja", "ko", "pt"]
+CatalogTargetLocale = Literal[
+    "en-US",
+    "es",
+    "tr",
+    "ar",
+    "ja",
+    "ko",
+    "pt",
+    "fr",
+    "fa",
+]
 
 
 class CatalogTranslationFailure(BaseModel):

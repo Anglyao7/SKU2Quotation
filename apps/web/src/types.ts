@@ -312,7 +312,9 @@ export type StorefrontLocale =
   | "ar"
   | "ja"
   | "ko"
-  | "pt";
+  | "pt"
+  | "fr"
+  | "fa";
 
 export interface CatalogLanguagePackDescriptor {
   source_locale: StorefrontLocale;

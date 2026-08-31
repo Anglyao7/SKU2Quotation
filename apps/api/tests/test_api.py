@@ -895,11 +895,11 @@ def test_merchant_only_enables_languages_with_published_packages(
         monkeypatch.setattr(
             catalog_translation_repository,
             "available_language_pack_locales",
-            lambda *_args, **_kwargs: ["es", "ar", "ja", "pt"],
+            lambda *_args, **_kwargs: ["es", "ar", "ja", "pt", "fr", "fa"],
         )
         response = client.patch(
             "/api/v1/me/merchant",
-            json={"storefront_locales": ["es", "ar", "ja", "pt"]},
+            json={"storefront_locales": ["es", "ar", "ja", "pt", "fr", "fa"]},
         )
         assert response.status_code == 200, response.text
         assert response.json()["storefront_locales"] == [
@@ -908,6 +908,8 @@ def test_merchant_only_enables_languages_with_published_packages(
             "ar",
             "ja",
             "pt",
+            "fr",
+            "fa",
         ]
 
         settings = client.get("/api/v1/me/merchant")
@@ -918,6 +920,8 @@ def test_merchant_only_enables_languages_with_published_packages(
             "ar",
             "ja",
             "pt",
+            "fr",
+            "fa",
         ]
 
         store = client.get("/api/store/demo", params={"locale": "pt-BR"})
@@ -929,7 +933,13 @@ def test_merchant_only_enables_languages_with_published_packages(
             "ar",
             "ja",
             "pt",
+            "fr",
+            "fa",
         ]
+
+        persian_store = client.get("/api/store/demo", params={"locale": "fa-IR"})
+        assert persian_store.status_code == 200, persian_store.text
+        assert persian_store.json()["locale"] == "fa"
 
         disabled = client.get("/api/store/demo", params={"locale": "ko"})
         assert disabled.status_code == 422

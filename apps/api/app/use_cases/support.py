@@ -81,6 +81,7 @@ HUMAN_REQUEST_CONFIRMATIONS = {
     "ja": "担当者に通知しました。しばらくお待ちください。",
     "ko": "상담원에게 알림을 보냈습니다. 잠시만 기다려 주세요.",
     "fr": "Un conseiller a été prévenu. Merci de patienter un instant.",
+    "fa": "به پشتیبان انسانی اطلاع داده شد. لطفاً کمی منتظر بمانید.",
     "de": "Ein Mitarbeiter wurde benachrichtigt. Bitte warten Sie einen Moment.",
     "it": "Un operatore è stato avvisato. Attendi un momento.",
     "ru": "Оператор поддержки уведомлён. Пожалуйста, немного подождите.",

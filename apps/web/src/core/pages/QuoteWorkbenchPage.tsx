@@ -148,6 +148,8 @@ const locales: Array<{ value: StorefrontLocale; label: string; flag: string }> =
   { value: "ja", label: "日本語", flag: "🇯🇵" },
   { value: "ko", label: "한국어", flag: "🇰🇷" },
   { value: "pt", label: "Português", flag: "🇵🇹" },
+  { value: "fr", label: "Français", flag: "🇫🇷" },
+  { value: "fa", label: "فارسی", flag: "🇮🇷" },
 ];
 
 const styles: Array<{ value: QuoteDocumentStyle; label: string; color: string }> = [

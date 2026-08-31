@@ -2025,6 +2025,8 @@ const english: Record<string, string> = {
   "选择访客可以使用的语言；只有管理员已发布语言包的语言才可以启用。":
     "Choose the languages available to visitors. A language can only be enabled after an administrator publishes its language package.",
   "已启用 {count} 种": "{count} enabled",
+  "可启用 {count} 种": "{count} available",
+  "待配置 {count} 种": "{count} awaiting packages",
   "正在读取语言包配置": "Loading language-package settings",
   "该语言包未配置，请联系管理员。":
     "This language package is not configured. Contact an administrator.",
@@ -2038,6 +2040,14 @@ const english: Record<string, string> = {
   "选择默认语言": "Choose the default language",
   "保存语言": "Save languages",
   "源语言": "Source language",
+  "源语言 · 固定保留": "Source language · always on",
+  "待管理员配置": "Administrator setup required",
+  "已在前台启用": "Enabled on storefront",
+  "点击启用": "Click to enable",
+  "保存前台语言": "Save storefront languages",
+  "有未保存的语言更改": "You have unsaved language changes.",
+  "语言包已发布后即可选择，并显示在访客的语言菜单中。":
+    "Published language packages can be selected and shown in the visitor language menu.",
   "展示 {language}": "Show {language}",
   "前台语言已更新。尚未完成翻译的内容会暂时显示原文。":
     "Storefront languages updated. Content not yet translated will temporarily show its source text.",

@@ -5,6 +5,14 @@ const source = await fs.readFile(
   new URL("../src/lib/api.ts", import.meta.url),
   "utf8",
 );
+const localeSource = await fs.readFile(
+  new URL("../src/lib/storefrontLocale.ts", import.meta.url),
+  "utf8",
+);
+const localeTypes = await fs.readFile(
+  new URL("../src/types.ts", import.meta.url),
+  "utf8",
+);
 
 function section(start, end) {
   const startIndex = source.indexOf(start);
@@ -62,5 +70,15 @@ assert.ok(
   source.includes("LANGUAGE_PACK_DESCRIPTOR_TIMEOUT_MS"),
   "A missing or unreachable language-pack descriptor must have a short timeout",
 );
+for (const locale of ["fr", "fa"]) {
+  assert.ok(
+    localeSource.includes(`code: "${locale}"`),
+    `Storefront language options must include ${locale}`,
+  );
+  assert.ok(
+    localeTypes.includes(`| "${locale}"`),
+    `StorefrontLocale must include ${locale}`,
+  );
+}
 
 console.log("Storefront language fallback tests passed");

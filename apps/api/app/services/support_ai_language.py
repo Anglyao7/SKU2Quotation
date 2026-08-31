@@ -103,6 +103,10 @@ def detect_message_language(value: str, *, locale_hint: str = "und") -> str:
             return "ja"
         if counts["ko"]:
             return "ko"
+        if counts["ar"] and (locale_hint or "").split("-", 1)[0].casefold() == "fa":
+            # Persian and Arabic share most of the same Unicode blocks. The
+            # explicitly selected storefront locale is the reliable tie-breaker.
+            return "fa"
         return script
     natural_text = IDENTIFIER_PATTERN.sub(" ", normalized)
     words = {word.casefold() for word in WORD_PATTERN.findall(natural_text)}

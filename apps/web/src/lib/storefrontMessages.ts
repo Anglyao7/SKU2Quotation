@@ -1,8 +1,9 @@
 import type { StorefrontLocale } from "../types";
+import { frenchStorefrontMessages, persianStorefrontMessages } from "./storefrontMessages.fr-fa";
 import { portugueseStorefrontMessages } from "./storefrontMessages.pt";
 
 type AdditionalLocale = Exclude<StorefrontLocale, "zh-CN" | "en-US">;
-type ExistingAdditionalLocale = Exclude<AdditionalLocale, "pt">;
+type ExistingAdditionalLocale = Exclude<AdditionalLocale, "pt" | "fr" | "fa">;
 
 const localizedStorefrontMessagesBase: Record<
   string,
@@ -253,6 +254,11 @@ const localizedStorefrontMessagesBase: Record<
 export const localizedStorefrontMessages = Object.fromEntries(
   Object.entries(localizedStorefrontMessagesBase).map(([source, translations]) => [
     source,
-    { ...translations, pt: portugueseStorefrontMessages[source] },
+    {
+      ...translations,
+      pt: portugueseStorefrontMessages[source],
+      fr: frenchStorefrontMessages[source],
+      fa: persianStorefrontMessages[source],
+    },
   ]),
-) as Record<string, Record<AdditionalLocale, string>>;
+) as Record<string, Partial<Record<AdditionalLocale, string>>>;

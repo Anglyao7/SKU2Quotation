@@ -39,6 +39,10 @@ SUPPORTED_LOCALE_CODES = {
     "pt": "PT",
     "pt-PT": "PT",
     "pt-BR": "PT",
+    "fr": "FR",
+    "fr-FR": "FR",
+    "fa": "FA",
+    "fa-IR": "FA",
 }
 
 ALIYUN_LOCALE_CODES = {
@@ -60,6 +64,10 @@ ALIYUN_LOCALE_CODES = {
     "pt": "pt",
     "pt-PT": "pt",
     "pt-BR": "pt",
+    "fr": "fr",
+    "fr-FR": "fr",
+    "fa": "fa",
+    "fa-IR": "fa",
 }
 
 DEFAULT_ALIYUN_ALIMT_ENDPOINT = "mt.cn-hangzhou.aliyuncs.com"
@@ -84,6 +92,10 @@ LOCALE_NAMES = {
     "pt": "Portuguese",
     "pt-PT": "Portuguese",
     "pt-BR": "Brazilian Portuguese",
+    "fr": "French",
+    "fr-FR": "French",
+    "fa": "Persian",
+    "fa-IR": "Persian",
 }
 
 _CATALOG_BOUNDARY_PATTERN = re.compile(

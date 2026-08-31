@@ -3,9 +3,11 @@ import {
   Check,
   GlobeHemisphereWest,
   LockSimple,
+  Plus,
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
+import { StorefrontFlag } from "../../components/StorefrontFlag";
 import { STOREFRONT_LANGUAGE_OPTIONS } from "../../lib/storefrontLocale";
 import type { StorefrontLocale } from "../../types";
 import { useCoreAuth } from "../AuthContext";
@@ -30,6 +32,10 @@ export function StorefrontLanguageSettings() {
 
   const changed = enabledLocales.join(",") !== savedLocales.join(",")
     || defaultLocale !== savedDefaultLocale;
+  const availableCount = STOREFRONT_LANGUAGE_OPTIONS.filter(
+    (language) => language.code === "zh-CN" || configuredLocales.includes(language.code),
+  ).length;
+  const waitingCount = STOREFRONT_LANGUAGE_OPTIONS.length - availableCount;
 
   useEffect(() => {
     let active = true;
@@ -110,16 +116,18 @@ export function StorefrontLanguageSettings() {
           </Text>
         </div>
         <div className="language-selection-toolbar">
-          <Text size="1" color="gray">
-            {t("已启用 {count} 种", { count: enabledLocales.length })}
-          </Text>
+          <div className="language-selection-summary" aria-live="polite">
+            <span className="is-enabled">{t("已启用 {count} 种", { count: enabledLocales.length })}</span>
+            <span>{t("可启用 {count} 种", { count: availableCount })}</span>
+            {waitingCount ? <span className="is-waiting">{t("待配置 {count} 种", { count: waitingCount })}</span> : null}
+          </div>
           <Button
             variant={changed ? "solid" : "soft"}
             onClick={() => void save()}
             loading={saving}
             disabled={!canManageSettings || !changed || saving || loading}
           >
-            {t(changed ? "保存更改" : "已保存")}
+            {t(changed ? "保存前台语言" : "已保存")}
           </Button>
         </div>
       </div>
@@ -147,15 +155,19 @@ export function StorefrontLanguageSettings() {
                   onClick={() => toggleLanguage(language.code, !enabled)}
                   disabled={source || !canManageSettings}
                   aria-pressed={enabled}
+                  aria-disabled={!configured || source || !canManageSettings}
+                  title={!configured ? t("该语言包未配置，请联系管理员。") : undefined}
                 >
-                  <span className="language-option-flag" aria-hidden="true">{language.flag}</span>
+                  <StorefrontFlag locale={language.code} className="language-option-flag" />
                   <span className="language-option-copy">
                     <strong lang={language.code} dir={language.direction}>{language.label}</strong>
-                    <small>{source
-                      ? t("源语言")
-                      : configured
-                        ? language.code.split("-")[0].toUpperCase()
-                        : t("语言包未配置")}</small>
+                    <small className="language-option-status">{source
+                      ? t("源语言 · 固定保留")
+                      : !configured
+                        ? t("待管理员配置")
+                        : enabled
+                          ? t("已在前台启用")
+                          : t("点击启用")}</small>
                   </span>
                   <span className="language-option-indicator" aria-hidden="true">
                     {source
@@ -164,11 +176,21 @@ export function StorefrontLanguageSettings() {
                         ? <WarningCircle weight="fill" />
                         : enabled
                           ? <Check weight="bold" />
-                          : null}
+                          : <Plus weight="bold" />}
                   </span>
                 </button>
               );
             })}
+          </div>
+          <div className={`language-selection-state${changed ? " is-changed" : ""}`}>
+            {changed
+              ? <WarningCircle weight="fill" aria-hidden="true" />
+              : <Check weight="bold" aria-hidden="true" />}
+            <Text size="1" color="gray">
+              {t(changed
+                ? "有未保存的语言更改"
+                : "语言包已发布后即可选择，并显示在访客的语言菜单中。")}
+            </Text>
           </div>
           <div className="language-default-row">
             <div>

@@ -814,7 +814,7 @@ def _register_quote_pdf_font(locale: str) -> str:
             pass
         return cid_font
 
-    if locale == "ar":
+    if locale in {"ar", "fa"}:
         configured = os.environ.get("QUOTE_ARABIC_FONT_PATH", "").strip()
         candidates = [
             *((Path(configured),) if configured else ()),
@@ -841,7 +841,7 @@ def _register_quote_pdf_font(locale: str) -> str:
 
 def _pdf_localized_text(value: object | None, locale: str) -> str:
     text = str(value or "")
-    if locale == "ar" and re.search(r"[\u0600-\u06ff]", text):
+    if locale in {"ar", "fa"} and re.search(r"[\u0600-\u06ff]", text):
         try:
             import arabic_reshaper
             from bidi.algorithm import get_display
