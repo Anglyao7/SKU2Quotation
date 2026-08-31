@@ -323,7 +323,16 @@
 .language-package-details dd { margin: 0; overflow: hidden; font-size: 12px; font-weight: 600; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .language-job-card { display: grid; gap: 13px; }
 .language-batch-history-card { display: grid; gap: 14px; }
+.language-batch-heading-meta { display: flex !important; align-items: center; justify-content: flex-end; gap: 8px !important; }
+.language-batch-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.language-batch-filters > button { min-width: 0; min-height: 42px; padding: 8px 11px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--core-line); border-radius: 10px; color: var(--core-muted); background: var(--core-surface); cursor: pointer; transition: border-color 140ms ease, color 140ms ease, background 140ms ease; }
+.language-batch-filters > button:hover { border-color: var(--core-line-strong); color: var(--core-ink); background: var(--core-soft); }
+.language-batch-filters > button.is-active { border-color: color-mix(in srgb, var(--core-accent) 42%, var(--core-line)); color: var(--core-accent); background: color-mix(in srgb, var(--core-accent) 7%, var(--core-surface)); }
+.language-batch-filters > button span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.language-batch-filters > button strong { min-width: 24px; font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.language-batch-empty { min-height: 96px; display: grid; place-items: center; padding: 18px; border: 1px dashed var(--core-line); border-radius: 12px; background: var(--core-soft); text-align: center; }
 .language-batch-list { display: grid; gap: 8px; }
+.language-batch-list.is-loading { opacity: .62; transition: opacity 140ms ease; }
 .language-batch-row { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; border: 1px solid var(--core-line); border-radius: 12px; background: var(--core-soft); }
 .language-batch-row.is-failed { border-color: color-mix(in srgb, var(--red-8, #d14343) 34%, var(--core-line)); background: color-mix(in srgb, var(--red-3, #fff0f0) 30%, var(--core-soft)); }
 .language-batch-row.is-succeeded { background: color-mix(in srgb, var(--green-3, #e8f8ed) 26%, var(--core-soft)); }
@@ -336,6 +345,14 @@
 .language-batch-attempts > div > div { display: grid; gap: 2px; padding-left: 10px; border-left: 2px solid var(--core-line); }
 .language-batch-attempts small { overflow-wrap: anywhere; color: var(--red-10, #b42318); }
 .language-batch-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
+.language-batch-pagination { padding-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--core-line); }
+.language-batch-pagination-summary { display: flex; align-items: center; gap: 14px; }
+.language-batch-pagination-summary label { display: inline-flex; align-items: center; gap: 8px; color: var(--core-muted); font-size: 11px; white-space: nowrap; }
+.language-batch-pagination-summary select { min-width: 82px; min-height: 32px; }
+.language-batch-pagination-controls { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.language-batch-pagination-controls .rt-Button { min-width: 32px; padding-inline: 8px; font-variant-numeric: tabular-nums; }
+.language-batch-pagination-controls svg { width: 15px; height: 15px; }
+.language-batch-pagination-ellipsis { width: 26px; display: inline-grid; place-items: center; color: var(--core-muted); font-size: 12px; }
 .language-job-card.is-failed { border-color: color-mix(in srgb, var(--red-8, #d14343) 32%, var(--core-line)); }
 .language-job-card.is-paused { border-color: color-mix(in srgb, var(--amber-8, #d99a21) 34%, var(--core-line)); background: color-mix(in srgb, var(--amber-3, #fff4d6) 24%, var(--core-surface)); }
 .language-job-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
@@ -421,8 +438,12 @@
   .catalog-translation-compare-grid label.is-wide, .catalog-translation-sku-row label.is-wide { grid-column: auto; }
   .catalog-translation-pagination { align-items: flex-start; flex-direction: column; }
   .language-package-details dd { text-align: left; }
+  .language-batch-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .language-batch-row { align-items: flex-start; flex-direction: column; }
   .language-batch-actions { width: 100%; justify-content: space-between; }
+  .language-batch-pagination { align-items: stretch; flex-direction: column; }
+  .language-batch-pagination-summary, .language-batch-pagination-controls { justify-content: space-between; }
+  .language-batch-pagination-controls { overflow-x: auto; padding-bottom: 2px; }
 }
 .core-sku-toolbar { padding: 12px !important; display: grid; grid-template-columns: minmax(260px, 1fr) minmax(180px, 230px) minmax(120px, 150px) minmax(130px, 165px) auto; gap: 10px; align-items: center; }
 .core-sku-toolbar .rt-TextFieldRoot, .core-sku-toolbar > .rt-Button { min-height: 40px; }

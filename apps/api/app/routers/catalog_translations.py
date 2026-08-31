@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from ..catalog_translation_schemas import (
+    CatalogTranslationBatchPageResponse,
     CatalogTranslationBatchResponse,
     CatalogTranslationJobResponse,
     CatalogTranslationProductRetryRequest,
@@ -148,6 +149,40 @@ def get_translation_job(
                 tenant_id=scoped_context.tenant_id,
                 permissions=scoped_context.permissions,
                 job_id=job_id,
+            )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/jobs/{job_id}/batch-history",
+    response_model=CatalogTranslationBatchPageResponse,
+)
+def list_translation_batch_history(
+    job_id: UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    status: str = Query(default="ALL", max_length=30),
+    include_skus: bool = Query(default=False),
+    tenant_id: UUID | None = Query(default=None),
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogTranslationBatchPageResponse:
+    context = current_context(session)
+    try:
+        with use_cases.platform_admin_translation_scope(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.list_translation_batch_page(
+                session,
+                tenant_id=scoped_context.tenant_id,
+                permissions=scoped_context.permissions,
+                job_id=job_id,
+                page=page,
+                page_size=page_size,
+                status_filter=status,
+                include_skus=include_skus,
             )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

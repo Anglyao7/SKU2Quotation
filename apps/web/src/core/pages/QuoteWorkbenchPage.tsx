@@ -94,11 +94,31 @@ type QuoteSettingsPayload = {
   visibleColumns: QuoteTemplateField[];
   extraInformation: QuoteExtraInformation[];
 };
+type QuoteCurrencyOption = {
+  currency: string;
+  name: string;
+  symbol: string;
+  rate: number;
+};
 
 const PREVIEW_SCALE_MIN = 40;
 const PREVIEW_SCALE_MAX = 150;
 const PREVIEW_SCALE_STEP = 5;
 const MAX_PDF_COLUMNS = 5;
+const preferredCurrencyOrder = [
+  "CNY", "USD", "EUR", "GBP", "JPY", "KRW", "HKD", "SGD", "AUD", "CAD",
+  "CHF", "NZD", "TRY", "SAR", "AED", "INR", "THB", "MYR", "IDR", "PHP",
+  "MXN", "BRL", "ZAR",
+];
+
+function normalizedCurrency(value: string) {
+  const currency = value.trim().toUpperCase();
+  return currency === "RMB" ? "CNY" : currency;
+}
+
+function compactRate(value: number) {
+  return value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
 
 function normalizedPreviewScale(value: number) {
   return Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, Math.round(value / PREVIEW_SCALE_STEP) * PREVIEW_SCALE_STEP));
@@ -436,6 +456,7 @@ export function QuoteWorkbenchPage() {
   const [market, setMarket] = useState<DashboardSnapshot["market"]>();
   const [conversionOpen, setConversionOpen] = useState(false);
   const [converting, setConverting] = useState(false);
+  const [targetCurrency, setTargetCurrency] = useState("USD");
   const autoSettingsTimer = useRef<number | undefined>(undefined);
   const autoItemsTimer = useRef<number | undefined>(undefined);
   const savedSettingsRef = useRef<QuoteSettingsPayload | undefined>(undefined);
@@ -516,22 +537,50 @@ export function QuoteWorkbenchPage() {
   const isReadOnly = Boolean(draft?.readOnly);
   const canEditPrices = draft?.status === "PENDING_CONFIRMATION" && !isReadOnly;
   const hasPendingItemEdits = Object.values(itemEdits).some((edit) => Object.keys(edit).length > 0);
+  const currencyOptions = useMemo<QuoteCurrencyOption[]>(() => {
+    const available = new Map<string, QuoteCurrencyOption>();
+    available.set("CNY", { currency: "CNY", name: "人民币", symbol: "¥", rate: 1 });
+    for (const row of market?.exchangeRates ?? []) {
+      const currency = normalizedCurrency(row.currency);
+      if (!row.rate || row.rate <= 0) continue;
+      available.set(currency, {
+        currency,
+        name: row.name,
+        symbol: row.symbol,
+        rate: row.rate,
+      });
+    }
+    return [...available.values()].sort((left, right) => {
+      const leftIndex = preferredCurrencyOrder.indexOf(left.currency);
+      const rightIndex = preferredCurrencyOrder.indexOf(right.currency);
+      return (leftIndex < 0 ? preferredCurrencyOrder.length : leftIndex)
+        - (rightIndex < 0 ? preferredCurrencyOrder.length : rightIndex);
+    });
+  }, [market?.exchangeRates]);
   const conversionRate = useMemo(() => {
-    if (!draft || !market?.exchangeRates?.length) return undefined;
-    const source = draft.currency.toUpperCase() === "RMB" ? "CNY" : draft.currency.toUpperCase();
-    const sourceRate = source === "CNY"
-      ? 1
-      : market.exchangeRates.find((row) => row.currency.toUpperCase() === source)?.rate;
-    const targetRate = market.exchangeRates.find((row) => row.currency.toUpperCase() === "USD")?.rate;
+    if (!draft) return undefined;
+    const source = normalizedCurrency(draft.currency);
+    const target = normalizedCurrency(targetCurrency);
+    const sourceRate = currencyOptions.find((row) => row.currency === source)?.rate;
+    const targetRate = currencyOptions.find((row) => row.currency === target)?.rate;
     if (!sourceRate || !targetRate || sourceRate <= 0 || targetRate <= 0) return undefined;
     // Market rates are CNY per unit of currency, so source/target gives the
     // amount of target currency represented by one source unit.
     return sourceRate / targetRate;
-  }, [draft, market]);
-  const canConvertToUsd = Boolean(canEditPrices && draft?.currency.toUpperCase() !== "USD" && conversionRate);
-  const conversionRateLabel = conversionRate
-    ? conversionRate.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")
-    : "";
+  }, [currencyOptions, draft, targetCurrency]);
+  const canConvertCurrency = Boolean(
+    canEditPrices
+    && draft
+    && normalizedCurrency(draft.currency) !== normalizedCurrency(targetCurrency)
+    && conversionRate,
+  );
+  const conversionRateLabel = conversionRate ? compactRate(conversionRate) : "";
+  const canOpenCurrencyConversion = Boolean(
+    canEditPrices
+    && draft
+    && currencyOptions.some((row) => row.currency === normalizedCurrency(draft.currency))
+    && currencyOptions.some((row) => row.currency !== normalizedCurrency(draft.currency)),
+  );
 
   const clampPreviewPan = useCallback((next: PreviewPan, scale = previewScale): PreviewPan => {
     const viewport = previewViewportRef.current;
@@ -1063,19 +1112,36 @@ export function QuoteWorkbenchPage() {
     }
   };
 
-  const convertToUsd = async () => {
-    if (!draft || !canConvertToUsd || hasPendingItemEdits || converting) return;
+  const openCurrencyConversion = () => {
+    if (!draft || !canOpenCurrencyConversion || hasPendingItemEdits) return;
+    const source = normalizedCurrency(draft.currency);
+    const preferredTarget = source === "CNY" ? "USD" : "CNY";
+    const nextTarget = currencyOptions.find((row) => row.currency === preferredTarget)
+      ?? currencyOptions.find((row) => row.currency !== source);
+    if (!nextTarget) return;
+    setTargetCurrency(nextTarget.currency);
+    setConversionOpen(true);
+  };
+
+  const convertCurrency = async () => {
+    if (!draft || !canConvertCurrency || hasPendingItemEdits || converting) return;
     setConverting(true);
     setError("");
     try {
-      const next = await convertPublicQuoteDraftCurrency(draft.id, "USD");
+      const sourceCurrency = normalizedCurrency(draft.currency);
+      const destinationCurrency = normalizedCurrency(targetCurrency);
+      const next = await convertPublicQuoteDraftCurrency(draft.id, destinationCurrency);
       setDraft(next);
       setPriceDrafts(Object.fromEntries(next.items.map((item) => [item.id, item.unitPrice.toFixed(2)])));
       setConversionOpen(false);
-      const rateText = conversionRate ? conversionRate.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") : "";
+      const rateText = conversionRate ? compactRate(conversionRate) : "";
       notify(rateText
-        ? t("已按 1 {source} = {rate} USD 换算本报价单。", { source: draft.currency, rate: rateText })
-        : t("报价单已换算为 USD。"), { kind: "success" });
+        ? t("已按 1 {source} = {rate} {target} 换算本报价单。", {
+          source: sourceCurrency,
+          rate: rateText,
+          target: destinationCurrency,
+        })
+        : t("报价单已切换为 {target}。", { target: destinationCurrency }), { kind: "success" });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("报价币种换算失败"));
     } finally {
@@ -1311,8 +1377,7 @@ export function QuoteWorkbenchPage() {
         <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
       </div>
       <div className="quote-workbench-actions">
-        <Button variant="soft" color="blue" disabled={!canConvertToUsd || hasPendingItemEdits || converting} loading={converting} onClick={() => setConversionOpen(true)}><CurrencyDollar />{draft.currency === "USD" ? t("已是 USD") : t("换算为 USD")}</Button>
-        {conversionRateLabel && draft.currency.toUpperCase() !== "USD" ? <Text size="1" color="gray" className="quote-fx-rate">1 {draft.currency} = {conversionRateLabel} USD</Text> : null}
+        <Button variant="soft" color="blue" disabled={!canOpenCurrencyConversion || hasPendingItemEdits || converting} loading={converting} onClick={openCurrencyConversion}><CurrencyDollar />{t("币种")} · {normalizedCurrency(draft.currency)}</Button>
         <Button variant="soft" disabled={!canEditPrices || bulkSaving} onClick={() => setBulkPriceOpen(true)}><SlidersHorizontal />{t("一键调价")}</Button>
         <Text size="1" color="gray" className="quote-autosave-status" aria-live="polite">{saving || savingItems ? t("正在自动保存…") : t("已自动保存")}</Text>
         <Button color="blue" disabled={!canEditPrices || saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{t("保存报价单")}</Button>
@@ -1414,19 +1479,38 @@ export function QuoteWorkbenchPage() {
     {isReadOnly ? <Card className="quote-readonly-notice"><ShieldCheck size={19} /><div><Text size="2" weight="medium">{t("当前为只读查看")}</Text><Text size="1" color="gray">{t("这是子账号提交的询价单，只能由提交该询价的子账号制作、确认和处理。")}</Text></div></Card> : null}
 
     <AlertDialog.Root open={conversionOpen} onOpenChange={(open) => { if (!converting) setConversionOpen(open); }}>
-      <AlertDialog.Content maxWidth="500px">
-        <AlertDialog.Title>{t("按汇率换算为 USD")}</AlertDialog.Title>
-        <AlertDialog.Description size="2">
-          {conversionRate
-            ? t("当前汇率为 1 {source} = {rate} USD。将换算本报价单的单价、总价和报价合计，不会修改商品库价格。", {
-              source: draft.currency,
-              rate: conversionRate.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""),
-            })
-            : t("暂时无法取得当前汇率，请稍后重试。")}
-        </AlertDialog.Description>
+      <AlertDialog.Content maxWidth="520px" className="quote-currency-dialog">
+        <AlertDialog.Title>{t("切换报价币种")}</AlertDialog.Title>
+        <AlertDialog.Description size="2">{t("只换算本报价单的单价和合计，不会修改商品库价格。")}</AlertDialog.Description>
+        <div className="quote-currency-converter">
+          <div className="quote-currency-current">
+            <Text size="1" color="gray">{t("当前币种")}</Text>
+            <strong>{normalizedCurrency(draft.currency)}</strong>
+          </div>
+          <span className="quote-currency-arrow" aria-hidden="true">→</span>
+          <label className="quote-currency-target">
+            <Text size="1" color="gray">{t("目标币种")}</Text>
+            <Select.Root value={targetCurrency} onValueChange={setTargetCurrency} disabled={converting}>
+              <Select.Trigger aria-label={t("目标币种")} />
+              <Select.Content position="popper">
+                {currencyOptions.filter((option) => option.currency !== normalizedCurrency(draft.currency)).map((option) => (
+                  <Select.Item key={option.currency} value={option.currency}>{option.symbol} {option.currency} · {option.name}</Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
+          </label>
+        </div>
+        <div className="quote-currency-summary" aria-live="polite">
+          {conversionRate ? (
+            <>
+              <div><span>{t("参考汇率")}</span><strong>1 {normalizedCurrency(draft.currency)} = {conversionRateLabel} {normalizedCurrency(targetCurrency)}</strong></div>
+              <div><span>{t("换算后预计合计")}</span><strong>{money(previewTotal * conversionRate, normalizedCurrency(targetCurrency))}</strong></div>
+            </>
+          ) : <Text size="2" color="red">{t("暂时无法取得当前汇率，请稍后重试。")}</Text>}
+        </div>
         <div className="quote-sync-confirm-actions">
           <AlertDialog.Cancel><Button variant="soft" color="gray" disabled={converting}>{t("取消")}</Button></AlertDialog.Cancel>
-          <AlertDialog.Action><Button color="blue" disabled={!canConvertToUsd || hasPendingItemEdits || converting} loading={converting} onClick={() => void convertToUsd()}>{t("确认换算")}</Button></AlertDialog.Action>
+          <AlertDialog.Action><Button color="blue" disabled={!canConvertCurrency || hasPendingItemEdits || converting} loading={converting} onClick={() => void convertCurrency()}>{t("确认换算")}</Button></AlertDialog.Action>
         </div>
       </AlertDialog.Content>
     </AlertDialog.Root>

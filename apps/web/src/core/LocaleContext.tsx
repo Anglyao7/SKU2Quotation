@@ -738,6 +738,14 @@ const english: Record<string, string> = {
   "已按 1 {source} = {rate} USD 换算本报价单。": "This quote was converted at 1 {source} = {rate} USD.",
   "报价单已换算为 USD。": "The quote was converted to USD.",
   "报价币种换算失败": "Could not convert the quote currency",
+  "切换报价币种": "Change quote currency",
+  "只换算本报价单的单价和合计，不会修改商品库价格。": "Only this quote's unit prices and totals will be converted. Catalog prices stay unchanged.",
+  "当前币种": "Current currency",
+  "目标币种": "Target currency",
+  "参考汇率": "Reference rate",
+  "换算后预计合计": "Estimated converted total",
+  "已按 1 {source} = {rate} {target} 换算本报价单。": "Converted this quote at 1 {source} = {rate} {target}.",
+  "报价单已切换为 {target}。": "The quote currency is now {target}.",
   "一键调价": "Bulk price adjustment",
   "保存商品修改": "Save product changes",
   "保存报价单": "Save quotation",
@@ -1941,6 +1949,9 @@ const english: Record<string, string> = {
   "商品标签": "Product tags",
   "多语言管理": "Languages",
   "多语言": "Languages",
+  "商家翻译": "Merchant translations",
+  "选择商品前台展示的语言；未配置语言包时请联系平台管理员。":
+    "Choose the languages shown in the product storefront. Contact a platform administrator when a language package is not configured.",
   "管理商品前台可用语言，并更新各语言的商品内容。":
     "Manage storefront languages and update product content for each language.",
   "管理员统一执行翻译任务，并查看、微调各语言的商品译文。":
@@ -2070,6 +2081,23 @@ const english: Record<string, string> = {
   "任务进度与批次记录会在读取完成后同步显示。":
     "Job progress and batch history will appear together when loaded.",
   "正在读取翻译批次记录": "Loading translation batch history",
+  "请求记录": "Request history",
+  "翻译批次": "Translation batches",
+  "共 {count} 批": "{count} batches total",
+  "筛选翻译批次": "Filter translation batches",
+  "全部批次": "All batches",
+  "请求中": "In progress",
+  "失败待重试": "Failed — retry pending",
+  "等待请求": "Queued",
+  "已拆分": "Split into smaller batches",
+  "成功": "Succeeded",
+  "没有符合当前状态的翻译批次。":
+    "No translation batches match this status.",
+  "该任务还没有翻译批次。": "This job has no translation batches yet.",
+  "翻译批次分页": "Translation batch pagination",
+  "第 {batch} 批": "Batch {batch}",
+  "{count} 个{item}": "{count} {item}",
+  "重新请求": "Retry request",
   "显示最近 {shown} 批；失败批次始终保留。":
     "Showing the latest {shown} batches; failed batches are always retained.",
   "核对变更": "Checking changes",

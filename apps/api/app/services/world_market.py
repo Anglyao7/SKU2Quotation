@@ -36,7 +36,30 @@ logger = logging.getLogger(__name__)
 TIME_API_URL = "https://timeapi.io/api/Time/current/zone"
 RATES_API_URL = "https://api.frankfurter.dev/v2/rates"
 BASE_CURRENCY = "CNY"
-RATE_QUOTE_CURRENCIES = ("USD", "EUR", "TRY", "SAR", "AED", "GBP", "JPY", "KRW")
+RATE_QUOTE_CURRENCIES = (
+    "USD",
+    "EUR",
+    "GBP",
+    "JPY",
+    "KRW",
+    "HKD",
+    "SGD",
+    "AUD",
+    "CAD",
+    "CHF",
+    "NZD",
+    "TRY",
+    "SAR",
+    "AED",
+    "INR",
+    "THB",
+    "MYR",
+    "IDR",
+    "PHP",
+    "MXN",
+    "BRL",
+    "ZAR",
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +96,20 @@ _CURRENCY_META: dict[str, tuple[str, str]] = {
     "GBP": ("英镑", "£"),
     "JPY": ("日元", "¥"),
     "KRW": ("韩元", "₩"),
+    "HKD": ("港币", "HK$"),
+    "SGD": ("新加坡元", "S$"),
+    "AUD": ("澳元", "A$"),
+    "CAD": ("加拿大元", "C$"),
+    "CHF": ("瑞士法郎", "CHF"),
+    "NZD": ("新西兰元", "NZ$"),
+    "INR": ("印度卢比", "₹"),
+    "THB": ("泰铢", "฿"),
+    "MYR": ("马来西亚林吉特", "RM"),
+    "IDR": ("印尼盾", "Rp"),
+    "PHP": ("菲律宾比索", "₱"),
+    "MXN": ("墨西哥比索", "MX$"),
+    "BRL": ("巴西雷亚尔", "R$"),
+    "ZAR": ("南非兰特", "R"),
 }
 
 _CACHE_LOCK = RLock()

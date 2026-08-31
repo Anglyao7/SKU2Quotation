@@ -18885,6 +18885,88 @@ def test_qwen_failed_text_batch_can_be_requeued_from_batch_history(
         assert history.json()[0]["id"] == str(batch_id)
         assert history.json()[0]["item_kind"] == "TEXT"
         assert history.json()[0]["status"] == "QUEUED"
+
+        with SessionLocal() as session:
+            session.add_all(
+                [
+                    CatalogTranslationBatchRow(
+                        tenant_id=DEFAULT_TENANT_ID,
+                        job_id=job_id,
+                        sequence_no=sequence_no,
+                        status=batch_status,
+                        sku_ids=[],
+                        sku_refs=[
+                            {
+                                "id": f"history-{sequence_no}",
+                                "code": "zh-CN",
+                                "name": f"批次 {sequence_no}",
+                                "kind": "TEXT",
+                            }
+                        ],
+                        attempt_count=0,
+                        total_skus=1,
+                        processed_skus=(1 if batch_status == "SUCCEEDED" else 0),
+                        failed_skus=(1 if batch_status == "FAILED" else 0),
+                    )
+                    for sequence_no, batch_status in [
+                        (2, "SUCCEEDED"),
+                        (3, "SUCCEEDED"),
+                        (4, "RUNNING"),
+                        (5, "FAILED"),
+                        (6, "CANCELLED"),
+                    ]
+                ]
+            )
+            session.commit()
+
+        first_page = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batch-history",
+            params={"page": 1, "page_size": 2, "status": "ALL"},
+        )
+        assert first_page.status_code == 200, first_page.text
+        page_payload = first_page.json()
+        assert page_payload["page"] == 1
+        assert page_payload["page_size"] == 2
+        assert page_payload["total"] == 6
+        assert page_payload["pages"] == 3
+        assert page_payload["all_count"] == 6
+        assert page_payload["completed_count"] == 2
+        assert page_payload["in_progress_count"] == 2
+        assert page_payload["failed_count"] == 1
+        assert page_payload["cancelled_count"] == 1
+        assert [
+            row["sequence_no"] for row in page_payload["items"]
+        ] == [5, 4]
+
+        second_page = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batch-history",
+            params={"page": 2, "page_size": 2, "status": "ALL"},
+        )
+        assert second_page.status_code == 200, second_page.text
+        assert [
+            row["sequence_no"] for row in second_page.json()["items"]
+        ] == [1, 6]
+
+        last_page = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batch-history",
+            params={"page": 3, "page_size": 2, "status": "ALL"},
+        )
+        assert last_page.status_code == 200, last_page.text
+        assert [
+            row["sequence_no"] for row in last_page.json()["items"]
+        ] == [3, 2]
+        assert all(
+            row["status"] == "SUCCEEDED"
+            for row in last_page.json()["items"]
+        )
+
+        failed_page = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batch-history",
+            params={"page": 1, "page_size": 20, "status": "FAILED"},
+        )
+        assert failed_page.status_code == 200, failed_page.text
+        assert failed_page.json()["total"] == 1
+        assert failed_page.json()["items"][0]["sequence_no"] == 5
     finally:
         with SessionLocal() as session:
             session.execute(

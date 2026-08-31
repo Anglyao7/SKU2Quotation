@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -5185,8 +5185,8 @@ def convert_tenant_quote_draft_currency(
             kind="conflict",
         )
 
-    source_currency = str(draft.currency or "CNY").strip().upper()
-    target_currency = str(request.target_currency or "").strip().upper()
+    source_currency = _canonical_quote_currency(draft.currency)
+    target_currency = _canonical_quote_currency(request.target_currency)
     if source_currency == target_currency:
         return _quote_draft_item_edit_response(
             session,
@@ -5195,26 +5195,31 @@ def convert_tenant_quote_draft_currency(
         )
 
     market = get_dashboard_market_snapshot()
-    factor = _currency_conversion_factor(
-        market,
-        source_currency=source_currency,
-        target_currency=target_currency,
-    )
-    if factor is None:
-        raise ApplicationError(
-            "QUOTE_CURRENCY_RATE_UNAVAILABLE",
-            f"当前暂未取得 {source_currency} 到 {target_currency} 的汇率，请稍后重试。",
-            kind="conflict",
-        )
-
     items = repository.list_quote_draft_items(
         session,
         tenant_id=tenant_id,
         quote_draft_id=quote_draft_id,
     )
+    base_currency, base_unit_prices = _quote_currency_conversion_base(
+        draft,
+        items,
+        current_currency=source_currency,
+    )
+    factor = _currency_conversion_factor(
+        market,
+        source_currency=base_currency,
+        target_currency=target_currency,
+    )
+    if factor is None:
+        raise ApplicationError(
+            "QUOTE_CURRENCY_RATE_UNAVAILABLE",
+            f"当前暂未取得 {base_currency} 到 {target_currency} 的汇率，请稍后重试。",
+            kind="conflict",
+        )
+
     for item in items:
         item.unit_price_snapshot = _money(
-            Decimal(item.unit_price_snapshot) * factor
+            base_unit_prices[item.id] * factor
         )
         item.currency_snapshot = target_currency
     draft.currency = target_currency
@@ -5234,7 +5239,20 @@ def convert_tenant_quote_draft_currency(
         conversion={
             "from": source_currency,
             "to": target_currency,
-            "factor": str(factor),
+            "factor": str(
+                _currency_conversion_factor(
+                    market,
+                    source_currency=source_currency,
+                    target_currency=target_currency,
+                )
+                or factor
+            ),
+            "base_currency": base_currency,
+            "base_factor": str(factor),
+            "base_unit_prices": {
+                str(item_id): str(price)
+                for item_id, price in base_unit_prices.items()
+            },
             "rate_date": rate_date,
             "source": str(getattr(market, "rate_source", "market")),
             "converted_at": utcnow().isoformat(),
@@ -5252,7 +5270,7 @@ def _recalculate_quote_draft_totals(
     draft: PublicQuoteDraftRow,
     items: list[PublicQuoteDraftItemRow],
     *,
-    conversion: dict[str, str] | None = None,
+    conversion: dict[str, object] | None = None,
 ) -> None:
     for item in items:
         item.line_total = _money(
@@ -5271,7 +5289,7 @@ def _refresh_quote_draft_snapshot(
     draft: PublicQuoteDraftRow,
     items: list[PublicQuoteDraftItemRow],
     *,
-    conversion: dict[str, str] | None = None,
+    conversion: dict[str, object] | None = None,
 ) -> None:
     """Keep the audit snapshot aligned with editable quote-line values."""
 
@@ -5315,6 +5333,10 @@ def _refresh_quote_draft_snapshot(
     snapshot["estimated_total"] = str(draft.estimated_total)
     if conversion is not None:
         snapshot["currency_conversion"] = conversion
+    else:
+        # A manual price adjustment establishes a new monetary baseline. Do
+        # not keep replaying a conversion base captured before that edit.
+        snapshot.pop("currency_conversion", None)
     draft.snapshot = snapshot
     draft.content_hash = hashlib.sha256(
         json.dumps(
@@ -5333,6 +5355,47 @@ def _market_currency_rate(snapshot: object, currency: str) -> Decimal | None:
             if value is not None and Decimal(value) > 0:
                 return Decimal(value)
     return None
+
+
+def _canonical_quote_currency(value: object) -> str:
+    currency = str(value or "CNY").strip().upper()
+    return "CNY" if currency == "RMB" else currency
+
+
+def _quote_currency_conversion_base(
+    draft: PublicQuoteDraftRow,
+    items: list[PublicQuoteDraftItemRow],
+    *,
+    current_currency: str,
+) -> tuple[str, dict[UUID, Decimal]]:
+    """Return the stable prices used for repeated currency switching.
+
+    Prices are rounded when shown in each settlement currency. Reusing those
+    rounded values for the next conversion slowly changes the quote total.
+    Keep the first pre-conversion prices instead and always derive subsequent
+    currencies from that immutable baseline. Any manual price edit clears the
+    saved conversion metadata in ``_refresh_quote_draft_snapshot``.
+    """
+
+    snapshot = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+    conversion = snapshot.get("currency_conversion")
+    if isinstance(conversion, dict):
+        base_currency = _canonical_quote_currency(conversion.get("base_currency"))
+        raw_prices = conversion.get("base_unit_prices")
+        if isinstance(raw_prices, dict):
+            try:
+                prices = {
+                    item.id: Decimal(str(raw_prices[str(item.id)]))
+                    for item in items
+                }
+            except (KeyError, InvalidOperation, TypeError, ValueError):
+                prices = {}
+            if len(prices) == len(items) and all(price >= 0 for price in prices.values()):
+                return base_currency, prices
+    return current_currency, {
+        item.id: Decimal(item.unit_price_snapshot)
+        for item in items
+    }
 
 
 def _currency_conversion_factor(

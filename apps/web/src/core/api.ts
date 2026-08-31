@@ -129,6 +129,8 @@ import type {
   CatalogShareTargetType,
   CatalogTranslationBatch,
   CatalogTranslationBatchAttempt,
+  CatalogTranslationBatchFilter,
+  CatalogTranslationBatchPage,
   CatalogTranslationJob,
   CatalogLocalizedProductContent,
   CatalogLocalizedSkuContent,
@@ -3279,6 +3281,19 @@ interface ApiCatalogTranslationBatch {
   attempts: ApiCatalogTranslationBatchAttempt[];
 }
 
+interface ApiCatalogTranslationBatchPage {
+  items: ApiCatalogTranslationBatch[];
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
+  all_count: number;
+  completed_count: number;
+  in_progress_count: number;
+  failed_count: number;
+  cancelled_count: number;
+}
+
 interface ApiCatalogTranslationStatus {
   source_locale: StorefrontLocale;
   target_locale: StorefrontLocale;
@@ -3472,6 +3487,23 @@ function mapCatalogTranslationBatch(
   };
 }
 
+function mapCatalogTranslationBatchPage(
+  row: ApiCatalogTranslationBatchPage,
+): CatalogTranslationBatchPage {
+  return {
+    items: row.items.map(mapCatalogTranslationBatch),
+    page: row.page,
+    pageSize: row.page_size,
+    total: row.total,
+    pages: row.pages,
+    allCount: row.all_count,
+    completedCount: row.completed_count,
+    inProgressCount: row.in_progress_count,
+    failedCount: row.failed_count,
+    cancelledCount: row.cancelled_count,
+  };
+}
+
 function mapCatalogTranslationStatus(
   row: ApiCatalogTranslationStatus,
 ): CatalogTranslationStatus {
@@ -3610,6 +3642,31 @@ export async function getCatalogTranslationBatches(
     { cache: "no-store" },
   );
   return rows.map(mapCatalogTranslationBatch);
+}
+
+export async function getCatalogTranslationBatchPage(
+  jobId: string,
+  options: {
+    page?: number;
+    pageSize?: number;
+    status?: CatalogTranslationBatchFilter;
+    includeSkus?: boolean;
+    tenantId?: string;
+  } = {},
+): Promise<CatalogTranslationBatchPage> {
+  const query = new URLSearchParams({
+    page: String(options.page ?? 1),
+    page_size: String(options.pageSize ?? 50),
+    status: options.status ?? "ALL",
+    include_skus: String(options.includeSkus ?? false),
+  });
+  if (options.tenantId) query.set("tenant_id", options.tenantId);
+  return mapCatalogTranslationBatchPage(
+    await request<ApiCatalogTranslationBatchPage>(
+      `/catalog/translations/jobs/${encodeURIComponent(jobId)}/batch-history?${query.toString()}`,
+      { cache: "no-store" },
+    ),
+  );
 }
 
 export async function retryCatalogTranslationBatch(

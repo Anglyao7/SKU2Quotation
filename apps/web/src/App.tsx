@@ -73,6 +73,7 @@ const SystemMonitoringPage = recoverableLazy(() => import("./core/pages/SystemMo
 const PlatformUsageAnalyticsPage = recoverableLazy(() => import("./core/pages/PlatformUsageAnalyticsPage").then((module) => ({ default: module.PlatformUsageAnalyticsPage })));
 const ConfigurationCenterPage = recoverableLazy(() => import("./core/pages/ConfigurationCenterPage").then((module) => ({ default: module.ConfigurationCenterPage })));
 const LanguagePackagesPage = recoverableLazy(() => import("./core/pages/LanguagePackagesPage").then((module) => ({ default: module.LanguagePackagesPage })));
+const MerchantLanguagesPage = recoverableLazy(() => import("./core/pages/MerchantLanguagesPage").then((module) => ({ default: module.MerchantLanguagesPage })));
 const StorefrontAnalyticsPage = recoverableLazy(() => import("./core/pages/StorefrontAnalyticsPage").then((module) => ({ default: module.StorefrontAnalyticsPage })));
 const AnnouncementsPage = recoverableLazy(() => import("./core/pages/AnnouncementsPage").then((module) => ({ default: module.AnnouncementsPage })));
 const SupportCenterPage = recoverableLazy(() => import("./core/pages/SupportCenterPage").then((module) => ({ default: module.SupportCenterPage })));
@@ -408,7 +409,7 @@ const router = createBrowserRouter([{
         { path: "products", element: <ConsoleProductsRoute /> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
-        { path: "languages", element: <PlatformAdminGate><PermissionGate anyOf={["product.view"]}><LanguagePackagesPage /></PermissionGate></PlatformAdminGate> },
+        { path: "languages", element: <PermissionGate anyOf={["system.settings_manage"]}><MerchantLanguagesPage /></PermissionGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
         { path: "supply-chain", element: <PermissionGate anyOf={["supplier.view", "supplier.manage"]}><SupplyChainPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
@@ -425,6 +426,7 @@ const router = createBrowserRouter([{
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "system/usage", element: <PlatformAdminGate><PlatformUsageAnalyticsPage /></PlatformAdminGate> },
         { path: "system/configuration", element: <PlatformAdminGate><ConfigurationCenterPage /></PlatformAdminGate> },
+        { path: "platform/translations", element: <PlatformAdminGate><PermissionGate anyOf={["product.view"]}><LanguagePackagesPage /></PermissionGate></PlatformAdminGate> },
         { path: "system/translation", element: <Navigate to="/console/system/configuration?section=translation" replace /> },
         { path: "analytics", element: <PermissionGate anyOf={["analytics.view"]}><StorefrontAnalyticsPage /></PermissionGate> },
         { path: "announcements", element: <PermissionGate anyOf={["announcement.manage"]}><AnnouncementsPage /></PermissionGate> },

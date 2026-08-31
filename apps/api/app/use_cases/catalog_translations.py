@@ -29,6 +29,7 @@ from ..catalog_translation_models import (
 )
 from ..catalog_translation_schemas import (
     CatalogTranslationBatchAttemptResponse,
+    CatalogTranslationBatchPageResponse,
     CatalogTranslationBatchResponse,
     CatalogTranslationFailure,
     CatalogTranslationJobResponse,
@@ -1200,6 +1201,21 @@ def list_translation_batches(
             batches = recent
     if not batches:
         return []
+    return _translation_batch_responses(
+        session,
+        tenant_id=tenant_id,
+        batches=batches,
+        include_skus=include_skus,
+    )
+
+
+def _translation_batch_responses(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    batches: list[CatalogTranslationBatchRow],
+    include_skus: bool,
+) -> list[CatalogTranslationBatchResponse]:
     attempts = list(
         session.scalars(
             select(CatalogTranslationBatchAttemptRow)
@@ -1226,6 +1242,124 @@ def list_translation_batches(
         )
         for batch in batches
     ]
+
+
+def list_translation_batch_page(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    job_id: UUID,
+    page: int,
+    page_size: int,
+    status_filter: str = "ALL",
+    include_skus: bool = False,
+) -> CatalogTranslationBatchPageResponse:
+    _require(permissions, "product.view")
+    job = session.scalar(
+        select(CatalogTranslationJobRow).where(
+            CatalogTranslationJobRow.tenant_id == tenant_id,
+            CatalogTranslationJobRow.id == job_id,
+        )
+    )
+    if job is None:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_JOB_NOT_FOUND",
+            "商品翻译任务不存在。",
+            kind="not_found",
+        )
+
+    normalized_filter = status_filter.strip().upper()
+    if normalized_filter not in {"ALL", "SUCCEEDED", "IN_PROGRESS", "FAILED"}:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_BATCH_FILTER_INVALID",
+            "翻译批次筛选条件无效。",
+            kind="validation",
+        )
+
+    base_conditions = (
+        CatalogTranslationBatchRow.tenant_id == tenant_id,
+        CatalogTranslationBatchRow.job_id == job_id,
+    )
+    status_rows = session.execute(
+        select(
+            CatalogTranslationBatchRow.status,
+            func.count(CatalogTranslationBatchRow.id),
+        )
+        .where(*base_conditions)
+        .group_by(CatalogTranslationBatchRow.status)
+    ).all()
+    counts = {str(status): int(count) for status, count in status_rows}
+    all_count = sum(counts.values())
+    completed_count = counts.get("SUCCEEDED", 0)
+    in_progress_count = counts.get("QUEUED", 0) + counts.get("RUNNING", 0)
+    failed_count = counts.get("FAILED", 0)
+    cancelled_count = counts.get("CANCELLED", 0)
+
+    statement = select(CatalogTranslationBatchRow).where(*base_conditions)
+    if normalized_filter == "SUCCEEDED":
+        statement = statement.where(
+            CatalogTranslationBatchRow.status == "SUCCEEDED"
+        )
+        total = completed_count
+    elif normalized_filter == "IN_PROGRESS":
+        statement = statement.where(
+            CatalogTranslationBatchRow.status.in_(["QUEUED", "RUNNING"])
+        )
+        total = in_progress_count
+    elif normalized_filter == "FAILED":
+        statement = statement.where(
+            CatalogTranslationBatchRow.status == "FAILED"
+        )
+        total = failed_count
+    else:
+        total = all_count
+
+    pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, pages) if pages else 1
+    completion_order = case(
+        (
+            CatalogTranslationBatchRow.status.in_(
+                ["QUEUED", "RUNNING", "FAILED"]
+            ),
+            0,
+        ),
+        (CatalogTranslationBatchRow.status == "CANCELLED", 1),
+        else_=2,
+    )
+    batches = list(
+        session.scalars(
+            statement
+            .order_by(
+                completion_order.asc(),
+                CatalogTranslationBatchRow.sequence_no.desc(),
+            )
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    items = (
+        _translation_batch_responses(
+            session,
+            tenant_id=tenant_id,
+            batches=batches,
+            include_skus=include_skus,
+        )
+        if batches
+        else []
+    )
+    return CatalogTranslationBatchPageResponse(
+        items=items,
+        page=effective_page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+        all_count=all_count,
+        completed_count=completed_count,
+        in_progress_count=in_progress_count,
+        failed_count=failed_count,
+        cancelled_count=cancelled_count,
+    )
 
 
 def _start_forced_translation_job(

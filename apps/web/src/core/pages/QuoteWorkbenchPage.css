@@ -861,6 +861,71 @@
   margin-top: 20px;
 }
 
+.quote-currency-dialog {
+  display: grid;
+  gap: 14px;
+}
+
+.quote-currency-converter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.45fr);
+  gap: 12px;
+  align-items: end;
+  margin-top: 4px;
+}
+
+.quote-currency-current,
+.quote-currency-target {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.quote-currency-current strong {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 13px;
+  border: 1px solid var(--gray-a6);
+  border-radius: var(--radius-3);
+  background: var(--gray-a2);
+  font-variant-numeric: tabular-nums;
+}
+
+.quote-currency-target .rt-SelectTrigger {
+  width: 100%;
+}
+
+.quote-currency-arrow {
+  padding-bottom: 10px;
+  color: var(--gray-a10);
+}
+
+.quote-currency-summary {
+  display: grid;
+  gap: 9px;
+  padding: 13px 14px;
+  border-radius: var(--radius-3);
+  background: var(--accent-a2);
+  border: 1px solid var(--accent-a4);
+}
+
+.quote-currency-summary > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.quote-currency-summary span {
+  color: var(--gray-a11);
+}
+
+.quote-currency-summary strong {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
 .quote-bulk-price-dialog {
   display: grid;
   gap: 12px;
@@ -1604,6 +1669,25 @@
 
   .quote-workbench-actions > * {
     flex: 1 1 auto;
+  }
+
+  .quote-currency-converter {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .quote-currency-arrow {
+    display: none;
+  }
+
+  .quote-currency-summary > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .quote-currency-summary strong {
+    text-align: start;
   }
 
   .quote-preview-zoom {

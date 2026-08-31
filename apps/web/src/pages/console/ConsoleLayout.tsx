@@ -77,7 +77,7 @@ const navigationGroups = [
       { to: "/console/products", label: "SKU 商品库", mobileLabel: "SKU", icon: Cube, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/products/categories", label: "分类管理", mobileLabel: "分类", icon: TreeStructure, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/products/tags", label: "标签管理", mobileLabel: "标签", icon: Tag, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
-      { to: "/console/languages", label: "多语言", mobileLabel: "语言", icon: Translate, permissions: ["product.view"], platformAdminOnly: true, mobilePrimary: false },
+      { to: "/console/languages", label: "多语言", mobileLabel: "语言", icon: Translate, permissions: ["system.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
   },
   {
@@ -118,6 +118,7 @@ const navigationGroups = [
     items: [
       { to: "/console/tenants", label: "商家管理", mobileLabel: "商家", icon: StoreIcon, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/identities", label: "身份管理", mobileLabel: "身份", icon: IdentificationCard, permissions: [], platformAdminOnly: true, mobilePrimary: false },
+      { to: "/console/platform/translations", label: "商家翻译", mobileLabel: "翻译", icon: Translate, permissions: ["product.view"], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/monitoring", label: "系统监控", mobileLabel: "监控", icon: Pulse, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/usage", label: "数据监控", mobileLabel: "数据", icon: ChartLineUp, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/system/configuration", label: "配置中心", mobileLabel: "配置", icon: SlidersHorizontal, permissions: [], platformAdminOnly: true, mobilePrimary: false },

@@ -1630,6 +1630,25 @@ export interface CatalogTranslationBatch {
   attempts: CatalogTranslationBatchAttempt[];
 }
 
+export type CatalogTranslationBatchFilter =
+  | "ALL"
+  | "SUCCEEDED"
+  | "IN_PROGRESS"
+  | "FAILED";
+
+export interface CatalogTranslationBatchPage {
+  items: CatalogTranslationBatch[];
+  page: number;
+  pageSize: number;
+  total: number;
+  pages: number;
+  allCount: number;
+  completedCount: number;
+  inProgressCount: number;
+  failedCount: number;
+  cancelledCount: number;
+}
+
 export interface CatalogTranslationStatus {
   sourceLocale: StorefrontLocale;
   targetLocale: StorefrontLocale;

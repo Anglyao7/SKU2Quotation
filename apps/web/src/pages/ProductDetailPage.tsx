@@ -37,6 +37,7 @@ import { money } from "../lib/format";
 import {
   buildProductVariantModel,
   selectedVariantValues,
+  skuPackingQuantity,
   skuIdForVariantChoice,
 } from "../lib/productVariantOptions";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
@@ -125,8 +126,17 @@ export function ProductDetailPage() {
   const selectedLabel = selectedSku?.specification?.trim()
     || selectedSku?.name?.trim()
     || t("标准款");
+  const selectedPackingQuantity = skuPackingQuantity(selectedSku);
   const selectedQuantity = selectedSku ? cart[selectedSku.id]?.quantity || 0 : 0;
-  const selectedImageUrl = selectedSku?.image_url || product.image_url;
+  const productImageUrls = useMemo(
+    () => Array.from(new Set([
+      product.image_url,
+      ...(product.image_urls || []),
+      ...product.skus.map((sku) => sku.image_url),
+    ].filter((url): url is string => typeof url === "string" && Boolean(url.trim())))),
+    [product.image_url, product.image_urls, product.skus],
+  );
+  const selectedImageUrl = selectedSku?.image_url || product.image_url || productImageUrls[0];
   const [imageFailed, setImageFailed] = useState(!selectedImageUrl);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [favorite, setFavorite] = useState(() => isStorefrontFavorite(storageScope, product.id));
@@ -317,9 +327,8 @@ export function ProductDetailPage() {
             <Card className="sku-detail-media" variant="surface">
               {selectedImageUrl && !imageFailed ? (
                 <ProductImagePreview
-                  key={selectedSku?.id || product.id}
                   src={selectedImageUrl}
-                  images={product.image_urls}
+                  images={productImageUrls}
                   alt={`${product.name} · ${selectedLabel}`}
                   openLabel={t("点击查看大图")}
                   closeLabel={t("关闭图片预览")}
@@ -467,9 +476,8 @@ export function ProductDetailPage() {
                 {selectedSku ? (
                   <div className="product-selection-bar">
                     <div className="product-selection-identity">
-                      <small>{t("已选 SKU")}</small>
-                      <strong>{selectedLabel}</strong>
-                      <span>SKU {selectedSku.sku_code}</span>
+                      <small>{t("装箱数")}</small>
+                      <strong>{selectedPackingQuantity || t("未设置")}</strong>
                     </div>
                     {selectedQuantity ? (
                       <div

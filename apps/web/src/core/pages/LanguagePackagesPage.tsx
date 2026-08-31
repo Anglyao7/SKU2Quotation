@@ -11,12 +11,12 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowsClockwise,
-  CheckCircle,
+  CaretLeft,
+  CaretRight,
   Package,
   Pause,
   Play,
   Translate,
-  WarningCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
@@ -25,7 +25,7 @@ import { ToastNotice } from "../ToastContext";
 import {
   CoreApiError,
   getCatalogTranslationJob,
-  getCatalogTranslationBatches,
+  getCatalogTranslationBatchPage,
   getCatalogTranslationStatus,
   getLatestCatalogTranslationJob,
   pauseCatalogTranslationJob,
@@ -37,6 +37,8 @@ import type {
   CatalogTranslationJob,
   CatalogTranslationJobStage,
   CatalogTranslationBatch,
+  CatalogTranslationBatchFilter,
+  CatalogTranslationBatchPage,
   CatalogTranslationStatus,
 } from "../types";
 import { useLocale } from "../LocaleContext";
@@ -51,6 +53,21 @@ const TARGET_LANGUAGES = STOREFRONT_LANGUAGE_OPTIONS.filter(
   (language) => language.code !== "zh-CN",
 );
 const TRANSLATION_TENANT_STORAGE_KEY = "atc.admin.catalog-translation-tenant";
+const BATCH_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
+
+type PaginationItem = number | "leading-ellipsis" | "trailing-ellipsis";
+
+function paginationItems(page: number, pages: number): PaginationItem[] {
+  if (pages <= 7) return Array.from({ length: pages }, (_, index) => index + 1);
+  const items: PaginationItem[] = [1];
+  const start = Math.max(2, page - 1);
+  const end = Math.min(pages - 1, page + 1);
+  if (start > 2) items.push("leading-ellipsis");
+  for (let current = start; current <= end; current += 1) items.push(current);
+  if (end < pages - 1) items.push("trailing-ellipsis");
+  items.push(pages);
+  return items;
+}
 
 const stageCopy: Record<CatalogTranslationJobStage, string> = {
   QUEUED: "等待开始",
@@ -94,8 +111,11 @@ export function LanguagePackagesPage() {
   const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>("en-US");
   const [status, setStatus] = useState<CatalogTranslationStatus>();
   const [job, setJob] = useState<CatalogTranslationJob>();
-  const [batches, setBatches] = useState<CatalogTranslationBatch[]>([]);
+  const [batchHistory, setBatchHistory] = useState<CatalogTranslationBatchPage>();
   const [batchesJobId, setBatchesJobId] = useState<string>();
+  const [batchPage, setBatchPage] = useState(1);
+  const [batchPageSize, setBatchPageSize] = useState(50);
+  const [batchStatusFilter, setBatchStatusFilter] = useState<CatalogTranslationBatchFilter>("ALL");
   const [retryingBatchId, setRetryingBatchId] = useState<string>();
   const [coverageLoading, setCoverageLoading] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -107,6 +127,10 @@ export function LanguagePackagesPage() {
   const selectedTenantIdRef = useRef(selectedTenantId);
   const selectedLocaleRef = useRef<StorefrontLocale>(selectedLocale);
   const localeRequestIdRef = useRef(0);
+  const batchRequestIdRef = useRef(0);
+  const batchPageRef = useRef(batchPage);
+  const batchPageSizeRef = useRef(batchPageSize);
+  const batchStatusFilterRef = useRef(batchStatusFilter);
 
   const selectedMerchant = merchants.find(
     (merchant) => merchant.id === selectedTenantId,
@@ -150,9 +174,10 @@ export function LanguagePackagesPage() {
   const selectedJob = job?.targetLocale === selectedLocale
     ? job
     : undefined;
-  const selectedBatches = selectedJob && batchesJobId === selectedJob.id
-    ? batches
-    : [];
+  const selectedBatchHistory = selectedJob && batchesJobId === selectedJob.id
+    ? batchHistory
+    : undefined;
+  const selectedBatches = selectedBatchHistory?.items ?? [];
   const activeJob = selectedJob && ["QUEUED", "RUNNING", "PAUSED"].includes(selectedJob.status)
     ? selectedJob
     : undefined;
@@ -244,9 +269,10 @@ export function LanguagePackagesPage() {
     tenantId = selectedTenantIdRef.current,
     requestId?: number,
   ) => {
+    const batchRequestId = ++batchRequestIdRef.current;
     if (!jobId) {
       if (localeRequestIsCurrent(locale, tenantId, requestId)) {
-        setBatches([]);
+        setBatchHistory(undefined);
         setBatchesJobId(undefined);
         setBatchHistoryLoading(false);
       }
@@ -256,18 +282,30 @@ export function LanguagePackagesPage() {
       setBatchHistoryLoading(true);
     }
     try {
-      const next = await getCatalogTranslationBatches(jobId, {
+      const requestedPage = batchPageRef.current;
+      const next = await getCatalogTranslationBatchPage(jobId, {
         includeSkus: false,
-        limit: 100,
-        includeFailed: true,
+        page: requestedPage,
+        pageSize: batchPageSizeRef.current,
+        status: batchStatusFilterRef.current,
         tenantId,
       });
-      if (localeRequestIsCurrent(locale, tenantId, requestId)) {
-        setBatches(next);
+      if (
+        batchRequestIdRef.current === batchRequestId
+        && localeRequestIsCurrent(locale, tenantId, requestId)
+      ) {
+        setBatchHistory(next);
         setBatchesJobId(jobId);
+        if (next.page !== requestedPage) {
+          batchPageRef.current = next.page;
+          setBatchPage(next.page);
+        }
       }
     } finally {
-      if (localeRequestIsCurrent(locale, tenantId, requestId)) {
+      if (
+        batchRequestIdRef.current === batchRequestId
+        && localeRequestIsCurrent(locale, tenantId, requestId)
+      ) {
         setBatchHistoryLoading(false);
       }
     }
@@ -292,12 +330,19 @@ export function LanguagePackagesPage() {
     selectedTenantIdRef.current = selectedTenantId;
     selectedLocaleRef.current = selectedLocale;
     const requestId = ++localeRequestIdRef.current;
+    batchRequestIdRef.current += 1;
     setError("");
     setSuccess("");
     setStatus(undefined);
     setJob(undefined);
-    setBatches([]);
+    setBatchHistory(undefined);
     setBatchesJobId(undefined);
+    batchPageRef.current = 1;
+    batchPageSizeRef.current = 50;
+    batchStatusFilterRef.current = "ALL";
+    setBatchPage(1);
+    setBatchPageSize(50);
+    setBatchStatusFilter("ALL");
     setCoverageLoading(true);
     setHistoryLoading(true);
     setBatchHistoryLoading(false);
@@ -448,6 +493,19 @@ export function LanguagePackagesPage() {
     ).catch(() => undefined);
   }, [selectedJob?.id, pollableJob, batchesJobId, selectedTenantId]);
 
+  useEffect(() => {
+    if (
+      !selectedTenantId
+      || !selectedJob?.id
+      || batchesJobId !== selectedJob.id
+    ) return;
+    void refreshBatches(
+      selectedJob.id,
+      selectedJob.targetLocale,
+      selectedTenantId,
+    ).catch(() => undefined);
+  }, [batchPage, batchPageSize, batchStatusFilter]);
+
   const startJob = async (fullRebuild: boolean) => {
     if (
       !canEditProducts
@@ -475,8 +533,14 @@ export function LanguagePackagesPage() {
           );
       if (!localeRequestIsCurrent(actionLocale, actionTenantId)) return;
       setJob(next);
-      setBatches([]);
+      setBatchHistory(undefined);
       setBatchesJobId(undefined);
+      batchPageRef.current = 1;
+      batchPageSizeRef.current = 50;
+      batchStatusFilterRef.current = "ALL";
+      setBatchPage(1);
+      setBatchPageSize(50);
+      setBatchStatusFilter("ALL");
       void refreshBatches(
         next.id,
         next.targetLocale,
@@ -566,17 +630,78 @@ export function LanguagePackagesPage() {
     }
   };
 
+  const changeBatchFilter = (next: CatalogTranslationBatchFilter) => {
+    if (next === batchStatusFilter) return;
+    batchStatusFilterRef.current = next;
+    batchPageRef.current = 1;
+    setBatchStatusFilter(next);
+    setBatchPage(1);
+  };
+
+  const changeBatchPage = (next: number) => {
+    const pages = selectedBatchHistory?.pages ?? 0;
+    const normalized = Math.max(1, Math.min(next, Math.max(1, pages)));
+    if (normalized === batchPage) return;
+    batchPageRef.current = normalized;
+    setBatchPage(normalized);
+  };
+
+  const changeBatchPageSize = (next: number) => {
+    if (next === batchPageSize) return;
+    batchPageSizeRef.current = next;
+    batchPageRef.current = 1;
+    setBatchPageSize(next);
+    setBatchPage(1);
+  };
+
   const coverage = useMemo(() => {
     if (!displayedTotalSkus) return 0;
     return Math.round(displayedTranslatedSkus / displayedTotalSkus * 100);
   }, [displayedTotalSkus, displayedTranslatedSkus]);
+  const batchPagination = useMemo(
+    () => paginationItems(
+      selectedBatchHistory?.page ?? 1,
+      selectedBatchHistory?.pages ?? 0,
+    ),
+    [selectedBatchHistory?.page, selectedBatchHistory?.pages],
+  );
+  const batchFilterOptions: Array<{
+    value: CatalogTranslationBatchFilter;
+    label: string;
+    count: number;
+  }> = [
+    {
+      value: "ALL",
+      label: "全部批次",
+      count: selectedBatchHistory?.allCount ?? selectedJob?.batchCount ?? 0,
+    },
+    {
+      value: "SUCCEEDED",
+      label: "已完成",
+      count: selectedBatchHistory?.completedCount
+        ?? selectedJob?.completedBatchCount
+        ?? 0,
+    },
+    {
+      value: "IN_PROGRESS",
+      label: "请求中",
+      count: selectedBatchHistory?.inProgressCount ?? 0,
+    },
+    {
+      value: "FAILED",
+      label: "失败待重试",
+      count: selectedBatchHistory?.failedCount
+        ?? selectedJob?.failedBatchCount
+        ?? 0,
+    },
+  ];
 
   return (
     <div className="core-workspace language-pack-page">
       <div className="core-page-heading language-pack-heading">
         <div>
-          <Text size="2" color="gray">{t("商品资料")}</Text>
-          <Heading size="8">{t("多语言")}</Heading>
+          <Text size="2" color="gray">{t("平台")}</Text>
+          <Heading size="8">{t("商家翻译")}</Heading>
           <Text size="2" color="gray">
             {t("管理员统一执行翻译任务，并查看、微调各语言的商品译文。")}
           </Text>
@@ -896,30 +1021,54 @@ export function LanguagePackagesPage() {
         </Card>
       ) : null}
 
-      {batchHistoryLoading && selectedJob ? (
+      {batchHistoryLoading && selectedJob && !selectedBatchHistory ? (
         <Card className="language-batch-history-card">
           <div className="language-history-loading is-compact">
             <Spinner size="2" />
             <Text size="2" color="gray">{t("正在读取翻译批次记录")}</Text>
           </div>
         </Card>
-      ) : selectedJob && selectedBatches.length ? (
+      ) : selectedJob ? (
         <Card className="language-batch-history-card">
           <div className="language-job-header">
             <div>
               <Text size="1" color="gray">{t("请求记录")}</Text>
               <Heading size="4">{t("翻译批次")}</Heading>
             </div>
-            <Badge color="gray">{t("{count} 批", { count: selectedJob.batchCount })}</Badge>
+            <div className="language-batch-heading-meta">
+              {batchHistoryLoading ? <Spinner size="1" /> : null}
+              <Badge color="gray">
+                {t("共 {count} 批", {
+                  count: selectedBatchHistory?.allCount ?? selectedJob.batchCount,
+                })}
+              </Badge>
+            </div>
           </div>
-          {selectedJob.batchCount > selectedBatches.length ? (
-            <Text size="1" color="gray">
-              {t("显示最近 {shown} 批；失败批次始终保留。", {
-                shown: selectedBatches.length,
-              })}
-            </Text>
+          <div className="language-batch-filters" role="tablist" aria-label={t("筛选翻译批次")}>
+            {batchFilterOptions.map((option) => (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={batchStatusFilter === option.value}
+                className={batchStatusFilter === option.value ? "is-active" : undefined}
+                key={option.value}
+                onClick={() => changeBatchFilter(option.value)}
+              >
+                <span>{t(option.label)}</span>
+                <strong>{option.count}</strong>
+              </button>
+            ))}
+          </div>
+          {!selectedBatches.length ? (
+            <div className="language-batch-empty">
+              <Text size="2" color="gray">
+                {t((selectedBatchHistory?.allCount ?? 0) > 0
+                  ? "没有符合当前状态的翻译批次。"
+                  : "该任务还没有翻译批次。")}
+              </Text>
+            </div>
           ) : null}
-          <div className="language-batch-list">
+          <div className={`language-batch-list${batchHistoryLoading ? " is-loading" : ""}`}>
             {selectedBatches.map((batch) => {
               const latestAttempt = batch.attempts[batch.attempts.length - 1];
               const failedAttemptCount = batch.attempts.filter(
@@ -939,12 +1088,12 @@ export function LanguagePackagesPage() {
                   : batch.status === "SUCCEEDED"
                     ? "已完成"
                     : batch.status === "FAILED"
-                      ? "失败"
+                      ? "失败待重试"
                       : batch.status === "RUNNING"
                         ? "请求中"
                         : batch.status === "CANCELLED"
                           ? "已拆分"
-                        : "等待中";
+                        : "等待请求";
               const itemLabel = batch.itemKind === "TEXT" ? "字段" : "SKU";
               const preview = batch.skuRefs.slice(0, 3).map((ref) => (
                 batch.itemKind === "TEXT" ? ref.name : ref.code || ref.name
@@ -1000,7 +1149,13 @@ export function LanguagePackagesPage() {
                             <div key={attempt.id}>
                               <span>
                                 {t("第 {attempt} 次", { attempt: attempt.attemptNo })}
-                                {` · ${attempt.status === "SUCCEEDED" ? t("成功") : t("失败")}`}
+                                {` · ${t(attempt.status === "SUCCEEDED"
+                                  ? "成功"
+                                  : attempt.status === "RUNNING"
+                                    ? "请求中"
+                                    : attempt.status === "CANCELLED"
+                                      ? "已取消"
+                                      : "失败")}`}
                                 {` · ${formatDate(attempt.completedAt)}`}
                               </span>
                               {attempt.errorMessage ? <small>{attempt.errorMessage}</small> : null}
@@ -1037,6 +1192,73 @@ export function LanguagePackagesPage() {
               );
             })}
           </div>
+          {selectedBatchHistory && selectedBatchHistory.pages > 0 ? (
+            <nav className="language-batch-pagination" aria-label={t("翻译批次分页")}>
+              <div className="language-batch-pagination-summary">
+                <Text size="1" color="gray">
+                  {t("第 {page} / {pages} 页", {
+                    page: selectedBatchHistory.page,
+                    pages: selectedBatchHistory.pages,
+                  })}
+                </Text>
+                <label>
+                  <span>{t("每页显示")}</span>
+                  <select
+                    value={batchPageSize}
+                    disabled={batchHistoryLoading}
+                    onChange={(event) => changeBatchPageSize(Number(event.target.value))}
+                  >
+                    {BATCH_PAGE_SIZE_OPTIONS.map((option) => (
+                      <option value={option} key={option}>
+                        {t("{count} 条", { count: option })}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="language-batch-pagination-controls">
+                <Button
+                  size="2"
+                  variant="soft"
+                  color="gray"
+                  disabled={batchHistoryLoading || selectedBatchHistory.page <= 1}
+                  onClick={() => changeBatchPage(selectedBatchHistory.page - 1)}
+                  aria-label={t("上一页")}
+                >
+                  <CaretLeft />
+                </Button>
+                {batchPagination.map((item) => typeof item === "number" ? (
+                  <Button
+                    size="2"
+                    variant={item === selectedBatchHistory.page ? "solid" : "soft"}
+                    color={item === selectedBatchHistory.page ? undefined : "gray"}
+                    disabled={batchHistoryLoading}
+                    onClick={() => changeBatchPage(item)}
+                    aria-current={item === selectedBatchHistory.page ? "page" : undefined}
+                    aria-label={t("第 {page} 页", { page: item })}
+                    key={item}
+                  >
+                    {item}
+                  </Button>
+                ) : (
+                  <span className="language-batch-pagination-ellipsis" key={item}>…</span>
+                ))}
+                <Button
+                  size="2"
+                  variant="soft"
+                  color="gray"
+                  disabled={
+                    batchHistoryLoading
+                    || selectedBatchHistory.page >= selectedBatchHistory.pages
+                  }
+                  onClick={() => changeBatchPage(selectedBatchHistory.page + 1)}
+                  aria-label={t("下一页")}
+                >
+                  <CaretRight />
+                </Button>
+              </div>
+            </nav>
+          ) : null}
         </Card>
       ) : null}
     </div>

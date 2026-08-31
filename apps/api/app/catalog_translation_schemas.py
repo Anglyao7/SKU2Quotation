@@ -59,6 +59,19 @@ class CatalogTranslationBatchResponse(BaseModel):
     )
 
 
+class CatalogTranslationBatchPageResponse(BaseModel):
+    items: list[CatalogTranslationBatchResponse] = Field(default_factory=list)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total: int = Field(ge=0)
+    pages: int = Field(ge=0)
+    all_count: int = Field(ge=0)
+    completed_count: int = Field(ge=0)
+    in_progress_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    cancelled_count: int = Field(ge=0)
+
+
 class CatalogTranslationJobStartRequest(BaseModel):
     target_locale: CatalogTargetLocale = "en-US"
     mode: Literal["INCREMENTAL", "FULL_REBUILD"] = "INCREMENTAL"

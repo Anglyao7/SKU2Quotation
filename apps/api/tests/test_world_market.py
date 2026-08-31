@@ -3,10 +3,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from uuid import uuid4
 
 from app.services import world_market
 from app.use_cases import public_catalog
-from app.use_cases.public_catalog import _currency_conversion_factor
+from app.use_cases.public_catalog import (
+    _canonical_quote_currency,
+    _currency_conversion_factor,
+    _quote_currency_conversion_base,
+)
 
 
 def test_exchange_rates_are_exposed_as_currency_to_cny(monkeypatch) -> None:
@@ -120,3 +125,82 @@ def test_quote_conversion_uses_currency_to_cny_rates() -> None:
         source_currency="EUR",
         target_currency="USD",
     ) == Decimal("8.333333333333") / Decimal("7.142857142857")
+    assert _currency_conversion_factor(
+        market,
+        source_currency="USD",
+        target_currency="RMB",
+    ) == Decimal("7.142857142857")
+
+
+def test_quote_currency_alias_and_stable_conversion_base() -> None:
+    first_id = uuid4()
+    second_id = uuid4()
+    items = [
+        SimpleNamespace(id=first_id, unit_price_snapshot=Decimal("19.99")),
+        SimpleNamespace(id=second_id, unit_price_snapshot=Decimal("8.50")),
+    ]
+    draft = SimpleNamespace(snapshot={})
+
+    assert _canonical_quote_currency("rmb") == "CNY"
+    assert _canonical_quote_currency(" usd ") == "USD"
+    assert _quote_currency_conversion_base(
+        draft,
+        items,
+        current_currency="CNY",
+    ) == (
+        "CNY",
+        {
+            first_id: Decimal("19.99"),
+            second_id: Decimal("8.50"),
+        },
+    )
+
+    draft.snapshot = {
+        "currency_conversion": {
+            "base_currency": "CNY",
+            "base_unit_prices": {
+                str(first_id): "19.99",
+                str(second_id): "8.50",
+            },
+        }
+    }
+    items[0].unit_price_snapshot = Decimal("2.78")
+    items[1].unit_price_snapshot = Decimal("1.18")
+
+    assert _quote_currency_conversion_base(
+        draft,
+        items,
+        current_currency="USD",
+    ) == (
+        "CNY",
+        {
+            first_id: Decimal("19.99"),
+            second_id: Decimal("8.50"),
+        },
+    )
+
+
+def test_world_market_exposes_common_trade_currencies() -> None:
+    assert {
+        "USD",
+        "EUR",
+        "GBP",
+        "JPY",
+        "KRW",
+        "HKD",
+        "SGD",
+        "AUD",
+        "CAD",
+        "CHF",
+        "TRY",
+        "SAR",
+        "AED",
+        "INR",
+        "THB",
+        "MYR",
+        "IDR",
+        "PHP",
+        "MXN",
+        "BRL",
+        "ZAR",
+    }.issubset(world_market._CURRENCY_META)

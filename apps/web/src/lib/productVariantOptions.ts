@@ -14,6 +14,21 @@ const NON_VARIANT_OPTION_KEYS = new Set([
   "起定数",
   "是否是新品",
 ]);
+const PACKING_QUANTITY_OPTION_KEYS = new Set([
+  "装箱数量",
+  "装箱数",
+  "一箱个数",
+  "packingquantity",
+  "unitspercarton",
+  "packingqty",
+  "unitscarton",
+  "unidadescaja",
+  "koliadedi",
+  "العددفيالكرتون",
+  "梱包数",
+  "포장수량",
+  "unidadescaixa",
+]);
 
 export interface ProductVariantChoice {
   value: string;
@@ -45,6 +60,19 @@ function optionText(value: unknown): string | null {
   if (typeof value === "string") return value.trim() || null;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "boolean") return value ? "是" : "否";
+  return null;
+}
+
+function normalizedOptionKey(value: string): string {
+  return value.toLocaleLowerCase().replace(/[\s\-_/：:()（）]+/g, "");
+}
+
+export function skuPackingQuantity(sku: Sku | undefined): string | null {
+  if (!sku?.option_values) return null;
+  for (const [key, value] of Object.entries(sku.option_values)) {
+    if (!PACKING_QUANTITY_OPTION_KEYS.has(normalizedOptionKey(key))) continue;
+    return optionText(value);
+  }
   return null;
 }
 
