@@ -899,6 +899,85 @@ def test_catalog_value_translation_rejects_residual_chinese() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "容量：7L",
+        "内径40×50CM/外径68×78CM",
+        "2 / 透明",
+        "IP68防水",
+        "猫用",
+        "50g / 白桃味",
+        "OPP袋",
+        "勇者",
+    ],
+)
+def test_catalog_value_translation_accepts_unchanged_shared_japanese_terms(
+    value: str,
+) -> None:
+    assert catalog_translation_value_is_complete(
+        value,
+        value,
+        source_locale="zh-CN",
+        target_locale="ja",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "宠物用品",
+        "毛量：12KG",
+        "图腾 / S",
+        "胸背",
+        "包装形式",
+        "竹雨新",
+        "追光者",
+        "白 Cheap product",
+    ],
+)
+def test_catalog_value_translation_rejects_unchanged_chinese_for_japanese(
+    value: str,
+) -> None:
+    assert not catalog_translation_value_is_complete(
+        value,
+        value,
+        source_locale="zh-CN",
+        target_locale="ja",
+    )
+
+
+class _SharedJapaneseTermTranslator:
+    identity = TranslationIdentity(provider="test", version="shared-ja")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        self.calls += 1
+        return text
+
+
+def test_catalog_value_translation_does_not_retry_valid_unchanged_japanese() -> None:
+    translator = _SharedJapaneseTermTranslator()
+
+    translated = translate_catalog_values(
+        translator,
+        ["容量：7L"],
+        source_locale="zh-CN",
+        target_locale="ja",
+    )
+
+    assert translated == ["容量：7L"]
+    assert translator.calls == 1
+
+
 def test_pending_sources_reuses_translation_after_provider_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1836,6 +1836,7 @@ export interface PublicQuoteDraftItem {
   productId: string;
   position: number;
   quantity: number;
+  customerNote?: string;
   skuCode: string;
   name: string;
   description?: string;

@@ -43,6 +43,7 @@ import type {
 export interface CartLine {
   sku: Sku;
   quantity: number;
+  note?: string;
 }
 
 interface CartDrawerProps {
@@ -54,6 +55,7 @@ interface CartDrawerProps {
   contactImages?: Array<Pick<StorefrontSupportAction, "image_url" | "label">>;
   lines: CartLine[];
   onQuantity: (skuId: string, quantity: number) => void;
+  onNote: (skuId: string, note: string) => void;
   onClear: () => void;
   locale: StorefrontLocale;
 }
@@ -126,7 +128,7 @@ function CartLineImage({ sku }: { sku: Sku }) {
   );
 }
 
-export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmail, contactImages, lines, onQuantity, onClear, locale }: CartDrawerProps) {
+export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmail, contactImages, lines, onQuantity, onNote, onClear, locale }: CartDrawerProps) {
   const [open, setOpen] = useState(false);
   const [reviewReminderOpen, setReviewReminderOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -193,9 +195,14 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
       customer_name: String(data.get("customer_name") || "").trim(),
       customer_company: String(data.get("customer_company") || "").trim() || undefined,
       customer_email: String(data.get("customer_email") || "").trim() || undefined,
+      customer_phone: String(data.get("customer_phone") || "").trim() || undefined,
       notes: String(data.get("notes") || "").trim() || undefined,
       privacy_acknowledged: true,
-      items: lines.map((line) => ({ sku_id: line.sku.id, quantity: line.quantity })),
+      items: lines.map((line) => ({
+        sku_id: line.sku.id,
+        quantity: line.quantity,
+        customer_note: line.note?.trim() || undefined,
+      })),
     };
     try {
       const createdQuote = await api.createStoreQuote(slug, payload, accountId);
@@ -316,7 +323,7 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                 <Button type="button" size="1" variant="ghost" color="gray" onClick={onClear}>{t("清空")}</Button>
               </div>
               <div className="cart-lines">
-                {lines.map(({ sku, quantity }) => (
+                {lines.map(({ sku, quantity, note }) => (
                   <div className="cart-line" key={sku.id}>
                     <CartLineImage sku={sku} />
                     <div className="cart-line-copy">
@@ -337,6 +344,18 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                         </IconButton>
                       </Tooltip>
                     </div>
+                    <label className="cart-line-note">
+                      <Text as="span" size="1" color="gray">{t("商品备注（选填）")}</Text>
+                      <TextArea
+                        value={note || ""}
+                        onChange={(event) => onNote(sku.id, event.target.value)}
+                        maxLength={1000}
+                        rows={2}
+                        resize="vertical"
+                        placeholder={t("例如颜色偏好、印刷要求或包装说明")}
+                        aria-label={t("{name} 的商品备注", { name: sku.name })}
+                      />
+                    </label>
                   </div>
                 ))}
               </div>
@@ -365,9 +384,13 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                     <Text as="span" size="2" weight="medium">{t("公司名称")}</Text>
                     <TextField.Root name="customer_company" placeholder={t("请输入公司名称")} autoComplete="organization" />
                   </label>
-                  <label className="field-group field-span-2">
+                  <label className="field-group">
                     <Text as="span" size="2" weight="medium">{t("客户邮箱")}</Text>
                     <TextField.Root name="customer_email" type="email" placeholder="name@company.com" autoComplete="email" />
+                  </label>
+                  <label className="field-group">
+                    <Text as="span" size="2" weight="medium">{t("联系电话")}</Text>
+                    <TextField.Root name="customer_phone" type="tel" placeholder={t("电话或 WhatsApp")} autoComplete="tel" />
                   </label>
                   <label className="field-group field-span-2">
                     <Text as="span" size="2" weight="medium">{t("报价备注")}</Text>

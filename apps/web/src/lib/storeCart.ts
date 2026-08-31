@@ -3,6 +3,7 @@ import type { Sku } from "../types";
 export interface StoredCartLine {
   sku: Sku;
   quantity: number;
+  note?: string;
 }
 
 export type StoredCart = Record<string, StoredCartLine>;
@@ -25,12 +26,13 @@ function sanitizeCart(value: unknown): StoredCart {
   const cart: StoredCart = {};
   Object.entries(value as Record<string, unknown>).forEach(([skuId, entry]) => {
     if (!entry || typeof entry !== "object") return;
-    const line = entry as { sku?: Sku; quantity?: number };
+    const line = entry as { sku?: Sku; quantity?: number; note?: string };
     const quantity = Number(line.quantity);
     if (!line.sku || line.sku.id !== skuId || !Number.isFinite(quantity) || quantity < 1) return;
     cart[skuId] = {
       sku: line.sku,
       quantity: Math.min(1_000_000, Math.floor(quantity)),
+      note: typeof line.note === "string" ? line.note.slice(0, 1000) : undefined,
     };
   });
   return cart;

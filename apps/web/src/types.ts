@@ -553,6 +553,7 @@ export interface ProductTagPayload {
 export interface QuoteItemInput {
   sku_id: string;
   quantity: number;
+  customer_note?: string;
 }
 
 export interface CreateQuoteInput {
@@ -560,6 +561,7 @@ export interface CreateQuoteInput {
   customer_name: string;
   customer_company?: string;
   customer_email?: string;
+  customer_phone?: string;
   notes?: string;
   privacy_acknowledged: true;
   items: QuoteItemInput[];
@@ -571,6 +573,7 @@ export interface QuoteItem {
   sku_code?: string;
   sku_name?: string;
   name?: string;
+  customer_note?: string | null;
   quantity: number;
   unit_price?: number | string | null;
   line_total?: number | string | null;
@@ -590,6 +593,7 @@ export interface Quote {
   customer_name: string;
   customer_company?: string | null;
   customer_email?: string | null;
+  customer_phone?: string | null;
   notes?: string | null;
   locale?: StorefrontLocale;
   status?: "draft" | "generated" | "sent" | "expired" | string;

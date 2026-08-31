@@ -50,6 +50,7 @@ import {
 import {
   normalizeStorefrontLocale,
   storefrontDirection,
+  storefrontLayoutDirection,
   storefrontText,
 } from "../lib/storefrontLocale";
 import { tagGlassStyle } from "../lib/tagColors";
@@ -200,7 +201,7 @@ export function ProductDetailPage() {
     const previousLanguage = document.documentElement.lang;
     const previousDirection = document.documentElement.dir;
     document.documentElement.lang = locale;
-    document.documentElement.dir = storefrontDirection(locale);
+    document.documentElement.dir = storefrontLayoutDirection();
     document.title = `${product.name} | ${store.name}`;
     return () => {
       document.title = previousTitle;
@@ -219,6 +220,11 @@ export function ProductDetailPage() {
       return next;
     });
   };
+  const updateCartNote = (skuId: string, note: string) => {
+    setCart((current) => current[skuId]
+      ? { ...current, [skuId]: { ...current[skuId], note } }
+      : current);
+  };
 
   const addToCart = (sku: Sku) => {
     setCart((current) => ({
@@ -226,6 +232,7 @@ export function ProductDetailPage() {
       [sku.id]: {
         sku,
         quantity: (current[sku.id]?.quantity || 0) + 1,
+        note: current[sku.id]?.note,
       },
     }));
   };
@@ -250,7 +257,9 @@ export function ProductDetailPage() {
   return (
     <div
       className={`store-shell sku-detail-shell${cartLines.length ? " has-cart" : ""}${showMobilePurchaseDock ? " has-mobile-purchase" : ""}`}
-      dir={storefrontDirection(locale)}
+      dir={storefrontLayoutDirection()}
+      data-locale={locale}
+      data-text-direction={storefrontDirection(locale)}
     >
       <header className="store-header">
         <Container size="4" className="store-header-container">
@@ -296,6 +305,7 @@ export function ProductDetailPage() {
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
                 lines={cartLines}
                 onQuantity={updateQuantity}
+                onNote={updateCartNote}
                 onClear={() => setCart({})}
                 locale={locale}
               />

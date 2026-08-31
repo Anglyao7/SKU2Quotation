@@ -6930,7 +6930,11 @@ def test_ai_search_popular_terms_can_be_curated_for_the_storefront() -> None:
     with SessionLocal() as session:
         profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
         assert profile is not None
-        original_terms = list(profile.ai_search_questions or [])
+        original_questions = list(profile.ai_search_questions or [])
+        original_terms = list(profile.popular_search_terms or [])
+        profile.ai_search_questions = ["这是一条旧版推荐问题吗？"]
+        profile.popular_search_terms = []
+        session.commit()
 
     configured_terms = ["大型犬玩具", "珐琅铁锅", "户外帐篷"]
     try:
@@ -6945,6 +6949,10 @@ def test_ai_search_popular_terms_can_be_curated_for_the_storefront() -> None:
         assert loaded.status_code == 200, loaded.text
         assert loaded.json()["configured_terms"] == configured_terms
 
+        recommended = client.get("/api/v1/ai/search/recommended-questions")
+        assert recommended.status_code == 200, recommended.text
+        assert recommended.json()["questions"] == ["这是一条旧版推荐问题吗？"]
+
         storefront = client.get("/api/store/demo")
         assert storefront.status_code == 200, storefront.text
         assert storefront.json()["popular_search_terms"] == configured_terms
@@ -6958,7 +6966,8 @@ def test_ai_search_popular_terms_can_be_curated_for_the_storefront() -> None:
         with SessionLocal() as session:
             profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
             assert profile is not None
-            profile.ai_search_questions = original_terms
+            profile.ai_search_questions = original_questions
+            profile.popular_search_terms = original_terms
             session.commit()
 
 
@@ -16383,6 +16392,9 @@ def test_supplier_profile_counts_products_from_direct_sku_supplier_links() -> No
                 status="ACTIVE",
             )
         )
+        # These rows have composite foreign keys but no ORM relationships, so
+        # make the parent insertion order explicit before creating the SKU.
+        session.flush()
         session.add(
             SkuRow(
                 id=sku_id,
@@ -17968,6 +17980,11 @@ def test_public_catalog_reuses_on_demand_translation_memory(
         "configured_catalog_translator",
         lambda: provider,
     )
+    monkeypatch.setattr(
+        catalog_translation_repository,
+        "available_language_pack_locales",
+        lambda *_args, **_kwargs: ["en-US"],
+    )
     with SessionLocal() as session:
         session.execute(
             delete(CatalogTextTranslationRow).where(
@@ -18105,6 +18122,11 @@ def test_public_product_detail_reuses_one_product_translation_batch(
         public_catalog_use_cases,
         "configured_catalog_translator",
         lambda: provider,
+    )
+    monkeypatch.setattr(
+        catalog_translation_repository,
+        "available_language_pack_locales",
+        lambda *_args, **_kwargs: ["en-US"],
     )
 
     def fail_duplicate_sku_translation(*_args, **_kwargs):
@@ -21079,7 +21101,11 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
                 "customer_phone": "@PHONE",
                 "notes": "@SUM(A1:A2)",
                 "privacy_acknowledged": True,
-                "items": [{"sku_id": sku_data["id"], "quantity": 2}],
+                "items": [{
+                    "sku_id": sku_data["id"],
+                    "quantity": 2,
+                    "customer_note": "  Please use blue packaging.  ",
+                }],
             },
         )
     finally:
@@ -21096,6 +21122,8 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
     assert draft["quote_number"].startswith("QD-")
     assert "不构成" in draft["disclaimer"]
     assert Decimal(str(draft["total"])) == original_price * 2
+    assert draft["customer_phone"] == "@PHONE"
+    assert draft["items"][0]["customer_note"] == "Please use blue packaging."
     raw_token = draft["download_token"]
     assert raw_token and raw_token.startswith(f"{DEFAULT_TENANT_ID}.")
     assert "token=" not in draft["pdf_url"]
@@ -21139,7 +21167,9 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert len(stored.token_hash) == 64
         assert snapshot_item.name_snapshot == original_name
         assert snapshot_item.unit_price_snapshot == original_price
+        assert snapshot_item.customer_note == "Please use blue packaging."
         assert stored_draft.snapshot["status"] == "PENDING_CONFIRMATION"
+        assert stored_draft.snapshot["items"][0]["customer_note"] == "Please use blue packaging."
         assert stored_draft.snapshot["privacy_notice"]["acknowledged"] is True
         assert stored_draft.snapshot["privacy_notice"]["version"] == "privacy-v1"
 
@@ -21213,6 +21243,7 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert merchant_detail.json()["download_token"] is None
         assert merchant_detail.json()["pdf_url"] is None
         assert merchant_detail.json()["items"][0]["name_snapshot"] == original_name
+        assert merchant_detail.json()["items"][0]["customer_note"] == "Please use blue packaging."
         merchant_pdf = client.get(
             f"/api/v1/public-quote-drafts/{quote_id}/pdf"
         )
@@ -21908,7 +21939,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
             connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
             ).scalar()
-            == "20260830_0126"
+            == "20260831_0128"
         )
     upgraded_engine.dispose()
     command.check(config)

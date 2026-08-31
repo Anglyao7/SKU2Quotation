@@ -1300,9 +1300,11 @@ export function QuoteWorkbenchPage() {
                     <strong title={name}>{name}</strong>
                     <span className="mono-text" title={item.skuCode}>{item.skuCode}</span>
                     <span>{t("第 {position} 项", { position: item.position })}</span>
+                    {item.customerNote ? <span className="quote-editor-item-customer-note" title={item.customerNote}>{t("客户商品备注")}：{item.customerNote}</span> : null}
                   </span>
                   <Info className="quote-editor-item-summary-icon" size={17} aria-hidden="true" />
                 </button>
+                {item.customerNote ? <div className="quote-customer-item-note"><Text size="1" color="amber">{t("客户商品备注")}</Text><Text size="1">{item.customerNote}</Text></div> : null}
                 <div className="quote-editor-item-fields">
                   <label className="quote-editor-item-field quote-editor-item-field--wide">
                     <Text size="1" color="gray">{t("商品名称")}</Text>
@@ -1344,6 +1346,25 @@ export function QuoteWorkbenchPage() {
             );
           })}
         </div>
+      </section>
+    );
+  };
+
+  const renderCustomerRequest = () => {
+    if (!draft) return null;
+    return (
+      <section className="quote-editor-customer-request" aria-label={t("客户填写信息")}>
+        <div className="quote-editor-items-heading">
+          <div><Text size="2" weight="medium">{t("客户填写信息")}</Text><Text size="1" color="gray">{draft.customerCompany || draft.customerName}</Text></div>
+        </div>
+        <div className="quote-customer-request-grid">
+          <div><span>{t("联系人")}</span><strong>{draft.customerName}</strong></div>
+          <div><span>{t("公司名称")}</span><strong>{draft.customerCompany || "—"}</strong></div>
+          <div><span>{t("客户邮箱")}</span><strong>{draft.customerEmail || "—"}</strong></div>
+          <div><span>{t("联系电话")}</span><strong>{draft.customerPhone || "—"}</strong></div>
+          {draft.visitorCountryCode ? <div><span>{t("客户国家")}</span><strong>{draft.visitorCountryCode}</strong></div> : null}
+        </div>
+        {draft.notes ? <div className="quote-customer-order-note"><Text size="1" color="gray">{t("整单备注")}</Text><Text size="2">{draft.notes}</Text></div> : null}
       </section>
     );
   };
@@ -1396,6 +1417,7 @@ export function QuoteWorkbenchPage() {
         <Badge color={saving || savingItems ? "amber" : "jade"}>{saving || savingItems ? t("保存中") : t("自动保存")}</Badge>
       </div>
       {renderQuoteToolbar()}
+      {renderCustomerRequest()}
       {renderOrderItemsEditor()}
       <section className="quote-editor-extra">
         <div className="quote-editor-extra-heading"><div><Text size="2" weight="medium">{t("额外信息")}</Text><Text size="1" color="gray">{t("显示在整张报价单的商品列表下方")}</Text></div><Button size="1" variant="soft" color="blue" disabled={isReadOnly || extraInformation.length >= 20} onClick={addExtraInformation}>＋ {t("添加")}</Button></div>
@@ -1560,6 +1582,7 @@ export function QuoteWorkbenchPage() {
               <div><Text size="1" color="gray">{t("版本")}</Text><strong>v{selectedDrawerItem.productVersion} · SKU v{selectedDrawerItem.skuVersion}</strong></div>
             </div>
             {selectedDrawerItem.description ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品描述")}</Text><Text as="p">{selectedDrawerItem.description}</Text></div> : null}
+            {selectedDrawerItem.customerNote ? <div className="quote-item-detail-section quote-item-detail-customer-note"><Text size="1" color="amber">{t("客户商品备注")}</Text><Text as="p">{selectedDrawerItem.customerNote}</Text></div> : null}
             {selectedDrawerItem.specification ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品规格")}</Text><Text as="p">{selectedDrawerItem.specification}</Text></div> : null}
             {selectedDrawerItem.tags.length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品标签")}</Text><div className="quote-item-tags">{selectedDrawerItem.tags.map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</div></div> : null}
             {Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("规格参数")}</Text><div className="quote-item-options">{Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).map(([key, value]) => <div key={key}><span>{key}</span><strong>{displayOptionValue(value, quoteSeparator(locale))}</strong></div>)}</div></div> : null}

@@ -31,6 +31,78 @@ _PROTECTED_MARKER_PATTERN = re.compile(
 )
 _TRANSLATABLE_PROSE_PATTERN = re.compile(r"[A-Za-z]{2,}|[\u3400-\u9fff]")
 _CJK_PROSE_PATTERN = re.compile(r"[\u3400-\u9fff]")
+_CJK_PROSE_RUN_PATTERN = re.compile(r"[\u3400-\u9fff]+")
+_LATIN_PROSE_RUN_PATTERN = re.compile(r"[A-Za-z]{2,}")
+
+# Chinese and Japanese legitimately share a useful subset of catalog terms.
+# Requiring every Japanese result to differ byte-for-byte made values such as
+# ``容量：7L``, ``透明`` and ``内径40CM/外径68CM`` impossible to finish: the
+# correct Japanese wording is identical to the source.  Keep this vocabulary
+# deliberately narrow.  An unchanged value is accepted only when every Han
+# run and every Latin run is a known Japanese catalog term or technical token;
+# arbitrary Chinese names and marketing prose remain invalid.
+_JAPANESE_SHARED_CATALOG_TERMS = frozenset(
+    {
+        "容量",
+        "重量",
+        "直径",
+        "内径",
+        "外径",
+        "透明",
+        "半透明",
+        "特大",
+        "白",
+        "白色",
+        "黄色",
+        "茶色",
+        "黄褐色",
+        "猫",
+        "犬",
+        "猫用",
+        "犬用",
+        "犬猫",
+        "小型犬",
+        "中型犬",
+        "大型犬",
+        "超小型犬",
+        "生活防水",
+        "防水",
+        "通信",
+        "大容量",
+        "袋",
+        "牛肉",
+        "白桃味",
+        "勇者",
+    }
+)
+_JAPANESE_SHARED_LATIN_TERMS = frozenset(
+    {
+        "cm",
+        "fi",
+        "ip",
+        "ipx",
+        "kg",
+        "mm",
+        "ml",
+        "opp",
+        "oz",
+        "tpu",
+        "white",
+        "wi",
+    }
+)
+
+
+def _japanese_unchanged_catalog_value_is_valid(value: str) -> bool:
+    han_runs = _CJK_PROSE_RUN_PATTERN.findall(value)
+    if not han_runs or any(
+        run not in _JAPANESE_SHARED_CATALOG_TERMS for run in han_runs
+    ):
+        return False
+    return all(
+        run.casefold() in _JAPANESE_SHARED_LATIN_TERMS
+        for run in _LATIN_PROSE_RUN_PATTERN.findall(value)
+    )
 
 
 def catalog_translation_value_is_complete(
@@ -44,9 +116,10 @@ def catalog_translation_value_is_complete(
 
     Product codes and dimensions may remain unchanged, but Chinese prose must
     not leak into Latin, Arabic, or Korean storefronts. Japanese legitimately
-    uses Han characters, so for Japanese we only reject a wholly unchanged
-    Chinese value. This check is also used when reading translation memory so
-    an older partial response cannot remain stuck in the storefront cache.
+    uses Han characters, including a narrow vocabulary whose correct Japanese
+    form is identical to Chinese. This check is also used when reading
+    translation memory so an older partial response cannot remain stuck in the
+    storefront cache.
     """
 
     source = source_value.strip()
@@ -60,7 +133,10 @@ def catalog_translation_value_is_complete(
     if normalized_target in {"zh", "zh-cn"}:
         return True
     if normalized_target in {"ja", "ja-jp"}:
-        return translated.casefold() != source.casefold()
+        return (
+            translated.casefold() != source.casefold()
+            or _japanese_unchanged_catalog_value_is_valid(source)
+        )
     return not _CJK_PROSE_PATTERN.search(translated)
 
 
@@ -468,10 +544,21 @@ def validate_catalog_translation_values(
             zip(values, results, strict=True)
         ):
             normalized_source = source_value.strip()
+            unchanged = (
+                translated_value.casefold() == normalized_source.casefold()
+            )
+            unchanged_is_valid_japanese = (
+                unchanged
+                and target_locale.strip().replace("_", "-").casefold()
+                in {"ja", "ja-jp"}
+                and _japanese_unchanged_catalog_value_is_valid(
+                    normalized_source
+                )
+            )
             needs_direct_retry = (
                 _TRANSLATABLE_PROSE_PATTERN.search(normalized_source)
                 and (
-                    translated_value.casefold() == normalized_source.casefold()
+                    (unchanged and not unchanged_is_valid_japanese)
                     or not catalog_translation_value_is_complete(
                         normalized_source,
                         translated_value,

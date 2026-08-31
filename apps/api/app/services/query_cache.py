@@ -350,15 +350,16 @@ def _collect_orm_invalidations(
 def _publish_invalidations(session: Session) -> None:
     pending = session.info.pop(_PENDING_INVALIDATIONS, set())
     pending_dashboard = session.info.pop(_PENDING_DASHBOARD_STATISTICS, set())
-    _mark_dashboard_statistics_dirty(
-        pending_dashboard,
-        bind=session.get_bind(),
-        request_context={
-            key: str(session.info[key])
-            for key in ("organization_id", "user_id")
-            if session.info.get(key)
-        },
-    )
+    if pending_dashboard:
+        _mark_dashboard_statistics_dirty(
+            pending_dashboard,
+            bind=session.get_bind(),
+            request_context={
+                key: str(session.info[key])
+                for key in ("organization_id", "user_id")
+                if session.info.get(key)
+            },
+        )
     invalidate_versions(pending)
 
 

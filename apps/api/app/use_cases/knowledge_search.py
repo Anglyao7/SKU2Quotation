@@ -265,7 +265,7 @@ def get_popular_search_terms(
     return PopularSearchTermsResponse(
         days=days,
         configured_terms=_normalized_configured_popular_terms(
-            profile.ai_search_questions if profile is not None else None,
+            profile.popular_search_terms if profile is not None else None,
         ),
         items=[
             PopularSearchTerm(
@@ -308,7 +308,7 @@ def update_popular_search_terms(
         )
         session.add(profile)
         session.flush()
-    profile.ai_search_questions = list(request.terms)
+    profile.popular_search_terms = list(request.terms)
     session.commit()
     return get_popular_search_terms(
         session,

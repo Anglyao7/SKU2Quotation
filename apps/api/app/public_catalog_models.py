@@ -98,6 +98,14 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         # backfill migration can safely enforce NOT NULL in production.
         nullable=True,
     )
+    popular_search_terms: Mapped[list[str] | None] = mapped_column(
+        JSON_DOCUMENT,
+        default=list,
+        # Keep this nullable while existing production rows are backfilled by
+        # normal settings writes.  An empty value intentionally falls back to
+        # real search analytics instead of legacy recommended questions.
+        nullable=True,
+    )
     support_widget_config: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT,
         default=dict,
@@ -370,6 +378,7 @@ class PublicQuoteDraftItemRow(AuditTimestampMixin, Base):
     sku_id: Mapped[UUID] = mapped_column(nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    customer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     product_id_snapshot: Mapped[UUID] = mapped_column(nullable=False)
     product_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
     sku_version: Mapped[int] = mapped_column(BigInteger, nullable=False)

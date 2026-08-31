@@ -7,6 +7,7 @@ import {
   storefrontText,
 } from "../lib/storefrontLocale";
 import type { StorefrontLocale } from "../types";
+import { StorefrontFlag } from "./StorefrontFlag";
 
 export function StorefrontLanguageSwitch({
   locale,
@@ -56,9 +57,7 @@ export function StorefrontLanguageSwitch({
           aria-label={t("选择语言")}
         >
           <Translate size={17} />
-          <span className="storefront-language-flag" aria-hidden="true">
-            {currentLanguage.flag}
-          </span>
+          <StorefrontFlag locale={currentLanguage.code} className="storefront-language-flag" />
           <span>{currentLanguage.shortLabel}</span>
         </Button>
       </DropdownMenu.Trigger>
@@ -72,9 +71,7 @@ export function StorefrontLanguageSwitch({
             <span className="storefront-language-check">
               {locale === language.code ? <Check /> : null}
             </span>
-            <span className="storefront-language-flag" aria-hidden="true">
-              {language.flag}
-            </span>
+            <StorefrontFlag locale={language.code} className="storefront-language-flag" />
             <span lang={language.code} dir={language.direction}>{language.label}</span>
           </DropdownMenu.Item>
         ))}

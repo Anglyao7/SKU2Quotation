@@ -690,18 +690,29 @@ img { display: block; max-width: 100%; }
 .storefront-language-trigger { min-width: 78px; justify-content: center; gap: 6px; }
 .storefront-language-check { width: 16px; height: 16px; display: inline-grid; place-items: center; }
 .storefront-language-check svg { width: 14px; height: 14px; }
-.storefront-language-flag {
+.storefront-flag {
+  width: 22px;
+  height: 15px;
   flex: 0 0 auto;
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-  font-size: 16px;
-  font-style: normal;
-  line-height: 1;
+  display: inline-grid;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, .14), 0 1px 2px rgba(15, 23, 42, .12);
+  vertical-align: -2px;
 }
+.storefront-flag > svg { width: 100%; height: 100%; display: block; }
+.storefront-language-flag { width: 21px; height: 14px; }
 .storefront-language-menu { min-width: 178px; }
 .storefront-language-menu .rt-DropdownMenuItem { gap: 9px; }
 .storefront-language-menu [dir="rtl"] { text-align: right; }
-.store-shell[dir="rtl"] input,
-.store-shell[dir="rtl"] textarea { text-align: right; }
+.store-shell[data-text-direction="rtl"] :is(h1, h2, h3, h4, h5, h6, p),
+.store-shell[data-text-direction="rtl"] :is(input, textarea),
+.store-shell[data-text-direction="rtl"] .sku-detail-description-content {
+  direction: rtl;
+  text-align: right;
+  unicode-bidi: plaintext;
+}
 .header-count { min-width: 22px; height: 22px; padding-inline: 6px; display: inline-grid; place-items: center; border-radius: 10px; background: rgba(245, 250, 248, 0.16); font-size: 11px; font-weight: 700; }
 .visitor-center-trigger { position: relative; min-width: 76px; gap: 6px; }
 .visitor-center-unread {
@@ -2173,6 +2184,13 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .cart-line img { object-fit: cover; }
 .cart-line-image-placeholder { display: grid; place-items: center; color: var(--text-soft); }
 .cart-line-copy { min-width: 0; display: grid; gap: 2px; }
+.cart-line-note {
+  grid-column: 2 / -1;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+.cart-line-note .rt-TextAreaRoot { min-height: 58px; background: var(--surface); }
 .quantity-control { display: grid; grid-template-columns: 28px 26px 28px; place-items: center; gap: 2px; }
 .quote-total-row { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: 20px 22px; border-radius: 12px; background: var(--accent-soft); }
 .quote-total-row > div { text-align: right; }
@@ -3078,6 +3096,7 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .cart-line { grid-template-columns: 52px minmax(0, 1fr); gap: 9px 11px; padding: 10px; }
   .cart-line img, .cart-line-image-placeholder { width: 52px; height: 52px; }
   .cart-line .quantity-control { grid-column: 2; justify-self: start; }
+  .cart-line-note { grid-column: 1 / -1; }
   .form-grid { grid-template-columns: 1fr; }
   .field-span-2 { grid-column: span 1; }
   .store-footer .rt-ContainerInner { padding-inline: 16px; }

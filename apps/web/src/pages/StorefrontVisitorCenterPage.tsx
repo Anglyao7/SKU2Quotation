@@ -44,6 +44,7 @@ import {
 import {
   normalizeStorefrontLocale,
   storefrontDirection,
+  storefrontLayoutDirection,
   storefrontLocaleQuery,
   storefrontText,
 } from "../lib/storefrontLocale";
@@ -195,8 +196,18 @@ export function StorefrontVisitorCenterPage() {
     else if (next[skuId]) next[skuId] = { ...next[skuId], quantity };
     return next;
   });
+  const updateCartNote = (skuId: string, note: string) => setCart((current) => (
+    current[skuId]
+      ? { ...current, [skuId]: { ...current[skuId], note } }
+      : current
+  ));
 
-  return <div className={`store-shell visitor-center-shell${cartLines.length ? " has-cart" : ""}`} dir={storefrontDirection(locale)}>
+  return <div
+    className={`store-shell visitor-center-shell${cartLines.length ? " has-cart" : ""}`}
+    dir={storefrontLayoutDirection()}
+    data-locale={locale}
+    data-text-direction={storefrontDirection(locale)}
+  >
     <header className="store-header">
       <Container size="4" className="store-header-container"><div className="header-inner">
         <div className="store-header-branding"><Link to={storefrontHome} className="store-identity">
@@ -206,7 +217,7 @@ export function StorefrontVisitorCenterPage() {
         <div className="header-actions">
           <StorefrontLanguageSwitch locale={locale} availableLocales={store.available_locales} />
           <ThemeToggle labels={{ toDark: t("切换深色模式"), toLight: t("切换浅色模式") }} />
-          <CartDrawer slug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} lines={cartLines} onQuantity={updateQuantity} onClear={() => setCart({})} locale={locale} />
+          <CartDrawer slug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} lines={cartLines} onQuantity={updateQuantity} onNote={updateCartNote} onClear={() => setCart({})} locale={locale} />
         </div>
       </div></Container>
     </header>

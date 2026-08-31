@@ -17,6 +17,7 @@ import { readStoreCart, writeStoreCart } from "../lib/storeCart";
 import {
   normalizeStorefrontLocale,
   storefrontDirection,
+  storefrontLayoutDirection,
   storefrontLocaleQuery,
   storefrontText,
 } from "../lib/storefrontLocale";
@@ -142,9 +143,19 @@ export function StorefrontCustomPage() {
     else if (next[skuId]) next[skuId] = { ...next[skuId], quantity };
     return next;
   });
+  const updateCartNote = (skuId: string, note: string) => setCart((current) => (
+    current[skuId]
+      ? { ...current, [skuId]: { ...current[skuId], note } }
+      : current
+  ));
 
   return (
-    <div className={`store-shell storefront-custom-page-shell${cartLines.length ? " has-cart" : ""}`} dir={storefrontDirection(locale)}>
+    <div
+      className={`store-shell storefront-custom-page-shell${cartLines.length ? " has-cart" : ""}`}
+      dir={storefrontLayoutDirection()}
+      data-locale={locale}
+      data-text-direction={storefrontDirection(locale)}
+    >
       <header className="store-header">
         <Container size="4" className="store-header-container">
           <div className="header-inner">
@@ -167,6 +178,7 @@ export function StorefrontCustomPage() {
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
                 lines={cartLines}
                 onQuantity={updateQuantity}
+                onNote={updateCartNote}
                 onClear={() => setCart({})}
                 locale={locale}
               />

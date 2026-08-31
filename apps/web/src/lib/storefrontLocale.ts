@@ -61,6 +61,15 @@ export function storefrontDirection(locale: StorefrontLocale): "ltr" | "rtl" {
   return languageByCode.get(locale)?.direction ?? "ltr";
 }
 
+/**
+ * The catalog keeps one stable visual layout in every language. Reading
+ * direction is applied to localized text only, so Arabic does not mirror the
+ * navigation, actions, category rail, or product grid.
+ */
+export function storefrontLayoutDirection(): "ltr" {
+  return "ltr";
+}
+
 export function storefrontLanguage(locale: StorefrontLocale) {
   return languageByCode.get(locale) ?? STOREFRONT_LANGUAGE_OPTIONS[0];
 }
@@ -258,6 +267,11 @@ const english: Record<string, string> = {
   "公司名称": "Company",
   "请输入公司名称": "Enter company name",
   "客户邮箱": "Email",
+  "联系电话": "Phone / WhatsApp",
+  "电话或 WhatsApp": "Phone number or WhatsApp",
+  "商品备注（选填）": "Product note (optional)",
+  "例如颜色偏好、印刷要求或包装说明": "For example: colour preference, printing, or packaging requirements",
+  "{name} 的商品备注": "Product note for {name}",
   "报价备注": "Quote notes",
   "交期、包装或其他说明": "Lead time, packaging, or other requirements",
   "我已阅读并理解": "I have read and understood ",

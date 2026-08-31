@@ -188,6 +188,15 @@ class PublicImageSearchResponse(BaseModel):
 class PublicCartItem(BaseModel):
     sku_id: UUID
     quantity: Decimal = Field(gt=0, le=1_000_000, decimal_places=6)
+    customer_note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("customer_note", mode="before")
+    @classmethod
+    def normalize_customer_note(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
 
 class PublicQuoteDraftCreate(BaseModel):
@@ -225,6 +234,7 @@ class PublicQuoteDraftItemResponse(BaseModel):
     product_id: UUID | None = None
     position: int
     quantity: Decimal
+    customer_note: str | None = None
     sku_code_snapshot: str
     name_snapshot: str
     description_snapshot: str | None
