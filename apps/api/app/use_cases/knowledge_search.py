@@ -30,6 +30,7 @@ from ..knowledge_embedding_schemas import (
     KnowledgeProjectionResponse,
     PopularSearchTerm,
     PopularSearchTermsResponse,
+    PopularSearchTermsUpdate,
 )
 from ..model_mixins import utcnow
 from ..public_catalog_models import TenantPublicProfileRow
@@ -77,6 +78,21 @@ def _normalized_recommended_questions(value: object) -> list[str]:
         seen.add(key)
         normalized.append(question)
     return normalized[:5] or list(DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS)
+
+
+def _normalized_configured_popular_terms(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        term = str(item).strip()[:80]
+        key = term.casefold()
+        if not term or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(term)
+    return normalized[:5]
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -241,8 +257,16 @@ def get_popular_search_terms(
         end_date=end_date,
         limit=limit,
     )
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id,
+        )
+    )
     return PopularSearchTermsResponse(
         days=days,
+        configured_terms=_normalized_configured_popular_terms(
+            profile.ai_search_questions if profile is not None else None,
+        ),
         items=[
             PopularSearchTerm(
                 term=str(row["term_display"] or row["term_normalized"]),
@@ -251,6 +275,47 @@ def get_popular_search_terms(
             )
             for row in rows
         ],
+    )
+
+
+def update_popular_search_terms(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    request: PopularSearchTermsUpdate,
+) -> PopularSearchTermsResponse:
+    _require(permissions, "product.edit")
+    profile = session.scalar(
+        select(TenantPublicProfileRow).where(
+            TenantPublicProfileRow.tenant_id == tenant_id,
+        )
+    )
+    if profile is None:
+        tenant = session.get(TenantRow, tenant_id)
+        if tenant is None:
+            raise ApplicationError(
+                "TENANT_NOT_FOUND",
+                "Merchant workspace was not found.",
+                kind="not_found",
+            )
+        profile = TenantPublicProfileRow(
+            tenant_id=tenant_id,
+            slug=tenant.slug,
+            publication_status=(
+                "PUBLISHED" if tenant.status == "active" else "SUSPENDED"
+            ),
+        )
+        session.add(profile)
+        session.flush()
+    profile.ai_search_questions = list(request.terms)
+    session.commit()
+    return get_popular_search_terms(
+        session,
+        tenant_id=tenant_id,
+        permissions=permissions,
+        days=30,
+        limit=10,
     )
 
 

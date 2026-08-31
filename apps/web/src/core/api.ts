@@ -6398,6 +6398,7 @@ export async function searchProducts(query: string, limit = 10): Promise<HybridS
 
 interface ApiPopularSearchTerms {
   days: number;
+  configured_terms?: string[];
   items: Array<{
     term: string;
     count: number;
@@ -6419,6 +6420,28 @@ export async function getAISearchPopularTerms(
   );
   return {
     days: row.days,
+    configuredTerms: row.configured_terms ?? [],
+    items: row.items.map((item) => ({
+      term: item.term,
+      count: item.count,
+      lastSearchedAt: item.last_searched_at,
+    })),
+  };
+}
+
+export async function updateAISearchPopularTerms(
+  terms: string[],
+): Promise<PopularSearchTerms> {
+  const row = await request<ApiPopularSearchTerms>(
+    "/ai/search/popular-terms",
+    {
+      method: "PUT",
+      body: JSON.stringify({ terms }),
+    },
+  );
+  return {
+    days: row.days,
+    configuredTerms: row.configured_terms ?? [],
     items: row.items.map((item) => ({
       term: item.term,
       count: item.count,

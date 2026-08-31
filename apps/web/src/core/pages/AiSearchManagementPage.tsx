@@ -6,6 +6,7 @@ import {
   Heading,
   Progress,
   Text,
+  TextField,
 } from "@radix-ui/themes";
 import {
   ArrowClockwise,
@@ -14,7 +15,10 @@ import {
   MagnifyingGlass,
   Pause,
   Play,
+  Plus,
+  FloppyDisk,
   Sparkle,
+  Trash,
 } from "@phosphor-icons/react";
 import {
   useCallback,
@@ -31,15 +35,18 @@ import {
   pauseKnowledgeIndexJob,
   resumeKnowledgeIndexJob,
   startKnowledgeIndexJob,
+  updateAISearchPopularTerms,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import { useToast } from "../ToastContext";
 import type {
   KnowledgeIndexJob,
   KnowledgeIndexStatus,
   PopularSearchTerm,
 } from "../types";
+import "./AiSearchManagementPage.css";
 
 const ACTIVE_JOB_STATUSES = new Set(["QUEUED", "RUNNING"]);
 
@@ -55,6 +62,7 @@ function checkpointTime(value: string, locale: string) {
 export function AiSearchManagementPage() {
   const { hasPermission } = useCoreAuth();
   const { locale, t } = useLocale();
+  const { notify } = useToast();
   const canManageIndex = hasPermission("product.edit");
   const [status, setStatus] = useState<KnowledgeIndexStatus>();
   const [job, setJob] = useState<KnowledgeIndexJob>();
@@ -65,6 +73,9 @@ export function AiSearchManagementPage() {
   const [error, setError] = useState("");
   const [rebuildOpen, setRebuildOpen] = useState(false);
   const [popularTerms, setPopularTerms] = useState<PopularSearchTerm[]>([]);
+  const [configuredTerms, setConfiguredTerms] = useState<string[]>([""]);
+  const [savedConfiguredTerms, setSavedConfiguredTerms] = useState<string[]>([]);
+  const [savingTerms, setSavingTerms] = useState(false);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -78,6 +89,9 @@ export function AiSearchManagementPage() {
       setStatus(nextStatus);
       setJob(latestJob);
       setPopularTerms(popular?.items ?? []);
+      const nextConfiguredTerms = popular?.configuredTerms ?? [];
+      setConfiguredTerms(nextConfiguredTerms.length ? nextConfiguredTerms : [""]);
+      setSavedConfiguredTerms(nextConfiguredTerms);
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -206,6 +220,69 @@ export function AiSearchManagementPage() {
   }, [status]);
 
   const activeBusy = jobBlocksStart || Boolean(starting);
+  const normalizedConfiguredTerms = useMemo(
+    () => configuredTerms.map((term) => term.trim()).filter(Boolean),
+    [configuredTerms],
+  );
+  const configuredTermKeys = normalizedConfiguredTerms.map((term) => term.toLocaleLowerCase());
+  const configuredTermsHaveDuplicates = new Set(configuredTermKeys).size !== configuredTermKeys.length;
+  const configuredTermsChanged = JSON.stringify(normalizedConfiguredTerms) !== JSON.stringify(savedConfiguredTerms);
+
+  const updateConfiguredTerm = (index: number, value: string) => {
+    setConfiguredTerms((current) => {
+      const next = current.length ? [...current] : [""];
+      next[index] = value;
+      return next;
+    });
+  };
+
+  const removeConfiguredTerm = (index: number) => {
+    setConfiguredTerms((current) => {
+      const next = current.filter((_, itemIndex) => itemIndex !== index);
+      return next.length ? next : [""];
+    });
+  };
+
+  const addConfiguredTerm = (term = "") => {
+    setConfiguredTerms((current) => {
+      const next = current.length ? [...current] : [""];
+      const normalized = term.trim();
+      if (normalized && next.some((item) => item.trim().toLocaleLowerCase() === normalized.toLocaleLowerCase())) {
+        return next;
+      }
+      const emptyIndex = next.findIndex((item) => !item.trim());
+      if (normalized && emptyIndex >= 0) {
+        next[emptyIndex] = normalized;
+        return next;
+      }
+      if (next.length >= 5) return next;
+      next.push(normalized);
+      return next;
+    });
+  };
+
+  const saveConfiguredTerms = async () => {
+    if (!canManageIndex || savingTerms || !configuredTermsChanged) return;
+    if (configuredTermsHaveDuplicates) {
+      notify(t("热门搜索词不能重复。"), { kind: "error" });
+      return;
+    }
+    setSavingTerms(true);
+    try {
+      const updated = await updateAISearchPopularTerms(normalizedConfiguredTerms);
+      setPopularTerms(updated.items);
+      setConfiguredTerms(updated.configuredTerms.length ? updated.configuredTerms : [""]);
+      setSavedConfiguredTerms(updated.configuredTerms);
+      notify(t("热门搜索词已保存，并会显示在商品前台。"), { kind: "success" });
+    } catch (reason) {
+      notify(
+        reason instanceof Error ? reason.message : t("热门搜索词保存失败，请稍后重试。"),
+        { kind: "error" },
+      );
+    } finally {
+      setSavingTerms(false);
+    }
+  };
   const jobBadgeColor =
     job?.status === "FAILED"
       ? "red"
@@ -436,18 +513,78 @@ export function AiSearchManagementPage() {
           <Card className="core-ai-popular-terms">
             <div className="core-ai-recommended-heading">
               <div>
-                <Text size="1" color="gray">{t("搜索趋势")}</Text>
+                <Text size="1" color="gray">{t("前台搜索设置")}</Text>
                 <Heading size="4">{t("热门搜索词")}</Heading>
                 <Text size="2" color="gray">
-                  {t("自动记录近30天前台搜索次数最多的前十个词，前五条会直接显示在前台商品搜索框下方。")}
+                  {t("最多设置 5 个热门搜索词；保存后会按当前顺序显示在商品前台搜索框下方。")}
                 </Text>
               </div>
-              <Badge color="amber">{t("自动记录")}</Badge>
+              <Badge color="jade">{t("商家自定义")}</Badge>
             </div>
+
+            <div className="ai-popular-term-editor">
+              {configuredTerms.map((term, index) => (
+                <div className="ai-popular-term-row" key={index}>
+                  <Badge color="gray" variant="soft">{index + 1}</Badge>
+                  <TextField.Root
+                    value={term}
+                    maxLength={80}
+                    placeholder={t("例如：大型犬玩具")}
+                    aria-label={t("第 {index} 个热门搜索词", { index: index + 1 })}
+                    onChange={(event) => updateConfiguredTerm(index, event.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    color="gray"
+                    aria-label={t("删除热门搜索词")}
+                    onClick={() => removeConfiguredTerm(index)}
+                  >
+                    <Trash />
+                  </Button>
+                </div>
+              ))}
+              {configuredTermsHaveDuplicates ? (
+                <Text size="1" color="red">{t("热门搜索词不能重复。")}</Text>
+              ) : null}
+              <div className="ai-popular-term-actions">
+                <Button
+                  type="button"
+                  variant="soft"
+                  color="gray"
+                  disabled={configuredTerms.length >= 5 || configuredTerms.some((term) => !term.trim())}
+                  onClick={() => addConfiguredTerm()}
+                >
+                  <Plus />
+                  {t("添加搜索词")}
+                </Button>
+                <Button
+                  type="button"
+                  loading={savingTerms}
+                  disabled={savingTerms || configuredTermsHaveDuplicates || !configuredTermsChanged}
+                  onClick={() => void saveConfiguredTerms()}
+                >
+                  <FloppyDisk />
+                  {t("保存并显示")}
+                </Button>
+              </div>
+            </div>
+
             {popularTerms.length ? (
+              <div className="ai-popular-trend-section">
+                <div>
+                  <Text size="2" weight="medium" as="div">{t("近 30 天搜索趋势")}</Text>
+                  <Text size="1" color="gray">{t("点击真实搜索词可快速添加到前台展示。")}</Text>
+                </div>
               <div className="core-ai-popular-term-list">
                 {popularTerms.map((item, index) => (
-                  <div className="core-ai-popular-term" key={`${item.term}-${index}`}>
+                  <button
+                    type="button"
+                    className="core-ai-popular-term"
+                    key={`${item.term}-${index}`}
+                    disabled={normalizedConfiguredTerms.length >= 5 || configuredTermKeys.includes(item.term.trim().toLocaleLowerCase())}
+                    onClick={() => addConfiguredTerm(item.term)}
+                  >
                     <div className="core-ai-popular-term-copy">
                       <Badge color={index < 3 ? "amber" : "gray"}>{index + 1}</Badge>
                       <Text size="2" weight="medium">{item.term}</Text>
@@ -455,13 +592,14 @@ export function AiSearchManagementPage() {
                         {t("{count} 次", { count: item.count.toLocaleString(locale) })}
                       </Text>
                     </div>
-                    {index < 5 ? <Badge color="jade" variant="soft">{t("前台展示")}</Badge> : null}
-                  </div>
+                    <Plus />
+                  </button>
                 ))}
+              </div>
               </div>
             ) : (
               <Text size="2" color="gray">
-                {t("暂未记录到搜索词，访客开始搜索后会自动汇总。")}
+                {t("暂未记录到搜索趋势，你仍然可以直接填写热门搜索词。")}
               </Text>
             )}
           </Card>

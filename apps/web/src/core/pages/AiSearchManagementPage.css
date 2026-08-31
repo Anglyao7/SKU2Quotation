@@ -1,0 +1,77 @@
+.ai-popular-term-editor {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--core-line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--core-surface) 84%, var(--accent-2));
+}
+
+.ai-popular-term-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 10px;
+}
+
+.ai-popular-term-row > .rt-Badge {
+  justify-content: center;
+}
+
+.ai-popular-term-row > .rt-Button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.ai-popular-term-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.ai-popular-trend-section {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.ai-popular-trend-section .core-ai-popular-term {
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
+}
+
+.ai-popular-trend-section .core-ai-popular-term:hover:not(:disabled) {
+  border-color: var(--accent-7);
+  background: var(--accent-2);
+  transform: translateY(-1px);
+}
+
+.ai-popular-trend-section .core-ai-popular-term:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+@media (max-width: 640px) {
+  .ai-popular-term-editor {
+    padding: 12px;
+  }
+
+  .ai-popular-term-row {
+    grid-template-columns: 24px minmax(0, 1fr) 36px;
+    gap: 8px;
+  }
+
+  .ai-popular-term-actions {
+    flex-direction: column;
+  }
+
+  .ai-popular-term-actions > .rt-Button {
+    width: 100%;
+  }
+}

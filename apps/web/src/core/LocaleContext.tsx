@@ -2197,6 +2197,24 @@ const english: Record<string, string> = {
   "打开 AI 搜索": "Open AI Search",
   "搜索趋势": "Search trends",
   "热门搜索词": "Popular search terms",
+  "前台搜索设置": "Storefront search settings",
+  "最多设置 5 个热门搜索词；保存后会按当前顺序显示在商品前台搜索框下方。":
+    "Set up to five popular search terms. After saving, they appear below the storefront search box in this order.",
+  "商家自定义": "Merchant-defined",
+  "例如：大型犬玩具": "For example: toys for large dogs",
+  "第 {index} 个热门搜索词": "Popular search term {index}",
+  "删除热门搜索词": "Delete popular search term",
+  "热门搜索词不能重复。": "Popular search terms cannot be duplicated.",
+  "添加搜索词": "Add search term",
+  "保存并显示": "Save and display",
+  "热门搜索词已保存，并会显示在商品前台。":
+    "Popular search terms saved and will appear on the storefront.",
+  "热门搜索词保存失败，请稍后重试。": "Could not save popular search terms. Try again later.",
+  "近 30 天搜索趋势": "Search trends from the last 30 days",
+  "点击真实搜索词可快速添加到前台展示。":
+    "Click a real search term to add it to the storefront display.",
+  "暂未记录到搜索趋势，你仍然可以直接填写热门搜索词。":
+    "No search trends have been recorded yet. You can still enter popular search terms directly.",
   "自动记录近30天前台搜索次数最多的前十个词，前五条会直接显示在前台商品搜索框下方。":
     "Automatically track the top ten storefront searches from the last 30 days. The top five appear directly below the storefront search box.",
   "前台展示": "Shown on storefront",

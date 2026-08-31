@@ -6926,6 +6926,42 @@ def test_product_knowledge_splits_one_oversized_variant_without_losing_identity(
     assert "防水耐磨" in projected_text
 
 
+def test_ai_search_popular_terms_can_be_curated_for_the_storefront() -> None:
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original_terms = list(profile.ai_search_questions or [])
+
+    configured_terms = ["大型犬玩具", "珐琅铁锅", "户外帐篷"]
+    try:
+        updated = client.put(
+            "/api/v1/ai/search/popular-terms",
+            json={"terms": configured_terms},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["configured_terms"] == configured_terms
+
+        loaded = client.get("/api/v1/ai/search/popular-terms")
+        assert loaded.status_code == 200, loaded.text
+        assert loaded.json()["configured_terms"] == configured_terms
+
+        storefront = client.get("/api/store/demo")
+        assert storefront.status_code == 200, storefront.text
+        assert storefront.json()["popular_search_terms"] == configured_terms
+
+        duplicate = client.put(
+            "/api/v1/ai/search/popular-terms",
+            json={"terms": ["户外帐篷", "户外帐篷"]},
+        )
+        assert duplicate.status_code == 422, duplicate.text
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.ai_search_questions = original_terms
+            session.commit()
+
+
 def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:
     waterproof_id = uuid4()
     bowl_id = uuid4()

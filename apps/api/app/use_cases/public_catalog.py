@@ -187,8 +187,22 @@ def _public_popular_search_terms(
     session: Session,
     *,
     tenant_id: UUID,
+    configured_terms: object = None,
 ) -> list[str]:
     """Return storefront-safe search trends without making the store depend on analytics."""
+
+    configured: list[str] = []
+    seen: set[str] = set()
+    if isinstance(configured_terms, list):
+        for item in configured_terms:
+            term = str(item).strip()[:80]
+            key = term.casefold()
+            if not term or key in seen:
+                continue
+            seen.add(key)
+            configured.append(term)
+    if configured:
+        return configured[:5]
 
     try:
         start_date, end_date = popular_search_window(days=30)
@@ -904,6 +918,7 @@ def get_store(
         popular_search_terms=_public_popular_search_terms(
             session,
             tenant_id=tenant.id,
+            configured_terms=getattr(profile, "ai_search_questions", None),
         ),
         announcements=announcement_use_cases.public_announcements(
             session,

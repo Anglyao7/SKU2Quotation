@@ -150,7 +150,28 @@ class PopularSearchTerm(BaseModel):
 
 class PopularSearchTermsResponse(BaseModel):
     days: int = Field(ge=1, le=365)
+    configured_terms: list[str] = Field(default_factory=list, max_length=5)
     items: list[PopularSearchTerm] = Field(max_length=10)
+
+
+class PopularSearchTermsUpdate(BaseModel):
+    terms: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("terms")
+    @classmethod
+    def normalize_terms(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            term = str(item).strip()[:80]
+            key = term.casefold()
+            if not term:
+                continue
+            if key in seen:
+                raise ValueError("热门搜索词不能重复")
+            seen.add(key)
+            normalized.append(term)
+        return normalized
 
 
 class SearchScoreBreakdown(BaseModel):

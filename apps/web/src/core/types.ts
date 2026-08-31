@@ -1040,6 +1040,7 @@ export interface PopularSearchTerm {
 
 export interface PopularSearchTerms {
   days: number;
+  configuredTerms: string[];
   items: PopularSearchTerm[];
 }
 

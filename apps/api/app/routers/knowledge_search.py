@@ -20,6 +20,7 @@ from ..knowledge_embedding_schemas import (
     KnowledgeIndexUpdateResponse,
     KnowledgeProjectionResponse,
     PopularSearchTermsResponse,
+    PopularSearchTermsUpdate,
     RerankSettingsResponse,
     RerankSettingsUpdateRequest,
 )
@@ -389,6 +390,28 @@ def get_popular_search_terms(
             permissions=context.permissions,
             days=days,
             limit=limit,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/search/popular-terms",
+    response_model=PopularSearchTermsResponse,
+)
+def update_popular_search_terms(
+    payload: PopularSearchTermsUpdate,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PopularSearchTermsResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_popular_search_terms(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            request=payload,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
