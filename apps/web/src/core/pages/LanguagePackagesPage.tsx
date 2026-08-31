@@ -975,11 +975,16 @@ export function LanguagePackagesPage() {
                 </span>
                 {selectedJob.executionMode === "QWEN_BATCH" ? (
                   <span>
-                    {t("Qwen Batch · {status} · 上游完成 {done} / {total} 个请求", {
-                      status: selectedJob.externalBatchStatus ?? t("准备中"),
-                      done: selectedJob.externalCompletedRequests,
-                      total: selectedJob.externalTotalRequests,
-                    })}
+                    {selectedJob.externalBatchStatus?.startsWith("realtime_")
+                      ? t("Qwen 实时并发 · 已完成 {done} / {total} 个请求", {
+                          done: selectedJob.externalCompletedRequests,
+                          total: selectedJob.externalTotalRequests,
+                        })
+                      : t("Qwen Batch · {status} · 上游完成 {done} / {total} 个请求", {
+                          status: selectedJob.externalBatchStatus ?? t("准备中"),
+                          done: selectedJob.externalCompletedRequests,
+                          total: selectedJob.externalTotalRequests,
+                        })}
                   </span>
                 ) : (
                   <span>{t("实时并发 · SKU 与语言包字段统一翻译")}</span>

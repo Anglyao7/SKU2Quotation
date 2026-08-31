@@ -17524,6 +17524,36 @@ class _PartialQwenBatchJobTestClient(_QwenBatchJobTestClient):
         )
 
 
+class _RealtimeTailQwenJobTestClient(_QwenBatchJobTestClient):
+    realtime_calls = 0
+
+    def __init__(
+        self,
+        configuration: QwenBatchConfiguration,
+        *,
+        production: bool = False,
+    ) -> None:
+        super().__init__(configuration, production=production)
+        self.identity = configuration.identity
+
+    @classmethod
+    def reset(cls) -> None:
+        super().reset()
+        cls.realtime_calls = 0
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        assert source_locale == "zh-CN"
+        assert target_locale == "en-US"
+        type(self).realtime_calls += 1
+        return re.sub(r"[\u3400-\u9fff]+", "Translated", text)
+
+
 class _BlockingCatalogTranslationTestProvider(_CatalogTranslationTestProvider):
     def __init__(self) -> None:
         super().__init__()
@@ -18453,6 +18483,129 @@ def test_qwen_batch_progress_keeps_moving_before_result_import() -> None:
     ) == pytest.approx(3_000 / 3_980)
 
 
+def test_qwen_small_job_uses_realtime_tail_without_batch_upload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.delenv("TRANSLATION_PACKAGE_PUBLIC_BASE_URL", raising=False)
+    _RealtimeTailQwenJobTestClient.reset()
+    configuration = QwenBatchConfiguration(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key="sk-qwen-batch-test",
+        model_name="qwen3.7-flash-2026-07-15",
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_execution_mode",
+        lambda _session: "QWEN_BATCH",
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "resolved_qwen_batch_configuration",
+        lambda _session: configuration,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "QwenBatchClient",
+        _RealtimeTailQwenJobTestClient,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **kwargs: catalog_translation_use_cases._run_translation_job(
+            **kwargs
+        ),
+    )
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(CatalogLanguagePackRow).where(
+                CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.execute(
+            delete(CatalogSkuTranslationRow).where(
+                CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.execute(
+            delete(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.execute(
+            delete(CatalogTranslationJobRow).where(
+                CatalogTranslationJobRow.tenant_id == DEFAULT_TENANT_ID
+            )
+        )
+        session.commit()
+
+    job_id: UUID | None = None
+    try:
+        started = client.post(
+            "/api/v1/catalog/translations/jobs",
+            json={
+                "target_locale": "en-US",
+                "mode": "FULL_REBUILD",
+                "confirm_full_rebuild": True,
+            },
+        )
+        assert started.status_code == 202, started.text
+        job_id = UUID(started.json()["id"])
+
+        finished = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}"
+        )
+        assert finished.status_code == 200, finished.text
+        payload = finished.json()
+        assert payload["status"] == "SUCCEEDED"
+        assert payload["execution_mode"] == "QWEN_BATCH"
+        assert payload["external_batch_status"] == "realtime_completed"
+        assert payload["translation_processed_values"] == (
+            payload["translation_total_values"]
+        )
+        assert _RealtimeTailQwenJobTestClient.realtime_calls > 0
+        assert _RealtimeTailQwenJobTestClient.uploads == 0
+        assert _RealtimeTailQwenJobTestClient.submissions == 0
+
+        history = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert history.status_code == 200, history.text
+        assert history.json()
+        assert all(
+            batch["status"] == "SUCCEEDED"
+            and batch["attempt_count"] == 1
+            for batch in history.json()
+        )
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogLanguagePackRow).where(
+                    CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogSkuTranslationRow).where(
+                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.execute(
+                delete(CatalogTextTranslationRow).where(
+                    CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            if job_id is not None:
+                session.execute(
+                    delete(CatalogTranslationJobRow).where(
+                        CatalogTranslationJobRow.id == job_id
+                    )
+                )
+            session.commit()
+
+
 def test_qwen_batch_job_reuses_completed_task_after_package_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -18502,6 +18655,11 @@ def test_qwen_batch_job_reuses_completed_task_after_package_failure(
         catalog_translation_use_cases,
         "QwenBatchClient",
         _QwenBatchJobTestClient,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_qwen_requests_fit_realtime_tail",
+        lambda _requests, *, concurrency: False,
     )
     monkeypatch.setattr(
         catalog_translation_use_cases,
@@ -18670,6 +18828,11 @@ def test_qwen_batch_job_salvages_valid_rows_and_retries_only_failed_request(
         catalog_translation_use_cases,
         "QwenBatchClient",
         _PartialQwenBatchJobTestClient,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_qwen_requests_fit_realtime_tail",
+        lambda _requests, *, concurrency: False,
     )
     monkeypatch.setattr(
         catalog_translation_use_cases,

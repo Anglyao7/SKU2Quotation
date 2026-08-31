@@ -215,6 +215,8 @@ def qwen_batch_translation_requests(
 class QwenBatchClient:
     """Small HTTP adapter around DashScope's OpenAI-compatible Batch API."""
 
+    translates_mixed_language_text = True
+
     def __init__(
         self,
         configuration: QwenBatchConfiguration,
@@ -250,8 +252,30 @@ class QwenBatchClient:
             timeout_seconds=float(configuration.timeout_seconds),
             max_tokens=configuration.max_tokens,
             reasoning_effort="",
+            enable_thinking=False,
             production=production,
             client=self._client,
+        )
+
+    @property
+    def identity(self) -> TranslationIdentity:
+        """Keep Batch and real-time tail calls in one translation memory."""
+
+        return self.configuration.identity
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        """Translate one request through Qwen's real-time compatible API."""
+
+        return self._prompt_adapter.translate(
+            text,
+            source_locale=source_locale,
+            target_locale=target_locale,
         )
 
     def _request(

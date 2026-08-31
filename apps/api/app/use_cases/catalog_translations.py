@@ -98,6 +98,8 @@ from ..services.translation_configuration import (
     translation_provider_is_configured,
 )
 from ..services.qwen_batch_translation import (
+    QWEN_BATCH_REQUEST_MAX_CHARACTERS,
+    QWEN_BATCH_REQUEST_MAX_ITEMS,
     QWEN_BATCH_TERMINAL_STATUSES,
     QwenBatchClient,
     QwenBatchItemFailure,
@@ -3520,6 +3522,276 @@ def _delete_qwen_batch_files(
             logger.warning("could not delete stale Qwen Batch file %s", file_id)
 
 
+def _qwen_requests_fit_realtime_tail(
+    requests: list[dict[str, object]],
+    *,
+    concurrency: int,
+) -> bool:
+    """Use real-time Qwen when the remainder fits in at most two waves."""
+
+    return bool(requests) and len(requests) <= max(1, concurrency) * 2
+
+
+def _run_qwen_realtime_tail(
+    session: Session,
+    *,
+    job: CatalogTranslationJobRow,
+    client: QwenBatchClient,
+    identity: TranslationIdentity,
+    requests: list[dict[str, object]],
+    rows_by_request: dict[str, CatalogTranslationBatchRow],
+    snapshot: dict[str, object],
+    storage: object,
+) -> bool:
+    """Finish a small Batch remainder through Qwen's real-time endpoint.
+
+    The request rows, translation-memory identity, retries, and checkpoints
+    stay identical to the Batch workflow. Only the provider transport changes,
+    avoiding a cloud Batch queue for a remainder that fits in two local waves.
+    """
+
+    concurrency = resolved_catalog_translation_concurrency(session)
+    max_retry_count = resolved_catalog_translation_retry_count(session)
+    translation_total, processed = _job_qwen_batch_counts(job)
+    if translation_total == 0:
+        translation_total = sum(
+            _qwen_request_value_count(request) for request in requests
+        )
+    request_index = 0
+    completed_requests = 0
+    failed_requests = 0
+    failures: list[QwenBatchItemFailure] = []
+    first_error: TranslationProviderError | None = None
+
+    job.external_batch_status = "realtime_in_progress"
+    job.external_total_requests = len(requests)
+    job.external_completed_requests = 0
+    job.external_failed_requests = 0
+    job.current_sku_id = None
+    job.current_sku_name = (
+        f"剩余 {len(requests)} 个请求，正在实时并发翻译"
+    )
+    job.stage = "TRANSLATING"
+    job.updated_at = utcnow()
+    session.commit()
+
+    with ThreadPoolExecutor(
+        max_workers=concurrency,
+        thread_name_prefix="catalog-qwen-realtime-tail",
+    ) as executor:
+        while request_index < len(requests):
+            if _pause_at_safe_checkpoint(session, job):
+                return True
+            window = requests[request_index : request_index + concurrency]
+            window_rows = {
+                str(request["custom_id"]): rows_by_request[str(request["custom_id"])]
+                for request in window
+                if str(request["custom_id"]) in rows_by_request
+            }
+            _mark_qwen_batch_rows_running(window_rows)
+            job.current_sku_name = (
+                f"正在实时并发翻译第 {request_index + 1}–"
+                f"{request_index + len(window)} / {len(requests)} 个请求"
+            )
+            job.updated_at = utcnow()
+            session.commit()
+
+            future_map: dict[
+                Future[_TextTranslationOutcome],
+                dict[str, object],
+            ] = {}
+            for request in window:
+                values = [str(value) for value in request.get("values", [])]
+                row = rows_by_request.get(str(request["custom_id"]))
+                future = executor.submit(
+                    _translate_realtime_text_outcome,
+                    client,
+                    tenant_id=job.tenant_id,
+                    values=values,
+                    # Every value in this snapshot was already selected as
+                    # missing or explicitly refreshed. Do not let an older
+                    # cache entry undo FULL_REBUILD semantics.
+                    forced_values=set(values),
+                    source_locale=str(request["source_locale"]),
+                    target_locale=job.target_locale,
+                    batch_items=QWEN_BATCH_REQUEST_MAX_ITEMS,
+                    batch_characters=QWEN_BATCH_REQUEST_MAX_CHARACTERS,
+                    max_retry_count=max_retry_count,
+                    attempt_offset=row.attempt_count if row is not None else 0,
+                )
+                future_map[future] = request
+
+            for future in as_completed(future_map):
+                request = future_map[future]
+                values = [str(value) for value in request.get("values", [])]
+                try:
+                    outcome = future.result()
+                except Exception as exc:  # pragma: no cover - defensive
+                    now = utcnow()
+                    error = TranslationProviderError(
+                        "实时翻译尾批处理时发生内部错误"
+                        f"（{type(exc).__name__}）",
+                        category="INTERNAL",
+                        retryable=True,
+                    )
+                    outcome = _TextTranslationOutcome(
+                        {},
+                        error,
+                        [
+                            _BatchAttemptEvent(
+                                attempt_no=1,
+                                request_started_at=now,
+                                first_byte_at=now,
+                                completed_at=now,
+                                status="FAILED",
+                                processed_skus=0,
+                                failed_skus=len(values),
+                                error_message=str(error),
+                            )
+                        ],
+                    )
+                translated_count = len(outcome.translations)
+                processed = min(
+                    translation_total,
+                    processed + translated_count,
+                )
+                row = rows_by_request.get(str(request["custom_id"]))
+                if row is not None:
+                    _persist_text_batch_attempts(
+                        session,
+                        job_batch=row,
+                        events=outcome.attempts,
+                        succeeded=outcome.error is None,
+                        translated_count=translated_count,
+                        total_count=len(values),
+                        error_message=(
+                            str(outcome.error)
+                            if outcome.error is not None
+                            else None
+                        ),
+                    )
+                if outcome.error is None:
+                    completed_requests += 1
+                    continue
+                failed_requests += 1
+                first_error = first_error or outcome.error
+                unresolved = [
+                    value
+                    for value in values
+                    if value not in outcome.translations
+                ]
+                if unresolved:
+                    failed_request = dict(request)
+                    failed_request["values"] = unresolved
+                    failures.append(
+                        QwenBatchItemFailure(
+                            custom_id=str(request["custom_id"]),
+                            request=failed_request,
+                            error_message=str(outcome.error),
+                        )
+                    )
+
+            request_index += len(window)
+            job.external_completed_requests = completed_requests
+            job.external_failed_requests = failed_requests
+            _save_qwen_batch_progress(
+                job,
+                total=translation_total,
+                processed=processed,
+                retry_generation=_qwen_retry_generation(snapshot),
+            )
+            job.current_sku_name = (
+                f"已完成 {request_index} / {len(requests)} 个实时请求"
+            )
+            job.updated_at = utcnow()
+            session.commit()
+
+    progress_rows = public_catalog_repository.list_all_public_catalog_rows(
+        session,
+        tenant_id=job.tenant_id,
+        now=utcnow(),
+    )
+    completed_candidate_skus = _qwen_complete_candidate_sku_count(
+        session,
+        job=job,
+        identity=identity,
+        rows=progress_rows,
+        snapshot=snapshot,
+        storage=storage,
+    )
+    retry_generation = _qwen_retry_generation(snapshot)
+    if failures:
+        next_generation = retry_generation + 1
+        retry_requests, split_parent_ids = _qwen_retry_requests(
+            tuple(failures),
+            job_id=job.id,
+            generation=next_generation,
+        )
+        _mark_qwen_split_parents(
+            session,
+            tenant_id=job.tenant_id,
+            parent_ids=split_parent_ids,
+        )
+        retry_requests, _retry_rows = _ensure_qwen_batch_rows(
+            session,
+            job=job,
+            requests=retry_requests,
+        )
+        snapshot = dict(job.batch_request_payload or snapshot)
+        snapshot["requests"] = retry_requests
+        job.batch_request_payload = snapshot
+        _save_qwen_batch_progress(
+            job,
+            total=translation_total,
+            processed=processed,
+            retry_generation=next_generation,
+            processed_skus=completed_candidate_skus,
+        )
+        job.external_batch_status = "realtime_failed"
+        job.current_sku_name = None
+        job.updated_at = utcnow()
+        session.commit()
+        reason = (
+            str(first_error).rstrip("。")
+            if first_error is not None
+            else "上游没有返回有效译文"
+        )
+        unresolved_count = sum(failure.value_count for failure in failures)
+        raise TranslationProviderError(
+            f"实时并发已跳过 {len(failures)} 个失败请求，其余请求已保存；"
+            f"仍有 {unresolved_count} 个字段待重试。首个错误：{reason}。",
+            category=(
+                first_error.category
+                if first_error is not None
+                else "INCOMPLETE"
+            ),
+            retryable=True,
+            upstream_status_code=(
+                first_error.upstream_status_code
+                if first_error is not None
+                else None
+            ),
+        )
+
+    snapshot = dict(job.batch_request_payload or snapshot)
+    snapshot["requests"] = []
+    job.batch_request_payload = snapshot
+    _save_qwen_batch_progress(
+        job,
+        total=translation_total,
+        processed=translation_total,
+        retry_generation=retry_generation,
+        processed_skus=completed_candidate_skus,
+    )
+    job.external_batch_status = "realtime_completed"
+    job.external_completed_requests = len(requests)
+    job.external_failed_requests = 0
+    job.current_sku_name = None
+    job.updated_at = utcnow()
+    session.commit()
+    return False
+
+
 def _run_qwen_batch_translation_job(
     session: Session,
     *,
@@ -3733,6 +4005,38 @@ def _run_qwen_batch_translation_job(
         ):
             # The model result was already imported before a later packaging
             # or object-storage failure. Do not create or charge another task.
+            break
+
+        realtime_concurrency = resolved_catalog_translation_concurrency(session)
+        has_batch_transport_checkpoint = any(
+            (
+                job.external_input_file_id,
+                job.external_batch_id,
+                job.external_output_file_id,
+                job.external_error_file_id,
+            )
+        )
+        if (
+            not has_batch_transport_checkpoint
+            and _qwen_requests_fit_realtime_tail(
+                requests,
+                concurrency=realtime_concurrency,
+            )
+        ):
+            paused = _run_qwen_realtime_tail(
+                session,
+                job=job,
+                client=client,
+                identity=identity,
+                requests=requests,
+                rows_by_request=rows_by_request,
+                snapshot=snapshot,
+                storage=storage,
+            )
+            if paused:
+                return
+            snapshot = dict(job.batch_request_payload or snapshot)
+            requests = []
             break
 
         _mark_qwen_batch_rows_running(rows_by_request)

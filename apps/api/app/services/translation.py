@@ -751,6 +751,7 @@ class OpenAICompatibleTranslator:
         timeout_seconds: float = 20.0,
         max_tokens: int = 16_384,
         reasoning_effort: str | None = "low",
+        enable_thinking: bool | None = None,
         production: bool = False,
         client: httpx.Client | None = None,
     ) -> None:
@@ -798,6 +799,7 @@ class OpenAICompatibleTranslator:
         self._timeout_seconds = timeout_seconds
         self._max_tokens = max_tokens
         self._reasoning_effort = normalized_reasoning_effort
+        self._enable_thinking = enable_thinking
         self._client = client or httpx.Client(trust_env=False)
         endpoint_host = urlsplit(self._endpoint).netloc.casefold()
         fingerprint = hashlib.sha256(
@@ -1032,6 +1034,7 @@ class OpenAICompatibleTranslator:
             text,
             source_locale=source_locale,
             target_locale=target_locale,
+            enable_thinking=self._enable_thinking,
         )
         structured = bool(_catalog_marker_items(text))
         try:

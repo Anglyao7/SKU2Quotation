@@ -2117,6 +2117,8 @@ const english: Record<string, string> = {
     "Qwen Batch · {status} · upstream completed {done} / {total} requests",
   "Qwen Batch · {status} · {done} / {total} 个请求":
     "Qwen Batch · {status} · {done} / {total} requests",
+  "Qwen 实时并发 · 已完成 {done} / {total} 个请求":
+    "Qwen real-time concurrency · {done} / {total} requests completed",
   "准备中": "Preparing",
   "剩余 {remaining} 个 SKU · 断点 {time}": "{remaining} SKUs remaining · checkpoint {time}",
   "从断点继续": "Resume from checkpoint",

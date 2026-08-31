@@ -93,6 +93,41 @@ def test_qwen_batch_jsonl_uses_flash_and_disables_thinking() -> None:
     assert "[[ATCK_00000]]" in line["body"]["messages"][1]["content"]
 
 
+def test_qwen_realtime_tail_uses_same_identity_and_disables_thinking() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path.endswith("/chat/completions")
+        payload = json.loads(request.read())
+        assert payload["model"] == DEFAULT_QWEN_BATCH_MODEL
+        assert payload["enable_thinking"] is False
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(["Color"])},
+                    }
+                ]
+            },
+        )
+
+    configuration = _configuration()
+    client = QwenBatchClient(
+        configuration,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    translated = client.translate(
+        "[[ATCV_000]]\n颜色",
+        source_locale="zh-CN",
+        target_locale="en-US",
+    )
+
+    assert translated == "[[ATCV_000]]\nColor"
+    assert client.identity == configuration.identity
+
+
 def test_qwen_batch_lifecycle_and_result_mapping() -> None:
     seen: list[tuple[str, str]] = []
 

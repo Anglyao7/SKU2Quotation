@@ -27,6 +27,26 @@ class _Translator:
     identity = TranslationIdentity(provider="test", version="v1")
 
 
+def test_qwen_small_remainder_switches_to_two_realtime_waves() -> None:
+    requests = [
+        {"custom_id": f"request-{index}", "values": [str(index)]}
+        for index in range(14)
+    ]
+
+    assert catalog_translations._qwen_requests_fit_realtime_tail(
+        requests,
+        concurrency=10,
+    )
+    assert not catalog_translations._qwen_requests_fit_realtime_tail(
+        requests + requests[:7],
+        concurrency=10,
+    )
+    assert not catalog_translations._qwen_requests_fit_realtime_tail(
+        [],
+        concurrency=10,
+    )
+
+
 def test_translation_administration_requires_platform_admin() -> None:
     with pytest.raises(ApplicationError) as caught:
         catalog_translations._require_platform_admin(
