@@ -2236,7 +2236,18 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .login-back-link { align-self: center; color: var(--text-soft); font-size: 12px; padding: 8px; }
 
 /* Console shell */
-.console-shell { min-height: 100dvh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); overflow-x: clip; background: var(--page); }
+.console-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  overflow-x: clip;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  background: var(--page);
+}
 .console-shell--quote-workbench { display: block; }
 .console-shell--quote-workbench .console-sidebar { display: none; }
 .console-shell--quote-workbench .console-content { max-width: none; padding: 22px clamp(14px, 1.4vw, 26px) 48px; }
