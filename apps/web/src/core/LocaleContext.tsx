@@ -2046,12 +2046,23 @@ const english: Record<string, string> = {
   "翻译内容已更新，前台将自动使用最新版本。":
     "Translations updated. The storefront will use the latest version automatically.",
   "前台语言": "Storefront languages",
+  "管理访客在商品前台可以选择的语言；绿色表示正在展示，未配置语言包时请联系平台管理员。":
+    "Manage the languages visitors can choose on the product storefront. Green means visible; contact a platform administrator for unavailable language packages.",
   "选择访客可以使用的语言；只有管理员已发布语言包的语言才可以启用。":
     "Choose the languages available to visitors. A language can only be enabled after an administrator publishes its language package.",
   "已启用 {count} 种": "{count} enabled",
   "可启用 {count} 种": "{count} available",
   "待配置 {count} 种": "{count} awaiting packages",
   "正在读取语言包配置": "Loading language-package settings",
+  "已选择 {count} 种前台语言": "{count} storefront languages selected",
+  "保存后，绿色底纹的语言会出现在访客的语言菜单中。":
+    "After saving, languages with a green background appear in the visitor language menu.",
+  "选择展示语言": "Choose visible languages",
+  "点击语言卡片即可开启或关闭前台展示，简体中文固定保留。":
+    "Select a language card to show or hide it on the storefront. Simplified Chinese always remains visible.",
+  "语言状态说明": "Language status guide",
+  "已选择展示": "Selected",
+  "尚未展示": "Not selected",
   "该语言包未配置，请联系管理员。":
     "This language package is not configured. Contact an administrator.",
   "勾选后会出现在访客语言菜单；简体中文始终保留。翻译与是否展示分开管理。":
@@ -2065,9 +2076,14 @@ const english: Record<string, string> = {
   "保存语言": "Save languages",
   "源语言": "Source language",
   "源语言 · 固定保留": "Source language · always on",
+  "固定展示": "Always visible",
   "待管理员配置": "Administrator setup required",
   "已在前台启用": "Enabled on storefront",
   "点击启用": "Click to enable",
+  "正在展示 · 点击关闭": "Visible · select to hide",
+  "未展示 · 点击开启": "Hidden · select to show",
+  "待保存 · 将开启展示": "Unsaved · will be shown",
+  "待保存 · 将关闭展示": "Unsaved · will be hidden",
   "保存前台语言": "Save storefront languages",
   "有未保存的语言更改": "You have unsaved language changes.",
   "语言包已发布后即可选择，并显示在访客的语言菜单中。":

@@ -1,6 +1,7 @@
 import { Button, Card, Heading, Select, Spinner, Text } from "@radix-ui/themes";
 import {
   Check,
+  Eye,
   GlobeHemisphereWest,
   LockSimple,
   Plus,
@@ -36,6 +37,9 @@ export function StorefrontLanguageSettings() {
     (language) => language.code === "zh-CN" || configuredLocales.includes(language.code),
   ).length;
   const waitingCount = STOREFRONT_LANGUAGE_OPTIONS.length - availableCount;
+  const enabledLanguages = STOREFRONT_LANGUAGE_OPTIONS.filter(
+    (language) => enabledLocales.includes(language.code),
+  );
 
   useEffect(() => {
     let active = true;
@@ -116,11 +120,6 @@ export function StorefrontLanguageSettings() {
           </Text>
         </div>
         <div className="language-selection-toolbar">
-          <div className="language-selection-summary" aria-live="polite">
-            <span className="is-enabled">{t("已启用 {count} 种", { count: enabledLocales.length })}</span>
-            <span>{t("可启用 {count} 种", { count: availableCount })}</span>
-            {waitingCount ? <span className="is-waiting">{t("待配置 {count} 种", { count: waitingCount })}</span> : null}
-          </div>
           <Button
             variant={changed ? "solid" : "soft"}
             onClick={() => void save()}
@@ -142,16 +141,71 @@ export function StorefrontLanguageSettings() {
         </div>
       ) : (
         <>
+          <section className="language-display-overview" aria-live="polite">
+            <div className="language-display-overview-copy">
+              <span aria-hidden="true"><Eye weight="fill" /></span>
+              <div>
+                <Text size="2" weight="bold">
+                  {t("已选择 {count} 种前台语言", { count: enabledLanguages.length })}
+                </Text>
+                <Text size="1">
+                  {t("保存后，绿色底纹的语言会出现在访客的语言菜单中。")}
+                </Text>
+              </div>
+            </div>
+            <div className="language-display-list">
+              {enabledLanguages.map((language) => (
+                <span key={language.code} lang={language.code} dir={language.direction}>
+                  <StorefrontFlag locale={language.code} />
+                  {language.label}
+                </span>
+              ))}
+            </div>
+          </section>
+
+          <div className="language-options-heading">
+            <div>
+              <Text size="2" weight="bold">{t("选择展示语言")}</Text>
+              <Text size="1" color="gray">
+                {t("点击语言卡片即可开启或关闭前台展示，简体中文固定保留。")}
+              </Text>
+            </div>
+            <div className="language-state-legend" aria-label={t("语言状态说明")}>
+              <span className="is-enabled"><i />{t("已选择展示")}</span>
+              <span><i />{t("尚未展示")}</span>
+              {waitingCount ? <span className="is-waiting"><i />{t("待管理员配置")}</span> : null}
+            </div>
+          </div>
+
           <div className="language-package-options">
             {STOREFRONT_LANGUAGE_OPTIONS.map((language) => {
               const enabled = enabledLocales.includes(language.code);
+              const saved = savedLocales.includes(language.code);
+              const pending = enabled !== saved;
               const source = language.code === "zh-CN";
               const configured = source || configuredLocales.includes(language.code);
+              let statusLabel = t("未展示 · 点击开启");
+              let indicator = <Plus weight="bold" />;
+              if (source) {
+                statusLabel = t("固定展示");
+                indicator = <LockSimple weight="bold" />;
+              } else if (!configured) {
+                statusLabel = t("语言包未配置");
+                indicator = <WarningCircle weight="fill" />;
+              } else if (pending) {
+                statusLabel = t(enabled
+                  ? "待保存 · 将开启展示"
+                  : "待保存 · 将关闭展示");
+                indicator = <WarningCircle weight="fill" />;
+              } else if (enabled) {
+                statusLabel = t("正在展示 · 点击关闭");
+                indicator = <Check weight="bold" />;
+              }
               return (
                 <button
                   type="button"
                   key={language.code}
-                  className={`language-package-option${enabled ? " is-enabled" : ""}${source ? " is-source" : ""}${!configured ? " is-unavailable" : ""}`}
+                  className={`language-package-option${enabled ? " is-enabled" : ""}${pending ? " is-pending" : ""}${source ? " is-source" : ""}${!configured ? " is-unavailable" : ""}`}
                   onClick={() => toggleLanguage(language.code, !enabled)}
                   disabled={source || !canManageSettings}
                   aria-pressed={enabled}
@@ -161,22 +215,10 @@ export function StorefrontLanguageSettings() {
                   <StorefrontFlag locale={language.code} className="language-option-flag" />
                   <span className="language-option-copy">
                     <strong lang={language.code} dir={language.direction}>{language.label}</strong>
-                    <small className="language-option-status">{source
-                      ? t("源语言 · 固定保留")
-                      : !configured
-                        ? t("待管理员配置")
-                        : enabled
-                          ? t("已在前台启用")
-                          : t("点击启用")}</small>
+                    <small className="language-option-status">{statusLabel}</small>
                   </span>
                   <span className="language-option-indicator" aria-hidden="true">
-                    {source
-                      ? <LockSimple weight="bold" />
-                      : !configured
-                        ? <WarningCircle weight="fill" />
-                        : enabled
-                          ? <Check weight="bold" />
-                          : <Plus weight="bold" />}
+                    {indicator}
                   </span>
                 </button>
               );
