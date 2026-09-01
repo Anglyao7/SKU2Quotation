@@ -19016,6 +19016,360 @@ def test_qwen_batch_job_reuses_completed_task_after_package_failure(
             session.commit()
 
 
+def test_qwen_full_rebuild_resume_reuses_cross_version_text_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A local-only retry must keep imported text and truthful SKU progress."""
+
+    target_locale = "fa"
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.delenv("TRANSLATION_PACKAGE_PUBLIC_BASE_URL", raising=False)
+    configuration = QwenBatchConfiguration(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key="sk-qwen-batch-test",
+        model_name="qwen3.7-flash-2026-07-15",
+    )
+
+    class UploadTimeoutQwenClient(_QwenBatchJobTestClient):
+        @classmethod
+        def reset(cls) -> None:
+            super().reset()
+
+        def jsonl_content(
+            self,
+            requests: list[dict[str, object]],
+            *,
+            target_locale: str,
+        ) -> bytes:
+            assert target_locale == "fa"
+            assert requests
+            self.request_count = len(requests)
+            return b'{"custom_id":"test"}\n'
+
+        def upload_jsonl(self, content: bytes, *, filename: str) -> str:
+            assert content and filename.endswith(".jsonl")
+            type(self).uploads += 1
+            raise TranslationProviderError(
+                "上游 Qwen Batch 请求超时（测试）",
+                category="UPSTREAM_TIMEOUT",
+                retryable=True,
+            )
+
+    UploadTimeoutQwenClient.reset()
+    dispatches: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "catalog_translation_execution_mode",
+        lambda _session: "QWEN_BATCH",
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "resolved_qwen_batch_configuration",
+        lambda _session: configuration,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "QwenBatchClient",
+        UploadTimeoutQwenClient,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_qwen_requests_fit_realtime_tail",
+        lambda _requests, *, concurrency: False,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "_dispatch_translation_job",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(CatalogLanguagePackRow).where(
+                CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogLanguagePackRow.target_locale == target_locale,
+            )
+        )
+        session.execute(
+            delete(CatalogSkuTranslationRow).where(
+                CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogSkuTranslationRow.target_locale == target_locale,
+            )
+        )
+        session.execute(
+            delete(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogTextTranslationRow.target_locale == target_locale,
+            )
+        )
+        session.execute(
+            delete(CatalogTranslationJobRow).where(
+                CatalogTranslationJobRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogTranslationJobRow.target_locale == target_locale,
+            )
+        )
+        session.commit()
+
+    job_id: UUID | None = None
+    try:
+        started = client.post(
+            "/api/v1/catalog/translations/jobs",
+            json={
+                "target_locale": target_locale,
+                "mode": "FULL_REBUILD",
+                "confirm_full_rebuild": True,
+            },
+        )
+        assert started.status_code == 202, started.text
+        job_id = UUID(started.json()["id"])
+        assert len(dispatches) == 1
+
+        with SessionLocal() as session:
+            rows = public_catalog_repository.list_all_public_catalog_rows(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                now=datetime.now(UTC),
+            )
+            sources = [
+                catalog_translation_use_cases.catalog_translation_source(row)
+                for row in rows
+            ]
+            values = (
+                catalog_translation_use_cases
+                .catalog_language_pack_translatable_values(rows)
+            )
+        chinese_values = [
+            value
+            for value in values
+            if catalog_translation_use_cases._catalog_value_source_locale(value)
+            == "zh-CN"
+        ]
+        translated_all = {
+            value: re.sub(r"[\u3400-\u9fff]+", "Translated", value)
+            for value in chinese_values
+        }
+        english_values = [
+            value for value in values if value not in translated_all
+        ]
+        translated_english = {
+            value: f"Translated {value}" for value in english_values
+        }
+        missing_value: str | None = None
+        completed_before_retry = 0
+        for candidate in chinese_values:
+            available = {
+                **translated_english,
+                **{
+                    value: translated
+                    for value, translated in translated_all.items()
+                    if value != candidate
+                },
+            }
+            completed = (
+                catalog_translation_use_cases
+                ._complete_translation_source_count(
+                    sources,
+                    available,
+                    source_locale="zh-CN",
+                    target_locale=target_locale,
+                )
+            )
+            if 0 < completed < len(sources):
+                missing_value = candidate
+                completed_before_retry = completed
+                break
+        assert missing_value is not None
+
+        cached_values = {
+            value: translated
+            for value, translated in translated_all.items()
+            if value != missing_value
+        }
+        catalog_translation_use_cases.store_translation_values(
+            tenant_id=DEFAULT_TENANT_ID,
+            translations=cached_values,
+            source_locale="zh-CN",
+            target_locale=target_locale,
+            provider="qwen-batch",
+            provider_version="catalog-text-v1:legacy-test",
+        )
+        catalog_translation_use_cases.store_translation_values(
+            tenant_id=DEFAULT_TENANT_ID,
+            translations=translated_english,
+            source_locale="en-US",
+            target_locale=target_locale,
+            provider="qwen-batch",
+            provider_version="catalog-text-v1:legacy-test",
+        )
+
+        bad_requests = catalog_translation_use_cases.qwen_batch_translation_requests(
+            {"zh-CN": chinese_values},
+            job_id=job_id,
+            max_items=1,
+        )
+        cached_request = next(
+            request
+            for request in bad_requests
+            if request["values"] != [missing_value]
+        )
+        missing_request = next(
+            request
+            for request in bad_requests
+            if request["values"] == [missing_value]
+        )
+        with SessionLocal() as session:
+            job = session.get(CatalogTranslationJobRow, job_id)
+            assert job is not None
+            job.status = "FAILED"
+            job.stage = "FAILED"
+            job.started_at = datetime.now(UTC)
+            job.completed_at = datetime.now(UTC)
+            job.total_skus = len(sources)
+            job.processed_skus = 0
+            job.remaining_sku_ids = [str(source.sku_id) for source in sources]
+            job.batch_request_payload = {
+                "schema_version": 2,
+                "catalog_digest": (
+                    catalog_translation_use_cases.catalog_rows_source_digest(rows)
+                ),
+                "requests": bad_requests,
+                "candidate_source_hashes": {
+                    str(source.sku_id): source.source_hash for source in sources
+                },
+                "processed_skus_before_batch": 0,
+                "qwen_batch_progress": {
+                    "total_values": len(chinese_values),
+                    "processed_values": 0,
+                    "processed_skus": 0,
+                    "retry_generation": 0,
+                    "imported_batch_ids": [],
+                },
+            }
+            session.add_all(
+                [
+                    CatalogTranslationBatchRow(
+                        tenant_id=DEFAULT_TENANT_ID,
+                        job_id=job_id,
+                        sequence_no=1,
+                        status="SUCCEEDED",
+                        sku_ids=[],
+                        sku_refs=(
+                            catalog_translation_use_cases
+                            ._qwen_request_refs(cached_request)
+                        ),
+                        attempt_count=1,
+                        total_skus=1,
+                        processed_skus=1,
+                        failed_skus=0,
+                    ),
+                    CatalogTranslationBatchRow(
+                        tenant_id=DEFAULT_TENANT_ID,
+                        job_id=job_id,
+                        sequence_no=2,
+                        status="RUNNING",
+                        sku_ids=[],
+                        sku_refs=(
+                            catalog_translation_use_cases
+                            ._qwen_request_refs(missing_request)
+                        ),
+                        attempt_count=0,
+                        total_skus=1,
+                        processed_skus=0,
+                        failed_skus=0,
+                    ),
+                ]
+            )
+            session.commit()
+
+        monkeypatch.setattr(
+            catalog_translation_use_cases,
+            "_dispatch_translation_job",
+            lambda **kwargs: catalog_translation_use_cases._run_translation_job(
+                **kwargs
+            ),
+        )
+        resumed = client.post(
+            f"/api/v1/catalog/translations/jobs/{job_id}/resume"
+        )
+        assert resumed.status_code == 200, resumed.text
+
+        failed = client.get(f"/api/v1/catalog/translations/jobs/{job_id}")
+        assert failed.status_code == 200, failed.text
+        failed_payload = failed.json()
+        assert failed_payload["status"] == "FAILED"
+        assert failed_payload["processed_skus"] == 0
+        assert failed_payload["translation_processed_skus"] == (
+            completed_before_retry
+        )
+        assert UploadTimeoutQwenClient.uploads == 1
+        assert UploadTimeoutQwenClient.submissions == 0
+
+        catalog_translation_use_cases.store_translation_values(
+            tenant_id=DEFAULT_TENANT_ID,
+            translations={missing_value: translated_all[missing_value]},
+            source_locale="zh-CN",
+            target_locale=target_locale,
+            provider="qwen-batch",
+            provider_version="catalog-text-v1:legacy-test",
+        )
+        resumed_again = client.post(
+            f"/api/v1/catalog/translations/jobs/{job_id}/resume"
+        )
+        assert resumed_again.status_code == 200, resumed_again.text
+
+        finished = client.get(f"/api/v1/catalog/translations/jobs/{job_id}")
+        assert finished.status_code == 200, finished.text
+        finished_payload = finished.json()
+        assert finished_payload["status"] == "SUCCEEDED", (
+            finished_payload.get("error_message"),
+            finished_payload.get("failure_details"),
+            finished_payload.get("translation_processed_values"),
+            finished_payload.get("translation_total_values"),
+            finished_payload.get("translation_processed_skus"),
+        )
+        assert finished_payload["processed_skus"] == len(sources)
+        assert finished_payload["translation_processed_skus"] == len(sources)
+        assert finished_payload["package_published"] is True
+        assert UploadTimeoutQwenClient.uploads == 1
+        assert UploadTimeoutQwenClient.submissions == 0
+
+        history = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batches"
+        )
+        assert history.status_code == 200, history.text
+        assert history.json()
+        assert all(row["status"] == "SUCCEEDED" for row in history.json())
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogLanguagePackRow).where(
+                    CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogLanguagePackRow.target_locale == target_locale,
+                )
+            )
+            session.execute(
+                delete(CatalogSkuTranslationRow).where(
+                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogSkuTranslationRow.target_locale == target_locale,
+                )
+            )
+            session.execute(
+                delete(CatalogTextTranslationRow).where(
+                    CatalogTextTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogTextTranslationRow.target_locale == target_locale,
+                )
+            )
+            if job_id is not None:
+                session.execute(
+                    delete(CatalogTranslationJobRow).where(
+                        CatalogTranslationJobRow.id == job_id
+                    )
+                )
+            session.commit()
+
+
 def test_qwen_batch_job_salvages_valid_rows_and_retries_only_failed_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

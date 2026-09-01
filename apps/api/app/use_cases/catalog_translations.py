@@ -3049,7 +3049,6 @@ def _qwen_complete_candidate_sku_count(
     if snapshot.get("catalog_digest") != catalog_rows_source_digest(rows):
         return 0
     sources = [catalog_translation_source(row) for row in rows]
-    source_by_id = {str(source.sku_id): source for source in sources}
     current_pack = translation_repository.language_pack(
         session,
         tenant_id=job.tenant_id,
@@ -3080,26 +3079,77 @@ def _qwen_complete_candidate_sku_count(
         values=values,
         seed=seed,
     )
+    return _qwen_complete_candidate_sku_count_from_translations(
+        job=job,
+        sources=sources,
+        snapshot=snapshot,
+        translations=translations,
+    )
+
+
+def _qwen_complete_candidate_sku_count_from_translations(
+    *,
+    job: CatalogTranslationJobRow,
+    sources: list[CatalogTranslationSource],
+    snapshot: dict[str, object],
+    translations: dict[str, str],
+) -> int:
+    """Count complete snapshot candidates without repeating a memory lookup."""
+
     candidate_hashes = snapshot.get("candidate_source_hashes")
     candidate_hashes = (
         candidate_hashes if isinstance(candidate_hashes, dict) else {}
     )
-    completed = 0
+    source_by_id = {str(source.sku_id): source for source in sources}
+    candidates: list[CatalogTranslationSource] = []
     for sku_id, source_hash in candidate_hashes.items():
         source = source_by_id.get(str(sku_id))
-        if source is None or source.source_hash != source_hash:
-            continue
-        try:
-            catalog_translation_result_from_values(
-                source,
-                translations,
-                source_locale=job.source_locale,
-                target_locale=job.target_locale,
-            )
-        except TranslationProviderError:
-            continue
-        completed += 1
-    return min(job.total_skus, completed)
+        if source is not None and source.source_hash == source_hash:
+            candidates.append(source)
+    return min(
+        job.total_skus,
+        _complete_translation_source_count(
+            candidates,
+            translations,
+            source_locale=job.source_locale,
+            target_locale=job.target_locale,
+        ),
+    )
+
+
+def _qwen_checkpoint_processed_skus(
+    job: CatalogTranslationJobRow,
+    *,
+    snapshot: dict[str, object],
+    completed_candidate_skus: int,
+) -> int:
+    """Combine a materialized prefix with text-complete Batch candidates."""
+
+    raw_prefix = snapshot.get("processed_skus_before_batch", 0)
+    try:
+        prefix = max(0, int(raw_prefix or 0))
+    except (TypeError, ValueError):
+        prefix = 0
+    return min(job.total_skus, prefix + max(0, completed_candidate_skus))
+
+
+def _job_has_completed_qwen_text_checkpoint(
+    session: Session,
+    *,
+    job: CatalogTranslationJobRow,
+) -> bool:
+    """Return whether this job has already imported any useful text Batch."""
+
+    return session.scalar(
+        select(CatalogTranslationBatchRow.id)
+        .where(
+            CatalogTranslationBatchRow.tenant_id == job.tenant_id,
+            CatalogTranslationBatchRow.job_id == job.id,
+            CatalogTranslationBatchRow.status == "SUCCEEDED",
+            CatalogTranslationBatchRow.processed_skus > 0,
+        )
+        .limit(1)
+    ) is not None
 
 
 def _translation_value_checkpoint_batches(
@@ -3999,6 +4049,11 @@ def _run_qwen_realtime_tail(
         snapshot=snapshot,
         storage=storage,
     )
+    completed_checkpoint_skus = _qwen_checkpoint_processed_skus(
+        job,
+        snapshot=snapshot,
+        completed_candidate_skus=completed_candidate_skus,
+    )
     retry_generation = _qwen_retry_generation(snapshot)
     if failures:
         next_generation = retry_generation + 1
@@ -4025,7 +4080,7 @@ def _run_qwen_realtime_tail(
             total=translation_total,
             processed=processed,
             retry_generation=next_generation,
-            processed_skus=completed_candidate_skus,
+            processed_skus=completed_checkpoint_skus,
         )
         job.external_batch_status = "realtime_failed"
         job.current_sku_name = None
@@ -4061,7 +4116,7 @@ def _run_qwen_realtime_tail(
         total=translation_total,
         processed=processed,
         retry_generation=retry_generation,
-        processed_skus=completed_candidate_skus,
+        processed_skus=completed_checkpoint_skus,
     )
     job.external_batch_status = "realtime_completed"
     job.external_completed_requests = len(requests)
@@ -4093,6 +4148,10 @@ def _run_qwen_batch_translation_job(
     )
     requests = snapshot.get("requests")
     requests = requests if isinstance(requests, list) else []
+    has_completed_text_checkpoint = _job_has_completed_qwen_text_checkpoint(
+        session,
+        job=job,
+    )
 
     if snapshot:
         checkpoint_rows = public_catalog_repository.list_all_public_catalog_rows(
@@ -4111,7 +4170,22 @@ def _run_qwen_batch_translation_job(
                 or not job.external_output_file_id
             )
         )
-        if catalog_changed or unusable_terminal_task:
+        has_transport_checkpoint = any(
+            (
+                job.external_input_file_id,
+                job.external_batch_id,
+                job.external_output_file_id,
+                job.external_error_file_id,
+            )
+        )
+        local_resume_checkpoint = (
+            not first_run
+            and job.mode == "FULL_REBUILD"
+            and not _forced_sku_ids(job)
+            and has_completed_text_checkpoint
+            and not has_transport_checkpoint
+        )
+        if catalog_changed or unusable_terminal_task or local_resume_checkpoint:
             # Text imported before a catalog change remains reusable through
             # translation memory.  Only the obsolete transport checkpoint is
             # discarded, so the next file contains the current missing text.
@@ -4192,13 +4266,32 @@ def _run_qwen_batch_translation_job(
             if forced_ids
             else set()
         )
-        _available, missing_by_locale = _batch_translation_availability(
+        reuse_completed_full_rebuild = (
+            job.mode == "FULL_REBUILD"
+            and not first_run
+            and not forced_ids
+            and has_completed_text_checkpoint
+        )
+        available, missing_by_locale = _batch_translation_availability(
             tenant_id=job.tenant_id,
             target_locale=job.target_locale,
             identity=identity,
             values=values,
             seed=seed,
-            force_refresh_values=(set(values) if job.mode == "FULL_REBUILD" else forced_values),
+            force_refresh_values=(
+                set(values)
+                if job.mode == "FULL_REBUILD"
+                and not reuse_completed_full_rebuild
+                else forced_values
+            ),
+        )
+        # A failed upload can leave request rows marked RUNNING even though an
+        # earlier cloud Batch already committed their values. Repair history
+        # from exact translation memory before rebuilding the missing subset.
+        _reconcile_realtime_text_batches(
+            session,
+            job=job,
+            translations=available,
         )
         requests = qwen_batch_translation_requests(
             missing_by_locale,
@@ -4221,15 +4314,6 @@ def _run_qwen_batch_translation_job(
             "value_count": len(values),
         }
         job.batch_request_payload = snapshot
-        translation_value_count = sum(
-            _qwen_request_value_count(request) for request in requests
-        )
-        snapshot = _save_qwen_batch_progress(
-            job,
-            total=translation_value_count,
-            processed=0,
-            retry_generation=0,
-        )
         job.provider = identity.provider
         job.provider_version = identity.version
         if not preserve_progress and not forced_resume:
@@ -4240,6 +4324,28 @@ def _run_qwen_batch_translation_job(
         else:
             job.total_skus = job.processed_skus + len(candidates)
         job.remaining_sku_ids = [str(source.sku_id) for source in candidates]
+        completed_candidate_skus = (
+            _qwen_complete_candidate_sku_count_from_translations(
+                job=job,
+                sources=sources,
+                snapshot=snapshot,
+                translations=available,
+            )
+        )
+        translation_value_count = sum(
+            _qwen_request_value_count(request) for request in requests
+        )
+        snapshot = _save_qwen_batch_progress(
+            job,
+            total=translation_value_count,
+            processed=0,
+            retry_generation=0,
+            processed_skus=_qwen_checkpoint_processed_skus(
+                job,
+                snapshot=snapshot,
+                completed_candidate_skus=completed_candidate_skus,
+            ),
+        )
         job.external_total_requests = len(requests)
         job.stage = "TRANSLATING"
         job.updated_at = utcnow()
@@ -4456,6 +4562,11 @@ def _run_qwen_batch_translation_job(
             snapshot=snapshot,
             storage=storage,
         )
+        completed_checkpoint_skus = _qwen_checkpoint_processed_skus(
+            job,
+            snapshot=snapshot,
+            completed_candidate_skus=completed_candidate_skus,
+        )
         current_batch_id = job.external_batch_id
         retry_generation = _qwen_retry_generation(snapshot)
         snapshot = _save_qwen_batch_progress(
@@ -4464,7 +4575,7 @@ def _run_qwen_batch_translation_job(
             processed=translation_processed + newly_processed,
             imported_batch_id=current_batch_id,
             retry_generation=retry_generation,
-            processed_skus=completed_candidate_skus,
+            processed_skus=completed_checkpoint_skus,
         )
         translation_total, translation_processed = _job_qwen_batch_counts(job)
         job.current_sku_name = (
