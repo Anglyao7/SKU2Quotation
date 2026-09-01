@@ -76,6 +76,7 @@ const EMPTY_IMAGE_SEARCH_STATE: StorefrontImageSearchState = {
   previewUrl: "",
   filename: "",
 };
+const SEARCH_ANALYTICS_DELAY_MS = 2_000;
 
 function importProductDetailModule() {
   return import("./ProductDetailPage");
@@ -311,6 +312,7 @@ export function StorePage() {
   );
   const [cartTenant, setCartTenant] = useState(storageScope);
   const requestId = useRef(0);
+  const lastRecordedSearchKeyRef = useRef("");
   const imageSearchRef = useRef<StorefrontImageSearchHandle>(null);
   const hasCatalogResultsRef = useRef(Boolean(initialCatalogSnapshot?.products.length));
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
@@ -344,6 +346,24 @@ export function StorePage() {
     const timeout = window.setTimeout(() => setDeferredSearch(search.trim()), 280);
     return () => window.clearTimeout(timeout);
   }, [search]);
+
+  useEffect(() => {
+    if (imageSearchState.phase !== "idle") return;
+    const term = search.trim().replace(/\s+/g, " ").slice(0, 200);
+    if (!term) return;
+    const searchKey = `${tenantSlug}\u0000${term.toLocaleLowerCase()}`;
+    if (lastRecordedSearchKeyRef.current === searchKey) return;
+
+    const timeout = window.setTimeout(() => {
+      lastRecordedSearchKeyRef.current = searchKey;
+      void api.recordStorefrontSearch(tenantSlug, term).catch(() => {
+        if (lastRecordedSearchKeyRef.current === searchKey) {
+          lastRecordedSearchKeyRef.current = "";
+        }
+      });
+    }, SEARCH_ANALYTICS_DELAY_MS);
+    return () => window.clearTimeout(timeout);
+  }, [imageSearchState.phase, search, tenantSlug]);
 
   useEffect(() => {
     setStore(loadedStore);

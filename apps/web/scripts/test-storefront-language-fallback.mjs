@@ -13,6 +13,14 @@ const localeTypes = await fs.readFile(
   new URL("../src/types.ts", import.meta.url),
   "utf8",
 );
+const languageSettingsSource = await fs.readFile(
+  new URL("../src/core/pages/StorefrontLanguageSettings.tsx", import.meta.url),
+  "utf8",
+);
+const coreStyles = await fs.readFile(
+  new URL("../src/core/core.css", import.meta.url),
+  "utf8",
+);
 
 function section(start, end) {
   const startIndex = source.indexOf(start);
@@ -80,5 +88,19 @@ for (const locale of ["fr", "fa"]) {
     `StorefrontLocale must include ${locale}`,
   );
 }
+
+assert.ok(
+  languageSettingsSource.includes('${enabled ? " is-enabled" : ""}'),
+  "Merchant language cards must follow the customer's current enabled selection",
+);
+assert.match(
+  coreStyles,
+  /\.language-package-option\.is-enabled\s*\{[^}]*color:\s*white;[^}]*background:\s*color-mix\(in srgb, var\(--core-success\) 88%, var\(--core-surface\)\);/s,
+  "Enabled merchant language cards must use an unmistakable green background",
+);
+assert.ok(
+  coreStyles.includes(".language-package-option.is-pending:not(.is-enabled)"),
+  "A language being disabled must not retain the green selected state",
+);
 
 console.log("Storefront language fallback tests passed");

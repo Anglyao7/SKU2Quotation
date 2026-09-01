@@ -21,13 +21,14 @@ from ..product_center_models import ProductAuditEventRow
 from ..product_supplier_models import ProductCategoryRow, ProductRow
 from ..repositories import public_catalog_repository
 from ..repositories import storefront_analytics_repository as repository
-from ..services.catalog_translation import catalog_translation_source
-from ..services.storefront_analytics import raw_ip_retention_days
-from ..services.platform_usage import record_storefront_visit
 from ..services.catalog_write_guard import (
     lock_catalog_write,
     release_rollback_ownership,
 )
+from ..services.catalog_translation import catalog_translation_source
+from ..services.platform_usage import record_storefront_visit
+from ..services.search_analytics import record_storefront_search
+from ..services.storefront_analytics import raw_ip_retention_days
 from ..storefront_analytics_schemas import (
     StorefrontAnalyticsCountryPoint,
     StorefrontAnalyticsCountryProductPoint,
@@ -183,6 +184,22 @@ def record_storefront_visit_event(
         event_id=event_id,
         ip_address=ip_address,
         country_code=country_code,
+    )
+    session.commit()
+    return tenant.id, recorded
+
+
+def record_storefront_search_event(
+    session: Session,
+    *,
+    slug: str,
+    term: str,
+) -> tuple[UUID, bool]:
+    tenant = _resolve_public_store(session, slug=slug)
+    recorded = record_storefront_search(
+        session,
+        tenant_id=tenant.id,
+        term=term,
     )
     session.commit()
     return tenant.id, recorded

@@ -793,6 +793,15 @@ export const api = {
         keepalive: true,
       },
     ),
+  recordStorefrontSearch: (slug: string, term: string) =>
+    request<void>(
+      `/api/store/${encodeURIComponent(slug)}/search-events`,
+      {
+        method: "POST",
+        body: JSON.stringify({ term }),
+        keepalive: true,
+      },
+    ),
   async getStoreSkus(
     slug: string,
     filters: StoreSkuFilters = {},

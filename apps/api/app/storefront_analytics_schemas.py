@@ -36,6 +36,18 @@ class StorefrontVisitCreate(BaseModel):
         return normalized
 
 
+class StorefrontSearchCreate(BaseModel):
+    term: str = Field(min_length=1, max_length=200)
+
+    @field_validator("term")
+    @classmethod
+    def normalize_term(cls, value: str) -> str:
+        normalized = " ".join(value.split()).strip()
+        if not normalized:
+            raise ValueError("term must not be blank")
+        return normalized
+
+
 class StorefrontAnalyticsSummary(BaseModel):
     total_views: int = Field(ge=0)
     unique_visitors: int = Field(ge=0)

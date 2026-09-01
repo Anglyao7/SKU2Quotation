@@ -87,6 +87,7 @@ from app.storefront_analytics_models import (
     StorefrontProductViewDailyRow,
     StorefrontProductViewEventRow,
 )
+from app.search_analytics_models import StorefrontSearchTermDailyRow
 from app.announcement_models import StorefrontAnnouncementRow
 from app.storefront_page_models import StorefrontCustomPageRow
 from app.image_intelligence_models import (
@@ -6981,6 +6982,42 @@ def test_ai_search_popular_terms_can_be_curated_for_the_storefront() -> None:
             profile.ai_search_questions = original_questions
             profile.popular_search_terms = original_terms
             session.commit()
+
+
+def test_storefront_search_is_recorded_only_by_explicit_search_event() -> None:
+    term = f"delayed-search-{uuid4().hex[:12]}"
+
+    catalog = client.get(
+        "/api/store/demo/products",
+        params={"q": term, "page": 1},
+    )
+    assert catalog.status_code == 200, catalog.text
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(StorefrontSearchTermDailyRow).where(
+                StorefrontSearchTermDailyRow.tenant_id == DEFAULT_TENANT_ID,
+                StorefrontSearchTermDailyRow.term_normalized == term,
+            )
+        ) is None
+
+    recorded = client.post(
+        "/api/store/demo/search-events",
+        json={"term": f"  {term}  "},
+    )
+    assert recorded.status_code == 204, recorded.text
+
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(StorefrontSearchTermDailyRow).where(
+                StorefrontSearchTermDailyRow.tenant_id == DEFAULT_TENANT_ID,
+                StorefrontSearchTermDailyRow.term_normalized == term,
+            )
+        )
+        assert row is not None
+        assert row.term_display == term
+        assert row.search_count == 1
+        session.delete(row)
+        session.commit()
 
 
 def test_phase3b_projection_and_hybrid_search_api_are_testable() -> None:

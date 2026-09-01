@@ -8,7 +8,6 @@ from urllib.parse import unquote
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Header,
@@ -55,7 +54,6 @@ from ..services.public_quote_documents import (
     render_public_quote_draft_xlsx,
 )
 from ..services.rate_limit import configured_limit, enforce_rate_limit
-from ..services.search_analytics import record_storefront_search_background
 from ..services.storefront_analytics import request_country_code, request_visitor_ip
 from ..use_cases import public_catalog as use_cases
 from ..use_cases import catalog_translations as translation_use_cases
@@ -133,29 +131,6 @@ def _catalog_subaccount(
             kind="forbidden",
         )
     return submitter
-
-
-def _schedule_search_term_record(
-    background_tasks: BackgroundTasks,
-    *,
-    session: Session,
-    term: str,
-    page: int,
-) -> None:
-    """Record only the first result page so pagination is not over-counted."""
-
-    if page != 1 or not term.strip():
-        return
-    raw_tenant_id = session.info.get("tenant_id")
-    try:
-        tenant_id = UUID(str(raw_tenant_id))
-    except (TypeError, ValueError):
-        return
-    background_tasks.add_task(
-        record_storefront_search_background,
-        tenant_id,
-        term,
-    )
 
 
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
@@ -260,7 +235,6 @@ def list_public_skus(
     tenant_slug: str,
     request: Request,
     response: Response,
-    background_tasks: BackgroundTasks,
     q: str = Query(default="", max_length=300),
     category: str | None = Query(default=None, max_length=200),
     tags: list[str] = Query(default=[]),
@@ -317,12 +291,6 @@ def list_public_skus(
             locale=locale,
             subaccount_membership_id=(submitter[0].id if submitter else None),
         )
-        _schedule_search_term_record(
-            background_tasks,
-            session=session,
-            term=q,
-            page=page,
-        )
         return result
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -336,7 +304,6 @@ def list_public_products(
     tenant_slug: str,
     request: Request,
     response: Response,
-    background_tasks: BackgroundTasks,
     q: str = Query(default="", max_length=300),
     category: str | None = Query(default=None, max_length=200),
     tags: list[str] = Query(default=[]),
@@ -400,12 +367,6 @@ def list_public_products(
             locale=locale,
             share_token=share,
             subaccount_membership_id=(submitter[0].id if submitter else None),
-        )
-        _schedule_search_term_record(
-            background_tasks,
-            session=session,
-            term=q,
-            page=page,
         )
         return result
     except ApplicationError as exc:
