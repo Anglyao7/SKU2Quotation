@@ -21,6 +21,7 @@ import {
 } from "react";
 import { Brand } from "./components/Brand";
 import { ErrorState } from "./components/States";
+import { StorefrontLanguageTransitionProvider } from "./components/StorefrontLanguageTransition";
 import { useCoreAuth } from "./core/AuthContext";
 import { useLocale } from "./core/LocaleContext";
 import { api, ApiError } from "./lib/api";
@@ -45,6 +46,14 @@ function recoverableLazy<T extends ComponentType<any>>(
   loader: () => Promise<{ default: T }>,
 ) {
   return lazy(() => importWithChunkRecovery(loader));
+}
+
+function ApplicationFrame() {
+  return (
+    <StorefrontLanguageTransitionProvider>
+      <Outlet />
+    </StorefrontLanguageTransitionProvider>
+  );
 }
 
 const LandingPage = recoverableLazy(() => import("./pages/marketing/LandingPage").then((module) => ({ default: module.LandingPage })));
@@ -385,7 +394,7 @@ function StorefrontRouteError() {
 }
 
 const router = createBrowserRouter([{
-  element: <Outlet />,
+  element: <ApplicationFrame />,
   errorElement: <ApplicationRouteError />,
   children: [
   { path: "/", element: <LandingPage /> },
