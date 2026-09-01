@@ -43,6 +43,7 @@ import { useLocale } from "../../core/LocaleContext";
 import { pollingBackoffMs } from "../../core/pollingBackoff";
 import { initials } from "../../lib/format";
 import { storefrontAccountKey, storefrontBasePath } from "../../lib/storefrontAccount";
+import { STOREFRONT_LANGUAGE_OPTIONS, storefrontLanguage } from "../../lib/storefrontLocale";
 import {
   SUBSCRIPTION_TIER_PRESENTATION,
   subscriptionTierLabel,
@@ -195,6 +196,7 @@ export function ConsoleLayout() {
   const activeTenantId = profile?.context.tenantId ?? "";
   const activeTenantSlug = profile?.context.tenantSlug ?? memberships.find((row) => row.id === activeMembershipId)?.tenantSlug ?? "";
   const displayName = profile?.user.displayName || profile?.user.email || t("当前成员");
+  const currentConsoleLanguage = storefrontLanguage(locale);
   const defaultCurrency = (profile?.context.defaultCurrency ?? "CNY").toUpperCase();
   const businessMode = defaultCurrency === "CNY" ? "DOMESTIC" : "EXPORT";
   const subscriptionTier: TenantSubscriptionTier = profile?.context.subscriptionTier ?? "TRIAL";
@@ -547,18 +549,20 @@ export function ConsoleLayout() {
             <DropdownMenu.Trigger>
               <Button className="locale-trigger" variant="ghost" color="gray" aria-label={t("切换语言")} title={t("切换语言")}>
                 <Translate size={18} />
-                <span>{locale === "en-US" ? "EN" : "中"}</span>
+                <span>{currentConsoleLanguage.shortLabel}</span>
               </Button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="end" className="locale-menu-content">
-              <DropdownMenu.Item onSelect={() => void changeLanguage("zh-CN")}>
-                <span className="locale-check">{locale === "zh-CN" ? <Check size={15} /> : null}</span>
-                简体中文
-              </DropdownMenu.Item>
-              <DropdownMenu.Item onSelect={() => void changeLanguage("en-US")}>
-                <span className="locale-check">{locale === "en-US" ? <Check size={15} /> : null}</span>
-                English
-              </DropdownMenu.Item>
+              {STOREFRONT_LANGUAGE_OPTIONS.map((language) => (
+                <DropdownMenu.Item
+                  key={language.code}
+                  onSelect={() => void changeLanguage(language.code)}
+                >
+                  <span className="locale-check">{locale === language.code ? <Check size={15} /> : null}</span>
+                  <span aria-hidden="true">{language.flag}</span>
+                  {language.label}
+                </DropdownMenu.Item>
+              ))}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
           <ThemeToggle />

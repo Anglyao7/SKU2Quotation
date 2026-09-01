@@ -420,6 +420,100 @@ def clear_customer_account_category_pricing(
         raise application_http_error(exc) from exc
 
 
+def _fixed_self_price(request: SubaccountProductPriceOverrideRequest | SubaccountSkuPriceOverrideRequest) -> None:
+    if request.pricing_mode != "FIXED_PRICE":
+        raise ApplicationError(
+            "CUSTOMER_SELF_PRICE_MODE_INVALID",
+            "子账号只能直接设置自己的最终销售价。",
+        )
+
+
+@router.put(
+    "/customer-portal/pricing/products/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def set_customer_portal_product_price(
+    product_id: UUID,
+    request: SubaccountProductPriceOverrideRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> None:
+    context = current_context(session)
+    try:
+        _fixed_self_price(request)
+        use_cases.set_subaccount_product_price_override(
+            session,
+            context=context,
+            membership_id=context.membership_id,
+            product_id=product_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/customer-portal/pricing/products/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def clear_customer_portal_product_price(
+    product_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> None:
+    context = current_context(session)
+    try:
+        use_cases.clear_subaccount_product_price_override(
+            session,
+            context=context,
+            membership_id=context.membership_id,
+            product_id=product_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put(
+    "/customer-portal/pricing/skus/{sku_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def set_customer_portal_sku_price(
+    sku_id: UUID,
+    request: SubaccountSkuPriceOverrideRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> None:
+    context = current_context(session)
+    try:
+        _fixed_self_price(request)
+        use_cases.set_subaccount_sku_price_override(
+            session,
+            context=context,
+            membership_id=context.membership_id,
+            sku_id=sku_id,
+            request=request,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/customer-portal/pricing/skus/{sku_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def clear_customer_portal_sku_price(
+    sku_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> None:
+    context = current_context(session)
+    try:
+        use_cases.clear_subaccount_sku_price_override(
+            session,
+            context=context,
+            membership_id=context.membership_id,
+            sku_id=sku_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.get("/customer-portal/overview", response_model=CustomerPortalOverview)
 def customer_portal_overview(
     session: Session = Depends(get_authenticated_session),

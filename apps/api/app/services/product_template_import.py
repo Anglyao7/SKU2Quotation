@@ -559,6 +559,25 @@ def _normalize_sku_code(value: object) -> str:
     return _cell_text(value).strip().upper()
 
 
+def _sku_name_with_specification(name: str, specification: str) -> str:
+    """Append one exact specification suffix, even after repeated round trips.
+
+    Current catalog exports contain both the materialized SKU name and its
+    structured specification. Re-importing that workbook must not append the
+    same `` · specification`` suffix again on every cycle.
+    """
+
+    normalized_name = name.strip()
+    normalized_specification = specification.strip()
+    if not normalized_specification:
+        return normalized_name
+    suffix = f" · {normalized_specification}"
+    while normalized_name.endswith(suffix):
+        normalized_name = normalized_name[: -len(suffix)].rstrip()
+    base_name = normalized_name or name.strip() or normalized_specification
+    return f"{base_name}{suffix}"
+
+
 def _source_sku_identity(sku: SkuRow) -> str:
     return _normalize_sku_code(sku.source_sku_code or sku.sku_code)
 
@@ -3506,7 +3525,7 @@ def _parse_product_sku_rows(
                 continue
             generated_codes.add(generated_sku_code)
             final_sku_name = (
-                f"{base_sku_name} · {specification}"
+                _sku_name_with_specification(base_sku_name, specification)
                 if schema_version >= 5 and specification
                 else (
                     sku_name

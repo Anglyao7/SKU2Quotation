@@ -44,6 +44,8 @@ _LATIN_PROSE_RUN_PATTERN = re.compile(r"[A-Za-z]{2,}")
 _JAPANESE_SHARED_CATALOG_TERMS = frozenset(
     {
         "容量",
+        "包装形式",
+        "毛量",
         "重量",
         "直径",
         "内径",
@@ -575,11 +577,20 @@ def validate_catalog_translation_values(
                 protected=direct_protected,
             )
             try:
-                direct_translation = translator.translate(
-                    direct_source,
-                    source_locale=source_locale,
-                    target_locale=target_locale,
-                )
+                repair = getattr(translator, "repair_translation", None)
+                if callable(repair):
+                    direct_translation = repair(
+                        direct_source,
+                        translated_value,
+                        source_locale=source_locale,
+                        target_locale=target_locale,
+                    )
+                else:
+                    direct_translation = translator.translate(
+                        direct_source,
+                        source_locale=source_locale,
+                        target_locale=target_locale,
+                    )
             except TranslationProviderError:
                 continue
             restored = _restore_identifiers(

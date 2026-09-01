@@ -95,6 +95,12 @@ class CatalogTranslationProductRetryRequest(BaseModel):
     target_locale: CatalogTargetLocale = "en-US"
 
 
+class CatalogLanguagePackPublishRequest(BaseModel):
+    """Publish the currently completed automatic and manual translations."""
+
+    target_locale: CatalogTargetLocale = "en-US"
+
+
 class CatalogLocalizedProductContent(BaseModel):
     name: str = Field(min_length=1, max_length=1000)
     description: str | None = Field(default=None, max_length=100_000)

@@ -285,9 +285,9 @@ export function AccountSettingsPage() {
               <div>
                 <Text size="1" color="gray">{t("当前登录账户")}</Text>
                 <Heading size="4">{displayName}</Heading>
-                <Badge color={user?.isPlatformAdmin ? "amber" : "gray"}>
-                  {t(user?.isPlatformAdmin ? "平台管理员" : isCustomerSubaccount ? "子账号" : "商家成员")}
-                </Badge>
+                {user?.isPlatformAdmin ? (
+                  <Badge color="amber">{t("平台管理员")}</Badge>
+                ) : null}
               </div>
 
             </div>

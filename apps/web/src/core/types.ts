@@ -1,6 +1,6 @@
 import type { StorefrontLocale, TenantSubscriptionTier } from "../types";
 
-export type UiLocale = "zh-CN" | "en-US";
+export type UiLocale = StorefrontLocale;
 export type BusinessMode = "DOMESTIC" | "EXPORT";
 
 export interface AuthUser {

@@ -40,6 +40,12 @@ class StorefrontChatConversationRow(AuditTimestampMixin, Base):
             "reference_number",
             name="uq_storefront_chat_conversations_reference",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "owner_membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_storefront_chat_conversations_owner_membership",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
             "visitor_token_hash",
             name="uq_storefront_chat_conversations_visitor_token",
@@ -57,6 +63,13 @@ class StorefrontChatConversationRow(AuditTimestampMixin, Base):
             "human_resolved_at",
             "status",
         ),
+        Index(
+            "ix_storefront_chat_conversations_tenant_owner_activity",
+            "tenant_id",
+            "owner_membership_id",
+            "status",
+            "last_message_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -64,6 +77,9 @@ class StorefrontChatConversationRow(AuditTimestampMixin, Base):
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # NULL identifies the merchant's main storefront. A concrete membership
+    # owns the conversation created from that subaccount's storefront.
+    owner_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
     reference_number: Mapped[str] = mapped_column(String(40), nullable=False)
     visitor_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     visitor_name: Mapped[str | None] = mapped_column(String(120), nullable=True)

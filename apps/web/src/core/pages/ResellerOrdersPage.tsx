@@ -55,7 +55,7 @@ export function ResellerOrdersPage() {
       <CorePageHeading
         eyebrow={t("销售")}
         title={t("我的询价")}
-        description={t("这里只显示当前子账号提交的询价记录与处理状态。")}
+        description={t("这里只显示当前账户提交的询价记录与处理状态。")}
         actions={(
           <div className="core-heading-actions">
             <Button variant="soft" onClick={() => void load()} disabled={loading}><ArrowClockwise className={loading ? "is-spinning" : undefined} />{t("刷新")}</Button>

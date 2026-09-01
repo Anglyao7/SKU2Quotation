@@ -33,7 +33,7 @@ DEFAULT_QWEN_BATCH_BASE_URL = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 DEFAULT_QWEN_BATCH_MODEL = "qwen3.7-flash-2026-07-15"
-QWEN_BATCH_PROMPT_VERSION = "catalog-text-v1"
+QWEN_BATCH_PROMPT_VERSION = "catalog-text-v2-source-script-audit"
 QWEN_BATCH_COMPLETION_WINDOW = "24h"
 # Keep each JSONL row small enough that one language can expose hundreds of
 # independent provider requests in a single Batch file.  The provider accepts
@@ -274,6 +274,23 @@ class QwenBatchClient:
 
         return self._prompt_adapter.translate(
             text,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+
+    def repair_translation(
+        self,
+        source_text: str,
+        candidate_text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        """Use a dedicated strict prompt for source-script leakage."""
+
+        return self._prompt_adapter.repair_translation(
+            source_text,
+            candidate_text,
             source_locale=source_locale,
             target_locale=target_locale,
         )

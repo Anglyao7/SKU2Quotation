@@ -4,6 +4,7 @@ import {
   Card,
   Dialog,
   Heading,
+  Select,
   Spinner,
   Text,
   TextArea,
@@ -92,15 +93,20 @@ export function CatalogTranslationEditor({
   tenantId,
   locale,
   packageVersion,
+  onLocaleChange,
+  onSaved,
 }: {
   tenantId: string;
   locale: StorefrontLocale;
   packageVersion?: number;
+  onLocaleChange: (locale: StorefrontLocale) => void;
+  onSaved?: () => void | Promise<void>;
 }) {
   const { t } = useLocale();
-  const languageLabel = STOREFRONT_LANGUAGE_OPTIONS.find(
+  const selectedLanguage = STOREFRONT_LANGUAGE_OPTIONS.find(
     (language) => language.code === locale,
-  )?.label ?? locale;
+  );
+  const languageLabel = selectedLanguage?.label ?? locale;
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -203,10 +209,11 @@ export function CatalogTranslationEditor({
       setDetail(updated);
       setProductDraft({ ...updated.translation });
       setSkuDrafts(updated.skus.map((sku) => ({ ...sku.translation })));
-      setSuccess(t("人工译文已保存并发布为语言包 v{version}。", {
-        version: updated.packageVersion ?? "—",
+      setSuccess(t("人工译文已保存，并计入 {language} 的完成进度。", {
+        language: languageLabel,
       }));
       await load();
+      await onSaved?.();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("人工译文保存失败。"));
     } finally {
@@ -222,17 +229,35 @@ export function CatalogTranslationEditor({
           <Text size="1" color="gray">{t("管理员工具")}</Text>
           <Heading size="5">{t("商品译文微调")}</Heading>
           <Text size="2" color="gray">
-            {t("按语言查看当前前台商品；人工修改保存后立即发布新语言包，并优先于自动译文。")}
+            {t("先选择目标语言，再逐字段检查商品与 SKU；保存后计入完成度，发布由管理员单独确认。")}
           </Text>
         </div>
-        <TextField.Root
-          className="catalog-translation-search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={t("搜索商品名称或编码")}
-        >
-          <TextField.Slot><MagnifyingGlass /></TextField.Slot>
-        </TextField.Root>
+        <div className="catalog-translation-editor-tools">
+          <label>
+            <Text size="1" color="gray">{t("当前微调语言")}</Text>
+            <Select.Root
+              value={locale}
+              onValueChange={(value) => onLocaleChange(value as StorefrontLocale)}
+            >
+              <Select.Trigger aria-label={t("当前微调语言")} />
+              <Select.Content position="popper">
+                {STOREFRONT_LANGUAGE_OPTIONS.filter((language) => language.code !== "zh-CN").map((language) => (
+                  <Select.Item key={language.code} value={language.code}>
+                    {language.flag} {language.label}
+                  </Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
+          </label>
+          <TextField.Root
+            className="catalog-translation-search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t("搜索商品名称或编码")}
+          >
+            <TextField.Slot><MagnifyingGlass /></TextField.Slot>
+          </TextField.Root>
+        </div>
       </div>
 
       {error ? <ToastNotice kind="error" message={error} /> : null}
@@ -314,6 +339,14 @@ export function CatalogTranslationEditor({
               <Dialog.Description>
                 {detail.source.name} · {detail.productCode ?? t("未设置商品编码")}
               </Dialog.Description>
+              <div className="catalog-translation-review-context">
+                <Badge color="blue" variant="soft">
+                  {selectedLanguage?.flag} {languageLabel}
+                </Badge>
+                <Text size="2">
+                  {t("这里保存的是当前语言的人工译文；保存后该商品下的 SKU 会视为已完成，但不会自动发布前台版本。")}
+                </Text>
+              </div>
 
               <div className="catalog-translation-compare-grid">
                 <section>
@@ -322,7 +355,7 @@ export function CatalogTranslationEditor({
                   <p>{detail.source.description || t("无商品描述")}</p>
                   <small>{detail.source.categoryLabel || t("未分类")}</small>
                 </section>
-                <section className="is-editable">
+                <section className={`is-editable${selectedLanguage?.direction === "rtl" ? " is-rtl" : ""}`}>
                   <label>
                     <Text size="1" color="gray">{t("商品名称")}</Text>
                     <TextField.Root value={productDraft.name} onChange={(event) => setProductDraft({ ...productDraft, name: event.target.value })} />
@@ -346,13 +379,13 @@ export function CatalogTranslationEditor({
                 </section>
               </div>
 
-              <div className="catalog-translation-mapping-grid">
+              <div className={`catalog-translation-mapping-grid${selectedLanguage?.direction === "rtl" ? " is-rtl" : ""}`}>
                 <MappingEditor title={t("规格名称")} source={detail.source.specifications} value={productDraft.specifications} onChange={(value) => setProductDraft({ ...productDraft, specifications: value })} />
                 <MappingEditor title={t("选项名称")} source={detail.source.optionLabels} value={productDraft.optionLabels} onChange={(value) => setProductDraft({ ...productDraft, optionLabels: value })} />
                 <MappingEditor title={t("选项值")} source={detail.source.optionValues} value={productDraft.optionValues} onChange={(value) => setProductDraft({ ...productDraft, optionValues: value })} />
               </div>
 
-              <section className="catalog-translation-skus">
+              <section className={`catalog-translation-skus${selectedLanguage?.direction === "rtl" ? " is-rtl" : ""}`}>
                 <div>
                   <Heading size="3">{t("SKU 译文")}</Heading>
                   <Text size="1" color="gray">{t("商品下的 SKU 名称与规格也会一并写入语言包。")}</Text>
@@ -380,7 +413,7 @@ export function CatalogTranslationEditor({
 
               <div className="catalog-translation-dialog-actions">
                 <Dialog.Close><Button variant="soft" color="gray" disabled={saving}>{t("取消")}</Button></Dialog.Close>
-                <Button loading={saving} disabled={!productDraft.name.trim() || skuDrafts.some((sku) => !sku.name.trim())} onClick={() => void save()}>{t("保存并发布语言包")}</Button>
+                <Button loading={saving} disabled={!productDraft.name.trim() || skuDrafts.some((sku) => !sku.name.trim())} onClick={() => void save()}>{t("保存人工译文")}</Button>
               </div>
             </>
           ) : null}

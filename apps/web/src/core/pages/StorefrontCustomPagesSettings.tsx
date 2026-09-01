@@ -68,24 +68,25 @@ function validHtmlFile(file: File | undefined) {
 }
 
 function ResponsiveHtmlGuide({ compact = false }: { compact?: boolean }) {
+  const { t } = useLocale();
   return (
     <aside className={`storefront-html-guide${compact ? " is-compact" : ""}`}>
       <div className="storefront-html-guide-heading">
         <Code weight="duotone" />
         <div>
-          <strong>HTML 页面必须支持响应式布局</strong>
-          <span>客户主要通过手机访问，请在上传前同时检查三种宽度。</span>
+          <strong>{t("HTML 页面必须支持响应式布局")}</strong>
+          <span>{t("客户主要通过手机访问，请在上传前同时检查三种宽度。")}</span>
         </div>
       </div>
       <div className="storefront-html-device-grid">
-        <div><b>手机</b><span>≤ 767 px</span></div>
-        <div><b>平板</b><span>768–1199 px</span></div>
-        <div><b>桌面</b><span>≥ 1200 px</span></div>
+        <div><b>{t("手机")}</b><span>≤ 767 px</span></div>
+        <div><b>{t("平板")}</b><span>768–1199 px</span></div>
+        <div><b>{t("桌面")}</b><span>≥ 1200 px</span></div>
       </div>
       <ul>
-        <li>加入 <code>&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;</code></li>
-        <li>避免固定页面宽度；图片和视频请使用 <code>max-width: 100%</code></li>
-        <li>按钮和链接需适合触屏，正文不要依赖鼠标悬停才能查看</li>
+        <li>{t("加入响应式 viewport 声明")}：<code>&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;</code></li>
+        <li>{t("避免固定页面宽度；图片和视频请使用 max-width: 100%")}</li>
+        <li>{t("按钮和链接需适合触屏，正文不要依赖鼠标悬停才能查看")}</li>
       </ul>
     </aside>
   );

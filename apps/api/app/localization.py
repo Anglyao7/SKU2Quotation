@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from typing import TypeAlias
+
+from .storefront_locales import StorefrontLocale, normalize_storefront_locale
 
 
-UiLocale: TypeAlias = Literal["zh-CN", "en-US"]
+# The console and storefront intentionally share one locale vocabulary.  UI
+# copy is static, while catalog facts are read from the published language
+# package for the same locale.
+UiLocale: TypeAlias = StorefrontLocale
 
 
 def normalize_ui_locale(value: str | None) -> UiLocale:
-    normalized = (value or "").strip().lower()
-    return "en-US" if normalized.startswith("en") else "zh-CN"
+    return normalize_storefront_locale(value) or "zh-CN"

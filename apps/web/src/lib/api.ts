@@ -586,6 +586,9 @@ async function download(
 }
 
 export const api = {
+  getStoreLanguagePack: (slug: string, locale?: StorefrontLocale) => (
+    storefrontLanguagePack(slug, locale)
+  ),
   getStore: async (slug: string, locale?: StorefrontLocale, accountId?: string) => {
     await requireStorefrontAccountSession(accountId);
     const languagePack = await storefrontLanguagePack(slug, locale);
@@ -843,56 +846,66 @@ export const api = {
       client_message_id: string;
       locale: StorefrontLocale;
     },
+    accountId?: string,
   ) => request<PublicSupportConversation>(
-    `/api/store/${encodeURIComponent(slug)}/support/conversations`,
+    `/api/store/${encodeURIComponent(slug)}/support/conversations${accountId ? `?account=${encodeURIComponent(accountId)}` : ""}`,
     { method: "POST", body: JSON.stringify(payload), cache: "no-store" },
+    Boolean(accountId || getCoreAccessToken()),
   ),
-  getSupportConversation: (slug: string, token: string) =>
+  getSupportConversation: (slug: string, token: string, accountId?: string) =>
     request<PublicSupportConversation>(
-      `/api/store/${encodeURIComponent(slug)}/support/conversations/current`,
+      `/api/store/${encodeURIComponent(slug)}/support/conversations/current${accountId ? `?account=${encodeURIComponent(accountId)}` : ""}`,
       {
         cache: "no-store",
         headers: { "X-Support-Token": token },
       },
+      Boolean(accountId),
     ),
   sendSupportMessage: (
     slug: string,
     token: string,
     payload: { message: string; client_message_id: string; locale?: StorefrontLocale },
+    accountId?: string,
   ) => request<PublicSupportConversation>(
-    `/api/store/${encodeURIComponent(slug)}/support/conversations/current/messages`,
+    `/api/store/${encodeURIComponent(slug)}/support/conversations/current/messages${accountId ? `?account=${encodeURIComponent(accountId)}` : ""}`,
     {
       method: "POST",
       body: JSON.stringify(payload),
       cache: "no-store",
       headers: { "X-Support-Token": token },
     },
+    Boolean(accountId),
   ),
-  requestHumanSupport: (slug: string, token: string) =>
+  requestHumanSupport: (slug: string, token: string, accountId?: string) =>
     request<PublicSupportConversation>(
-      `/api/store/${encodeURIComponent(slug)}/support/conversations/current/human-assistance`,
+      `/api/store/${encodeURIComponent(slug)}/support/conversations/current/human-assistance${accountId ? `?account=${encodeURIComponent(accountId)}` : ""}`,
       {
         method: "POST",
         cache: "no-store",
         headers: { "X-Support-Token": token },
       },
+      Boolean(accountId),
     ),
   streamSupportConversation: async (
     slug: string,
     token: string,
     onEvent: (event: PublicSupportStreamEvent) => void,
     signal?: AbortSignal,
+    accountId?: string,
   ): Promise<void> => {
+    if (accountId) await requireStorefrontAccountSession(accountId);
+    const accessToken = accountId ? getCoreAccessToken() : undefined;
     let response: Response;
     try {
       response = await fetch(apiUrl(
-        `/api/store/${encodeURIComponent(slug)}/support/conversations/current/events`,
+        `/api/store/${encodeURIComponent(slug)}/support/conversations/current/events${accountId ? `?account=${encodeURIComponent(accountId)}` : ""}`,
       ), {
         cache: "no-store",
         credentials: "include",
         headers: {
           Accept: "text/event-stream",
           "X-Support-Token": token,
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         signal,
       });

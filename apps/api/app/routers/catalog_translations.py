@@ -13,6 +13,8 @@ from ..catalog_translation_schemas import (
     CatalogTranslationProductUpdateRequest,
     CatalogTranslationProductDetail,
     CatalogTranslationProductListResponse,
+    CatalogLanguagePackPublishRequest,
+    CatalogLanguagePackResponse,
     CatalogTranslationJobStartRequest,
     CatalogTranslationStatusResponse,
 )
@@ -371,6 +373,31 @@ def update_translation_product(
                 session,
                 context=scoped_context,
                 product_id=product_id,
+                request=payload,
+            )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/language-pack/publish",
+    response_model=CatalogLanguagePackResponse,
+)
+def publish_reviewed_language_pack(
+    payload: CatalogLanguagePackPublishRequest,
+    tenant_id: UUID | None = Query(default=None),
+    session: Session = Depends(get_authenticated_session),
+) -> CatalogLanguagePackResponse:
+    context = current_context(session)
+    try:
+        with use_cases.platform_admin_translation_scope(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+        ) as (scoped_context, _requester_membership_id):
+            return use_cases.publish_reviewed_language_pack(
+                session,
+                context=scoped_context,
                 request=payload,
             )
     except ApplicationError as exc:

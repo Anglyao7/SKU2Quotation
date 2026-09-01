@@ -17,6 +17,7 @@ import {
   Pause,
   Play,
   Translate,
+  UploadSimple,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
@@ -29,6 +30,7 @@ import {
   getCatalogTranslationStatus,
   getLatestCatalogTranslationJob,
   pauseCatalogTranslationJob,
+  publishCatalogLanguagePack,
   resumeCatalogTranslationJob,
   retryCatalogTranslationBatch,
   startCatalogTranslationJob,
@@ -121,6 +123,7 @@ export function LanguagePackagesPage() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [batchHistoryLoading, setBatchHistoryLoading] = useState(false);
   const [startingJob, setStartingJob] = useState(false);
+  const [publishingPack, setPublishingPack] = useState(false);
   const [controllingJob, setControllingJob] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -569,6 +572,40 @@ export function LanguagePackagesPage() {
     }
   };
 
+  const publishCurrentLanguagePack = async () => {
+    if (
+      !canEditProducts
+      || !selectedTenantId
+      || publishingPack
+      || displayedTranslatedSkus === 0
+    ) return;
+    const actionLocale = selectedLocale;
+    const actionTenantId = selectedTenantId;
+    setPublishingPack(true);
+    setError("");
+    setSuccess("");
+    try {
+      const pack = await publishCatalogLanguagePack(
+        actionLocale,
+        actionTenantId,
+      );
+      if (!localeRequestIsCurrent(actionLocale, actionTenantId)) return;
+      await refreshStatus(actionLocale, actionTenantId);
+      setSuccess(t("已手动发布 {language} 语言包 v{version}；未完成内容继续显示中文原文。", {
+        language: selectedLanguage.label,
+        version: pack.version,
+      }));
+    } catch (caught) {
+      if (localeRequestIsCurrent(actionLocale, actionTenantId)) {
+        setError(caught instanceof Error
+          ? caught.message
+          : t("手动发布语言包失败。"));
+      }
+    } finally {
+      setPublishingPack(false);
+    }
+  };
+
   const controlTranslationJob = async (action: "pause" | "resume") => {
     if (
       !canEditProducts
@@ -763,13 +800,23 @@ export function LanguagePackagesPage() {
                   ))}
                 </Select.Content>
               </Select.Root>
-              <Badge color={coverageLoading ? "gray" : selectedStatus?.packageOutdated ? "amber" : selectedStatus?.package ? "green" : "gray"}>
+              <Badge color={coverageLoading
+                ? "gray"
+                : selectedStatus?.packageOutdated
+                  ? "amber"
+                  : selectedStatus?.package && displayedPendingSkus > 0
+                    ? "blue"
+                    : selectedStatus?.package
+                      ? "green"
+                      : "gray"}>
                 {t(coverageLoading
                   ? "正在同步"
                   : selectedStatus?.packageOutdated
                     ? "有内容待更新"
-                    : selectedStatus?.package
-                      ? "内容已是最新"
+                    : selectedStatus?.package && displayedPendingSkus > 0
+                      ? "已发布当前进度"
+                      : selectedStatus?.package
+                        ? "内容已是最新"
                       : "尚未翻译")}
               </Badge>
             </div>
@@ -786,7 +833,7 @@ export function LanguagePackagesPage() {
             <>
               <div className="language-pack-metrics">
                 <div><strong>{displayedTotalSkus}</strong><span>{t("公开 SKU")}</span></div>
-                <div><strong>{displayedTranslatedSkus}</strong><span>{t("已翻译")}</span></div>
+                <div><strong>{displayedTranslatedSkus}</strong><span>{t("已完成（含人工）")}</span></div>
                 <div><strong>{displayedPendingSkus}</strong><span>{t("新增或变更")}</span></div>
                 <div><strong>{coverage}%</strong><span>{t("SKU 翻译覆盖")}</span></div>
               </div>
@@ -904,6 +951,56 @@ export function LanguagePackagesPage() {
               <div><dt>{t("包含内容")}</dt><dd>{selectedStatus?.package ? `${selectedStatus.package.productCount} Products · ${selectedStatus.package.skuCount} SKUs` : "—"}</dd></div>
             </dl>
           )}
+          <div className="language-package-manual-release">
+            <div>
+              <Text size="2" weight="bold">{t("手动发布当前进度")}</Text>
+              <Text size="1" color="gray">
+                {t("无需等待全部翻译完成；发布后，已完成和人工确认的译文立即生效，缺失内容继续回退中文。")}
+              </Text>
+            </div>
+            <AlertDialog.Root>
+              <AlertDialog.Trigger>
+                <Button
+                  variant="soft"
+                  size="2"
+                  loading={publishingPack}
+                  disabled={
+                    !canEditProducts
+                    || coverageLoading
+                    || publishingPack
+                    || displayedTranslatedSkus === 0
+                    || !selectedStatus?.packageOutdated
+                  }
+                >
+                  <UploadSimple />
+                  {t("手动发布语言包")}
+                </Button>
+              </AlertDialog.Trigger>
+              <AlertDialog.Content maxWidth="500px">
+                <AlertDialog.Title>
+                  {t("发布当前 {language} 翻译进度？", {
+                    language: selectedLanguage.label,
+                  })}
+                </AlertDialog.Title>
+                <AlertDialog.Description>
+                  {t("当前已完成 {done} / {total} 个 SKU。系统会创建一个新的语言包版本；未完成的 SKU 不会阻塞发布，并继续显示中文原文。", {
+                    done: displayedTranslatedSkus,
+                    total: displayedTotalSkus,
+                  })}
+                </AlertDialog.Description>
+                <div className="language-pack-dialog-actions">
+                  <AlertDialog.Cancel>
+                    <Button variant="soft" color="gray">{t("取消")}</Button>
+                  </AlertDialog.Cancel>
+                  <AlertDialog.Action>
+                    <Button onClick={() => void publishCurrentLanguagePack()}>
+                      {t("确认发布新版本")}
+                    </Button>
+                  </AlertDialog.Action>
+                </div>
+              </AlertDialog.Content>
+            </AlertDialog.Root>
+          </div>
         </Card>
       </div>
 
@@ -913,6 +1010,10 @@ export function LanguagePackagesPage() {
           tenantId={selectedTenantId}
           locale={selectedLocale}
           packageVersion={selectedStatus?.package?.version}
+          onLocaleChange={setSelectedLocale}
+          onSaved={async () => {
+            await refreshStatus(selectedLocale, selectedTenantId);
+          }}
         />
       ) : null}
 
@@ -969,7 +1070,7 @@ export function LanguagePackagesPage() {
                 </span>
                 <span>
                   {t("已有完整译文 {done} / {total} 个 SKU", {
-                    done: selectedJob.translationProcessedSkus,
+                    done: displayedTranslatedSkus,
                     total: selectedJob.totalSkus,
                   })}
                 </span>

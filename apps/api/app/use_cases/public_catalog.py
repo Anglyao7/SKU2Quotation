@@ -67,7 +67,6 @@ from ..public_catalog_schemas import (
     PublicSkuResponse,
     PublicStoreResponse,
 )
-from ..support_schemas import PublicSupportWidgetResponse
 from ..repositories import public_catalog_repository as repository
 from ..repositories import catalog_translation_repository
 from ..repositories import quote_template_repository
@@ -885,12 +884,10 @@ def get_store(
             ai_search_questions=[],
             popular_search_terms=[],
             announcements=[],
-            support_widget=PublicSupportWidgetResponse(
-                enabled=False,
-                welcome_message="",
-                ai_enabled=False,
-                custom_actions=[],
-            ),
+            # The same storefront support entry is available to a child
+            # account, while conversations are stored under that membership
+            # and never mixed with the main storefront inbox.
+            support_widget=support_use_cases.public_widget(session, profile),
             footer_sections=[],
             custom_pages=[],
             storefront_scope="CUSTOMER_SUBACCOUNT",

@@ -1,4 +1,5 @@
 import atexit
+import gzip
 import hashlib
 import io
 import json
@@ -1351,18 +1352,19 @@ def test_user_can_persist_console_locale_preference() -> None:
         assert user is not None
         original_locale = user.locale
     try:
-        response = client.patch(
-            "/api/v1/me/preferences",
-            json={"locale": "en-US"},
-        )
-        assert response.status_code == 200, response.text
-        assert response.json() == {"locale": "en-US"}
+        for locale in ["en-US", "es", "tr", "ar", "ja", "ko", "pt", "fr", "fa"]:
+            response = client.patch(
+                "/api/v1/me/preferences",
+                json={"locale": locale},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json() == {"locale": locale}
         me_response = client.get("/api/v1/me")
         assert me_response.status_code == 200
-        assert me_response.json()["user"]["locale"] == "en-US"
+        assert me_response.json()["user"]["locale"] == "fa"
         invalid = client.patch(
             "/api/v1/me/preferences",
-            json={"locale": "fr-FR"},
+            json={"locale": "de"},
         )
         assert invalid.status_code == 422
     finally:
@@ -17440,6 +17442,7 @@ class _QwenBatchJobTestClient:
 
 class _PartialQwenBatchJobTestClient(_QwenBatchJobTestClient):
     parse_calls = 0
+    realtime_calls = 0
 
     def __init__(
         self,
@@ -17448,12 +17451,26 @@ class _PartialQwenBatchJobTestClient(_QwenBatchJobTestClient):
         production: bool = False,
     ) -> None:
         super().__init__(configuration, production=production)
+        self.identity = configuration.identity
         self.current_requests: list[dict[str, object]] = []
 
     @classmethod
     def reset(cls) -> None:
         super().reset()
         cls.parse_calls = 0
+        cls.realtime_calls = 0
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        assert source_locale == "zh-CN"
+        assert target_locale == "en-US"
+        type(self).realtime_calls += 1
+        return re.sub(r"[\u3400-\u9fff]+", "Translated", text)
 
     def jsonl_content(
         self,
@@ -18456,7 +18473,22 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         )
         assert reviewed.status_code == 200, reviewed.text
         assert reviewed.json()["status"] == "MANUAL"
-        assert reviewed.json()["package_version"] == 2
+        assert reviewed.json()["package_version"] == 1
+
+        reviewed_status = client.get(
+            "/api/v1/catalog/translations/status",
+            params={"target_locale": "en-US"},
+        )
+        assert reviewed_status.status_code == 200, reviewed_status.text
+        assert reviewed_status.json()["translated_skus"] == 3
+        assert reviewed_status.json()["package_outdated"] is True
+
+        published_review = client.post(
+            "/api/v1/catalog/translations/language-pack/publish",
+            json={"target_locale": "en-US"},
+        )
+        assert published_review.status_code == 200, published_review.text
+        assert published_review.json()["version"] == 2
 
         reviewed_manifest = client.get(
             "/api/store/demo/language-packages/en-US"
@@ -18491,6 +18523,165 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
             session.execute(
                 delete(CatalogTranslationJobRow).where(
                     CatalogTranslationJobRow.tenant_id == DEFAULT_TENANT_ID
+                )
+            )
+            session.commit()
+
+
+def test_manual_review_counts_as_complete_and_can_publish_partial_pack(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target_locale = "fr"
+    monkeypatch.setenv("TRANSLATION_PACKAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("TRANSLATION_PACKAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.delenv("TRANSLATION_PACKAGE_PUBLIC_BASE_URL", raising=False)
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(CatalogTranslationOverrideRow).where(
+                CatalogTranslationOverrideRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogTranslationOverrideRow.target_locale == target_locale,
+            )
+        )
+        session.execute(
+            delete(CatalogLanguagePackRow).where(
+                CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogLanguagePackRow.target_locale == target_locale,
+            )
+        )
+        session.execute(
+            delete(CatalogSkuTranslationRow).where(
+                CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                CatalogSkuTranslationRow.target_locale == target_locale,
+            )
+        )
+        session.commit()
+
+    try:
+        initial_status = client.get(
+            "/api/v1/catalog/translations/status",
+            params={"target_locale": target_locale},
+        )
+        assert initial_status.status_code == 200, initial_status.text
+        total_skus = initial_status.json()["total_skus"]
+        assert total_skus > 0
+        assert initial_status.json()["translated_skus"] == 0
+        assert initial_status.json()["package"] is None
+        empty_publish = client.post(
+            "/api/v1/catalog/translations/language-pack/publish",
+            json={"target_locale": target_locale},
+        )
+        assert empty_publish.status_code == 409, empty_publish.text
+        assert empty_publish.json()["detail"]["code"] == (
+            "CATALOG_LANGUAGE_PACKAGE_NO_COMPLETED_TRANSLATIONS"
+        )
+
+        listed = client.get(
+            "/api/v1/catalog/translations/products",
+            params={
+                "target_locale": target_locale,
+                "page": 1,
+                "page_size": 100,
+            },
+        )
+        assert listed.status_code == 200, listed.text
+        reviewed_item = min(
+            listed.json()["items"],
+            key=lambda item: item["sku_count"],
+        )
+        detail = client.get(
+            f"/api/v1/catalog/translations/products/{reviewed_item['id']}",
+            params={"target_locale": target_locale},
+        )
+        assert detail.status_code == 200, detail.text
+        review_payload = detail.json()
+        review_payload["translation"]["name"] = "Produit vérifié manuellement"
+        for index, sku in enumerate(review_payload["skus"], start=1):
+            sku["translation"]["name"] = f"Variante vérifiée {index}"
+
+        saved = client.put(
+            f"/api/v1/catalog/translations/products/{reviewed_item['id']}/translation",
+            json={
+                "target_locale": target_locale,
+                "source_hash": review_payload["source_hash"],
+                "sku_source_hashes": {
+                    sku["id"]: sku["source_hash"]
+                    for sku in review_payload["skus"]
+                },
+                "product": review_payload["translation"],
+                "skus": [sku["translation"] for sku in review_payload["skus"]],
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["status"] == "MANUAL"
+        assert saved.json()["package_version"] is None
+        assert all(sku["status"] == "MANUAL" for sku in saved.json()["skus"])
+
+        saved_status = client.get(
+            "/api/v1/catalog/translations/status",
+            params={"target_locale": target_locale},
+        )
+        assert saved_status.status_code == 200, saved_status.text
+        reviewed_sku_count = len(review_payload["skus"])
+        assert saved_status.json()["translated_skus"] == reviewed_sku_count
+        assert saved_status.json()["pending_skus"] == total_skus - reviewed_sku_count
+        assert saved_status.json()["package_outdated"] is True
+        assert saved_status.json()["package"] is None
+
+        published = client.post(
+            "/api/v1/catalog/translations/language-pack/publish",
+            json={"target_locale": target_locale},
+        )
+        assert published.status_code == 200, published.text
+        assert published.json()["version"] == 1
+        assert published.json()["sku_count"] == reviewed_sku_count
+        assert published.json()["product_count"] == 1
+
+        with SessionLocal() as session:
+            published_row = session.scalar(
+                select(CatalogLanguagePackRow).where(
+                    CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogLanguagePackRow.target_locale == target_locale,
+                )
+            )
+            assert published_row is not None
+            payload = json.loads(
+                gzip.decompress(
+                    (tmp_path / published_row.object_key).read_bytes()
+                )
+            )
+        assert payload["products"][reviewed_item["id"]]["name"] == (
+            "Produit vérifié manuellement"
+        )
+        assert len(payload["skus"]) == reviewed_sku_count
+
+        published_status = client.get(
+            "/api/v1/catalog/translations/status",
+            params={"target_locale": target_locale},
+        )
+        assert published_status.status_code == 200, published_status.text
+        assert published_status.json()["translated_skus"] == reviewed_sku_count
+        assert published_status.json()["pending_skus"] == total_skus - reviewed_sku_count
+        assert published_status.json()["package_outdated"] is False
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(CatalogTranslationOverrideRow).where(
+                    CatalogTranslationOverrideRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogTranslationOverrideRow.target_locale == target_locale,
+                )
+            )
+            session.execute(
+                delete(CatalogLanguagePackRow).where(
+                    CatalogLanguagePackRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogLanguagePackRow.target_locale == target_locale,
+                )
+            )
+            session.execute(
+                delete(CatalogSkuTranslationRow).where(
+                    CatalogSkuTranslationRow.tenant_id == DEFAULT_TENANT_ID,
+                    CatalogSkuTranslationRow.target_locale == target_locale,
                 )
             )
             session.commit()
@@ -18592,7 +18783,7 @@ def test_qwen_small_job_uses_realtime_tail_without_batch_upload(
         )
         assert finished.status_code == 200, finished.text
         payload = finished.json()
-        assert payload["status"] == "SUCCEEDED"
+        assert payload["status"] == "SUCCEEDED", payload
         assert payload["execution_mode"] == "QWEN_BATCH"
         assert payload["external_batch_status"] == "realtime_completed"
         assert payload["translation_processed_values"] == (
@@ -18920,12 +19111,18 @@ def test_qwen_batch_job_salvages_valid_rows_and_retries_only_failed_request(
         )
         assert finished.status_code == 200, finished.text
         payload = finished.json()
-        assert payload["status"] == "SUCCEEDED"
+        assert payload["status"] == "SUCCEEDED", (
+            payload.get("error_message"),
+            payload.get("failure_details"),
+            payload.get("translation_processed_values"),
+            payload.get("translation_total_values"),
+        )
         assert payload["translation_total_values"] > 1
         assert payload["translation_processed_values"] == (
             payload["translation_total_values"]
         )
-        assert _PartialQwenBatchJobTestClient.submissions == 2
+        assert _PartialQwenBatchJobTestClient.submissions == 1
+        assert _PartialQwenBatchJobTestClient.realtime_calls > 0
 
         history = client.get(
             f"/api/v1/catalog/translations/jobs/{job_id}/batches"
@@ -21949,7 +22146,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
             connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
             ).scalar()
-            == "20260831_0128"
+            == "20260831_0129"
         )
     upgraded_engine.dispose()
     command.check(config)
@@ -22751,6 +22948,18 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     listing = client.get("/api/store/demo/skus", params={"page_size": 1})
     assert listing.status_code == 200, listing.text
     sku_id = listing.json()["items"][0]["id"]
+    merchant_price_before = Decimal(str(listing.json()["items"][0]["price"]))
+    main_support = client.post(
+        "/api/store/demo/support/conversations",
+        json={
+            "message": f"Main storefront support {suffix}",
+            "client_message_id": f"main-{suffix}",
+            "locale": "zh-CN",
+        },
+    )
+    assert main_support.status_code == 201, main_support.text
+    main_support_id = main_support.json()["id"]
+    main_support_token = main_support.json()["access_token"]
     merchant_statistics_before = client.get(
         "/api/v1/storefront-orders/statistics"
     )
@@ -22808,13 +23017,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert dedicated_store_data["ai_search_questions"] == []
             assert dedicated_store_data["popular_search_terms"] == []
             assert dedicated_store_data["announcements"] == []
-            assert dedicated_store_data["support_widget"] == {
-                "enabled": False,
-                "title": "AI 智能客服",
-                "welcome_message": "",
-                "ai_enabled": False,
-                "custom_actions": [],
-            }
+            assert dedicated_store_data["support_widget"]["enabled"] is True
             assert dedicated_store_data["footer_sections"] == []
             assert dedicated_store_data["custom_pages"] == []
             assert dedicated_store.headers["cache-control"] == "private, no-store"
@@ -22850,6 +23053,86 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 headers=headers,
                 params={"page_size": 1, "account": str(uuid4())},
             ).status_code == 403
+
+            price_update = child_client.put(
+                f"/api/v1/customer-portal/pricing/skus/{sku_id}",
+                headers=headers,
+                json={"pricing_mode": "FIXED_PRICE", "value": "123.45"},
+            )
+            assert price_update.status_code == 204, price_update.text
+            repriced_catalog = child_client.get(
+                "/api/store/demo/skus",
+                headers=headers,
+                params={"page_size": 1, "account": account["id"]},
+            )
+            assert repriced_catalog.status_code == 200, repriced_catalog.text
+            repriced_sku = next(
+                row for row in repriced_catalog.json()["items"] if row["id"] == sku_id
+            )
+            assert Decimal(str(repriced_sku["price"])) == Decimal("123.45")
+            assert "base_price" not in repriced_sku
+
+            child_support = child_client.post(
+                "/api/store/demo/support/conversations",
+                headers=headers,
+                params={"account": account["id"]},
+                json={
+                    "message": f"Child storefront support {suffix}",
+                    "client_message_id": f"child-{suffix}",
+                    "locale": "zh-CN",
+                },
+            )
+            assert child_support.status_code == 201, child_support.text
+            child_support_id = child_support.json()["id"]
+            child_support_token = child_support.json()["access_token"]
+            child_support_current = child_client.get(
+                "/api/store/demo/support/conversations/current",
+                headers={
+                    **headers,
+                    "X-Support-Token": child_support_token,
+                },
+                params={"account": account["id"]},
+            )
+            assert child_support_current.status_code == 200, child_support_current.text
+            assert child_support_current.json()["id"] == child_support_id
+            assert child_client.get(
+                "/api/store/demo/support/conversations/current",
+                headers={"X-Support-Token": child_support_token},
+            ).status_code == 401
+            assert child_client.get(
+                "/api/store/demo/support/conversations/current",
+                headers={**headers, "X-Support-Token": main_support_token},
+                params={"account": account["id"]},
+            ).status_code == 401
+            child_support_reply = child_client.post(
+                "/api/store/demo/support/conversations/current/messages",
+                headers={
+                    **headers,
+                    "X-Support-Token": child_support_token,
+                },
+                params={"account": account["id"]},
+                json={
+                    "message": f"Child follow-up {suffix}",
+                    "client_message_id": f"child-follow-up-{suffix}",
+                    "locale": "zh-CN",
+                },
+            )
+            assert child_support_reply.status_code == 200, child_support_reply.text
+            child_support_inbox = child_client.get(
+                "/api/v1/support/conversations",
+                headers=headers,
+                params={"page_size": 100},
+            )
+            assert child_support_inbox.status_code == 200, child_support_inbox.text
+            child_support_ids = {
+                row["id"] for row in child_support_inbox.json()["items"]
+            }
+            assert child_support_id in child_support_ids
+            assert main_support_id not in child_support_ids
+            assert child_client.get(
+                f"/api/v1/support/conversations/{main_support_id}",
+                headers=headers,
+            ).status_code == 404
 
             product_listing = child_client.get(
                 "/api/v1/product-center/products",
@@ -22909,6 +23192,21 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     )
     assert owner_account["login_count_30d"] >= 1
     assert owner_account["order_count"] == 1
+    merchant_listing_after = client.get(
+        "/api/store/demo/skus", params={"page_size": 1}
+    )
+    assert merchant_listing_after.status_code == 200
+    assert Decimal(str(merchant_listing_after.json()["items"][0]["price"])) == merchant_price_before
+    main_support_inbox = client.get(
+        "/api/v1/support/conversations", params={"page_size": 100}
+    )
+    assert main_support_inbox.status_code == 200, main_support_inbox.text
+    main_support_ids = {row["id"] for row in main_support_inbox.json()["items"]}
+    assert main_support_id in main_support_ids
+    assert child_support_id not in main_support_ids
+    assert client.get(
+        f"/api/v1/support/conversations/{child_support_id}"
+    ).status_code == 404
     owner_detail = client.get(f"/api/v1/customer-accounts/{account['id']}")
     assert owner_detail.status_code == 200, owner_detail.text
     assert owner_detail.json()["id"] == account["id"]

@@ -105,8 +105,17 @@ def list_conversations(
     status: str | None,
     query: str,
     preview_locale: str,
+    owner_membership_id: UUID | None,
 ) -> tuple[list[tuple[StorefrontChatConversationRow, str]], int]:
-    predicate = [StorefrontChatConversationRow.tenant_id == tenant_id]
+    predicate = [
+        StorefrontChatConversationRow.tenant_id == tenant_id,
+        (
+            StorefrontChatConversationRow.owner_membership_id
+            == owner_membership_id
+            if owner_membership_id is not None
+            else StorefrontChatConversationRow.owner_membership_id.is_(None)
+        ),
+    ]
     if status:
         predicate.append(StorefrontChatConversationRow.status == status)
     normalized = query.strip()
@@ -170,9 +179,16 @@ def list_pending_human_requests(
     *,
     tenant_id: UUID,
     limit: int,
+    owner_membership_id: UUID | None,
 ) -> tuple[list[tuple[StorefrontChatConversationRow, str]], int]:
     predicate = (
         StorefrontChatConversationRow.tenant_id == tenant_id,
+        (
+            StorefrontChatConversationRow.owner_membership_id
+            == owner_membership_id
+            if owner_membership_id is not None
+            else StorefrontChatConversationRow.owner_membership_id.is_(None)
+        ),
         StorefrontChatConversationRow.status == "OPEN",
         StorefrontChatConversationRow.human_requested_at.is_not(None),
         StorefrontChatConversationRow.human_resolved_at.is_(None),

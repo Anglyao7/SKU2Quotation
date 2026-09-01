@@ -16,7 +16,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 import psycopg
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session
 
@@ -32,6 +32,7 @@ from ..catalog_translation_schemas import (
     CatalogTranslationBatchPageResponse,
     CatalogTranslationBatchResponse,
     CatalogTranslationFailure,
+    CatalogLanguagePackPublishRequest,
     CatalogTranslationJobResponse,
     CatalogTranslationProductRetryRequest,
     CatalogTranslationProductUpdateRequest,
@@ -57,15 +58,17 @@ from ..repositories import catalog_translation_repository as translation_reposit
 from ..repositories import public_catalog_repository
 from ..services.auth.dependencies import RequestContext
 from ..services.catalog_translation import (
+    CatalogTranslationResult,
     CatalogTranslationSource,
     catalog_translation_source,
     catalog_translation_result_from_values,
     catalog_translation_value_is_complete,
 )
 from ..services.catalog_language_packages import (
+    PACKAGE_SCHEMA,
+    PACKAGE_SCHEMA_VERSION,
     apply_catalog_language_pack_overrides,
     build_catalog_language_pack,
-    catalog_language_pack_payload_matches_rows,
     catalog_language_pack_product_entry,
     catalog_language_pack_sku_entry,
     catalog_language_pack_source_cutoff,
@@ -118,6 +121,30 @@ from ..storefront_locales import (
 
 
 logger = logging.getLogger(__name__)
+_MANUAL_TRANSLATION_PROVIDER = "manual"
+_MANUAL_TRANSLATION_PROVIDER_VERSION = "admin-review-v1"
+_PRODUCT_OVERRIDE_FIELDS = frozenset(
+    {
+        "name",
+        "description",
+        "category_label",
+        "tags",
+        "display_tag",
+        "specifications",
+        "option_labels",
+        "option_values",
+    }
+)
+_SKU_OVERRIDE_FIELDS = frozenset(
+    {
+        "name",
+        "description",
+        "category_label",
+        "tags",
+        "display_tag",
+        "specification",
+    }
+)
 _translation_executor = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="catalog-translation",
@@ -1633,9 +1660,17 @@ def _retry_qwen_text_batch(
         job.remaining_sku_ids = [str(source.sku_id) for source in sources]
     job.batch_request_payload = snapshot
     translation_total, translation_processed = _job_qwen_batch_counts(job)
+    if translation_total == 0:
+        raw_value_count = snapshot.get("value_count", 0)
+        try:
+            translation_total = max(0, int(raw_value_count))
+        except (TypeError, ValueError):
+            translation_total = 0
+    if translation_total == 0:
+        translation_total = translation_processed + len(values)
     _save_qwen_batch_progress(
         job,
-        total=max(translation_total, translation_processed + len(values)),
+        total=translation_total,
         processed=translation_processed,
         retry_generation=generation,
     )
@@ -1887,6 +1922,29 @@ def get_translation_status(
             or pack.source_digest != catalog_rows_source_digest(rows)
             or pack.storage_fingerprint != storage_status.fingerprint
         )
+    if pack is not None:
+        unpublished_updates = [
+            value
+            for value in (
+                translation_repository.latest_translation_updated_at(
+                    session,
+                    tenant_id=tenant_id,
+                    target_locale=target_locale,
+                ),
+                translation_repository.latest_translation_override_updated_at(
+                    session,
+                    tenant_id=tenant_id,
+                    target_locale=target_locale,
+                ),
+            )
+            if value is not None
+        ]
+        if (
+            unpublished_updates
+            and max(map(_as_utc, unpublished_updates))
+            > _as_utc(pack.published_at)
+        ):
+            package_outdated = True
     return CatalogTranslationStatusResponse(
         source_locale=_SOURCE_LOCALE,
         target_locale=target_locale,
@@ -1942,13 +2000,65 @@ def _localized_entry_status(
     source_hash: str,
     override: dict[str, object] | None,
 ) -> str:
+    if override and override.get("source_hash") == source_hash:
+        return "MANUAL"
     if not isinstance(entry, dict):
         return "MISSING"
     if entry.get("source_hash") != source_hash:
         return "STALE"
-    if override and override.get("source_hash") == source_hash:
-        return "MANUAL"
     return "TRANSLATED"
+
+
+def _entry_with_review_override(
+    entry: object,
+    *,
+    fallback: dict[str, object],
+    source_hash: str,
+    override: dict[str, object] | None,
+    allowed_fields: frozenset[str],
+) -> dict[str, object] | None:
+    reviewed = dict(entry) if isinstance(entry, dict) else None
+    if not override or override.get("source_hash") != source_hash:
+        return reviewed
+    values = override.get("values")
+    if not isinstance(values, dict):
+        return reviewed
+    if reviewed is None or reviewed.get("source_hash") != source_hash:
+        reviewed = dict(fallback)
+    for field in allowed_fields:
+        if field in values:
+            reviewed[field] = values[field]
+    reviewed["source_hash"] = source_hash
+    return reviewed
+
+
+def _sku_entry_from_translation(
+    source: dict[str, object],
+    translation: CatalogSkuTranslationRow | None,
+    *,
+    existing: object = None,
+) -> dict[str, object] | None:
+    if (
+        translation is None
+        or translation.source_hash != source.get("translation_source_hash")
+    ):
+        return dict(existing) if isinstance(existing, dict) else None
+    entry = (
+        dict(existing)
+        if isinstance(existing, dict)
+        and existing.get("source_hash") == source.get("source_hash")
+        else catalog_language_pack_sku_entry(source)
+    )
+    entry.update(
+        {
+            "name": translation.name,
+            "description": translation.description,
+            "category_label": translation.category,
+            "tags": list(translation.tags or []),
+            "display_tag": translation.display_tag,
+        }
+    )
+    return entry
 
 
 def _product_content(
@@ -2105,7 +2215,14 @@ def list_translation_products(
         if source is None or product is None:
             continue
         entry = payload_products.get(str(product_id))
-        entry_dict = entry if isinstance(entry, dict) else {}
+        override = product_overrides.get(str(product_id))
+        entry_dict = _entry_with_review_override(
+            entry,
+            fallback=catalog_language_pack_product_entry(source),
+            source_hash=str(source["source_hash"]),
+            override=override,
+            allowed_fields=_PRODUCT_OVERRIDE_FIELDS,
+        ) or {}
         items.append(
             CatalogTranslationProductListItem(
                 id=product_id,
@@ -2125,7 +2242,7 @@ def list_translation_products(
                 status=_localized_entry_status(
                     entry,
                     source_hash=str(source["source_hash"]),
-                    override=product_overrides.get(str(product_id)),
+                    override=override,
                 ),
                 sku_count=sku_counts.get(product_id, 0),
             )
@@ -2173,27 +2290,54 @@ def get_translation_product(
     payload_products = payload_products if isinstance(payload_products, dict) else {}
     payload_skus = payload_skus if isinstance(payload_skus, dict) else {}
     sku_ids = {UUID(source["sku_id"]) for source in sku_sources}
+    sku_translations = translation_repository.translation_map(
+        session,
+        tenant_id=context.tenant_id,
+        sku_ids=list(sku_ids),
+        target_locale=locale,
+    )
     product_overrides, sku_overrides = _language_pack_override_values(
         session,
         tenant_id=context.tenant_id,
         target_locale=locale,
         entity_ids={product_id, *sku_ids},
     )
-    product_entry = payload_products.get(str(product_id))
+    published_product_entry = payload_products.get(str(product_id))
+    product_override = product_overrides.get(str(product_id))
+    product_entry = _entry_with_review_override(
+        published_product_entry,
+        fallback=catalog_language_pack_product_entry(product_source),
+        source_hash=str(product_source["source_hash"]),
+        override=product_override,
+        allowed_fields=_PRODUCT_OVERRIDE_FIELDS,
+    )
     sku_rows = {row[1].id: row[1] for row in rows}
     sku_details: list[CatalogTranslationSkuDetail] = []
     for source in sku_sources:
         sku_id = UUID(source["sku_id"])
-        sku_entry = payload_skus.get(str(sku_id))
+        published_sku_entry = payload_skus.get(str(sku_id))
+        automatic_sku_entry = _sku_entry_from_translation(
+            source,
+            sku_translations.get(sku_id),
+            existing=published_sku_entry,
+        )
+        sku_override = sku_overrides.get(str(sku_id))
+        sku_entry = _entry_with_review_override(
+            automatic_sku_entry,
+            fallback=catalog_language_pack_sku_entry(source),
+            source_hash=str(source["source_hash"]),
+            override=sku_override,
+            allowed_fields=_SKU_OVERRIDE_FIELDS,
+        )
         sku_details.append(
             CatalogTranslationSkuDetail(
                 id=sku_id,
                 sku_code=sku_rows[sku_id].sku_code,
                 source_hash=str(source["source_hash"]),
                 status=_localized_entry_status(
-                    sku_entry,
+                    automatic_sku_entry,
                     source_hash=str(source["source_hash"]),
-                    override=sku_overrides.get(str(sku_id)),
+                    override=sku_override,
                 ),
                 source=_sku_content(
                     catalog_language_pack_sku_entry(source),
@@ -2210,9 +2354,9 @@ def get_translation_product(
         source_hash=str(product_source["source_hash"]),
         target_locale=locale,
         status=_localized_entry_status(
-            product_entry,
+            published_product_entry,
             source_hash=str(product_source["source_hash"]),
-            override=product_overrides.get(str(product_id)),
+            override=product_override,
         ),
         package_version=pack.version if pack is not None else None,
         source=_product_content(
@@ -2244,17 +2388,6 @@ def update_translation_product(
             "CATALOG_TRANSLATION_PRODUCT_NOT_FOUND",
             "前台商品不存在或尚未发布。",
             kind="not_found",
-        )
-    current_pack, payload = _language_pack_payload(
-        session,
-        tenant_id=context.tenant_id,
-        target_locale=locale,
-    )
-    if current_pack is None or not payload:
-        raise ApplicationError(
-            "CATALOG_LANGUAGE_PACKAGE_NOT_CONFIGURED",
-            "该语言包未配置，请先由管理员执行全量翻译。",
-            kind="conflict",
         )
     product_sources, sku_sources = catalog_language_pack_source_entries(rows)
     product_source = product_sources[0]
@@ -2298,6 +2431,9 @@ def update_translation_product(
         updated_by_user_id=context.user_id,
     )
     source_by_sku_id = {UUID(source["sku_id"]): source for source in sku_sources}
+    translation_source_by_sku_id = {
+        row[1].id: catalog_translation_source(row) for row in rows
+    }
     for item in request.skus:
         translation_repository.save_translation_override(
             session,
@@ -2309,40 +2445,159 @@ def update_translation_product(
             values=item.model_dump(exclude={"sku_id"}),
             updated_by_user_id=context.user_id,
         )
-    session.flush()
+        translation_source = translation_source_by_sku_id[item.sku_id]
+        translation_repository.save_translation(
+            session,
+            tenant_id=context.tenant_id,
+            source_locale=_SOURCE_LOCALE,
+            target_locale=locale,
+            source=translation_source,
+            result=CatalogTranslationResult(
+                sku_id=item.sku_id,
+                source_hash=translation_source.source_hash,
+                name=item.name,
+                description=item.description,
+                category=item.category_label,
+                tags=tuple(item.tags),
+                display_tag=item.display_tag,
+                specification=item.specification,
+            ),
+            provider=_MANUAL_TRANSLATION_PROVIDER,
+            provider_version=_MANUAL_TRANSLATION_PROVIDER_VERSION,
+        )
+    session.commit()
+    return get_translation_product(
+        session,
+        context=context,
+        product_id=product_id,
+        target_locale=locale,
+    )
 
-    next_payload = json.loads(json.dumps(payload, ensure_ascii=False))
-    products = next_payload.get("products")
-    skus = next_payload.get("skus")
-    categories = next_payload.get("categories")
-    products = products if isinstance(products, dict) else {}
-    skus = skus if isinstance(skus, dict) else {}
-    categories = categories if isinstance(categories, dict) else {}
-    next_payload["products"] = products
-    next_payload["skus"] = skus
-    next_payload["categories"] = categories
 
-    existing_product = products.get(str(product_id))
-    if (
-        not isinstance(existing_product, dict)
-        or existing_product.get("source_hash") != product_source["source_hash"]
-    ):
-        products[str(product_id)] = catalog_language_pack_product_entry(product_source)
-    for source in sku_sources:
-        sku_id = str(source["sku_id"])
-        existing_sku = skus.get(sku_id)
-        if (
-            not isinstance(existing_sku, dict)
-            or existing_sku.get("source_hash") != source["source_hash"]
-        ):
-            skus[sku_id] = catalog_language_pack_sku_entry(source)
+def _acquire_language_pack_publish_lock(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+) -> None:
+    if session.bind is None or session.bind.dialect.name != "postgresql":
+        return
+    session.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtextextended(:publish_key, 0))"
+        ),
+        {"publish_key": f"catalog-language-pack:{tenant_id}:{target_locale}"},
+    )
 
+
+def _current_pack_entry(
+    entries: object,
+    *,
+    entry_id: str,
+    source_hash: str,
+) -> dict[str, object] | None:
+    if not isinstance(entries, dict):
+        return None
+    entry = entries.get(entry_id)
+    if not isinstance(entry, dict) or entry.get("source_hash") != source_hash:
+        return None
+    return dict(entry)
+
+
+def publish_reviewed_language_pack(
+    session: Session,
+    *,
+    context: RequestContext,
+    request: CatalogLanguagePackPublishRequest,
+) -> CatalogLanguagePackResponse:
+    """Publish every currently valid translation without waiting for 100%."""
+
+    _require_platform_admin(context)
+    _require(context.permissions, "product.edit")
+    locale = _admin_target_locale(request.target_locale)
+    storage_status = language_package_storage_status()
+    if not storage_status.configured:
+        raise ApplicationError(
+            "CATALOG_LANGUAGE_PACKAGE_STORAGE_NOT_CONFIGURED",
+            "语言包存储尚未配置，请联系平台管理员。",
+        )
+
+    _acquire_language_pack_publish_lock(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+    )
+    session.expire_all()
+    tenant = session.get(TenantRow, context.tenant_id)
+    if tenant is None:
+        raise ApplicationError(
+            "TENANT_NOT_FOUND",
+            "商家工作区不存在。",
+            kind="not_found",
+        )
+    rows = _all_rows(session, tenant_id=context.tenant_id)
+    if not rows:
+        raise ApplicationError(
+            "CATALOG_LANGUAGE_PACKAGE_EMPTY",
+            "当前商家没有可发布的前台商品。",
+            kind="conflict",
+        )
+
+    current_pack, previous_payload = _language_pack_payload(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+    )
+    previous_products = previous_payload.get("products")
+    previous_skus = previous_payload.get("skus")
+    product_sources, sku_sources = catalog_language_pack_source_entries(rows)
+    sku_ids = [UUID(source["sku_id"]) for source in sku_sources]
+    sku_translations = translation_repository.translation_map(
+        session,
+        tenant_id=context.tenant_id,
+        sku_ids=sku_ids,
+        target_locale=locale,
+    )
     product_overrides, sku_overrides = _language_pack_override_values(
         session,
         tenant_id=context.tenant_id,
         target_locale=locale,
-        entity_ids={product_id, *source_sku_ids},
     )
+
+    products: dict[str, dict[str, object]] = {}
+    for source in product_sources:
+        product_id = str(source["product_id"])
+        current = _current_pack_entry(
+            previous_products,
+            entry_id=product_id,
+            source_hash=str(source["source_hash"]),
+        )
+        override = product_overrides.get(product_id)
+        if current is not None:
+            products[product_id] = current
+        elif override and override.get("source_hash") == source["source_hash"]:
+            products[product_id] = catalog_language_pack_product_entry(source)
+
+    skus: dict[str, dict[str, object]] = {}
+    for source in sku_sources:
+        sku_id = str(source["sku_id"])
+        current = _current_pack_entry(
+            previous_skus,
+            entry_id=sku_id,
+            source_hash=str(source["source_hash"]),
+        )
+        translated = _sku_entry_from_translation(
+            source,
+            sku_translations.get(UUID(sku_id)),
+            existing=current,
+        )
+        override = sku_overrides.get(sku_id)
+        if translated is not None:
+            skus[sku_id] = translated
+        elif override and override.get("source_hash") == source["source_hash"]:
+            skus[sku_id] = catalog_language_pack_sku_entry(source)
+
     apply_catalog_language_pack_overrides(
         products=products,
         skus=skus,
@@ -2351,30 +2606,43 @@ def update_translation_product(
         product_overrides=product_overrides,
         sku_overrides=sku_overrides,
     )
-    source_category = product_source.get("category")
-    if source_category:
-        categories[str(source_category)] = (
-            products[str(product_id)].get("category_label") or source_category
+    if not products and not skus:
+        raise ApplicationError(
+            "CATALOG_LANGUAGE_PACKAGE_NO_COMPLETED_TRANSLATIONS",
+            "当前语言还没有已完成或人工确认的译文。",
+            kind="conflict",
         )
 
-    all_rows = _status_rows(session, tenant_id=context.tenant_id)
-    payload_is_current = catalog_language_pack_payload_matches_rows(next_payload, all_rows)
-    source_digest = (
-        catalog_rows_source_digest(all_rows)
-        if payload_is_current
-        else current_pack.source_digest
-    )
-    source_cutoff_at = (
-        catalog_language_pack_source_cutoff(all_rows)
-        if payload_is_current
-        else current_pack.source_cutoff_at
-    )
-    next_version = current_pack.version + 1
+    categories: dict[str, object] = {}
+    for source in product_sources:
+        category = source.get("category")
+        entry = products.get(str(source["product_id"]))
+        if category and entry is not None:
+            categories[str(category)] = entry.get("category_label") or category
+    for source in sku_sources:
+        category = source.get("category")
+        entry = skus.get(str(source["sku_id"]))
+        if category and entry is not None:
+            categories.setdefault(
+                str(category),
+                entry.get("category_label") or category,
+            )
+
+    next_version = (current_pack.version if current_pack is not None else 0) + 1
+    next_payload: dict[str, object] = {
+        "schema": PACKAGE_SCHEMA,
+        "schema_version": PACKAGE_SCHEMA_VERSION,
+        "source_locale": _SOURCE_LOCALE,
+        "target_locale": locale,
+        "products": products,
+        "skus": skus,
+        "categories": categories,
+    }
     build = repack_catalog_language_pack_payload(
         next_payload,
         version=next_version,
-        source_digest=source_digest,
-        source_cutoff_at=source_cutoff_at,
+        source_digest=catalog_rows_source_digest(rows),
+        source_cutoff_at=catalog_language_pack_source_cutoff(rows),
     )
     storage = configured_language_package_storage()
     object_key = language_pack_object_key(
@@ -2385,10 +2653,11 @@ def update_translation_product(
     )
     stored = storage.put(build.compressed, object_key=object_key)
     published_at = utcnow()
-    translation_repository.save_language_pack(
+    identity_row = next(iter(sku_translations.values()), None)
+    published_pack = translation_repository.save_language_pack(
         session,
         tenant_id=context.tenant_id,
-        source_locale=current_pack.source_locale,
+        source_locale=_SOURCE_LOCALE,
         target_locale=locale,
         version=next_version,
         object_key=stored.object_key,
@@ -2400,19 +2669,30 @@ def update_translation_product(
         product_count=build.product_count,
         sku_count=build.sku_count,
         category_count=build.category_count,
-        provider=current_pack.provider,
-        provider_version=current_pack.provider_version,
+        provider=(
+            current_pack.provider
+            if current_pack is not None
+            else identity_row.provider
+            if identity_row is not None
+            else _MANUAL_TRANSLATION_PROVIDER
+        ),
+        provider_version=(
+            current_pack.provider_version
+            if current_pack is not None
+            else identity_row.provider_version
+            if identity_row is not None
+            else _MANUAL_TRANSLATION_PROVIDER_VERSION
+        ),
         source_cutoff_at=build.source_cutoff_at,
         published_at=published_at,
         full_rebuild=False,
     )
     session.commit()
-    return get_translation_product(
-        session,
-        context=context,
-        product_id=product_id,
-        target_locale=locale,
-    )
+    _cached_admin_language_pack_payload.cache_clear()
+    response = _language_pack_response(published_pack, tenant_slug=tenant.slug)
+    if response is None:  # pragma: no cover - repository always returns a row
+        raise RuntimeError("published language package could not be loaded")
+    return response
 
 
 def _resolve_public_language_pack(
@@ -3779,7 +4059,7 @@ def _run_qwen_realtime_tail(
     _save_qwen_batch_progress(
         job,
         total=translation_total,
-        processed=translation_total,
+        processed=processed,
         retry_generation=retry_generation,
         processed_skus=completed_candidate_skus,
     )
@@ -4018,9 +4298,12 @@ def _run_qwen_batch_translation_job(
         )
         if (
             not has_batch_transport_checkpoint
-            and _qwen_requests_fit_realtime_tail(
-                requests,
-                concurrency=realtime_concurrency,
+            and (
+                _qwen_retry_generation(snapshot) > 0
+                or _qwen_requests_fit_realtime_tail(
+                    requests,
+                    concurrency=realtime_concurrency,
+                )
             )
         ):
             paused = _run_qwen_realtime_tail(
@@ -4155,12 +4438,11 @@ def _run_qwen_batch_translation_job(
             result=parse_result,
         )
         translation_total, translation_processed = _job_qwen_batch_counts(job)
-        successful_ids = set(parse_result.successful_request_ids)
-        newly_processed = sum(
-            _qwen_request_value_count(request)
-            for request in requests
-            if str(request.get("custom_id", "")) in successful_ids
-        )
+        # A malformed structured response may still contain valid individual
+        # values. They are committed to translation memory and must count now;
+        # only the unresolved subset is retried. Counting whole successful
+        # request rows under-reported those salvaged values.
+        newly_processed = parse_result.processed_values
         progress_rows = public_catalog_repository.list_all_public_catalog_rows(
             session,
             tenant_id=job.tenant_id,
@@ -4194,16 +4476,47 @@ def _run_qwen_batch_translation_job(
         if parse_result.failures:
             next_generation = retry_generation + 1
             if next_generation > _QWEN_BATCH_MAX_RETRY_GENERATION:
+                retry_requests, split_parent_ids = _qwen_retry_requests(
+                    parse_result.failures,
+                    job_id=job.id,
+                    generation=next_generation,
+                )
+                if not retry_requests:
+                    session.commit()
+                    raise TranslationProviderError(
+                        "Qwen Batch failed subsets could not be reconstructed"
+                    )
+                _mark_qwen_split_parents(
+                    session,
+                    tenant_id=job.tenant_id,
+                    parent_ids=split_parent_ids,
+                )
+                retry_requests, _retry_rows = _ensure_qwen_batch_rows(
+                    session,
+                    job=job,
+                    requests=retry_requests,
+                )
+                snapshot = dict(job.batch_request_payload or snapshot)
+                snapshot["requests"] = retry_requests
+                job.batch_request_payload = snapshot
+                _save_qwen_batch_progress(
+                    job,
+                    total=translation_total,
+                    processed=translation_processed,
+                    imported_batch_id=current_batch_id,
+                    retry_generation=next_generation,
+                )
                 stale_file_ids = _clear_qwen_batch_checkpoint(
                     job,
                     clear_payload=False,
                 )
-                job.external_total_requests = len(requests)
+                job.external_total_requests = len(retry_requests)
                 session.commit()
                 _delete_qwen_batch_files(client, stale_file_ids)
                 raise TranslationProviderError(
                     f"已保存 {translation_processed} / {translation_total} 个翻译字段；"
-                    f"仍有 {parse_result.failed_values} 个字段需要按失败批次重试"
+                    f"仍有 {parse_result.failed_values} 个字段待实时并发重试，"
+                    "失败断点已完整保留"
                 )
             retry_requests, split_parent_ids = _qwen_retry_requests(
                 parse_result.failures,
@@ -4309,9 +4622,67 @@ def _run_qwen_batch_translation_job(
         seed=seed,
     )
     if missing_by_locale:
-        raise TranslationProviderError(
-            "Batch translation memory is incomplete after result import"
+        missing_count = sum(
+            len(locale_values) for locale_values in missing_by_locale.values()
         )
+        retry_generation = max(1, _qwen_retry_generation(snapshot) + 1)
+        retry_requests = qwen_batch_translation_requests(
+            missing_by_locale,
+            job_id=job.id,
+            generation=retry_generation,
+        )
+        retry_requests, _retry_rows = _ensure_qwen_batch_rows(
+            session,
+            job=job,
+            requests=retry_requests,
+        )
+        snapshot = dict(job.batch_request_payload or snapshot)
+        snapshot["requests"] = retry_requests
+        job.batch_request_payload = snapshot
+        translation_total, _translation_processed = _job_qwen_batch_counts(job)
+        translation_total = max(translation_total, missing_count)
+        _save_qwen_batch_progress(
+            job,
+            total=translation_total,
+            processed=max(0, translation_total - missing_count),
+            retry_generation=retry_generation,
+        )
+        stale_file_ids = _clear_qwen_batch_checkpoint(
+            job,
+            clear_payload=False,
+        )
+        job.external_batch_status = "realtime_pending_retry"
+        job.external_total_requests = len(retry_requests)
+        job.external_completed_requests = 0
+        job.external_failed_requests = len(retry_requests)
+        job.current_sku_name = None
+        job.updated_at = utcnow()
+        session.commit()
+        _delete_qwen_batch_files(client, stale_file_ids)
+        locale_summary = "、".join(
+            f"{source_locale} {len(locale_values)} 项"
+            for source_locale, locale_values in sorted(missing_by_locale.items())
+        )
+        raise TranslationProviderError(
+            f"Batch 结果导入后仍有 {missing_count} 个字段缺少有效译文"
+            f"（{locale_summary}）；已重建完整断点，继续任务将实时并发重试"
+        )
+
+    translation_total, _translation_processed = _job_qwen_batch_counts(job)
+    snapshot = dict(job.batch_request_payload or snapshot)
+    snapshot["requests"] = []
+    job.batch_request_payload = snapshot
+    _save_qwen_batch_progress(
+        job,
+        total=translation_total,
+        processed=translation_total,
+        retry_generation=_qwen_retry_generation(snapshot),
+    )
+    _reconcile_realtime_text_batches(
+        session,
+        job=job,
+        translations=translations,
+    )
 
     candidate_hashes = snapshot.get("candidate_source_hashes")
     candidate_hashes = (
@@ -4368,6 +4739,18 @@ def _run_qwen_batch_translation_job(
     if _pause_at_safe_checkpoint(session, job):
         return
 
+    _acquire_language_pack_publish_lock(
+        session,
+        tenant_id=job.tenant_id,
+        target_locale=job.target_locale,
+    )
+    session.expire_all()
+    current_pack = translation_repository.language_pack(
+        session,
+        tenant_id=job.tenant_id,
+        target_locale=job.target_locale,
+    )
+    previous_payload = load_language_pack_payload(storage, current_pack)
     sku_translations = translation_repository.translation_map(
         session,
         tenant_id=job.tenant_id,
@@ -4403,7 +4786,6 @@ def _run_qwen_batch_translation_job(
     )
     job.stage = "UPLOADING"
     job.updated_at = utcnow()
-    session.commit()
     stored = storage.put(build.compressed, object_key=object_key)
     published_at = utcnow()
     translation_repository.save_language_pack(
@@ -4701,6 +5083,18 @@ def _run_translation_job(
             if _pause_at_safe_checkpoint(session, job):
                 return
 
+            _acquire_language_pack_publish_lock(
+                session,
+                tenant_id=tenant_id,
+                target_locale=job.target_locale,
+            )
+            session.expire_all()
+            current_pack = translation_repository.language_pack(
+                session,
+                tenant_id=tenant_id,
+                target_locale=job.target_locale,
+            )
+            previous_payload = load_language_pack_payload(storage, current_pack)
             product_overrides, sku_overrides = _language_pack_override_values(
                 session,
                 tenant_id=tenant_id,
@@ -4736,7 +5130,6 @@ def _run_translation_job(
             )
             job.stage = "UPLOADING"
             job.updated_at = utcnow()
-            session.commit()
             stored = storage.put(build.compressed, object_key=object_key)
             published_at = utcnow()
             translation_repository.save_language_pack(

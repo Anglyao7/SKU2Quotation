@@ -22,12 +22,13 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
-from ..database import SessionLocal, get_session
+from ..database import SessionLocal, get_auth_session, get_session
 from ..domain.errors import ApplicationError
-from ..services.auth.dependencies import current_context, get_authenticated_session
+from ..services.auth.dependencies import bearer, current_context, get_authenticated_session
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.storefront_analytics import request_visitor_ip, request_visitor_location
 from ..support_schemas import (
@@ -46,6 +47,7 @@ from ..support_schemas import (
     SupportTranslationPreviewWrite,
 )
 from ..use_cases import support as use_cases
+from ..use_cases import public_catalog as public_catalog_use_cases
 from ..services.support_ai_orchestrator import (
     process_queued_runs_for_public_conversation,
 )
@@ -61,6 +63,48 @@ SUPPORT_STREAM_HEADERS = {
     "Content-Encoding": "identity",
     "X-Accel-Buffering": "no",
 }
+
+
+def _support_account_owner(
+    *,
+    account: UUID | None,
+    credentials: HTTPAuthorizationCredentials | None,
+    identity_session: Session,
+    permission_session: Session,
+) -> UUID | None:
+    if account is None:
+        return None
+    access_token = (
+        credentials.credentials
+        if credentials is not None and credentials.scheme.lower() == "bearer"
+        else None
+    )
+    member_context = public_catalog_use_cases.optional_customer_subaccount_membership(
+        identity_session,
+        access_token=access_token,
+    )
+    membership = member_context[0] if member_context is not None else None
+    user = member_context[1] if member_context is not None else None
+    if membership is None or membership.id != account:
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_SESSION_MISMATCH",
+            "当前登录账号与该子账号前台不一致。",
+            kind="forbidden" if membership is not None else "unauthorized",
+        )
+    assert user is not None
+    permissions = public_catalog_use_cases.customer_subaccount_permissions(
+        identity_session,
+        permission_session=permission_session,
+        membership=membership,
+        user=user,
+    )
+    if "support.view" not in permissions:
+        raise ApplicationError(
+            "SUPPORT_ACCESS_DENIED",
+            "当前子账号未开通客服权限。",
+            kind="forbidden",
+        )
+    return membership.id
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,12 +135,14 @@ def _load_public_support_stream_state(
     *,
     tenant_slug: str,
     token: str,
+    owner_membership_id: UUID | None,
 ) -> _PublicSupportStreamState:
     with SessionLocal() as session:
         conversation = use_cases.get_public_conversation(
             session,
             slug=tenant_slug,
             token=token,
+            owner_membership_id=owner_membership_id,
         )
         run = use_cases.latest_public_chat_run(
             session,
@@ -133,6 +179,7 @@ async def _public_support_event_stream(
     request: Request,
     tenant_slug: str,
     token: str,
+    owner_membership_id: UUID | None,
     initial: _PublicSupportStreamState,
 ) -> AsyncIterator[str]:
     current = initial.conversation
@@ -172,6 +219,7 @@ async def _public_support_event_stream(
                 _load_public_support_stream_state,
                 tenant_slug=tenant_slug,
                 token=token,
+                owner_membership_id=owner_membership_id,
             )
         except ApplicationError:
             yield _support_sse_event(
@@ -427,6 +475,8 @@ def list_support_conversations(
             session,
             tenant_id=context.tenant_id,
             permissions=context.permissions,
+            membership_id=context.membership_id,
+            account_scope=context.account_scope,
             page=page,
             page_size=page_size,
             status=conversation_status,
@@ -452,6 +502,8 @@ def list_support_human_requests(
             session,
             tenant_id=context.tenant_id,
             permissions=context.permissions,
+            membership_id=context.membership_id,
+            account_scope=context.account_scope,
             limit=limit,
         )
     except ApplicationError as exc:
@@ -475,6 +527,8 @@ def get_support_conversation(
             tenant_id=context.tenant_id,
             conversation_id=conversation_id,
             permissions=context.permissions,
+            membership_id=context.membership_id,
+            account_scope=context.account_scope,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -497,6 +551,8 @@ def reply_support_conversation(
             session,
             tenant_id=context.tenant_id,
             user_id=context.user_id,
+            membership_id=context.membership_id,
+            account_scope=context.account_scope,
             conversation_id=conversation_id,
             permissions=context.permissions,
             request=payload,
@@ -523,6 +579,8 @@ def preview_support_reply_translation(
             tenant_id=context.tenant_id,
             conversation_id=conversation_id,
             permissions=context.permissions,
+            membership_id=context.membership_id,
+            account_scope=context.account_scope,
             request=payload,
         )
     except ApplicationError as exc:
@@ -547,6 +605,8 @@ def update_support_conversation(
             tenant_id=context.tenant_id,
             conversation_id=conversation_id,
             permissions=context.permissions,
+            membership_id=context.membership_id,
+            account_scope=context.account_scope,
             request=payload,
         )
     except ApplicationError as exc:
@@ -572,6 +632,8 @@ def update_support_conversation_automation(
             conversation_id=conversation_id,
             permissions=context.permissions,
             is_platform_admin=context.is_platform_admin,
+            membership_id=context.membership_id,
+            account_scope=context.account_scope,
             request=payload,
         )
     except ApplicationError as exc:
@@ -613,7 +675,10 @@ def create_public_support_conversation(
     request: Request,
     response: Response,
     background_tasks: BackgroundTasks,
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
     enforce_rate_limit(
@@ -627,6 +692,12 @@ def create_public_support_conversation(
         ),
     )
     try:
+        owner_membership_id = _support_account_owner(
+            account=account,
+            credentials=credentials,
+            identity_session=identity_session,
+            permission_session=session,
+        )
         visitor_ip = request_visitor_ip(request)
         visitor_location = request_visitor_location(
             request,
@@ -636,6 +707,7 @@ def create_public_support_conversation(
             session,
             slug=tenant_slug,
             request=payload,
+            owner_membership_id=owner_membership_id,
             visitor_ip=visitor_ip,
             visitor_location=visitor_location,
         )
@@ -658,14 +730,24 @@ def get_public_support_conversation(
     tenant_slug: str,
     response: Response,
     x_support_token: str = Header(..., max_length=500),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
     try:
+        owner_membership_id = _support_account_owner(
+            account=account,
+            credentials=credentials,
+            identity_session=identity_session,
+            permission_session=session,
+        )
         return use_cases.get_public_conversation(
             session,
             slug=tenant_slug,
             token=x_support_token,
+            owner_membership_id=owner_membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -676,6 +758,10 @@ async def stream_public_support_conversation(
     tenant_slug: str,
     request: Request,
     x_support_token: str = Header(..., max_length=500),
+    account: UUID | None = Query(default=None),
+    session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> StreamingResponse:
     enforce_rate_limit(
         request,
@@ -685,10 +771,17 @@ async def stream_public_support_conversation(
         token=x_support_token,
     )
     try:
+        owner_membership_id = _support_account_owner(
+            account=account,
+            credentials=credentials,
+            identity_session=identity_session,
+            permission_session=session,
+        )
         initial = await asyncio.to_thread(
             _load_public_support_stream_state,
             tenant_slug=tenant_slug,
             token=x_support_token,
+            owner_membership_id=owner_membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -697,6 +790,7 @@ async def stream_public_support_conversation(
             request=request,
             tenant_slug=tenant_slug,
             token=x_support_token,
+            owner_membership_id=owner_membership_id,
             initial=initial,
         ),
         media_type="text/event-stream",
@@ -715,7 +809,10 @@ def send_public_support_message(
     response: Response,
     background_tasks: BackgroundTasks,
     x_support_token: str = Header(..., max_length=500),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
     enforce_rate_limit(
@@ -726,6 +823,12 @@ def send_public_support_message(
         token=x_support_token,
     )
     try:
+        owner_membership_id = _support_account_owner(
+            account=account,
+            credentials=credentials,
+            identity_session=identity_session,
+            permission_session=session,
+        )
         visitor_ip = request_visitor_ip(request)
         visitor_location = request_visitor_location(
             request,
@@ -736,6 +839,7 @@ def send_public_support_message(
             slug=tenant_slug,
             token=x_support_token,
             request=payload,
+            owner_membership_id=owner_membership_id,
             visitor_ip=visitor_ip,
             visitor_location=visitor_location,
         )
@@ -759,7 +863,10 @@ def request_public_human_assistance(
     request: Request,
     response: Response,
     x_support_token: str = Header(..., max_length=500),
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
     enforce_rate_limit(
@@ -770,10 +877,17 @@ def request_public_human_assistance(
         token=x_support_token,
     )
     try:
+        owner_membership_id = _support_account_owner(
+            account=account,
+            credentials=credentials,
+            identity_session=identity_session,
+            permission_session=session,
+        )
         return use_cases.request_public_human_assistance(
             session,
             slug=tenant_slug,
             token=x_support_token,
+            owner_membership_id=owner_membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

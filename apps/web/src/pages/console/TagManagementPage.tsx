@@ -21,6 +21,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { EmptyState, ErrorState, TableSkeleton } from "../../components/States";
 import { useCoreAuth } from "../../core/AuthContext";
+import { useLocale } from "../../core/LocaleContext";
 import { ToastNotice } from "../../core/ToastContext";
 import { api } from "../../lib/api";
 import type { ProductTag } from "../../types";
@@ -46,6 +47,7 @@ const TAG_CATEGORIES = [
 
 export function TagManagementPage() {
   const { profile } = useCoreAuth();
+  const { t } = useLocale();
   const { activeTenantId } = useOutletContext<ConsoleOutletContext>();
   const [tags, setTags] = useState<ProductTag[]>([]);
   const [total, setTotal] = useState(0);
@@ -70,11 +72,11 @@ export function TagManagementPage() {
       setTags(data.tags);
       setTotal(data.total);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "标签列表加载失败。");
+      setError(caught instanceof Error ? caught.message : t("标签列表加载失败。"));
     } finally {
       setLoading(false);
     }
-  }, [activeTenantId, categoryFilter, isPlatformAdmin]);
+  }, [activeTenantId, categoryFilter, isPlatformAdmin, t]);
 
   useEffect(() => {
     void load();
@@ -120,7 +122,7 @@ export function TagManagementPage() {
       closeDialog();
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "操作失败。");
+      setError(caught instanceof Error ? caught.message : t("操作失败。"));
     } finally {
       setSaving(false);
     }
@@ -134,7 +136,7 @@ export function TagManagementPage() {
       setDeleting(null);
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "标签删除失败。");
+      setError(caught instanceof Error ? caught.message : t("标签删除失败。"));
       setDeleting(null);
     }
   };
@@ -142,7 +144,7 @@ export function TagManagementPage() {
   if (isPlatformAdmin && !activeTenantId) {
     return (
       <div className="console-page">
-        <ToastNotice message="请先从侧边栏选择一个租户，再管理标签。" />
+        <ToastNotice message={t("请先从侧边栏选择一个租户，再管理标签。")} />
       </div>
     );
   }
@@ -151,27 +153,27 @@ export function TagManagementPage() {
     <div className="console-page">
       <div className="page-heading-row">
         <div>
-          <Heading as="h1" size="6">标签管理</Heading>
+          <Heading as="h1" size="6">{t("标签管理")}</Heading>
         </div>
         <Button onClick={openCreate}>
           <Plus weight="bold" />
-          新建标签
+          {t("新建标签")}
         </Button>
       </div>
 
       <div style={{ display: "flex", gap: "12px", marginBottom: "20px" }}>
         <Select.Root value={categoryFilter} onValueChange={setCategoryFilter}>
-          <Select.Trigger placeholder="全部分类" style={{ width: "180px" }} />
+          <Select.Trigger placeholder={t("全部分类")} style={{ width: "180px" }} />
           <Select.Content>
             {TAG_CATEGORIES.map((cat) => (
               <Select.Item key={cat.value} value={cat.value}>
-                {cat.label}
+                {t(cat.label)}
               </Select.Item>
             ))}
           </Select.Content>
         </Select.Root>
         <Badge color="gray" variant="soft">
-          共 {total} 个标签
+          {t("共 {count} 个标签", { count: total })}
         </Badge>
       </div>
 
@@ -183,18 +185,18 @@ export function TagManagementPage() {
         <ErrorState message={error} onRetry={load} />
       ) : tags.length === 0 ? (
         <EmptyState
-          title="还没有标签"
-          description="创建第一个标签，用于标记和分类您的商品。"
-          action={<Button onClick={openCreate}><Plus weight="bold" />新建标签</Button>}
+          title={t("还没有标签")}
+          description={t("创建第一个标签，用于标记和分类您的商品。")}
+          action={<Button onClick={openCreate}><Plus weight="bold" />{t("新建标签")}</Button>}
         />
       ) : (
         <Table.Root variant="surface">
           <Table.Header>
             <Table.Row>
-              <Table.ColumnHeaderCell>标签名称</Table.ColumnHeaderCell>
-              <Table.ColumnHeaderCell>分类</Table.ColumnHeaderCell>
-              <Table.ColumnHeaderCell>使用次数</Table.ColumnHeaderCell>
-              <Table.ColumnHeaderCell width="100px">操作</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>{t("标签名称")}</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>{t("分类")}</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>{t("使用次数")}</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell width="100px">{t("操作")}</Table.ColumnHeaderCell>
             </Table.Row>
           </Table.Header>
           <Table.Body>
@@ -208,7 +210,7 @@ export function TagManagementPage() {
                 </Table.Cell>
                 <Table.Cell>
                   {tag.category ? (
-                    <Badge color="gray" variant="soft">{tag.category}</Badge>
+                    <Badge color="gray" variant="soft">{t(tag.category)}</Badge>
                   ) : (
                     <Text color="gray" size="2">—</Text>
                   )}
@@ -225,7 +227,7 @@ export function TagManagementPage() {
                       variant="ghost"
                       color="gray"
                       onClick={() => openEdit(tag)}
-                      aria-label="编辑"
+                      aria-label={t("编辑")}
                     >
                       <NotePencil weight="fill" />
                     </IconButton>
@@ -234,7 +236,7 @@ export function TagManagementPage() {
                       variant="ghost"
                       color="red"
                       onClick={() => setDeleting(tag)}
-                      aria-label="删除"
+                      aria-label={t("删除")}
                     >
                       <Trash weight="fill" />
                     </IconButton>
@@ -248,17 +250,17 @@ export function TagManagementPage() {
 
       <Dialog.Root open={editing !== null} onOpenChange={(open) => !open && closeDialog()}>
         <Dialog.Content maxWidth="480px">
-          <Dialog.Title>{editing === "new" ? "新建标签" : "编辑标签"}</Dialog.Title>
+          <Dialog.Title>{t(editing === "new" ? "新建标签" : "编辑标签")}</Dialog.Title>
           <form onSubmit={handleSubmit}>
             <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
               <label>
                 <Text size="2" weight="medium" as="div" mb="1">
-                  标签名称 <Text color="red" as="span">*</Text>
+                  {t("标签名称")} <Text color="red" as="span">*</Text>
                 </Text>
                 <TextField.Root
                   value={payload.name}
                   onChange={(e) => setPayload({ ...payload, name: e.target.value })}
-                  placeholder="例如：Hot / 畅销 / 防水"
+                  placeholder={t("例如：Hot / 畅销 / 防水")}
                   maxLength={80}
                   required
                 />
@@ -266,17 +268,17 @@ export function TagManagementPage() {
 
               <label>
                 <Text size="2" weight="medium" as="div" mb="1">
-                  标签分类
+                  {t("标签分类")}
                 </Text>
                 <Select.Root
                   value={payload.category}
                   onValueChange={(value) => setPayload({ ...payload, category: value })}
                 >
-                  <Select.Trigger placeholder="选择分类" />
+                  <Select.Trigger placeholder={t("选择分类")} />
                   <Select.Content>
                     {TAG_CATEGORIES.map((cat) => (
                       <Select.Item key={cat.value} value={cat.value}>
-                        {cat.label}
+                        {t(cat.label)}
                       </Select.Item>
                     ))}
                   </Select.Content>
@@ -286,11 +288,11 @@ export function TagManagementPage() {
               <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end", marginTop: "8px" }}>
                 <Dialog.Close>
                   <Button type="button" variant="soft" color="gray">
-                    取消
+                    {t("取消")}
                   </Button>
                 </Dialog.Close>
                 <Button type="submit" disabled={saving || !payload.name.trim()}>
-                  {saving ? "保存中…" : editing === "new" ? "创建" : "保存"}
+                  {t(saving ? "保存中…" : editing === "new" ? "创建" : "保存")}
                 </Button>
               </div>
             </div>
@@ -300,21 +302,21 @@ export function TagManagementPage() {
 
       <AlertDialog.Root open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <AlertDialog.Content maxWidth="400px">
-          <AlertDialog.Title>确认删除</AlertDialog.Title>
+          <AlertDialog.Title>{t("确认删除")}</AlertDialog.Title>
           <AlertDialog.Description>
-            确定要删除标签 <strong>"{deleting?.name}"</strong> 吗？
+            {t("确定要删除标签“{name}”吗？", { name: deleting?.name || "" })}
             {deleting && deleting.usage_count > 0 && (
               <Text as="div" color="red" size="2" mt="2">
-                ⚠️ 此标签已被 {deleting.usage_count} 个商品使用
+                {t("此标签已被 {count} 个商品使用", { count: deleting.usage_count })}
               </Text>
             )}
           </AlertDialog.Description>
           <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end", marginTop: "16px" }}>
             <AlertDialog.Cancel>
-              <Button variant="soft" color="gray">取消</Button>
+              <Button variant="soft" color="gray">{t("取消")}</Button>
             </AlertDialog.Cancel>
             <AlertDialog.Action>
-              <Button color="red" onClick={deleteTag}>删除</Button>
+              <Button color="red" onClick={deleteTag}>{t("删除")}</Button>
             </AlertDialog.Action>
           </div>
         </AlertDialog.Content>

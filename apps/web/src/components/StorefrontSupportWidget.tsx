@@ -335,7 +335,7 @@ export function StorefrontSupportWidget({
     if (!token) return;
     if (!quiet) setLoading(true);
     try {
-      const next = await api.getSupportConversation(tenantSlug, token);
+      const next = await api.getSupportConversation(tenantSlug, token, accountId);
       applyConversationSnapshot(next);
       setError("");
     } catch (caught) {
@@ -349,7 +349,7 @@ export function StorefrontSupportWidget({
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [applyConversationSnapshot, storageScope, tenantSlug, t, token]);
+  }, [accountId, applyConversationSnapshot, storageScope, tenantSlug, t, token]);
 
   useEffect(() => {
     if (!open || !token) return;
@@ -402,6 +402,7 @@ export function StorefrontSupportWidget({
           token,
           handleStreamEvent,
           controller.signal,
+          accountId,
         );
       } catch (caught) {
         if (stopped || controller.signal.aborted) return;
@@ -430,6 +431,7 @@ export function StorefrontSupportWidget({
   }, [
     enqueueStreamingDelta,
     applyConversationSnapshot,
+    accountId,
     open,
     refreshConversation,
     resetStreamingPlayback,
@@ -486,16 +488,16 @@ export function StorefrontSupportWidget({
     try {
       const clientMessageId = crypto.randomUUID();
       const next = token
-        ? await api.sendSupportMessage(tenantSlug, token, {
+          ? await api.sendSupportMessage(tenantSlug, token, {
             message,
             client_message_id: clientMessageId,
             locale,
-          })
+          }, accountId)
         : await api.createSupportConversation(tenantSlug, {
             message,
             client_message_id: clientMessageId,
             locale,
-          });
+          }, accountId);
       const nextToken = next.access_token || token;
       if (nextToken && nextToken !== token) {
         setToken(nextToken);
@@ -521,7 +523,7 @@ export function StorefrontSupportWidget({
     setHumanRequestBusy(true);
     setError("");
     try {
-      setConversation(await api.requestHumanSupport(tenantSlug, token));
+      setConversation(await api.requestHumanSupport(tenantSlug, token, accountId));
     } catch (caught) {
       setError(caught instanceof Error
         ? caught.message

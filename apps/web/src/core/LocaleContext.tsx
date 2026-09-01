@@ -9,6 +9,9 @@ import {
 } from "react";
 import { updateUserPreferences } from "./api";
 import { useCoreAuth } from "./AuthContext";
+import { consoleLocaleMessage } from "./consoleLocaleMessages";
+import { parseStorefrontLocale } from "../lib/storefrontLocale";
+import { localizedStorefrontMessages } from "../lib/storefrontMessages";
 import type { UiLocale } from "./types";
 
 const STORAGE_KEY = "zhimaoyun.console.locale";
@@ -1964,6 +1967,9 @@ const english: Record<string, string> = {
   "商品译文微调": "Product translation review",
   "按语言查看当前前台商品；人工修改保存后立即发布新语言包，并优先于自动译文。":
     "Review current storefront products by language. Manual edits publish a new language package immediately and take precedence over automatic translations.",
+  "先选择目标语言，再逐字段检查商品与 SKU；保存后计入完成度，发布由管理员单独确认。":
+    "Choose a target language, then review each product and SKU field. Saving counts as completed; publishing remains a separate administrator action.",
+  "当前微调语言": "Language being reviewed",
   "正在读取商品译文列表": "Loading product translations",
   "商品译文读取失败。": "Could not load product translations.",
   "商品原文": "Source product",
@@ -1990,10 +1996,28 @@ const english: Record<string, string> = {
   "SKU 描述": "SKU description",
   "商品下的 SKU 名称与规格也会一并写入语言包。":
     "SKU names and specifications for this product are saved to the language package as well.",
+  "这里保存的是当前语言的人工译文；保存后该商品下的 SKU 会视为已完成，但不会自动发布前台版本。":
+    "These edits apply only to the selected language. Saving marks the product SKUs complete without publishing a storefront version.",
+  "保存人工译文": "Save manual translation",
+  "人工译文已保存，并计入 {language} 的完成进度。":
+    "Manual translation saved and counted toward {language} completion.",
   "保存并发布语言包": "Save and publish language package",
   "人工译文已保存并发布为语言包 v{version}。":
     "Manual translations saved and published as language package v{version}.",
   "人工译文保存失败。": "Could not save manual translations.",
+  "已完成（含人工）": "Completed (including manual)",
+  "手动发布当前进度": "Publish current progress",
+  "已发布当前进度": "Current progress published",
+  "无需等待全部翻译完成；发布后，已完成和人工确认的译文立即生效，缺失内容继续回退中文。":
+    "You do not need to wait for full completion. Completed and manually reviewed translations go live, while missing content continues to fall back to Chinese.",
+  "手动发布语言包": "Publish language package",
+  "发布当前 {language} 翻译进度？": "Publish current {language} progress?",
+  "当前已完成 {done} / {total} 个 SKU。系统会创建一个新的语言包版本；未完成的 SKU 不会阻塞发布，并继续显示中文原文。":
+    "{done} of {total} SKUs are complete. A new language package version will be created; incomplete SKUs will not block publishing and will continue to show the Chinese source.",
+  "确认发布新版本": "Publish new version",
+  "已手动发布 {language} 语言包 v{version}；未完成内容继续显示中文原文。":
+    "Published {language} language package v{version}. Incomplete content continues to show the Chinese source.",
+  "手动发布语言包失败。": "Could not publish the language package.",
   "每分钟最大请求数（RPM）": "Maximum requests per minute (RPM)",
   "达到上限后请求会排队等待，已完成的翻译和断点不会丢失。":
     "Requests wait in a queue after the limit is reached; completed translations and checkpoints are preserved.",
@@ -3419,10 +3443,22 @@ const LocaleContext = createContext<LocaleContextValue | null>(null);
 
 function storedLocale(): UiLocale {
   const value = window.localStorage.getItem(STORAGE_KEY);
-  if (value === "zh-CN" || value === "en-US") return value;
-  return window.navigator.language.toLowerCase().startsWith("en")
-    ? "en-US"
-    : "zh-CN";
+  return parseStorefrontLocale(value)
+    ?? parseStorefrontLocale(window.navigator.language)
+    ?? "zh-CN";
+}
+
+function fixedLocaleMessage(locale: UiLocale, message: string): string {
+  if (locale === "zh-CN") return message;
+  if (locale === "en-US") return consoleLocaleMessage(locale, message) ?? english[message] ?? message;
+  const storefrontMessage = (
+    localizedStorefrontMessages[message] as Partial<Record<UiLocale, string>> | undefined
+  )?.[locale];
+  return consoleLocaleMessage(locale, message)
+    ?? storefrontMessage
+    ?? consoleLocaleMessage("en-US", message)
+    ?? english[message]
+    ?? message;
 }
 
 function interpolate(
@@ -3477,7 +3513,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
       locale,
       isEnglish: locale === "en-US",
       t: (message, values) =>
-        interpolate(locale === "en-US" ? english[message] ?? message : message, values),
+        interpolate(fixedLocaleMessage(locale, message), values),
       setLocale,
     }),
     [locale, setLocale],

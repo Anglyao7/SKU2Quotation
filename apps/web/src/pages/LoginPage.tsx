@@ -1,7 +1,8 @@
-import { Button, Card, Heading, Text, TextField } from "@radix-ui/themes";
+import { Button, Card, DropdownMenu, Heading, Text, TextField } from "@radix-ui/themes";
 import {
   ArrowRight,
   Buildings,
+  Check,
   Eye,
   EyeSlash,
   LockKey,
@@ -16,6 +17,7 @@ import { useCoreAuth } from "../core/AuthContext";
 import { authLoginMessageKey } from "../core/authLoginError";
 import { useLocale } from "../core/LocaleContext";
 import { ToastNotice } from "../core/ToastContext";
+import { STOREFRONT_LANGUAGE_OPTIONS, storefrontLanguage } from "../lib/storefrontLocale";
 
 export function LoginPage() {
   const { locale, setLocale, t } = useLocale();
@@ -39,6 +41,7 @@ export function LoginPage() {
     ? "/console"
     : requestedDestination;
   const visibleError = error || authError;
+  const currentLanguage = storefrontLanguage(locale);
 
   useEffect(() => {
     if (status === "authenticated") {
@@ -74,7 +77,31 @@ export function LoginPage() {
 
   return (
     <main className="login-page">
-      <div className="login-topbar"><Brand /><div className="login-topbar-actions"><Button variant="ghost" color="gray" onClick={() => void setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")} aria-label={t("切换语言")}><Translate />{locale === "zh-CN" ? "EN" : "中文"}</Button><ThemeToggle /></div></div>
+      <div className="login-topbar">
+        <Brand />
+        <div className="login-topbar-actions">
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>
+              <Button variant="ghost" color="gray" aria-label={t("切换语言")}>
+                <Translate />{currentLanguage.shortLabel}
+              </Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content align="end" className="locale-menu-content">
+              {STOREFRONT_LANGUAGE_OPTIONS.map((language) => (
+                <DropdownMenu.Item
+                  key={language.code}
+                  onSelect={() => void setLocale(language.code)}
+                >
+                  <span className="locale-check">{locale === language.code ? <Check size={15} /> : null}</span>
+                  <span aria-hidden="true">{language.flag}</span>
+                  {language.label}
+                </DropdownMenu.Item>
+              ))}
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+          <ThemeToggle />
+        </div>
+      </div>
       <div className="login-layout">
         <Card className="login-card" variant="surface">
           <div className="login-card-heading">

@@ -1208,6 +1208,46 @@ export async function clearCustomerSubaccountSkuPricing(
   );
 }
 
+export async function updateOwnProductPrice(
+  productId: string,
+  value: number,
+): Promise<void> {
+  await request<void>(
+    `/customer-portal/pricing/products/${encodeURIComponent(productId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ pricing_mode: "FIXED_PRICE", value }),
+    },
+  );
+}
+
+export async function clearOwnProductPrice(productId: string): Promise<void> {
+  await request<void>(
+    `/customer-portal/pricing/products/${encodeURIComponent(productId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function updateOwnSkuPrice(
+  skuId: string,
+  value: number,
+): Promise<void> {
+  await request<void>(
+    `/customer-portal/pricing/skus/${encodeURIComponent(skuId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ pricing_mode: "FIXED_PRICE", value }),
+    },
+  );
+}
+
+export async function clearOwnSkuPrice(skuId: string): Promise<void> {
+  await request<void>(
+    `/customer-portal/pricing/skus/${encodeURIComponent(skuId)}`,
+    { method: "DELETE" },
+  );
+}
+
 export async function updateCustomerSubaccountCategoryPricing(
   membershipId: string,
   categoryId: string,
@@ -3855,6 +3895,24 @@ export async function updateCatalogTranslationProduct(
           product: apiCatalogProductContent(product),
           skus: skus.map(apiCatalogSkuContent),
         }),
+      },
+    ),
+  );
+}
+
+export async function publishCatalogLanguagePack(
+  targetLocale: StorefrontLocale,
+  tenantId?: string,
+): Promise<CatalogLanguagePackInfo> {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("tenant_id", tenantId);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return mapCatalogLanguagePack(
+    await request<ApiCatalogLanguagePack>(
+      `/catalog/translations/language-pack/publish${suffix}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ target_locale: targetLocale }),
       },
     ),
   );

@@ -218,7 +218,7 @@ export async function latestCachedLanguagePack(
   return (await readLatestRecord(slug.toLocaleLowerCase(), locale))?.payload;
 }
 
-function localizedOptionValues(
+export function localizeSkuOptionValues(
   optionValues: Record<string, unknown> | undefined,
   product: CatalogLanguagePack["products"][string] | undefined,
 ) {
@@ -282,7 +282,7 @@ export function localizeSku(
     tags: translation.tags || sku.tags,
     display_tag: translation.display_tag ?? sku.display_tag,
     specification: translation.specification ?? sku.specification,
-    option_values: localizedOptionValues(sku.option_values, product),
+    option_values: localizeSkuOptionValues(sku.option_values, product),
     source_locale: pack.source_locale,
     locale: pack.target_locale,
     translation_status: "TRANSLATED",

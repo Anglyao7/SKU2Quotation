@@ -942,7 +942,7 @@ export function StorePage() {
                 )}
                 <span>
                   <strong>{store.storefront_scope === "CUSTOMER_SUBACCOUNT" ? (accountName || store.name) : store.name}</strong>
-                  <small>{accountName ? t("子账号专属商品目录") : t("商品目录")}</small>
+                  <small>{t("商品目录")}</small>
                 </span>
               </Link>
               <span className="powered-by">{t("由智贸云提供")}</span>

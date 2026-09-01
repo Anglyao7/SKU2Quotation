@@ -38,12 +38,17 @@ import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { removeImportItem, resetFailedImportItem, selectUniqueImportFiles } from "../importQueueState";
 import { useLocale } from "../LocaleContext";
+import {
+  localizeCoreProductDetail,
+  localizeCoreProductPage,
+  localizeProductCategories,
+} from "../catalogLanguagePack";
 import { CatalogShareDialog, type CatalogShareTarget } from "../components/CatalogShareDialog";
 import { ImageEnhancementDialog, type ImageEnhancementTarget } from "../components/ImageEnhancementDialog";
 import { primaryCategoryLabel } from "../../lib/format";
 import { storefrontLanguage } from "../../lib/storefrontLocale";
 import { api } from "../../lib/api";
-import type { ProductTag, StorefrontLocale } from "../../types";
+import type { CatalogLanguagePack, ProductTag, StorefrontLocale } from "../../types";
 import type { CatalogImportFile, CatalogImportFileRollbackResult, CoreProduct, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductListPage, ProductSku, PublicCatalogOffer, SkuListItem } from "../types";
 import { useToast } from "../ToastContext";
 
@@ -318,6 +323,7 @@ export function ProductsPage() {
   const { notify } = useToast();
   const canEdit = hasPermission("product.edit");
   const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
+  const tenantSlug = profile?.context.tenantSlug;
   const canDelete = canEdit;
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
@@ -332,10 +338,27 @@ export function ProductsPage() {
   const [missingImagesOnly, setMissingImagesOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(initialSkuPageSize);
-  const [result, setResult] = useState<ProductListPage>(emptyProductPage);
+  const [languagePackState, setLanguagePackState] = useState<{
+    locale: StorefrontLocale;
+    pack?: CatalogLanguagePack;
+  }>({ locale: "zh-CN" });
+  const activeLanguagePack = languagePackState.locale === locale
+    ? languagePackState.pack
+    : undefined;
+  const [sourceResult, setResult] = useState<ProductListPage>(emptyProductPage);
+  const result = useMemo(
+    () => localizeCoreProductPage(sourceResult, activeLanguagePack),
+    [activeLanguagePack, sourceResult],
+  );
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [managedTags, setManagedTags] = useState<ProductTag[]>([]);
-  const [selected, setSelected] = useState<ProductDetail>();
+  const [selectedSource, setSelected] = useState<ProductDetail>();
+  const selected = useMemo(
+    () => selectedSource
+      ? localizeCoreProductDetail(selectedSource, activeLanguagePack)
+      : undefined,
+    [activeLanguagePack, selectedSource],
+  );
   const [selectedSkuId, setSelectedSkuId] = useState<string | undefined>(params.get("sku") ?? undefined);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -437,6 +460,21 @@ export function ProductsPage() {
       setTranslationLocale(preferred);
     }).catch(() => undefined);
   }, []);
+  useEffect(() => {
+    let cancelled = false;
+    if (locale === "zh-CN" || !tenantSlug) {
+      setLanguagePackState({ locale });
+      return () => { cancelled = true; };
+    }
+    void api.getStoreLanguagePack(tenantSlug, locale)
+      .then((pack) => {
+        if (!cancelled) setLanguagePackState({ locale, pack });
+      })
+      .catch(() => {
+        if (!cancelled) setLanguagePackState({ locale });
+      });
+    return () => { cancelled = true; };
+  }, [locale, tenantSlug]);
   useEffect(() => {
     void api.getProductTags("", 200)
       .then((response) => setManagedTags(response.tags))
@@ -1193,33 +1231,37 @@ export function ProductsPage() {
     setPage(1);
     window.localStorage.setItem(SKU_PAGE_SIZE_STORAGE_KEY, String(next));
   };
+  const displayCategories = useMemo(
+    () => localizeProductCategories(categories, activeLanguagePack),
+    [activeLanguagePack, categories],
+  );
   const rootCategories = useMemo(
-    () => categories
+    () => displayCategories
       .filter((item) => !item.parentId && item.status !== "ARCHIVED")
       .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, locale)),
-    [categories, locale],
+    [displayCategories, locale],
   );
   const bulkCategoryOptions = useMemo(
     () => rootCategories.flatMap((root) => [
       { id: root.id, label: root.name },
-      ...categories
+      ...displayCategories
         .filter((item) => item.parentId === root.id && item.status !== "ARCHIVED")
         .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, locale))
         .map((child) => ({ id: child.id, label: `${root.name} / ${child.name}` })),
     ]),
-    [categories, locale, rootCategories],
+    [displayCategories, locale, rootCategories],
   );
   const createCategoryOptions = useMemo(
     () => rootCategories
       .filter((root) => root.status === "ACTIVE")
       .flatMap((root) => [
         { id: root.id, label: root.name },
-        ...categories
+        ...displayCategories
           .filter((item) => item.parentId === root.id && item.status === "ACTIVE")
           .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, locale))
           .map((child) => ({ id: child.id, label: `${root.name} / ${child.name}` })),
       ]),
-    [categories, locale, rootCategories],
+    [displayCategories, locale, rootCategories],
   );
   const hasActiveFilters = Boolean(query.trim() || categoryId || status || missingImagesOnly);
   const bulkActionTitle = bulkAction === "category"
@@ -2085,7 +2127,7 @@ export function ProductsPage() {
 
       <Dialog.Root open={Boolean(selected || detailLoading)} onOpenChange={(open) => { if (!open) close(); }}>
         <Dialog.Content className="core-detail-dialog">
-          {detailLoading || !selected ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} selectedSkuId={selectedSkuId} categories={categories} managedTags={managedTags} onEnhanceProduct={openImageEnhancementForProduct} onEnhanceSkus={openImageEnhancementForSkus} onTranslateProduct={translateProduct} translatingProductId={translatingProductId} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
+          {detailLoading || !selected || !selectedSource ? <CoreLoading label={t("正在读取商品详情")} /> : <ProductDetailPanel product={selected} sourceProduct={selectedSource} selectedSkuId={selectedSkuId} categories={displayCategories} managedTags={managedTags} onEnhanceProduct={openImageEnhancementForProduct} onEnhanceSkus={openImageEnhancementForSkus} onTranslateProduct={translateProduct} translatingProductId={translatingProductId} onChanged={async () => { await refreshSelected(); await load(); }} onClose={close} />}
         </Dialog.Content>
       </Dialog.Root>
 
@@ -2368,8 +2410,9 @@ function ManagedTagPicker({ tags, selected, onChange, disabled = false }: {
   );
 }
 
-function ProductDetailPanel({ product, selectedSkuId, categories, managedTags, onEnhanceProduct, onEnhanceSkus, onTranslateProduct, translatingProductId, onChanged, onClose }: {
+function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories, managedTags, onEnhanceProduct, onEnhanceSkus, onTranslateProduct, translatingProductId, onChanged, onClose }: {
   product: ProductDetail;
+  sourceProduct: ProductDetail;
   selectedSkuId?: string;
   categories: ProductCategory[];
   managedTags: ProductTag[];
@@ -2520,7 +2563,7 @@ function ProductDetailPanel({ product, selectedSkuId, categories, managedTags, o
               color="blue"
               loading={translatingProductId === product.id}
               disabled={Boolean(translatingProductId)}
-              onClick={() => onTranslateProduct(product)}
+              onClick={() => onTranslateProduct(sourceProduct)}
             >
               <Translate />{t("翻译")}
             </Button>
@@ -2661,15 +2704,16 @@ function ProductDetailPanel({ product, selectedSkuId, categories, managedTags, o
           </div>
         </Tabs.Content>
         <Tabs.Content value="skus" className="core-product-detail-tab-panel">
-          <SkuPanel product={product} initialSkuId={selectedSkuId} managedTags={managedTags} onEnhanceSkus={onEnhanceSkus} onChanged={onChanged} />
+          <SkuPanel product={sourceProduct} displayProduct={product} initialSkuId={selectedSkuId} managedTags={managedTags} onEnhanceSkus={onEnhanceSkus} onChanged={onChanged} />
         </Tabs.Content>
       </Tabs.Root>
     </>
   );
 }
 
-function SkuPanel({ product, initialSkuId, managedTags, onEnhanceSkus, onChanged }: {
+function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanceSkus, onChanged }: {
   product: ProductDetail;
+  displayProduct: ProductDetail;
   initialSkuId?: string;
   managedTags: ProductTag[];
   onEnhanceSkus: (productId: string, skuIds: string[]) => void;
@@ -2797,11 +2841,12 @@ function SkuPanel({ product, initialSkuId, managedTags, onEnhanceSkus, onChanged
       {error ? <div className="core-form-error" role="alert">{error}</div> : null}
       <div className="core-sku-detail-list">
         {product.skus.map((sku) => {
+          const displaySku = displayProduct.skus.find((item) => item.id === sku.id) || sku;
           const offer = offers.find((item) => item.skuId === sku.id);
           const editing = editingSkuId === sku.id;
           const expanded = expandedSkuIds.has(sku.id);
-          const options = visibleSkuOptions(sku.optionValues);
-          const skuLabel = sku.name || options.map(([, value]) => String(value)).join(" · ") || t("基础款");
+          const options = visibleSkuOptions(displaySku.optionValues);
+          const skuLabel = displaySku.name || options.map(([, value]) => String(value)).join(" · ") || t("基础款");
           const packingQuantity = getSkuPackingQuantity(sku.optionValues);
           return (
             <Card className="core-sku-detail-card" data-expanded={expanded || undefined} data-editing={editing || undefined} key={sku.id}>
@@ -2871,7 +2916,7 @@ function SkuPanel({ product, initialSkuId, managedTags, onEnhanceSkus, onChanged
                       </div>
                     ) : <strong>{t("暂无规格")}</strong>}
                   </div>
-                  <div className="core-sku-expanded-field"><span>{t("SKU 名称")}</span><strong>{sku.name || product.name}</strong></div>
+                  <div className="core-sku-expanded-field"><span>{t("SKU 名称")}</span><strong>{displaySku.name || displayProduct.name}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("条码")}</span><strong className="core-tabular">{sku.barcode || t("未设置")}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("起订数")}</span><strong className="core-tabular">{sku.defaultMoq === undefined ? t("未设置") : `${sku.defaultMoq} ${sku.moqUnit ?? ""}`.trim()}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("装箱数")}</span><strong className="core-tabular">{packingQuantity || t("未设置")}</strong></div>

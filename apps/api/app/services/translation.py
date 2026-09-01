@@ -752,7 +752,7 @@ class OpenAICompatibleTranslator:
     """OpenAI chat-completions adapter for mixed-language catalog text."""
 
     translates_mixed_language_text = True
-    _PROMPT_VERSION = "v2"
+    _PROMPT_VERSION = "v3-source-script-audit"
 
     def __init__(
         self,
@@ -836,6 +836,24 @@ class OpenAICompatibleTranslator:
     ) -> str:
         source_name = _locale_name(source_locale)
         target_name = _locale_name(target_locale)
+        source_script_rule = (
+            "Only [[ATCK_...]] placeholders, genuine SKU/model codes, "
+            "numbers, dimensions, and measurement units are protected. "
+            "Generic product descriptors, colors, materials, option names, "
+            "category names, and brand-like words written in Chinese are "
+            "natural language and MUST be translated or transliterated. "
+            "Never copy the source text merely because a term is unfamiliar. "
+            "Before responding, silently inspect every output value for "
+            "untranslated source-language fragments and repair them. "
+        )
+        target_script_rule = (
+            "For a non-Chinese, non-Japanese target, the final output MUST "
+            "contain zero Chinese Han characters. For Japanese, use natural "
+            "Japanese: a Han term may stay unchanged only when that exact "
+            "word is standard Japanese; Chinese-only product prose, names, "
+            "colors, and marketing vocabulary must be translated or "
+            "transliterated into Japanese. "
+        )
         if structured:
             return (
                 "Translate every natural-language part in the JSON array "
@@ -844,13 +862,14 @@ class OpenAICompatibleTranslator:
                 "the same meaning, output that meaning once, including when "
                 "the duplicate is inside parentheses. Preserve [[ATCK_...]] "
                 "placeholders, SKU codes, model numbers, units, dimensions, "
-                "punctuation, and line breaks. Do not leave prose in another "
+                "punctuation, and line breaks. "
+                f"{source_script_rule}{target_script_rule}"
+                "Do not leave prose in another "
                 "language untranslated; ITEM NO, SIZE, COLOR, and DESCRIPTION "
                 "are translatable labels, not model codes. Translate or "
                 "transliterate names and brands written in the source script. "
-                "When the target is not Chinese or Japanese, no Chinese prose "
-                "may remain. Return only a JSON "
-                "array with the same length and order. No analysis or Markdown."
+                "Return only a JSON array with the same length and order. No "
+                "analysis or Markdown."
             )
         return (
             f"Translate this commerce text from {source_name} into "
@@ -858,13 +877,40 @@ class OpenAICompatibleTranslator:
             "English phrases repeat the same meaning, output that meaning "
             "once, including when the duplicate is inside parentheses. "
             "Preserve SKU codes, model numbers, units, dimensions, "
-            "punctuation, line breaks, and [[ATCK_...]] placeholders. Do not "
+            "punctuation, line breaks, and [[ATCK_...]] placeholders. "
+            f"{source_script_rule}{target_script_rule}"
+            "Do not "
             "leave prose in another language untranslated; ITEM NO, SIZE, "
             "COLOR, and DESCRIPTION are translatable labels, not model codes. "
             "Translate or transliterate names and brands written in the source "
-            "script. When the target is not Chinese or Japanese, no Chinese "
-            "prose may remain. "
+            "script. "
             "Return only the translation, with no analysis or Markdown."
+        )
+
+    @staticmethod
+    def _repair_system_prompt(
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        source_name = _locale_name(source_locale)
+        target_name = _locale_name(target_locale)
+        return (
+            "You are the strict final quality-control pass for a commerce "
+            f"translation from {source_name} to {target_name}. The user gives "
+            "SOURCE and a flawed CANDIDATE. Rewrite the candidate so every "
+            "natural-language fragment from SOURCE is expressed in the target "
+            "language. Preserve only [[ATCK_...]] placeholders, genuine "
+            "SKU/model codes, numbers, dimensions, units, punctuation, and "
+            "line breaks. Chinese product descriptors, colors, materials, "
+            "option/category names, and unfamiliar brand-like words are NOT "
+            "protected: translate or transliterate them. Never copy Chinese "
+            "as a fallback. For a non-Chinese, non-Japanese target, the result "
+            "must contain zero Han characters. For Japanese, retain a Han word "
+            "only if it is standard natural Japanese; rewrite Chinese-only "
+            "vocabulary. Silently scan and repair the result before answering. "
+            "Return exactly one corrected translation, without labels, JSON, "
+            "analysis, or Markdown."
         )
 
     def request_payload(
@@ -1029,26 +1075,15 @@ class OpenAICompatibleTranslator:
             )
         return normalized
 
-    def translate(
+    def _request_completion(
         self,
-        text: str,
+        payload: Mapping[str, object],
         *,
-        source_locale: str,
-        target_locale: str,
+        source_text: str,
+        structured: bool,
     ) -> str:
-        if not text:
-            return ""
-        source = _provider_locale(source_locale)
-        target = _provider_locale(target_locale)
-        if source == target:
-            return text
-        payload = self.request_payload(
-            text,
-            source_locale=source_locale,
-            target_locale=target_locale,
-            enable_thinking=self._enable_thinking,
-        )
-        structured = bool(_catalog_marker_items(text))
+        """Send one compatible chat request with uniform safe diagnostics."""
+
         try:
             response = self._client.post(
                 self._endpoint,
@@ -1110,7 +1145,83 @@ class OpenAICompatibleTranslator:
                 category="UPSTREAM_RESPONSE",
                 retryable=True,
             )
-        return self.translated_response(body, source_text=text)
+        return self.translated_response(body, source_text=source_text)
+
+    def repair_translation(
+        self,
+        source_text: str,
+        candidate_text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        """Repair a translated value that still leaked source-language text."""
+
+        if not source_text:
+            return ""
+        source = _provider_locale(source_locale)
+        target = _provider_locale(target_locale)
+        if source == target:
+            return source_text
+        request_text = json.dumps(
+            {
+                "SOURCE": source_text,
+                "CANDIDATE": candidate_text,
+            },
+            ensure_ascii=False,
+        )
+        payload: dict[str, object] = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": self._repair_system_prompt(
+                        source_locale=source_locale,
+                        target_locale=target_locale,
+                    ),
+                },
+                {"role": "user", "content": request_text},
+            ],
+            "temperature": 0,
+            "max_tokens": min(
+                self._max_tokens,
+                max(2_500, 1_500 + len(request_text) * 2),
+            ),
+        }
+        if self._reasoning_effort:
+            payload["reasoning_effort"] = self._reasoning_effort
+        if self._enable_thinking is not None:
+            payload["enable_thinking"] = self._enable_thinking
+        return self._request_completion(
+            payload,
+            source_text=source_text,
+            structured=False,
+        )
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        if not text:
+            return ""
+        source = _provider_locale(source_locale)
+        target = _provider_locale(target_locale)
+        if source == target:
+            return text
+        payload = self.request_payload(
+            text,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            enable_thinking=self._enable_thinking,
+        )
+        return self._request_completion(
+            payload,
+            source_text=text,
+            structured=bool(_catalog_marker_items(text)),
+        )
 
 
 def catalog_translation_is_configured(

@@ -291,6 +291,8 @@ def test_openai_compatible_adapter_uses_chat_completions_contract() -> None:
         assert "Simplified Chinese" in system_prompt
         assert "English" in system_prompt
         assert "Return only the translation" in system_prompt
+        assert "zero Chinese Han characters" in system_prompt
+        assert "Generic product descriptors" in system_prompt
         return httpx.Response(
             200,
             json={
@@ -862,6 +864,104 @@ def test_catalog_value_translation_retries_residual_chinese_without_markers() ->
     assert translated == ["Correia de corrente arco-íris"]
 
 
+class _RepairCapableTranslator:
+    identity = TranslationIdentity(provider="test", version="repair-capable")
+
+    def __init__(self) -> None:
+        self.repairs: list[tuple[str, str, str]] = []
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        assert text.startswith("[[ATCV_")
+        return "[[ATCV_000]]\nBol 高级灰"
+
+    def repair_translation(
+        self,
+        source_text: str,
+        candidate_text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        self.repairs.append((source_text, candidate_text, target_locale))
+        return "Bol gris premium"
+
+
+def test_catalog_value_translation_repairs_residual_source_script() -> None:
+    translator = _RepairCapableTranslator()
+
+    translated = translate_catalog_values(
+        translator,
+        ["碗 高级灰"],
+        source_locale="zh-CN",
+        target_locale="fr",
+    )
+
+    assert translated == ["Bol gris premium"]
+    assert translator.repairs == [("碗 高级灰", "Bol 高级灰", "fr")]
+
+
+class _LocaleRepairTranslator:
+    identity = TranslationIdentity(provider="test", version="locale-repair")
+
+    def __init__(self, candidate: str, repaired: str) -> None:
+        self.candidate = candidate
+        self.repaired = repaired
+        self.repair_calls = 0
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        return f"[[ATCV_000]]\n{self.candidate}"
+
+    def repair_translation(
+        self,
+        source_text: str,
+        candidate_text: str,
+        *,
+        source_locale: str,
+        target_locale: str,
+    ) -> str:
+        assert candidate_text == self.candidate
+        self.repair_calls += 1
+        return self.repaired
+
+
+@pytest.mark.parametrize(
+    ("source", "candidate", "repaired", "target_locale"),
+    [
+        ("冷感垫", "垫 خنک کننده", "پد خنک‌کننده", "fa"),
+        ("竹雨新", "竹雨新", "竹雨新（チクウシン）", "ja"),
+    ],
+)
+def test_catalog_value_translation_repairs_persian_and_japanese_leakage(
+    source: str,
+    candidate: str,
+    repaired: str,
+    target_locale: str,
+) -> None:
+    translator = _LocaleRepairTranslator(candidate, repaired)
+
+    translated = translate_catalog_values(
+        translator,
+        [source],
+        source_locale="zh-CN",
+        target_locale=target_locale,
+    )
+
+    assert translated == [repaired]
+    assert translator.repair_calls == 1
+
+
 class _AlwaysPartialTranslator:
     identity = TranslationIdentity(provider="test", version="always-partial")
 
@@ -910,6 +1010,8 @@ def test_catalog_value_translation_rejects_residual_chinese() -> None:
         "50g / 白桃味",
         "OPP袋",
         "勇者",
+        "毛量：12KG",
+        "包装形式",
     ],
 )
 def test_catalog_value_translation_accepts_unchanged_shared_japanese_terms(
@@ -927,10 +1029,8 @@ def test_catalog_value_translation_accepts_unchanged_shared_japanese_terms(
     "value",
     [
         "宠物用品",
-        "毛量：12KG",
         "图腾 / S",
         "胸背",
-        "包装形式",
         "竹雨新",
         "追光者",
         "白 Cheap product",

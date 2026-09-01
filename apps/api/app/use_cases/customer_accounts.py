@@ -426,6 +426,49 @@ def _parent_child_membership(
     return membership
 
 
+def _pricing_target_membership(
+    session: Session,
+    *,
+    context: RequestContext,
+    membership_id: UUID,
+) -> MembershipRow:
+    """Resolve a pricing target for either the parent or the child itself.
+
+    A child can change only its own customer-facing prices. It cannot address a
+    sibling membership by id, while parent accounts retain the existing direct
+    child management flow.
+    """
+
+    if context.account_scope != _CUSTOMER_SCOPE:
+        return _parent_child_membership(
+            session,
+            context=context,
+            membership_id=membership_id,
+        )
+    if membership_id != context.membership_id:
+        raise ApplicationError(
+            "CUSTOMER_ACCOUNT_NOT_FOUND",
+            "Customer subaccount was not found.",
+            kind="not_found",
+        )
+    membership = session.scalar(
+        select(MembershipRow).where(
+            MembershipRow.id == context.membership_id,
+            MembershipRow.tenant_id == context.tenant_id,
+            MembershipRow.account_scope == _CUSTOMER_SCOPE,
+            MembershipRow.status == "active",
+            MembershipRow.deleted_at.is_(None),
+        )
+    )
+    if membership is None:
+        raise ApplicationError(
+            "CUSTOMER_ACCOUNT_NOT_FOUND",
+            "Customer subaccount was not found.",
+            kind="not_found",
+        )
+    return membership
+
+
 def _summary_rows(
     session: Session,
     *,
@@ -1299,7 +1342,7 @@ def get_subaccount_pricing(
     page: int = 1,
     page_size: int = 20,
 ) -> SubaccountPricingPage:
-    child = _parent_child_membership(
+    child = _pricing_target_membership(
         session, context=context, membership_id=membership_id
     )
     policy = _pricing_policy(
@@ -1470,7 +1513,7 @@ def update_subaccount_pricing_policy(
     membership_id: UUID,
     request: SubaccountPricingPolicyUpdate,
 ) -> SubaccountPricingPolicyResponse:
-    child = _parent_child_membership(
+    child = _pricing_target_membership(
         session, context=context, membership_id=membership_id
     )
     policy = _pricing_policy(
@@ -1523,7 +1566,7 @@ def update_subaccount_category_price_override(
     category_id: UUID,
     request: SubaccountCategoryPriceOverrideRequest,
 ) -> SubaccountPricingPolicyResponse:
-    child = _parent_child_membership(
+    child = _pricing_target_membership(
         session, context=context, membership_id=membership_id
     )
     category = session.scalar(
@@ -1602,7 +1645,7 @@ def clear_subaccount_category_price_override(
     membership_id: UUID,
     category_id: UUID,
 ) -> None:
-    child = _parent_child_membership(
+    child = _pricing_target_membership(
         session, context=context, membership_id=membership_id
     )
     override = session.scalar(
@@ -1627,7 +1670,7 @@ def set_subaccount_product_price_override(
     product_id: UUID,
     request: SubaccountProductPriceOverrideRequest,
 ) -> SubaccountProductPricingItem:
-    child = _parent_child_membership(
+    child = _pricing_target_membership(
         session, context=context, membership_id=membership_id
     )
     product = session.scalar(
@@ -1687,7 +1730,7 @@ def clear_subaccount_product_price_override(
     membership_id: UUID,
     product_id: UUID,
 ) -> None:
-    child = _parent_child_membership(
+    child = _pricing_target_membership(
         session, context=context, membership_id=membership_id
     )
     override = session.scalar(
@@ -1714,7 +1757,7 @@ def set_subaccount_sku_price_override(
 ) -> SubaccountProductPricingItem:
     """Set a price for one concrete SKU and return the refreshed product row."""
 
-    child = _parent_child_membership(
+    child = _pricing_target_membership(
         session, context=context, membership_id=membership_id
     )
     sku = session.scalar(
@@ -1783,7 +1826,7 @@ def clear_subaccount_sku_price_override(
     membership_id: UUID,
     sku_id: UUID,
 ) -> None:
-    child = _parent_child_membership(
+    child = _pricing_target_membership(
         session, context=context, membership_id=membership_id
     )
     override = session.scalar(

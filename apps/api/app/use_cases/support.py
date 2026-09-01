@@ -714,6 +714,7 @@ def create_public_conversation(
     *,
     slug: str,
     request: PublicChatConversationCreate,
+    owner_membership_id: UUID | None = None,
     visitor_ip: str | None = None,
     visitor_location: VisitorLocation | None = None,
 ) -> PublicChatConversationResponse:
@@ -724,6 +725,7 @@ def create_public_conversation(
     row = StorefrontChatConversationRow(
         id=conversation_id,
         tenant_id=tenant.id,
+        owner_membership_id=owner_membership_id,
         reference_number=f"CS-{now:%Y%m%d}-{conversation_id.hex[:8].upper()}",
         visitor_token_hash=hash_secret(token),
         visitor_name=request.visitor_name,
@@ -771,6 +773,7 @@ def _public_conversation(
     *,
     slug: str,
     token: str,
+    owner_membership_id: UUID | None = None,
 ) -> StorefrontChatConversationRow:
     tenant, _ = _resolve_public_store(session, slug=slug)
     if not token or len(token) > 500:
@@ -790,6 +793,15 @@ def _public_conversation(
             "客服会话已失效，请重新发起咨询。",
             kind="unauthorized",
         )
+    if row.owner_membership_id != owner_membership_id:
+        # Never infer ownership from possession of a public conversation token.
+        # Older unowned sessions remain in the merchant inbox; a child account
+        # starts a fresh account-owned session instead of being able to claim it.
+        raise ApplicationError(
+            "SUPPORT_SESSION_INVALID",
+            "客服会话已失效，请重新发起咨询。",
+            kind="unauthorized",
+        )
     return row
 
 
@@ -798,8 +810,14 @@ def get_public_conversation(
     *,
     slug: str,
     token: str,
+    owner_membership_id: UUID | None = None,
 ) -> PublicChatConversationResponse:
-    row = _public_conversation(session, slug=slug, token=token)
+    row = _public_conversation(
+        session,
+        slug=slug,
+        token=token,
+        owner_membership_id=owner_membership_id,
+    )
     return _public_conversation_response(session, row)
 
 
@@ -827,10 +845,16 @@ def send_public_message(
     slug: str,
     token: str,
     request: PublicChatMessageWrite,
+    owner_membership_id: UUID | None = None,
     visitor_ip: str | None = None,
     visitor_location: VisitorLocation | None = None,
 ) -> PublicChatConversationResponse:
-    row = _public_conversation(session, slug=slug, token=token)
+    row = _public_conversation(
+        session,
+        slug=slug,
+        token=token,
+        owner_membership_id=owner_membership_id,
+    )
     location_changed = False
     if visitor_ip and visitor_location:
         if not row.visitor_ip:
@@ -893,8 +917,14 @@ def request_public_human_assistance(
     *,
     slug: str,
     token: str,
+    owner_membership_id: UUID | None = None,
 ) -> PublicChatConversationResponse:
-    authenticated = _public_conversation(session, slug=slug, token=token)
+    authenticated = _public_conversation(
+        session,
+        slug=slug,
+        token=token,
+        owner_membership_id=owner_membership_id,
+    )
     row = repository.get_conversation_for_update(
         session,
         tenant_id=authenticated.tenant_id,
@@ -976,11 +1006,42 @@ def _summary(
     )
 
 
+def _operator_owner_membership_id(
+    *,
+    membership_id: UUID,
+    account_scope: str,
+) -> UUID | None:
+    return membership_id if account_scope == "CUSTOMER_SUBACCOUNT" else None
+
+
+def _require_operator_conversation(
+    row: StorefrontChatConversationRow | None,
+    *,
+    membership_id: UUID,
+    account_scope: str,
+) -> StorefrontChatConversationRow:
+    expected_owner = _operator_owner_membership_id(
+        membership_id=membership_id,
+        account_scope=account_scope,
+    )
+    if row is None or row.owner_membership_id != expected_owner:
+        # Deliberately return not-found for another account's conversation so
+        # callers cannot use ids to discover sibling or parent conversations.
+        raise ApplicationError(
+            "SUPPORT_CONVERSATION_NOT_FOUND",
+            "客服会话不存在。",
+            kind="not_found",
+        )
+    return row
+
+
 def list_human_requests(
     session: Session,
     *,
     tenant_id: UUID,
     permissions: frozenset[str],
+    membership_id: UUID,
+    account_scope: str,
     limit: int,
 ) -> SupportHumanRequestSummaryResponse:
     _require(permissions, "support.view")
@@ -988,6 +1049,10 @@ def list_human_requests(
         session,
         tenant_id=tenant_id,
         limit=limit,
+        owner_membership_id=_operator_owner_membership_id(
+            membership_id=membership_id,
+            account_scope=account_scope,
+        ),
     )
     return SupportHumanRequestSummaryResponse(
         pending_count=total,
@@ -1012,6 +1077,8 @@ def list_conversations(
     *,
     tenant_id: UUID,
     permissions: frozenset[str],
+    membership_id: UUID,
+    account_scope: str,
     page: int,
     page_size: int,
     status: str | None,
@@ -1026,6 +1093,10 @@ def list_conversations(
         status=status,
         query=query,
         preview_locale=_merchant_reading_locale(session, tenant_id=tenant_id),
+        owner_membership_id=_operator_owner_membership_id(
+            membership_id=membership_id,
+            account_scope=account_scope,
+        ),
     )
     return SupportConversationPageResponse(
         items=[
@@ -1053,6 +1124,8 @@ def get_conversation(
     tenant_id: UUID,
     conversation_id: UUID,
     permissions: frozenset[str],
+    membership_id: UUID,
+    account_scope: str,
 ) -> SupportConversationDetailResponse:
     _require(permissions, "support.view")
     row = repository.get_conversation(
@@ -1060,12 +1133,11 @@ def get_conversation(
         tenant_id=tenant_id,
         conversation_id=conversation_id,
     )
-    if row is None:
-        raise ApplicationError(
-            "SUPPORT_CONVERSATION_NOT_FOUND",
-            "客服会话不存在。",
-            kind="not_found",
-        )
+    row = _require_operator_conversation(
+        row,
+        membership_id=membership_id,
+        account_scope=account_scope,
+    )
     row.merchant_last_read_at = utcnow()
     messages = repository.list_messages(
         session,
@@ -1108,6 +1180,8 @@ def send_merchant_message(
     *,
     tenant_id: UUID,
     user_id: UUID,
+    membership_id: UUID,
+    account_scope: str,
     conversation_id: UUID,
     permissions: frozenset[str],
     request: SupportMerchantMessageWrite,
@@ -1118,12 +1192,11 @@ def send_merchant_message(
         tenant_id=tenant_id,
         conversation_id=conversation_id,
     )
-    if row is None:
-        raise ApplicationError(
-            "SUPPORT_CONVERSATION_NOT_FOUND",
-            "客服会话不存在。",
-            kind="not_found",
-        )
+    row = _require_operator_conversation(
+        row,
+        membership_id=membership_id,
+        account_scope=account_scope,
+    )
     if row.status != "OPEN":
         raise ApplicationError(
             "SUPPORT_CONVERSATION_CLOSED",
@@ -1176,6 +1249,8 @@ def send_merchant_message(
         tenant_id=tenant_id,
         conversation_id=row.id,
         permissions=frozenset({"support.view"}),
+        membership_id=membership_id,
+        account_scope=account_scope,
     )
 
 
@@ -1185,6 +1260,8 @@ def preview_merchant_message_translation(
     tenant_id: UUID,
     conversation_id: UUID,
     permissions: frozenset[str],
+    membership_id: UUID,
+    account_scope: str,
     request: SupportTranslationPreviewWrite,
 ) -> SupportTranslationPreviewResponse:
     _require(permissions, "support.reply")
@@ -1193,12 +1270,11 @@ def preview_merchant_message_translation(
         tenant_id=tenant_id,
         conversation_id=conversation_id,
     )
-    if row is None:
-        raise ApplicationError(
-            "SUPPORT_CONVERSATION_NOT_FOUND",
-            "客服会话不存在。",
-            kind="not_found",
-        )
+    row = _require_operator_conversation(
+        row,
+        membership_id=membership_id,
+        account_scope=account_scope,
+    )
     if row.status != "OPEN":
         raise ApplicationError(
             "SUPPORT_CONVERSATION_CLOSED",
@@ -1258,6 +1334,8 @@ def update_conversation_status(
     tenant_id: UUID,
     conversation_id: UUID,
     permissions: frozenset[str],
+    membership_id: UUID,
+    account_scope: str,
     request: SupportConversationStatusUpdate,
 ) -> SupportConversationDetailResponse:
     _require(permissions, "support.reply")
@@ -1266,12 +1344,11 @@ def update_conversation_status(
         tenant_id=tenant_id,
         conversation_id=conversation_id,
     )
-    if row is None:
-        raise ApplicationError(
-            "SUPPORT_CONVERSATION_NOT_FOUND",
-            "客服会话不存在。",
-            kind="not_found",
-        )
+    row = _require_operator_conversation(
+        row,
+        membership_id=membership_id,
+        account_scope=account_scope,
+    )
     row.status = request.status
     if request.status == "CLOSED":
         _resolve_human_assistance(row, resolved_at=utcnow())
@@ -1281,6 +1358,8 @@ def update_conversation_status(
         tenant_id=tenant_id,
         conversation_id=row.id,
         permissions=frozenset({"support.view"}),
+        membership_id=membership_id,
+        account_scope=account_scope,
     )
 
 
@@ -1291,6 +1370,8 @@ def update_conversation_automation(
     conversation_id: UUID,
     permissions: frozenset[str],
     is_platform_admin: bool,
+    membership_id: UUID,
+    account_scope: str,
     request: SupportConversationAutomationUpdate,
 ) -> SupportConversationDetailResponse:
     if request.automation_state == "HUMAN_TAKEOVER":
@@ -1311,12 +1392,11 @@ def update_conversation_automation(
         tenant_id=tenant_id,
         conversation_id=conversation_id,
     )
-    if row is None:
-        raise ApplicationError(
-            "SUPPORT_CONVERSATION_NOT_FOUND",
-            "客服会话不存在。",
-            kind="not_found",
-        )
+    row = _require_operator_conversation(
+        row,
+        membership_id=membership_id,
+        account_scope=account_scope,
+    )
     if row.automation_state != "AI_ACTIVE":
         row.automation_state = "AI_ACTIVE"
         now = utcnow()
@@ -1328,4 +1408,6 @@ def update_conversation_automation(
         tenant_id=tenant_id,
         conversation_id=row.id,
         permissions=frozenset({"support.view"}),
+        membership_id=membership_id,
+        account_scope=account_scope,
     )

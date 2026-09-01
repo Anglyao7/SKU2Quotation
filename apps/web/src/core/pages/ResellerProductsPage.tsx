@@ -10,6 +10,8 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowCounterClockwise,
+  Check,
   Cube,
   MagnifyingGlass,
   Storefront,
@@ -20,6 +22,12 @@ import { Link } from "react-router-dom";
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import {
+  clearOwnProductPrice,
+  clearOwnSkuPrice,
+  updateOwnProductPrice,
+  updateOwnSkuPrice,
+} from "../api";
 import { api } from "../../lib/api";
 import { money } from "../../lib/format";
 import { storefrontAccountKey, storefrontBasePath } from "../../lib/storefrontAccount";
@@ -85,6 +93,19 @@ export function ResellerProductsPage() {
     setQuery(draftQuery.trim());
   };
 
+  const refreshSelectedProduct = async () => {
+    if (!selectedProductId) return;
+    const detail = await api.getStoreProduct(
+      tenantSlug,
+      selectedProductId,
+      undefined,
+      undefined,
+      accountId,
+    );
+    setSelected(detail);
+    void load();
+  };
+
   const totalPages = Math.max(1, result?.pages || Math.ceil((result?.total || 0) / PAGE_SIZE));
   const storefrontPath = tenantSlug
     ? storefrontBasePath(
@@ -136,7 +157,7 @@ export function ResellerProductsPage() {
           <Dialog.Title>{selected?.name || t("商品详情")}</Dialog.Title>
           {detailLoading ? <CoreLoading label={t("正在读取商品详情")} /> : null}
           {detailError ? <CoreError message={detailError} onRetry={() => { const product = result?.items.find((item) => item.id === selectedProductId); if (product) void openProduct(product); }} /> : null}
-          {selected ? <ProductDetail product={selected} t={t} /> : null}
+          {selected ? <ProductDetail product={selected} t={t} onPriceChanged={refreshSelectedProduct} /> : null}
         </Dialog.Content>
       </Dialog.Root>
     </div>
@@ -156,23 +177,59 @@ function ProductRow({ product, onOpen, t }: { product: StoreProduct; onOpen: () 
   );
 }
 
-function ProductDetail({ product, t }: { product: StoreProductDetail; t: (value: string, variables?: Record<string, string | number>) => string }) {
+function ProductDetail({ product, t, onPriceChanged }: { product: StoreProductDetail; t: (value: string, variables?: Record<string, string | number>) => string; onPriceChanged: () => Promise<void> }) {
   const images = product.image_urls?.length ? product.image_urls : product.image_url ? [product.image_url] : [];
   return (
     <div className="reseller-product-detail">
       <div className="reseller-product-detail-top">
         <div className="reseller-product-detail-images">{images.length ? images.slice(0, 6).map((image, index) => <img key={`${image}-${index}`} src={image} alt="" loading="lazy" />) : <div className="reseller-product-detail-placeholder"><Cube /></div>}</div>
-        <div className="reseller-product-detail-copy"><div className="reseller-detail-tags">{product.category_label || product.category ? <Badge color="gray">{product.category_label || product.category}</Badge> : null}{product.tags.slice(0, 4).map((tag) => <Badge key={tag} color="blue">{tag}</Badge>)}</div><Heading size="6">{product.name}</Heading>{product.description ? <Text size="2" color="gray" className="reseller-product-description">{product.description}</Text> : <Text size="2" color="gray">{t("暂无商品描述")}</Text>}<strong className="reseller-detail-price">{formatPriceRange(product)}</strong><Text size="1" color="gray">{t("共 {count} 个 SKU", { count: product.sku_count })}</Text></div>
+        <div className="reseller-product-detail-copy"><div className="reseller-detail-tags">{product.category_label || product.category ? <Badge color="gray">{product.category_label || product.category}</Badge> : null}{product.tags.slice(0, 4).map((tag) => <Badge key={tag} color="blue">{tag}</Badge>)}</div><Heading size="6">{product.name}</Heading>{product.description ? <Text size="2" color="gray" className="reseller-product-description">{product.description}</Text> : <Text size="2" color="gray">{t("暂无商品描述")}</Text>}<strong className="reseller-detail-price">{formatPriceRange(product)}</strong><Text size="1" color="gray">{t("共 {count} 个 SKU", { count: product.sku_count })}</Text><PriceEditor initialValue={product.price_from === product.price_to ? Number(product.price_from) : undefined} currency={product.currency} saveLabel={t("应用到商品")} onSave={(value) => updateOwnProductPrice(product.id, value)} onClear={() => clearOwnProductPrice(product.id)} onChanged={onPriceChanged} t={t} /></div>
       </div>
       <div className="reseller-sku-list-heading"><Heading size="4">{t("SKU 规格")}</Heading><Text size="1" color="gray">{t("以下价格按当前账号规则展示")}</Text></div>
-      <div className="reseller-sku-list">{product.skus.map((sku) => <SkuRow key={sku.id} sku={sku} t={t} />)}</div>
+      <div className="reseller-sku-list">{product.skus.map((sku) => <SkuRow key={sku.id} sku={sku} t={t} onPriceChanged={onPriceChanged} />)}</div>
     </div>
   );
 }
 
-function SkuRow({ sku, t }: { sku: Sku; t: (value: string, variables?: Record<string, string | number>) => string }) {
+function SkuRow({ sku, t, onPriceChanged }: { sku: Sku; t: (value: string, variables?: Record<string, string | number>) => string; onPriceChanged: () => Promise<void> }) {
   const optionText = Object.entries(sku.option_values || {}).filter(([, value]) => value !== null && value !== undefined && String(value).trim()).map(([name, value]) => `${name}: ${String(value)}`).join(" · ");
-  return <div className="reseller-sku-row"><div><strong>{sku.name || sku.sku_code}</strong><small className="mono-text">{sku.sku_code}</small>{optionText ? <Text size="1" color="gray">{optionText}</Text> : null}</div><span>{sku.stock === null || sku.stock === undefined ? null : <Badge color={sku.stock > 0 ? "jade" : "gray"}>{t("库存 {count}", { count: sku.stock })}</Badge>}</span><strong>{money(sku.price, sku.currency || "CNY")}</strong></div>;
+  return <div className="reseller-sku-row"><div><strong>{sku.name || sku.sku_code}</strong><small className="mono-text">{sku.sku_code}</small>{optionText ? <Text size="1" color="gray">{optionText}</Text> : null}</div><span>{sku.stock === null || sku.stock === undefined ? null : <Badge color={sku.stock > 0 ? "jade" : "gray"}>{t("库存 {count}", { count: sku.stock })}</Badge>}</span><strong>{money(sku.price, sku.currency || "CNY")}</strong><PriceEditor compact initialValue={Number(sku.price)} currency={sku.currency || "CNY"} saveLabel={t("修改售价")} onSave={(value) => updateOwnSkuPrice(sku.id, value)} onClear={() => clearOwnSkuPrice(sku.id)} onChanged={onPriceChanged} t={t} /></div>;
+}
+
+function PriceEditor({ initialValue, currency, saveLabel, onSave, onClear, onChanged, compact = false, t }: { initialValue?: number; currency: string; saveLabel: string; onSave: (value: number) => Promise<void>; onClear: () => Promise<void>; onChanged: () => Promise<void>; compact?: boolean; t: (value: string, variables?: Record<string, string | number>) => string }) {
+  const [value, setValue] = useState(initialValue === undefined ? "" : String(initialValue));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const save = async () => {
+    const price = Number(value);
+    if (!Number.isFinite(price) || price < 0) {
+      setError(t("请输入有效售价"));
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await onSave(price);
+      await onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("售价保存失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clear = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await onClear();
+      await onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("售价恢复失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className={compact ? "reseller-price-editor is-compact" : "reseller-price-editor"}><div className="reseller-price-editor-controls"><TextField.Root type="number" min="0" step="0.01" value={value} onChange={(event) => setValue(event.target.value)} placeholder={t("输入销售价")} disabled={busy}><TextField.Slot>{currency}</TextField.Slot></TextField.Root><Button type="button" size="1" disabled={busy} onClick={() => void save()}><Check />{saveLabel}</Button><Button type="button" size="1" variant="soft" color="gray" disabled={busy} onClick={() => void clear()} aria-label={t("恢复默认售价")}><ArrowCounterClockwise />{compact ? null : t("恢复默认")}</Button></div>{error ? <Text size="1" color="red">{error}</Text> : null}</div>;
 }
 
 function formatPriceRange(product: StoreProduct) {

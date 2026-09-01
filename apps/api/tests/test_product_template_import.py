@@ -1582,6 +1582,38 @@ def test_catalog_export_can_be_imported_without_creating_new_identity(
     assert row.gross_weight == Decimal("1.200000")
 
 
+def test_catalog_export_round_trip_does_not_repeat_sku_specification(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog-round-trip.xlsx"
+    _write_product_sku_workbook(
+        path,
+        product_rows=[[
+            "P-ROUND-TRIP",
+            "软冰宠物冰垫",
+            "宠物用品",
+            *([None] * (len(PRODUCT_MASTER_TEMPLATE_HEADERS) - 3)),
+        ]],
+        sku_rows=[[
+            "P-ROUND-TRIP",
+            "SOURCE-ROUND-TRIP",
+            "软冰宠物冰垫 · 灰色 / L · 灰色 / L · 灰色 / L",
+            "颜色",
+            "灰色",
+            *([None] * 4),
+            "尺寸",
+            "L",
+            *([None] * 4),
+            *([None] * (len(SKU_DETAIL_TEMPLATE_HEADERS) - 15)),
+        ]],
+    )
+
+    result = parse_product_template(path)
+
+    assert len(result.rows) == 1
+    assert result.rows[0].sku_name == "软冰宠物冰垫 · 灰色 / L"
+
+
 def test_catalog_export_ignores_malformed_logistics_annotation_when_column_empty(
     tmp_path: Path,
 ) -> None:

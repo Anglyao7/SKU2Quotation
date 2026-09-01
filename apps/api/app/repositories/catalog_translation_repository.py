@@ -96,6 +96,34 @@ def count_translations(
     )
 
 
+def latest_translation_updated_at(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+) -> datetime | None:
+    return session.scalar(
+        select(func.max(CatalogSkuTranslationRow.updated_at)).where(
+            CatalogSkuTranslationRow.tenant_id == tenant_id,
+            CatalogSkuTranslationRow.target_locale == target_locale,
+        )
+    )
+
+
+def latest_translation_override_updated_at(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    target_locale: str,
+) -> datetime | None:
+    return session.scalar(
+        select(func.max(CatalogTranslationOverrideRow.updated_at)).where(
+            CatalogTranslationOverrideRow.tenant_id == tenant_id,
+            CatalogTranslationOverrideRow.target_locale == target_locale,
+        )
+    )
+
+
 def language_pack(
     session: Session,
     *,
