@@ -333,6 +333,54 @@ def _resolve_enterprise_login_identifier(
     return unique_value(matching_identifiers) or identifier.strip()
 
 
+def _resolve_password_change_identifier(
+    session: Session,
+    *,
+    auth_session: AuthSessionRow,
+    user: UserRow,
+) -> str | None:
+    """Resolve the provider username used to verify a password change.
+
+    Provisioned customer accounts may intentionally omit an email address.
+    Their tenant membership still stores the canonical login identifier used
+    when the identity-provider account was created.  Prefer the identifier
+    bound to the current tenant context, then fall back to a user's email or a
+    single unambiguous active membership identifier.
+    """
+
+    if auth_session.active_membership_id is not None:
+        active_identifier = session.scalar(
+            select(MembershipRow.login_identifier).where(
+                MembershipRow.id == auth_session.active_membership_id,
+                MembershipRow.user_id == user.id,
+                MembershipRow.status == "active",
+            )
+        )
+        if active_identifier and active_identifier.strip():
+            return active_identifier.strip()
+
+    if user.email_normalized and user.email_normalized.strip():
+        return user.email_normalized.strip()
+
+    identifiers = session.scalars(
+        select(MembershipRow.login_identifier)
+        .where(
+            MembershipRow.user_id == user.id,
+            MembershipRow.status == "active",
+            MembershipRow.login_identifier.is_not(None),
+        )
+        .order_by(MembershipRow.created_at, MembershipRow.id)
+    ).all()
+    unique_identifiers: list[str] = []
+    seen: set[str] = set()
+    for value in identifiers:
+        normalized = str(value).strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique_identifiers.append(normalized)
+    return unique_identifiers[0] if len(unique_identifiers) == 1 else None
+
+
 def _local_customer_password_claim(
     session: Session,
     *,
@@ -549,7 +597,19 @@ def change_password(
         session.commit()
         return
 
-    if not user.email_normalized or not user.identity_provider.startswith("oidc:"):
+    if not user.identity_provider.startswith("oidc:"):
+        raise AuthError(
+            "PASSWORD_CHANGE_UNAVAILABLE",
+            "password change is unavailable for this account",
+            status_code=409,
+        )
+
+    provider_identifier = _resolve_password_change_identifier(
+        session,
+        auth_session=auth_session,
+        user=user,
+    )
+    if not provider_identifier:
         raise AuthError(
             "PASSWORD_CHANGE_UNAVAILABLE",
             "password change is unavailable for this account",
@@ -559,7 +619,7 @@ def change_password(
     adapter = _identity_adapter("enterprise_oidc")
     try:
         claim = adapter.authenticate_password(
-            identifier=user.email_normalized,
+            identifier=provider_identifier,
             password=current_password,
         )
     except IdentityProviderError as exc:

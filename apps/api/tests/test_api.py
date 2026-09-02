@@ -3540,6 +3540,108 @@ def test_password_change_verifies_current_secret_and_revokes_peer_sessions(
         assert all(token.revoked_at is None for token in current_tokens)
 
 
+def test_oidc_subaccount_without_email_can_change_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+    membership_id = uuid4()
+    provider_key = f"oidc:{'e' * 32}"
+    subject = f"password-change-no-email-{uuid4()}"
+    identifier = f"no-email-child-{uuid4().hex[:10]}"
+    with SessionLocal() as session:
+        session.add(
+            UserRow(
+                id=user_id,
+                email_normalized=None,
+                display_name="No Email Child",
+                identity_provider=provider_key,
+                identity_subject=subject,
+                status="active",
+            )
+        )
+        session.add(
+            MembershipRow(
+                id=membership_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                user_id=user_id,
+                account_scope="CUSTOMER_SUBACCOUNT",
+                login_identifier=identifier,
+                status="active",
+            )
+        )
+        session.commit()
+
+    authenticated_identifiers: list[str] = []
+    changed_passwords: list[tuple[str, str]] = []
+
+    def authenticate(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        identifier: str,
+        password: str,
+    ) -> IdentityClaim:
+        authenticated_identifiers.append(identifier)
+        assert password == "InitialPass!123"
+        return IdentityClaim(
+            provider=provider_key,
+            subject=subject,
+            email_normalized=None,
+            email_verified=False,
+            display_name="No Email Child",
+        )
+
+    def update(
+        _self: OidcIdentityProviderAdapter,
+        *,
+        subject: str,
+        new_password: str,
+    ) -> None:
+        changed_passwords.append((subject, new_password))
+
+    monkeypatch.setenv("AUTH_PROFILE", "enterprise_oidc")
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "authenticate_password",
+        authenticate,
+    )
+    monkeypatch.setattr(
+        OidcIdentityProviderAdapter,
+        "change_password",
+        update,
+    )
+    monkeypatch.setattr(
+        "app.routers.auth.enforce_rate_limit",
+        lambda _request, **_kwargs: None,
+    )
+
+    with TestClient(app) as password_client:
+        login = password_client.post(
+            "/api/v1/auth/login",
+            json={
+                "grant_type": "password",
+                "identifier": identifier,
+                "password": "InitialPass!123",
+            },
+        )
+        assert login.status_code == 200, login.text
+        data = login.json()["data"]
+        changed = password_client.put(
+            "/api/v1/auth/password",
+            headers={
+                "Authorization": f"Bearer {data['access_token']}",
+                "X-CSRF-Token": data["csrf_token"],
+            },
+            json={
+                "current_password": "InitialPass!123",
+                "new_password": "123456",
+            },
+        )
+
+    assert changed.status_code == 204, changed.text
+    assert authenticated_identifiers == [identifier, identifier]
+    assert changed_passwords == [(subject, "123456")]
+
+
 def test_customer_subaccount_can_change_its_local_password(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
