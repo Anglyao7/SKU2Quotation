@@ -55,6 +55,7 @@ from ..services.auth.contracts import IdentityProviderError
 from ..services.auth.oidc_provider import public_oidc_config
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.rbac import list_permissions
+from ..services.storefront_paths import membership_storefront_path
 from ..tenant_modules import merchant_identity_is_platform_admin
 from ..domain.errors import ApplicationError
 from ..localization import normalize_ui_locale
@@ -148,10 +149,22 @@ def _token_response(
             context=AuthContext(
                 tenant_id=result.tenant.id if result.tenant else None,
                 membership_id=result.membership.id if result.membership else None,
-                tenant_name=result.tenant.name if result.tenant else None,
+                tenant_name=(
+                    result.user.display_name
+                    if result.membership is not None
+                    and result.membership.account_scope == "CUSTOMER_SUBACCOUNT"
+                    else result.tenant.name
+                    if result.tenant is not None
+                    else None
+                ),
                 tenant_slug=result.tenant.slug if result.tenant else None,
                 storefront_path=(
-                    f"/{result.membership.storefront_slug or result.tenant.slug}"
+                    membership_storefront_path(
+                        account_scope=result.membership.account_scope,
+                        membership_id=result.membership.id,
+                        tenant_slug=result.tenant.slug,
+                        storefront_slug=result.membership.storefront_slug,
+                    )
                     if result.tenant is not None and result.membership is not None
                     else None
                 ),
@@ -185,7 +198,11 @@ def _token_response(
                 MembershipSummary(
                     id=membership.id,
                     tenant_id=tenant.id,
-                    tenant_name=tenant.name,
+                    tenant_name=(
+                        result.user.display_name
+                        if membership.account_scope == "CUSTOMER_SUBACCOUNT"
+                        else tenant.name
+                    ),
                     tenant_slug=tenant.slug,
                     status=membership.status,
                 )

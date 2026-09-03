@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
-from ..database import get_session
+from ..database import get_auth_session, get_session
 from ..domain.errors import ApplicationError
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..storefront_page_schemas import (
@@ -17,6 +17,7 @@ from ..storefront_page_schemas import (
     StorefrontCustomPageUpdate,
 )
 from ..use_cases import storefront_pages as use_cases
+from ..use_cases import public_catalog as public_catalog_use_cases
 from .errors import application_http_error
 
 router = APIRouter(tags=["storefront-pages"])
@@ -149,13 +150,27 @@ def get_public_storefront_page(
     tenant_slug: str,
     page_slug: str,
     response: Response,
+    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
+    identity_session: Session = Depends(get_auth_session),
 ) -> PublicStorefrontPageDocument:
     response.headers.update({
         "Cache-Control": "public, max-age=60, stale-while-revalidate=300",
         "X-Content-Type-Options": "nosniff",
     })
     try:
+        alias_account = (
+            public_catalog_use_cases.public_customer_subaccount_membership_by_storefront_slug(
+                identity_session,
+                storefront_slug=tenant_slug,
+            )
+        )
+        if account is not None or alias_account is not None:
+            raise ApplicationError(
+                "STOREFRONT_PAGE_NOT_FOUND",
+                "Storefront page was not found.",
+                kind="not_found",
+            )
         return use_cases.public_page(
             session,
             tenant_slug=tenant_slug,

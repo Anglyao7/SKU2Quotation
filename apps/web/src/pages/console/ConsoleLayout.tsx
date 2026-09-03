@@ -519,7 +519,11 @@ export function ConsoleLayout() {
           <div className="tenant-context-heading">
             <div className="tenant-context-name">
               <Text size="1" color="gray" as="div">{t(greetingKey)}</Text>
-              {memberships.length > 1 ? <Select.Root value={activeMembershipId} disabled={status === "restoring"} onValueChange={(value) => void selectTenant(value)}><Select.Trigger className="tenant-select" placeholder={t("选择租户")} /><Select.Content>{memberships.filter((membership) => membership.status.toUpperCase() === "ACTIVE").map((membership) => <Select.Item value={membership.id} key={membership.id}>{membership.tenantName}</Select.Item>)}</Select.Content></Select.Root> : <Text size="2" weight="medium">{profile?.context.tenantName ?? t("当前租户")}</Text>}
+              {isCustomerSubaccount
+                ? <Text size="2" weight="medium">{displayName}</Text>
+                : memberships.length > 1
+                  ? <Select.Root value={activeMembershipId} disabled={status === "restoring"} onValueChange={(value) => void selectTenant(value)}><Select.Trigger className="tenant-select" placeholder={t("选择租户")} /><Select.Content>{memberships.filter((membership) => membership.status.toUpperCase() === "ACTIVE").map((membership) => <Select.Item value={membership.id} key={membership.id}>{membership.tenantName}</Select.Item>)}</Select.Content></Select.Root>
+                  : <Text size="2" weight="medium">{profile?.context.tenantName ?? t("当前租户")}</Text>}
               {tenantError ? <Text size="1" color="red">{tenantError}</Text> : null}
             </div>
             <Link className="topbar-storefront-link" to={storefrontPath} target="_blank" rel="noopener noreferrer" title={t("查看商品前台")}>

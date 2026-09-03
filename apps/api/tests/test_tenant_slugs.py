@@ -1,4 +1,5 @@
 import pytest
+from uuid import UUID
 
 from app.tenant_slugs import (
     storefront_slug_from_name,
@@ -59,3 +60,45 @@ def test_subaccount_storefront_slug_falls_back_to_login_identifier() -> None:
         login_identifier="Sales Team / East",
         display_name="Customer Name",
     ) == "sales-team-east"
+
+
+def test_customer_subaccount_uses_its_independent_short_storefront_path() -> None:
+    from app.services.storefront_paths import membership_storefront_path
+
+    membership_id = UUID("11111111-1111-4111-8111-111111111111")
+    assert membership_storefront_path(
+        account_scope="CUSTOMER_SUBACCOUNT",
+        membership_id=membership_id,
+        tenant_slug="main-merchant",
+        storefront_slug="aaa",
+    ) == "/aaa"
+
+
+def test_customer_subaccount_never_falls_back_to_the_merchant_storefront() -> None:
+    from app.services.storefront_paths import membership_storefront_path
+
+    membership_id = UUID("11111111-1111-4111-8111-111111111111")
+    expected = "/main-merchant/account/account--11111111-1111-4111-8111-111111111111"
+    assert membership_storefront_path(
+        account_scope="CUSTOMER_SUBACCOUNT",
+        membership_id=membership_id,
+        tenant_slug="main-merchant",
+        storefront_slug=None,
+    ) == expected
+    assert membership_storefront_path(
+        account_scope="CUSTOMER_SUBACCOUNT",
+        membership_id=membership_id,
+        tenant_slug="main-merchant",
+        storefront_slug="main-merchant",
+    ) == expected
+
+
+def test_staff_keeps_the_merchant_storefront_path() -> None:
+    from app.services.storefront_paths import membership_storefront_path
+
+    assert membership_storefront_path(
+        account_scope="STAFF",
+        membership_id=UUID("11111111-1111-4111-8111-111111111111"),
+        tenant_slug="main-merchant",
+        storefront_slug=None,
+    ) == "/main-merchant"

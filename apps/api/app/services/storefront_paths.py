@@ -9,6 +9,30 @@ from ..repositories.public_catalog_repository import occupied_storefront_slugs
 from ..tenant_slugs import unique_storefront_slug
 
 
+def membership_storefront_path(
+    *,
+    account_scope: str,
+    membership_id: UUID,
+    tenant_slug: str,
+    storefront_slug: str | None,
+) -> str:
+    """Return a customer-safe storefront path for a membership.
+
+    Customer subaccounts must never fall back to the merchant's top-level
+    storefront. The legacy account route remains a safe independent fallback
+    while an older database is waiting for the storefront-slug migration.
+    """
+
+    tenant_path = str(tenant_slug or "").casefold().strip()
+    account_path = str(storefront_slug or "").casefold().strip()
+    if account_scope != "CUSTOMER_SUBACCOUNT":
+        return f"/{tenant_path}" if tenant_path else "/"
+    if account_path and account_path != tenant_path:
+        return f"/{account_path}"
+    legacy_key = f"account--{str(membership_id).casefold()}"
+    return f"/{tenant_path}/account/{legacy_key}" if tenant_path else f"/{legacy_key}"
+
+
 def _lock_allocation(session: Session) -> None:
     """Serialize storefront-path allocation across PostgreSQL API workers."""
 

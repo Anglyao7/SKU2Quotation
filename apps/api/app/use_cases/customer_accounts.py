@@ -78,7 +78,10 @@ from ..services.subaccount_pricing import (
     subaccount_category_price_rules,
     subaccount_sku_price_rules,
 )
-from ..services.storefront_paths import allocate_storefront_slug
+from ..services.storefront_paths import (
+    allocate_storefront_slug,
+    membership_storefront_path,
+)
 from ..services.storefront_analytics import raw_ip_retention_days
 from ..tenant_slugs import subaccount_storefront_slug_base
 from ..services.rbac import (
@@ -478,6 +481,13 @@ def _summary_rows(
     tenant_id: UUID,
     parent_membership_id: UUID,
 ) -> list[CustomerSubaccountSummary]:
+    tenant = session.get(TenantRow, tenant_id)
+    if tenant is None:
+        raise ApplicationError(
+            "TENANT_NOT_FOUND",
+            "Tenant was not found.",
+            kind="not_found",
+        )
     rows = list(
         session.execute(
             select(MembershipRow, UserRow)
@@ -562,7 +572,12 @@ def _summary_rows(
             login_identifier=membership.login_identifier or user.email_normalized or "—",
             email=user.email_normalized,
             storefront_slug=membership.storefront_slug or "",
-            storefront_path=f"/{membership.storefront_slug}" if membership.storefront_slug else "",
+            storefront_path=membership_storefront_path(
+                account_scope=membership.account_scope,
+                membership_id=membership.id,
+                tenant_slug=tenant.slug,
+                storefront_slug=membership.storefront_slug,
+            ),
             status=membership.status,
             capabilities=_capabilities_from_permissions(
                 membership.permission_overrides
@@ -1948,13 +1963,20 @@ def get_customer_portal_overview(
         ).one()
     else:
         count, last_order = 0, None
+    storefront_path = membership_storefront_path(
+        account_scope=membership.account_scope,
+        membership_id=membership.id,
+        tenant_slug=tenant.slug,
+        storefront_slug=membership.storefront_slug,
+    )
+    storefront_slug = storefront_path.removeprefix("/").split("/", 1)[0]
     return CustomerPortalOverview(
         membership_id=membership.id,
         display_name=user.display_name,
-        tenant_name=tenant.name,
-        tenant_slug=tenant.slug,
-        storefront_slug=membership.storefront_slug or tenant.slug,
-        storefront_path=f"/{membership.storefront_slug or tenant.slug}",
+        tenant_name=user.display_name,
+        tenant_slug=storefront_slug,
+        storefront_slug=storefront_slug,
+        storefront_path=storefront_path,
         account_status=membership.status,
         order_count=int(count or 0),
         last_order_at=last_order,

@@ -121,6 +121,7 @@ from ..services.world_market import (
     get_exchange_rate_snapshot,
 )
 from ..storefront_footer import storefront_footer_sections
+from ..support_schemas import PublicSupportWidgetResponse
 from ..storefront_locales import (
     effective_storefront_locales,
     normalize_storefront_locale,
@@ -1008,9 +1009,30 @@ def get_store(
     account_name = str(getattr(user, "display_name", "") or "").strip()
     return response.model_copy(
         update={
-            # The account keeps its customer-facing identity while inheriting
-            # every published merchant storefront capability and setting.
+            # A customer subaccount is an independent sales identity. It shares
+            # the merchant catalog, translations and pricing source only; it
+            # must not expose the merchant's branding or storefront content.
             "name": account_name or response.name,
+            "description": None,
+            "logo_url": None,
+            "contact_email": None,
+            "contact_phone": None,
+            "all_products_position": 0,
+            "hot_products_enabled": False,
+            "category_showcase_enabled": True,
+            "exchange_rates_enabled": False,
+            "ai_search_questions": [],
+            "popular_search_terms": [],
+            "announcements": [],
+            "support_widget": PublicSupportWidgetResponse(
+                enabled=False,
+                title="",
+                welcome_message="",
+                ai_enabled=False,
+                custom_actions=[],
+            ),
+            "footer_sections": [],
+            "custom_pages": [],
             "storefront_scope": "CUSTOMER_SUBACCOUNT",
             "account_id": membership.id,
         }

@@ -11,6 +11,7 @@ from ..identity_models import TenantSubscriptionRow
 from ..localization import normalize_ui_locale
 from ..repositories.identity_repository import get_membership, get_tenant
 from ..services.auth.dependencies import RequestContext
+from ..services.storefront_paths import membership_storefront_path
 from ..tenant_modules import merchant_identity_is_platform_admin
 from ..tenant_subscriptions import TenantSubscriptionTier
 
@@ -57,9 +58,18 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
         context=AuthContext(
             tenant_id=tenant.id,
             membership_id=membership.id,
-            tenant_name=tenant.name,
+            tenant_name=(
+                user.display_name
+                if membership.account_scope == "CUSTOMER_SUBACCOUNT"
+                else tenant.name
+            ),
             tenant_slug=tenant.slug,
-            storefront_path=f"/{membership.storefront_slug or tenant.slug}",
+            storefront_path=membership_storefront_path(
+                account_scope=membership.account_scope,
+                membership_id=membership.id,
+                tenant_slug=tenant.slug,
+                storefront_slug=membership.storefront_slug,
+            ),
             business_mode=(
                 "DOMESTIC"
                 if tenant.default_currency.upper() == "CNY"
@@ -81,7 +91,11 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
             MembershipSummary(
                 id=membership.id,
                 tenant_id=tenant.id,
-                tenant_name=tenant.name,
+                tenant_name=(
+                    user.display_name
+                    if membership.account_scope == "CUSTOMER_SUBACCOUNT"
+                    else tenant.name
+                ),
                 tenant_slug=tenant.slug,
                 status=membership.status,
             )
