@@ -142,7 +142,7 @@ import type {
   UiLocale,
   Warehouse,
 } from "./types";
-import type { StorefrontLocale } from "../types";
+import type { CatalogLanguagePack, StorefrontLocale } from "../types";
 import { buildPasswordChangePayload } from "./accountPassword";
 import { buildPasswordLoginPayload } from "./authCredentials";
 import { accessTokenRefreshDelayMs } from "./authSessionTiming";
@@ -2195,6 +2195,15 @@ export async function listProductCatalog(params: {
     total: row.total,
     pages: row.pages,
   };
+}
+
+export async function getConsoleCatalogLanguagePack(
+  targetLocale: StorefrontLocale,
+): Promise<CatalogLanguagePack> {
+  return request<CatalogLanguagePack>(
+    `/catalog/translations/language-pack/${encodeURIComponent(targetLocale)}`,
+    { cache: "no-store" },
+  );
 }
 
 export async function exportSkuCatalog(params: {

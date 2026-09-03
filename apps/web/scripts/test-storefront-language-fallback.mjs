@@ -21,6 +21,29 @@ const coreStyles = await fs.readFile(
   new URL("../src/core/core.css", import.meta.url),
   "utf8",
 );
+const coreApiSource = await fs.readFile(
+  new URL("../src/core/api.ts", import.meta.url),
+  "utf8",
+);
+const consolePackHookSource = await fs.readFile(
+  new URL("../src/core/useConsoleCatalogLanguagePack.ts", import.meta.url),
+  "utf8",
+);
+const productsPageSource = await fs.readFile(
+  new URL("../src/core/pages/ProductsPage.tsx", import.meta.url),
+  "utf8",
+);
+const resellerProductsPageSource = await fs.readFile(
+  new URL("../src/core/pages/ResellerProductsPage.tsx", import.meta.url),
+  "utf8",
+);
+const coreLanguagePackSource = await fs.readFile(
+  new URL("../src/core/catalogLanguagePack.ts", import.meta.url),
+  "utf8",
+);
+const coreProductDetailLocalization = coreLanguagePackSource.slice(
+  coreLanguagePackSource.indexOf("export function localizeCoreProductDetail("),
+);
 
 function section(start, end) {
   const startIndex = source.indexOf(start);
@@ -101,6 +124,32 @@ assert.match(
 assert.ok(
   coreStyles.includes(".language-package-option.is-pending:not(.is-enabled)"),
   "A language being disabled must not retain the green selected state",
+);
+
+assert.ok(
+  coreApiSource.includes("/catalog/translations/language-pack/${encodeURIComponent(targetLocale)}"),
+  "Authenticated console catalog localization must use the tenant-scoped language-pack endpoint",
+);
+assert.ok(
+  consolePackHookSource.includes("useConsoleCatalogLanguagePack"),
+  "Console pages must share one tenant-scoped language-pack loader",
+);
+assert.ok(
+  productsPageSource.includes("useConsoleCatalogLanguagePack()"),
+  "The staff product catalog must load the authenticated console language pack",
+);
+assert.ok(
+  !productsPageSource.includes("api.getStoreLanguagePack(tenantSlug, locale)"),
+  "The staff console must not depend on public storefront language enablement",
+);
+assert.ok(
+  resellerProductsPageSource.includes("useConsoleCatalogLanguagePack()")
+    && resellerProductsPageSource.includes("localizeProductDetail(selectedSource, activeLanguagePack)"),
+  "Customer subaccounts must use the same tenant translations for products and SKU details",
+);
+assert.ok(
+  !coreProductDetailLocalization.includes("if (!translation) return product;"),
+  "SKU translations must still apply when a product-level translation is unavailable",
 );
 
 console.log("Storefront language fallback tests passed");

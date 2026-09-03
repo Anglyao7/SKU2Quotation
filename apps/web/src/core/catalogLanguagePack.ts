@@ -118,12 +118,11 @@ export function localizeCoreProductDetail(
 ): ProductDetail {
   if (!pack) return product;
   const translation = translatedProduct(product, pack);
-  if (!translation) return product;
   const localizedCore = localizeCoreProduct(product, pack);
   return {
     ...product,
     ...localizedCore,
-    description: translation.description ?? product.description,
+    description: translation?.description ?? product.description,
     attributes: product.attributes.map((attribute) => (
       localizeAttribute(attribute, translation)
     )),

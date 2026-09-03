@@ -494,6 +494,9 @@
   .language-batch-pagination-controls { overflow-x: auto; padding-bottom: 2px; }
 }
 .core-sku-toolbar { padding: 12px !important; display: grid; grid-template-columns: minmax(260px, 1fr) minmax(180px, 230px) minmax(120px, 150px) minmax(130px, 165px) auto; gap: 10px; align-items: center; }
+.core-catalog-language-state { min-height: 44px; padding: 10px 14px !important; display: flex; align-items: center; gap: 9px; border-color: color-mix(in srgb, var(--accent) 28%, var(--line)) !important; background: color-mix(in srgb, var(--accent-soft) 46%, var(--surface)) !important; }
+.core-catalog-language-state > svg { flex: 0 0 auto; color: var(--accent); }
+.core-catalog-language-state > .rt-Text:first-of-type { min-width: 0; flex: 1; }
 .core-sku-toolbar .rt-TextFieldRoot, .core-sku-toolbar > .rt-Button { min-height: 40px; }
 .core-sku-toolbar > .rt-Button { min-width: 72px; white-space: nowrap; }
 .core-sku-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--control-gap-compact); }

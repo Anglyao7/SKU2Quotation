@@ -2800,6 +2800,56 @@ def public_language_pack_content(
     return content, pack
 
 
+def console_language_pack_content(
+    session: Session,
+    *,
+    context: RequestContext,
+    target_locale: str,
+) -> tuple[bytes, CatalogLanguagePackRow]:
+    """Load the active tenant's pack for authenticated console catalog views.
+
+    Console localization is tenant data, not a storefront exposure decision.
+    Staff and customer subaccounts therefore resolve the same tenant-scoped
+    package even when that language is not enabled in the public storefront.
+    """
+
+    _require(context.permissions, "product.view")
+    locale = normalize_storefront_locale(target_locale)
+    source_locale = _SOURCE_LOCALE
+    if locale is None or locale == source_locale:
+        raise ApplicationError(
+            "CATALOG_TRANSLATION_LOCALE_INVALID",
+            "请选择已生成语言包的后台语言。",
+        )
+    pack = translation_repository.language_pack(
+        session,
+        tenant_id=context.tenant_id,
+        target_locale=locale,
+    )
+    if pack is None:
+        raise ApplicationError(
+            "CATALOG_LANGUAGE_PACKAGE_NOT_FOUND",
+            "当前商家尚未发布该语言包。",
+            kind="not_found",
+        )
+    try:
+        content = configured_language_package_storage().get(pack.object_key)
+    except Exception as exc:
+        logger.warning(
+            "console language package object unavailable for tenant %s/%s/v%s: %s",
+            context.tenant_id,
+            locale,
+            pack.version,
+            type(exc).__name__,
+        )
+        raise ApplicationError(
+            "CATALOG_LANGUAGE_PACKAGE_OBJECT_NOT_FOUND",
+            "语言包文件暂时不可用，请稍后重试。",
+            kind="unavailable",
+        ) from exc
+    return content, pack
+
+
 def _safe_job_error(exc: Exception) -> str:
     if isinstance(exc, TranslationProviderError):
         message = str(exc).rstrip("。")

@@ -22,6 +22,7 @@ import { Link } from "react-router-dom";
 import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import { useConsoleCatalogLanguagePack } from "../useConsoleCatalogLanguagePack";
 import {
   clearOwnProductPrice,
   clearOwnSkuPrice,
@@ -30,14 +31,21 @@ import {
 } from "../api";
 import { api } from "../../lib/api";
 import { money } from "../../lib/format";
+import { localizeProduct, localizeProductDetail } from "../../lib/storefrontLanguagePack";
 import { storefrontAccountKey, storefrontBasePath } from "../../lib/storefrontAccount";
+import { storefrontLanguage } from "../../lib/storefrontLocale";
 import type { Sku, StoreProduct, StoreProductDetail, StoreProductList } from "../../types";
 
 const PAGE_SIZE = 24;
 
 export function ResellerProductsPage() {
   const { profile } = useCoreAuth();
-  const { t } = useLocale();
+  const { locale, t } = useLocale();
+  const {
+    pack: activeLanguagePack,
+    loading: languagePackLoading,
+    error: languagePackError,
+  } = useConsoleCatalogLanguagePack();
   const tenantSlug = profile?.context.tenantSlug || "";
   const accountId = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
     ? profile.context.membershipId
@@ -45,10 +53,27 @@ export function ResellerProductsPage() {
   const [query, setQuery] = useState("");
   const [draftQuery, setDraftQuery] = useState("");
   const [page, setPage] = useState(1);
-  const [result, setResult] = useState<StoreProductList>();
+  const [sourceResult, setSourceResult] = useState<StoreProductList>();
+  const result = useMemo<StoreProductList | undefined>(() => (
+    sourceResult && activeLanguagePack
+      ? {
+          ...sourceResult,
+          items: sourceResult.items.map((product) => (
+            localizeProduct(product, activeLanguagePack)
+          )),
+          source_locale: activeLanguagePack.source_locale,
+          locale: activeLanguagePack.target_locale,
+        }
+      : sourceResult
+  ), [activeLanguagePack, sourceResult]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState<StoreProductDetail>();
+  const [selectedSource, setSelectedSource] = useState<StoreProductDetail>();
+  const selected = useMemo(() => (
+    selectedSource && activeLanguagePack
+      ? localizeProductDetail(selectedSource, activeLanguagePack)
+      : selectedSource
+  ), [activeLanguagePack, selectedSource]);
   const [selectedProductId, setSelectedProductId] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
@@ -58,7 +83,7 @@ export function ResellerProductsPage() {
     setLoading(true);
     setError("");
     try {
-      setResult(await api.getStoreProducts(tenantSlug, {
+      setSourceResult(await api.getStoreProducts(tenantSlug, {
         q: query || undefined,
         page,
         includeFacets: false,
@@ -75,11 +100,11 @@ export function ResellerProductsPage() {
 
   const openProduct = async (product: StoreProduct) => {
     setSelectedProductId(product.id);
-    setSelected(undefined);
+    setSelectedSource(undefined);
     setDetailError("");
     setDetailLoading(true);
     try {
-      setSelected(await api.getStoreProduct(tenantSlug, product.id, undefined, undefined, accountId));
+      setSelectedSource(await api.getStoreProduct(tenantSlug, product.id, undefined, undefined, accountId));
     } catch (caught) {
       setDetailError(caught instanceof Error ? caught.message : t("商品详情加载失败"));
     } finally {
@@ -102,7 +127,7 @@ export function ResellerProductsPage() {
       undefined,
       accountId,
     );
-    setSelected(detail);
+    setSelectedSource(detail);
     void load();
   };
 
@@ -124,6 +149,20 @@ export function ResellerProductsPage() {
         description={t("浏览商品资料与当前账号可见价格。")}
         actions={<Button asChild variant="soft"><Link to={storefrontPath} target="_blank" rel="noreferrer"><Storefront />{t("打开商品前台")}</Link></Button>}
       />
+      {locale !== "zh-CN" ? (
+        <Card className="core-catalog-language-state" role="status" aria-live="polite">
+          <Cube weight="duotone" />
+          <Text size="2">
+            {languagePackLoading
+              ? t("正在读取 {language} 商品与 SKU 译文…", { language: storefrontLanguage(locale).label })
+              : activeLanguagePack
+              ? t("正在显示 {language} 商品标题、描述、分类、标签和 SKU 规格。", { language: storefrontLanguage(locale).label })
+              : t("{language} 语言包尚未发布，商品内容暂时显示中文。", { language: storefrontLanguage(locale).label })}
+          </Text>
+          {activeLanguagePack ? <Badge color="jade">v{activeLanguagePack.version}</Badge> : null}
+          {languagePackError && !languagePackLoading ? <Text size="1" color="gray">{languagePackError}</Text> : null}
+        </Card>
+      ) : null}
       <Card className="reseller-catalog-toolbar">
         <form onSubmit={submitSearch}>
           <TextField.Root value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} placeholder={t("搜索商品名称、SKU 或标签")}>
@@ -152,7 +191,7 @@ export function ResellerProductsPage() {
         </div>
       </> : null}
 
-      <Dialog.Root open={Boolean(selected || detailLoading || detailError)} onOpenChange={(open) => { if (!open) { setSelected(undefined); setDetailError(""); } }}>
+      <Dialog.Root open={Boolean(selected || detailLoading || detailError)} onOpenChange={(open) => { if (!open) { setSelectedSource(undefined); setDetailError(""); } }}>
         <Dialog.Content className="reseller-product-dialog" maxWidth="900px">
           <Dialog.Title>{selected?.name || t("商品详情")}</Dialog.Title>
           {detailLoading ? <CoreLoading label={t("正在读取商品详情")} /> : null}

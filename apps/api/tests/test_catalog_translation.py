@@ -26,6 +26,52 @@ from app.services.translation import (
 )
 
 
+def test_console_language_pack_is_shared_by_staff_and_customer_subaccounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = uuid4()
+    payload = b"shared-tenant-language-pack"
+    observed_tenant_ids = []
+    pack = SimpleNamespace(
+        object_key="catalog-language-packs/shared/en-US/v1.json.gz",
+        target_locale="en-US",
+        version=1,
+    )
+
+    def language_pack(_session: object, *, tenant_id: object, target_locale: str):
+        observed_tenant_ids.append(tenant_id)
+        assert target_locale == "en-US"
+        return pack
+
+    monkeypatch.setattr(
+        catalog_translation_use_cases.translation_repository,
+        "language_pack",
+        language_pack,
+    )
+    monkeypatch.setattr(
+        catalog_translation_use_cases,
+        "configured_language_package_storage",
+        lambda: SimpleNamespace(get=lambda object_key: payload),
+    )
+
+    for account_scope in ("STAFF", "CUSTOMER_SUBACCOUNT"):
+        content, resolved_pack = (
+            catalog_translation_use_cases.console_language_pack_content(
+                SimpleNamespace(),
+                context=SimpleNamespace(
+                    tenant_id=tenant_id,
+                    permissions=frozenset({"product.view"}),
+                    account_scope=account_scope,
+                ),
+                target_locale="en-US",
+            )
+        )
+        assert content == payload
+        assert resolved_pack is pack
+
+    assert observed_tenant_ids == [tenant_id, tenant_id]
+
+
 class _FakeAliyunTranslationClient:
     def __init__(self) -> None:
         self.batch_requests: list[object] = []

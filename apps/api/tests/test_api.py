@@ -18437,6 +18437,17 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
         assert download.status_code == 200, download.text
         assert download.headers["cache-control"].endswith("immutable")
         language_payload = download.json()
+
+        console_download = client.get(
+            "/api/v1/catalog/translations/language-pack/en-US"
+        )
+        assert console_download.status_code == 200, console_download.text
+        assert console_download.headers["cache-control"] == "private, no-store"
+        assert console_download.headers["etag"] == (
+            f'"{package["content_sha256"]}"'
+        )
+        assert console_download.json() == language_payload
+
         assert language_payload["schema"] == "atc-catalog-language-pack"
         assert language_payload["schema_version"] == 2
         assert language_payload["version"] == 1

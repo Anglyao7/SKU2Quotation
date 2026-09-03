@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from ..catalog_translation_schemas import (
@@ -29,6 +29,33 @@ router = APIRouter(
     prefix="/api/v1/catalog/translations",
     tags=["catalog-translations"],
 )
+
+
+@router.get("/language-pack/{target_locale}")
+def get_console_language_pack(
+    target_locale: str,
+    session: Session = Depends(get_authenticated_session),
+) -> Response:
+    context = current_context(session)
+    try:
+        content, pack = use_cases.console_language_pack_content(
+            session,
+            context=context,
+            target_locale=target_locale,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Encoding": "gzip",
+            "Cache-Control": "private, no-store",
+            "Pragma": "no-cache",
+            "ETag": f'"{pack.content_sha256}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/status", response_model=CatalogTranslationStatusResponse)

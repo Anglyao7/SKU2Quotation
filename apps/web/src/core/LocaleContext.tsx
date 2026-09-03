@@ -1996,6 +1996,12 @@ const english: Record<string, string> = {
   "SKU 描述": "SKU description",
   "商品下的 SKU 名称与规格也会一并写入语言包。":
     "SKU names and specifications for this product are saved to the language package as well.",
+  "正在读取 {language} 商品与 SKU 译文…":
+    "Loading {language} product and SKU translations…",
+  "正在显示 {language} 商品标题、描述、分类、标签和 SKU 规格。":
+    "Showing {language} product titles, descriptions, categories, tags, and SKU specifications.",
+  "{language} 语言包尚未发布，商品内容暂时显示中文。":
+    "The {language} language package is not published yet. Catalog content is temporarily shown in Chinese.",
   "这里保存的是当前语言的人工译文；保存后该商品下的 SKU 会视为已完成，但不会自动发布前台版本。":
     "These edits apply only to the selected language. Saving marks the product SKUs complete without publishing a storefront version.",
   "保存人工译文": "Save manual translation",

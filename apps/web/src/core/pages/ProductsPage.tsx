@@ -38,6 +38,7 @@ import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { removeImportItem, resetFailedImportItem, selectUniqueImportFiles } from "../importQueueState";
 import { useLocale } from "../LocaleContext";
+import { useConsoleCatalogLanguagePack } from "../useConsoleCatalogLanguagePack";
 import {
   localizeCoreProductDetail,
   localizeCoreProductPage,
@@ -48,7 +49,7 @@ import { ImageEnhancementDialog, type ImageEnhancementTarget } from "../componen
 import { primaryCategoryLabel } from "../../lib/format";
 import { storefrontLanguage } from "../../lib/storefrontLocale";
 import { api } from "../../lib/api";
-import type { CatalogLanguagePack, ProductTag, StorefrontLocale } from "../../types";
+import type { ProductTag, StorefrontLocale } from "../../types";
 import type { CatalogImportFile, CatalogImportFileRollbackResult, CoreProduct, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductListPage, ProductSku, PublicCatalogOffer, SkuListItem } from "../types";
 import { useToast } from "../ToastContext";
 
@@ -323,7 +324,6 @@ export function ProductsPage() {
   const { notify } = useToast();
   const canEdit = hasPermission("product.edit");
   const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
-  const tenantSlug = profile?.context.tenantSlug;
   const canDelete = canEdit;
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
@@ -338,13 +338,11 @@ export function ProductsPage() {
   const [missingImagesOnly, setMissingImagesOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(initialSkuPageSize);
-  const [languagePackState, setLanguagePackState] = useState<{
-    locale: StorefrontLocale;
-    pack?: CatalogLanguagePack;
-  }>({ locale: "zh-CN" });
-  const activeLanguagePack = languagePackState.locale === locale
-    ? languagePackState.pack
-    : undefined;
+  const {
+    pack: activeLanguagePack,
+    loading: languagePackLoading,
+    error: languagePackError,
+  } = useConsoleCatalogLanguagePack();
   const [sourceResult, setResult] = useState<ProductListPage>(emptyProductPage);
   const result = useMemo(
     () => localizeCoreProductPage(sourceResult, activeLanguagePack),
@@ -460,21 +458,6 @@ export function ProductsPage() {
       setTranslationLocale(preferred);
     }).catch(() => undefined);
   }, []);
-  useEffect(() => {
-    let cancelled = false;
-    if (locale === "zh-CN" || !tenantSlug) {
-      setLanguagePackState({ locale });
-      return () => { cancelled = true; };
-    }
-    void api.getStoreLanguagePack(tenantSlug, locale)
-      .then((pack) => {
-        if (!cancelled) setLanguagePackState({ locale, pack });
-      })
-      .catch(() => {
-        if (!cancelled) setLanguagePackState({ locale });
-      });
-    return () => { cancelled = true; };
-  }, [locale, tenantSlug]);
   useEffect(() => {
     void api.getProductTags("", 200)
       .then((response) => setManagedTags(response.tags))
@@ -1301,6 +1284,20 @@ export function ProductsPage() {
           ) : null}
         </>}
       />
+      {locale !== "zh-CN" ? (
+        <Card className="core-catalog-language-state" role="status" aria-live="polite">
+          <Translate weight="duotone" />
+          <Text size="2">
+            {languagePackLoading
+              ? t("正在读取 {language} 商品与 SKU 译文…", { language: storefrontLanguage(locale).label })
+              : activeLanguagePack
+              ? t("正在显示 {language} 商品标题、描述、分类、标签和 SKU 规格。", { language: storefrontLanguage(locale).label })
+              : t("{language} 语言包尚未发布，商品内容暂时显示中文。", { language: storefrontLanguage(locale).label })}
+          </Text>
+          {activeLanguagePack ? <Badge color="jade">v{activeLanguagePack.version}</Badge> : null}
+          {languagePackError && !languagePackLoading ? <Text size="1" color="gray">{languagePackError}</Text> : null}
+        </Card>
+      ) : null}
       <Card className="core-sku-toolbar">
         <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={t("搜索商品名称、产品编码或 SKU")} aria-label={t("搜索商品库")}><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
         <select value={categoryId} onChange={(event) => { setCategoryId(event.target.value); setPage(1); }} aria-label={t("按分类筛选")}>
