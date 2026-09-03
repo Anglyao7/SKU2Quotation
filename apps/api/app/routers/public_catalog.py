@@ -71,11 +71,9 @@ PUBLIC_EXCHANGE_RATE_CACHE_HEADERS = {
     "Cache-Control": "public, max-age=300, stale-while-revalidate=900",
 }
 PRIVATE_DETAIL_CACHE_HEADERS = {
-    # A child-account token changes the returned prices. Never let a shared
-    # proxy serve that personalized response to an anonymous visitor or a
-    # different reseller.
+    # The opaque account URL changes prices and product visibility. Keep it
+    # out of shared proxy caches even though visitors do not need to log in.
     "Cache-Control": "private, no-store",
-    "Vary": "Authorization",
 }
 _PUBLIC_QUOTE_MEDIA_PATTERN = re.compile(
     r"^/api/store/(?P<slug>[^/]+)/media/"
@@ -95,30 +93,17 @@ def _catalog_subaccount(
     identity_session: Session,
     *,
     permission_session: Session,
-    credentials: HTTPAuthorizationCredentials | None,
     expected_membership_id: UUID | None,
 ):
-    # A child storefront is activated only by its dedicated ``account`` URL.
-    # Merely having a child token in the browser must not personalize the
-    # merchant's ordinary public route or attach child pricing to it.
+    # The UUID in the dedicated account URL is an opaque public storefront
+    # selector, not an authenticated backend session. Private APIs still use
+    # their normal bearer-token and RBAC checks.
     if expected_membership_id is None:
         return None
-    submitter = use_cases.optional_customer_subaccount_membership(
+    submitter = use_cases.public_customer_subaccount_membership(
         identity_session,
-        access_token=_bearer_access_token(credentials),
+        membership_id=expected_membership_id,
     )
-    if submitter is None:
-        raise ApplicationError(
-            "STOREFRONT_ACCOUNT_SESSION_REQUIRED",
-            "请先登录对应子账号后再打开该专属前台。",
-            kind="unauthorized",
-        )
-    if submitter[0].id != expected_membership_id:
-        raise ApplicationError(
-            "STOREFRONT_ACCOUNT_SESSION_MISMATCH",
-            "当前登录账号与该子账号前台不一致。",
-            kind="forbidden",
-        )
     if "customer_portal.access" not in use_cases.customer_subaccount_permissions(
         identity_session,
         permission_session=permission_session,
@@ -140,7 +125,6 @@ def get_public_store(
     locale: str | None = Query(default=None, max_length=20),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicStoreResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -148,7 +132,6 @@ def get_public_store(
         subaccount = _catalog_subaccount(
             identity_session,
             permission_session=session,
-            credentials=credentials,
             expected_membership_id=account,
         )
         if subaccount is not None:
@@ -245,7 +228,6 @@ def list_public_skus(
     locale: str | None = Query(default=None, max_length=20),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicSkuPage:
     response.headers.update(NO_STORE_HEADERS)
@@ -275,7 +257,6 @@ def list_public_skus(
         submitter = _catalog_subaccount(
             identity_session,
             permission_session=session,
-            credentials=credentials,
             expected_membership_id=account,
         )
         result = use_cases.list_public_skus(
@@ -315,7 +296,6 @@ def list_public_products(
     share: str | None = Query(default=None, min_length=8, max_length=64),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicProductPage:
     response.headers.update(NO_STORE_HEADERS)
@@ -351,7 +331,6 @@ def list_public_products(
         submitter = _catalog_subaccount(
             identity_session,
             permission_session=session,
-            credentials=credentials,
             expected_membership_id=account,
         )
         result = use_cases.list_public_products(
@@ -387,7 +366,6 @@ def search_public_products_by_image(
     share: str | None = Query(default=None, min_length=8, max_length=64),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicImageSearchResponse:
     request_started = time.perf_counter()
@@ -416,7 +394,6 @@ def search_public_products_by_image(
         submitter = _catalog_subaccount(
             identity_session,
             permission_session=session,
-            credentials=credentials,
             expected_membership_id=account,
         )
         result = use_cases.search_public_products_by_image(
@@ -465,12 +442,11 @@ def get_public_product(
     share: str | None = Query(default=None, min_length=8, max_length=64),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicProductDetail:
     response.headers.update(
         PRIVATE_DETAIL_CACHE_HEADERS
-        if credentials is not None
+        if account is not None
         else PUBLIC_DETAIL_CACHE_HEADERS
     )
     if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
@@ -491,7 +467,6 @@ def get_public_product(
         submitter = _catalog_subaccount(
             identity_session,
             permission_session=session,
-            credentials=credentials,
             expected_membership_id=account,
         )
         return use_cases.get_public_product(
@@ -519,7 +494,6 @@ def get_public_sku(
     share: str | None = Query(default=None, min_length=8, max_length=64),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicSkuResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -538,7 +512,6 @@ def get_public_sku(
         submitter = _catalog_subaccount(
             identity_session,
             permission_session=session,
-            credentials=credentials,
             expected_membership_id=account,
         )
         return use_cases.get_public_sku(
@@ -651,24 +624,18 @@ def submit_public_quote_draft(
             request,
             visitor_ip=visitor_ip,
         )
-        submitter = use_cases.optional_customer_quote_submitter(
-            identity_session,
-            permission_session=session,
-            access_token=_bearer_access_token(credentials),
-        )
         if account is not None:
-            if submitter is None:
-                raise ApplicationError(
-                    "STOREFRONT_ACCOUNT_SESSION_REQUIRED",
-                    "请先登录对应子账号后再提交询价。",
-                    kind="unauthorized",
-                )
-            if submitter.membership_id != account:
-                raise ApplicationError(
-                    "STOREFRONT_ACCOUNT_SESSION_MISMATCH",
-                    "当前登录账号与该子账号前台不一致。",
-                    kind="forbidden",
-                )
+            submitter = use_cases.public_customer_quote_submitter(
+                identity_session,
+                permission_session=session,
+                membership_id=account,
+            )
+        else:
+            submitter = use_cases.optional_customer_quote_submitter(
+                identity_session,
+                permission_session=session,
+                access_token=_bearer_access_token(credentials),
+            )
         return use_cases.create_public_quote_draft(
             session,
             slug=tenant_slug,

@@ -234,8 +234,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
       shareToken,
       accountId,
     });
-    if (accountId) await catalogWarmup;
-    else void catalogWarmup.catch(() => undefined);
+    void catalogWarmup.catch(() => undefined);
     const store = await api.getStore(tenantSlug, locale, accountId);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(`${storefrontPath(store.slug)}${currentUrl.search}${currentUrl.hash}`);

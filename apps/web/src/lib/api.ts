@@ -41,7 +41,6 @@ import { ensureStorefrontVisitorToken } from "./storefrontVisitor";
 import {
   clearCoreAuthSession,
   ensureFreshCoreAccessToken,
-  getCoreAuthGeneration,
   getCoreAccessToken,
   refreshAuthSession,
 } from "../core/api";
@@ -277,16 +276,7 @@ function storeProductPath(slug: string, productId: string, locale?: StorefrontLo
 }
 
 function publicCatalogAuthScope() {
-  return getCoreAccessToken()
-    ? `#account-scope=${getCoreAuthGeneration()}`
-    : "#account-scope=anonymous";
-}
-
-async function requireStorefrontAccountSession(accountId?: string) {
-  if (!accountId) return;
-  if (await ensureFreshCoreAccessToken()) return;
-  window.dispatchEvent(new CustomEvent("atc:auth-expired"));
-  throw new ApiError("会话已失效，请重新登录。", 401);
+  return "#public-storefront";
 }
 
 function normalizeList<T>(payload: unknown): { items: T[]; total: number } {
@@ -372,7 +362,6 @@ async function getCachedStoreSkus(
   slug: string,
   filters: StoreSkuFilters = {},
 ): Promise<SkuList> {
-  await requireStorefrontAccountSession(filters.accountId);
   const languagePack = await storefrontLanguagePack(slug, filters.locale);
   const params = new URLSearchParams();
   if (filters.q) params.set("q", filters.q);
@@ -391,7 +380,7 @@ async function getCachedStoreSkus(
     ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
     : path}${publicCatalogAuthScope()}`;
   return cachedPublicRequest(publicCatalogCacheKey("catalog", cachePath), PUBLIC_CATALOG_CACHE_TTL_MS, async () => {
-    const raw = await request<unknown>(path, {}, Boolean(filters.accountId || getCoreAccessToken()));
+    const raw = await request<unknown>(path);
     const list = normalizeList<Sku>(raw);
     const meta = raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
@@ -460,7 +449,6 @@ async function getCachedStoreProducts(
   slug: string,
   filters: StoreSkuFilters = {},
 ): Promise<StoreProductList> {
-  await requireStorefrontAccountSession(filters.accountId);
   const languagePack = await storefrontLanguagePack(slug, filters.locale);
   const params = new URLSearchParams();
   if (filters.q) params.set("q", filters.q);
@@ -482,7 +470,7 @@ async function getCachedStoreProducts(
     publicCatalogCacheKey("products", cachePath),
     PUBLIC_CATALOG_CACHE_TTL_MS,
     async () => {
-      const raw = await request<unknown>(path, {}, Boolean(filters.accountId || getCoreAccessToken()));
+      const raw = await request<unknown>(path);
       const list = normalizeList<StoreProduct>(raw);
       const meta = raw && typeof raw === "object" && !Array.isArray(raw)
         ? (raw as Record<string, unknown>)
@@ -590,7 +578,6 @@ export const api = {
     storefrontLanguagePack(slug, locale)
   ),
   getStore: async (slug: string, locale?: StorefrontLocale, accountId?: string) => {
-    await requireStorefrontAccountSession(accountId);
     const languagePack = await storefrontLanguagePack(slug, locale);
     // Store metadata keeps the selected locale and language menu. Catalog
     // reads below always request source data: a published package is applied
@@ -604,11 +591,7 @@ export const api = {
       publicCatalogCacheKey("store", cachePath),
       PUBLIC_STORE_CACHE_TTL_MS,
       async () => {
-        const store = await request<Storefront>(
-          path,
-          {},
-          Boolean(accountId || getCoreAccessToken()),
-        );
+        const store = await request<Storefront>(path);
         if (!languagePack) return store;
         return {
           ...store,
@@ -635,7 +618,6 @@ export const api = {
     );
   },
   getStorefrontCustomPage: async (slug: string, pageSlug: string, accountId?: string) => {
-    await requireStorefrontAccountSession(accountId);
     const params = new URLSearchParams();
     if (accountId) params.set("account", accountId);
     const query = params.toString();
@@ -643,7 +625,7 @@ export const api = {
     return cachedPublicRequest(
       publicCatalogCacheKey("storefront-custom-page", `${path}${publicCatalogAuthScope()}`),
       PUBLIC_STORE_CACHE_TTL_MS,
-      () => request<StorefrontCustomPageDocument>(path, {}, Boolean(accountId || getCoreAccessToken())),
+      () => request<StorefrontCustomPageDocument>(path),
     );
   },
   getCatalogShare: async (
@@ -664,7 +646,6 @@ export const api = {
     shareToken?: string,
     accountId?: string,
   ): Promise<StoreProductDetail> {
-    await requireStorefrontAccountSession(accountId);
     const languagePack = await storefrontLanguagePack(slug, locale);
     const sourcePath = storeProductPath(slug, productId, undefined, accountId);
     const path = shareToken
@@ -677,11 +658,7 @@ export const api = {
       publicCatalogCacheKey("product", cachePath),
       PUBLIC_PRODUCT_CACHE_TTL_MS,
       async () => {
-        const product = await request<StoreProductDetail>(
-          path,
-          {},
-          Boolean(accountId || getCoreAccessToken()),
-        );
+        const product = await request<StoreProductDetail>(path);
         const normalized = {
           ...normalizeStoreProduct(product),
           skus: (product.skus || []).map(normalizeSku),
@@ -733,7 +710,6 @@ export const api = {
           body: form,
           signal: AbortSignal.timeout(120_000),
         },
-        Boolean(accountId || getCoreAccessToken()),
       ),
       storefrontLanguagePack(slug, locale),
     ]);
@@ -754,7 +730,6 @@ export const api = {
     await getCachedStoreProducts(slug, filters);
   },
   async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale, shareToken?: string, accountId?: string): Promise<Sku> {
-    await requireStorefrontAccountSession(accountId);
     const languagePack = await storefrontLanguagePack(slug, locale);
     const sourcePath = storeSkuPath(slug, skuId, undefined, accountId);
     const path = shareToken
@@ -768,7 +743,7 @@ export const api = {
       PUBLIC_SKU_CACHE_TTL_MS,
       async () => {
         const sku = normalizeSku(
-          await request<Sku>(path, {}, Boolean(accountId || getCoreAccessToken())),
+          await request<Sku>(path),
         );
         return languagePack ? localizeSku(sku, languagePack) : sku;
       },
@@ -818,7 +793,7 @@ export const api = {
       headers: {
         "X-Storefront-Visitor-Token": ensureStorefrontVisitorToken(slug),
       },
-    }, Boolean(accountId || getCoreAccessToken()))),
+    }, Boolean(!accountId && getCoreAccessToken()))),
   listStorefrontVisitorQuotes: (slug: string) =>
     request<StorefrontVisitorQuote[]>(
       `/api/store/${encodeURIComponent(slug)}/visitor/quotes`,
@@ -859,7 +834,6 @@ export const api = {
   ) => request<PublicSupportConversation>(
     `/api/store/${encodeURIComponent(slug)}/support/conversations${accountId ? `?account=${encodeURIComponent(accountId)}` : ""}`,
     { method: "POST", body: JSON.stringify(payload), cache: "no-store" },
-    Boolean(accountId || getCoreAccessToken()),
   ),
   getSupportConversation: (slug: string, token: string, accountId?: string) =>
     request<PublicSupportConversation>(
@@ -868,7 +842,6 @@ export const api = {
         cache: "no-store",
         headers: { "X-Support-Token": token },
       },
-      Boolean(accountId),
     ),
   sendSupportMessage: (
     slug: string,
@@ -883,7 +856,6 @@ export const api = {
       cache: "no-store",
       headers: { "X-Support-Token": token },
     },
-    Boolean(accountId),
   ),
   requestHumanSupport: (slug: string, token: string, accountId?: string) =>
     request<PublicSupportConversation>(
@@ -893,7 +865,6 @@ export const api = {
         cache: "no-store",
         headers: { "X-Support-Token": token },
       },
-      Boolean(accountId),
     ),
   streamSupportConversation: async (
     slug: string,
@@ -902,8 +873,6 @@ export const api = {
     signal?: AbortSignal,
     accountId?: string,
   ): Promise<void> => {
-    if (accountId) await requireStorefrontAccountSession(accountId);
-    const accessToken = accountId ? getCoreAccessToken() : undefined;
     let response: Response;
     try {
       response = await fetch(apiUrl(
@@ -914,7 +883,6 @@ export const api = {
         headers: {
           Accept: "text/event-stream",
           "X-Support-Token": token,
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         signal,
       });

@@ -424,6 +424,76 @@ def optional_customer_subaccount_membership(
     return membership, user
 
 
+def public_customer_subaccount_membership(
+    identity_session: Session,
+    *,
+    membership_id: UUID,
+) -> tuple[MembershipRow, UserRow]:
+    """Resolve the opaque account id carried by a shared storefront URL.
+
+    A customer storefront is a public, read-only sales surface.  Its account
+    UUID selects pricing, visibility, branding, quote ownership and support
+    ownership, but it never authenticates a visitor for private ``/api/v1``
+    APIs.  Those APIs continue to require a real login session.
+    """
+
+    membership = identity_session.get(MembershipRow, membership_id)
+    if (
+        membership is None
+        or membership.status != "active"
+        or membership.account_scope != "CUSTOMER_SUBACCOUNT"
+    ):
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_NOT_FOUND",
+            "子账号前台不存在或已停用。",
+            kind="not_found",
+        )
+    user = identity_session.get(UserRow, membership.user_id)
+    tenant = identity_session.get(TenantRow, membership.tenant_id)
+    if (
+        user is None
+        or user.status != "active"
+        or tenant is None
+        or tenant.status != "active"
+    ):
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_NOT_FOUND",
+            "子账号前台不存在或已停用。",
+            kind="not_found",
+        )
+    return membership, user
+
+
+def public_customer_quote_submitter(
+    identity_session: Session,
+    *,
+    permission_session: Session,
+    membership_id: UUID,
+) -> CustomerQuoteSubmitter:
+    """Resolve a public child storefront that may receive visitor quotes."""
+
+    membership, user = public_customer_subaccount_membership(
+        identity_session,
+        membership_id=membership_id,
+    )
+    if "customer_portal.order_create" not in customer_subaccount_permissions(
+        identity_session,
+        permission_session=permission_session,
+        membership=membership,
+        user=user,
+    ):
+        raise ApplicationError(
+            "CUSTOMER_ORDER_CREATE_DENIED",
+            "当前子账号未开通询价权限。",
+            kind="forbidden",
+        )
+    return CustomerQuoteSubmitter(
+        membership_id=membership.id,
+        tenant_id=membership.tenant_id,
+        user_id=user.id,
+    )
+
+
 def customer_subaccount_permissions(
     identity_session: Session,
     *,

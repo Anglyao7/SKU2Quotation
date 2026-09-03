@@ -22,13 +22,12 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
 from ..database import SessionLocal, get_auth_session, get_session
 from ..domain.errors import ApplicationError
-from ..services.auth.dependencies import bearer, current_context, get_authenticated_session
+from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.storefront_analytics import request_visitor_ip, request_visitor_location
 from ..support_schemas import (
@@ -68,30 +67,15 @@ SUPPORT_STREAM_HEADERS = {
 def _support_account_owner(
     *,
     account: UUID | None,
-    credentials: HTTPAuthorizationCredentials | None,
     identity_session: Session,
     permission_session: Session,
 ) -> UUID | None:
     if account is None:
         return None
-    access_token = (
-        credentials.credentials
-        if credentials is not None and credentials.scheme.lower() == "bearer"
-        else None
-    )
-    member_context = public_catalog_use_cases.optional_customer_subaccount_membership(
+    membership, user = public_catalog_use_cases.public_customer_subaccount_membership(
         identity_session,
-        access_token=access_token,
+        membership_id=account,
     )
-    membership = member_context[0] if member_context is not None else None
-    user = member_context[1] if member_context is not None else None
-    if membership is None or membership.id != account:
-        raise ApplicationError(
-            "STOREFRONT_ACCOUNT_SESSION_MISMATCH",
-            "当前登录账号与该子账号前台不一致。",
-            kind="forbidden" if membership is not None else "unauthorized",
-        )
-    assert user is not None
     permissions = public_catalog_use_cases.customer_subaccount_permissions(
         identity_session,
         permission_session=permission_session,
@@ -677,7 +661,6 @@ def create_public_support_conversation(
     background_tasks: BackgroundTasks,
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -694,7 +677,6 @@ def create_public_support_conversation(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
-            credentials=credentials,
             identity_session=identity_session,
             permission_session=session,
         )
@@ -732,14 +714,12 @@ def get_public_support_conversation(
     x_support_token: str = Header(..., max_length=500),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
     try:
         owner_membership_id = _support_account_owner(
             account=account,
-            credentials=credentials,
             identity_session=identity_session,
             permission_session=session,
         )
@@ -760,7 +740,6 @@ async def stream_public_support_conversation(
     x_support_token: str = Header(..., max_length=500),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> StreamingResponse:
     enforce_rate_limit(
@@ -773,7 +752,6 @@ async def stream_public_support_conversation(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
-            credentials=credentials,
             identity_session=identity_session,
             permission_session=session,
         )
@@ -811,7 +789,6 @@ def send_public_support_message(
     x_support_token: str = Header(..., max_length=500),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -825,7 +802,6 @@ def send_public_support_message(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
-            credentials=credentials,
             identity_session=identity_session,
             permission_session=session,
         )
@@ -865,7 +841,6 @@ def request_public_human_assistance(
     x_support_token: str = Header(..., max_length=500),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicChatConversationResponse:
     response.headers.update(NO_STORE_HEADERS)
@@ -879,7 +854,6 @@ def request_public_human_assistance(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
-            credentials=credentials,
             identity_session=identity_session,
             permission_session=session,
         )

@@ -23495,6 +23495,10 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert portal.json()["display_name"] == f"Downstream Customer {suffix}"
             assert portal.json()["membership_id"] == account["id"]
             assert child_client.get("/api/v1/customer-accounts", headers=headers).status_code == 403
+            assert child_client.get(
+                "/api/v1/me",
+                params={"account": account["id"]},
+            ).status_code == 401
 
             dedicated_catalog = child_client.get(
                 "/api/store/demo/skus",
@@ -23537,12 +23541,12 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert child_client.get(
                 "/api/store/demo",
                 params={"account": account["id"]},
-            ).status_code == 401
+            ).status_code == 200
             assert child_client.get(
                 "/api/store/demo",
                 headers=headers,
                 params={"account": str(uuid4())},
-            ).status_code == 403
+            ).status_code == 404
             assert child_client.get(
                 "/api/store/demo/pages/about-us",
                 headers=headers,
@@ -23551,12 +23555,25 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert child_client.get(
                 "/api/store/demo/skus",
                 params={"page_size": 1, "account": account["id"]},
-            ).status_code == 401
+            ).status_code == 200
+            assert child_client.get(
+                f"/api/store/demo/skus/{sku_id}",
+                params={"account": account["id"]},
+            ).status_code == 200
+            anonymous_products = child_client.get(
+                "/api/store/demo/products",
+                params={"page_size": 1, "account": account["id"]},
+            )
+            assert anonymous_products.status_code == 200, anonymous_products.text
+            assert child_client.get(
+                f"/api/store/demo/products/{anonymous_products.json()['items'][0]['id']}",
+                params={"account": account["id"]},
+            ).status_code == 200
             assert child_client.get(
                 "/api/store/demo/skus",
                 headers=headers,
                 params={"page_size": 1, "account": str(uuid4())},
-            ).status_code == 403
+            ).status_code == 404
 
             price_update = child_client.put(
                 f"/api/v1/customer-portal/pricing/skus/{sku_id}",
@@ -23566,7 +23583,6 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert price_update.status_code == 204, price_update.text
             repriced_catalog = child_client.get(
                 "/api/store/demo/skus",
-                headers=headers,
                 params={"page_size": 1, "account": account["id"]},
             )
             assert repriced_catalog.status_code == 200, repriced_catalog.text
@@ -23578,7 +23594,6 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
 
             child_support = child_client.post(
                 "/api/store/demo/support/conversations",
-                headers=headers,
                 params={"account": account["id"]},
                 json={
                     "message": f"Child storefront support {suffix}",
@@ -23592,7 +23607,6 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             child_support_current = child_client.get(
                 "/api/store/demo/support/conversations/current",
                 headers={
-                    **headers,
                     "X-Support-Token": child_support_token,
                 },
                 params={"account": account["id"]},
@@ -23611,7 +23625,6 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             child_support_reply = child_client.post(
                 "/api/store/demo/support/conversations/current/messages",
                 headers={
-                    **headers,
                     "X-Support-Token": child_support_token,
                 },
                 params={"account": account["id"]},
@@ -23663,7 +23676,6 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
 
             submitted = child_client.post(
                 "/api/store/demo/quotes",
-                headers=headers,
                 params={"account": account["id"]},
                 json={
                     "customer_name": f"Downstream Customer {suffix}",
@@ -23784,6 +23796,15 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                     "items": [{"sku_id": sku_id, "quantity": 1}],
                 },
             ).status_code == 403
+            assert restricted_client.post(
+                "/api/store/demo/quotes",
+                params={"account": account["id"]},
+                json={
+                    "customer_name": f"Downstream Customer {suffix}",
+                    "privacy_acknowledged": True,
+                    "items": [{"sku_id": sku_id, "quantity": 1}],
+                },
+            ).status_code == 403
 
     suspended = client.patch(
         f"/api/v1/customer-accounts/{account['id']}/status",
@@ -23791,6 +23812,10 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     )
     assert suspended.status_code == 200, suspended.text
     assert suspended.json()["status"] == "suspended"
+    assert client.get(
+        "/api/store/demo",
+        params={"account": account["id"]},
+    ).status_code == 404
 
     deleted = client.delete(f"/api/v1/customer-accounts/{account['id']}")
     assert deleted.status_code == 204, deleted.text
