@@ -93,16 +93,28 @@ def _catalog_subaccount(
     identity_session: Session,
     *,
     expected_membership_id: UUID | None,
+    storefront_slug: str,
 ):
     # The UUID in the dedicated account URL is an opaque public storefront
     # selector, not an authenticated backend session. Private APIs still use
     # their normal bearer-token and RBAC checks.
+    alias_account = use_cases.public_customer_subaccount_membership_by_storefront_slug(
+        identity_session,
+        storefront_slug=storefront_slug,
+    )
     if expected_membership_id is None:
-        return None
-    return use_cases.public_customer_subaccount_membership(
+        return alias_account
+    explicit_account = use_cases.public_customer_subaccount_membership(
         identity_session,
         membership_id=expected_membership_id,
     )
+    if alias_account is not None and alias_account[0].id != explicit_account[0].id:
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_PATH_MISMATCH",
+            "子账号前台路径与账号不匹配。",
+            kind="not_found",
+        )
+    return explicit_account
 
 
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
@@ -119,6 +131,7 @@ def get_public_store(
         subaccount = _catalog_subaccount(
             identity_session,
             expected_membership_id=account,
+            storefront_slug=tenant_slug,
         )
         if subaccount is not None:
             response.headers.update(PRIVATE_DETAIL_CACHE_HEADERS)
@@ -243,6 +256,7 @@ def list_public_skus(
         submitter = _catalog_subaccount(
             identity_session,
             expected_membership_id=account,
+            storefront_slug=tenant_slug,
         )
         result = use_cases.list_public_skus(
             session,
@@ -316,6 +330,7 @@ def list_public_products(
         submitter = _catalog_subaccount(
             identity_session,
             expected_membership_id=account,
+            storefront_slug=tenant_slug,
         )
         result = use_cases.list_public_products(
             session,
@@ -378,6 +393,7 @@ def search_public_products_by_image(
         submitter = _catalog_subaccount(
             identity_session,
             expected_membership_id=account,
+            storefront_slug=tenant_slug,
         )
         result = use_cases.search_public_products_by_image(
             session,
@@ -450,6 +466,7 @@ def get_public_product(
         submitter = _catalog_subaccount(
             identity_session,
             expected_membership_id=account,
+            storefront_slug=tenant_slug,
         )
         return use_cases.get_public_product(
             session,
@@ -494,6 +511,7 @@ def get_public_sku(
         submitter = _catalog_subaccount(
             identity_session,
             expected_membership_id=account,
+            storefront_slug=tenant_slug,
         )
         return use_cases.get_public_sku(
             session,
@@ -605,10 +623,15 @@ def submit_public_quote_draft(
             request,
             visitor_ip=visitor_ip,
         )
-        if account is not None:
+        storefront_account = _catalog_subaccount(
+            identity_session,
+            expected_membership_id=account,
+            storefront_slug=tenant_slug,
+        )
+        if storefront_account is not None:
             submitter = use_cases.public_customer_quote_submitter(
                 identity_session,
-                membership_id=account,
+                membership_id=storefront_account[0].id,
             )
         else:
             submitter = use_cases.optional_customer_quote_submitter(

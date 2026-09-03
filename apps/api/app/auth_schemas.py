@@ -113,6 +113,7 @@ class AuthContext(BaseModel):
     membership_id: UUID | None
     tenant_name: str | None
     tenant_slug: str | None
+    storefront_path: str | None = None
     business_mode: Literal["DOMESTIC", "EXPORT"] | None
     default_currency: str | None
     default_workspace: str | None

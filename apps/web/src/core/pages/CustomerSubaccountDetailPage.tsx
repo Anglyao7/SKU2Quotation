@@ -19,6 +19,7 @@ import {
   Key,
   Power,
   SlidersHorizontal,
+  Storefront,
   Trash,
   UserCircle,
   WarningCircle,
@@ -216,6 +217,7 @@ export function CustomerSubaccountDetailPage() {
       title={account.displayName}
       description={t("集中查看账号资料、访问状态、价格规则和该账号提交的订单。")}
       actions={<div className="customer-subaccount-detail-actions">
+        <Button asChild variant="soft" color="jade"><Link to={account.storefrontPath} target="_blank" rel="noreferrer"><Storefront />{t("打开前台")}</Link></Button>
         <Button variant="soft" color="gray" onClick={() => setAccessOpen(true)}><SlidersHorizontal />{t("权限")}</Button>
         <Button variant="soft" color="gray" onClick={() => setPricingOpen(true)}><CurrencyDollar />{t("价格")}</Button>
         <Button variant="soft" color="gray" onClick={() => setPasswordOpen(true)}><Key />{t("改密码")}</Button>
@@ -238,6 +240,7 @@ export function CustomerSubaccountDetailPage() {
         <div className="customer-subaccount-info-grid">
           <InformationItem icon={<UserCircle />} label={t("登录账号")} value={account.loginIdentifier} />
           <InformationItem icon={<EnvelopeSimple />} label={t("联系邮箱")} value={account.email || "—"} />
+          <InformationItem icon={<Storefront />} label={t("前台路径")} value={account.storefrontPath} />
           <InformationItem icon={<CalendarBlank />} label={t("创建时间")} value={coreDate(account.createdAt)} />
           <InformationItem icon={<Clock />} label={t("最近登录")} value={account.lastLoginAt ? coreDate(account.lastLoginAt) : t("尚未登录")} />
         </div>

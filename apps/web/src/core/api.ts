@@ -299,6 +299,7 @@ interface ApiAuthTokenData {
     membership_id?: string | null;
     tenant_name?: string | null;
     tenant_slug?: string | null;
+    storefront_path?: string | null;
     business_mode?: "DOMESTIC" | "EXPORT" | null;
     default_currency?: string | null;
     default_workspace?: string | null;
@@ -337,6 +338,7 @@ function mapAuthData(row: ApiAuthTokenData): AuthTokenData {
       membershipId: defined(row.context.membership_id),
       tenantName: defined(row.context.tenant_name),
       tenantSlug: defined(row.context.tenant_slug),
+      storefrontPath: defined(row.context.storefront_path),
       businessMode: defined(row.context.business_mode),
       defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
@@ -647,6 +649,7 @@ function mapCurrentUser(row: ApiCurrentUserResponse): CurrentUser {
       membershipId: defined(row.context.membership_id),
       tenantName: defined(row.context.tenant_name),
       tenantSlug: defined(row.context.tenant_slug),
+      storefrontPath: defined(row.context.storefront_path),
       businessMode: defined(row.context.business_mode),
       defaultCurrency: defined(row.context.default_currency),
       defaultWorkspace: defined(row.context.default_workspace),
@@ -900,6 +903,8 @@ interface ApiCustomerSubaccount {
   display_name: string;
   login_identifier: string;
   email?: string | null;
+  storefront_slug: string;
+  storefront_path: string;
   status: string;
   identity_code: "SUBACCOUNT";
   capabilities: CustomerSubaccountCapability[];
@@ -957,6 +962,8 @@ function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
     displayName: row.display_name,
     loginIdentifier: row.login_identifier,
     email: defined(row.email),
+    storefrontSlug: row.storefront_slug,
+    storefrontPath: row.storefront_path,
     status: row.status,
     identityCode: row.identity_code,
     capabilities: row.capabilities || ["catalog", "submit_orders", "view_orders"],
@@ -1395,6 +1402,8 @@ export async function getCustomerPortalOverview(): Promise<CustomerPortalOvervie
     display_name: string;
     tenant_name: string;
     tenant_slug: string;
+    storefront_slug: string;
+    storefront_path: string;
     account_status: string;
     order_count: number;
     last_order_at?: string | null;
@@ -1404,6 +1413,8 @@ export async function getCustomerPortalOverview(): Promise<CustomerPortalOvervie
     displayName: row.display_name,
     tenantName: row.tenant_name,
     tenantSlug: row.tenant_slug,
+    storefrontSlug: row.storefront_slug,
+    storefrontPath: row.storefront_path,
     accountStatus: row.account_status,
     orderCount: Number(row.order_count || 0),
     lastOrderAt: defined(row.last_order_at),

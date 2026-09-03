@@ -16,6 +16,7 @@ export interface AuthWorkspaceContext {
   membershipId?: string;
   tenantName?: string;
   tenantSlug?: string;
+  storefrontPath?: string;
   businessMode?: BusinessMode;
   defaultCurrency?: string;
   defaultWorkspace?: string;
@@ -119,6 +120,8 @@ export interface CustomerSubaccount {
   displayName: string;
   loginIdentifier: string;
   email?: string;
+  storefrontSlug: string;
+  storefrontPath: string;
   status: "active" | "suspended" | string;
   identityCode: "SUBACCOUNT";
   capabilities: CustomerSubaccountCapability[];
@@ -245,6 +248,8 @@ export interface CustomerPortalOverview {
   displayName: string;
   tenantName: string;
   tenantSlug: string;
+  storefrontSlug: string;
+  storefrontPath: string;
   accountStatus: string;
   orderCount: number;
   lastOrderAt?: string;

@@ -22799,12 +22799,16 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
             )
         }
     )
+    assert "storefront_slug" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("memberships")
+    }
     with upgraded_engine.connect() as connection:
         assert (
             connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
             ).scalar()
-            == "20260903_0130"
+            == "20260903_0131"
         )
     upgraded_engine.dispose()
     command.check(config)
@@ -22814,6 +22818,10 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert public_tables.isdisjoint(inspect(downgraded_engine).get_table_names())
     assert customer_account_tables.isdisjoint(inspect(downgraded_engine).get_table_names())
     assert analytics_tables.isdisjoint(inspect(downgraded_engine).get_table_names())
+    assert "storefront_slug" not in {
+        column["name"]
+        for column in inspect(downgraded_engine).get_columns("memberships")
+    }
     downgraded_engine.dispose()
     command.upgrade(config, "head")
     command.check(config)
@@ -23578,6 +23586,8 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
         "support",
     ]
     assert account["login_count_30d"] == 0
+    assert account["storefront_slug"] == f"customer-{suffix}"
+    assert account["storefront_path"] == f"/customer-{suffix}"
 
     custom_page_slug = f"account-storefront-parity-{suffix}"
     custom_page = client.post(
@@ -23593,6 +23603,17 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     )
     assert custom_page.status_code == 201, custom_page.text
     custom_page_id = custom_page.json()["id"]
+    short_storefront = client.get(f"/api/store/{account['storefront_slug']}")
+    assert short_storefront.status_code == 200, short_storefront.text
+    assert short_storefront.json()["slug"] == account["storefront_slug"]
+    assert short_storefront.json()["storefront_scope"] == "CUSTOMER_SUBACCOUNT"
+    assert short_storefront.json()["account_id"] == account["id"]
+    assert short_storefront.json()["custom_pages"][0]["path"].startswith(
+        account["storefront_path"]
+    )
+    assert client.get(
+        f"/api/store/{account['storefront_slug']}/pages/{custom_page_slug}"
+    ).status_code == 200
 
     product_write_permissions = {
         "product.create",
@@ -23653,6 +23674,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             login_data = login.json()["data"]
             token = login_data["access_token"]
             assert login_data["context"]["account_scope"] == "CUSTOMER_SUBACCOUNT"
+            assert login_data["context"]["storefront_path"] == account["storefront_path"]
             child_permissions = set(login_data["permissions"])
             assert {"product.view", "catalog.view"}.issubset(child_permissions)
             assert child_permissions.isdisjoint(product_write_permissions)
@@ -23663,6 +23685,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert portal.status_code == 200, portal.text
             assert portal.json()["display_name"] == f"Downstream Customer {suffix}"
             assert portal.json()["membership_id"] == account["id"]
+            assert portal.json()["storefront_path"] == account["storefront_path"]
             assert child_client.get("/api/v1/customer-accounts", headers=headers).status_code == 403
             assert child_client.get(
                 "/api/v1/me",
@@ -23687,6 +23710,12 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert dedicated_store_data["name"] == f"Downstream Customer {suffix}"
             assert dedicated_store_data["support_widget"]["enabled"] is True
             assert dedicated_store.headers["cache-control"] == "private, no-store"
+            short_catalog = child_client.get(
+                f"/api/store/{account['storefront_slug']}/skus",
+                params={"page_size": 1},
+            )
+            assert short_catalog.status_code == 200, short_catalog.text
+            assert short_catalog.json()["items"]
 
             # A child token alone must not make the merchant's ordinary URL
             # inherit child pricing or identity. The account UUID is the
@@ -23781,8 +23810,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert "base_price" not in repriced_sku
 
             child_support = child_client.post(
-                "/api/store/demo/support/conversations",
-                params={"account": account["id"]},
+                f"/api/store/{account['storefront_slug']}/support/conversations",
                 json={
                     "message": f"Child storefront support {suffix}",
                     "client_message_id": f"child-{suffix}",
@@ -23793,11 +23821,10 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             child_support_id = child_support.json()["id"]
             child_support_token = child_support.json()["access_token"]
             child_support_current = child_client.get(
-                "/api/store/demo/support/conversations/current",
+                f"/api/store/{account['storefront_slug']}/support/conversations/current",
                 headers={
                     "X-Support-Token": child_support_token,
                 },
-                params={"account": account["id"]},
             )
             assert child_support_current.status_code == 200, child_support_current.text
             assert child_support_current.json()["id"] == child_support_id
@@ -23811,11 +23838,10 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 params={"account": account["id"]},
             ).status_code == 401
             child_support_reply = child_client.post(
-                "/api/store/demo/support/conversations/current/messages",
+                f"/api/store/{account['storefront_slug']}/support/conversations/current/messages",
                 headers={
                     "X-Support-Token": child_support_token,
                 },
-                params={"account": account["id"]},
                 json={
                     "message": f"Child follow-up {suffix}",
                     "client_message_id": f"child-follow-up-{suffix}",
@@ -23863,8 +23889,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             ).status_code == 403
 
             submitted = child_client.post(
-                "/api/store/demo/quotes",
-                params={"account": account["id"]},
+                f"/api/store/{account['storefront_slug']}/quotes",
                 json={
                     "customer_name": f"Downstream Customer {suffix}",
                     "privacy_acknowledged": True,

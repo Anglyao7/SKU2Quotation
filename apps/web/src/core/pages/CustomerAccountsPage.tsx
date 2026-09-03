@@ -165,6 +165,9 @@ export function CustomerAccountsPage() {
             </div>
             <Badge color={account.status === "active" ? "jade" : "gray"}>{t(account.status === "active" ? "已开通" : "已停用")}</Badge>
             <div className="customer-account-actions">
+              <Button asChild size="1" variant="soft" color="jade">
+                <Link to={account.storefrontPath} target="_blank" rel="noreferrer"><Eye />{t("打开前台")}</Link>
+              </Button>
               <Button asChild size="1" variant="soft" color="gray">
                 <Link to={`/console/customer-accounts/${encodeURIComponent(account.id)}`}><Eye />{t("查看详情")}<CaretRight /></Link>
               </Button>

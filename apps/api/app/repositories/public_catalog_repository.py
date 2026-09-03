@@ -8,7 +8,7 @@ from sqlalchemy import Text, case, cast, exists, func, or_, select, update
 from sqlalchemy.orm import Load, Session, aliased
 
 from ..catalog_merchandising import POPULAR_CATEGORY_CODE
-from ..identity_models import TenantRow
+from ..identity_models import MembershipRow, TenantRow, UserRow
 from ..product_center_models import SkuRow
 from ..product_supplier_models import (
     ProductCategoryMembershipRow,
@@ -89,6 +89,23 @@ def find_published_profile_by_slug(
     )
     if profile is not None:
         return profile
+    tenant_id = session.scalar(
+        select(MembershipRow.tenant_id)
+        .join(UserRow, UserRow.id == MembershipRow.user_id)
+        .join(TenantRow, TenantRow.id == MembershipRow.tenant_id)
+        .where(
+            MembershipRow.storefront_slug == normalized,
+            MembershipRow.account_scope == "CUSTOMER_SUBACCOUNT",
+            MembershipRow.status == "active",
+            MembershipRow.deleted_at.is_(None),
+            UserRow.status == "active",
+            UserRow.deleted_at.is_(None),
+            TenantRow.status == "active",
+            TenantRow.deleted_at.is_(None),
+        )
+    )
+    if tenant_id is not None:
+        return find_published_profile_by_tenant(session, tenant_id=tenant_id)
     profiles = session.scalars(
         select(TenantPublicProfileRow).where(
             TenantPublicProfileRow.publication_status == "PUBLISHED",
@@ -138,6 +155,16 @@ def occupied_storefront_slugs(
             for value in [slug, *(legacy_slugs or [])]
             if str(value).strip()
         )
+    occupied.update(
+        str(slug).casefold().strip()
+        for slug in session.scalars(
+            select(MembershipRow.storefront_slug).where(
+                MembershipRow.storefront_slug.is_not(None),
+                MembershipRow.deleted_at.is_(None),
+            )
+        ).all()
+        if str(slug or "").strip()
+    )
     return occupied
 
 

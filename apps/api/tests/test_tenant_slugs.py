@@ -1,6 +1,10 @@
 import pytest
 
-from app.tenant_slugs import storefront_slug_from_name, unique_storefront_slug
+from app.tenant_slugs import (
+    storefront_slug_from_name,
+    subaccount_storefront_slug_base,
+    unique_storefront_slug,
+)
 
 
 @pytest.mark.parametrize(
@@ -33,3 +37,25 @@ def test_unique_storefront_slug_keeps_numbered_path_within_limit() -> None:
     candidate = unique_storefront_slug(base, {base})
     assert candidate.endswith("-2")
     assert len(candidate) == 80
+
+
+def test_subaccount_storefront_slug_uses_email_shaped_login_local_part() -> None:
+    assert subaccount_storefront_slug_base(
+        login_identifier="AAA@Example.com",
+        display_name="Customer Name",
+    ) == "aaa"
+
+
+def test_subaccount_storefront_slug_keeps_login_name_over_contact_email() -> None:
+    assert subaccount_storefront_slug_base(
+        login_identifier="aaa",
+        email="contact@example.com",
+        display_name="Customer Name",
+    ) == "aaa"
+
+
+def test_subaccount_storefront_slug_falls_back_to_login_identifier() -> None:
+    assert subaccount_storefront_slug_base(
+        login_identifier="Sales Team / East",
+        display_name="Customer Name",
+    ) == "sales-team-east"

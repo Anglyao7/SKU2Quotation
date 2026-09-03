@@ -150,6 +150,11 @@ def _token_response(
                 membership_id=result.membership.id if result.membership else None,
                 tenant_name=result.tenant.name if result.tenant else None,
                 tenant_slug=result.tenant.slug if result.tenant else None,
+                storefront_path=(
+                    f"/{result.membership.storefront_slug or result.tenant.slug}"
+                    if result.tenant is not None and result.membership is not None
+                    else None
+                ),
                 business_mode=(
                     "DOMESTIC"
                     if result.tenant

@@ -150,6 +150,8 @@ class CustomerSubaccountSummary(BaseModel):
     display_name: str
     login_identifier: str
     email: str | None
+    storefront_slug: str
+    storefront_path: str
     status: str
     identity_code: Literal["SUBACCOUNT"] = "SUBACCOUNT"
     capabilities: list[CustomerSubaccountCapability]
@@ -300,6 +302,8 @@ class CustomerPortalOverview(BaseModel):
     display_name: str
     tenant_name: str
     tenant_slug: str
+    storefront_slug: str
+    storefront_path: str
     account_status: str
     order_count: int
     last_order_at: datetime | None

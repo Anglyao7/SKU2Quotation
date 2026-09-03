@@ -34,6 +34,7 @@ def test_identity_role_has_no_direct_user_or_membership_update_grant() -> None:
         "permission_overrides",
         "permission_version",
         "login_identifier",
+        "storefront_slug",
         "updated_at",
     )
 

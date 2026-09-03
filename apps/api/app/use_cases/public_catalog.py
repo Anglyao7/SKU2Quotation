@@ -464,6 +464,34 @@ def public_customer_subaccount_membership(
     return membership, user
 
 
+def public_customer_subaccount_membership_by_storefront_slug(
+    identity_session: Session,
+    *,
+    storefront_slug: str,
+) -> tuple[MembershipRow, UserRow] | None:
+    """Resolve a public child storefront's globally unique short path."""
+
+    normalized = storefront_slug.casefold().strip()
+    if not normalized:
+        return None
+    row = identity_session.execute(
+        select(MembershipRow, UserRow)
+        .join(UserRow, UserRow.id == MembershipRow.user_id)
+        .join(TenantRow, TenantRow.id == MembershipRow.tenant_id)
+        .where(
+            MembershipRow.storefront_slug == normalized,
+            MembershipRow.account_scope == "CUSTOMER_SUBACCOUNT",
+            MembershipRow.status == "active",
+            MembershipRow.deleted_at.is_(None),
+            UserRow.status == "active",
+            UserRow.deleted_at.is_(None),
+            TenantRow.status == "active",
+            TenantRow.deleted_at.is_(None),
+        )
+    ).first()
+    return (row[0], row[1]) if row is not None else None
+
+
 def public_customer_quote_submitter(
     identity_session: Session,
     *,
@@ -922,7 +950,13 @@ def get_store(
     )
     response = PublicStoreResponse(
         id=tenant.id,
-        slug=tenant.slug,
+        slug=(
+            subaccount[0].storefront_slug
+            if subaccount is not None
+            and subaccount[0].storefront_slug
+            and subaccount[0].storefront_slug.casefold() == slug.casefold().strip()
+            else tenant.slug
+        ),
         name=tenant.name,
         description=profile.description,
         logo_url=storefront_logo_url(profile),
@@ -957,7 +991,13 @@ def get_store(
         custom_pages=storefront_page_use_cases.public_navigation_pages(
             session,
             tenant_id=tenant.id,
-            tenant_slug=tenant.slug,
+            tenant_slug=(
+                subaccount[0].storefront_slug
+                if subaccount is not None
+                and subaccount[0].storefront_slug
+                and subaccount[0].storefront_slug.casefold() == slug.casefold().strip()
+                else tenant.slug
+            ),
         ),
         storefront_scope="MERCHANT",
     )

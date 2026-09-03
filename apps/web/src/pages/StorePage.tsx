@@ -238,7 +238,7 @@ export function StorePage() {
   const { profile } = useCoreAuth();
   const location = useLocation();
   const { shareId, accountKey } = useParams<{ shareId?: string; accountKey?: string }>();
-  const accountId = storefrontAccountMembershipId(accountKey);
+  const accountId = storefrontAccountMembershipId(accountKey) || loadedStore.account_id || undefined;
   const tenantSlug = loadedStore.slug;
   const locale: StorefrontLocale = normalizeStorefrontLocale(loadedStore.locale);
   const t = useCallback(

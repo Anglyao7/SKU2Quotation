@@ -126,7 +126,7 @@ export function StorefrontVisitorCenterPage() {
   const store = useLoaderData() as Storefront;
   const { profile } = useCoreAuth();
   const { accountKey } = useParams<{ accountKey?: string }>();
-  const accountId = storefrontAccountMembershipId(accountKey);
+  const accountId = storefrontAccountMembershipId(accountKey) || store.account_id || undefined;
   const basePath = storefrontBasePath(store.slug, accountKey);
   const storageScope = storefrontStorageScope(store.slug, accountId);
   const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId

@@ -59,6 +59,7 @@ def get_current_user(session: Session, *, context: RequestContext) -> MeResponse
             membership_id=membership.id,
             tenant_name=tenant.name,
             tenant_slug=tenant.slug,
+            storefront_path=f"/{membership.storefront_slug or tenant.slug}",
             business_mode=(
                 "DOMESTIC"
                 if tenant.default_currency.upper() == "CNY"

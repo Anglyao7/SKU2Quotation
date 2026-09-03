@@ -42,7 +42,7 @@ import { preloadConsoleRoute } from "../../core/routePreload";
 import { useLocale } from "../../core/LocaleContext";
 import { pollingBackoffMs } from "../../core/pollingBackoff";
 import { initials } from "../../lib/format";
-import { storefrontAccountKey, storefrontBasePath } from "../../lib/storefrontAccount";
+import { storefrontBasePath } from "../../lib/storefrontAccount";
 import { STOREFRONT_LANGUAGE_OPTIONS, storefrontLanguage } from "../../lib/storefrontLocale";
 import {
   SUBSCRIPTION_TIER_PRESENTATION,
@@ -237,12 +237,12 @@ export function ConsoleLayout() {
   const mobileMore = visibleNavigation.filter((item) => !item.mobilePrimary);
   const mobileMoreActive = mobileMore.some((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
     || location.pathname.startsWith("/console/account");
-  const storefrontPath = activeTenantSlug
+  const storefrontPath = isCustomerSubaccount && profile?.context.storefrontPath
+    ? profile.context.storefrontPath
+    : activeTenantSlug
     ? storefrontBasePath(
         activeTenantSlug,
-        isCustomerSubaccount && activeMembershipId
-          ? storefrontAccountKey(displayName, activeMembershipId)
-          : undefined,
+        undefined,
       )
     : "/";
   const activeTenant = useMemo<Tenant | undefined>(() => activeTenantId ? {

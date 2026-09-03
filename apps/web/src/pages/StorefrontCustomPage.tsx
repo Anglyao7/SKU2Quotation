@@ -112,7 +112,7 @@ export function StorefrontCustomPage() {
   const { store, page } = useLoaderData() as StorefrontCustomPageLoaderData;
   const { profile } = useCoreAuth();
   const { accountKey } = useParams<{ accountKey?: string }>();
-  const accountId = storefrontAccountMembershipId(accountKey);
+  const accountId = storefrontAccountMembershipId(accountKey) || store.account_id || undefined;
   const storageScope = storefrontStorageScope(store.slug, accountId);
   const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId
     ? profile.user.displayName

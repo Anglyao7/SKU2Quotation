@@ -72,6 +72,27 @@ def storefront_slug_from_name(value: str) -> str:
     return slug
 
 
+def subaccount_storefront_slug_base(
+    *,
+    login_identifier: str,
+    email: str | None = None,
+    display_name: str | None = None,
+) -> str:
+    """Build a short storefront path from a child account's public identity.
+
+    The login account is the canonical public identity. For email-shaped login
+    values only the local part is used, so ``aaa@example.com`` receives the
+    readable base path ``/aaa``. A separate contact email is only a fallback;
+    the normal storefront slug rules still reserve application-owned routes.
+    """
+
+    candidate = (login_identifier or email or "").strip()
+    if "@" in candidate:
+        candidate = candidate.split("@", 1)[0]
+    candidate = candidate or (display_name or "").strip()
+    return storefront_slug_from_name(candidate)
+
+
 def unique_storefront_slug(base: str, occupied: Iterable[str]) -> str:
     """Return a readable unused storefront path derived from ``base``.
 

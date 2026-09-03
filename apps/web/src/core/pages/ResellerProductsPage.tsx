@@ -32,7 +32,7 @@ import {
 import { api } from "../../lib/api";
 import { money } from "../../lib/format";
 import { localizeProduct, localizeProductDetail } from "../../lib/storefrontLanguagePack";
-import { storefrontAccountKey, storefrontBasePath } from "../../lib/storefrontAccount";
+import { storefrontBasePath } from "../../lib/storefrontAccount";
 import { storefrontLanguage } from "../../lib/storefrontLocale";
 import type { Sku, StoreProduct, StoreProductDetail, StoreProductList } from "../../types";
 
@@ -132,14 +132,8 @@ export function ResellerProductsPage() {
   };
 
   const totalPages = Math.max(1, result?.pages || Math.ceil((result?.total || 0) / PAGE_SIZE));
-  const storefrontPath = tenantSlug
-    ? storefrontBasePath(
-        tenantSlug,
-        accountId
-          ? storefrontAccountKey(profile?.user.displayName || "account", accountId)
-          : undefined,
-      )
-    : "/";
+  const storefrontPath = profile?.context.storefrontPath
+    || (tenantSlug ? storefrontBasePath(tenantSlug) : "/");
 
   return (
     <div className="core-workspace reseller-products-page">

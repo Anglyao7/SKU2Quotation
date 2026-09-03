@@ -7,7 +7,6 @@ import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "..
 import { useLocale } from "../LocaleContext";
 import type { CustomerPortalOrder, CustomerPortalOverview } from "../types";
 import { money } from "../../lib/format";
-import { storefrontAccountKey, storefrontBasePath } from "../../lib/storefrontAccount";
 
 const orderStatusLabel: Record<string, string> = {
   PENDING_CONFIRMATION: "待商家确认",
@@ -43,12 +42,7 @@ export function ResellerOrdersPage() {
   useEffect(() => { void load(); }, [load]);
 
   if (loading && !overview) return <div className="core-workspace"><CoreLoading label={t("正在读取我的询价")} /></div>;
-  const catalogPath = overview
-    ? storefrontBasePath(
-        overview.tenantSlug,
-        storefrontAccountKey(overview.displayName, overview.membershipId),
-      )
-    : "/";
+  const catalogPath = overview?.storefrontPath || "/";
 
   return (
     <div className="core-workspace reseller-orders-page">

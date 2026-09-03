@@ -78,6 +78,8 @@ from ..services.subaccount_pricing import (
     subaccount_category_price_rules,
     subaccount_sku_price_rules,
 )
+from ..services.storefront_paths import allocate_storefront_slug
+from ..tenant_slugs import subaccount_storefront_slug_base
 from ..services.rbac import (
     CUSTOMER_SUBACCOUNT_PRODUCT_PERMISSION_MODULES,
     CUSTOMER_SUBACCOUNT_PRODUCT_READ_PERMISSION_CODES,
@@ -558,6 +560,8 @@ def _summary_rows(
             display_name=user.display_name,
             login_identifier=membership.login_identifier or user.email_normalized or "—",
             email=user.email_normalized,
+            storefront_slug=membership.storefront_slug or "",
+            storefront_path=f"/{membership.storefront_slug}" if membership.storefront_slug else "",
             status=membership.status,
             capabilities=_capabilities_from_permissions(
                 membership.permission_overrides
@@ -825,6 +829,14 @@ def create_customer_subaccount(
         modules=request.modules,
         capabilities=request.capabilities,
     )
+    storefront_slug = allocate_storefront_slug(
+        session,
+        base=subaccount_storefront_slug_base(
+            login_identifier=request.login_identifier,
+            email=request.email,
+            display_name=request.display_name,
+        ),
+    )
     try:
         provisioned = provision_password_identity(
             identity_session,
@@ -894,6 +906,16 @@ def create_customer_subaccount(
                     "permission_overrides": json.dumps(permission_overrides),
                 },
             ).mappings().one()
+            identity_session.execute(
+                text(
+                    "UPDATE memberships SET storefront_slug = :storefront_slug, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = :membership_id"
+                ),
+                {
+                    "storefront_slug": storefront_slug,
+                    "membership_id": row["subaccount_membership_id"],
+                },
+            )
             if local_material is not None:
                 salt, password_hash = local_material
                 identity_session.add(
@@ -941,6 +963,8 @@ def create_customer_subaccount(
             display_name=row["subaccount_display_name"],
             login_identifier=row["subaccount_login_identifier"],
             email=row["subaccount_email"],
+            storefront_slug=storefront_slug,
+            storefront_path=f"/{storefront_slug}",
             status=row["subaccount_membership_status"],
             capabilities=_capabilities_from_permissions(permission_overrides),
             modules=_modules_from_permissions(permission_overrides),
@@ -965,6 +989,7 @@ def create_customer_subaccount(
         account_scope=_CUSTOMER_SCOPE,
         parent_membership_id=context.membership_id,
         login_identifier=request.login_identifier.casefold(),
+        storefront_slug=storefront_slug,
         status="active",
         joined_at=utcnow(),
         permission_overrides=permission_overrides,
@@ -1153,6 +1178,7 @@ def delete_customer_subaccount(
         policy.deleted_at = now
 
     membership.status = "removed"
+    membership.storefront_slug = None
     membership.deleted_at = now
     membership.permission_overrides = []
     membership.permission_version += 1
@@ -1872,6 +1898,8 @@ def get_customer_portal_overview(
         display_name=user.display_name,
         tenant_name=tenant.name,
         tenant_slug=tenant.slug,
+        storefront_slug=membership.storefront_slug or tenant.slug,
+        storefront_path=f"/{membership.storefront_slug or tenant.slug}",
         account_status=membership.status,
         order_count=int(count or 0),
         last_order_at=last_order,

@@ -224,6 +224,11 @@ class MembershipRow(AuditTimestampMixin, Base):
             "parent_membership_id",
             "account_scope",
         ),
+        Index(
+            "uq_memberships_storefront_slug",
+            "storefront_slug",
+            unique=True,
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -235,6 +240,7 @@ class MembershipRow(AuditTimestampMixin, Base):
     )
     parent_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
     login_identifier: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    storefront_slug: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="invited", nullable=False)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     permission_version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)

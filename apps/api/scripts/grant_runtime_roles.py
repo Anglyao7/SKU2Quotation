@@ -49,6 +49,7 @@ AUTH_COLUMN_UPDATE_GRANTS: dict[str, tuple[str, ...]] = {
         "permission_overrides",
         "permission_version",
         "login_identifier",
+        "storefront_slug",
         "updated_at",
     ),
     "users": ("status", "updated_at"),

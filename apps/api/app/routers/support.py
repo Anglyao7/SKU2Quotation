@@ -67,14 +67,27 @@ SUPPORT_STREAM_HEADERS = {
 def _support_account_owner(
     *,
     account: UUID | None,
+    storefront_slug: str,
     identity_session: Session,
 ) -> UUID | None:
+    alias_account = (
+        public_catalog_use_cases.public_customer_subaccount_membership_by_storefront_slug(
+            identity_session,
+            storefront_slug=storefront_slug,
+        )
+    )
     if account is None:
-        return None
+        return alias_account[0].id if alias_account is not None else None
     membership, _user = public_catalog_use_cases.public_customer_subaccount_membership(
         identity_session,
         membership_id=account,
     )
+    if alias_account is not None and alias_account[0].id != membership.id:
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_PATH_MISMATCH",
+            "子账号前台路径与账号不匹配。",
+            kind="not_found",
+        )
     return membership.id
 
 
@@ -664,6 +677,7 @@ def create_public_support_conversation(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
+            storefront_slug=tenant_slug,
             identity_session=identity_session,
         )
         visitor_ip = request_visitor_ip(request)
@@ -706,6 +720,7 @@ def get_public_support_conversation(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
+            storefront_slug=tenant_slug,
             identity_session=identity_session,
         )
         return use_cases.get_public_conversation(
@@ -737,6 +752,7 @@ async def stream_public_support_conversation(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
+            storefront_slug=tenant_slug,
             identity_session=identity_session,
         )
         initial = await asyncio.to_thread(
@@ -786,6 +802,7 @@ def send_public_support_message(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
+            storefront_slug=tenant_slug,
             identity_session=identity_session,
         )
         visitor_ip = request_visitor_ip(request)
@@ -837,6 +854,7 @@ def request_public_human_assistance(
     try:
         owner_membership_id = _support_account_owner(
             account=account,
+            storefront_slug=tenant_slug,
             identity_session=identity_session,
         )
         return use_cases.request_public_human_assistance(
