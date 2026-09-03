@@ -340,7 +340,7 @@ export function SkuDetailPage() {
         config={store.support_widget}
       />
 
-      <StorefrontFooter store={store} t={t} />
+      <StorefrontFooter store={store} t={t} accountKey={accountKey} />
     </div>
   );
 }

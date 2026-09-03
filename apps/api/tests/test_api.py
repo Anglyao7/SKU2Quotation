@@ -23391,7 +23391,7 @@ def _local_access_token(test_client: TestClient, user_id: UUID) -> str:
 def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An owner creates a child; the child sees only its portal and own order trail."""
+    """A child has isolated backend data and a full inherited public storefront."""
 
     suffix = uuid4().hex[:10]
     subaccount_password = "975310"
@@ -23424,6 +23424,21 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
         "support",
     ]
     assert account["login_count_30d"] == 0
+
+    custom_page_slug = f"account-storefront-parity-{suffix}"
+    custom_page = client.post(
+        "/api/v1/storefront/pages",
+        data={"title": "Account Storefront Parity", "slug": custom_page_slug},
+        files={
+            "html_file": (
+                "account-storefront-parity.html",
+                b"<main>Account storefront parity</main>",
+                "text/html",
+            )
+        },
+    )
+    assert custom_page.status_code == 201, custom_page.text
+    custom_page_id = custom_page.json()["id"]
 
     product_write_permissions = {
         "product.create",
@@ -23516,18 +23531,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert dedicated_store_data["storefront_scope"] == "CUSTOMER_SUBACCOUNT"
             assert dedicated_store_data["account_id"] == account["id"]
             assert dedicated_store_data["name"] == f"Downstream Customer {suffix}"
-            assert dedicated_store_data["description"] is None
-            assert dedicated_store_data["logo_url"] is None
-            assert dedicated_store_data["contact_email"] is None
-            assert dedicated_store_data["contact_phone"] is None
-            assert dedicated_store_data["hot_products_enabled"] is False
-            assert dedicated_store_data["exchange_rates_enabled"] is False
-            assert dedicated_store_data["ai_search_questions"] == []
-            assert dedicated_store_data["popular_search_terms"] == []
-            assert dedicated_store_data["announcements"] == []
             assert dedicated_store_data["support_widget"]["enabled"] is True
-            assert dedicated_store_data["footer_sections"] == []
-            assert dedicated_store_data["custom_pages"] == []
             assert dedicated_store.headers["cache-control"] == "private, no-store"
 
             # A child token alone must not make the merchant's ordinary URL
@@ -23535,9 +23539,34 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             # explicit boundary between the two storefronts.
             merchant_store = child_client.get("/api/store/demo", headers=headers)
             assert merchant_store.status_code == 200, merchant_store.text
-            assert merchant_store.json()["storefront_scope"] == "MERCHANT"
-            assert merchant_store.json()["account_id"] is None
-            assert merchant_store.json()["name"] != f"Downstream Customer {suffix}"
+            merchant_store_data = merchant_store.json()
+            assert merchant_store_data["storefront_scope"] == "MERCHANT"
+            assert merchant_store_data["account_id"] is None
+            assert merchant_store_data["name"] != f"Downstream Customer {suffix}"
+            # The account URL changes only account identity, catalog pricing,
+            # visibility and business ownership. Every published storefront
+            # capability continues to come from the merchant storefront.
+            for field in (
+                "description",
+                "logo_url",
+                "contact_email",
+                "contact_phone",
+                "default_currency",
+                "locale",
+                "source_locale",
+                "available_locales",
+                "all_products_position",
+                "hot_products_enabled",
+                "category_showcase_enabled",
+                "exchange_rates_enabled",
+                "ai_search_questions",
+                "popular_search_terms",
+                "announcements",
+                "support_widget",
+                "footer_sections",
+                "custom_pages",
+            ):
+                assert dedicated_store_data[field] == merchant_store_data[field]
             assert child_client.get(
                 "/api/store/demo",
                 params={"account": account["id"]},
@@ -23547,11 +23576,16 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 headers=headers,
                 params={"account": str(uuid4())},
             ).status_code == 404
-            assert child_client.get(
-                "/api/store/demo/pages/about-us",
-                headers=headers,
+            merchant_custom_page = child_client.get(
+                f"/api/store/demo/pages/{custom_page_slug}",
+            )
+            account_custom_page = child_client.get(
+                f"/api/store/demo/pages/{custom_page_slug}",
                 params={"account": account["id"]},
-            ).status_code == 404
+            )
+            assert account_custom_page.status_code == merchant_custom_page.status_code
+            assert merchant_custom_page.status_code == 200, merchant_custom_page.text
+            assert account_custom_page.json() == merchant_custom_page.json()
             assert child_client.get(
                 "/api/store/demo/skus",
                 params={"page_size": 1, "account": account["id"]},
@@ -23804,7 +23838,12 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                     "privacy_acknowledged": True,
                     "items": [{"sku_id": sku_id, "quantity": 1}],
                 },
-            ).status_code == 403
+            ).status_code == 201
+
+    removed_custom_page = client.delete(
+        f"/api/v1/storefront/pages/{custom_page_id}",
+    )
+    assert removed_custom_page.status_code == 204, removed_custom_page.text
 
     suspended = client.patch(
         f"/api/v1/customer-accounts/{account['id']}/status",

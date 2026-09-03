@@ -467,26 +467,14 @@ def public_customer_subaccount_membership(
 def public_customer_quote_submitter(
     identity_session: Session,
     *,
-    permission_session: Session,
     membership_id: UUID,
 ) -> CustomerQuoteSubmitter:
-    """Resolve a public child storefront that may receive visitor quotes."""
+    """Resolve the account ownership selected by a public storefront URL."""
 
     membership, user = public_customer_subaccount_membership(
         identity_session,
         membership_id=membership_id,
     )
-    if "customer_portal.order_create" not in customer_subaccount_permissions(
-        identity_session,
-        permission_session=permission_session,
-        membership=membership,
-        user=user,
-    ):
-        raise ApplicationError(
-            "CUSTOMER_ORDER_CREATE_DENIED",
-            "当前子账号未开通询价权限。",
-            kind="forbidden",
-        )
     return CustomerQuoteSubmitter(
         membership_id=membership.id,
         tenant_id=membership.tenant_id,
@@ -932,38 +920,7 @@ def get_store(
             profile=profile,
         )
     )
-    if subaccount is not None:
-        membership, user = subaccount
-        account_name = str(getattr(user, "display_name", "") or "").strip()
-        return PublicStoreResponse(
-            id=tenant.id,
-            slug=tenant.slug,
-            name=account_name or "子账号",
-            description=None,
-            logo_url=None,
-            contact_email=None,
-            contact_phone=None,
-            default_currency=tenant.default_currency,
-            locale=requested_locale,
-            source_locale=source_locale,
-            available_locales=available_locales,
-            all_products_position=0,
-            hot_products_enabled=False,
-            category_showcase_enabled=True,
-            exchange_rates_enabled=False,
-            ai_search_questions=[],
-            popular_search_terms=[],
-            announcements=[],
-            # The same storefront support entry is available to a child
-            # account, while conversations are stored under that membership
-            # and never mixed with the main storefront inbox.
-            support_widget=support_use_cases.public_widget(session, profile),
-            footer_sections=[],
-            custom_pages=[],
-            storefront_scope="CUSTOMER_SUBACCOUNT",
-            account_id=membership.id,
-        )
-    return PublicStoreResponse(
+    response = PublicStoreResponse(
         id=tenant.id,
         slug=tenant.slug,
         name=tenant.name,
@@ -1003,6 +960,20 @@ def get_store(
             tenant_slug=tenant.slug,
         ),
         storefront_scope="MERCHANT",
+    )
+    if subaccount is None:
+        return response
+
+    membership, user = subaccount
+    account_name = str(getattr(user, "display_name", "") or "").strip()
+    return response.model_copy(
+        update={
+            # The account keeps its customer-facing identity while inheriting
+            # every published merchant storefront capability and setting.
+            "name": account_name or response.name,
+            "storefront_scope": "CUSTOMER_SUBACCOUNT",
+            "account_id": membership.id,
+        }
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
@@ -149,7 +149,6 @@ def get_public_storefront_page(
     tenant_slug: str,
     page_slug: str,
     response: Response,
-    account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
 ) -> PublicStorefrontPageDocument:
     response.headers.update({
@@ -157,16 +156,6 @@ def get_public_storefront_page(
         "X-Content-Type-Options": "nosniff",
     })
     try:
-        if account is not None:
-            # Child accounts start with a product-only storefront. Merchant
-            # HTML pages are intentionally not inherited or addressable by a
-            # manually typed child URL.
-            response.headers.update(NO_STORE_HEADERS)
-            raise ApplicationError(
-                "STOREFRONT_PAGE_NOT_FOUND",
-                "前台页面不存在。",
-                kind="not_found",
-            )
         return use_cases.public_page(
             session,
             tenant_slug=tenant_slug,

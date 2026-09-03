@@ -194,7 +194,7 @@ export function StorefrontCustomPage() {
         <ResponsiveHtmlFrame html={page.html} title={page.title} />
       </main>
       <StorefrontSupportWidget tenantSlug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} locale={locale} config={store.support_widget} />
-      <StorefrontFooter store={store} t={t} />
+      <StorefrontFooter store={store} t={t} accountKey={accountKey} />
     </div>
   );
 }

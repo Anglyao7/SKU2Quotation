@@ -1,5 +1,6 @@
 import { Container, Text } from "@radix-ui/themes";
 import { Link } from "react-router-dom";
+import { storefrontBasePath } from "../lib/storefrontAccount";
 import type { Storefront, StorefrontFooterSection } from "../types";
 
 type StorefrontTranslator = (
@@ -33,14 +34,28 @@ function fallbackSections(store: Storefront): StorefrontFooterSection[] {
   }];
 }
 
+function scopedFooterUrl(url: string, store: Storefront, accountKey?: string) {
+  if (!accountKey || !url.startsWith("/")) return url;
+  const encodedRoot = `/${encodeURIComponent(store.slug)}`;
+  const rawRoot = `/${store.slug}`;
+  const root = url === encodedRoot || url.startsWith(`${encodedRoot}/`)
+    ? encodedRoot
+    : url === rawRoot || url.startsWith(`${rawRoot}/`)
+      ? rawRoot
+      : undefined;
+  if (!root) return url;
+  return `${storefrontBasePath(store.slug, accountKey)}${url.slice(root.length)}`;
+}
+
 export function StorefrontFooter({
   store,
   t,
+  accountKey,
 }: {
   store: Storefront;
   t: StorefrontTranslator;
+  accountKey?: string;
 }) {
-  if (store.storefront_scope === "CUSTOMER_SUBACCOUNT") return null;
   const sections = store.footer_sections ?? fallbackSections(store);
   const merchantInitial = Array.from(store.name.trim())[0]?.toLocaleUpperCase() || "S";
 
@@ -68,14 +83,14 @@ export function StorefrontFooter({
                 <section className="store-footer-section" key={`${section.title}-${sectionIndex}`}>
                   <h2>
                     {section.title_url ? (
-                      <FooterLink url={section.title_url}>{section.title}</FooterLink>
+                      <FooterLink url={scopedFooterUrl(section.title_url, store, accountKey)}>{section.title}</FooterLink>
                     ) : section.title}
                   </h2>
                   {section.links.length ? (
                     <ul>
                       {section.links.map((link, linkIndex) => (
                         <li key={`${link.label}-${linkIndex}`}>
-                          <FooterLink url={link.url}>{link.label}</FooterLink>
+                          <FooterLink url={scopedFooterUrl(link.url, store, accountKey)}>{link.label}</FooterLink>
                         </li>
                       ))}
                     </ul>

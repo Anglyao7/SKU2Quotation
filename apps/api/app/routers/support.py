@@ -68,26 +68,13 @@ def _support_account_owner(
     *,
     account: UUID | None,
     identity_session: Session,
-    permission_session: Session,
 ) -> UUID | None:
     if account is None:
         return None
-    membership, user = public_catalog_use_cases.public_customer_subaccount_membership(
+    membership, _user = public_catalog_use_cases.public_customer_subaccount_membership(
         identity_session,
         membership_id=account,
     )
-    permissions = public_catalog_use_cases.customer_subaccount_permissions(
-        identity_session,
-        permission_session=permission_session,
-        membership=membership,
-        user=user,
-    )
-    if "support.view" not in permissions:
-        raise ApplicationError(
-            "SUPPORT_ACCESS_DENIED",
-            "当前子账号未开通客服权限。",
-            kind="forbidden",
-        )
     return membership.id
 
 
@@ -678,7 +665,6 @@ def create_public_support_conversation(
         owner_membership_id = _support_account_owner(
             account=account,
             identity_session=identity_session,
-            permission_session=session,
         )
         visitor_ip = request_visitor_ip(request)
         visitor_location = request_visitor_location(
@@ -721,7 +707,6 @@ def get_public_support_conversation(
         owner_membership_id = _support_account_owner(
             account=account,
             identity_session=identity_session,
-            permission_session=session,
         )
         return use_cases.get_public_conversation(
             session,
@@ -753,7 +738,6 @@ async def stream_public_support_conversation(
         owner_membership_id = _support_account_owner(
             account=account,
             identity_session=identity_session,
-            permission_session=session,
         )
         initial = await asyncio.to_thread(
             _load_public_support_stream_state,
@@ -803,7 +787,6 @@ def send_public_support_message(
         owner_membership_id = _support_account_owner(
             account=account,
             identity_session=identity_session,
-            permission_session=session,
         )
         visitor_ip = request_visitor_ip(request)
         visitor_location = request_visitor_location(
@@ -855,7 +838,6 @@ def request_public_human_assistance(
         owner_membership_id = _support_account_owner(
             account=account,
             identity_session=identity_session,
-            permission_session=session,
         )
         return use_cases.request_public_human_assistance(
             session,

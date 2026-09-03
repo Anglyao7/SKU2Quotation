@@ -92,7 +92,6 @@ def _bearer_access_token(
 def _catalog_subaccount(
     identity_session: Session,
     *,
-    permission_session: Session,
     expected_membership_id: UUID | None,
 ):
     # The UUID in the dedicated account URL is an opaque public storefront
@@ -100,22 +99,10 @@ def _catalog_subaccount(
     # their normal bearer-token and RBAC checks.
     if expected_membership_id is None:
         return None
-    submitter = use_cases.public_customer_subaccount_membership(
+    return use_cases.public_customer_subaccount_membership(
         identity_session,
         membership_id=expected_membership_id,
     )
-    if "customer_portal.access" not in use_cases.customer_subaccount_permissions(
-        identity_session,
-        permission_session=permission_session,
-        membership=submitter[0],
-        user=submitter[1],
-    ):
-        raise ApplicationError(
-            "STOREFRONT_ACCOUNT_ACCESS_DENIED",
-            "当前子账号未开通商品前台权限。",
-            kind="forbidden",
-        )
-    return submitter
 
 
 @router.get("/api/store/{tenant_slug}", response_model=PublicStoreResponse)
@@ -131,7 +118,6 @@ def get_public_store(
     try:
         subaccount = _catalog_subaccount(
             identity_session,
-            permission_session=session,
             expected_membership_id=account,
         )
         if subaccount is not None:
@@ -256,7 +242,6 @@ def list_public_skus(
     try:
         submitter = _catalog_subaccount(
             identity_session,
-            permission_session=session,
             expected_membership_id=account,
         )
         result = use_cases.list_public_skus(
@@ -330,7 +315,6 @@ def list_public_products(
     try:
         submitter = _catalog_subaccount(
             identity_session,
-            permission_session=session,
             expected_membership_id=account,
         )
         result = use_cases.list_public_products(
@@ -393,7 +377,6 @@ def search_public_products_by_image(
     try:
         submitter = _catalog_subaccount(
             identity_session,
-            permission_session=session,
             expected_membership_id=account,
         )
         result = use_cases.search_public_products_by_image(
@@ -466,7 +449,6 @@ def get_public_product(
     try:
         submitter = _catalog_subaccount(
             identity_session,
-            permission_session=session,
             expected_membership_id=account,
         )
         return use_cases.get_public_product(
@@ -511,7 +493,6 @@ def get_public_sku(
     try:
         submitter = _catalog_subaccount(
             identity_session,
-            permission_session=session,
             expected_membership_id=account,
         )
         return use_cases.get_public_sku(
@@ -627,7 +608,6 @@ def submit_public_quote_draft(
         if account is not None:
             submitter = use_cases.public_customer_quote_submitter(
                 identity_session,
-                permission_session=session,
                 membership_id=account,
             )
         else:

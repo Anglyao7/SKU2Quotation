@@ -248,6 +248,6 @@ export function StorefrontVisitorCenterPage() {
         </div>
       </Tabs.Root>
     </Container></main>
-    <StorefrontFooter store={store} t={t} />
+    <StorefrontFooter store={store} t={t} accountKey={accountKey} />
   </div>;
 }
