@@ -20,7 +20,13 @@ import {
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useCoreAuth } from "../AuthContext";
-import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
+import {
+  CoreCatalogLanguageLoading,
+  CoreEmpty,
+  CoreError,
+  CoreLoading,
+  CorePageHeading,
+} from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import { useConsoleCatalogLanguagePack } from "../useConsoleCatalogLanguagePack";
 import {
@@ -140,7 +146,6 @@ export function ResellerProductsPage() {
       <CorePageHeading
         eyebrow={t("商品")}
         title={t("商品目录")}
-        description={t("浏览商品资料与当前账号可见价格。")}
         actions={<Button asChild variant="soft"><Link to={storefrontPath} target="_blank" rel="noreferrer"><Storefront />{t("打开商品前台")}</Link></Button>}
       />
       {locale !== "zh-CN" ? (
@@ -168,10 +173,15 @@ export function ResellerProductsPage() {
         <Text size="1" color="gray">{result ? t("共 {count} 个商品", { count: result.total }) : t("正在读取商品")}</Text>
       </Card>
 
-      {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
-      {loading && !result ? <CoreLoading label={t("正在读取商品目录")} /> : null}
-      {!loading && !error && result && !result.items.length ? <CoreEmpty title={t("没有匹配的商品")} description={t("请更换关键词后重试。")} /> : null}
-      {result?.items.length ? <>
+      {languagePackLoading ? (
+        <CoreCatalogLanguageLoading
+          label={t("正在读取 {language} 商品与 SKU 译文…", { language: storefrontLanguage(locale).label })}
+        />
+      ) : null}
+      {!languagePackLoading && error ? <CoreError message={error} onRetry={() => void load()} /> : null}
+      {!languagePackLoading && loading && !result ? <CoreLoading label={t("正在读取商品目录")} /> : null}
+      {!languagePackLoading && !loading && !error && result && !result.items.length ? <CoreEmpty title={t("没有匹配的商品")} description={t("请更换关键词后重试。")} /> : null}
+      {!languagePackLoading && result?.items.length ? <>
         <Card className="reseller-catalog-card">
           <div className="reseller-catalog-table-scroll">
             <div className="reseller-catalog-table reseller-catalog-table-head"><span>{t("商品")}</span><span>{t("分类")}</span><span>{t("SKU")}</span><span>{t("当前价格")}</span><span>{t("操作")}</span></div>
@@ -218,7 +228,7 @@ function ProductDetail({ product, t, onPriceChanged }: { product: StoreProductDe
         <div className="reseller-product-detail-images">{images.length ? images.slice(0, 6).map((image, index) => <img key={`${image}-${index}`} src={image} alt="" loading="lazy" />) : <div className="reseller-product-detail-placeholder"><Cube /></div>}</div>
         <div className="reseller-product-detail-copy"><div className="reseller-detail-tags">{product.category_label || product.category ? <Badge color="gray">{product.category_label || product.category}</Badge> : null}{product.tags.slice(0, 4).map((tag) => <Badge key={tag} color="blue">{tag}</Badge>)}</div><Heading size="6">{product.name}</Heading>{product.description ? <Text size="2" color="gray" className="reseller-product-description">{product.description}</Text> : <Text size="2" color="gray">{t("暂无商品描述")}</Text>}<strong className="reseller-detail-price">{formatPriceRange(product)}</strong><Text size="1" color="gray">{t("共 {count} 个 SKU", { count: product.sku_count })}</Text><PriceEditor initialValue={product.price_from === product.price_to ? Number(product.price_from) : undefined} currency={product.currency} saveLabel={t("应用到商品")} onSave={(value) => updateOwnProductPrice(product.id, value)} onClear={() => clearOwnProductPrice(product.id)} onChanged={onPriceChanged} t={t} /></div>
       </div>
-      <div className="reseller-sku-list-heading"><Heading size="4">{t("SKU 规格")}</Heading><Text size="1" color="gray">{t("以下价格按当前账号规则展示")}</Text></div>
+      <div className="reseller-sku-list-heading"><Heading size="4">{t("SKU 规格")}</Heading></div>
       <div className="reseller-sku-list">{product.skus.map((sku) => <SkuRow key={sku.id} sku={sku} t={t} onPriceChanged={onPriceChanged} />)}</div>
     </div>
   );

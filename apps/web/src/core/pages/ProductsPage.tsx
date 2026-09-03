@@ -35,7 +35,7 @@ import {
   CoreApiError,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
-import { CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
+import { CoreCatalogLanguageLoading, CoreEmpty, CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { removeImportItem, resetFailedImportItem, selectUniqueImportFiles } from "../importQueueState";
 import { useLocale } from "../LocaleContext";
 import { useConsoleCatalogLanguagePack } from "../useConsoleCatalogLanguagePack";
@@ -1348,9 +1348,14 @@ export function ProductsPage() {
           </div>
         </Card>
       ) : null}
-      {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
-      {loading && !result.items.length ? <CoreLoading label={t("正在读取商品库")} /> : null}
-      {!loading && !result.items.length && !error ? (
+      {languagePackLoading ? (
+        <CoreCatalogLanguageLoading
+          label={t("正在读取 {language} 商品与 SKU 译文…", { language: storefrontLanguage(locale).label })}
+        />
+      ) : null}
+      {!languagePackLoading && error ? <CoreError message={error} onRetry={() => void load()} /> : null}
+      {!languagePackLoading && loading && !result.items.length ? <CoreLoading label={t("正在读取商品库")} /> : null}
+      {!languagePackLoading && !loading && !result.items.length && !error ? (
         hasActiveFilters
           ? <CoreEmpty title={t("没有符合条件的商品")} description={t("请调整筛选条件。")} action={<Button variant="soft" onClick={resetFilters}>{t("清除筛选")}</Button>} />
           : <CoreEmpty
@@ -1359,7 +1364,7 @@ export function ProductsPage() {
               action={canCreate || canImport ? <div className="core-empty-actions">{canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}{canImport ? <Button asChild variant="soft" color="gray"><a href={PRODUCT_TEMPLATE_DOWNLOAD_URL} download="商品导入模板.xlsx"><DownloadSimple />{t("下载模板")}</a></Button> : null}{canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入与撤回")}</Button> : null}</div> : undefined}
             />
       ) : null}
-      {result.items.length ? (
+      {!languagePackLoading && result.items.length ? (
         <section className="core-sku-data-panel" aria-label={t("商品列表")}>
           <header className="core-sku-table-summary" aria-live="polite">
             <Text size="2">

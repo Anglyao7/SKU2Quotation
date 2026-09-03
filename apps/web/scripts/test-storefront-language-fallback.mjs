@@ -37,6 +37,10 @@ const resellerProductsPageSource = await fs.readFile(
   new URL("../src/core/pages/ResellerProductsPage.tsx", import.meta.url),
   "utf8",
 );
+const coreUiSource = await fs.readFile(
+  new URL("../src/core/CoreUi.tsx", import.meta.url),
+  "utf8",
+);
 const coreLanguagePackSource = await fs.readFile(
   new URL("../src/core/catalogLanguagePack.ts", import.meta.url),
   "utf8",
@@ -146,6 +150,25 @@ assert.ok(
   resellerProductsPageSource.includes("useConsoleCatalogLanguagePack()")
     && resellerProductsPageSource.includes("localizeProductDetail(selectedSource, activeLanguagePack)"),
   "Customer subaccounts must use the same tenant translations for products and SKU details",
+);
+assert.ok(
+  coreUiSource.includes('import { ThinkingOrb } from "thinking-orbs";')
+    && coreUiSource.includes('<ThinkingOrb state="working" size={64} speed={1.3}'),
+  "Console catalog language loading must reuse the storefront search animation",
+);
+for (const [name, pageSource] of [
+  ["staff product catalog", productsPageSource],
+  ["reseller product catalog", resellerProductsPageSource],
+]) {
+  assert.ok(
+    pageSource.includes("languagePackLoading ? (")
+      && pageSource.includes("<CoreCatalogLanguageLoading"),
+    `${name} must hide source-language rows while a language pack is loading`,
+  );
+}
+assert.ok(
+  !resellerProductsPageSource.includes("以下价格按当前账号规则展示"),
+  "The reseller catalog must not show explanatory pricing annotations",
 );
 assert.ok(
   !coreProductDetailLocalization.includes("if (!translation) return product;"),

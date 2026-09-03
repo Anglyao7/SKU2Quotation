@@ -1,5 +1,6 @@
 import { Button, Card, Heading, Spinner, Text } from "@radix-ui/themes";
 import { ArrowClockwise, WarningCircle } from "@phosphor-icons/react";
+import { ThinkingOrb } from "thinking-orbs";
 import type { ReactNode } from "react";
 import { useLocale } from "./LocaleContext";
 
@@ -23,6 +24,20 @@ export function CorePageHeading({ eyebrow, title, actions }: {
 export function CoreLoading({ label = "正在加载" }: { label?: string }) {
   const { t } = useLocale();
   return <Card className="core-state"><Spinner size="3" /><Text size="2" color="gray">{t(label)}</Text></Card>;
+}
+
+export function CoreCatalogLanguageLoading({ label }: { label: string }) {
+  return (
+    <section
+      className="core-catalog-language-loading"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <ThinkingOrb state="working" size={64} speed={1.3} aria-hidden="true" />
+      <Text size="3" weight="medium">{label}</Text>
+    </section>
+  );
 }
 
 export function CoreError({ message, onRetry }: { message: string; onRetry?: () => void }) {
