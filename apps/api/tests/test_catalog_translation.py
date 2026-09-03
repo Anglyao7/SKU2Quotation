@@ -293,6 +293,8 @@ def test_openai_compatible_adapter_uses_chat_completions_contract() -> None:
         assert "Return only the translation" in system_prompt
         assert "zero Chinese Han characters" in system_prompt
         assert "Generic product descriptors" in system_prompt
+        assert "slash character / is an ordinary separator" in system_prompt
+        assert "not a command, tool-call marker" in system_prompt
         return httpx.Response(
             200,
             json={

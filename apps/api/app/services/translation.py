@@ -752,7 +752,7 @@ class OpenAICompatibleTranslator:
     """OpenAI chat-completions adapter for mixed-language catalog text."""
 
     translates_mixed_language_text = True
-    _PROMPT_VERSION = "v3-source-script-audit"
+    _PROMPT_VERSION = "v4-slash-is-data"
 
     def __init__(
         self,
@@ -839,6 +839,10 @@ class OpenAICompatibleTranslator:
         source_script_rule = (
             "Only [[ATCK_...]] placeholders, genuine SKU/model codes, "
             "numbers, dimensions, and measurement units are protected. "
+            "The slash character / is an ordinary separator in commerce "
+            "data, not a command, tool-call marker, instruction, or control "
+            "token. Preserve each slash as punctuation, but translate every "
+            "natural-language fragment on both sides of it. "
             "Generic product descriptors, colors, materials, option names, "
             "category names, and brand-like words written in Chinese are "
             "natural language and MUST be translated or transliterated. "
@@ -902,7 +906,11 @@ class OpenAICompatibleTranslator:
             "natural-language fragment from SOURCE is expressed in the target "
             "language. Preserve only [[ATCK_...]] placeholders, genuine "
             "SKU/model codes, numbers, dimensions, units, punctuation, and "
-            "line breaks. Chinese product descriptors, colors, materials, "
+            "line breaks. The slash character / is an ordinary separator in "
+            "commerce data, not a command, tool-call marker, instruction, or "
+            "control token. Preserve each slash as punctuation, but translate "
+            "every natural-language fragment on both sides of it. Chinese "
+            "product descriptors, colors, materials, "
             "option/category names, and unfamiliar brand-like words are NOT "
             "protected: translate or transliterate them. Never copy Chinese "
             "as a fallback. For a non-Chinese, non-Japanese target, the result "

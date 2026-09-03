@@ -94,6 +94,8 @@ def test_qwen_batch_jsonl_uses_flash_and_disables_thinking() -> None:
     system_prompt = line["body"]["messages"][0]["content"]
     assert "zero Chinese Han characters" in system_prompt
     assert "Generic product descriptors" in system_prompt
+    assert "slash character / is an ordinary separator" in system_prompt
+    assert "not a command, tool-call marker" in system_prompt
 
 
 def test_qwen_realtime_tail_uses_same_identity_and_disables_thinking() -> None:
@@ -137,6 +139,9 @@ def test_qwen_realtime_repair_uses_strict_source_script_prompt() -> None:
         assert payload["enable_thinking"] is False
         assert "strict final quality-control" in payload["messages"][0]["content"]
         assert "zero Han characters" in payload["messages"][0]["content"]
+        system_prompt = payload["messages"][0]["content"]
+        assert "slash character / is an ordinary separator" in system_prompt
+        assert "not a command, tool-call marker" in system_prompt
         assert json.loads(payload["messages"][1]["content"]) == {
             "SOURCE": "碗 高级灰",
             "CANDIDATE": "Bol 高级灰",
