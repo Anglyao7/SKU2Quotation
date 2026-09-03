@@ -12,7 +12,25 @@ function isExternalUrl(url: string) {
   return /^https?:\/\//i.test(url);
 }
 
+function isPlatformDestination(url: string) {
+  const normalized = url.trim();
+  if (/^\/(?:$|[?#]|main(?:[/?#]|$)|login(?:[/?#]|$)|privacy(?:[/?#]|$))/i.test(normalized)) {
+    return true;
+  }
+  if (!isExternalUrl(normalized)) return false;
+  try {
+    const target = new URL(normalized);
+    const hostname = target.hostname.toLocaleLowerCase().replace(/^www\./, "");
+    return hostname === "aitradecloud.top";
+  } catch {
+    return false;
+  }
+}
+
 function FooterLink({ url, children }: { url: string; children: string }) {
+  if (isPlatformDestination(url)) {
+    return <span>{children}</span>;
+  }
   if (url.startsWith("/")) {
     return <Link to={url}>{children}</Link>;
   }
@@ -105,7 +123,7 @@ export function StorefrontFooter({
           <Text size="1" color="gray">
             {t("商品与报价由 {store} 提供，报价草稿须经商家确认。", { store: store.name })}
           </Text>
-          <Link className="store-footer-powered" to="/main">Powered by AI Trade Cloud</Link>
+          <span className="store-footer-powered">Powered by AI Trade Cloud</span>
         </div>
       </Container>
     </footer>

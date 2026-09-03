@@ -282,7 +282,6 @@ export function ProductDetailPage() {
                   <small>{t("商品目录")}</small>
                 </span>
               </Link>
-              <span className="powered-by">{t("由智贸云提供")}</span>
             </div>
             <div className="header-actions">
               <StorefrontLanguageSwitch

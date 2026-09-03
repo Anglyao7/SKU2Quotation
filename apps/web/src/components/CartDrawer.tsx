@@ -402,9 +402,9 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                 <input type="checkbox" name="privacy_acknowledged" required />
                 <span>
                   {t("我已阅读并理解")}
-                  <Link to="/privacy" target="_blank" rel="noreferrer">
+                  <span>
                     {isChinese ? "《隐私政策》" : t("隐私政策")}
-                  </Link>
+                  </span>
                   {isChinese ? "；" : ". "}
                   {t("我填写的信息将提供给 {store}，仅用于生成和跟进本次报价", { store: storeName })}
                   {contactEmail ? (

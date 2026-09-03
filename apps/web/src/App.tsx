@@ -377,11 +377,19 @@ function StorefrontRouteError() {
     if (!notFound && staleBundle) reloadLatestBundle();
   }, [notFound, staleBundle]);
 
-  if (notFound) return <NotFoundPage />;
+  if (notFound) {
+    return (
+      <main className="not-found-page">
+        <div className="not-found-content">
+          <Heading size="7">商家页面没有找到</Heading>
+          <Text color="gray">链接可能已失效，请向商家确认最新访问地址。</Text>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="not-found-page">
-      <Brand />
       <div className="not-found-content">
         <ErrorState
           message={message}

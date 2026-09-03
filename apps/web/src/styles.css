@@ -636,7 +636,6 @@ img { display: block; max-width: 100%; }
 .store-identity > span:last-child { min-width: 0; display: grid; gap: 2px; line-height: 1.1; }
 .store-identity strong { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .store-identity small { color: var(--text-soft); font-size: 10px; letter-spacing: .04em; }
-.powered-by { padding-left: 14px; border-left: 1px solid var(--line); color: var(--text-soft); font-size: 10px; white-space: nowrap; }
 .storefront-top-navigation {
   position: sticky;
   top: 72px;
@@ -2105,7 +2104,6 @@ img { display: block; max-width: 100%; }
   gap: 18px;
 }
 .store-footer-powered { flex: 0 0 auto; color: var(--gray-9) !important; font-size: 11px; text-decoration: none; }
-.store-footer-powered:hover { color: var(--accent-11) !important; }
 .store-shell.has-cart .store-footer { padding-bottom: 82px; }
 
 /* Anonymous storefront visitor center */
@@ -2852,7 +2850,6 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .store-header-branding { min-width: 0; }
   .store-identity > img, .store-identity-mark { width: 36px; height: 36px; border-radius: 11px; }
   .store-identity > span:last-child { max-width: 150px; }
-  .powered-by { display: none !important; }
   .header-actions > .rt-IconButton { width: 40px; height: 40px; }
   .storefront-language-trigger { min-width: 70px; min-height: 40px !important; padding-inline: 8px !important; }
   .visitor-center-trigger { min-width: 40px !important; width: 40px; height: 40px; padding: 0 !important; }
