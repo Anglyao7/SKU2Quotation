@@ -182,11 +182,17 @@ class CustomerSubaccountOrderSummary(BaseModel):
     submitted_by_name: str
     customer_name: str
     customer_company: str | None
+    customer_email: str | None = None
+    customer_phone: str | None = None
     currency: str
     total_amount: Decimal
+    item_count: int = Field(ge=0)
+    total_quantity: Decimal = Field(ge=0)
     created_at: datetime
     valid_until: datetime
     visitor_country_code: str | None = None
+    visitor_ip_address: str | None = None
+    visitor_ip_retained_until: datetime | None = None
 
 
 class CustomerSubaccountOrderItemSummary(BaseModel):
@@ -194,13 +200,19 @@ class CustomerSubaccountOrderItemSummary(BaseModel):
     product_id: UUID | None = None
     sku_code: str
     product_name: str
+    image_url: str | None = None
+    specification: str | None = None
+    customer_note: str | None = None
     quantity: Decimal
+    unit_code: str
     currency: str
     unit_price: Decimal
     line_total: Decimal
 
 
 class CustomerSubaccountOrderDetail(CustomerSubaccountOrderSummary):
+    notes: str | None = None
+    document_locale: str
     items: list[CustomerSubaccountOrderItemSummary] = Field(default_factory=list)
 
 

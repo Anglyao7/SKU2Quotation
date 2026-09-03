@@ -16,10 +16,16 @@ import {
   Eye,
   EyeSlash,
   CurrencyDollar,
+  EnvelopeSimple,
   Folder,
   FolderOpen,
+  GlobeHemisphereWest,
   Key,
+  MapPin,
+  Package,
+  Phone,
   Plus,
+  ShieldCheck,
   SlidersHorizontal,
   TreeStructure,
   UserPlus,
@@ -64,6 +70,7 @@ const orderStatusLabel: Record<string, string> = {
   CONFIRMED: "已确认",
   CANCELLED: "已取消",
   EXPIRED: "已过期",
+  COMPLETED: "已成交",
 };
 
 const SUBACCOUNT_MODULES: Array<{
@@ -96,6 +103,30 @@ function countryFlag(countryCode?: string) {
 function countryLabel(countryCode?: string) {
   const normalized = String(countryCode || "").trim().toUpperCase();
   return normalized ? `${countryFlag(normalized)} ${normalized}` : "—";
+}
+
+function orderStatusColor(status: string): "amber" | "jade" | "gray" {
+  if (status === "PENDING_CONFIRMATION") return "amber";
+  if (status === "CONFIRMED" || status === "COMPLETED") return "jade";
+  return "gray";
+}
+
+function orderFollowUp(detail: CustomerSubaccountOrderDetail) {
+  if (detail.status === "COMPLETED") return "已成交，可归档";
+  if (detail.status === "CONFIRMED") return "已确认，建议跟进交付";
+  if (detail.status === "CANCELLED") return "已取消，无需继续跟进";
+  if (detail.status === "EXPIRED" || Date.parse(detail.validUntil) < Date.now()) return "已超过有效期，可联系客户重新报价";
+  return "客户尚未确认，建议尽快联系";
+}
+
+function orderContactSignal(detail: CustomerSubaccountOrderDetail) {
+  if (detail.customerEmail && detail.customerPhone) return "邮箱和电话均已填写，可直接跟进";
+  if (detail.customerEmail || detail.customerPhone) return "已有一种直接联系方式";
+  return "只留下姓名，建议补充联系方式";
+}
+
+function quantityLabel(value: number) {
+  return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 6 });
 }
 
 export function CustomerAccountsPage() {
@@ -338,16 +369,51 @@ export function CustomerSubaccountOrderDetailDialog({
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Dialog.Content className="customer-account-dialog customer-order-detail-dialog">
       {loading || !detail ? <CoreLoading label={t("正在读取订单详情")} /> : <>
-        <div className="core-dialog-heading"><div><Text size="1" color="gray">{t("子账号询价 · 只读")}</Text><Dialog.Title>{detail.quoteNumber}</Dialog.Title><Dialog.Description>{detail.submittedByName} · {coreDate(detail.createdAt)}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}>×</Button></div>
-        <div className="customer-order-detail-meta">
-          <Card><Text size="1" color="gray">{t("客户")}</Text><strong>{detail.customerCompany || detail.customerName}</strong><Text size="1">{detail.customerName}</Text></Card>
-          <Card><Text size="1" color="gray">{t("客户国家")}</Text><strong>{countryLabel(detail.visitorCountryCode)}</strong></Card>
-          <Card><Text size="1" color="gray">{t("最终报价")}</Text><strong>{money(detail.totalAmount, detail.currency)}</strong></Card>
-          <Card><Text size="1" color="gray">{t("状态")}</Text><Badge color={detail.status === "CONFIRMED" || detail.status === "COMPLETED" ? "jade" : detail.status === "CANCELLED" ? "gray" : "amber"}>{t(orderStatusLabel[detail.status] ?? detail.status)}</Badge></Card>
+        <div className="core-dialog-heading customer-order-detail-heading"><div><Text size="1" color="gray">{t("子账号询价 · 主账号只读分析")}</Text><Dialog.Title>{detail.quoteNumber}</Dialog.Title><Dialog.Description>{t("由 {name} 的前台提交于 {date}", { name: detail.submittedByName, date: coreDate(detail.createdAt) })}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}>×</Button></div>
+
+        <section className="customer-order-insights" aria-label={t("订单简析")}>
+          <div className="customer-order-insight is-primary"><span><ShieldCheck /></span><small>{t("跟进建议")}</small><strong>{t(orderFollowUp(detail))}</strong></div>
+          <div><span><EnvelopeSimple /></span><small>{t("联系条件")}</small><strong>{t(orderContactSignal(detail))}</strong></div>
+          <div><span><Package /></span><small>{t("订单规模")}</small><strong>{t("{count} 个 SKU · {quantity} 件", { count: detail.itemCount, quantity: quantityLabel(detail.totalQuantity) })}</strong></div>
+          <div><span><CurrencyDollar /></span><small>{t("报价总额")}</small><strong>{money(detail.totalAmount, detail.currency)}</strong></div>
+        </section>
+
+        <div className="customer-order-detail-layout">
+          <section className="customer-order-detail-section">
+            <div className="customer-order-detail-section-heading"><div><Text size="1" color="gray">{t("联系人")}</Text><Heading size="4">{detail.customerCompany || detail.customerName}</Heading></div><Badge color={orderStatusColor(detail.status)}>{t(orderStatusLabel[detail.status] ?? detail.status)}</Badge></div>
+            <dl className="customer-order-contact-grid">
+              <div><dt>{t("联系人")}</dt><dd>{detail.customerName}</dd></div>
+              <div><dt><EnvelopeSimple />{t("邮箱")}</dt><dd className="mono-text">{detail.customerEmail || "—"}</dd></div>
+              <div><dt><Phone />{t("电话 / WhatsApp")}</dt><dd className="mono-text">{detail.customerPhone || "—"}</dd></div>
+              <div><dt><GlobeHemisphereWest />{t("报价语言")}</dt><dd>{detail.documentLocale || "—"}</dd></div>
+            </dl>
+          </section>
+          <section className="customer-order-detail-section">
+            <div className="customer-order-detail-section-heading"><div><Text size="1" color="gray">{t("访问来源")}</Text><Heading size="4">{countryLabel(detail.visitorCountryCode)}</Heading></div><MapPin /></div>
+            <dl className="customer-order-source-grid">
+              <div><dt>{t("提交 IP")}</dt><dd className="mono-text">{detail.visitorIpAddress || t("历史订单未记录")}</dd></div>
+              <div><dt>{t("提交时间")}</dt><dd>{coreDate(detail.createdAt)}</dd></div>
+              <div><dt>{t("报价有效至")}</dt><dd>{coreDate(detail.validUntil)}</dd></div>
+              <div><dt>{t("IP 保留至")}</dt><dd>{detail.visitorIpRetainedUntil ? coreDate(detail.visitorIpRetainedUntil) : "—"}</dd></div>
+            </dl>
+            <p className="customer-order-ip-note"><ShieldCheck />{t("提交 IP 仅主账号可见，并会按隐私保留周期自动清除。")}</p>
+          </section>
         </div>
+
+        {detail.notes ? <section className="customer-order-note"><Text size="1" color="gray">{t("客户备注")}</Text><p>{detail.notes}</p></section> : null}
+
         <div className="customer-order-detail-items">
+          <div className="customer-order-detail-items-title"><div><Text size="1" color="gray">{t("商品明细")}</Text><Heading size="4">{t("{count} 个 SKU", { count: detail.itemCount })}</Heading></div><strong>{money(detail.totalAmount, detail.currency)}</strong></div>
           <div className="customer-order-detail-items-head"><span>{t("商品 / SKU")}</span><span>{t("数量")}</span><span>{t("最终单价")}</span><span>{t("小计")}</span></div>
-          {detail.items.map((item) => <div className="customer-order-detail-item" key={item.skuId}><div><strong>{item.productName}</strong><small className="mono-text">{item.skuCode}</small></div><span>{item.quantity}</span><span>{money(item.unitPrice, item.currency)}</span><strong>{money(item.lineTotal, item.currency)}</strong></div>)}
+          {detail.items.map((item) => <div className="customer-order-detail-item" key={item.skuId}>
+            <div className="customer-order-item-identity">
+              <span className="customer-order-item-image">{item.imageUrl ? <img src={item.imageUrl} alt="" loading="lazy" /> : <Package weight="duotone" />}</span>
+              <span><strong>{item.productName}</strong><small className="mono-text">{item.skuCode}</small>{item.specification ? <small>{item.specification}</small> : null}{item.customerNote ? <em>{t("备注：{note}", { note: item.customerNote })}</em> : null}</span>
+            </div>
+            <span>{quantityLabel(item.quantity)} {item.unitCode}</span>
+            <span>{money(item.unitPrice, item.currency)}</span>
+            <strong>{money(item.lineTotal, item.currency)}</strong>
+          </div>)}
           {!detail.items.length ? <Text size="2" color="gray">{t("没有商品明细")}</Text> : null}
         </div>
         <div className="core-dialog-actions"><Button onClick={onClose}>{t("关闭")}</Button></div>

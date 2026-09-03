@@ -4068,6 +4068,7 @@ def create_public_quote_draft(
     submitted_by_user_id: UUID | None = None,
     visitor_token: str | None = None,
     visitor_country_code: str | None = None,
+    visitor_ip_address: str | None = None,
 ) -> PublicQuoteDraftResponse:
     tenant, profile = _resolve_store(session, slug=slug)
     source_locale, requested_locale, _available_locales = (
@@ -4374,6 +4375,11 @@ def create_public_quote_draft(
         visitor_country_code=(
             str(visitor_country_code).strip().upper()[:8]
             if visitor_country_code
+            else None
+        ),
+        visitor_ip_address=(
+            str(visitor_ip_address).strip()[:45]
+            if visitor_ip_address and visitor_ip_address != "0.0.0.0"
             else None
         ),
         visitor_token_hash=visitor_token_hash,

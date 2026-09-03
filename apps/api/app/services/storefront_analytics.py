@@ -17,6 +17,7 @@ from fastapi import Request
 from ..database import SessionLocal, set_public_tenant_context
 from ..model_mixins import utcnow
 from ..repositories import storefront_analytics_repository as repository
+from ..repositories import public_catalog_repository
 
 
 logger = logging.getLogger(__name__)
@@ -255,11 +256,17 @@ def cleanup_expired_raw_events(tenant_id: UUID) -> None:
                 tenant_id=tenant_id,
                 cutoff=cutoff,
             )
+            cleared_quote_ips = public_catalog_repository.clear_quote_ip_addresses_before(
+                session,
+                tenant_id=tenant_id,
+                cutoff=cutoff,
+            )
             session.commit()
-        if deleted:
+        if deleted or cleared_quote_ips:
             logger.info(
-                "storefront analytics raw-IP retention removed %s events for tenant %s",
+                "storefront raw-IP retention removed %s events and cleared %s quote addresses for tenant %s",
                 deleted,
+                cleared_quote_ips,
                 tenant_id,
             )
     except Exception:

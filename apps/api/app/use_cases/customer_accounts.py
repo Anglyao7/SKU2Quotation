@@ -79,6 +79,7 @@ from ..services.subaccount_pricing import (
     subaccount_sku_price_rules,
 )
 from ..services.storefront_paths import allocate_storefront_slug
+from ..services.storefront_analytics import raw_ip_retention_days
 from ..tenant_slugs import subaccount_storefront_slug_base
 from ..services.rbac import (
     CUSTOMER_SUBACCOUNT_PRODUCT_PERMISSION_MODULES,
@@ -590,7 +591,19 @@ def _order_summary(
     draft: PublicQuoteDraftRow,
     membership: MembershipRow,
     user: UserRow,
+    *,
+    item_count: int,
+    total_quantity: Decimal,
 ) -> CustomerSubaccountOrderSummary:
+    ip_recorded_at = draft.created_at
+    if ip_recorded_at.tzinfo is None:
+        ip_recorded_at = ip_recorded_at.replace(tzinfo=utcnow().tzinfo)
+    ip_retained_until = ip_recorded_at + timedelta(days=raw_ip_retention_days())
+    visible_ip = (
+        getattr(draft, "visitor_ip_address", None)
+        if ip_retained_until > utcnow()
+        else None
+    )
     return CustomerSubaccountOrderSummary(
         id=draft.id,
         quote_number=draft.request_number,
@@ -599,11 +612,17 @@ def _order_summary(
         submitted_by_name=user.display_name,
         customer_name=draft.customer_name,
         customer_company=draft.customer_company,
+        customer_email=draft.customer_email,
+        customer_phone=draft.customer_phone,
         currency=draft.currency,
         total_amount=draft.estimated_total,
+        item_count=item_count,
+        total_quantity=total_quantity,
         created_at=draft.created_at,
         valid_until=draft.expires_at,
         visitor_country_code=getattr(draft, "visitor_country_code", None),
+        visitor_ip_address=visible_ip,
+        visitor_ip_retained_until=(ip_retained_until if visible_ip else None),
     )
 
 
@@ -718,8 +737,32 @@ def list_customer_subaccount_orders(
             .limit(page_size)
         ).all()
     )
+    quote_ids = [row[0].id for row in rows]
+    item_metrics = {
+        quote_draft_id: (int(item_count or 0), Decimal(total_quantity or 0))
+        for quote_draft_id, item_count, total_quantity in session.execute(
+            select(
+                PublicQuoteDraftItemRow.quote_draft_id,
+                func.count(PublicQuoteDraftItemRow.id),
+                func.coalesce(func.sum(PublicQuoteDraftItemRow.quantity), 0),
+            )
+            .where(
+                PublicQuoteDraftItemRow.tenant_id == context.tenant_id,
+                PublicQuoteDraftItemRow.quote_draft_id.in_(quote_ids),
+                PublicQuoteDraftItemRow.deleted_at.is_(None),
+            )
+            .group_by(PublicQuoteDraftItemRow.quote_draft_id)
+        ).all()
+    } if quote_ids else {}
     return CustomerSubaccountOrderPage(
-        items=[_order_summary(*row) for row in rows],
+        items=[
+            _order_summary(
+                *row,
+                item_count=item_metrics.get(row[0].id, (0, Decimal("0")))[0],
+                total_quantity=item_metrics.get(row[0].id, (0, Decimal("0")))[1],
+            )
+            for row in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -756,16 +799,28 @@ def get_customer_subaccount_order(
         )
         .order_by(PublicQuoteDraftItemRow.position, PublicQuoteDraftItemRow.id)
     ).all()
-    summary = _order_summary(draft, membership, user)
+    summary = _order_summary(
+        draft,
+        membership,
+        user,
+        item_count=len(items),
+        total_quantity=sum((item.quantity for item in items), Decimal("0")),
+    )
     return CustomerSubaccountOrderDetail(
         **summary.model_dump(),
+        notes=draft.notes,
+        document_locale=draft.document_locale,
         items=[
             CustomerSubaccountOrderItemSummary(
                 sku_id=item.sku_id,
                 product_id=item.product_id_snapshot,
                 sku_code=item.sku_code_snapshot,
                 product_name=item.name_snapshot,
+                image_url=item.image_url_snapshot,
+                specification=item.specification_snapshot,
+                customer_note=item.customer_note,
                 quantity=item.quantity,
+                unit_code=item.unit_code_snapshot,
                 currency=item.currency_snapshot,
                 unit_price=item.unit_price_snapshot,
                 line_total=item.line_total,

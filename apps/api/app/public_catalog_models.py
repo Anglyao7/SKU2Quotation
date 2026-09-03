@@ -291,10 +291,16 @@ class PublicQuoteDraftRow(AuditTimestampMixin, Base):
         String(30), default="PENDING_CONFIRMATION", nullable=False
     )
     submitted_by_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
-    # Country is derived once from the visitor IP at submission time.  Keep
-    # the normalized code rather than the raw address in this commercial row.
+    # Country is derived once from the visitor IP at submission time and may
+    # outlive the short-lived raw address used for owner-side order analysis.
     visitor_country_code: Mapped[str | None] = mapped_column(
         String(8), nullable=True
+    )
+    # The parent merchant may inspect the submission address for short-lived
+    # fraud/follow-up analysis. The retention cleanup clears this field using
+    # the same bounded window as raw storefront analytics events.
+    visitor_ip_address: Mapped[str | None] = mapped_column(
+        String(45), nullable=True
     )
     visitor_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     visitor_token_expires_at: Mapped[datetime | None] = mapped_column(

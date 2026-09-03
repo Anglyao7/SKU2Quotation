@@ -150,11 +150,17 @@ export interface CustomerSubaccountOrder {
   submittedByName: string;
   customerName: string;
   customerCompany?: string;
+  customerEmail?: string;
+  customerPhone?: string;
   currency: string;
   totalAmount: number;
+  itemCount: number;
+  totalQuantity: number;
   createdAt: string;
   validUntil: string;
   visitorCountryCode?: string;
+  visitorIpAddress?: string;
+  visitorIpRetainedUntil?: string;
 }
 
 export interface CustomerSubaccountOrderItem {
@@ -162,13 +168,19 @@ export interface CustomerSubaccountOrderItem {
   productId?: string;
   skuCode: string;
   productName: string;
+  imageUrl?: string;
+  specification?: string;
+  customerNote?: string;
   quantity: number;
+  unitCode: string;
   currency: string;
   unitPrice: number;
   lineTotal: number;
 }
 
 export interface CustomerSubaccountOrderDetail extends CustomerSubaccountOrder {
+  notes?: string;
+  documentLocale: string;
   items: CustomerSubaccountOrderItem[];
 }
 

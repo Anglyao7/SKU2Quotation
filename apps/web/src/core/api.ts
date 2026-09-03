@@ -933,11 +933,17 @@ interface ApiCustomerSubaccountOrder {
   submitted_by_name: string;
   customer_name: string;
   customer_company?: string | null;
+  customer_email?: string | null;
+  customer_phone?: string | null;
   currency: string;
   total_amount: number;
+  item_count: number;
+  total_quantity: number | string;
   created_at: string;
   valid_until: string;
   visitor_country_code?: string | null;
+  visitor_ip_address?: string | null;
+  visitor_ip_retained_until?: string | null;
 }
 
 interface ApiCustomerSubaccountOrderItem {
@@ -945,13 +951,19 @@ interface ApiCustomerSubaccountOrderItem {
   product_id?: string | null;
   sku_code: string;
   product_name: string;
+  image_url?: string | null;
+  specification?: string | null;
+  customer_note?: string | null;
   quantity: number | string;
+  unit_code: string;
   currency: string;
   unit_price: number | string;
   line_total: number | string;
 }
 
 interface ApiCustomerSubaccountOrderDetail extends ApiCustomerSubaccountOrder {
+  notes?: string | null;
+  document_locale: string;
   items: ApiCustomerSubaccountOrderItem[];
 }
 
@@ -994,11 +1006,17 @@ function mapCustomerSubaccountOrder(row: ApiCustomerSubaccountOrder): CustomerSu
     submittedByName: row.submitted_by_name,
     customerName: row.customer_name,
     customerCompany: defined(row.customer_company),
+    customerEmail: defined(row.customer_email),
+    customerPhone: defined(row.customer_phone),
     currency: row.currency,
     totalAmount: Number(row.total_amount),
+    itemCount: Number(row.item_count || 0),
+    totalQuantity: Number(row.total_quantity || 0),
     createdAt: row.created_at,
     validUntil: row.valid_until,
     visitorCountryCode: row.visitor_country_code || undefined,
+    visitorIpAddress: defined(row.visitor_ip_address),
+    visitorIpRetainedUntil: defined(row.visitor_ip_retained_until),
   };
 }
 
@@ -1007,12 +1025,18 @@ function mapCustomerSubaccountOrderDetail(
 ): CustomerSubaccountOrderDetail {
   return {
     ...mapCustomerSubaccountOrder(row),
+    notes: defined(row.notes),
+    documentLocale: row.document_locale,
     items: (row.items || []).map((item) => ({
       skuId: item.sku_id,
       productId: item.product_id || undefined,
       skuCode: item.sku_code,
       productName: item.product_name,
+      imageUrl: defined(item.image_url),
+      specification: defined(item.specification),
+      customerNote: defined(item.customer_note),
       quantity: Number(item.quantity || 0),
+      unitCode: item.unit_code,
       currency: item.currency,
       unitPrice: Number(item.unit_price || 0),
       lineTotal: Number(item.line_total || 0),

@@ -168,6 +168,29 @@ def occupied_storefront_slugs(
     return occupied
 
 
+def clear_quote_ip_addresses_before(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    cutoff: datetime,
+) -> int:
+    """Erase expired quote IPs without changing the order's business timestamp."""
+
+    result = session.execute(
+        update(PublicQuoteDraftRow)
+        .where(
+            PublicQuoteDraftRow.tenant_id == tenant_id,
+            PublicQuoteDraftRow.visitor_ip_address.is_not(None),
+            PublicQuoteDraftRow.created_at < cutoff,
+        )
+        .values(
+            visitor_ip_address=None,
+            updated_at=PublicQuoteDraftRow.updated_at,
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 def find_published_profile_by_tenant(
     session: Session, *, tenant_id: UUID
 ) -> TenantPublicProfileRow | None:

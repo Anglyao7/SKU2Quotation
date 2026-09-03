@@ -17,6 +17,8 @@ import {
   EnvelopeSimple,
   FileText,
   Key,
+  MapPin,
+  Package,
   Power,
   SlidersHorizontal,
   Storefront,
@@ -77,6 +79,32 @@ function countryFlag(countryCode?: string) {
 function countryLabel(countryCode?: string) {
   const normalized = String(countryCode || "").trim().toUpperCase();
   return normalized ? `${countryFlag(normalized)} ${normalized}` : "—";
+}
+
+function quantityLabel(value: number) {
+  return Number(value || 0).toLocaleString(undefined, {
+    maximumFractionDigits: 6,
+  });
+}
+
+function orderStatusColor(status: string): "amber" | "jade" | "gray" {
+  if (status === "PENDING_CONFIRMATION") return "amber";
+  if (status === "CONFIRMED" || status === "COMPLETED") return "jade";
+  return "gray";
+}
+
+function orderFollowUp(order: CustomerSubaccountOrderDetail | CustomerSubaccountOrderPage["items"][number]) {
+  if (order.status === "COMPLETED") return "已成交，可归档";
+  if (order.status === "CONFIRMED") return "已确认，跟进交付";
+  if (order.status === "CANCELLED") return "已取消，无需跟进";
+  if (order.status === "EXPIRED" || Date.parse(order.validUntil) < Date.now()) return "已过有效期";
+  return "待确认，建议尽快回复";
+}
+
+function orderContactSignal(order: CustomerSubaccountOrderDetail | CustomerSubaccountOrderPage["items"][number]) {
+  if (order.customerEmail && order.customerPhone) return "联系方式完整";
+  if (order.customerEmail || order.customerPhone) return "已有直接联系方式";
+  return "仅留姓名，需补充联系方式";
 }
 
 function DetailMetric({ icon, label, value, note }: {
@@ -163,6 +191,7 @@ export function CustomerSubaccountDetailPage() {
       setOrderDetail(await getCustomerSubaccountOrder(orderId));
     } catch (caught) {
       notify(caught instanceof Error ? caught.message : t("订单详情加载失败"), { kind: "error" });
+    } finally {
       setOrderDetailLoading(false);
     }
   };
@@ -266,20 +295,45 @@ export function CustomerSubaccountDetailPage() {
 
     <Card className="customer-order-panel customer-subaccount-orders-panel">
       <div className="customer-account-panel-heading">
-        <div><Text size="1" color="gray">{t("账号订单数据")}</Text><Heading size="5">{t("该子账号提交的订单")}</Heading></div>
+        <div><Text size="1" color="gray">{t("订单观察")}</Text><Heading size="5">{t("该子账号带来的客户报价")}</Heading></div>
         <Badge color="gray"><FileText />{t("共 {count} 笔", { count: orders?.total ?? 0 })}</Badge>
       </div>
-      {orders?.items.length ? <div className={`customer-order-table${ordersLoading ? " is-loading" : ""}`} aria-busy={ordersLoading}>
-        <div className="customer-order-table-head is-account-detail"><span>{t("订单")}</span><span>{t("客户信息")}</span><span>{t("国家")}</span><span>{t("金额")}</span><span>{t("状态")}</span><span>{t("提交时间")}</span></div>
-        {orders.items.map((order) => <div className="customer-order-table-row is-account-detail" key={order.id} role="button" tabIndex={0} onClick={() => void openOrder(order.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openOrder(order.id); } }}>
-          <span className="mono-text">{order.quoteNumber}</span>
-          <span>{order.customerCompany || order.customerName}</span>
-          <span title={order.visitorCountryCode || undefined}>{countryLabel(order.visitorCountryCode)}</span>
-          <strong>{money(order.totalAmount, order.currency)}</strong>
-          <Badge color={order.status === "PENDING_CONFIRMATION" ? "amber" : order.status === "CONFIRMED" || order.status === "COMPLETED" ? "jade" : "gray"}>{t(ORDER_STATUS_LABELS[order.status] ?? order.status)}</Badge>
-          <span>{coreDate(order.createdAt)}</span>
-        </div>)}
-      </div> : <CoreEmpty title={t("该子账号尚未提交订单")} description={t("订单提交后会在这里形成该账号自己的历史记录。")} />}
+      {orders?.items.length ? <div className={`customer-order-review-list${ordersLoading ? " is-loading" : ""}`} aria-busy={ordersLoading}>
+        {orders.items.map((order) => <article
+          className="customer-order-review-row"
+          key={order.id}
+          role="button"
+          tabIndex={0}
+          onClick={() => void openOrder(order.id)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              void openOrder(order.id);
+            }
+          }}
+        >
+          <header className="customer-order-review-heading">
+            <div>
+              <strong className="mono-text">{order.quoteNumber}</strong>
+              <time dateTime={order.createdAt}>{coreDate(order.createdAt)}</time>
+            </div>
+            <Badge color={orderStatusColor(order.status)}>{t(ORDER_STATUS_LABELS[order.status] ?? order.status)}</Badge>
+          </header>
+          <div className="customer-order-review-facts">
+            <div><span><UserCircle /></span><small>{t("客户")}</small><strong>{order.customerCompany || order.customerName}</strong><p>{order.customerCompany ? order.customerName : (order.customerEmail || order.customerPhone || t("未留下联系方式"))}</p></div>
+            <div><span><MapPin /></span><small>{t("来源")}</small><strong>{countryLabel(order.visitorCountryCode)}</strong><p className="mono-text">{order.visitorIpAddress || t("历史订单未记录 IP")}</p></div>
+            <div><span><Package /></span><small>{t("订单规模")}</small><strong>{t("{count} 个 SKU", { count: order.itemCount })}</strong><p>{t("合计数量 {quantity}", { quantity: quantityLabel(order.totalQuantity) })}</p></div>
+            <div><span><CurrencyDollar /></span><small>{t("报价金额")}</small><strong>{money(order.totalAmount, order.currency)}</strong><p>{t("有效至 {date}", { date: coreDate(order.validUntil) })}</p></div>
+          </div>
+          <footer className="customer-order-review-footer">
+            <div className="customer-order-signals">
+              <span className={order.status === "PENDING_CONFIRMATION" ? "is-urgent" : ""}>{t(orderFollowUp(order))}</span>
+              <span>{t(orderContactSignal(order))}</span>
+            </div>
+            <strong>{t("查看完整分析")}<CaretRight /></strong>
+          </footer>
+        </article>)}
+      </div> : <CoreEmpty title={t("该子账号尚未提交订单")} description={t("订单提交后会在这里形成客户、来源、金额与跟进建议记录。")} />}
       {orders && orders.total > orders.pageSize ? <div className="customer-order-pagination">
         <Text size="2" color="gray">{t("第 {page} / {pages} 页", { page: orders.page, pages: pageCount })}</Text>
         <div><Button size="1" variant="soft" color="gray" disabled={ordersLoading || orders.page <= 1} onClick={() => void changeOrderPage(orders.page - 1)}><CaretLeft />{t("上一页")}</Button><Button size="1" variant="soft" color="gray" disabled={ordersLoading || orders.page >= pageCount} onClick={() => void changeOrderPage(orders.page + 1)}>{t("下一页")}<CaretRight /></Button></div>

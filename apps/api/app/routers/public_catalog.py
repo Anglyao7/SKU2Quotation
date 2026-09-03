@@ -8,6 +8,7 @@ from urllib.parse import unquote
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Header,
@@ -54,7 +55,12 @@ from ..services.public_quote_documents import (
     render_public_quote_draft_xlsx,
 )
 from ..services.rate_limit import configured_limit, enforce_rate_limit
-from ..services.storefront_analytics import request_country_code, request_visitor_ip
+from ..services.storefront_analytics import (
+    cleanup_expired_raw_events,
+    mark_cleanup_scheduled,
+    request_country_code,
+    request_visitor_ip,
+)
 from ..use_cases import public_catalog as use_cases
 from ..use_cases import catalog_translations as translation_use_cases
 from ..services.language_package_storage import IMMUTABLE_CACHE_CONTROL
@@ -602,6 +608,7 @@ def submit_public_quote_draft(
     payload: PublicQuoteDraftCreate,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
@@ -639,7 +646,7 @@ def submit_public_quote_draft(
                 permission_session=session,
                 access_token=_bearer_access_token(credentials),
             )
-        return use_cases.create_public_quote_draft(
+        result = use_cases.create_public_quote_draft(
             session,
             slug=tenant_slug,
             request=payload,
@@ -648,7 +655,14 @@ def submit_public_quote_draft(
             submitted_by_user_id=(submitter.user_id if submitter else None),
             visitor_token=x_storefront_visitor_token,
             visitor_country_code=visitor_country_code,
+            visitor_ip_address=visitor_ip,
         )
+        if mark_cleanup_scheduled(result.tenant_id):
+            background_tasks.add_task(
+                cleanup_expired_raw_events,
+                result.tenant_id,
+            )
+        return result
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

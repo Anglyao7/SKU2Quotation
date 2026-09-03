@@ -22803,12 +22803,16 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
         column["name"]
         for column in inspect(upgraded_engine).get_columns("memberships")
     }
+    assert "visitor_ip_address" in {
+        column["name"]
+        for column in inspect(upgraded_engine).get_columns("public_quote_drafts")
+    }
     with upgraded_engine.connect() as connection:
         assert (
             connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
             ).scalar()
-            == "20260903_0131"
+            == "20260903_0132"
         )
     upgraded_engine.dispose()
     command.check(config)
@@ -23661,7 +23665,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
 
     with monkeypatch.context() as auth_environment:
         auth_environment.setenv("AUTH_TEST_BYPASS", "false")
-        with TestClient(app) as child_client:
+        with TestClient(app, client=("203.0.113.57", 50000)) as child_client:
             login = child_client.post(
                 "/api/v1/auth/login",
                 json={
@@ -23892,15 +23896,21 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 f"/api/store/{account['storefront_slug']}/quotes",
                 json={
                     "customer_name": f"Downstream Customer {suffix}",
+                    "customer_company": f"Buyer Company {suffix}",
+                    "customer_email": f"buyer-{suffix}@example.test",
+                    "customer_phone": "+1 202 555 0178",
+                    "notes": "Please confirm the delivery window.",
                     "privacy_acknowledged": True,
                     "items": [{"sku_id": sku_id, "quantity": 1}],
                 },
             )
             assert submitted.status_code == 201, submitted.text
+            assert "visitor_ip_address" not in submitted.json()
             quote_id = submitted.json()["id"]
             own_orders = child_client.get("/api/v1/customer-portal/orders", headers=headers)
             assert own_orders.status_code == 200, own_orders.text
             assert [row["id"] for row in own_orders.json()] == [quote_id]
+            assert all("visitor_ip_address" not in row for row in own_orders.json())
             confirmed = child_client.patch(
                 f"/api/v1/public-quote-drafts/{quote_id}/status",
                 headers=headers,
@@ -23947,6 +23957,23 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     assert account_orders.status_code == 200, account_orders.text
     assert account_orders.json()["total"] == 1
     assert [row["id"] for row in account_orders.json()["items"]] == [quote_id]
+    account_order = account_orders.json()["items"][0]
+    assert account_order["customer_company"] == f"Buyer Company {suffix}"
+    assert account_order["customer_email"] == f"buyer-{suffix}@example.test"
+    assert account_order["customer_phone"] == "+1 202 555 0178"
+    assert account_order["visitor_ip_address"] == "203.0.113.57"
+    assert account_order["visitor_ip_retained_until"] is not None
+    assert account_order["item_count"] == 1
+    assert Decimal(str(account_order["total_quantity"])) == Decimal("1")
+    account_order_detail = client.get(
+        f"/api/v1/customer-accounts/orders/{quote_id}"
+    )
+    assert account_order_detail.status_code == 200, account_order_detail.text
+    detail_payload = account_order_detail.json()
+    assert detail_payload["notes"] == "Please confirm the delivery window."
+    assert detail_payload["document_locale"] == "zh-CN"
+    assert detail_payload["items"][0]["unit_code"]
+    assert detail_payload["items"][0]["product_name"]
     owner_orders = client.get(
         "/api/v1/customer-accounts/orders", params={"page": 1, "page_size": 100}
     )
