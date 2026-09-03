@@ -200,7 +200,7 @@ export function LoginPage() {
           {visibleError ? <ToastNotice kind="error" message={visibleError} /> : null}
         </Card>
       </div>
-      <Link to="/" className="login-back-link">{t("返回官网")}</Link>
+      <Link to="/main" className="login-back-link">{t("返回官网")}</Link>
     </main>
   );
 }

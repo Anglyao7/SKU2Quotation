@@ -29,6 +29,7 @@ _RESERVED = {
     "inquiries",
     "inventory",
     "login",
+    "main",
     "portal",
     "privacy",
     "products",

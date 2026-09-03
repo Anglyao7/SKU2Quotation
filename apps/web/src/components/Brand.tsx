@@ -10,7 +10,7 @@ export function Brand({
   subtitle?: string;
 }) {
   return (
-    <Link to="/" className="brand" aria-label={`${BRAND_NAME_ZH}首页`}>
+    <Link to="/main" className="brand" aria-label={`${BRAND_NAME_ZH}首页`}>
       <span className="brand-mark"><CubeFocus size={22} weight="duotone" /></span>
       {!compact && (
         <span className="brand-copy">

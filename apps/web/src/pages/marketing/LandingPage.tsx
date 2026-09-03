@@ -237,7 +237,7 @@ export function LandingPage() {
             <a href="#merchants">商家入口</a>
           </nav>
           <div className={styles.headerActions}>
-            <Link className={styles.headerLogin} to="/login">登录工作台</Link>
+            <Link className={styles.headerLogin} to="/">登录工作台</Link>
             <button
               className={styles.menuButton}
               type="button"
@@ -260,7 +260,7 @@ export function LandingPage() {
             <a href="#capabilities" onClick={closeMenu}>能力</a>
             <a href="#pricing" onClick={closeMenu}>价格</a>
             <a href="#merchants" onClick={closeMenu}>商家入口</a>
-            <Link to="/login" onClick={closeMenu}>登录工作台</Link>
+            <Link to="/" onClick={closeMenu}>登录工作台</Link>
           </nav>
         </div>
       </header>
@@ -289,7 +289,7 @@ export function LandingPage() {
                 <Link className={styles.primaryButton} to={primaryStorefrontPath}>
                   查看商品前台 <ArrowRight size={18} weight="bold" />
                 </Link>
-                <Link className={styles.secondaryButton} to="/login">登录工作台</Link>
+                <Link className={styles.secondaryButton} to="/">登录工作台</Link>
               </div>
             </div>
           </div>
@@ -538,7 +538,7 @@ export function LandingPage() {
             <a href="#workflow">流程</a>
             <a href="#pricing">价格</a>
             <Link to={primaryStorefrontPath}>查看商品前台</Link>
-            <Link to="/login">登录工作台</Link>
+            <Link to="/">登录工作台</Link>
             <Link to="/privacy">隐私政策</Link>
             <a href="/licenses/Noto-CJK-OFL.txt">字体许可</a>
           </nav>

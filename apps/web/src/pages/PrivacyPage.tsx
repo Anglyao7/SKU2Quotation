@@ -26,7 +26,7 @@ export function PrivacyPage() {
     <main className="legal-page">
       <header className="legal-header">
         <Brand subtitle="万千货品，自成脉络" />
-        <Link to="/" className="legal-back"><ArrowLeft size={17} />返回首页</Link>
+        <Link to="/main" className="legal-back"><ArrowLeft size={17} />返回首页</Link>
       </header>
 
       <article className="legal-document">

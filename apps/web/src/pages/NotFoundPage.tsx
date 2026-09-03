@@ -11,7 +11,7 @@ export function NotFoundPage() {
         <Compass size={42} weight="duotone" />
         <Heading size="7">页面没有找到</Heading>
         <Text color="gray">链接可能已失效，或你没有访问这个页面的权限。</Text>
-        <Button asChild><Link to="/"><ArrowLeft size={17} />返回官网</Link></Button>
+        <Button asChild><Link to="/main"><ArrowLeft size={17} />返回官网</Link></Button>
       </div>
     </main>
   );

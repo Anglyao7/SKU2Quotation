@@ -128,7 +128,7 @@ function ApplicationRouteError() {
             {t("重新加载最新版")}
           </Button>
           <Button asChild size="3" variant="soft" color="gray">
-            <a href="/">{t("返回首页")}</a>
+            <a href="/main">{t("返回首页")}</a>
           </Button>
         </div>
       </section>
@@ -141,7 +141,7 @@ function ProtectedRoute() {
   const { t } = useLocale();
   const location = useLocation();
   if (status === "restoring") return <div className="route-loading"><Spinner size="3" /><span>{t("正在恢复安全会话")}</span></div>;
-  if (status !== "authenticated") return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  if (status !== "authenticated") return <Navigate to="/" replace state={{ from: location.pathname + location.search }} />;
   return <Outlet />;
 }
 
@@ -360,7 +360,7 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
 function LegacyStoreRedirect() {
   const { tenantSlug } = useParams();
   const location = useLocation();
-  return tenantSlug ? <Navigate replace to={`/${encodeURIComponent(tenantSlug)}${location.search}${location.hash}`} /> : <Navigate to="/" replace />;
+  return tenantSlug ? <Navigate replace to={`/${encodeURIComponent(tenantSlug)}${location.search}${location.hash}`} /> : <Navigate to="/main" replace />;
 }
 
 function StorefrontRouteError() {
@@ -396,10 +396,11 @@ const router = createBrowserRouter([{
   element: <ApplicationFrame />,
   errorElement: <ApplicationRouteError />,
   children: [
-  { path: "/", element: <LandingPage /> },
+  { path: "/", element: <LoginPage /> },
+  { path: "/main", element: <LandingPage /> },
   { path: "/store/:tenantSlug", element: <LegacyStoreRedirect /> },
-  { path: "/login", element: <LoginPage /> },
-  { path: "/login/callback", element: <Navigate to="/login" replace /> },
+  { path: "/login", element: <Navigate to="/" replace /> },
+  { path: "/login/callback", element: <Navigate to="/" replace /> },
   { path: "/privacy", element: <PrivacyPage /> },
   {
     element: <ProtectedRoute />,

@@ -105,7 +105,7 @@ export function StorefrontFooter({
           <Text size="1" color="gray">
             {t("商品与报价由 {store} 提供，报价草稿须经商家确认。", { store: store.name })}
           </Text>
-          <Link className="store-footer-powered" to="/">Powered by AI Trade Cloud</Link>
+          <Link className="store-footer-powered" to="/main">Powered by AI Trade Cloud</Link>
         </div>
       </Container>
     </footer>
