@@ -86,7 +86,7 @@ def get_dashboard(
         import_limit=import_limit,
     )
     metrics: list[DashboardMetric] = []
-    if "product.view" in permissions:
+    if "product.view" in permissions and account_scope != "CUSTOMER_SUBACCOUNT":
         metrics.append(DashboardMetric(key="active_skus", label="有效 SKU", value=data["active_skus"], destination="/products"))
     if "inquiry.view" in permissions:
         metrics.extend((
@@ -102,7 +102,7 @@ def get_dashboard(
 
     active_products = int(data["active_products"])
     data_health = None
-    if "product.view" in permissions:
+    if "product.view" in permissions and account_scope != "CUSTOMER_SUBACCOUNT":
         def coverage(value: object) -> float:
             if not active_products:
                 return 0.0

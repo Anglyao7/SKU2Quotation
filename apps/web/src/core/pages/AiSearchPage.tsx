@@ -3,6 +3,7 @@ import { ArrowRight, CaretDown, CaretUp, MagnifyingGlass, ShieldCheck, Sparkle, 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { getAISearchPopularTerms, searchProducts } from "../api";
+import { useCoreAuth } from "../AuthContext";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, percent } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import type { HybridSearchResponse } from "../types";
@@ -10,7 +11,9 @@ import type { HybridSearchResponse } from "../types";
 const scoreLabels: Record<string, string> = { keyword: "关键词", semantic: "语义", attribute: "属性", tag: "标签", supplier: "供应商" };
 
 export function AiSearchPage() {
+  const { profile } = useCoreAuth();
   const { t } = useLocale();
+  const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState(params.get("q") ?? "");
   const [response, setResponse] = useState<HybridSearchResponse>();
@@ -61,7 +64,7 @@ export function AiSearchPage() {
         </form>
         {!response && !loading && examples.length ? <div className="core-example-list">{examples.map((example) => <Button key={example} variant="soft" color="gray" onClick={() => void runSearch(example)}>{example}<ArrowRight /></Button>)}</div> : null}
       </Card>
-      {loading ? <CoreLoading label={t("正在综合产品知识与供应商信号")} /> : null}
+      {loading ? <CoreLoading label={t(isCustomerSubaccount ? "正在综合商品资料" : "正在综合产品知识与供应商信号")} /> : null}
       {error ? <CoreError message={error} onRetry={() => void runSearch()} /> : null}
       {response && !loading ? (
         <section className="core-search-results">
@@ -82,8 +85,8 @@ export function AiSearchPage() {
                   <div className="core-result-rank">{String(index + 1).padStart(2, "0")}</div>
                   <div className="core-result-body">
                     <div className="core-result-title"><div><Text size="1" color="gray">{result.productCode ?? t("产品")} · {t("来源版本")} v{result.sourceVersion}</Text><Heading size="4">{result.name}</Heading></div><strong>{percent(result.score)}</strong></div>
-                    <div className="core-score-grid">{Object.entries(result.scoreBreakdown).map(([key, value]) => <div key={key}><span><Text size="1" color="gray">{t(scoreLabels[key] ?? key)}</Text><Text size="1" weight="bold">{percent(value)}</Text></span><Progress value={value * 100} /></div>)}</div>
-                    <div className="core-fact-row"><span>{t("供应商")}：{result.product?.supplier || t("暂无证据")}</span><span>{t("参考价")}：{result.product?.price === undefined ? "—" : `${result.product.currency ?? ""} ${result.product.price.toFixed(2)}`}</span><span>{t("交期")}：{result.product?.sources[0]?.leadTimeDays ? t("{count} 天", { count: result.product.sources[0].leadTimeDays }) : "—"}</span></div>
+                    <div className="core-score-grid">{Object.entries(result.scoreBreakdown).filter(([key]) => !isCustomerSubaccount || key !== "supplier").map(([key, value]) => <div key={key}><span><Text size="1" color="gray">{t(scoreLabels[key] ?? key)}</Text><Text size="1" weight="bold">{percent(value)}</Text></span><Progress value={value * 100} /></div>)}</div>
+                    <div className="core-fact-row">{!isCustomerSubaccount ? <span>{t("供应商")}：{result.product?.supplier || t("暂无证据")}</span> : null}<span>{t("参考价")}：{result.product?.price === undefined ? "—" : `${result.product.currency ?? ""} ${result.product.price.toFixed(2)}`}</span>{!isCustomerSubaccount ? <span>{t("交期")}：{result.product?.sources[0]?.leadTimeDays ? t("{count} 天", { count: result.product.sources[0].leadTimeDays }) : "—"}</span> : null}</div>
                     <div className="core-row-actions"><Button variant="ghost" color="gray" onClick={() => setExpanded(open ? undefined : result.productId)}>{open ? <CaretUp /> : <CaretDown />}{t("匹配依据")}</Button><Button asChild variant="soft"><Link to={`/console/products?product=${encodeURIComponent(result.productId)}`}>{t("查看产品")}</Link></Button><Button asChild><Link to={`/console/inquiries?product=${encodeURIComponent(result.productId)}&q=${encodeURIComponent(response.query)}`}>{t("加入询盘")}<ArrowRight /></Link></Button></div>
                     {open ? <div className="core-evidence-list">{result.evidence.map((item, evidenceIndex) => <blockquote key={`${result.productId}:${evidenceIndex}`}><Text size="1" color="gray">{t("匹配依据")}</Text><p>{item.excerpt}</p></blockquote>)}{!result.evidence.length ? <Text size="2" color="gray">{t("该结果暂未返回证据摘录。")}</Text> : null}</div> : null}
                   </div>

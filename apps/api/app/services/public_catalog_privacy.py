@@ -36,12 +36,22 @@ def _normalized_option_key(value: object) -> str:
 _NORMALIZED_PRIVATE_SKU_OPTION_KEYS = frozenset(
     _normalized_option_key(value) for value in _PRIVATE_SKU_OPTION_KEYS
 )
+_PRIVATE_SKU_OPTION_FRAGMENT_PATTERN = re.compile(
+    r"supplier|vendor|factory|manufacturer|sourcing|procurement|purchaseprice|"
+    r"cost|internalprice|供应商|供應商|厂家|廠家|工厂|工廠|采购|採購|"
+    r"进货|進貨|成本|内部价|內部價|供货|供貨",
+    re.IGNORECASE,
+)
 
 
 def is_private_sku_option_key(value: object) -> bool:
     """Return whether an option label is reserved for merchant-side notes."""
 
-    return _normalized_option_key(value) in _NORMALIZED_PRIVATE_SKU_OPTION_KEYS
+    normalized = _normalized_option_key(value)
+    return (
+        normalized in _NORMALIZED_PRIVATE_SKU_OPTION_KEYS
+        or bool(_PRIVATE_SKU_OPTION_FRAGMENT_PATTERN.search(normalized))
+    )
 
 
 def _public_option_mapping(values: Mapping[object, Any]) -> dict[str, Any]:

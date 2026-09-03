@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
@@ -28,6 +29,21 @@ from ..trade_flow_schemas import CandidateSelectRequest, CustomerCreateRequest, 
 
 MIN_MARGIN = Decimal("0.15")
 RULE_VERSION = "atc-deterministic-margin-v1"
+_CUSTOMER_PRIVATE_CONTEXT_PATTERN = re.compile(
+    r"supplier|vendor|source|cost|margin|采购|採購|进货|進貨|成本|毛利|"
+    r"供应商|供應商|厂家|廠家|工厂|工廠|寻源|尋源|内部|內部",
+    re.IGNORECASE,
+)
+
+
+def _customer_visible_messages(values: list[str]) -> list[str]:
+    """Remove sourcing and cost commentary from reseller responses."""
+
+    return [
+        value
+        for value in values
+        if not _CUSTOMER_PRIVATE_CONTEXT_PATTERN.search(str(value))
+    ]
 
 
 def _require(permissions: frozenset[str], code: str) -> None:
@@ -234,20 +250,12 @@ def _match_response(
         # Match evidence can contain excerpts and source identifiers copied
         # from supplier records.  Keep the score/reason shape useful to a
         # reseller while removing the private provenance fields.
-        private_keys = {
-            "supplier_id",
-            "supplier_name",
-            "supplier_product_id",
-            "source_sku_code",
-            "source_filename",
-            "source",
-            "excerpt",
-        }
         evidence = [
             {
                 key: value
                 for key, value in entry.items()
-                if key not in private_keys
+                if key != "excerpt"
+                and not _CUSTOMER_PRIVATE_CONTEXT_PATTERN.search(str(key))
             }
             for entry in evidence
             if isinstance(entry, dict)
@@ -261,9 +269,25 @@ def _match_response(
         product_version=row.product_version,
         rank=row.rank,
         total_score=float(row.total_score),
-        score_breakdown=row.score_breakdown,
-        reasons=row.reasons,
-        gaps=row.gaps,
+        score_breakdown=(
+            row.score_breakdown
+            if expose_supplier_source
+            else {
+                key: value
+                for key, value in row.score_breakdown.items()
+                if not _CUSTOMER_PRIVATE_CONTEXT_PATTERN.search(str(key))
+            }
+        ),
+        reasons=(
+            row.reasons
+            if expose_supplier_source
+            else _customer_visible_messages(row.reasons)
+        ),
+        gaps=(
+            row.gaps
+            if expose_supplier_source
+            else _customer_visible_messages(row.gaps)
+        ),
         evidence=evidence,
         ranking_version=row.ranking_version,
         status=row.status,
@@ -425,7 +449,11 @@ def _quote_response(
             target_margin_rate=row.target_margin_rate if show_cost else None,
             unit_price=row.unit_price,
             line_total=row.line_total,
-            warnings=row.warnings,
+            warnings=(
+                row.warnings
+                if not child_scope
+                else _customer_visible_messages(row.warnings)
+            ),
         )
         for row in repository.list_quote_items(
             session,
@@ -502,11 +530,32 @@ def create_quotation(
         if product is None: raise ApplicationError("PRODUCT_NOT_FOUND", "Selected product is no longer available.", kind="conflict")
         if product.current_version != match.product_version: raise ApplicationError("MATCH_STALE", "Selected product changed after matching; rerun matching before quotation.", kind="conflict")
         source = repository.get_active_source(session, tenant_id=tenant_id, product_id=match.product_id, source_id=match.supplier_product_id) if match.supplier_product_id else repository.first_source(session, tenant_id=tenant_id, product_id=match.product_id)
-        if source is None: raise ApplicationError("SUPPLIER_SOURCE_MISSING", "Selected product has no ACTIVE supplier source.", kind="conflict")
+        if source is None:
+            if account_scope == "CUSTOMER_SUBACCOUNT":
+                raise ApplicationError(
+                    "PRODUCT_PRICE_UNAVAILABLE",
+                    "Selected product does not have an available quote price.",
+                    kind="conflict",
+                )
+            raise ApplicationError("SUPPLIER_SOURCE_MISSING", "Selected product has no ACTIVE supplier source.", kind="conflict")
         source_id = source.id
         price = repository.current_price(session, tenant_id=tenant_id, source_id=source_id, sku_id=match.sku_id, as_of=now)
-        if price is None: raise ApplicationError("CONFIRMED_PRICE_MISSING", "Selected source has no confirmed price.", kind="conflict")
-        if price.currency != inquiry.currency: raise ApplicationError("FX_RATE_REQUIRED", "Quotation currency differs from supplier price; an explicit FX snapshot is required.", kind="conflict")
+        if price is None:
+            if account_scope == "CUSTOMER_SUBACCOUNT":
+                raise ApplicationError(
+                    "PRODUCT_PRICE_UNAVAILABLE",
+                    "Selected product does not have an available quote price.",
+                    kind="conflict",
+                )
+            raise ApplicationError("CONFIRMED_PRICE_MISSING", "Selected source has no confirmed price.", kind="conflict")
+        if price.currency != inquiry.currency:
+            if account_scope == "CUSTOMER_SUBACCOUNT":
+                raise ApplicationError(
+                    "FX_RATE_REQUIRED",
+                    "The selected product price requires a configured currency conversion.",
+                    kind="conflict",
+                )
+            raise ApplicationError("FX_RATE_REQUIRED", "Quotation currency differs from supplier price; an explicit FX snapshot is required.", kind="conflict")
         warnings = []
         valid_to = price.valid_to.replace(tzinfo=UTC) if price.valid_to and price.valid_to.tzinfo is None else price.valid_to
         if valid_to and valid_to < now: warnings.append("供应商价格已过有效期"); needs_approval = True

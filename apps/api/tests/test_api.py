@@ -23646,6 +23646,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     listing = client.get("/api/store/demo/skus", params={"page_size": 1})
     assert listing.status_code == 200, listing.text
     sku_id = listing.json()["items"][0]["id"]
+    product_id = listing.json()["items"][0]["product_id"]
     merchant_price_before = Decimal(str(listing.json()["items"][0]["price"]))
     main_support = client.post(
         "/api/store/demo/support/conversations",
@@ -23681,9 +23682,57 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert login_data["context"]["storefront_path"] == account["storefront_path"]
             child_permissions = set(login_data["permissions"])
             assert {"product.view", "catalog.view"}.issubset(child_permissions)
+            assert {"quotation.view", "quotation.create"}.issubset(child_permissions)
             assert child_permissions.isdisjoint(product_write_permissions)
+            assert child_permissions.isdisjoint({
+                "supplier.view",
+                "supplier.manage",
+                "product.cost.read",
+                "product.cost.write",
+                "inventory.view",
+            })
             assert "support.settings_manage" not in child_permissions
             headers = {"Authorization": f"Bearer {token}"}
+
+            for private_endpoint in (
+                "/api/v1/suppliers",
+                "/api/v1/supplier-profiles",
+                "/api/v1/supply-chain",
+                f"/api/v1/products/{product_id}/prices",
+                "/api/v1/inventory/stocks",
+            ):
+                denied_private_data = child_client.get(
+                    private_endpoint,
+                    headers=headers,
+                )
+                assert denied_private_data.status_code == 403, (
+                    private_endpoint,
+                    denied_private_data.text,
+                )
+
+            child_product_detail = child_client.get(
+                f"/api/v1/products/{product_id}",
+                headers=headers,
+            )
+            assert child_product_detail.status_code == 200, child_product_detail.text
+            child_product_payload = child_product_detail.json()
+            assert child_product_payload["supplier_count"] == 0
+            assert child_product_payload["current_offer"] is None
+            assert child_product_payload["sources"] == []
+            assert child_product_payload["supplier"] == "—"
+            assert all(
+                row["source_sku_code"] is None
+                for row in child_product_payload["skus"]
+            )
+            child_dashboard = child_client.get("/api/v1/dashboard", headers=headers)
+            assert child_dashboard.status_code == 200, child_dashboard.text
+            assert child_dashboard.json()["data_health"] is None
+            assert "active_suppliers" not in {
+                metric["key"] for metric in child_dashboard.json()["metrics"]
+            }
+            assert "active_skus" not in {
+                metric["key"] for metric in child_dashboard.json()["metrics"]
+            }
 
             portal = child_client.get("/api/v1/customer-portal/overview", headers=headers)
             assert portal.status_code == 200, portal.text
@@ -23907,9 +23956,23 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             assert submitted.status_code == 201, submitted.text
             assert "visitor_ip_address" not in submitted.json()
             quote_id = submitted.json()["id"]
+            child_workbench = child_client.get(
+                f"/api/v1/public-quote-drafts/{quote_id}",
+                headers=headers,
+            )
+            assert child_workbench.status_code == 200, child_workbench.text
+            assert child_workbench.json()["read_only"] is False
+            line = child_workbench.json()["items"][0]
+            repriced_quote = child_client.patch(
+                f"/api/v1/public-quote-drafts/{quote_id}/items/{line['id']}/price",
+                headers=headers,
+                json={"unit_price": str(Decimal(str(line["unit_price_snapshot"])) + 1)},
+            )
+            assert repriced_quote.status_code == 200, repriced_quote.text
             own_orders = child_client.get("/api/v1/customer-portal/orders", headers=headers)
             assert own_orders.status_code == 200, own_orders.text
             assert [row["id"] for row in own_orders.json()] == [quote_id]
+            assert own_orders.json()[0]["status"] == "PENDING_CONFIRMATION"
             assert all("visitor_ip_address" not in row for row in own_orders.json())
             confirmed = child_client.patch(
                 f"/api/v1/public-quote-drafts/{quote_id}/status",
@@ -23917,12 +23980,26 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 json={"status": "CONFIRMED"},
             )
             assert confirmed.status_code == 200, confirmed.text
+            assert confirmed.json()["status"] == "CONFIRMED"
             child_statistics = child_client.get(
                 "/api/v1/storefront-orders/statistics",
                 headers=headers,
             )
             assert child_statistics.status_code == 200, child_statistics.text
             assert child_statistics.json()["current_month"]["order_count"] >= 1
+            completed = child_client.patch(
+                f"/api/v1/public-quote-drafts/{quote_id}/status",
+                headers=headers,
+                json={"status": "COMPLETED"},
+            )
+            assert completed.status_code == 200, completed.text
+            assert completed.json()["status"] == "COMPLETED"
+            completed_orders = child_client.get(
+                "/api/v1/customer-portal/orders",
+                headers=headers,
+            )
+            assert completed_orders.status_code == 200, completed_orders.text
+            assert completed_orders.json()[0]["status"] == "COMPLETED"
 
     owner_dashboard = client.get("/api/v1/customer-accounts")
     assert owner_dashboard.status_code == 200, owner_dashboard.text

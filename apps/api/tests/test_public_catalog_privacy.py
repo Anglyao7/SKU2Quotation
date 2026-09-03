@@ -31,3 +31,18 @@ def test_public_specification_removes_note_segments_from_old_quotes() -> None:
     assert public_specification("颜色: 红；备注: 仅后台可见；尺寸: M") == "颜色: 红；尺寸: M"
     assert public_specification("备注：仅后台可见") is None
     assert public_specification("颜色: 红") == "颜色: 红"
+
+
+def test_public_catalog_removes_supplier_and_cost_option_fields() -> None:
+    values = {
+        "颜色": "蓝",
+        "供应商名称": "不应公开的工厂",
+        "supplier_sku": "PRIVATE-001",
+        "采购价": "12.00",
+        "内部价格": "18.00",
+    }
+
+    assert public_sku_option_values(values) == {"颜色": "蓝"}
+    assert public_specification(
+        "颜色: 蓝；供应商名称: 不应公开的工厂；采购价: 12.00"
+    ) == "颜色: 蓝"

@@ -61,7 +61,7 @@
 .reseller-price-editor.is-compact .reseller-price-editor-controls .rt-TextFieldRoot { min-width: 125px; }
 .reseller-visibility-note { padding: 13px 15px !important; display: flex; align-items: center; gap: 9px; color: var(--core-muted); }
 .reseller-visibility-note > svg { flex: 0 0 auto; color: var(--core-accent); }
-.reseller-orders-table { min-width: 860px; display: grid; grid-template-columns: minmax(145px, 1fr) minmax(180px, 1.35fr) minmax(120px, .8fr) minmax(110px, .75fr) minmax(125px, .9fr) minmax(125px, .9fr); align-items: center; gap: 14px; }
+.reseller-orders-table { min-width: 980px; display: grid; grid-template-columns: minmax(145px, 1fr) minmax(180px, 1.35fr) minmax(120px, .8fr) minmax(110px, .75fr) minmax(125px, .9fr) minmax(125px, .9fr) minmax(100px, auto); align-items: center; gap: 14px; }
 .reseller-orders-table-head { min-height: 43px; padding: 0 16px; color: var(--core-muted); background: var(--core-soft); font-size: 11px; }
 .reseller-orders-table-row { min-height: 72px; padding: 10px 16px; border-top: 1px solid var(--core-line); }
 .reseller-orders-table-row > span { min-width: 0; display: grid; gap: 3px; }

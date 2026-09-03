@@ -16,6 +16,7 @@ import {
   ArrowLeft,
   CaretDown,
   Check,
+  CheckCircle,
   ClipboardText,
   Columns,
   CurrencyDollar,
@@ -33,6 +34,7 @@ import {
   SlidersHorizontal,
   ShieldCheck,
   X,
+  XCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -52,6 +54,7 @@ import {
   updatePublicQuoteDraftSettings,
   updatePublicQuoteDraftStatus,
 } from "../api";
+import { useCoreAuth } from "../AuthContext";
 import { CoreError, CoreLoading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import { ToastNotice, useToast } from "../ToastContext";
@@ -420,6 +423,7 @@ function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField, loc
 
 export function QuoteWorkbenchPage() {
   const { quoteDraftId } = useParams<{ quoteDraftId: string }>();
+  const { profile } = useCoreAuth();
   const { t } = useLocale();
   const { notify } = useToast();
   const [draft, setDraft] = useState<PublicQuoteDraft>();
@@ -438,6 +442,8 @@ export function QuoteWorkbenchPage() {
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState<"pdf" | "xlsx" | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [statusUpdating, setStatusUpdating] = useState<"COMPLETED" | "CANCELLED" | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
   const [error, setError] = useState("");
   const [itemEdits, setItemEdits] = useState<Record<string, QuoteItemEdit>>({});
   const [savingItems, setSavingItems] = useState(false);
@@ -537,6 +543,7 @@ export function QuoteWorkbenchPage() {
   // Keep this flag at the UI boundary as well as enforcing it in the API so a
   // read-only workbench never sends a mutation that is guaranteed to fail.
   const isReadOnly = Boolean(draft?.readOnly);
+  const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
   const canEditPrices = draft?.status === "PENDING_CONFIRMATION" && !isReadOnly;
   const hasPendingItemEdits = Object.values(itemEdits).some((edit) => Object.keys(edit).length > 0);
   const currencyOptions = useMemo<QuoteCurrencyOption[]>(() => {
@@ -939,6 +946,22 @@ export function QuoteWorkbenchPage() {
       setError(reason instanceof Error ? reason.message : t("报价单确认失败"));
     } finally {
       setConfirming(false);
+    }
+  };
+
+  const updateStatus = async (status: "COMPLETED" | "CANCELLED") => {
+    if (!draft || draft.readOnly) return;
+    setStatusUpdating(status);
+    setError("");
+    try {
+      const updated = await updatePublicQuoteDraftStatus(draft.id, status);
+      setDraft(updated);
+      setCancelOpen(false);
+      notify(t(status === "COMPLETED" ? "报价已标记为成交。" : "询价已取消。"), { kind: "success" });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("订单状态更新失败"));
+    } finally {
+      setStatusUpdating(null);
     }
   };
 
@@ -1487,6 +1510,8 @@ export function QuoteWorkbenchPage() {
             <DropdownMenu.Content align="end"><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("pdf")}><FilePdf />{t("导出为 PDF")}</DropdownMenu.Item><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("xlsx")}><FileXls />{t("导出为 Excel")}</DropdownMenu.Item></DropdownMenu.Content>
           </DropdownMenu.Root>
           {draft.status === "PENDING_CONFIRMATION" && !isReadOnly ? <Button color="green" disabled={confirming || saving || savingItems} loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
+          {draft.status === "CONFIRMED" && !isReadOnly ? <Button color="green" disabled={Boolean(statusUpdating)} loading={statusUpdating === "COMPLETED"} onClick={() => void updateStatus("COMPLETED")}><CheckCircle />{t("标记为已成交")}</Button> : null}
+          {(draft.status === "PENDING_CONFIRMATION" || draft.status === "CONFIRMED") && !isReadOnly ? <Button variant="soft" color="red" disabled={confirming || Boolean(statusUpdating)} onClick={() => setCancelOpen(true)}><XCircle />{t("取消询价")}</Button> : null}
           <Button asChild variant="soft" color="gray"><Link to="/console/quotes"><ArrowLeft />{t("返回询价列表")}</Link></Button>
         </div>
       </div>
@@ -1501,6 +1526,21 @@ export function QuoteWorkbenchPage() {
       <div className="quote-status-meta"><span>{t("客户")}: {draft.customerCompany || draft.customerName}</span><span>{t("更新时间")}: {coreDate(draft.updatedAt)}</span><span>{t("有效期")}: {coreDate(draft.validUntil)}</span>{draft.visitorCountryCode ? <span>{t("客户国家")}: {draft.visitorCountryCode}</span> : null}</div>
     </Card>
     {isReadOnly ? <Card className="quote-readonly-notice"><ShieldCheck size={19} /><div><Text size="2" weight="medium">{t("当前为只读查看")}</Text><Text size="1" color="gray">{t("这是子账号提交的询价单，只能由提交该询价的子账号制作、确认和处理。")}</Text></div></Card> : null}
+
+    <AlertDialog.Root open={cancelOpen} onOpenChange={(open) => { if (!statusUpdating) setCancelOpen(open); }}>
+      <AlertDialog.Content maxWidth="460px">
+        <AlertDialog.Title>{t("取消这条询价？")}</AlertDialog.Title>
+        <AlertDialog.Description size="2">{t("取消后这条询价将不能继续修改、确认或标记成交。")}</AlertDialog.Description>
+        <div className="quote-sync-confirm-actions">
+          <AlertDialog.Cancel>
+            <Button variant="soft" color="gray" disabled={Boolean(statusUpdating)}>{t("返回")}</Button>
+          </AlertDialog.Cancel>
+          <AlertDialog.Action>
+            <Button color="red" loading={statusUpdating === "CANCELLED"} onClick={() => void updateStatus("CANCELLED")}><XCircle />{t("确认取消")}</Button>
+          </AlertDialog.Action>
+        </div>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
 
     <AlertDialog.Root open={conversionOpen} onOpenChange={(open) => { if (!converting) setConversionOpen(open); }}>
       <AlertDialog.Content maxWidth="520px" className="quote-currency-dialog">
@@ -1596,7 +1636,7 @@ export function QuoteWorkbenchPage() {
                   <div><Text size="1" color="gray">{t("商品名称")}</Text><strong>{selectedProductDetail.name}</strong></div>
                   <div><Text size="1" color="gray">{t("商品编码")}</Text><strong className="mono-text">{selectedProductDetail.productCode || selectedProductDetail.id}</strong></div>
                   <div><Text size="1" color="gray">{t("型号")}</Text><strong>{selectedProductDetail.model || "—"}</strong></div>
-                  <div><Text size="1" color="gray">{t("供应商")}</Text><strong>{selectedProductDetail.supplier || "—"}</strong></div>
+                  {!isCustomerSubaccount ? <div><Text size="1" color="gray">{t("供应商")}</Text><strong>{selectedProductDetail.supplier || "—"}</strong></div> : null}
                   <div><Text size="1" color="gray">{t("商品分类")}</Text><strong>{selectedProductDetail.category || "—"}</strong></div>
                   <div><Text size="1" color="gray">{t("SKU 数量")}</Text><strong>{selectedProductDetail.skuCount}</strong></div>
                 </div>

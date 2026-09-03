@@ -1,5 +1,5 @@
-import { Badge, Button, Card, Heading, Text } from "@radix-ui/themes";
-import { ArrowClockwise, Cube, FileText, Storefront } from "@phosphor-icons/react";
+import { Badge, Button, Card } from "@radix-ui/themes";
+import { ArrowClockwise, ArrowRight, Cube, Storefront } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getCustomerPortalOverview, listCustomerPortalOrders } from "../api";
@@ -49,7 +49,7 @@ export function ResellerOrdersPage() {
       <CorePageHeading
         eyebrow={t("销售")}
         title={t("我的询价")}
-        description={t("这里只显示当前账户提交的询价记录与处理状态。")}
+        description={t("查看并处理由当前代理商前台提交的全部报价。")}
         actions={(
           <div className="core-heading-actions">
             <Button variant="soft" onClick={() => void load()} disabled={loading}><ArrowClockwise className={loading ? "is-spinning" : undefined} />{t("刷新")}</Button>
@@ -61,7 +61,7 @@ export function ResellerOrdersPage() {
       {!error && !orders.length ? <CoreEmpty title={t("还没有询价记录")} description={t("在商品前台选择商品并提交后，记录会显示在这里。")} action={<Button asChild><Link to={catalogPath} target="_blank" rel="noreferrer"><Cube />{t("去选品")}</Link></Button>} /> : null}
       {orders.length ? <Card className="reseller-orders-table-card">
         <div className="reseller-table-scroll">
-          <div className="reseller-orders-table reseller-orders-table-head"><span>{t("询价编号")}</span><span>{t("客户")}</span><span>{t("金额")}</span><span>{t("状态")}</span><span>{t("提交时间")}</span><span>{t("有效期")}</span></div>
+          <div className="reseller-orders-table reseller-orders-table-head"><span>{t("询价编号")}</span><span>{t("客户")}</span><span>{t("金额")}</span><span>{t("状态")}</span><span>{t("提交时间")}</span><span>{t("有效期")}</span><span>{t("操作")}</span></div>
           {orders.map((order) => <div className="reseller-orders-table reseller-orders-table-row" key={order.id}>
             <strong className="core-tabular">{order.quoteNumber}</strong>
             <span><strong>{order.customerCompany || order.customerName}</strong><small>{order.customerCompany ? order.customerName : t("当前账号")}</small></span>
@@ -69,10 +69,14 @@ export function ResellerOrdersPage() {
             <Badge color={order.status === "PENDING_CONFIRMATION" ? "amber" : order.status === "CONFIRMED" ? "jade" : "gray"}>{t(orderStatusLabel[order.status] ?? order.status)}</Badge>
             <time>{coreDate(order.createdAt)}</time>
             <time>{coreDate(order.validUntil)}</time>
+            <Button asChild size="1" variant={order.status === "PENDING_CONFIRMATION" ? "solid" : "soft"}>
+              <Link to={`/console/quotes/${encodeURIComponent(order.id)}/workbench`}>
+                {t(order.status === "PENDING_CONFIRMATION" ? "处理报价" : "查看报价")}<ArrowRight />
+              </Link>
+            </Button>
           </div>)}
         </div>
       </Card> : null}
-      <Card className="reseller-visibility-note"><FileText /><Text size="2" color="gray">{t("报价页面只展示当前账号可见的商品和价格；供应商和内部成本信息不会显示。")}</Text></Card>
     </div>
   );
 }

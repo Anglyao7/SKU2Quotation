@@ -3060,8 +3060,6 @@ const english: Record<string, string> = {
     "The default markup applies to all products; product rules take priority. Subaccounts only see final prices.",
   "浏览商品资料与当前账号可见价格。": "Browse product information and prices visible to this account.",
   "以下价格按当前账号规则展示": "Prices below follow this account's rules",
-  "报价页面只展示当前账号可见的商品和价格；供应商和内部成本信息不会显示。":
-    "Quotes show only products and prices visible to this account; suppliers and internal costs are hidden.",
   "客户账号数据加载失败": "Could not load customer account data",
   "子账号概览": "Subaccount overview",
   "全部子账号": "All subaccounts",
