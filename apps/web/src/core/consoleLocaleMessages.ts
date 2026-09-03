@@ -1,4 +1,12 @@
 import type { UiLocale } from "./types";
+import arGenerated from "./locales/console.ar.json";
+import esGenerated from "./locales/console.es.json";
+import faGenerated from "./locales/console.fa.json";
+import frGenerated from "./locales/console.fr.json";
+import jaGenerated from "./locales/console.ja.json";
+import koGenerated from "./locales/console.ko.json";
+import ptGenerated from "./locales/console.pt.json";
+import trGenerated from "./locales/console.tr.json";
 
 type ConsoleDictionary = Record<string, string>;
 
@@ -155,7 +163,15 @@ const fa: ConsoleDictionary = {
 };
 
 const dictionaries: Partial<Record<UiLocale, ConsoleDictionary>> = {
-  "en-US": en, es, tr, ar, ja, ko, pt, fr, fa,
+  "en-US": en,
+  es: { ...esGenerated, ...es },
+  tr: { ...trGenerated, ...tr },
+  ar: { ...arGenerated, ...ar },
+  ja: { ...jaGenerated, ...ja },
+  ko: { ...koGenerated, ...ko },
+  pt: { ...ptGenerated, ...pt },
+  fr: { ...frGenerated, ...fr },
+  fa: { ...faGenerated, ...fa },
 };
 
 export function consoleLocaleMessage(locale: UiLocale, source: string): string | undefined {

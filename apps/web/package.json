@@ -10,6 +10,9 @@
     "test:import": "node scripts/test-import-queue.mjs",
     "test:storefront": "node scripts/test-storefront-language-fallback.mjs",
     "test:support": "node scripts/test-support-ui.mjs",
+    "locales:generate": "node scripts/generate-console-locales.mjs",
+    "locales:check": "node scripts/generate-console-locales.mjs --check",
+    "prebuild": "npm run locales:check",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },

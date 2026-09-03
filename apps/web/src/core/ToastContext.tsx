@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { CheckCircle, Info, WarningCircle, X } from "@phosphor-icons/react";
+import { useLocale } from "./LocaleContext";
 
 export type ToastKind = "success" | "error" | "info";
 
@@ -37,6 +38,7 @@ function iconFor(kind: ToastKind) {
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
+  const { t } = useLocale();
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
   const timers = useRef(new Map<string, number>());
 
@@ -70,7 +72,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div className="core-toast" data-kind={toast.kind} data-state={toast.state} key={toast.id} role={toast.kind === "error" ? "alert" : "status"}>
             <span className="core-toast-icon">{iconFor(toast.kind)}</span>
             <span className="core-toast-message">{toast.message}</span>
-            <button type="button" className="core-toast-close" aria-label="关闭通知" onClick={() => dismiss(toast.id)}><X size={16} /></button>
+            <button type="button" className="core-toast-close" aria-label={t("关闭通知")} onClick={() => dismiss(toast.id)}><X size={16} /></button>
           </div>
         ))}
       </div>

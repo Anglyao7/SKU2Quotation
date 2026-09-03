@@ -439,7 +439,7 @@ export function StorefrontAnalyticsPage() {
         )}
       />
 
-      {loading && !snapshot ? <CoreLoading label="正在汇总前台访问数据" /> : null}
+      {loading && !snapshot ? <CoreLoading label={t("正在汇总前台访问数据")} /> : null}
       {error && !snapshot ? <CoreError message={error} onRetry={() => void load(range)} /> : null}
       {error && snapshot ? (
         <Card className="storefront-analytics-inline-error">
