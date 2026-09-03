@@ -68,6 +68,64 @@ class ProductCategoryRow(AuditTimestampMixin, Base):
     version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
 
 
+class ProductCategoryMembershipRow(Base):
+    """Additional category memberships for one catalog product.
+
+    ``products.category_id`` remains the primary category so imports, sorting,
+    pricing rules, and older clients keep their existing behavior.  Rows in
+    this table are the product's additional storefront/category placements;
+    they never duplicate the product or any of its SKUs.
+    """
+
+    __tablename__ = "product_category_memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "product_id",
+            "category_id",
+            name="uq_product_category_memberships_assignment",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "product_id"],
+            ["products.tenant_id", "products.id"],
+            name="fk_product_category_memberships_product",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "category_id"],
+            ["product_categories.tenant_id", "product_categories.id"],
+            name="fk_product_category_memberships_category",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_product_category_memberships_tenant_category_product",
+            "tenant_id",
+            "category_id",
+            "product_id",
+        ),
+        Index(
+            "ix_product_category_memberships_tenant_product",
+            "tenant_id",
+            "product_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "tenants.id",
+            name="fk_product_category_memberships_tenant",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    product_id: Mapped[UUID] = mapped_column(nullable=False)
+    category_id: Mapped[UUID] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 class ProductRow(AuditTimestampMixin, Base):
     __tablename__ = "products"
     __table_args__ = (

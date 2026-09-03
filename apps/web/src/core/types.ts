@@ -509,6 +509,7 @@ export interface CoreProduct {
   status: string;
   category: string;
   categoryId?: string;
+  categories: Array<{ id: string; code: string; name: string }>;
   supplier: string;
   price?: number;
   priceFrom?: number;

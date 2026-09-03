@@ -35,6 +35,7 @@ class ProductCard(BaseModel):
     name: str
     status: str
     category: ProductCategorySummary | None
+    categories: list[ProductCategorySummary] = Field(default_factory=list)
     material: str | None
     sku_count: int
     supplier_count: int
@@ -106,6 +107,7 @@ class SkuListItem(BaseModel):
     product_code: str | None
     product_name: str
     category: ProductCategorySummary | None
+    categories: list[ProductCategorySummary] = Field(default_factory=list)
     tags: list[str]
     supplier_summary: SkuSupplierSummary
     default_moq: Decimal | None
@@ -388,10 +390,22 @@ class ManualProductCreateRequest(BaseModel):
 
 
 class ProductCategoryUpdateRequest(BaseModel):
-    """Move one product to a category from its detail view."""
+    """Replace one product's category memberships from its detail view."""
 
     expected_version: int = Field(ge=1)
     category_id: UUID | None = None
+    category_ids: list[UUID] | None = Field(default=None, max_length=50)
+
+    @model_validator(mode="after")
+    def normalize_category_ids(self) -> "ProductCategoryUpdateRequest":
+        if self.category_ids is not None:
+            self.category_ids = list(dict.fromkeys(self.category_ids))
+        return self
+
+    def resolved_category_ids(self) -> list[UUID]:
+        if self.category_ids is not None:
+            return self.category_ids
+        return [self.category_id] if self.category_id is not None else []
 
 
 class AttributeDefinitionCreateRequest(BaseModel):
@@ -712,6 +726,19 @@ class SkuBatchUpdateStatusRequest(BaseModel):
 class SkuBatchUpdateCategoryRequest(BaseModel):
     sku_ids: list[UUID] = Field(min_length=1, max_length=500)
     category_id: UUID | None = None
+    category_ids: list[UUID] | None = Field(default=None, max_length=50)
+    mode: Literal["ADD", "REPLACE"] = "REPLACE"
+
+    @model_validator(mode="after")
+    def normalize_category_ids(self) -> "SkuBatchUpdateCategoryRequest":
+        if self.category_ids is not None:
+            self.category_ids = list(dict.fromkeys(self.category_ids))
+        return self
+
+    def resolved_category_ids(self) -> list[UUID]:
+        if self.category_ids is not None:
+            return self.category_ids
+        return [self.category_id] if self.category_id is not None else []
 
 
 class SkuBatchUpdatePinnedRequest(BaseModel):

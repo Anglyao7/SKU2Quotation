@@ -115,6 +115,7 @@ from app.product_intelligence_models import (
 )
 from app.product_supplier_models import (
     ProductAttributeRow,
+    ProductCategoryMembershipRow,
     ProductCategoryRow,
     ProductImageRow,
     ProductRow,
@@ -174,6 +175,7 @@ from app.services.knowledge import (
     SCHEMA_VERSION,
     KnowledgeIndexExcludedError,
     KnowledgeProjectionError,
+    build_product_payload,
     build_product_chunks,
     indexed_product_ids,
     project_product_knowledge,
@@ -7521,6 +7523,90 @@ def test_uncategorized_product_is_removed_from_the_smart_index() -> None:
             session.commit()
 
 
+def test_product_knowledge_uses_all_category_memberships() -> None:
+    uncategorized_id = uuid4()
+    searchable_category_id = uuid4()
+    product_id = uuid4()
+    try:
+        with SessionLocal() as session:
+            session.add_all(
+                [
+                    ProductCategoryRow(
+                        id=uncategorized_id,
+                        tenant_id=DEFAULT_TENANT_ID,
+                        code=f"UNCATEGORIZED-{uncategorized_id.hex[:10]}",
+                        name="未分类",
+                        path="未分类",
+                        status="ACTIVE",
+                    ),
+                    ProductCategoryRow(
+                        id=searchable_category_id,
+                        tenant_id=DEFAULT_TENANT_ID,
+                        code=f"SEARCHABLE-{searchable_category_id.hex[:10]}",
+                        name="旅行用品",
+                        path="户外用品/旅行用品",
+                        status="ACTIVE",
+                    ),
+                ]
+            )
+            session.flush()
+            session.add(
+                ProductRow(
+                    id=product_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_code=f"MULTI-CATEGORY-{product_id.hex[:8]}",
+                    name="多分类索引测试商品",
+                    category_id=uncategorized_id,
+                    status="ACTIVE",
+                )
+            )
+            session.flush()
+            session.add(
+                ProductCategoryMembershipRow(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    product_id=product_id,
+                    category_id=searchable_category_id,
+                )
+            )
+            session.commit()
+
+            _product, payload = build_product_payload(
+                session,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+            )
+            assert {item["name"] for item in payload["categories"]} == {
+                "未分类",
+                "旅行用品",
+            }
+            overview = next(
+                chunk
+                for chunk in build_product_chunks(payload)
+                if chunk["chunk_type"] == "OVERVIEW"
+            )
+            assert "户外用品/旅行用品" in overview["content"]
+            assert set(overview["metadata"]["category_ids"]) == {
+                str(uncategorized_id),
+                str(searchable_category_id),
+            }
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ProductCategoryMembershipRow).where(
+                    ProductCategoryMembershipRow.product_id == product_id
+                )
+            )
+            session.execute(delete(ProductRow).where(ProductRow.id == product_id))
+            session.execute(
+                delete(ProductCategoryRow).where(
+                    ProductCategoryRow.id.in_(
+                        [uncategorized_id, searchable_category_id]
+                    )
+                )
+            )
+            session.commit()
+
+
 def test_support_product_retrieval_reuses_hybrid_index_and_public_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -11660,6 +11746,74 @@ def test_batch_merchandising_updates_category_pin_status_and_storefront_order() 
         assert alpha is not None
         assert alpha.category_id == target_category_id
         assert alpha.search_document_version == 0
+
+    add_second_category = client.post(
+        "/api/v1/skus/batch-update-category",
+        json={
+            "sku_ids": [str(alpha_product_id)],
+            "category_ids": [str(source_category_id)],
+            "mode": "ADD",
+        },
+    )
+    assert add_second_category.status_code == 200, add_second_category.text
+    assert add_second_category.json()["affected_product_count"] == 1
+    with SessionLocal() as session:
+        alpha = session.get(ProductRow, alpha_product_id)
+        assert alpha is not None
+        assert alpha.category_id == target_category_id
+        assert session.scalar(
+            select(ProductCategoryMembershipRow).where(
+                ProductCategoryMembershipRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductCategoryMembershipRow.product_id == alpha_product_id,
+                ProductCategoryMembershipRow.category_id == source_category_id,
+            )
+        ) is not None
+    source_listing = client.get(
+        "/api/v1/product-center/products",
+        params={"q": suffix, "category_id": str(source_category_id)},
+    )
+    assert source_listing.status_code == 200, source_listing.text
+    assert {item["id"] for item in source_listing.json()["items"]} == {
+        str(alpha_product_id),
+        str(zulu_product_id),
+    }
+    target_listing = client.get(
+        "/api/v1/product-center/products",
+        params={"q": suffix, "category_id": str(target_category_id)},
+    )
+    assert target_listing.status_code == 200, target_listing.text
+    alpha_payload = next(
+        item
+        for item in target_listing.json()["items"]
+        if item["id"] == str(alpha_product_id)
+    )
+    assert {item["id"] for item in alpha_payload["categories"]} == {
+        str(source_category_id),
+        str(target_category_id),
+    }
+    public_source_listing = client.get(
+        "/api/store/demo/products",
+        params={
+            "category": f"Bulk Source {suffix}",
+            "include_facets": "false",
+        },
+    )
+    assert public_source_listing.status_code == 200, public_source_listing.text
+    assert {item["id"] for item in public_source_listing.json()["items"]} == {
+        str(alpha_product_id),
+        str(zulu_product_id),
+    }
+    public_target_listing = client.get(
+        "/api/store/demo/products",
+        params={
+            "category": f"Bulk Target {suffix}",
+            "include_facets": "false",
+        },
+    )
+    assert public_target_listing.status_code == 200, public_target_listing.text
+    assert {item["id"] for item in public_target_listing.json()["items"]} == {
+        str(alpha_product_id),
+    }
 
     pin_later_category = client.post(
         "/api/v1/skus/batch-update-pinned",
@@ -22650,7 +22804,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
             connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
             ).scalar()
-            == "20260831_0129"
+            == "20260903_0130"
         )
     upgraded_engine.dispose()
     command.check(config)

@@ -217,6 +217,7 @@ class ReviewItemRow(AuditTimestampMixin, Base):
 
 from .product_supplier_models import (  # noqa: E402,F401
     ProductAttributeRow,
+    ProductCategoryMembershipRow,
     ProductCategoryRow,
     ProductImageRow,
     ProductRow,

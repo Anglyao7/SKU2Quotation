@@ -66,6 +66,7 @@ from ..product_center_schemas import (
 )
 from ..product_supplier_models import (
     ProductAttributeRow,
+    ProductCategoryMembershipRow,
     ProductCategoryRow,
     ProductImageRow,
     ProductRow,
@@ -551,10 +552,26 @@ def _card(
     account_scope: str = "STAFF",
     membership_id: UUID | None = None,
     pricing_context: tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID]] | None = None,
+    category_rows: list[ProductCategoryRow] | None = None,
 ) -> ProductCard:
-    category = repository.get_category(
-        session, tenant_id=tenant_id, category_id=product.category_id
+    if category_rows is None:
+        category_rows = repository.product_categories_by_product(
+            session,
+            tenant_id=tenant_id,
+            products=[product],
+        ).get(product.id, [])
+    category = next(
+        (row for row in category_rows if row.id == product.category_id),
+        category_rows[0] if category_rows else None,
     )
+    category_summaries = [
+        ProductCategorySummary(
+            id=row.id,
+            code=row.code,
+            name=_category_display_name(row),
+        )
+        for row in category_rows
+    ]
     attributes = repository.list_attributes(
         session, tenant_id=tenant_id, product_id=product.id
     )
@@ -615,6 +632,7 @@ def _card(
             if category
             else None
         ),
+        categories=category_summaries,
         material=material,
         sku_count=len(skus),
         supplier_count=len(offers) if can_read_owner_data else 0,
@@ -644,7 +662,11 @@ def _card(
             else child_currency
         ),
         moq=current_offer.moq if can_read_owner_data and current_offer else None,
-        tags=[value for value in [category.name if category else None, material] if value],
+        tags=[
+            value
+            for value in [*(row.name for row in category_rows), material]
+            if value
+        ],
         price_from=(
             min(child_price_values) if child_price_values else None
         ) if not can_read_owner_data else (
@@ -707,6 +729,11 @@ def list_products(
         category_ids={row.category_id for row in rows if row.category_id is not None},
     )
     storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
+    categories_by_product = repository.product_categories_by_product(
+        session,
+        tenant_id=tenant_id,
+        products=rows,
+    )
     return [
         _card(
             session,
@@ -717,6 +744,7 @@ def list_products(
             account_scope=account_scope,
             membership_id=membership_id,
             pricing_context=pricing_context,
+            category_rows=categories_by_product.get(row.id, []),
         )
         for row in rows
     ]
@@ -778,6 +806,11 @@ def list_product_page(
         category_ids={row.category_id for row in rows if row.category_id is not None},
     )
     storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
+    categories_by_product = repository.product_categories_by_product(
+        session,
+        tenant_id=tenant_id,
+        products=rows,
+    )
     items = [
         _card(
             session,
@@ -788,6 +821,7 @@ def list_product_page(
             account_scope=account_scope,
             membership_id=membership_id,
             pricing_context=pricing_context,
+            category_rows=categories_by_product.get(row.id, []),
         )
         for row in rows
     ]
@@ -965,6 +999,11 @@ def list_skus(
             target.append((source, supplier))
 
     storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
+    categories_by_product = repository.product_categories_by_product(
+        session,
+        tenant_id=tenant_id,
+        products=list({row.product.id: row.product for row in rows}.values()),
+    )
 
     image_statuses_by_product: dict[UUID, set[str]] = {}
     thumbnail_urls_by_product: dict[UUID, str] = {}
@@ -1038,6 +1077,14 @@ def list_skus(
                     if row.category
                     else None
                 ),
+                categories=[
+                    ProductCategorySummary(
+                        id=category.id,
+                        code=category.code,
+                        name=_category_display_name(category),
+                    )
+                    for category in categories_by_product.get(row.product.id, [])
+                ],
                 tags=list(offer.tags) if offer else [],
                 supplier_summary=SkuSupplierSummary(
                     count=len(unique_suppliers),
@@ -1305,6 +1352,144 @@ def get_product(
     )
 
 
+def _active_category_rows(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    category_ids: list[UUID],
+) -> list[ProductCategoryRow]:
+    """Validate and retain the category order chosen by the merchant."""
+
+    normalized_ids = list(dict.fromkeys(category_ids))
+    if not normalized_ids:
+        return []
+    rows = repository.list_categories_by_ids(
+        session,
+        tenant_id=tenant_id,
+        category_ids=normalized_ids,
+    )
+    rows_by_id = {
+        row.id: row
+        for row in rows
+        if row.deleted_at is None and row.status != "ARCHIVED"
+    }
+    if len(rows_by_id) != len(normalized_ids):
+        raise ApplicationError(
+            "CATEGORY_NOT_FOUND",
+            "分类不存在或已经归档。",
+            kind="not_found",
+        )
+    inactive = next(
+        (
+            rows_by_id[category_id]
+            for category_id in normalized_ids
+            if rows_by_id[category_id].status != "ACTIVE"
+        ),
+        None,
+    )
+    if inactive is not None:
+        raise ApplicationError(
+            "CATEGORY_NOT_ACTIVE",
+            "归档或停用的分类不能接收商品。",
+            kind="conflict",
+        )
+    return [rows_by_id[category_id] for category_id in normalized_ids]
+
+
+def _replace_product_categories(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    product: ProductRow,
+    category_ids: list[UUID],
+    action: str,
+    existing_category_ids: list[UUID] | None = None,
+) -> bool:
+    """Replace memberships while preserving the current primary when possible."""
+
+    requested_ids = list(dict.fromkeys(category_ids))
+    if existing_category_ids is None:
+        existing_memberships = list(
+            session.scalars(
+                select(ProductCategoryMembershipRow).where(
+                    ProductCategoryMembershipRow.tenant_id == tenant_id,
+                    ProductCategoryMembershipRow.product_id == product.id,
+                )
+            ).all()
+        )
+        existing_category_ids = [
+            *([product.category_id] if product.category_id is not None else []),
+            *(row.category_id for row in existing_memberships),
+        ]
+    previous_ids = list(dict.fromkeys(existing_category_ids))
+    if set(previous_ids) == set(requested_ids):
+        return False
+
+    primary_category_id = (
+        product.category_id
+        if product.category_id in requested_ids
+        else requested_ids[0]
+        if requested_ids
+        else None
+    )
+    additional_category_ids = [
+        category_id
+        for category_id in requested_ids
+        if category_id != primary_category_id
+    ]
+    session.execute(
+        delete(ProductCategoryMembershipRow).where(
+            ProductCategoryMembershipRow.tenant_id == tenant_id,
+            ProductCategoryMembershipRow.product_id == product.id,
+        )
+    )
+    session.add_all(
+        [
+            ProductCategoryMembershipRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                category_id=category_id,
+            )
+            for category_id in additional_category_ids
+        ]
+    )
+    now = utcnow()
+    previous_primary_category_id = product.category_id
+    product.category_id = primary_category_id
+    product.current_version += 1
+    product.search_document_version = 0
+    product.updated_by = user_id
+    product.updated_at = now
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=product.id,
+            entity_type="PRODUCT",
+            entity_id=str(product.id),
+            action=action,
+            before={
+                "category_id": (
+                    str(previous_primary_category_id)
+                    if previous_primary_category_id
+                    else None
+                ),
+                "category_ids": [str(category_id) for category_id in previous_ids],
+            },
+            after={
+                "category_id": (
+                    str(primary_category_id) if primary_category_id else None
+                ),
+                "category_ids": [str(category_id) for category_id in requested_ids],
+            },
+            actor_membership_id=membership_id,
+            occurred_at=now,
+        )
+    )
+    return True
+
+
 def update_product_category(
     session: Session,
     *,
@@ -1338,59 +1523,34 @@ def update_product_category(
             kind="conflict",
         )
 
-    category = repository.get_category(
+    category_ids = request.resolved_category_ids()
+    _active_category_rows(
         session,
         tenant_id=tenant_id,
-        category_id=request.category_id,
+        category_ids=category_ids,
     )
-    if request.category_id is not None and category is None:
-        raise ApplicationError(
-            "CATEGORY_NOT_FOUND",
-            "分类不存在或已经归档。",
-            kind="not_found",
-        )
-    if category is not None and category.status != "ACTIVE":
-        raise ApplicationError(
-            "CATEGORY_NOT_ACTIVE",
-            "归档或停用的分类不能接收商品。",
-            kind="conflict",
-        )
-
-    previous_category_id = product.category_id
-    if previous_category_id != request.category_id:
+    current_ids = {
+        row.id
+        for row in repository.product_categories_by_product(
+            session,
+            tenant_id=tenant_id,
+            products=[product],
+        ).get(product.id, [])
+    }
+    if current_ids != set(category_ids):
         _release_rollback_ownership(
             session,
             tenant_id=tenant_id,
             product_ids=[product.id],
         )
-        now = utcnow()
-        product.category_id = request.category_id
-        product.current_version += 1
-        # Category names are part of the searchable document. Force the next
-        # incremental index run to rebuild this product.
-        product.search_document_version = 0
-        product.updated_by = user_id
-        product.updated_at = now
-        session.add(
-            ProductAuditEventRow(
-                tenant_id=tenant_id,
-                product_id=product.id,
-                entity_type="PRODUCT",
-                entity_id=str(product.id),
-                action="product.category_updated",
-                before={
-                    "category_id": str(previous_category_id)
-                    if previous_category_id
-                    else None,
-                },
-                after={
-                    "category_id": str(request.category_id)
-                    if request.category_id
-                    else None,
-                },
-                actor_membership_id=membership_id,
-                occurred_at=now,
-            )
+        _replace_product_categories(
+            session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            membership_id=membership_id,
+            product=product,
+            category_ids=category_ids,
+            action="product.categories_updated",
         )
         _commit(
             session,
@@ -2654,8 +2814,10 @@ def _category_responses(
     # A product assigned to a second-level category is also associated with
     # its first-level category in the managed hierarchy.
     for parent_id, child_ids in children_by_parent.items():
-        product_counts[parent_id] = product_counts.get(parent_id, 0) + sum(
-            product_counts.get(child_id, 0) for child_id in child_ids
+        product_counts[parent_id] = repository.product_count_for_categories(
+            session,
+            tenant_id=tenant_id,
+            category_ids=[parent_id, *child_ids],
         )
     storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
     product_ids = {
@@ -3130,9 +3292,21 @@ def update_category(
             tenant_id=tenant_id,
             product_id=request.cover_product_id,
         )
+        cover_product_category_ids = (
+            {
+                category.id
+                for category in repository.product_categories_by_product(
+                    session,
+                    tenant_id=tenant_id,
+                    products=[cover_product],
+                ).get(cover_product.id, [])
+            }
+            if cover_product is not None
+            else set()
+        )
         if (
             cover_product is None
-            or cover_product.category_id != row.id
+            or row.id not in cover_product_category_ids
             or cover_product.status == "ARCHIVED"
         ):
             raise ApplicationError(
@@ -3176,15 +3350,21 @@ def update_category(
             child.path = f"{request.name}/{child.name}"
             child.version += 1
     affected_category_ids = [row.id, *(child.id for child in children)]
-    session.execute(
-        update(ProductRow)
-        .where(
-            ProductRow.tenant_id == tenant_id,
-            ProductRow.category_id.in_(affected_category_ids),
-            ProductRow.status == "ACTIVE",
-        )
-        .values(search_document_version=0)
+    affected_product_ids = _category_affected_product_ids(
+        session,
+        tenant_id=tenant_id,
+        category_ids=affected_category_ids,
     )
+    if affected_product_ids:
+        session.execute(
+            update(ProductRow)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.id.in_(affected_product_ids),
+                ProductRow.status == "ACTIVE",
+            )
+            .values(search_document_version=0)
+        )
     session.flush()
     after = _category_response(row).model_dump(mode="json")
     session.add(
@@ -3327,16 +3507,12 @@ def _category_delete_counts(
     categories: list[ProductCategoryRow],
 ) -> tuple[int, list[UUID], int]:
     category_ids = [row.id for row in categories]
-    affected_product_count = int(
-        session.scalar(
-            select(func.count(ProductRow.id)).where(
-                ProductRow.tenant_id == tenant_id,
-                ProductRow.category_id.in_(category_ids),
-                ProductRow.deleted_at.is_(None),
-                ProductRow.status != "ARCHIVED",
-            )
+    affected_product_count = len(
+        _category_affected_product_ids(
+            session,
+            tenant_id=tenant_id,
+            category_ids=category_ids,
         )
-        or 0
     )
     attribute_definition_ids = list(
         session.scalars(
@@ -3362,6 +3538,50 @@ def _category_delete_counts(
         else 0
     )
     return affected_product_count, attribute_definition_ids, attribute_value_count
+
+
+def _category_affected_product_ids(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    category_ids: list[UUID],
+    active_only: bool = True,
+) -> set[UUID]:
+    if not category_ids:
+        return set()
+    product_conditions = [ProductRow.tenant_id == tenant_id]
+    if active_only:
+        product_conditions.extend(
+            [
+                ProductRow.deleted_at.is_(None),
+                ProductRow.status != "ARCHIVED",
+            ]
+        )
+    primary_statement = select(ProductRow.id).where(
+        *product_conditions,
+        ProductRow.category_id.in_(category_ids),
+    )
+    additional_statement = (
+        select(ProductCategoryMembershipRow.product_id)
+        .join(
+            ProductRow,
+            (ProductRow.tenant_id == ProductCategoryMembershipRow.tenant_id)
+            & (ProductRow.id == ProductCategoryMembershipRow.product_id),
+        )
+        .where(
+            *product_conditions,
+            ProductCategoryMembershipRow.tenant_id == tenant_id,
+            ProductCategoryMembershipRow.category_id.in_(category_ids),
+        )
+    )
+    if not active_only:
+        primary_statement = primary_statement.execution_options(include_deleted=True)
+        additional_statement = additional_statement.execution_options(
+            include_deleted=True
+        )
+    primary_ids = set(session.scalars(primary_statement).all())
+    additional_ids = set(session.scalars(additional_statement).all())
+    return primary_ids | additional_ids
 
 
 def get_category_delete_impact(
@@ -3442,12 +3662,12 @@ def delete_category(
     category_ids = [row.id for row in categories]
     child_ids = [row.id for row in categories[1:]]
     affected_product_ids = list(
-        session.scalars(
-            select(ProductRow.id).where(
-                ProductRow.tenant_id == tenant_id,
-                ProductRow.category_id.in_(category_ids),
-            )
-        ).all()
+        _category_affected_product_ids(
+            session,
+            tenant_id=tenant_id,
+            category_ids=category_ids,
+            active_only=False,
+        )
     )
     _release_rollback_ownership(
         session,
@@ -3492,6 +3712,33 @@ def delete_category(
         all_products_position = min(all_products_position, len(roots))
 
     now = utcnow()
+    affected_products = list(
+        session.scalars(
+            select(ProductRow)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.id.in_(affected_product_ids),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+    )
+    remaining_memberships = list(
+        session.scalars(
+            select(ProductCategoryMembershipRow).where(
+                ProductCategoryMembershipRow.tenant_id == tenant_id,
+                ProductCategoryMembershipRow.product_id.in_(affected_product_ids),
+                ~ProductCategoryMembershipRow.category_id.in_(category_ids),
+            )
+        ).all()
+    ) if affected_product_ids else []
+    remaining_by_product: dict[UUID, list[ProductCategoryMembershipRow]] = {}
+    for membership in remaining_memberships:
+        remaining_by_product.setdefault(membership.product_id, []).append(membership)
+    category_order = {
+        row.id: index
+        for index, row in enumerate(repository.list_categories(session, tenant_id=tenant_id))
+    }
+    unclassified_product_count = 0
     before = {
         "category": _category_response(category).model_dump(mode="json"),
         "children": [
@@ -3500,16 +3747,28 @@ def delete_category(
         ],
     }
     try:
+        for product in affected_products:
+            if product.category_id in category_ids:
+                candidates = sorted(
+                    remaining_by_product.get(product.id, []),
+                    key=lambda row: category_order.get(row.category_id, 10**9),
+                )
+                promoted = candidates[0] if candidates else None
+                product.category_id = promoted.category_id if promoted else None
+                if promoted is not None:
+                    session.delete(promoted)
+                elif product.deleted_at is None and product.status != "ARCHIVED":
+                    unclassified_product_count += 1
+            product.search_document_version = 0
+            product.updated_at = now
+        # Persist primary-category promotion/detachment before deleting the
+        # category rows so restrictive product foreign keys cannot race the
+        # bulk DELETE statement.
+        session.flush()
         session.execute(
-            update(ProductRow)
-            .where(
-                ProductRow.tenant_id == tenant_id,
-                ProductRow.category_id.in_(category_ids),
-            )
-            .values(
-                category_id=None,
-                search_document_version=0,
-                updated_at=now,
+            delete(ProductCategoryMembershipRow).where(
+                ProductCategoryMembershipRow.tenant_id == tenant_id,
+                ProductCategoryMembershipRow.category_id.in_(category_ids),
             )
         )
         if attribute_definition_ids:
@@ -3552,7 +3811,7 @@ def delete_category(
                 before=before,
                 after={
                     "deleted_category_count": len(categories),
-                    "unclassified_product_count": affected_product_count,
+                    "unclassified_product_count": unclassified_product_count,
                     "deleted_attribute_definition_count": len(
                         attribute_definition_ids
                     ),
@@ -3576,7 +3835,7 @@ def delete_category(
     )
     return CategoryDeleteResponse(
         deleted_category_count=len(categories),
-        unclassified_product_count=affected_product_count,
+        unclassified_product_count=unclassified_product_count,
         deleted_attribute_definition_count=len(attribute_definition_ids),
         detached_attribute_value_count=attribute_value_count,
         all_products_position=all_products_position,
@@ -4626,92 +4885,143 @@ def batch_update_sku_category(
     membership_id: UUID,
     permissions: frozenset[str],
     sku_ids: list[UUID],
-    category_id: UUID | None,
+    category_ids: list[UUID],
+    mode: str = "REPLACE",
 ) -> dict[str, Any]:
-    """Move the products represented by selected SKUs into one category."""
+    """Place selected products in every requested category without copying them.
+
+    The historical endpoint accepted SKU ids, while the current product-first
+    table submits product ids.  Supporting both keeps older clients working and
+    makes the batch action behave correctly for products with no SKU rows.
+    """
 
     _require(permissions, "product.edit")
     _lock_catalog_write(session, tenant_id=tenant_id)
-    category = None
-    if category_id is not None:
-        category = session.scalar(
-            select(ProductCategoryRow).where(
-                ProductCategoryRow.tenant_id == tenant_id,
-                ProductCategoryRow.id == category_id,
-                ProductCategoryRow.deleted_at.is_(None),
-                ProductCategoryRow.status != "ARCHIVED",
-            )
-        )
-        if category is None:
-            raise ApplicationError(
-                "CATEGORY_NOT_FOUND",
-                "分类不存在或已经归档。",
-                kind="not_found",
-            )
-
-    requested_ids, selected_rows, failed_items = _load_batch_sku_selection(
+    normalized_category_ids = list(dict.fromkeys(category_ids))
+    _active_category_rows(
         session,
         tenant_id=tenant_id,
-        sku_ids=sku_ids,
+        category_ids=normalized_category_ids,
     )
-    product_ids = list(dict.fromkeys(row.product_id for row in selected_rows))
-    products = session.scalars(
-        select(ProductRow).where(
-            ProductRow.tenant_id == tenant_id,
-            ProductRow.id.in_(product_ids),
-            ProductRow.deleted_at.is_(None),
-            ProductRow.status != "ARCHIVED",
+
+    requested_ids = list(dict.fromkeys(sku_ids))
+    direct_products = list(
+        session.scalars(
+            select(ProductRow)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.id.in_(requested_ids),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+    )
+    direct_products_by_id = {row.id: row for row in direct_products}
+    remaining_ids = [
+        selected_id
+        for selected_id in requested_ids
+        if selected_id not in direct_products_by_id
+    ]
+    selected_skus = list(
+        session.scalars(
+            select(SkuRow)
+            .where(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.id.in_(remaining_ids),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+    )
+    selected_skus_by_id = {row.id: row for row in selected_skus}
+    sku_product_ids = {row.product_id for row in selected_skus}
+    sku_products = list(
+        session.scalars(
+            select(ProductRow)
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.id.in_(sku_product_ids),
+            )
+            .execution_options(include_deleted=True)
+        ).all()
+    )
+    products_by_id = {
+        row.id: row for row in [*direct_products, *sku_products]
+    }
+    selected_identifier_product_ids: dict[UUID, UUID] = {}
+    failed_items: list[dict[str, Any]] = []
+    for selected_id in requested_ids:
+        direct_product = direct_products_by_id.get(selected_id)
+        sku = selected_skus_by_id.get(selected_id)
+        product = direct_product or (products_by_id.get(sku.product_id) if sku else None)
+        invalid_sku = sku is not None and (
+            sku.deleted_at is not None or sku.status == "ARCHIVED"
         )
-    ).all()
-    products_by_id = {row.id: row for row in products}
+        if (
+            product is None
+            or product.deleted_at is not None
+            or product.status == "ARCHIVED"
+            or invalid_sku
+        ):
+            failed_items.append(
+                {
+                    "sku_id": str(selected_id),
+                    "reason": "商品或 SKU 不存在、已删除或已经归档",
+                }
+            )
+            continue
+        selected_identifier_product_ids[selected_id] = product.id
+
+    product_ids = list(dict.fromkeys(selected_identifier_product_ids.values()))
+    products = list(
+        session.scalars(
+            select(ProductRow).where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.id.in_(product_ids),
+                ProductRow.deleted_at.is_(None),
+                ProductRow.status != "ARCHIVED",
+            )
+        ).all()
+    )
     _release_rollback_ownership(
         session,
         tenant_id=tenant_id,
-        product_ids=list(products_by_id),
+        product_ids=[row.id for row in products],
     )
-    valid_rows: list[SkuRow] = []
-    for sku in selected_rows:
-        if sku.product_id not in products_by_id:
-            failed_items.append(
-                {"sku_id": str(sku.id), "reason": "所属商品不存在或已经归档"}
-            )
-        else:
-            valid_rows.append(sku)
-
-    now = utcnow()
+    changed_count = 0
+    categories_by_product = repository.product_categories_by_product(
+        session,
+        tenant_id=tenant_id,
+        products=products,
+    )
     for product in products:
-        previous_category_id = product.category_id
-        product.category_id = category_id
-        product.current_version += 1
-        product.search_document_version = 0
-        product.updated_by = user_id
-        product.updated_at = now
-        session.add(
-            ProductAuditEventRow(
+        existing_category_ids = [
+            row.id for row in categories_by_product.get(product.id, [])
+        ]
+        target_category_ids = (
+            list(dict.fromkeys([*existing_category_ids, *normalized_category_ids]))
+            if mode == "ADD"
+            else normalized_category_ids
+        )
+        changed_count += int(
+            _replace_product_categories(
+                session,
                 tenant_id=tenant_id,
-                product_id=product.id,
-                entity_type="PRODUCT",
-                entity_id=str(product.id),
-                action="product.category_batch_updated",
-                before={
-                    "category_id": str(previous_category_id)
-                    if previous_category_id
-                    else None
-                },
-                after={"category_id": str(category_id) if category_id else None},
-                actor_membership_id=membership_id,
-                occurred_at=now,
+                user_id=user_id,
+                membership_id=membership_id,
+                product=product,
+                category_ids=target_category_ids,
+                action="product.categories_batch_updated",
+                existing_category_ids=existing_category_ids,
             )
         )
 
-    if products:
+    if changed_count:
         _commit(
             session,
             conflict_code="BATCH_CATEGORY_UPDATE_FAILED",
             conflict_message="批量修改分类失败，请刷新商品库后重试。",
         )
     return {
-        "success_count": len(valid_rows),
+        "success_count": len(selected_identifier_product_ids),
         "failed_count": len(failed_items),
         "total_count": len(requested_ids),
         "failed_items": failed_items,

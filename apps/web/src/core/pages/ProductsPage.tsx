@@ -56,7 +56,6 @@ import { useToast } from "../ToastContext";
 const emptyProductPage: ProductListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
 const SKU_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 const SKU_PAGE_SIZE_STORAGE_KEY = "ai-trade-cloud:sku-page-size";
-const UNCLASSIFIED_CATEGORY_VALUE = "__unclassified__";
 const SKU_TEMPLATE_MARKER_KEY = "_sku2quotation";
 const SKU_PACKING_QUANTITY_KEY = "装箱数";
 const SKU_PACKING_QUANTITY_KEYS = new Set([
@@ -389,7 +388,9 @@ export function ProductsPage() {
   const [singleDeleteBusy, setSingleDeleteBusy] = useState(false);
   const [singleDeleteError, setSingleDeleteError] = useState("");
   const [bulkAction, setBulkAction] = useState<BulkSkuAction>();
-  const [bulkCategoryId, setBulkCategoryId] = useState("");
+  const [bulkCategoryIds, setBulkCategoryIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [bulkBusy, setBulkBusy] = useState(false);
   const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);
   const [deleteAllPassword, setDeleteAllPassword] = useState("");
@@ -978,13 +979,13 @@ export function ProductsPage() {
   const openBulkAction = (action: BulkSkuAction) => {
     if (!canEdit || !selectedProductIds.size) return;
     setBulkError("");
-    if (action === "category") setBulkCategoryId("");
+    if (action === "category") setBulkCategoryIds(new Set());
     setBulkAction(action);
   };
   const applyBulkAction = async () => {
     if (!canEdit || !selectedProductIds.size || !bulkAction) return;
-    if (bulkAction === "category" && !bulkCategoryId) {
-      setBulkError(t("请选择要移动到的分类。"));
+    if (bulkAction === "category" && !bulkCategoryIds.size) {
+      setBulkError(t("请至少选择一个分类。"));
       return;
     }
     setBulkBusy(true);
@@ -994,7 +995,7 @@ export function ProductsPage() {
       const response = bulkAction === "category"
         ? await batchUpdateSkuCategory(
             selectedIds,
-            bulkCategoryId === UNCLASSIFIED_CATEGORY_VALUE ? null : bulkCategoryId,
+            [...bulkCategoryIds],
           )
         : bulkAction === "pin" || bulkAction === "unpin"
         ? await batchUpdateSkuPinned(selectedIds, bulkAction === "pin")
@@ -1004,14 +1005,10 @@ export function ProductsPage() {
           );
       const failedIds = new Set(response.failedItems.map((item) => item.skuId));
       const affectedProducts = response.affectedProductCount ?? response.successCount;
-      const categoryName = bulkCategoryId === UNCLASSIFIED_CATEGORY_VALUE
-        ? t("未分类")
-        : categories.find((item) => item.id === bulkCategoryId)?.name ?? t("所选分类");
       const successMessage = bulkAction === "category"
-        ? t("已将 {skus} 个 SKU 对应的 {products} 个商品移动到“{category}”。", {
-            skus: response.successCount,
+        ? t("已将 {products} 个商品加入 {categories} 个分类，原分类已保留。", {
             products: affectedProducts,
-            category: categoryName,
+            categories: bulkCategoryIds.size,
           })
         : bulkAction === "pin"
         ? t("已置顶 {products} 个商品。", { products: affectedProducts })
@@ -1234,6 +1231,17 @@ export function ProductsPage() {
     ]),
     [displayCategories, locale, rootCategories],
   );
+  const bulkCategoryGroups = useMemo(
+    () => rootCategories
+      .filter((root) => root.status === "ACTIVE")
+      .map((root) => ({
+        root,
+        children: displayCategories
+          .filter((item) => item.parentId === root.id && item.status === "ACTIVE")
+          .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, locale)),
+      })),
+    [displayCategories, locale, rootCategories],
+  );
   const createCategoryOptions = useMemo(
     () => rootCategories
       .filter((root) => root.status === "ACTIVE")
@@ -1257,7 +1265,7 @@ export function ProductsPage() {
     ? t("上架所选 SKU？")
     : t("下架所选 SKU？");
   const bulkActionDescription = bulkAction === "category"
-    ? t("将所选商品移到目标分类。")
+    ? t("勾选一个或多个分类。商品会同时出现在这些分类中，现有分类不会被删除。")
     : bulkAction === "pin" || bulkAction === "unpin"
     ? t("置顶状态会应用到商品。")
     : t("将更新 {count} 个商品。", { count: selectedProductIds.size });
@@ -1333,6 +1341,7 @@ export function ProductsPage() {
             <Text size="2" weight="bold">{t("已选 {count} 个商品", { count: selectedProductIds.size })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
+            {canEdit ? <Button size="2" variant="soft" color="blue" onClick={() => openBulkAction("category")}><Folders />{t("修改分类")}</Button> : null}
             {canEdit ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
             <Button size="2" color="red" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(true)}><Trash />{t("删除已选商品")}</Button>
             <Button size="2" variant="ghost" color="gray" onClick={clearProductSelection}><X />{t("取消选择")}</Button>
@@ -1425,8 +1434,15 @@ export function ProductsPage() {
                         {product.capabilities.includes("edit") && product.status === "ACTIVE" ? <span className="core-sku-pinned"><PushPin weight="fill" />{t("可发布")}</span> : null}
                       </small>
                     </td>
-                    <td className="core-sku-category-column" title={product.category}>
-                      {product.category || t("未分类")}
+                    <td
+                      className="core-sku-category-column"
+                      title={product.categories.map((item) => item.name).join("、") || product.category}
+                    >
+                      <span className="core-sku-category-list">
+                        {product.categories.length
+                          ? product.categories.map((item) => item.name).join("、")
+                          : product.category || t("未分类")}
+                      </span>
                     </td>
                     <td className="core-sku-tags-column">
                       {product.tags.length ? (
@@ -1560,21 +1576,63 @@ export function ProductsPage() {
             <Button variant="ghost" color="gray" disabled={bulkBusy} onClick={() => { setBulkAction(undefined); setBulkError(""); }} aria-label={t("关闭")}><X /></Button>
           </div>
           {bulkAction === "category" ? (
-            <label className="core-bulk-category-field">
-              <Text size="2" weight="medium">{t("目标分类")}</Text>
-              <select value={bulkCategoryId} onChange={(event) => { setBulkCategoryId(event.target.value); setBulkError(""); }} disabled={bulkBusy} autoFocus>
-                <option value="" disabled>{t("请选择分类")}</option>
-                <option value={UNCLASSIFIED_CATEGORY_VALUE}>{t("未分类")}</option>
-                {bulkCategoryOptions.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
-              </select>
-            </label>
+            <section className="core-bulk-category-field" aria-labelledby="bulk-category-picker-title">
+              <div className="core-bulk-category-picker-heading">
+                <Text id="bulk-category-picker-title" size="2" weight="medium">{t("选择分类（可多选）")}</Text>
+                <Badge color="blue" variant="soft">{t("已选 {count} 个", { count: bulkCategoryIds.size })}</Badge>
+              </div>
+              <div className="core-bulk-category-picker">
+                {bulkCategoryGroups.map(({ root, children }) => (
+                  <div className="core-bulk-category-group" key={root.id}>
+                    <label className="core-bulk-category-option core-bulk-category-option-root">
+                      <Checkbox
+                        checked={bulkCategoryIds.has(root.id)}
+                        disabled={bulkBusy}
+                        onCheckedChange={(checked) => {
+                          setBulkCategoryIds((current) => {
+                            const next = new Set(current);
+                            if (checked) next.add(root.id);
+                            else next.delete(root.id);
+                            return next;
+                          });
+                          setBulkError("");
+                        }}
+                      />
+                      <span>{root.name}</span>
+                    </label>
+                    {children.length ? (
+                      <div className="core-bulk-category-children">
+                        {children.map((child) => (
+                          <label className="core-bulk-category-option" key={child.id}>
+                            <Checkbox
+                              checked={bulkCategoryIds.has(child.id)}
+                              disabled={bulkBusy}
+                              onCheckedChange={(checked) => {
+                                setBulkCategoryIds((current) => {
+                                  const next = new Set(current);
+                                  if (checked) next.add(child.id);
+                                  else next.delete(child.id);
+                                  return next;
+                                });
+                                setBulkError("");
+                              }}
+                            />
+                            <span>{child.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </section>
           ) : null}
           {bulkError ? <div className="core-form-error" role="alert">{bulkError}</div> : null}
           <div className="core-dialog-actions">
             <Button variant="soft" color="gray" disabled={bulkBusy} onClick={() => { setBulkAction(undefined); setBulkError(""); }}>{t("取消")}</Button>
             <Button
               color={bulkAction === "deactivate" ? "amber" : bulkAction === "activate" ? "jade" : undefined}
-              disabled={bulkBusy || !selectedProductIds.size || (bulkAction === "category" && !bulkCategoryId)}
+              disabled={bulkBusy || !selectedProductIds.size || (bulkAction === "category" && !bulkCategoryIds.size)}
               onClick={() => void applyBulkAction()}
             >
               {bulkAction === "category" ? <Folders /> : bulkAction === "pin" ? <PushPin /> : bulkAction === "unpin" ? <PushPinSlash /> : bulkAction === "activate" ? <ArrowUp /> : <ArrowDown />}
@@ -2430,7 +2488,9 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   const [imageError, setImageError] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
-  const [selectedCategoryId, setSelectedCategoryId] = useState(product.categoryId ?? "");
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(
+    () => new Set(product.categories.map((category) => category.id)),
+  );
   const [categorySaving, setCategorySaving] = useState(false);
   const [categoryError, setCategoryError] = useState("");
   const canEdit = hasPermission("product.edit");
@@ -2439,10 +2499,16 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
 
   const categoryOptions = useMemo(
     () => categories.filter((category) => (
-      category.status === "ACTIVE" || category.id === product.categoryId
+      category.status === "ACTIVE" || product.categories.some((item) => item.id === category.id)
     )),
-    [categories, product.categoryId],
+    [categories, product.categories],
   );
+  const savedCategoryIds = useMemo(
+    () => new Set(product.categories.map((category) => category.id)),
+    [product.categories],
+  );
+  const categorySelectionChanged = selectedCategoryIds.size !== savedCategoryIds.size
+    || [...selectedCategoryIds].some((categoryId) => !savedCategoryIds.has(categoryId));
 
   useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
   useEffect(() => {
@@ -2450,27 +2516,21 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
     imageDragDepthRef.current = 0;
     setImageDragging(false);
     setImageError("");
-    setSelectedCategoryId(product.categoryId ?? "");
+    setSelectedCategoryIds(new Set(product.categories.map((category) => category.id)));
     setCategoryError("");
-  }, [product.categoryId, product.id, selectedSkuId]);
-
-  useEffect(() => {
-    setSelectedCategoryId(product.categoryId ?? "");
-  }, [product.categoryId]);
+  }, [product.categories, product.id, selectedSkuId]);
 
   const saveCategory = async () => {
     if (!canEdit || categorySaving) return;
-    const nextCategoryId = selectedCategoryId || null;
-    const currentCategoryId = product.categoryId || null;
-    if (nextCategoryId === currentCategoryId) return;
+    if (!categorySelectionChanged) return;
     setCategorySaving(true);
     setCategoryError("");
     try {
-      await updateProductCategory(product.id, product.currentVersion, nextCategoryId);
+      await updateProductCategory(product.id, product.currentVersion, [...selectedCategoryIds]);
       await onChanged();
     } catch (reason) {
       setCategoryError(reason instanceof Error ? reason.message : t("分类保存失败，请稍后重试。"));
-      setSelectedCategoryId(product.categoryId ?? "");
+      setSelectedCategoryIds(new Set(product.categories.map((category) => category.id)));
     } finally {
       setCategorySaving(false);
     }
@@ -2656,23 +2716,37 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
                   <dd>
                     {canEdit ? (
                       <span className="core-product-category-control">
-                        <select
-                          value={selectedCategoryId}
-                          onChange={(event) => {
-                            setSelectedCategoryId(event.target.value);
-                            setCategoryError("");
-                          }}
-                          aria-label={t("选择商品分类")}
-                          disabled={categorySaving}
-                        >
-                          <option value="">{t("未分类")}</option>
-                          {categoryOptions.map((category) => (
-                            <option key={category.id} value={category.id}>
-                              {category.path?.trim() || category.name}
-                            </option>
-                          ))}
-                        </select>
-                        {selectedCategoryId !== (product.categoryId ?? "") ? (
+                        <DropdownMenu.Root>
+                          <DropdownMenu.Trigger>
+                            <Button variant="soft" color="gray" disabled={categorySaving}>
+                              {selectedCategoryIds.size
+                                ? t("已选 {count} 个分类", { count: selectedCategoryIds.size })
+                                : t("未分类")}
+                              <CaretDown />
+                            </Button>
+                          </DropdownMenu.Trigger>
+                          <DropdownMenu.Content className="core-product-category-menu" align="start">
+                            {categoryOptions.map((category) => (
+                              <DropdownMenu.CheckboxItem
+                                key={category.id}
+                                checked={selectedCategoryIds.has(category.id)}
+                                onSelect={(event) => event.preventDefault()}
+                                onCheckedChange={(checked) => {
+                                  setSelectedCategoryIds((current) => {
+                                    const next = new Set(current);
+                                    if (checked) next.add(category.id);
+                                    else next.delete(category.id);
+                                    return next;
+                                  });
+                                  setCategoryError("");
+                                }}
+                              >
+                                {category.path?.trim() || category.name}
+                              </DropdownMenu.CheckboxItem>
+                            ))}
+                          </DropdownMenu.Content>
+                        </DropdownMenu.Root>
+                        {categorySelectionChanged ? (
                           <Button
                             size="1"
                             variant="soft"
@@ -2685,7 +2759,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
                         ) : null}
                       </span>
                     ) : (
-                      <span>{primaryCategoryLabel(product.category) || t("未分类")}</span>
+                      <span>{product.categories.map((category) => category.name).join("、") || primaryCategoryLabel(product.category) || t("未分类")}</span>
                     )}
                   </dd>
                 </div>

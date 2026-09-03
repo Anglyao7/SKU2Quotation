@@ -568,12 +568,24 @@
 .core-sku-delete-dialog { width: min(530px, calc(100vw - 28px)) !important; max-width: 530px !important; }
 .core-sku-delete-dialog .core-notice { margin-block: 4px 18px; }
 .core-sku-single-delete-summary { display: grid; gap: 4px; margin-block: 4px 18px; padding: 13px 14px !important; }
-.core-sku-bulk-dialog { width: min(560px, calc(100vw - 28px)) !important; max-width: 560px !important; }
+.core-sku-bulk-dialog { width: min(680px, calc(100vw - 28px)) !important; max-width: 680px !important; }
 .core-sku-bulk-dialog .core-dialog-heading { margin-bottom: 18px; }
 .core-sku-bulk-dialog .core-notice { margin-block: 16px 18px; }
 .core-sku-bulk-dialog .core-dialog-actions { padding-top: 14px; border-top: 1px solid var(--core-line); }
-.core-bulk-category-field { display: grid; gap: 7px; }
-.core-bulk-category-field select { width: 100%; }
+.core-bulk-category-field { display: grid; gap: 10px; min-width: 0; }
+.core-bulk-category-picker-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.core-bulk-category-picker { max-height: min(52dvh, 440px); overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 8px; padding: 4px 5px 4px 1px; }
+.core-bulk-category-group { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--core-line); border-radius: 12px; background: color-mix(in srgb, var(--core-surface) 92%, var(--accent-soft)); }
+.core-bulk-category-children { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding-left: 28px; }
+.core-bulk-category-option { min-width: 0; min-height: 34px; padding: 7px 9px; display: flex; align-items: center; gap: 9px; border-radius: 9px; color: var(--core-ink); cursor: pointer; transition: background 140ms ease, color 140ms ease; }
+.core-bulk-category-option:hover { background: var(--accent-soft); }
+.core-bulk-category-option > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.core-bulk-category-option-root { font-weight: 650; }
+.core-sku-category-list { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.5; }
+.core-product-category-menu { max-width: min(360px, calc(100vw - 32px)); max-height: min(52dvh, 420px); overflow-y: auto; }
+@media (max-width: 640px) {
+  .core-bulk-category-children { grid-template-columns: 1fr; padding-left: 18px; }
+}
 .core-delete-all-dialog form { display: grid; gap: 16px; }
 .core-delete-all-dialog .core-dialog-heading, .core-delete-all-dialog .core-notice { margin-block: 0; }
 .core-delete-all-password { display: grid; gap: 7px; }

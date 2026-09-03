@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import and_, case, exists, func, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from ..ai_data_models import AISourceEvidenceRow
@@ -19,11 +19,38 @@ from ..public_catalog_models import PublicCatalogOfferRow
 from ..product_intelligence_models import ProductCandidateDecisionRow, ProductFieldCandidateRow
 from ..product_supplier_models import (
     ProductAttributeRow,
+    ProductCategoryMembershipRow,
     ProductCategoryRow,
     ProductImageRow,
     ProductRow,
     SupplierProductRow,
 )
+
+
+def _product_matches_category(*, tenant_id: UUID, category_id: UUID):
+    """Match a primary category or any additional category membership.
+
+    Selecting a first-level category also includes its direct children, which
+    preserves the existing two-level catalog behavior.
+    """
+
+    target_category_ids = select(ProductCategoryRow.id).where(
+        ProductCategoryRow.tenant_id == tenant_id,
+        or_(
+            ProductCategoryRow.id == category_id,
+            ProductCategoryRow.parent_id == category_id,
+        ),
+    )
+    return or_(
+        ProductRow.category_id.in_(target_category_ids),
+        exists(
+            select(ProductCategoryMembershipRow.id).where(
+                ProductCategoryMembershipRow.tenant_id == tenant_id,
+                ProductCategoryMembershipRow.product_id == ProductRow.id,
+                ProductCategoryMembershipRow.category_id.in_(target_category_ids),
+            )
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -122,14 +149,9 @@ def _product_statement(
         statement = statement.where(ProductRow.status != "ARCHIVED")
     if category_id is not None:
         statement = statement.where(
-            or_(
-                ProductRow.category_id == category_id,
-                ProductRow.category_id.in_(
-                    select(ProductCategoryRow.id).where(
-                        ProductCategoryRow.tenant_id == tenant_id,
-                        ProductCategoryRow.parent_id == category_id,
-                    )
-                ),
+            _product_matches_category(
+                tenant_id=tenant_id,
+                category_id=category_id,
             )
         )
     if supplier_id:
@@ -288,21 +310,142 @@ def product_counts_by_category(
     """
     if not category_ids:
         return {}
-    rows = session.execute(
-        select(ProductRow.category_id, func.count(ProductRow.id))
+    primary_assignments = select(
+        ProductRow.category_id.label("category_id"),
+        ProductRow.id.label("product_id"),
+    ).where(
+        ProductRow.tenant_id == tenant_id,
+        ProductRow.category_id.in_(category_ids),
+        ProductRow.deleted_at.is_(None),
+        ProductRow.status != "ARCHIVED",
+    )
+    additional_assignments = (
+        select(
+            ProductCategoryMembershipRow.category_id.label("category_id"),
+            ProductCategoryMembershipRow.product_id.label("product_id"),
+        )
+        .join(
+            ProductRow,
+            and_(
+                ProductRow.tenant_id == ProductCategoryMembershipRow.tenant_id,
+                ProductRow.id == ProductCategoryMembershipRow.product_id,
+            ),
+        )
         .where(
             ProductRow.tenant_id == tenant_id,
-            ProductRow.category_id.in_(category_ids),
+            ProductCategoryMembershipRow.tenant_id == tenant_id,
+            ProductCategoryMembershipRow.category_id.in_(category_ids),
             ProductRow.deleted_at.is_(None),
             ProductRow.status != "ARCHIVED",
         )
-        .group_by(ProductRow.category_id)
+    )
+    assignments = union_all(primary_assignments, additional_assignments).subquery()
+    rows = session.execute(
+        select(
+            assignments.c.category_id,
+            func.count(func.distinct(assignments.c.product_id)),
+        ).group_by(assignments.c.category_id)
     ).all()
     return {
         category_id: int(count)
         for category_id, count in rows
         if category_id is not None
     }
+
+
+def product_count_for_categories(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    category_ids: list[UUID],
+) -> int:
+    """Count unique live products across a category subtree."""
+
+    if not category_ids:
+        return 0
+    primary_products = select(ProductRow.id.label("product_id")).where(
+        ProductRow.tenant_id == tenant_id,
+        ProductRow.category_id.in_(category_ids),
+        ProductRow.deleted_at.is_(None),
+        ProductRow.status != "ARCHIVED",
+    )
+    additional_products = (
+        select(ProductCategoryMembershipRow.product_id.label("product_id"))
+        .join(
+            ProductRow,
+            and_(
+                ProductRow.tenant_id == ProductCategoryMembershipRow.tenant_id,
+                ProductRow.id == ProductCategoryMembershipRow.product_id,
+            ),
+        )
+        .where(
+            ProductCategoryMembershipRow.tenant_id == tenant_id,
+            ProductCategoryMembershipRow.category_id.in_(category_ids),
+            ProductRow.deleted_at.is_(None),
+            ProductRow.status != "ARCHIVED",
+        )
+    )
+    products = union_all(primary_products, additional_products).subquery()
+    return int(
+        session.scalar(
+            select(func.count(func.distinct(products.c.product_id)))
+        )
+        or 0
+    )
+
+
+def product_categories_by_product(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    products: list[ProductRow],
+) -> dict[UUID, list[ProductCategoryRow]]:
+    """Load primary and additional categories for a product collection once."""
+
+    if not products:
+        return {}
+    product_ids = [row.id for row in products]
+    additional_rows = session.execute(
+        select(
+            ProductCategoryMembershipRow.product_id,
+            ProductCategoryMembershipRow.category_id,
+        ).where(
+            ProductCategoryMembershipRow.tenant_id == tenant_id,
+            ProductCategoryMembershipRow.product_id.in_(product_ids),
+        )
+    ).all()
+    additional_ids_by_product: dict[UUID, list[UUID]] = {}
+    for product_id, category_id in additional_rows:
+        additional_ids_by_product.setdefault(product_id, []).append(category_id)
+
+    ordered_categories = list_categories(session, tenant_id=tenant_id)
+    categories_by_id = {row.id: row for row in ordered_categories}
+    category_order = {
+        row.id: index for index, row in enumerate(ordered_categories)
+    }
+    result: dict[UUID, list[ProductCategoryRow]] = {}
+    for product in products:
+        category_ids = list(
+            dict.fromkeys(
+                [
+                    *([product.category_id] if product.category_id is not None else []),
+                    *additional_ids_by_product.get(product.id, []),
+                ]
+            )
+        )
+        rows = [
+            categories_by_id[category_id]
+            for category_id in category_ids
+            if category_id in categories_by_id
+        ]
+        rows.sort(
+            key=lambda row: (
+                0 if row.id == product.category_id else 1,
+                category_order[row.id],
+            )
+        )
+        result[product.id] = rows
+    return result
 
 
 def list_categories_by_ids(
@@ -448,14 +591,9 @@ def list_sku_page_rows(
         conditions.append(~ProductRow.id.in_(hidden_product_ids))
     if category_id is not None:
         conditions.append(
-            or_(
-                ProductRow.category_id == category_id,
-                ProductRow.category_id.in_(
-                    select(ProductCategoryRow.id).where(
-                        ProductCategoryRow.tenant_id == tenant_id,
-                        ProductCategoryRow.parent_id == category_id,
-                    )
-                ),
+            _product_matches_category(
+                tenant_id=tenant_id,
+                category_id=category_id,
             )
         )
     if missing_images_only:

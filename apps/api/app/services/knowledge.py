@@ -15,6 +15,7 @@ from ..model_mixins import utcnow
 from ..product_center_models import SkuRow
 from ..product_supplier_models import (
     ProductAttributeRow,
+    ProductCategoryMembershipRow,
     ProductCategoryRow,
     ProductRow,
     SupplierProductRow,
@@ -169,7 +170,36 @@ def build_product_payload(
                 ProductCategoryRow.status == "ACTIVE",
             )
         )
-    if category is not None and category.name.strip() == UNCATEGORIZED_CATEGORY_NAME:
+    additional_categories = list(
+        session.scalars(
+            select(ProductCategoryRow)
+            .join(
+                ProductCategoryMembershipRow,
+                (ProductCategoryMembershipRow.tenant_id == ProductCategoryRow.tenant_id)
+                & (ProductCategoryMembershipRow.category_id == ProductCategoryRow.id),
+            )
+            .where(
+                ProductCategoryMembershipRow.tenant_id == tenant_id,
+                ProductCategoryMembershipRow.product_id == product.id,
+                ProductCategoryRow.status == "ACTIVE",
+                ProductCategoryRow.deleted_at.is_(None),
+            )
+            .order_by(
+                ProductCategoryRow.sort_order,
+                ProductCategoryRow.name,
+                ProductCategoryRow.id,
+            )
+        ).all()
+    )
+    categories = [
+        row
+        for row in [category, *additional_categories]
+        if row is not None
+    ]
+    categories = list({row.id: row for row in categories}.values())
+    if categories and all(
+        row.name.strip() == UNCATEGORIZED_CATEGORY_NAME for row in categories
+    ):
         raise KnowledgeIndexExcludedError("未分类商品不会纳入智能索引")
     attributes = session.scalars(
         select(ProductAttributeRow)
@@ -234,6 +264,15 @@ def build_product_payload(
             if category
             else None
         ),
+        "categories": [
+            {
+                "id": str(row.id),
+                "code": row.code,
+                "name": row.name,
+                "path": row.path,
+            }
+            for row in categories
+        ],
         "attributes": [
             {"key": attribute.attribute_key, "value": _attribute_value(attribute)}
             for attribute in attributes
@@ -410,6 +449,15 @@ def _partition_knowledge_section(
 def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
     product = payload["product"]
     category = payload.get("category") or {}
+    categories = payload.get("categories") or ([category] if category else [])
+    category_labels = list(
+        dict.fromkeys(
+            str(item.get("path") or item.get("name") or "").strip()
+            for item in categories
+            if str(item.get("path") or item.get("name") or "").strip()
+        )
+    )
+    category_text = "; ".join(category_labels)
     skus = payload.get("skus", [])
     suppliers = payload.get("suppliers", [])
     search_tags = list(dict.fromkeys(
@@ -445,7 +493,7 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
     overview_lines = [
         f"Product code: {product.get('code') or ''}",
         f"Product name: {product.get('name') or ''}",
-        f"Category: {category.get('name') or ''}",
+        f"Categories / 商品分类: {category_text}",
         f"Description: {product.get('description') or ''}",
         f"Search tags / 商品标签: {_render_value(search_tags)}" if search_tags else "",
         f"SKU MOQ options / SKU最低起订量选项: {'; '.join(sku_moq_options)}"
@@ -519,7 +567,7 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if chunk_type != "OVERVIEW":
             prefix_lines = [
                 f"Product name: {product.get('name') or ''}",
-                f"Category: {category.get('name') or ''}",
+                f"Categories / 商品分类: {category_text}",
                 f"Section: {chunk_type.casefold()}",
             ]
         parts = _partition_knowledge_section(lines, prefix_lines=prefix_lines)
@@ -546,6 +594,13 @@ def build_product_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 metadata["barcodes"] = barcodes
             if chunk_type == "OVERVIEW" and search_tags:
                 metadata["search_tags"] = search_tags
+            if chunk_type == "OVERVIEW" and categories:
+                metadata["category_ids"] = [
+                    str(item.get("id") or "")
+                    for item in categories
+                    if item.get("id")
+                ]
+                metadata["category_names"] = category_labels
             token_count = estimate_embedding_tokens(content)
             if token_count > KNOWLEDGE_CHUNK_MAX_TOKENS:
                 raise KnowledgeProjectionError(

@@ -10,7 +10,12 @@ from sqlalchemy.orm import Load, Session, aliased
 from ..catalog_merchandising import POPULAR_CATEGORY_CODE
 from ..identity_models import TenantRow
 from ..product_center_models import SkuRow
-from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
+from ..product_supplier_models import (
+    ProductCategoryMembershipRow,
+    ProductCategoryRow,
+    ProductImageRow,
+    ProductRow,
+)
 from ..public_catalog_models import (
     PublicCatalogOfferRow,
     PublicQuoteDownloadTokenRow,
@@ -25,6 +30,50 @@ ParentProductCategoryRow = aliased(
     ProductCategoryRow,
     name="parent_product_category",
 )
+AdditionalProductCategoryRow = aliased(
+    ProductCategoryRow,
+    name="additional_product_category",
+)
+
+
+def _additional_category_text_match(
+    *,
+    tenant_id: UUID,
+    normalized_category: str,
+    contains: bool = False,
+):
+    category_path = func.lower(
+        func.coalesce(
+            AdditionalProductCategoryRow.path,
+            AdditionalProductCategoryRow.name,
+        )
+    )
+    if contains:
+        name_match = func.lower(AdditionalProductCategoryRow.name).contains(
+            normalized_category
+        )
+        path_match = category_path.contains(normalized_category)
+    else:
+        name_match = func.lower(AdditionalProductCategoryRow.name) == normalized_category
+        path_match = or_(
+            category_path == normalized_category,
+            category_path.startswith(f"{normalized_category}/", autoescape=True),
+        )
+    return exists(
+        select(ProductCategoryMembershipRow.id)
+        .join(
+            AdditionalProductCategoryRow,
+            (AdditionalProductCategoryRow.tenant_id == ProductCategoryMembershipRow.tenant_id)
+            & (AdditionalProductCategoryRow.id == ProductCategoryMembershipRow.category_id),
+        )
+        .where(
+            ProductCategoryMembershipRow.tenant_id == tenant_id,
+            ProductCategoryMembershipRow.product_id == ProductRow.id,
+            AdditionalProductCategoryRow.status == "ACTIVE",
+            AdditionalProductCategoryRow.deleted_at.is_(None),
+            or_(name_match, path_match),
+        )
+    )
 
 
 def find_published_profile_by_slug(
@@ -183,6 +232,10 @@ def _public_catalog_statement(
                 category_path.startswith(
                     f"{normalized_category}/", autoescape=True
                 ),
+                _additional_category_text_match(
+                    tenant_id=tenant_id,
+                    normalized_category=normalized_category,
+                ),
             )
         )
     normalized = query.casefold().strip()
@@ -198,6 +251,11 @@ def _public_catalog_statement(
                 func.lower(func.coalesce(ProductRow.description, "")).contains(normalized),
                 func.lower(func.coalesce(ProductCategoryRow.name, "")).contains(normalized),
                 func.lower(func.coalesce(ProductCategoryRow.path, "")).contains(normalized),
+                _additional_category_text_match(
+                    tenant_id=tenant_id,
+                    normalized_category=normalized,
+                    contains=True,
+                ),
                 func.lower(cast(PublicCatalogOfferRow.tags, Text)).contains(normalized),
             )
         )
@@ -850,13 +908,54 @@ def list_public_catalog_category_ids(
         statement = statement.where(ProductRow.id.in_(product_ids))
     if excluded_product_ids:
         statement = statement.where(~ProductRow.id.in_(excluded_product_ids))
-    statement = (
-        statement.with_only_columns(ProductRow.category_id)
-        .where(ProductRow.category_id.is_not(None))
+    visible_product_ids = (
+        statement.with_only_columns(ProductRow.id)
         .order_by(None)
         .distinct()
+        .subquery()
     )
-    return set(session.scalars(statement).all())
+    primary_ids = set(
+        session.scalars(
+            select(ProductRow.category_id)
+            .join(
+                visible_product_ids,
+                visible_product_ids.c.id == ProductRow.id,
+            )
+            .where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.category_id.is_not(None),
+            )
+            .distinct()
+        ).all()
+    )
+    additional_ids = set(
+        session.scalars(
+            select(ProductCategoryMembershipRow.category_id)
+            .join(
+                visible_product_ids,
+                visible_product_ids.c.id
+                == ProductCategoryMembershipRow.product_id,
+            )
+            .join(
+                ProductCategoryRow,
+                (
+                    ProductCategoryRow.tenant_id
+                    == ProductCategoryMembershipRow.tenant_id
+                )
+                & (
+                    ProductCategoryRow.id
+                    == ProductCategoryMembershipRow.category_id
+                ),
+            )
+            .where(
+                ProductCategoryMembershipRow.tenant_id == tenant_id,
+                ProductCategoryRow.status == "ACTIVE",
+                ProductCategoryRow.deleted_at.is_(None),
+            )
+            .distinct()
+        ).all()
+    )
+    return primary_ids | additional_ids
 
 
 def list_catalog_categories(

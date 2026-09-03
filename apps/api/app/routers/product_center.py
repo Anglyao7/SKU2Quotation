@@ -937,7 +937,8 @@ def batch_update_sku_category(
             membership_id=context.membership_id,
             permissions=context.permissions,
             sku_ids=request.sku_ids,
-            category_id=request.category_id,
+            category_ids=request.resolved_category_ids(),
+            mode=request.mode,
         )
         return SkuBatchOperationResponse(**result)
     except ApplicationError as exc:

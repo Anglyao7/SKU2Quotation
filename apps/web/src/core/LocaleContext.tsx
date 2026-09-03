@@ -1635,6 +1635,14 @@ const english: Record<string, string> = {
   "下架": "Unpublish",
   "已置顶": "Pinned",
   "请选择要移动到的分类。": "Choose a destination category.",
+  "请至少选择一个分类。": "Choose at least one category.",
+  "选择分类（可多选）": "Choose categories (multiple allowed)",
+  "已选 {count} 个": "{count} selected",
+  "已选 {count} 个分类": "{count} categories selected",
+  "勾选一个或多个分类。商品会同时出现在这些分类中，现有分类不会被删除。":
+    "Choose one or more categories. Products will appear in all selected categories and keep their existing categories.",
+  "已将 {products} 个商品加入 {categories} 个分类，原分类已保留。":
+    "Added {products} products to {categories} categories and kept their existing categories.",
   "所选分类": "selected category",
   "已将 {skus} 个 SKU 对应的 {products} 个商品移动到“{category}”。":
     "Moved {products} products represented by {skus} SKUs to “{category}”.",

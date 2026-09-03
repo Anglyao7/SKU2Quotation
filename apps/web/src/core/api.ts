@@ -1861,6 +1861,7 @@ interface ApiProduct {
   name: string;
   status: string;
   category?: { id: string; code: string; name: string } | null;
+  categories?: Array<{ id: string; code: string; name: string }>;
   sku_count: number;
   supplier_count: number;
   primary_image_url?: string | null;
@@ -2056,6 +2057,7 @@ function mapProduct(row: ApiProduct): CoreProduct {
     status: row.status,
     category: row.category?.name ?? "未分类",
     categoryId: row.category?.id,
+    categories: row.categories ?? (row.category ? [row.category] : []),
     supplier: row.supplier,
     price: row.price == null ? undefined : Number(row.price),
     priceFrom: row.price_from == null ? undefined : Number(row.price_from),
@@ -2446,11 +2448,11 @@ export async function batchUpdateSkuStatus(
 
 export async function batchUpdateSkuCategory(
   skuIds: string[],
-  categoryId: string | null,
+  categoryIds: string[],
 ): Promise<SkuBatchOperationResult> {
   const row = await request<ApiSkuBatchOperationResult>("/skus/batch-update-category", {
     method: "POST",
-    body: JSON.stringify({ sku_ids: skuIds, category_id: categoryId }),
+    body: JSON.stringify({ sku_ids: skuIds, category_ids: categoryIds, mode: "ADD" }),
   });
   bumpPublicCatalogRevision();
   return mapSkuBatchOperationResult(row);
@@ -3935,7 +3937,7 @@ export async function getProduct(productId: string): Promise<ProductDetail> {
 export async function updateProductCategory(
   productId: string,
   expectedVersion: number,
-  categoryId: string | null,
+  categoryIds: string[],
 ): Promise<ProductDetail> {
   const row = await request<ApiProductDetail>(
     `/products/${encodeURIComponent(productId)}/category`,
@@ -3943,7 +3945,7 @@ export async function updateProductCategory(
       method: "PATCH",
       body: JSON.stringify({
         expected_version: expectedVersion,
-        category_id: categoryId,
+        category_ids: categoryIds,
       }),
     },
   );

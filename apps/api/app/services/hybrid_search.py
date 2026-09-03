@@ -9,12 +9,13 @@ from uuid import UUID
 
 from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import Text, cast, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..knowledge_embedding_models import EmbeddingRow, KnowledgeChunkRow, KnowledgeDocumentRow
 from ..product_center_models import SkuRow
 from ..product_supplier_models import (
     ProductAttributeRow,
+    ProductCategoryMembershipRow,
     ProductCategoryRow,
     ProductRow,
     SupplierProductRow,
@@ -32,6 +33,10 @@ from .embedding_configuration import resolved_text_embedding_provider
 
 RANKING_VERSION = "hybrid-product-v4-semantic-recall"
 UNCATEGORIZED_CATEGORY_NAME = "未分类"
+AdditionalProductCategoryRow = aliased(
+    ProductCategoryRow,
+    name="additional_product_category",
+)
 WEIGHTS = {
     "keyword": 0.50,
     "semantic": 0.25,
@@ -61,6 +66,67 @@ QUERY_NOISE_PHRASES = (
     "和",
     "与",
 )
+
+
+def _has_searchable_category():
+    additional_category_exists = (
+        select(1)
+        .select_from(ProductCategoryMembershipRow)
+        .join(
+            AdditionalProductCategoryRow,
+            (
+                AdditionalProductCategoryRow.tenant_id
+                == ProductCategoryMembershipRow.tenant_id
+            )
+            & (
+                AdditionalProductCategoryRow.id
+                == ProductCategoryMembershipRow.category_id
+            ),
+        )
+        .where(
+            ProductCategoryMembershipRow.tenant_id == ProductRow.tenant_id,
+            ProductCategoryMembershipRow.product_id == ProductRow.id,
+            AdditionalProductCategoryRow.status == "ACTIVE",
+            AdditionalProductCategoryRow.deleted_at.is_(None),
+            func.trim(AdditionalProductCategoryRow.name)
+            != UNCATEGORIZED_CATEGORY_NAME,
+        )
+        .exists()
+    )
+    return or_(
+        ProductCategoryRow.id.is_(None),
+        func.trim(ProductCategoryRow.name) != UNCATEGORIZED_CATEGORY_NAME,
+        additional_category_exists,
+    )
+
+
+def _additional_category_text_match(needle: str):
+    return (
+        select(1)
+        .select_from(ProductCategoryMembershipRow)
+        .join(
+            AdditionalProductCategoryRow,
+            (
+                AdditionalProductCategoryRow.tenant_id
+                == ProductCategoryMembershipRow.tenant_id
+            )
+            & (
+                AdditionalProductCategoryRow.id
+                == ProductCategoryMembershipRow.category_id
+            ),
+        )
+        .where(
+            ProductCategoryMembershipRow.tenant_id == ProductRow.tenant_id,
+            ProductCategoryMembershipRow.product_id == ProductRow.id,
+            AdditionalProductCategoryRow.status == "ACTIVE",
+            AdditionalProductCategoryRow.deleted_at.is_(None),
+            or_(
+                func.lower(AdditionalProductCategoryRow.name).contains(needle),
+                func.lower(AdditionalProductCategoryRow.path).contains(needle),
+            ),
+        )
+        .exists()
+    )
 
 
 def _retrieval_tokens(value: str, *, query: bool = False) -> set[str]:
@@ -406,10 +472,7 @@ def _postgres_semantic_candidate_rows(
             KnowledgeDocumentRow.status == "ACTIVE",
             KnowledgeDocumentRow.source_entity_type == "PRODUCT",
             ProductRow.status == "ACTIVE",
-            or_(
-                ProductCategoryRow.id.is_(None),
-                func.trim(ProductCategoryRow.name) != UNCATEGORIZED_CATEGORY_NAME,
-            ),
+            _has_searchable_category(),
         )
         .order_by(distance)
         .limit(candidate_limit)
@@ -546,10 +609,7 @@ def hybrid_product_search(
             KnowledgeDocumentRow.status == "ACTIVE",
             KnowledgeDocumentRow.source_entity_type == "PRODUCT",
             ProductRow.status == "ACTIVE",
-            or_(
-                ProductCategoryRow.id.is_(None),
-                func.trim(ProductCategoryRow.name) != UNCATEGORIZED_CATEGORY_NAME,
-            ),
+            _has_searchable_category(),
         )
     )
     if product_ids is not None:
@@ -642,6 +702,11 @@ def hybrid_product_search(
             if needle
             for field in lexical_fields
         ]
+        lexical_matches.extend(
+            _additional_category_text_match(needle)
+            for needle in lexical_needles
+            if needle
+        )
         if lexical_matches:
             lexical_statement = (
                 document_statement.join(
