@@ -367,15 +367,15 @@ export function CustomerSubaccountOrderDetailDialog({
 }) {
   const { t } = useLocale();
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
-    <Dialog.Content className="customer-account-dialog customer-order-detail-dialog">
+    <Dialog.Content className="customer-account-dialog customer-order-detail-dialog" maxWidth="1240px">
       {loading || !detail ? <CoreLoading label={t("正在读取订单详情")} /> : <>
         <div className="core-dialog-heading customer-order-detail-heading"><div><Text size="1" color="gray">{t("子账号询价 · 主账号只读分析")}</Text><Dialog.Title>{detail.quoteNumber}</Dialog.Title><Dialog.Description>{t("由 {name} 的前台提交于 {date}", { name: detail.submittedByName, date: coreDate(detail.createdAt) })}</Dialog.Description></div><Button variant="ghost" color="gray" onClick={onClose} aria-label={t("关闭")}>×</Button></div>
 
         <section className="customer-order-insights" aria-label={t("订单简析")}>
           <div className="customer-order-insight is-primary"><span><ShieldCheck /></span><small>{t("跟进建议")}</small><strong>{t(orderFollowUp(detail))}</strong></div>
-          <div><span><EnvelopeSimple /></span><small>{t("联系条件")}</small><strong>{t(orderContactSignal(detail))}</strong></div>
-          <div><span><Package /></span><small>{t("订单规模")}</small><strong>{t("{count} 个 SKU · {quantity} 件", { count: detail.itemCount, quantity: quantityLabel(detail.totalQuantity) })}</strong></div>
-          <div><span><CurrencyDollar /></span><small>{t("报价总额")}</small><strong>{money(detail.totalAmount, detail.currency)}</strong></div>
+          <div className="customer-order-insight"><span><EnvelopeSimple /></span><small>{t("联系条件")}</small><strong>{t(orderContactSignal(detail))}</strong></div>
+          <div className="customer-order-insight"><span><Package /></span><small>{t("订单规模")}</small><strong>{t("{count} 个 SKU · {quantity} 件", { count: detail.itemCount, quantity: quantityLabel(detail.totalQuantity) })}</strong></div>
+          <div className="customer-order-insight"><span><CurrencyDollar /></span><small>{t("报价总额")}</small><strong>{money(detail.totalAmount, detail.currency)}</strong></div>
         </section>
 
         <div className="customer-order-detail-layout">
@@ -407,12 +407,12 @@ export function CustomerSubaccountOrderDetailDialog({
           <div className="customer-order-detail-items-head"><span>{t("商品 / SKU")}</span><span>{t("数量")}</span><span>{t("最终单价")}</span><span>{t("小计")}</span></div>
           {detail.items.map((item) => <div className="customer-order-detail-item" key={item.skuId}>
             <div className="customer-order-item-identity">
-              <span className="customer-order-item-image">{item.imageUrl ? <img src={item.imageUrl} alt="" loading="lazy" /> : <Package weight="duotone" />}</span>
+              <span className="customer-order-item-image">{item.imageUrl ? <img src={item.imageUrl} alt={item.productName} loading="lazy" /> : <Package weight="duotone" />}</span>
               <span><strong>{item.productName}</strong><small className="mono-text">{item.skuCode}</small>{item.specification ? <small>{item.specification}</small> : null}{item.customerNote ? <em>{t("备注：{note}", { note: item.customerNote })}</em> : null}</span>
             </div>
-            <span>{quantityLabel(item.quantity)} {item.unitCode}</span>
-            <span>{money(item.unitPrice, item.currency)}</span>
-            <strong>{money(item.lineTotal, item.currency)}</strong>
+            <span className="customer-order-item-value" data-label={t("数量")}>{quantityLabel(item.quantity)} {item.unitCode}</span>
+            <span className="customer-order-item-value" data-label={t("最终单价")}>{money(item.unitPrice, item.currency)}</span>
+            <strong className="customer-order-item-value" data-label={t("小计")}>{money(item.lineTotal, item.currency)}</strong>
           </div>)}
           {!detail.items.length ? <Text size="2" color="gray">{t("没有商品明细")}</Text> : null}
         </div>
