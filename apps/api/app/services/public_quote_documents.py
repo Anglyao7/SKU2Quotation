@@ -826,18 +826,15 @@ def _render_custom_quote_xlsx(
 
 
 def _register_quote_pdf_font(locale: str) -> str:
-    cid_fonts = {
-        "zh-CN": "STSong-Light",
-        "ja": "HeiseiMin-W3",
-        "ko": "HYSMyeongJo-Medium",
-    }
-    cid_font = cid_fonts.get(locale)
-    if cid_font:
+    # Product data often keeps its original CJK text even when the document
+    # chrome is English or another translated locale. Register the three CID
+    # fallbacks for inline script runs, instead of selecting a font solely
+    # from the requested document locale.
+    for cid_font in ("STSong-Light", "HeiseiMin-W3", "HYSMyeongJo-Medium"):
         try:
             pdfmetrics.registerFont(UnicodeCIDFont(cid_font))
         except KeyError:
             pass
-        return cid_font
 
     if locale in {"ar", "fa"}:
         configured = os.environ.get("QUOTE_ARABIC_FONT_PATH", "").strip()
@@ -876,7 +873,20 @@ def _pdf_localized_text(value: object | None, locale: str) -> str:
             # Production installs the shaping helpers. This fallback keeps
             # development downloads functional before dependencies are synced.
             pass
-    return escape(text)
+    escaped = escape(text)
+    # ReportLab's bundled Latin font cannot draw CJK characters. Keep it as
+    # the base font so accented Latin remains intact, then apply script-aware
+    # CID fallbacks only to the runs that need them. This also supports mixed
+    # source data such as an English PI containing an untranslated Chinese
+    # product or merchant name.
+    script_fonts = (
+        (r"([\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]+)", "HYSMyeongJo-Medium"),
+        (r"([\u3040-\u30ff\u31f0-\u31ff]+)", "HeiseiMin-W3"),
+        (r"([\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)", "STSong-Light"),
+    )
+    for pattern, font_name in script_fonts:
+        escaped = re.sub(pattern, rf'<font name="{font_name}">\1</font>', escaped)
+    return escaped
 
 
 _PUBLIC_QUOTE_TABLE_FIELDS = frozenset(
@@ -1409,19 +1419,20 @@ def render_public_quote_draft_pdf(
                 ),
             ]
         )
-    story.extend(
-        [
-            Spacer(1, 8 * mm),
-            Paragraph(
-                _pdf_localized_text(
-                    f"{quote_text(locale, 'merchant_contact')}: "
-                    f"{document.contact_email or '-'}  {document.contact_phone or ''}",
-                    locale,
+    if not is_proforma:
+        story.extend(
+            [
+                Spacer(1, 8 * mm),
+                Paragraph(
+                    _pdf_localized_text(
+                        f"{quote_text(locale, 'merchant_contact')}: "
+                        f"{document.contact_email or '-'}  {document.contact_phone or ''}",
+                        locale,
+                    ),
+                    body_style,
                 ),
-                body_style,
-            ),
-        ]
-    )
+            ]
+        )
     pdf.build(story)
     return buffer.getvalue()
 

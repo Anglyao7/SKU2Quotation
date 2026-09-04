@@ -262,9 +262,13 @@ def test_proforma_invoice_pdf_contains_trade_and_banking_details() -> None:
     )
 
     reader = PdfReader(BytesIO(content))
+    assert len(reader.pages) == 1
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     assert "PROFORMA INVOICE" in text
     assert "PI-20260801-0001" in text
+    assert "示例商家" in text
+    assert "带图片的测试商品" in text
+    assert "\x00" not in text
     assert "FOB Shanghai" in text
     assert "Example International Bank" in text
     assert "USD 125.00" in text

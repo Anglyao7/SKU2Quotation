@@ -546,6 +546,19 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
+def _quote_snapshot_content_hash(snapshot: dict[str, object]) -> str:
+    """Return the canonical digest for an editable public quote snapshot."""
+
+    return hashlib.sha256(
+        json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _positive_int_environment(name: str, default: int, *, maximum: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
@@ -4410,11 +4423,7 @@ def create_public_quote_draft(
         "extra_information": [],
         "items": snapshot_items,
     }
-    content_hash = hashlib.sha256(
-        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()
+    content_hash = _quote_snapshot_content_hash(snapshot)
     visitor_token_hash = (
         _storefront_visitor_token_hash(visitor_token)
         if visitor_token is not None
@@ -5275,16 +5284,35 @@ def update_tenant_quote_draft_settings(
     draft.quotation_number = quote_number
     if request.visible_columns is not None:
         draft.quote_visible_columns = list(dict.fromkeys(request.visible_columns)) or None
+    snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
+    snapshot.update(
+        {
+            "document_locale": requested_locale,
+            "document_style": request.style,
+            "quotation_number": quote_number,
+            "quote_template_id": str(request.template_id) if request.template_id else None,
+            "quote_visible_columns": list(draft.quote_visible_columns or []),
+        }
+    )
     if request.extra_information is not None:
-        snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
         snapshot["extra_information"] = [
             entry.model_dump(mode="json") for entry in request.extra_information
         ]
-        draft.snapshot = snapshot
     if request.proforma_invoice is not None:
-        snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
+        previous_freight = _draft_proforma_invoice(draft).freight
         snapshot["proforma_invoice"] = request.proforma_invoice.model_dump(mode="json")
-        draft.snapshot = snapshot
+        # A merchant-entered freight value is denominated in the quote's
+        # current currency. Discard only the cached freight baseline so the
+        # next currency switch can rebuild it without disturbing the stable
+        # item-price baseline.
+        if request.proforma_invoice.freight != previous_freight:
+            conversion = snapshot.get("currency_conversion")
+            if isinstance(conversion, dict):
+                conversion = dict(conversion)
+                conversion.pop("base_freight", None)
+                snapshot["currency_conversion"] = conversion
+    draft.snapshot = snapshot
+    draft.content_hash = _quote_snapshot_content_hash(snapshot)
     draft.updated_at = utcnow()
     session.commit()
     session.refresh(draft)
@@ -5373,17 +5401,25 @@ def convert_tenant_quote_draft_currency(
             kind="conflict",
         )
 
-    direct_factor = _currency_conversion_factor(
-        market,
-        source_currency=source_currency,
-        target_currency=target_currency,
-    )
     proforma_invoice = _draft_proforma_invoice(draft)
-    if direct_factor is not None and proforma_invoice.freight:
+    base_freight = _quote_currency_conversion_base_freight(
+        draft,
+        market=market,
+        current_currency=source_currency,
+        base_currency=base_currency,
+        current_freight=Decimal(proforma_invoice.freight),
+    )
+    if base_freight is None:
+        raise ApplicationError(
+            "QUOTE_CURRENCY_RATE_UNAVAILABLE",
+            f"当前暂未取得 {source_currency} 到 {base_currency} 的汇率，请稍后重试。",
+            kind="conflict",
+        )
+    if proforma_invoice.freight:
         snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
         converted_proforma = proforma_invoice.model_dump(mode="json")
         converted_proforma["freight"] = str(
-            _money(Decimal(proforma_invoice.freight) * direct_factor)
+            _money(base_freight * factor)
         )
         snapshot["proforma_invoice"] = converted_proforma
         draft.snapshot = snapshot
@@ -5424,6 +5460,7 @@ def convert_tenant_quote_draft_currency(
                 str(item_id): str(price)
                 for item_id, price in base_unit_prices.items()
             },
+            "base_freight": str(base_freight),
             "rate_date": rate_date,
             "source": str(getattr(market, "rate_source", "market")),
             "converted_at": utcnow().isoformat(),
@@ -5510,14 +5547,7 @@ def _refresh_quote_draft_snapshot(
         # not keep replaying a conversion base captured before that edit.
         snapshot.pop("currency_conversion", None)
     draft.snapshot = snapshot
-    draft.content_hash = hashlib.sha256(
-        json.dumps(
-            snapshot,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    draft.content_hash = _quote_snapshot_content_hash(snapshot)
 
 
 def _market_currency_rate(snapshot: object, currency: str) -> Decimal | None:
@@ -5568,6 +5598,52 @@ def _quote_currency_conversion_base(
         item.id: Decimal(item.unit_price_snapshot)
         for item in items
     }
+
+
+def _quote_currency_conversion_base_freight(
+    draft: PublicQuoteDraftRow,
+    *,
+    market: object,
+    current_currency: str,
+    base_currency: str,
+    current_freight: Decimal,
+) -> Decimal | None:
+    """Recover an unrounded freight baseline across repeated conversions."""
+
+    snapshot = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+    conversion = snapshot.get("currency_conversion")
+    if isinstance(conversion, dict):
+        raw_base_freight = conversion.get("base_freight")
+        try:
+            stored_base_freight = Decimal(str(raw_base_freight))
+        except (InvalidOperation, TypeError, ValueError):
+            stored_base_freight = Decimal("-1")
+        if (
+            _canonical_quote_currency(conversion.get("base_currency")) == base_currency
+            and stored_base_freight >= 0
+        ):
+            return stored_base_freight
+
+    if current_currency == base_currency:
+        return current_freight
+
+    # Legacy conversion metadata already records the factor that produced the
+    # current quote currency. It lets us recover the original freight even if
+    # that metadata predates the explicit ``base_freight`` field.
+    if isinstance(conversion, dict):
+        try:
+            previous_factor = Decimal(str(conversion.get("base_factor")))
+        except (InvalidOperation, TypeError, ValueError):
+            previous_factor = Decimal("0")
+        if previous_factor > 0:
+            return current_freight / previous_factor
+
+    reverse_factor = _currency_conversion_factor(
+        market,
+        source_currency=current_currency,
+        target_currency=base_currency,
+    )
+    return current_freight * reverse_factor if reverse_factor is not None else None
 
 
 def _currency_conversion_factor(

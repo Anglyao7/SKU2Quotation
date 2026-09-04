@@ -485,7 +485,11 @@ export function QuoteWorkbenchPage() {
   const [syncItem, setSyncItem] = useState<PublicQuoteDraftItem>();
   const [productDetails, setProductDetails] = useState<Record<string, ProductDetail | null>>({});
   const [detailLoadingId, setDetailLoadingId] = useState<string>();
-  const [previewScale, setPreviewScale] = useState(75);
+  const [previewScale, setPreviewScale] = useState(() => (
+    typeof window !== "undefined" && window.matchMedia("(max-width: 520px)").matches
+      ? PREVIEW_SCALE_MIN
+      : 75
+  ));
   const [previewPan, setPreviewPan] = useState<PreviewPan>({ x: 0, y: 0 });
   const [previewDragging, setPreviewDragging] = useState(false);
   const [market, setMarket] = useState<DashboardSnapshot["market"]>();
@@ -1792,15 +1796,25 @@ export function QuoteWorkbenchPage() {
       </button>
       {manualOpen ? (
         <div className="quote-manual-content">
-          <Text size="2" weight="medium">{t("报价单工作台")}</Text>
-          <ul>
-            <li>{t("左侧设置报价单编号、模板、可见列、语言和样式。")}</li>
-            <li>{t("左侧订单商品可直接编辑，点击条目摘要可查看商品资料。")}</li>
-            <li>{t("中间可切换 PDF 与 Excel 预览，变更会同步并自动保存。")}</li>
-            <li>{t("商品表格列可在左侧设置，空值会保留为空。")}</li>
-            <li>{t("额外信息会显示在整张商品列表下方。")}</li>
-            <li>{t("完成后可导出 PDF 或 Excel，或通过并通知客户。")}</li>
-          </ul>
+          <Text size="2" weight="medium">{activeDocument === "proforma" ? proformaText(locale, "title") : t("报价单工作台")}</Text>
+          {activeDocument === "proforma" ? (
+            <ul>
+              <li>{proformaText(locale, "seller")} · {proformaText(locale, "buyer")} · {proformaText(locale, "invoice_number")}</li>
+              <li>{proformaText(locale, "trade_terms")} · {proformaText(locale, "payment_terms")} · {proformaText(locale, "delivery_terms")}</li>
+              <li>{proformaText(locale, "bank_details")} · {proformaText(locale, "freight")} · {proformaText(locale, "remarks")}</li>
+              <li>{t("中间可切换 PDF 与 Excel 预览，变更会同步并自动保存。")}</li>
+              <li>{t("商品表格列可在左侧设置，空值会保留为空。")}</li>
+            </ul>
+          ) : (
+            <ul>
+              <li>{t("左侧设置报价单编号、模板、可见列、语言和样式。")}</li>
+              <li>{t("左侧订单商品可直接编辑，点击条目摘要可查看商品资料。")}</li>
+              <li>{t("中间可切换 PDF 与 Excel 预览，变更会同步并自动保存。")}</li>
+              <li>{t("商品表格列可在左侧设置，空值会保留为空。")}</li>
+              <li>{t("额外信息会显示在整张商品列表下方。")}</li>
+              <li>{t("完成后可导出 PDF 或 Excel，或通过并通知客户。")}</li>
+            </ul>
+          )}
         </div>
       ) : null}
     </aside>

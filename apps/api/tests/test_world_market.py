@@ -11,6 +11,7 @@ from app.use_cases.public_catalog import (
     _canonical_quote_currency,
     _currency_conversion_factor,
     _quote_currency_conversion_base,
+    _quote_currency_conversion_base_freight,
 )
 
 
@@ -178,6 +179,40 @@ def test_quote_currency_alias_and_stable_conversion_base() -> None:
             second_id: Decimal("8.50"),
         },
     )
+
+
+def test_quote_freight_uses_stable_conversion_base() -> None:
+    market = SimpleNamespace(
+        exchange_rates=[SimpleNamespace(currency="USD", rate=Decimal("7.10"))]
+    )
+    draft = SimpleNamespace(
+        snapshot={
+            "currency_conversion": {
+                "base_currency": "CNY",
+                "base_factor": "0.1408450704225352112676056338",
+                "base_freight": "24.00",
+            }
+        }
+    )
+
+    assert _quote_currency_conversion_base_freight(
+        draft,
+        market=market,
+        current_currency="USD",
+        base_currency="CNY",
+        current_freight=Decimal("3.38"),
+    ) == Decimal("24.00")
+
+    del draft.snapshot["currency_conversion"]["base_freight"]
+    recovered = _quote_currency_conversion_base_freight(
+        draft,
+        market=market,
+        current_currency="USD",
+        base_currency="CNY",
+        current_freight=Decimal("3.38"),
+    )
+    assert recovered is not None
+    assert recovered.quantize(Decimal("0.01")) == Decimal("24.00")
 
 
 def test_world_market_exposes_common_trade_currencies() -> None:

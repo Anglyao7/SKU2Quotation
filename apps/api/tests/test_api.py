@@ -22113,6 +22113,7 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert merchant_detail.json()["pdf_url"] is None
         assert merchant_detail.json()["items"][0]["name_snapshot"] == original_name
         assert merchant_detail.json()["items"][0]["customer_note"] == "Please use blue packaging."
+        original_content_hash = merchant_detail.json()["content_hash"]
         proforma_settings = {
             "invoice_number": "PI-INTEGRATION-0001",
             "issue_date": "2026-09-04",
@@ -22144,6 +22145,7 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         )
         assert saved_proforma.status_code == 200, saved_proforma.text
         assert saved_proforma.json()["proforma_invoice"] == proforma_settings
+        assert saved_proforma.json()["content_hash"] != original_content_hash
 
         merchant_proforma_pdf = client.get(
             f"/api/v1/public-quote-drafts/{quote_id}/pdf",
@@ -22171,6 +22173,14 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
             stored_draft = session.get(PublicQuoteDraftRow, quote_id)
             assert stored_draft is not None
             assert stored_draft.snapshot["proforma_invoice"]["invoice_number"] == "PI-INTEGRATION-0001"
+            assert stored_draft.content_hash == hashlib.sha256(
+                json.dumps(
+                    stored_draft.snapshot,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
         merchant_pdf = client.get(
             f"/api/v1/public-quote-drafts/{quote_id}/pdf"
         )
