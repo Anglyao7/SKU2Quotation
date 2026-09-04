@@ -360,7 +360,7 @@
 .language-job-card { display: grid; gap: 13px; }
 .language-batch-history-card { display: grid; gap: 14px; }
 .language-batch-heading-meta { display: flex !important; align-items: center; justify-content: flex-end; gap: 8px !important; }
-.language-batch-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.language-batch-filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 .language-batch-filters > button { min-width: 0; min-height: 42px; padding: 8px 11px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--core-line); border-radius: 10px; color: var(--core-muted); background: var(--core-surface); cursor: pointer; transition: border-color 140ms ease, color 140ms ease, background 140ms ease; }
 .language-batch-filters > button:hover { border-color: var(--core-line-strong); color: var(--core-ink); background: var(--core-soft); }
 .language-batch-filters > button.is-active { border-color: color-mix(in srgb, var(--core-accent) 42%, var(--core-line)); color: var(--core-accent); background: color-mix(in srgb, var(--core-accent) 7%, var(--core-surface)); }

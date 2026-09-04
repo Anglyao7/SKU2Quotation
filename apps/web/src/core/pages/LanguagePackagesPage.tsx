@@ -720,6 +720,11 @@ export function LanguagePackagesPage() {
         ?? 0,
     },
     {
+      value: "QUEUED",
+      label: "等待请求",
+      count: selectedBatchHistory?.queuedCount ?? 0,
+    },
+    {
       value: "IN_PROGRESS",
       label: "请求中",
       count: selectedBatchHistory?.inProgressCount ?? 0,

@@ -1299,7 +1299,13 @@ def list_translation_batch_page(
         )
 
     normalized_filter = status_filter.strip().upper()
-    if normalized_filter not in {"ALL", "SUCCEEDED", "IN_PROGRESS", "FAILED"}:
+    if normalized_filter not in {
+        "ALL",
+        "SUCCEEDED",
+        "QUEUED",
+        "IN_PROGRESS",
+        "FAILED",
+    }:
         raise ApplicationError(
             "CATALOG_TRANSLATION_BATCH_FILTER_INVALID",
             "翻译批次筛选条件无效。",
@@ -1321,7 +1327,8 @@ def list_translation_batch_page(
     counts = {str(status): int(count) for status, count in status_rows}
     all_count = sum(counts.values())
     completed_count = counts.get("SUCCEEDED", 0)
-    in_progress_count = counts.get("QUEUED", 0) + counts.get("RUNNING", 0)
+    queued_count = counts.get("QUEUED", 0)
+    in_progress_count = counts.get("RUNNING", 0)
     failed_count = counts.get("FAILED", 0)
     cancelled_count = counts.get("CANCELLED", 0)
 
@@ -1331,9 +1338,14 @@ def list_translation_batch_page(
             CatalogTranslationBatchRow.status == "SUCCEEDED"
         )
         total = completed_count
+    elif normalized_filter == "QUEUED":
+        statement = statement.where(
+            CatalogTranslationBatchRow.status == "QUEUED"
+        )
+        total = queued_count
     elif normalized_filter == "IN_PROGRESS":
         statement = statement.where(
-            CatalogTranslationBatchRow.status.in_(["QUEUED", "RUNNING"])
+            CatalogTranslationBatchRow.status == "RUNNING"
         )
         total = in_progress_count
     elif normalized_filter == "FAILED":
@@ -1385,6 +1397,7 @@ def list_translation_batch_page(
         pages=pages,
         all_count=all_count,
         completed_count=completed_count,
+        queued_count=queued_count,
         in_progress_count=in_progress_count,
         failed_count=failed_count,
         cancelled_count=cancelled_count,

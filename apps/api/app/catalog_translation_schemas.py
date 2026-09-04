@@ -77,6 +77,7 @@ class CatalogTranslationBatchPageResponse(BaseModel):
     pages: int = Field(ge=0)
     all_count: int = Field(ge=0)
     completed_count: int = Field(ge=0)
+    queued_count: int = Field(ge=0)
     in_progress_count: int = Field(ge=0)
     failed_count: int = Field(ge=0)
     cancelled_count: int = Field(ge=0)

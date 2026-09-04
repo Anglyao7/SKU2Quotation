@@ -3375,6 +3375,7 @@ interface ApiCatalogTranslationBatchPage {
   pages: number;
   all_count: number;
   completed_count: number;
+  queued_count?: number;
   in_progress_count: number;
   failed_count: number;
   cancelled_count: number;
@@ -3584,6 +3585,7 @@ function mapCatalogTranslationBatchPage(
     pages: row.pages,
     allCount: row.all_count,
     completedCount: row.completed_count,
+    queuedCount: row.queued_count ?? 0,
     inProgressCount: row.in_progress_count,
     failedCount: row.failed_count,
     cancelledCount: row.cancelled_count,

@@ -1651,6 +1651,7 @@ export interface CatalogTranslationBatch {
 export type CatalogTranslationBatchFilter =
   | "ALL"
   | "SUCCEEDED"
+  | "QUEUED"
   | "IN_PROGRESS"
   | "FAILED";
 
@@ -1662,6 +1663,7 @@ export interface CatalogTranslationBatchPage {
   pages: number;
   allCount: number;
   completedCount: number;
+  queuedCount: number;
   inProgressCount: number;
   failedCount: number;
   cancelledCount: number;

@@ -19985,7 +19985,8 @@ def test_qwen_failed_text_batch_can_be_requeued_from_batch_history(
         assert page_payload["pages"] == 3
         assert page_payload["all_count"] == 6
         assert page_payload["completed_count"] == 2
-        assert page_payload["in_progress_count"] == 2
+        assert page_payload["queued_count"] == 1
+        assert page_payload["in_progress_count"] == 1
         assert page_payload["failed_count"] == 1
         assert page_payload["cancelled_count"] == 1
         assert [
@@ -20012,6 +20013,30 @@ def test_qwen_failed_text_batch_can_be_requeued_from_batch_history(
         assert all(
             row["status"] == "SUCCEEDED"
             for row in last_page.json()["items"]
+        )
+
+        queued_page = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batch-history",
+            params={"page": 1, "page_size": 20, "status": "QUEUED"},
+        )
+        assert queued_page.status_code == 200, queued_page.text
+        assert queued_page.json()["total"] == 1
+        assert queued_page.json()["items"][0]["sequence_no"] == 1
+        assert all(
+            row["status"] == "QUEUED"
+            for row in queued_page.json()["items"]
+        )
+
+        running_page = client.get(
+            f"/api/v1/catalog/translations/jobs/{job_id}/batch-history",
+            params={"page": 1, "page_size": 20, "status": "IN_PROGRESS"},
+        )
+        assert running_page.status_code == 200, running_page.text
+        assert running_page.json()["total"] == 1
+        assert running_page.json()["items"][0]["sequence_no"] == 4
+        assert all(
+            row["status"] == "RUNNING"
+            for row in running_page.json()["items"]
         )
 
         failed_page = client.get(
