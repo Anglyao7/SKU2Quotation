@@ -48,6 +48,7 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftItemPriceUpdate,
     PublicQuoteDraftItemsUpdate,
     PublicQuoteExtraInformation,
+    PublicProformaInvoiceSettings,
     PublicQuoteDraftPriceAdjustment,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSettingsUpdate,
@@ -3445,6 +3446,45 @@ def _draft_extra_information(draft: PublicQuoteDraftRow) -> list[PublicQuoteExtr
     return result
 
 
+def _default_proforma_invoice_number(draft: PublicQuoteDraftRow) -> str:
+    source = str(
+        getattr(draft, "quotation_number", None) or draft.request_number
+    ).strip()
+    if source.upper().startswith("QD-"):
+        return f"PI-{source[3:]}"
+    if source.upper().startswith("QT-"):
+        return f"PI-{source[3:]}"
+    return f"PI-{source}"[:80]
+
+
+def _draft_proforma_invoice(
+    draft: PublicQuoteDraftRow,
+) -> PublicProformaInvoiceSettings:
+    """Read PI fields from the extensible draft snapshot with safe defaults."""
+
+    issue_date = (
+        draft.created_at.date()
+        if isinstance(getattr(draft, "created_at", None), datetime)
+        else utcnow().date()
+    )
+    defaults: dict[str, object] = {
+        "invoice_number": _default_proforma_invoice_number(draft),
+        "issue_date": issue_date,
+    }
+    snapshot = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+    raw = snapshot.get("proforma_invoice")
+    if isinstance(raw, dict):
+        defaults.update(raw)
+    try:
+        return PublicProformaInvoiceSettings.model_validate(defaults)
+    except Exception:
+        # A malformed legacy snapshot must not make the quotation unreadable.
+        return PublicProformaInvoiceSettings(
+            invoice_number=_default_proforma_invoice_number(draft),
+            issue_date=issue_date,
+        )
+
+
 def _quote_specification(option_values: dict[str, object]) -> str | None:
     parts: list[str] = []
     for key, value in option_values.items():
@@ -3877,6 +3917,7 @@ def _draft_response(
         disclaimer=quote_text(document_locale, "disclaimer"),
         disclaimer_version=draft.disclaimer_version,
         extra_information=_draft_extra_information(draft),
+        proforma_invoice=_draft_proforma_invoice(draft),
         items=[_item_response(item) for item in items],
         download_token=raw_token,
         download_expires_at=token_expires_at,
@@ -5240,6 +5281,10 @@ def update_tenant_quote_draft_settings(
             entry.model_dump(mode="json") for entry in request.extra_information
         ]
         draft.snapshot = snapshot
+    if request.proforma_invoice is not None:
+        snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
+        snapshot["proforma_invoice"] = request.proforma_invoice.model_dump(mode="json")
+        draft.snapshot = snapshot
     draft.updated_at = utcnow()
     session.commit()
     session.refresh(draft)
@@ -5327,6 +5372,21 @@ def convert_tenant_quote_draft_currency(
             f"当前暂未取得 {base_currency} 到 {target_currency} 的汇率，请稍后重试。",
             kind="conflict",
         )
+
+    direct_factor = _currency_conversion_factor(
+        market,
+        source_currency=source_currency,
+        target_currency=target_currency,
+    )
+    proforma_invoice = _draft_proforma_invoice(draft)
+    if direct_factor is not None and proforma_invoice.freight:
+        snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
+        converted_proforma = proforma_invoice.model_dump(mode="json")
+        converted_proforma["freight"] = str(
+            _money(Decimal(proforma_invoice.freight) * direct_factor)
+        )
+        snapshot["proforma_invoice"] = converted_proforma
+        draft.snapshot = snapshot
 
     for item in items:
         item.unit_price_snapshot = _money(
@@ -5841,13 +5901,39 @@ def get_tenant_quote_document(
         mutate=False,
     )
     profile = repository.find_profile_by_tenant(session, tenant_id=tenant_id)
+    seller_name = tenant.name
+    seller_email = profile.contact_email if profile else None
+    seller_phone = profile.contact_phone if profile else None
+    if account_scope == "CUSTOMER_SUBACCOUNT" and membership_id is not None:
+        child_identity = session.execute(
+            select(MembershipRow, UserRow)
+            .join(UserRow, UserRow.id == MembershipRow.user_id)
+            .where(
+                MembershipRow.tenant_id == tenant_id,
+                MembershipRow.id == membership_id,
+                MembershipRow.account_scope == "CUSTOMER_SUBACCOUNT",
+                MembershipRow.deleted_at.is_(None),
+                UserRow.deleted_at.is_(None),
+            )
+        ).first()
+        if child_identity is not None:
+            membership, user = child_identity
+            seller_name = (
+                str(user.display_name or "").strip()
+                or str(membership.storefront_slug or "").strip()
+                or seller_name
+            )
+            # A reseller's commercial document is its own. Never inherit the
+            # parent merchant's public contact details into that export.
+            seller_email = None
+            seller_phone = None
     items = repository.list_quote_draft_items(
         session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
     )
     return PublicQuoteDocument(
-        tenant_name=tenant.name,
-        contact_email=profile.contact_email if profile else None,
-        contact_phone=profile.contact_phone if profile else None,
+        tenant_name=seller_name,
+        contact_email=seller_email,
+        contact_phone=seller_phone,
         quote=_localized_quote_response(
             session,
             draft=draft,

@@ -22113,6 +22113,64 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert merchant_detail.json()["pdf_url"] is None
         assert merchant_detail.json()["items"][0]["name_snapshot"] == original_name
         assert merchant_detail.json()["items"][0]["customer_note"] == "Please use blue packaging."
+        proforma_settings = {
+            "invoice_number": "PI-INTEGRATION-0001",
+            "issue_date": "2026-09-04",
+            "seller_address": "18 Export Road",
+            "seller_email": "sales@example.test",
+            "seller_phone": "+86 21 5555 0100",
+            "buyer_address": "100 Market Street",
+            "incoterm": "FOB Shanghai",
+            "payment_terms": "30% deposit, 70% before shipment",
+            "delivery_terms": "20 days after deposit",
+            "shipment_method": "Sea freight",
+            "port_of_loading": "Shanghai",
+            "port_of_destination": "Felixstowe",
+            "beneficiary_name": "Demo Merchant",
+            "bank_name": "Example International Bank",
+            "bank_address": "1 Finance Road",
+            "bank_account_number": "6222000000000000",
+            "swift_code": "EXAMPLESHXXX",
+            "freight": "12.50",
+            "remarks": "Bank charges are borne by the buyer.",
+        }
+        saved_proforma = client.patch(
+            f"/api/v1/public-quote-drafts/{quote_id}/settings",
+            json={
+                "locale": "zh-CN",
+                "style": "indigo",
+                "proforma_invoice": proforma_settings,
+            },
+        )
+        assert saved_proforma.status_code == 200, saved_proforma.text
+        assert saved_proforma.json()["proforma_invoice"] == proforma_settings
+
+        merchant_proforma_pdf = client.get(
+            f"/api/v1/public-quote-drafts/{quote_id}/pdf",
+            params={"document_type": "proforma_invoice"},
+        )
+        assert merchant_proforma_pdf.status_code == 200, merchant_proforma_pdf.text
+        assert merchant_proforma_pdf.content.startswith(b"%PDF")
+        assert "PI-INTEGRATION-0001.pdf" in merchant_proforma_pdf.headers["content-disposition"]
+        merchant_proforma_xlsx = client.get(
+            f"/api/v1/public-quote-drafts/{quote_id}/xlsx",
+            params={"document_type": "proforma_invoice"},
+        )
+        assert merchant_proforma_xlsx.status_code == 200, merchant_proforma_xlsx.text
+        proforma_workbook = load_workbook(BytesIO(merchant_proforma_xlsx.content), data_only=False)
+        proforma_sheet = proforma_workbook["形式发票"]
+        proforma_values = [cell.value for row in proforma_sheet.iter_rows() for cell in row]
+        assert proforma_sheet["A1"].value == "形式发票"
+        assert "PI-INTEGRATION-0001" in proforma_values
+        assert "FOB Shanghai" in proforma_values
+        assert "Example International Bank" in proforma_values
+        assert float(original_price * 2 + Decimal("12.50")) in proforma_values
+        proforma_workbook.close()
+
+        with SessionLocal() as session:
+            stored_draft = session.get(PublicQuoteDraftRow, quote_id)
+            assert stored_draft is not None
+            assert stored_draft.snapshot["proforma_invoice"]["invoice_number"] == "PI-INTEGRATION-0001"
         merchant_pdf = client.get(
             f"/api/v1/public-quote-drafts/{quote_id}/pdf"
         )

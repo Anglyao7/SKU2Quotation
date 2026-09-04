@@ -158,6 +158,31 @@
 .quote-editor-extra { padding-top: 14px; border-top: 1px solid var(--gray-a5); }
 .quote-extra-row-content .quote-editor-textarea { display: block; }
 
+.quote-editor-proforma {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--gray-a5);
+}
+
+.quote-proforma-section {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid color-mix(in srgb, var(--quote-accent) 16%, var(--gray-a5));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--quote-accent) 3%, var(--color-panel));
+}
+
+.quote-proforma-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
 /* The toolbar controls the whole quote and now lives in the left editor. */
 .quote-editor-panel .quote-workbench-toolbar {
   gap: 14px;
@@ -1563,6 +1588,68 @@
 .quote-preview-extra-row strong { color: var(--quote-accent); overflow-wrap: anywhere; }
 .quote-preview-extra-row span { padding-inline-start: 12px; border-inline-start: 1px solid color-mix(in srgb, var(--quote-accent) 20%, var(--gray-a6)); color: var(--gray-11); overflow-wrap: anywhere; white-space: pre-wrap; }
 
+.quote-proforma-preview {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+}
+
+.quote-proforma-parties {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.quote-proforma-parties > section {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-height: 92px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--quote-accent) 18%, var(--gray-a5));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--quote-accent) 3%, var(--color-panel));
+}
+
+.quote-proforma-parties strong { color: var(--gray-12); font-size: 14px; }
+.quote-proforma-parties span { color: var(--gray-10); font-size: 11px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.quote-proforma-meta { margin-top: -4px; }
+
+.quote-proforma-totals {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  justify-self: end;
+  min-width: min(100%, 330px);
+  margin-top: -18px;
+  border: 1px solid var(--gray-a5);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.quote-proforma-totals > * {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--gray-a4);
+}
+
+.quote-proforma-totals > :nth-last-child(-n + 2) { border-bottom: 0; }
+.quote-proforma-totals > strong { text-align: end; font-variant-numeric: tabular-nums; }
+.quote-proforma-totals .is-grand-total { color: var(--quote-accent); background: color-mix(in srgb, var(--quote-accent) 8%, var(--color-panel)); font-size: 15px; }
+
+.quote-proforma-preview-section {
+  display: grid;
+  gap: 9px;
+  padding-top: 14px;
+  border-top: 2px solid color-mix(in srgb, var(--quote-accent) 22%, var(--gray-a5));
+}
+
+.quote-proforma-preview-section > h3 { color: var(--quote-accent); }
+.quote-proforma-preview-section > div { display: grid; gap: 0; border: 1px solid var(--gray-a5); border-radius: 9px; overflow: hidden; }
+.quote-proforma-preview-section > div > div { display: grid; grid-template-columns: minmax(130px, 28%) minmax(0, 1fr); gap: 12px; padding: 8px 11px; border-bottom: 1px solid var(--gray-a4); }
+.quote-proforma-preview-section > div > div:last-child { border-bottom: 0; }
+.quote-proforma-preview-section span { color: var(--gray-10); font-size: 11px; }
+.quote-proforma-preview-section strong { min-width: 0; font-size: 11px; font-weight: 550; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .quote-preview-footer {
   align-items: flex-start;
   margin-top: 24px;
@@ -1635,6 +1722,8 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .quote-proforma-parties { grid-template-columns: 1fr; }
+
   .quote-preview-table {
     overflow: hidden;
   }
@@ -1698,6 +1787,7 @@
   .quote-preview-mode-switch { width: 100%; }
 
   .quote-editor-item-fields { grid-template-columns: 1fr; }
+  .quote-proforma-fields { grid-template-columns: 1fr; }
   .quote-editor-item-field--wide { grid-column: auto; }
   .quote-customer-request-grid { grid-template-columns: 1fr; }
   .quote-live-product-grid { grid-template-columns: 1fr; }

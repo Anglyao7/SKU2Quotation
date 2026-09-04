@@ -1871,6 +1871,28 @@ export interface PublicQuoteDraftItem {
   skuVersion: number;
 }
 
+export interface ProformaInvoiceSettings {
+  invoiceNumber: string;
+  issueDate: string;
+  sellerAddress: string;
+  sellerEmail: string;
+  sellerPhone: string;
+  buyerAddress: string;
+  incoterm: string;
+  paymentTerms: string;
+  deliveryTerms: string;
+  shipmentMethod: string;
+  portOfLoading: string;
+  portOfDestination: string;
+  beneficiaryName: string;
+  bankName: string;
+  bankAddress: string;
+  bankAccountNumber: string;
+  swiftCode: string;
+  freight: number;
+  remarks: string;
+}
+
 export interface PublicQuoteDraft {
   id: string;
   tenantId: string;
@@ -1898,6 +1920,7 @@ export interface PublicQuoteDraft {
   disclaimer: string;
   disclaimerVersion: string;
   extraInformation: QuoteExtraInformation[];
+  proformaInvoice: ProformaInvoiceSettings;
   items: PublicQuoteDraftItem[];
 }
 

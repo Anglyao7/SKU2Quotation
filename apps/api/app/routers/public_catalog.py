@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from typing import Literal
 from uuid import UUID
 from urllib.parse import unquote
 
@@ -1066,16 +1067,22 @@ def _quote_image_loader(session: Session):
     return load
 
 
-def _render_quote_xlsx(document, *, session: Session) -> bytes:
+def _render_quote_xlsx(
+    document,
+    *,
+    session: Session,
+    document_type: Literal["quotation", "proforma_invoice"] = "quotation",
+) -> bytes:
     image_loader = _quote_image_loader(session)
     template = document.excel_template
-    if template is not None:
+    if document_type == "quotation" and template is not None:
         try:
             with get_object_storage().materialize(template.object_key) as path:
                 return render_public_quote_draft_xlsx(
                     document,
                     template_path=path,
                     image_loader=image_loader,
+                    document_type=document_type,
                 )
         except Exception:
             logger.exception(
@@ -1085,7 +1092,19 @@ def _render_quote_xlsx(document, *, session: Session) -> bytes:
     return render_public_quote_draft_xlsx(
         document,
         image_loader=image_loader,
+        document_type=document_type,
     )
+
+
+def _document_number(
+    document,
+    document_type: Literal["quotation", "proforma_invoice"],
+) -> str:
+    if document_type == "proforma_invoice":
+        settings = document.quote.proforma_invoice
+        if settings is not None and settings.invoice_number:
+            return settings.invoice_number
+    return document.quote.quote_number
 
 
 @router.get("/api/quotes/{quote_draft_id}/pdf")
@@ -1161,6 +1180,7 @@ def download_public_quote_draft_xlsx(
 def download_tenant_quote_draft_pdf(
     quote_draft_id: UUID,
     request: Request,
+    document_type: Literal["quotation", "proforma_invoice"] = Query("quotation"),
     session: Session = Depends(get_authenticated_session),
 ) -> Response:
     context = current_context(session)
@@ -1188,10 +1208,11 @@ def download_tenant_quote_draft_pdf(
         content=render_public_quote_draft_pdf(
             document,
             image_loader=_quote_image_loader(session),
+            document_type=document_type,
         ),
         media_type="application/pdf",
         headers=_document_headers(
-            quote_number=document.quote.quote_number, extension="pdf"
+            quote_number=_document_number(document, document_type), extension="pdf"
         ),
     )
 
@@ -1200,6 +1221,7 @@ def download_tenant_quote_draft_pdf(
 def download_tenant_quote_draft_xlsx(
     quote_draft_id: UUID,
     request: Request,
+    document_type: Literal["quotation", "proforma_invoice"] = Query("quotation"),
     session: Session = Depends(get_authenticated_session),
 ) -> Response:
     context = current_context(session)
@@ -1224,9 +1246,13 @@ def download_tenant_quote_draft_xlsx(
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return Response(
-        content=_render_quote_xlsx(document, session=session),
+        content=_render_quote_xlsx(
+            document,
+            session=session,
+            document_type=document_type,
+        ),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=_document_headers(
-            quote_number=document.quote.quote_number, extension="xlsx"
+            quote_number=_document_number(document, document_type), extension="xlsx"
         ),
     )

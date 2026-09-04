@@ -64,10 +64,12 @@ import {
   quoteSeparator,
   quoteText,
   quoteUnit,
+  proformaText,
 } from "../quoteLocalization";
 import type {
   MerchantSettings,
   ProductDetail,
+  ProformaInvoiceSettings,
   PublicQuoteDraft,
   PublicQuoteDraftItem,
   QuoteExtraInformation,
@@ -80,6 +82,7 @@ import "./QuoteWorkbenchPage.css";
 
 type QuoteDocumentStyle = PublicQuoteDraft["documentStyle"];
 type QuotePreviewMode = "pdf" | "excel";
+type QuoteDocumentTab = "quotation" | "proforma" | "sales-contract" | "commercial-invoice" | "packing-list" | "customs-declaration";
 type QuoteItemEditField = "unitPrice" | "quantity" | "name" | "description" | "specification" | "category" | "unitCode";
 type QuoteItemEdit = Partial<Record<QuoteItemEditField, string>>;
 type PreviewPan = { x: number; y: number };
@@ -96,6 +99,7 @@ type QuoteSettingsPayload = {
   quoteNumber: string;
   visibleColumns: QuoteTemplateField[];
   extraInformation: QuoteExtraInformation[];
+  proformaInvoice: ProformaInvoiceSettings;
 };
 type QuoteCurrencyOption = {
   currency: string;
@@ -139,7 +143,8 @@ function quoteSettingsEqual(left: QuoteSettingsPayload | undefined, right: Quote
     && left.extraInformation.every((entry, index) => (
       entry.title === right.extraInformation[index]?.title
       && entry.content === right.extraInformation[index]?.content
-    )));
+    ))
+    && JSON.stringify(left.proformaInvoice) === JSON.stringify(right.proformaInvoice));
 }
 
 const locales: Array<{ value: StorefrontLocale; label: string; flag: string }> = [
@@ -433,6 +438,28 @@ export function QuoteWorkbenchPage() {
   const [style, setStyle] = useState<QuoteDocumentStyle>("indigo");
   const [templateId, setTemplateId] = useState<string>("");
   const [quoteNumber, setQuoteNumber] = useState("");
+  const [activeDocument, setActiveDocument] = useState<QuoteDocumentTab>("quotation");
+  const [proformaInvoice, setProformaInvoice] = useState<ProformaInvoiceSettings>({
+    invoiceNumber: "",
+    issueDate: "",
+    sellerAddress: "",
+    sellerEmail: "",
+    sellerPhone: "",
+    buyerAddress: "",
+    incoterm: "",
+    paymentTerms: "",
+    deliveryTerms: "",
+    shipmentMethod: "",
+    portOfLoading: "",
+    portOfDestination: "",
+    beneficiaryName: "",
+    bankName: "",
+    bankAddress: "",
+    bankAccountNumber: "",
+    swiftCode: "",
+    freight: 0,
+    remarks: "",
+  });
   const [previewMode, setPreviewMode] = useState<QuotePreviewMode>("pdf");
   const [visibleColumns, setVisibleColumns] = useState<QuoteTemplateField[]>(defaultVisibleTableFields);
   const [extraInformation, setExtraInformation] = useState<QuoteExtraInformation[]>([]);
@@ -508,7 +535,8 @@ export function QuoteWorkbenchPage() {
     extraInformation: extraInformation
       .filter((entry) => entry.title.trim() && entry.content.trim())
       .map((entry) => ({ title: entry.title.trim(), content: entry.content.trim() })),
-  }), [activeColumns, extraInformation, locale, quoteNumber, style, templateId]);
+    proformaInvoice: { ...proformaInvoice },
+  }), [activeColumns, extraInformation, locale, proformaInvoice, quoteNumber, style, templateId]);
   const previewGrid = useMemo(
     () => activeColumns.map((field) => `minmax(0, ${previewColumnWeights[field] ?? 1}fr)`).join(" "),
     [activeColumns],
@@ -544,6 +572,9 @@ export function QuoteWorkbenchPage() {
   // read-only workbench never sends a mutation that is guaranteed to fail.
   const isReadOnly = Boolean(draft?.readOnly);
   const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
+  const documentSellerName = isCustomerSubaccount
+    ? profile?.user.displayName?.trim() || ""
+    : settings?.name || "";
   const canEditPrices = draft?.status === "PENDING_CONFIRMATION" && !isReadOnly;
   const hasPendingItemEdits = Object.values(itemEdits).some((edit) => Object.keys(edit).length > 0);
   const currencyOptions = useMemo<QuoteCurrencyOption[]>(() => {
@@ -730,6 +761,7 @@ export function QuoteWorkbenchPage() {
       setStyle(nextDraft.documentStyle);
       setTemplateId(nextDraft.quoteTemplateId ?? "");
       setQuoteNumber(nextDraft.quoteNumber);
+      setProformaInvoice(nextDraft.proformaInvoice);
       setVisibleColumns(nextActiveColumns);
       setExtraInformation(nextDraft.extraInformation ?? []);
       setCollapsedExtraRows({});
@@ -740,6 +772,7 @@ export function QuoteWorkbenchPage() {
         quoteNumber: nextDraft.quoteNumber.trim(),
         visibleColumns: [...nextActiveColumns],
         extraInformation: (nextDraft.extraInformation ?? []).map((entry) => ({ ...entry })),
+        proformaInvoice: { ...nextDraft.proformaInvoice },
       };
       loadedDraftIdRef.current = nextDraft.id;
       void getDashboard().then((dashboard) => setMarket(dashboard.market)).catch(() => undefined);
@@ -846,6 +879,18 @@ export function QuoteWorkbenchPage() {
       if (!quiet) setError(t("报价单编号不能为空。"));
       return undefined;
     }
+    const proformaIsValid = Boolean(
+      payload.proformaInvoice.invoiceNumber.trim()
+      && payload.proformaInvoice.issueDate,
+    );
+    if (activeDocument === "proforma" && !payload.proformaInvoice.invoiceNumber.trim()) {
+      if (!quiet) setError(`${proformaText(payload.locale, "invoice_number")}不能为空。`);
+      return undefined;
+    }
+    if (activeDocument === "proforma" && !payload.proformaInvoice.issueDate) {
+      if (!quiet) setError(`${proformaText(payload.locale, "issue_date")}不能为空。`);
+      return undefined;
+    }
     const previous = savedSettingsRef.current;
     savedSettingsRef.current = payload;
     if (!quiet) {
@@ -860,17 +905,23 @@ export function QuoteWorkbenchPage() {
         quoteNumber: payload.quoteNumber,
         visibleColumns: payload.visibleColumns,
         extraInformation: payload.extraInformation,
+        // A partially typed required PI field must not block unrelated
+        // quotation edits. Leaving the nested object out preserves the last
+        // valid PI snapshot on the server until the PI is valid again.
+        proformaInvoice: proformaIsValid ? payload.proformaInvoice : undefined,
       });
       setDraft(next);
       setQuoteNumber(next.quoteNumber);
       const nextVisibleColumns = (next.visibleColumns.length ? next.visibleColumns : payload.visibleColumns).slice(0, MAX_PDF_COLUMNS);
       setVisibleColumns(nextVisibleColumns);
       setExtraInformation(next.extraInformation ?? payload.extraInformation);
+      setProformaInvoice(next.proformaInvoice);
       savedSettingsRef.current = {
         ...payload,
         quoteNumber: next.quoteNumber.trim(),
         visibleColumns: [...nextVisibleColumns],
         extraInformation: (next.extraInformation ?? payload.extraInformation).map((entry) => ({ ...entry })),
+        proformaInvoice: { ...next.proformaInvoice },
       };
       return next;
     } catch (reason) {
@@ -882,7 +933,7 @@ export function QuoteWorkbenchPage() {
     } finally {
       if (!quiet) setSaving(false);
     }
-  }, [notify, t]);
+  }, [activeDocument, notify, t]);
 
   const save = useCallback(async () => {
     if (!draft) return draft;
@@ -917,6 +968,7 @@ export function QuoteWorkbenchPage() {
 
   const download = async (type: "pdf" | "xlsx") => {
     if (!draft) return;
+    if (activeDocument !== "quotation" && activeDocument !== "proforma") return;
     setDownloading(type);
     setError("");
     try {
@@ -924,7 +976,11 @@ export function QuoteWorkbenchPage() {
       // implicit settings write while doing so.
       const saved = draft.readOnly ? draft : await save();
       if (!saved) return;
-      await downloadPublicQuoteDraftDocument(saved.id, saved.quoteNumber, type);
+      const documentType = activeDocument === "proforma" ? "proforma_invoice" : "quotation";
+      const documentNumber = documentType === "proforma_invoice"
+        ? saved.proformaInvoice.invoiceNumber
+        : saved.quoteNumber;
+      await downloadPublicQuoteDraftDocument(saved.id, documentNumber, type, documentType);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("报价文件下载失败"));
     } finally {
@@ -1157,6 +1213,7 @@ export function QuoteWorkbenchPage() {
       const destinationCurrency = normalizedCurrency(targetCurrency);
       const next = await convertPublicQuoteDraftCurrency(draft.id, destinationCurrency);
       setDraft(next);
+      setProformaInvoice(next.proformaInvoice);
       setPriceDrafts(Object.fromEntries(next.items.map((item) => [item.id, item.unitPrice.toFixed(2)])));
       setConversionOpen(false);
       const rateText = conversionRate ? compactRate(conversionRate) : "";
@@ -1210,21 +1267,60 @@ export function QuoteWorkbenchPage() {
     return previewValue(effective, column.field, locale);
   };
 
-  const renderExcelPreview = () => {
+  const renderExcelPreview = (documentType: "quotation" | "proforma_invoice" = "quotation") => {
     if (!draft) return null;
-    const columns = excelPreviewColumns;
-    const extraRows = extraInformation.filter((entry) => entry.title.trim() && entry.content.trim());
+    const isProforma = documentType === "proforma_invoice";
+    const columns = isProforma
+      ? ([
+        "serial_number",
+        "product_image",
+        "sku_code",
+        "product_name",
+        "specification",
+        "quantity",
+        "unit_code",
+        "unit_price",
+        "line_total",
+      ] as QuoteTemplateField[]).map((field, index) => ({
+        key: spreadsheetColumnName(index + 1),
+        header: fieldLabel(field, t, undefined, locale),
+        field,
+        width: excelPreviewColumnWidth(field),
+      }))
+      : excelPreviewColumns;
+    const hasConfiguredBank = Boolean(proformaInvoice.bankName || proformaInvoice.bankAddress || proformaInvoice.bankAccountNumber || proformaInvoice.swiftCode);
+    const proformaRows = [
+      { title: proformaText(locale, "seller_address"), content: proformaInvoice.sellerAddress },
+      { title: proformaText(locale, "buyer_address"), content: proformaInvoice.buyerAddress },
+      { title: proformaText(locale, "incoterm"), content: proformaInvoice.incoterm },
+      { title: proformaText(locale, "payment_terms"), content: proformaInvoice.paymentTerms },
+      { title: proformaText(locale, "delivery_terms"), content: proformaInvoice.deliveryTerms },
+      { title: proformaText(locale, "shipment_method"), content: proformaInvoice.shipmentMethod },
+      { title: proformaText(locale, "port_of_loading"), content: proformaInvoice.portOfLoading },
+      { title: proformaText(locale, "port_of_destination"), content: proformaInvoice.portOfDestination },
+      { title: proformaText(locale, "beneficiary_name"), content: hasConfiguredBank ? (proformaInvoice.beneficiaryName || documentSellerName) : "" },
+      { title: proformaText(locale, "bank_name"), content: proformaInvoice.bankName },
+      { title: proformaText(locale, "bank_address"), content: proformaInvoice.bankAddress },
+      { title: proformaText(locale, "bank_account_number"), content: proformaInvoice.bankAccountNumber },
+      { title: proformaText(locale, "swift_code"), content: proformaInvoice.swiftCode },
+      { title: proformaText(locale, "remarks"), content: proformaInvoice.remarks },
+    ].filter((entry) => entry.content.trim());
+    const extraRows = isProforma
+      ? proformaRows
+      : extraInformation.filter((entry) => entry.title.trim() && entry.content.trim());
     const itemStartRow = 5;
     const totalRow = itemStartRow + draft.items.length;
-    const sheetName = quoteText(locale, "sheet_name");
+    const documentTitle = isProforma ? proformaText(locale, "title") : quoteText(locale, "document_title");
+    const documentNumber = isProforma ? proformaInvoice.invoiceNumber : quoteNumber;
+    const sheetName = isProforma ? proformaText(locale, "sheet_name") : quoteText(locale, "sheet_name");
     return (
       <div className="quote-excel-preview-stage">
         <div className="quote-excel-formula-bar" aria-hidden="true">
           <span className="quote-excel-name-box">A1</span>
           <span className="quote-excel-fx">fx</span>
-          <span>{quoteText(locale, "document_title")} · {quoteNumber}</span>
+          <span>{documentTitle} · {documentNumber}</span>
         </div>
-        <div className="quote-excel-scroll" tabIndex={0} aria-label={t("Excel 报价单预览，可横向和纵向滚动查看完整表格")}>
+        <div className="quote-excel-scroll" tabIndex={0} aria-label={`${documentTitle} Excel`}>
           <table className="quote-excel-sheet">
             <colgroup>
               <col className="quote-excel-row-number-column" />
@@ -1239,16 +1335,16 @@ export function QuoteWorkbenchPage() {
             <tbody>
               <tr className="quote-excel-title-row">
                 <th className="quote-excel-row-number">1</th>
-                <td colSpan={columns.length}><strong>{quoteText(locale, "document_title")}</strong></td>
+                <td colSpan={columns.length}><strong>{documentTitle}</strong></td>
               </tr>
               <tr className="quote-excel-meta-row">
                 <th className="quote-excel-row-number">2</th>
                 <td colSpan={columns.length}>
                   <div className="quote-excel-meta-grid">
-                    <span><small>{quoteText(locale, "merchant")}</small><strong>{settings?.name || "—"}</strong></span>
-                    <span><small>{quoteText(locale, "quote_number")}</small><strong>{quoteNumber}</strong></span>
-                    <span><small>{quoteText(locale, "customer")}</small><strong>{draft.customerCompany || draft.customerName}</strong></span>
-                    <span><small>{quoteText(locale, "date")}</small><strong>{quoteDateOnly(draft.createdAt)}</strong></span>
+                    <span><small>{isProforma ? proformaText(locale, "seller") : quoteText(locale, "merchant")}</small><strong>{documentSellerName || "—"}</strong></span>
+                    <span><small>{isProforma ? proformaText(locale, "invoice_number") : quoteText(locale, "quote_number")}</small><strong>{documentNumber}</strong></span>
+                    <span><small>{isProforma ? proformaText(locale, "buyer") : quoteText(locale, "customer")}</small><strong>{draft.customerCompany || draft.customerName}</strong></span>
+                    <span><small>{isProforma ? proformaText(locale, "issue_date") : quoteText(locale, "date")}</small><strong>{isProforma ? proformaInvoice.issueDate : quoteDateOnly(draft.createdAt)}</strong></span>
                     <span><small>{quoteText(locale, "currency")}</small><strong>{draft.currency}</strong></span>
                   </div>
                 </td>
@@ -1267,20 +1363,26 @@ export function QuoteWorkbenchPage() {
                   {columns.map((column) => <td key={`${item.id}-${column.key}`} title={column.field ? previewValue(effectiveItem(item), column.field, locale) : ""}>{renderExcelPreviewCell(item, column)}</td>)}
                 </tr>
               ))}
-              <tr className="quote-excel-total-row">
-                <th className="quote-excel-row-number">{totalRow}</th>
-                {columns.length > 1 ? <td colSpan={columns.length - 1}>{quoteText(locale, "total")}</td> : null}
-                <td>{money(previewTotal, draft.currency)}</td>
-              </tr>
+              {(isProforma ? [
+                { label: proformaText(locale, "subtotal"), value: previewTotal },
+                { label: proformaText(locale, "freight"), value: proformaInvoice.freight },
+                { label: proformaText(locale, "grand_total"), value: previewTotal + proformaInvoice.freight },
+              ] : [{ label: quoteText(locale, "total"), value: previewTotal }]).map((row, index) => (
+                <tr className="quote-excel-total-row" key={row.label}>
+                  <th className="quote-excel-row-number">{totalRow + index}</th>
+                  {columns.length > 1 ? <td colSpan={columns.length - 1}>{row.label}</td> : null}
+                  <td>{money(row.value, draft.currency)}</td>
+                </tr>
+              ))}
               {extraRows.map((entry, index) => (
                 <tr className="quote-excel-extra-row" key={`${entry.title}-${index}`}>
-                  <th className="quote-excel-row-number">{totalRow + index + 1}</th>
+                  <th className="quote-excel-row-number">{totalRow + index + (isProforma ? 3 : 1)}</th>
                   <td colSpan={columns.length}><strong>{entry.title}</strong><span>{entry.content}</span></td>
                 </tr>
               ))}
               {draft.notes ? (
                 <tr className="quote-excel-notes-row">
-                  <th className="quote-excel-row-number">{totalRow + extraRows.length + 1}</th>
+                  <th className="quote-excel-row-number">{totalRow + extraRows.length + (isProforma ? 3 : 1)}</th>
                   <td colSpan={columns.length}><strong>{quoteText(locale, "notes")}</strong><span>{draft.notes}</span></td>
                 </tr>
               ) : null}
@@ -1290,6 +1392,112 @@ export function QuoteWorkbenchPage() {
         <div className="quote-excel-sheet-tabs">
           <button type="button" className="is-active"><FileXls />{sheetName}</button>
           <span>{t("{count} 个商品 · {columns} 列", { count: draft.items.length, columns: columns.length })}</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderProformaPdfPreview = () => {
+    if (!draft) return null;
+    const accent = styles.find((row) => row.value === style)?.color ?? styles[0].color;
+    const tradeRows = [
+      [proformaText(locale, "incoterm"), proformaInvoice.incoterm],
+      [proformaText(locale, "payment_terms"), proformaInvoice.paymentTerms],
+      [proformaText(locale, "delivery_terms"), proformaInvoice.deliveryTerms],
+      [proformaText(locale, "shipment_method"), proformaInvoice.shipmentMethod],
+      [proformaText(locale, "port_of_loading"), proformaInvoice.portOfLoading],
+      [proformaText(locale, "port_of_destination"), proformaInvoice.portOfDestination],
+    ].filter((row) => row[1]);
+    const hasBankDetails = Boolean(proformaInvoice.bankName || proformaInvoice.bankAddress || proformaInvoice.bankAccountNumber || proformaInvoice.swiftCode);
+    const bankRows = [
+      [proformaText(locale, "beneficiary_name"), proformaInvoice.beneficiaryName || documentSellerName],
+      [proformaText(locale, "bank_name"), proformaInvoice.bankName],
+      [proformaText(locale, "bank_address"), proformaInvoice.bankAddress],
+      [proformaText(locale, "bank_account_number"), proformaInvoice.bankAccountNumber],
+      [proformaText(locale, "swift_code"), proformaInvoice.swiftCode],
+    ].filter((row) => row[1]);
+    return (
+      <div className="quote-preview-stage">
+        <div
+          ref={previewViewportRef}
+          className={`quote-preview-viewport${previewDragging ? " is-dragging" : ""}`}
+          tabIndex={0}
+          aria-label={proformaText(locale, "title")}
+          onPointerDown={startPreviewPan}
+          onPointerMove={movePreviewPan}
+          onPointerUp={endPreviewPan}
+          onPointerCancel={endPreviewPan}
+          onWheel={handlePreviewWheel}
+          onKeyDown={handlePreviewKeyDown}
+        >
+          <div className="quote-preview-pan-layer" style={{ "--quote-preview-pan-x": `${previewPan.x}px`, "--quote-preview-pan-y": `${previewPan.y}px` } as React.CSSProperties}>
+            <div ref={previewSheetRef} className="quote-preview-sheet" style={{ "--quote-preview-scale": previewScale / 100 } as React.CSSProperties}>
+              <Card className="quote-preview-card quote-proforma-preview" style={{ "--quote-accent": accent } as React.CSSProperties}>
+                <div className="quote-preview-header">
+                  <div><Heading size="7">{proformaText(locale, "title")}</Heading><Text size="2" color="gray">{proformaInvoice.invoiceNumber}</Text></div>
+                </div>
+
+                <div className="quote-proforma-parties">
+                  <section>
+                    <Text size="1" color="gray">{proformaText(locale, "seller")}</Text>
+                    <strong>{documentSellerName || "—"}</strong>
+                    {proformaInvoice.sellerAddress ? <span>{proformaInvoice.sellerAddress}</span> : null}
+                    {proformaInvoice.sellerEmail ? <span>{proformaInvoice.sellerEmail}</span> : null}
+                    {proformaInvoice.sellerPhone ? <span>{proformaInvoice.sellerPhone}</span> : null}
+                  </section>
+                  <section>
+                    <Text size="1" color="gray">{proformaText(locale, "buyer")}</Text>
+                    <strong>{draft.customerCompany || draft.customerName}</strong>
+                    <span>{draft.customerName}</span>
+                    {proformaInvoice.buyerAddress ? <span>{proformaInvoice.buyerAddress}</span> : null}
+                    {draft.customerEmail ? <span>{draft.customerEmail}</span> : null}
+                    {draft.customerPhone ? <span>{draft.customerPhone}</span> : null}
+                  </section>
+                </div>
+
+                <div className="quote-preview-meta quote-proforma-meta">
+                  <div><span>{proformaText(locale, "invoice_number")}</span><strong>{proformaInvoice.invoiceNumber}</strong></div>
+                  <div><span>{proformaText(locale, "issue_date")}</span><strong>{proformaInvoice.issueDate}</strong></div>
+                  <div><span>{proformaText(locale, "valid_until")}</span><strong>{quoteDateOnly(draft.validUntil)}</strong></div>
+                  <div><span>{quoteText(locale, "currency")}</span><strong>{draft.currency}</strong></div>
+                </div>
+
+                <div className="quote-preview-table">
+                  <div className="quote-preview-row quote-preview-head" style={{ gridTemplateColumns: previewGrid }}>{activeColumns.map((field) => <span className="quote-preview-cell" key={field}>{fieldLabel(field, t, selectedTemplate, locale)}</span>)}</div>
+                  {draft.items.map((item) => <div className="quote-preview-row" style={{ gridTemplateColumns: previewGrid }} key={item.id}>{activeColumns.map((field) => <span className="quote-preview-cell" key={`${item.id}-${field}`}>{renderPreviewCell(item, field)}</span>)}</div>)}
+                </div>
+
+                <div className="quote-proforma-totals">
+                  <span>{proformaText(locale, "subtotal")}</span><strong>{money(previewTotal, draft.currency)}</strong>
+                  <span>{proformaText(locale, "freight")}</span><strong>{money(proformaInvoice.freight, draft.currency)}</strong>
+                  <span className="is-grand-total">{proformaText(locale, "grand_total")}</span><strong className="is-grand-total">{money(previewTotal + proformaInvoice.freight, draft.currency)}</strong>
+                </div>
+
+                {tradeRows.length ? (
+                  <section className="quote-proforma-preview-section">
+                    <Heading size="3">{proformaText(locale, "trade_terms")}</Heading>
+                    <div>{tradeRows.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
+                  </section>
+                ) : null}
+                {hasBankDetails ? (
+                  <section className="quote-proforma-preview-section">
+                    <Heading size="3">{proformaText(locale, "bank_details")}</Heading>
+                    <div>{bankRows.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
+                  </section>
+                ) : null}
+                {proformaInvoice.remarks ? <Card className="quote-preview-notes"><ClipboardText /><div><Text size="1" color="gray">{proformaText(locale, "remarks")}</Text><Text as="div">{proformaInvoice.remarks}</Text></div></Card> : null}
+                {draft.notes ? <Card className="quote-preview-notes"><ClipboardText /><div><Text size="1" color="gray">{quoteText(locale, "notes")}</Text><Text as="div">{draft.notes}</Text></div></Card> : null}
+              </Card>
+            </div>
+          </div>
+        </div>
+        <div className="quote-preview-zoom" aria-label={t("预览大小")}>
+          <Text size="1" color="gray" className="quote-preview-drag-hint">{t("拖动查看")}</Text>
+          <button type="button" className="quote-preview-zoom-step" aria-label={t("缩小预览")} onClick={() => changePreviewScale(previewScale - PREVIEW_SCALE_STEP)}>−</button>
+          <input type="range" min={PREVIEW_SCALE_MIN} max={PREVIEW_SCALE_MAX} step={PREVIEW_SCALE_STEP} value={previewScale} aria-label={t("预览大小")} onChange={(event) => changePreviewScale(Number(event.target.value))} />
+          <button type="button" className="quote-preview-zoom-step" aria-label={t("放大预览")} onClick={() => changePreviewScale(previewScale + PREVIEW_SCALE_STEP)}>+</button>
+          <output>{previewScale}%</output>
+          <button type="button" className="quote-preview-fit" onClick={fitPreviewToViewport}>{t("适合窗口")}</button>
         </div>
       </div>
     );
@@ -1394,16 +1602,126 @@ export function QuoteWorkbenchPage() {
     );
   };
 
+  const updateProformaInvoice = (patch: Partial<ProformaInvoiceSettings>) => {
+    setProformaInvoice((current) => ({ ...current, ...patch }));
+  };
+
+  const renderProformaEditor = () => (
+    <section className="quote-editor-proforma" aria-label={proformaText(locale, "title")}>
+      <div className="quote-editor-items-heading">
+        <div>
+          <Text size="2" weight="medium">{proformaText(locale, "title")}</Text>
+          <Text size="1" color="gray">{proformaText(locale, "trade_terms")} · {proformaText(locale, "bank_details")}</Text>
+        </div>
+        <Badge color="blue">PI</Badge>
+      </div>
+
+      <div className="quote-proforma-section">
+        <Text size="1" weight="bold" color="gray">{proformaText(locale, "seller")}</Text>
+        <div className="quote-proforma-fields">
+          <label className="quote-editor-item-field quote-editor-item-field--wide">
+            <Text size="1" color="gray">{proformaText(locale, "seller_address")}</Text>
+            <textarea className="quote-editor-textarea" rows={2} value={proformaInvoice.sellerAddress} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ sellerAddress: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{quoteText(locale, "email")}</Text>
+            <TextField.Root type="email" value={proformaInvoice.sellerEmail} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ sellerEmail: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{quoteText(locale, "phone")}</Text>
+            <TextField.Root value={proformaInvoice.sellerPhone} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ sellerPhone: event.target.value })} />
+          </label>
+        </div>
+      </div>
+
+      <div className="quote-proforma-section">
+        <Text size="1" weight="bold" color="gray">{proformaText(locale, "buyer")}</Text>
+        <label className="quote-editor-item-field">
+          <Text size="1" color="gray">{proformaText(locale, "buyer_address")}</Text>
+          <textarea className="quote-editor-textarea" rows={2} value={proformaInvoice.buyerAddress} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ buyerAddress: event.target.value })} />
+        </label>
+      </div>
+
+      <div className="quote-proforma-section">
+        <Text size="1" weight="bold" color="gray">{proformaText(locale, "trade_terms")}</Text>
+        <div className="quote-proforma-fields">
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{proformaText(locale, "issue_date")}</Text>
+            <TextField.Root type="date" value={proformaInvoice.issueDate} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ issueDate: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{proformaText(locale, "incoterm")}</Text>
+            <TextField.Root value={proformaInvoice.incoterm} disabled={!canEditPrices} placeholder="FOB / CIF / EXW" onChange={(event) => updateProformaInvoice({ incoterm: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field quote-editor-item-field--wide">
+            <Text size="1" color="gray">{proformaText(locale, "payment_terms")}</Text>
+            <textarea className="quote-editor-textarea" rows={2} value={proformaInvoice.paymentTerms} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ paymentTerms: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field quote-editor-item-field--wide">
+            <Text size="1" color="gray">{proformaText(locale, "delivery_terms")}</Text>
+            <textarea className="quote-editor-textarea" rows={2} value={proformaInvoice.deliveryTerms} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ deliveryTerms: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{proformaText(locale, "shipment_method")}</Text>
+            <TextField.Root value={proformaInvoice.shipmentMethod} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ shipmentMethod: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{proformaText(locale, "freight")}</Text>
+            <TextField.Root type="number" min="0" step="0.01" value={String(proformaInvoice.freight)} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ freight: Number.isFinite(event.target.valueAsNumber) ? Math.max(0, event.target.valueAsNumber) : 0 })}><TextField.Slot side="left">{draft?.currency}</TextField.Slot></TextField.Root>
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{proformaText(locale, "port_of_loading")}</Text>
+            <TextField.Root value={proformaInvoice.portOfLoading} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ portOfLoading: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{proformaText(locale, "port_of_destination")}</Text>
+            <TextField.Root value={proformaInvoice.portOfDestination} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ portOfDestination: event.target.value })} />
+          </label>
+        </div>
+      </div>
+
+      <div className="quote-proforma-section">
+        <Text size="1" weight="bold" color="gray">{proformaText(locale, "bank_details")}</Text>
+        <div className="quote-proforma-fields">
+          <label className="quote-editor-item-field quote-editor-item-field--wide">
+            <Text size="1" color="gray">{proformaText(locale, "beneficiary_name")}</Text>
+            <TextField.Root value={proformaInvoice.beneficiaryName} disabled={!canEditPrices} placeholder={documentSellerName} onChange={(event) => updateProformaInvoice({ beneficiaryName: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field quote-editor-item-field--wide">
+            <Text size="1" color="gray">{proformaText(locale, "bank_name")}</Text>
+            <TextField.Root value={proformaInvoice.bankName} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ bankName: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field quote-editor-item-field--wide">
+            <Text size="1" color="gray">{proformaText(locale, "bank_address")}</Text>
+            <textarea className="quote-editor-textarea" rows={2} value={proformaInvoice.bankAddress} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ bankAddress: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{proformaText(locale, "bank_account_number")}</Text>
+            <TextField.Root value={proformaInvoice.bankAccountNumber} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ bankAccountNumber: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field">
+            <Text size="1" color="gray">{proformaText(locale, "swift_code")}</Text>
+            <TextField.Root value={proformaInvoice.swiftCode} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ swiftCode: event.target.value })} />
+          </label>
+          <label className="quote-editor-item-field quote-editor-item-field--wide">
+            <Text size="1" color="gray">{proformaText(locale, "remarks")}</Text>
+            <textarea className="quote-editor-textarea" rows={2} value={proformaInvoice.remarks} disabled={!canEditPrices} onChange={(event) => updateProformaInvoice({ remarks: event.target.value })} />
+          </label>
+        </div>
+      </div>
+    </section>
+  );
+
   const renderQuoteToolbar = () => {
     if (!draft) return null;
     return (
       <section className="quote-workbench-toolbar" aria-label={t("报价单设置")}>
       <div className="quote-workbench-fields">
         <div className="quote-workbench-number">
-          <Text size="1" color="gray">{t("报价单 ID / 编号")}</Text>
-          <div className="quote-number-control"><TextField.Root value={quoteNumber} onChange={(event) => setQuoteNumber(event.target.value)} maxLength={80} disabled={isReadOnly} /></div>
+          <Text size="1" color="gray">{activeDocument === "proforma" ? proformaText(locale, "invoice_number") : t("报价单 ID / 编号")}</Text>
+          <div className="quote-number-control"><TextField.Root value={activeDocument === "proforma" ? proformaInvoice.invoiceNumber : quoteNumber} onChange={(event) => activeDocument === "proforma" ? updateProformaInvoice({ invoiceNumber: event.target.value }) : setQuoteNumber(event.target.value)} maxLength={80} disabled={isReadOnly} /></div>
         </div>
-        <label className="quote-workbench-select"><Text size="1" color="gray">{t("商家报价模板")}</Text><Select.Root value={templateId || "default"} onValueChange={changeTemplate} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper"><Select.Item value="default">{t("系统默认模板")}</Select.Item>{readyTemplates.filter((template) => !template.isDefault).map((template) => <Select.Item key={template.id} value={template.id}>{template.name}</Select.Item>)}</Select.Content></Select.Root></label>
+        {activeDocument === "quotation" ? <label className="quote-workbench-select"><Text size="1" color="gray">{t("商家报价模板")}</Text><Select.Root value={templateId || "default"} onValueChange={changeTemplate} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper"><Select.Item value="default">{t("系统默认模板")}</Select.Item>{readyTemplates.filter((template) => !template.isDefault).map((template) => <Select.Item key={template.id} value={template.id}>{template.name}</Select.Item>)}</Select.Content></Select.Root></label> : null}
         <div className="quote-workbench-select">
           <Text size="1" color="gray"><Columns />{t("商品表格列")}</Text>
           <DropdownMenu.Root>
@@ -1426,7 +1744,7 @@ export function QuoteWorkbenchPage() {
         <Button variant="soft" color="blue" disabled={!canOpenCurrencyConversion || hasPendingItemEdits || converting} loading={converting} onClick={openCurrencyConversion}><CurrencyDollar />{t("币种")} · {normalizedCurrency(draft.currency)}</Button>
         <Button variant="soft" disabled={!canEditPrices || bulkSaving} onClick={() => setBulkPriceOpen(true)}><SlidersHorizontal />{t("一键调价")}</Button>
         <Text size="1" color="gray" className="quote-autosave-status" aria-live="polite">{saving || savingItems ? t("正在自动保存…") : t("已自动保存")}</Text>
-        <Button color="blue" disabled={!canEditPrices || saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{t("保存报价单")}</Button>
+        <Button color="blue" disabled={!canEditPrices || saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{activeDocument === "proforma" ? t("保存") : t("保存报价单")}</Button>
       </div>
       </section>
     );
@@ -1436,15 +1754,16 @@ export function QuoteWorkbenchPage() {
     <Card className="quote-editor-panel">
       <div className="quote-editor-panel-heading">
         <div>
-          <Text size="1" color="gray">{t("报价单设置")}</Text>
-          <Heading size="4">{t("编辑报价单")}</Heading>
+          <Text size="1" color="gray">{activeDocument === "proforma" ? "PI" : t("报价单设置")}</Text>
+          <Heading size="4">{activeDocument === "proforma" ? t("形式发票") : t("编辑报价单")}</Heading>
         </div>
         <Badge color={saving || savingItems ? "amber" : "jade"}>{saving || savingItems ? t("保存中") : t("自动保存")}</Badge>
       </div>
       {renderQuoteToolbar()}
       {renderCustomerRequest()}
+      {activeDocument === "proforma" ? renderProformaEditor() : null}
       {renderOrderItemsEditor()}
-      <section className="quote-editor-extra">
+      {activeDocument === "quotation" ? <section className="quote-editor-extra">
         <div className="quote-editor-extra-heading"><div><Text size="2" weight="medium">{t("额外信息")}</Text><Text size="1" color="gray">{t("显示在整张报价单的商品列表下方")}</Text></div><Button size="1" variant="soft" color="blue" disabled={isReadOnly || extraInformation.length >= 20} onClick={addExtraInformation}>＋ {t("添加")}</Button></div>
         {extraInformation.map((entry, index) => (
           <div className={`quote-extra-row ${collapsedExtraRows[index] ? "is-collapsed" : ""}`} key={`extra-${index}`}>
@@ -1462,7 +1781,7 @@ export function QuoteWorkbenchPage() {
             ) : null}
           </div>
         ))}
-      </section>
+      </section> : null}
     </Card>
   );
 
@@ -1493,12 +1812,14 @@ export function QuoteWorkbenchPage() {
 
   const selectedStyle = styles.find((row) => row.value === style) ?? styles[0];
 
+  const activeDocumentExportable = activeDocument === "quotation" || activeDocument === "proforma";
+
   return <div className={`core-workspace quote-workbench quote-workbench--${style}`}>
-    <Tabs.Root defaultValue="quotation" className="quote-doc-tabs">
+    <Tabs.Root value={activeDocument} onValueChange={(value) => setActiveDocument(value as QuoteDocumentTab)} className="quote-doc-tabs">
       <div className="quote-workbench-header">
         <Tabs.List className="quote-workbench-document-tabs">
           <Tabs.Trigger value="quotation"><FileText />{t("报价单")}</Tabs.Trigger>
-          <Tabs.Trigger value="proforma"><LockKey />{t("形式发票")}</Tabs.Trigger>
+          <Tabs.Trigger value="proforma"><FileText />{t("形式发票")}</Tabs.Trigger>
           <Tabs.Trigger value="sales-contract"><LockKey />{t("销售合同")}</Tabs.Trigger>
           <Tabs.Trigger value="commercial-invoice"><LockKey />{t("商业发票")}</Tabs.Trigger>
           <Tabs.Trigger value="packing-list"><LockKey />{t("装箱单")}</Tabs.Trigger>
@@ -1506,10 +1827,10 @@ export function QuoteWorkbenchPage() {
         </Tabs.List>
         <div className="quote-workbench-header-actions">
           <DropdownMenu.Root>
-            <DropdownMenu.Trigger><Button variant="soft" loading={Boolean(downloading)}><DownloadSimple />{t("导出")}{downloading ? ` ${downloading.toUpperCase()}` : ""}<CaretDown /></Button></DropdownMenu.Trigger>
-            <DropdownMenu.Content align="end"><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("pdf")}><FilePdf />{t("导出为 PDF")}</DropdownMenu.Item><DropdownMenu.Item disabled={Boolean(downloading)} onSelect={() => void download("xlsx")}><FileXls />{t("导出为 Excel")}</DropdownMenu.Item></DropdownMenu.Content>
+            <DropdownMenu.Trigger><Button variant="soft" disabled={!activeDocumentExportable} loading={Boolean(downloading)}><DownloadSimple />{t("导出")}{downloading ? ` ${downloading.toUpperCase()}` : ""}<CaretDown /></Button></DropdownMenu.Trigger>
+            <DropdownMenu.Content align="end"><DropdownMenu.Item disabled={!activeDocumentExportable || Boolean(downloading)} onSelect={() => void download("pdf")}><FilePdf />{t("导出为 PDF")}</DropdownMenu.Item><DropdownMenu.Item disabled={!activeDocumentExportable || Boolean(downloading)} onSelect={() => void download("xlsx")}><FileXls />{t("导出为 Excel")}</DropdownMenu.Item></DropdownMenu.Content>
           </DropdownMenu.Root>
-          {draft.status === "PENDING_CONFIRMATION" && !isReadOnly ? <Button color="green" disabled={confirming || saving || savingItems} loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
+          {activeDocument === "quotation" && draft.status === "PENDING_CONFIRMATION" && !isReadOnly ? <Button color="green" disabled={confirming || saving || savingItems} loading={confirming} onClick={() => void confirm()}><PaperPlaneTilt />{t("通过并通知客户")}</Button> : null}
           {draft.status === "CONFIRMED" && !isReadOnly ? <Button color="green" disabled={Boolean(statusUpdating)} loading={statusUpdating === "COMPLETED"} onClick={() => void updateStatus("COMPLETED")}><CheckCircle />{t("标记为已成交")}</Button> : null}
           {(draft.status === "PENDING_CONFIRMATION" || draft.status === "CONFIRMED") && !isReadOnly ? <Button variant="soft" color="red" disabled={confirming || Boolean(statusUpdating)} onClick={() => setCancelOpen(true)}><XCircle />{t("取消询价")}</Button> : null}
           <Button asChild variant="soft" color="gray"><Link to="/console/quotes"><ArrowLeft />{t("返回询价列表")}</Link></Button>
@@ -1724,9 +2045,19 @@ export function QuoteWorkbenchPage() {
             <button type="button" className="quote-preview-fit" onClick={fitPreviewToViewport}>{t("适合窗口")}</button>
           </div>
         </div>
-        ) : renderExcelPreview()}
+        ) : renderExcelPreview("quotation")}
       </Tabs.Content>
-      {(["proforma", "sales-contract", "commercial-invoice", "packing-list", "customs-declaration"] as const).map((value) => <Tabs.Content value={value} key={value}><Card className="quote-coming-soon"><LockKey size={28} /><Heading size="4">{t("该单证将在后续版本开放")}</Heading><Text size="2" color="gray">{t("当前先完成报价单的制作、样式设置和文件导出。")}</Text></Card></Tabs.Content>)}
+      <Tabs.Content value="proforma">
+        <div className="quote-preview-mode-toolbar">
+          <div className="quote-preview-mode-switch" role="group" aria-label={t("预览格式")}>
+            <button type="button" className={previewMode === "pdf" ? "is-active" : ""} aria-pressed={previewMode === "pdf"} onClick={() => setPreviewMode("pdf")}><FilePdf />PDF</button>
+            <button type="button" className={previewMode === "excel" ? "is-active" : ""} aria-pressed={previewMode === "excel"} onClick={() => setPreviewMode("excel")}><FileXls />Excel</button>
+          </div>
+          <Text size="1" color="gray">{proformaText(locale, "title")} · {proformaInvoice.invoiceNumber}</Text>
+        </div>
+        {previewMode === "pdf" ? renderProformaPdfPreview() : renderExcelPreview("proforma_invoice")}
+      </Tabs.Content>
+      {(["sales-contract", "commercial-invoice", "packing-list", "customs-declaration"] as const).map((value) => <Tabs.Content value={value} key={value}><Card className="quote-coming-soon"><LockKey size={28} /><Heading size="4">{t("该单证将在后续版本开放")}</Heading><Text size="2" color="gray">{t("当前先完成报价单的制作、样式设置和文件导出。")}</Text></Card></Tabs.Content>)}
       </section>
       {renderManual()}
     </div>

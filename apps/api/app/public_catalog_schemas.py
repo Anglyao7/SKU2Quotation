@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
@@ -263,6 +263,61 @@ class PublicQuoteExtraInformation(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class PublicProformaInvoiceSettings(BaseModel):
+    """Merchant-authored fields that turn a quotation into a usable PI."""
+
+    invoice_number: str = Field(min_length=1, max_length=80)
+    issue_date: date
+    seller_address: str = Field(default="", max_length=2_000)
+    seller_email: str = Field(default="", max_length=320)
+    seller_phone: str = Field(default="", max_length=80)
+    buyer_address: str = Field(default="", max_length=2_000)
+    incoterm: str = Field(default="", max_length=120)
+    payment_terms: str = Field(default="", max_length=2_000)
+    delivery_terms: str = Field(default="", max_length=2_000)
+    shipment_method: str = Field(default="", max_length=200)
+    port_of_loading: str = Field(default="", max_length=200)
+    port_of_destination: str = Field(default="", max_length=200)
+    beneficiary_name: str = Field(default="", max_length=300)
+    bank_name: str = Field(default="", max_length=300)
+    bank_address: str = Field(default="", max_length=2_000)
+    bank_account_number: str = Field(default="", max_length=200)
+    swift_code: str = Field(default="", max_length=80)
+    freight: Decimal = Field(default=Decimal("0"), ge=0, max_digits=20, decimal_places=2)
+    remarks: str = Field(default="", max_length=5_000)
+
+    @field_validator(
+        "invoice_number",
+        "seller_address",
+        "seller_email",
+        "seller_phone",
+        "buyer_address",
+        "incoterm",
+        "payment_terms",
+        "delivery_terms",
+        "shipment_method",
+        "port_of_loading",
+        "port_of_destination",
+        "beneficiary_name",
+        "bank_name",
+        "bank_address",
+        "bank_account_number",
+        "swift_code",
+        "remarks",
+        mode="before",
+    )
+    @classmethod
+    def normalize_text_fields(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("invoice_number")
+    @classmethod
+    def validate_invoice_number(cls, value: str) -> str:
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("invoice number cannot contain control characters")
+        return value
+
+
 class PublicQuoteDraftResponse(BaseModel):
     id: UUID
     tenant_id: UUID
@@ -297,6 +352,7 @@ class PublicQuoteDraftResponse(BaseModel):
     disclaimer: str = PUBLIC_DRAFT_DISCLAIMER
     disclaimer_version: str = PUBLIC_DRAFT_DISCLAIMER_VERSION
     extra_information: list[PublicQuoteExtraInformation] = Field(default_factory=list)
+    proforma_invoice: PublicProformaInvoiceSettings | None = None
     items: list[PublicQuoteDraftItemResponse]
     download_token: str | None = None
     download_expires_at: datetime | None = None
@@ -321,6 +377,7 @@ class PublicQuoteDraftSettingsUpdate(BaseModel):
         default=None,
         max_length=20,
     )
+    proforma_invoice: PublicProformaInvoiceSettings | None = None
 
     @field_validator("quote_number", mode="before")
     @classmethod

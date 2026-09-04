@@ -6672,12 +6672,18 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
 }
 
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; product_id?: string | null; position: number; quantity: number | string; customer_note?: string | null; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; visitor_country_code?: string | null; read_only?: boolean; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; extra_information?: Array<{ title: string; content: string }>; items: ApiPublicQuoteDraftItem[] }
+interface ApiProformaInvoiceSettings { invoice_number: string; issue_date: string; seller_address?: string; seller_email?: string; seller_phone?: string; buyer_address?: string; incoterm?: string; payment_terms?: string; delivery_terms?: string; shipment_method?: string; port_of_loading?: string; port_of_destination?: string; beneficiary_name?: string; bank_name?: string; bank_address?: string; bank_account_number?: string; swift_code?: string; freight?: number | string; remarks?: string }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; visitor_country_code?: string | null; read_only?: boolean; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; extra_information?: Array<{ title: string; content: string }>; proforma_invoice?: ApiProformaInvoiceSettings | null; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; visitor_country_code?: string | null; read_only?: boolean; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
 interface ApiStorefrontOrderPeriodStatistics { start_at: string; end_at: string; order_count: number; completed_order_count: number; cancelled_order_count: number; amounts: Array<{ currency: string; total_amount: number | string; completed_amount: number | string; order_count: number }> }
 interface ApiStorefrontOrderStatistics { timezone: string; current_month: ApiStorefrontOrderPeriodStatistics; current_year: ApiStorefrontOrderPeriodStatistics }
 
 function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
+  const replacedInvoiceNumber = row.quote_number.replace(/^(?:QD|QT)-/i, "PI-");
+  const defaultInvoiceNumber = replacedInvoiceNumber === row.quote_number
+    ? `PI-${row.quote_number}`
+    : replacedInvoiceNumber;
+  const proforma = row.proforma_invoice;
   return {
     id: row.id,
     tenantId: row.tenant_id,
@@ -6705,6 +6711,27 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
     extraInformation: (row.extra_information ?? []).map((entry) => ({ title: entry.title, content: entry.content })),
+    proformaInvoice: {
+      invoiceNumber: proforma?.invoice_number || defaultInvoiceNumber,
+      issueDate: proforma?.issue_date || row.created_at.slice(0, 10),
+      sellerAddress: proforma?.seller_address ?? "",
+      sellerEmail: proforma?.seller_email ?? "",
+      sellerPhone: proforma?.seller_phone ?? "",
+      buyerAddress: proforma?.buyer_address ?? "",
+      incoterm: proforma?.incoterm ?? "",
+      paymentTerms: proforma?.payment_terms ?? "",
+      deliveryTerms: proforma?.delivery_terms ?? "",
+      shipmentMethod: proforma?.shipment_method ?? "",
+      portOfLoading: proforma?.port_of_loading ?? "",
+      portOfDestination: proforma?.port_of_destination ?? "",
+      beneficiaryName: proforma?.beneficiary_name ?? "",
+      bankName: proforma?.bank_name ?? "",
+      bankAddress: proforma?.bank_address ?? "",
+      bankAccountNumber: proforma?.bank_account_number ?? "",
+      swiftCode: proforma?.swift_code ?? "",
+      freight: Number(proforma?.freight ?? 0),
+      remarks: proforma?.remarks ?? "",
+    },
     items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, productId: item.product_id ?? item.sku_id, position: item.position, quantity: Number(item.quantity), customerNote: defined(item.customer_note), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
   };
 }
@@ -6727,6 +6754,7 @@ export async function updatePublicQuoteDraftSettings(
     quoteNumber?: string;
     visibleColumns?: QuoteTemplateField[];
     extraInformation?: QuoteExtraInformation[];
+    proformaInvoice?: PublicQuoteDraft["proformaInvoice"];
   },
 ): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
@@ -6740,6 +6768,27 @@ export async function updatePublicQuoteDraftSettings(
         quote_number: input.quoteNumber?.trim() || undefined,
         visible_columns: input.visibleColumns ?? [],
         extra_information: input.extraInformation ?? [],
+        proforma_invoice: input.proformaInvoice ? {
+          invoice_number: input.proformaInvoice.invoiceNumber.trim(),
+          issue_date: input.proformaInvoice.issueDate,
+          seller_address: input.proformaInvoice.sellerAddress.trim(),
+          seller_email: input.proformaInvoice.sellerEmail.trim(),
+          seller_phone: input.proformaInvoice.sellerPhone.trim(),
+          buyer_address: input.proformaInvoice.buyerAddress.trim(),
+          incoterm: input.proformaInvoice.incoterm.trim(),
+          payment_terms: input.proformaInvoice.paymentTerms.trim(),
+          delivery_terms: input.proformaInvoice.deliveryTerms.trim(),
+          shipment_method: input.proformaInvoice.shipmentMethod.trim(),
+          port_of_loading: input.proformaInvoice.portOfLoading.trim(),
+          port_of_destination: input.proformaInvoice.portOfDestination.trim(),
+          beneficiary_name: input.proformaInvoice.beneficiaryName.trim(),
+          bank_name: input.proformaInvoice.bankName.trim(),
+          bank_address: input.proformaInvoice.bankAddress.trim(),
+          bank_account_number: input.proformaInvoice.bankAccountNumber.trim(),
+          swift_code: input.proformaInvoice.swiftCode.trim(),
+          freight: input.proformaInvoice.freight,
+          remarks: input.proformaInvoice.remarks.trim(),
+        } : undefined,
       }),
     },
   ));
@@ -6869,13 +6918,14 @@ export async function getStorefrontOrderStatistics(): Promise<StorefrontOrderSta
 
 export async function downloadPublicQuoteDraftDocument(
   draftId: string,
-  quoteNumber: string,
+  documentNumber: string,
   type: "pdf" | "xlsx",
+  documentType: "quotation" | "proforma_invoice" = "quotation",
 ): Promise<void> {
-  const safeQuoteNumber = quoteNumber.replace(/[^a-zA-Z0-9._-]+/g, "-") || "quotation";
+  const safeDocumentNumber = documentNumber.replace(/[^a-zA-Z0-9._-]+/g, "-") || (documentType === "proforma_invoice" ? "proforma-invoice" : "quotation");
   await downloadCoreFile(
-    `/public-quote-drafts/${encodeURIComponent(draftId)}/${type}`,
-    `${safeQuoteNumber}.${type}`,
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/${type}?document_type=${documentType}`,
+    `${safeDocumentNumber}.${type}`,
   );
 }
 

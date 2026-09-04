@@ -9,7 +9,7 @@ from copy import copy
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 from urllib.parse import urljoin, urlsplit
 from xml.sax.saxutils import escape
 
@@ -41,6 +41,7 @@ from ..public_catalog_schemas import PUBLIC_QUOTE_PDF_MAX_COLUMNS, PublicQuoteDo
 from .public_catalog_privacy import public_specification
 from .quote_localization import (
     localize_quote_unit,
+    proforma_text,
     quote_field_label,
     quote_headers,
     quote_is_rtl,
@@ -50,6 +51,7 @@ from .quote_localization import (
 
 
 QuoteImageLoader = Callable[[str], bytes | None]
+QuoteDocumentType = Literal["quotation", "proforma_invoice"]
 MAX_QUOTE_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_QUOTE_IMAGE_EDGE = 320
 DEFAULT_QUOTE_HEADERS = quote_headers("zh-CN")
@@ -74,6 +76,29 @@ DEFAULT_QUOTE_WIDTHS = (
     28,
     18,
 )
+
+
+def _proforma_value(document: PublicQuoteDocument, field: str, fallback: object = "") -> object:
+    settings = getattr(document.quote, "proforma_invoice", None)
+    value = getattr(settings, field, None) if settings is not None else None
+    return fallback if value in (None, "") else value
+
+
+def _proforma_number(document: PublicQuoteDocument) -> str:
+    quote_number = str(document.quote.quote_number)
+    fallback = (
+        f"PI-{quote_number[3:]}"
+        if quote_number.upper().startswith(("QD-", "QT-"))
+        else f"PI-{quote_number}"
+    )
+    return str(_proforma_value(document, "invoice_number", fallback))
+
+
+def _proforma_freight(document: PublicQuoteDocument) -> Decimal:
+    try:
+        return Decimal(str(_proforma_value(document, "freight", Decimal("0"))))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
 
 _LOGISTICS_OPTION_ALIASES: dict[str, tuple[str, ...]] = {
     "packing_quantity": (
@@ -1055,9 +1080,18 @@ def render_public_quote_draft_pdf(
     document: PublicQuoteDocument,
     *,
     image_loader: QuoteImageLoader | None = None,
+    document_type: QuoteDocumentType = "quotation",
 ) -> bytes:
     quote = document.quote
     locale = quote_locale(quote.locale)
+    is_proforma = document_type == "proforma_invoice"
+    document_title = (
+        proforma_text(locale, "title")
+        if is_proforma
+        else quote_text(locale, "document_title")
+    )
+    document_number = _proforma_number(document) if is_proforma else quote.quote_number
+    freight = _proforma_freight(document) if is_proforma else Decimal("0")
     font_name = _register_quote_pdf_font(locale)
     style_palette = {
         "indigo": {"accent": "#314B9B", "soft": "#EEF2FF", "border": "#CBD5E1"},
@@ -1095,30 +1129,61 @@ def render_public_quote_draft_pdf(
         leftMargin=16 * mm,
         topMargin=15 * mm,
         bottomMargin=15 * mm,
-        title=f"{quote_text(locale, 'document_title')} {quote.quote_number}",
+        title=f"{document_title} {document_number}",
     )
     story = [
-        Paragraph(_pdf_localized_text(quote_text(locale, "document_title"), locale), title_style),
+        Paragraph(_pdf_localized_text(document_title, locale), title_style),
         Spacer(1, 6 * mm),
     ]
-    metadata = [
-        [
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'merchant')}: {document.tenant_name}", locale), body_style),
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'quote_number')}: {quote.quote_number}", locale), right_style),
-        ],
-        [
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'customer')}: {quote.customer_name}", locale), body_style),
-            Paragraph("", right_style),
-        ],
-        [
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'company')}: {quote.customer_company or '-'}", locale), body_style),
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'date')}: {quote.created_at:%Y-%m-%d}", locale), right_style),
-        ],
-        [
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'email')}: {quote.customer_email or '-'}", locale), body_style),
-            Paragraph(_pdf_localized_text(f"{quote_text(locale, 'currency')}: {quote.currency}", locale), right_style),
-        ],
-    ]
+    if is_proforma:
+        seller_email = str(_proforma_value(document, "seller_email", "-"))
+        seller_phone = str(_proforma_value(document, "seller_phone", "-"))
+        issue_date = _proforma_value(document, "issue_date", quote.created_at.date())
+        metadata = [
+            [
+                Paragraph(_pdf_localized_text(f"{proforma_text(locale, 'seller')}: {document.tenant_name}", locale), body_style),
+                Paragraph(_pdf_localized_text(f"{proforma_text(locale, 'invoice_number')}: {document_number}", locale), right_style),
+            ],
+            [
+                Paragraph(_pdf_localized_text(f"{proforma_text(locale, 'seller_address')}: {_proforma_value(document, 'seller_address', '-')}", locale), body_style),
+                Paragraph(_pdf_localized_text(f"{proforma_text(locale, 'issue_date')}: {issue_date}", locale), right_style),
+            ],
+            [
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'email')}: {seller_email}  {quote_text(locale, 'phone')}: {seller_phone}", locale), body_style),
+                Paragraph(_pdf_localized_text(f"{proforma_text(locale, 'valid_until')}: {quote.valid_until:%Y-%m-%d}", locale), right_style),
+            ],
+            [
+                Paragraph(_pdf_localized_text(f"{proforma_text(locale, 'buyer')}: {quote.customer_company or quote.customer_name}", locale), body_style),
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'currency')}: {quote.currency}", locale), right_style),
+            ],
+            [
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'contact')}: {quote.customer_name}  {quote_text(locale, 'email')}: {quote.customer_email or '-'}", locale), body_style),
+                Paragraph("", right_style),
+            ],
+            [
+                Paragraph(_pdf_localized_text(f"{proforma_text(locale, 'buyer_address')}: {_proforma_value(document, 'buyer_address', '-')}", locale), body_style),
+                Paragraph("", right_style),
+            ],
+        ]
+    else:
+        metadata = [
+            [
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'merchant')}: {document.tenant_name}", locale), body_style),
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'quote_number')}: {quote.quote_number}", locale), right_style),
+            ],
+            [
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'customer')}: {quote.customer_name}", locale), body_style),
+                Paragraph("", right_style),
+            ],
+            [
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'company')}: {quote.customer_company or '-'}", locale), body_style),
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'date')}: {quote.created_at:%Y-%m-%d}", locale), right_style),
+            ],
+            [
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'email')}: {quote.customer_email or '-'}", locale), body_style),
+                Paragraph(_pdf_localized_text(f"{quote_text(locale, 'currency')}: {quote.currency}", locale), right_style),
+            ],
+        ]
     meta_table = Table(metadata, colWidths=[90 * mm, 72 * mm])
     meta_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.extend([meta_table, Spacer(1, 7 * mm)])
@@ -1170,16 +1235,26 @@ def render_public_quote_draft_pdf(
                     )
                 )
         rows.append(row)
-    total_row = [""] * len(table_fields)
-    total_row[max(0, len(table_fields) - 2)] = Paragraph(
-        _pdf_localized_text(quote_text(locale, "total"), locale),
-        table_body_style,
+    totals = (
+        [
+            (proforma_text(locale, "subtotal"), Decimal(quote.total)),
+            (proforma_text(locale, "freight"), freight),
+            (proforma_text(locale, "grand_total"), Decimal(quote.total) + freight),
+        ]
+        if is_proforma
+        else [(quote_text(locale, "total"), Decimal(quote.total))]
     )
-    total_row[-1] = Paragraph(
-        _pdf_localized_text(f"{quote.currency} {quote.total:,.2f}", locale),
-        table_body_style,
-    )
-    rows.append(total_row)
+    for label, amount in totals:
+        total_row = [""] * len(table_fields)
+        total_row[max(0, len(table_fields) - 2)] = Paragraph(
+            _pdf_localized_text(label, locale),
+            table_body_style,
+        )
+        total_row[-1] = Paragraph(
+            _pdf_localized_text(f"{quote.currency} {amount:,.2f}", locale),
+            table_body_style,
+        )
+        rows.append(total_row)
     numeric_indexes = {
         index for index, field in enumerate(table_fields)
         if field in {
@@ -1223,6 +1298,99 @@ def render_public_quote_draft_pdf(
         )
     )
     story.append(table)
+    if is_proforma:
+        section_style = ParagraphStyle(
+            "DraftSection",
+            parent=body_style,
+            fontName=font_name,
+            fontSize=10,
+            leading=14,
+            textColor=colors.HexColor(palette["accent"]),
+        )
+        trade_rows = [
+            (proforma_text(locale, "incoterm"), _proforma_value(document, "incoterm")),
+            (proforma_text(locale, "payment_terms"), _proforma_value(document, "payment_terms")),
+            (proforma_text(locale, "delivery_terms"), _proforma_value(document, "delivery_terms")),
+            (proforma_text(locale, "shipment_method"), _proforma_value(document, "shipment_method")),
+            (proforma_text(locale, "port_of_loading"), _proforma_value(document, "port_of_loading")),
+            (proforma_text(locale, "port_of_destination"), _proforma_value(document, "port_of_destination")),
+        ]
+        populated_trade_rows = [(label, str(value)) for label, value in trade_rows if value]
+        if populated_trade_rows:
+            story.extend([
+                Spacer(1, 6 * mm),
+                Paragraph(_pdf_localized_text(proforma_text(locale, "trade_terms"), locale), section_style),
+                Spacer(1, 2 * mm),
+            ])
+            trade_table = Table(
+                [
+                    [
+                        Paragraph(_pdf_localized_text(label, locale), body_style),
+                        Paragraph(_pdf_localized_text(value, locale), body_style),
+                    ]
+                    for label, value in populated_trade_rows
+                ],
+                colWidths=[42 * mm, 120 * mm],
+            )
+            trade_table.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor(palette["soft"])),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor(palette["border"])),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.append(trade_table)
+
+        bank_is_configured = any(
+            _proforma_value(document, field)
+            for field in ("bank_name", "bank_address", "bank_account_number", "swift_code")
+        )
+        if bank_is_configured:
+            bank_rows = [
+                (proforma_text(locale, "beneficiary_name"), _proforma_value(document, "beneficiary_name", document.tenant_name)),
+                (proforma_text(locale, "bank_name"), _proforma_value(document, "bank_name")),
+                (proforma_text(locale, "bank_address"), _proforma_value(document, "bank_address")),
+                (proforma_text(locale, "bank_account_number"), _proforma_value(document, "bank_account_number")),
+                (proforma_text(locale, "swift_code"), _proforma_value(document, "swift_code")),
+            ]
+            story.extend([
+                Spacer(1, 6 * mm),
+                Paragraph(_pdf_localized_text(proforma_text(locale, "bank_details"), locale), section_style),
+                Spacer(1, 2 * mm),
+            ])
+            bank_table = Table(
+                [
+                    [
+                        Paragraph(_pdf_localized_text(label, locale), body_style),
+                        Paragraph(_pdf_localized_text(str(value), locale), body_style),
+                    ]
+                    for label, value in bank_rows
+                    if value
+                ],
+                colWidths=[42 * mm, 120 * mm],
+            )
+            bank_table.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor(palette["soft"])),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor(palette["border"])),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.append(bank_table)
+
+        remarks = str(_proforma_value(document, "remarks")).strip()
+        if remarks:
+            story.extend([
+                Spacer(1, 5 * mm),
+                Paragraph(
+                    _pdf_localized_text(f"{proforma_text(locale, 'remarks')}: {remarks}", locale),
+                    body_style,
+                ),
+            ])
     if quote.notes:
         story.extend(
             [Spacer(1, 7 * mm), Paragraph(_pdf_localized_text(f"{quote_text(locale, 'notes')}: {quote.notes}", locale), body_style)]
@@ -1258,12 +1426,225 @@ def render_public_quote_draft_pdf(
     return buffer.getvalue()
 
 
+def _render_public_proforma_invoice_xlsx(
+    document: PublicQuoteDocument,
+    *,
+    image_loader: QuoteImageLoader | None = None,
+) -> bytes:
+    quote = document.quote
+    locale = quote_locale(quote.locale)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = proforma_text(locale, "sheet_name")[:31]
+    sheet.sheet_view.showGridLines = False
+    sheet.sheet_view.rightToLeft = quote_is_rtl(locale)
+    palette = {
+        "indigo": ("314B9B", "EEF2FF"),
+        "emerald": ("087F5B", "E8F7F0"),
+        "gold": ("8A6418", "FBF3D7"),
+        "slate": ("334155", "F1F5F9"),
+        "rose": ("9F3B5B", "FFF0F4"),
+    }.get(document.style, ("314B9B", "EEF2FF"))
+    dark_fill = PatternFill("solid", fgColor=palette[0])
+    light_fill = PatternFill("solid", fgColor=palette[1])
+    white_font = Font(color="FFFFFF", bold=True)
+    last_column = "I"
+
+    sheet.merge_cells(f"A1:{last_column}1")
+    sheet["A1"] = proforma_text(locale, "title")
+    sheet["A1"].font = Font(size=18, bold=True, color=palette[0])
+    sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    sheet.row_dimensions[1].height = 32
+
+    def append_metadata(
+        left_label: str,
+        left_value: object,
+        right_label: str,
+        right_value: object,
+    ) -> None:
+        sheet.append([
+            left_label,
+            _xlsx_value(left_value),
+            "",
+            "",
+            right_label,
+            _xlsx_value(right_value),
+            "",
+            "",
+            "",
+        ])
+        row_number = sheet.max_row
+        sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=4)
+        sheet.merge_cells(start_row=row_number, start_column=6, end_row=row_number, end_column=9)
+        sheet.cell(row_number, 1).font = Font(bold=True, color=palette[0])
+        sheet.cell(row_number, 5).font = Font(bold=True, color=palette[0])
+        for cell in sheet[row_number]:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    seller_email = _proforma_value(document, "seller_email", "-")
+    seller_phone = _proforma_value(document, "seller_phone", "-")
+    append_metadata(
+        proforma_text(locale, "seller"),
+        document.tenant_name,
+        proforma_text(locale, "invoice_number"),
+        _proforma_number(document),
+    )
+    append_metadata(
+        proforma_text(locale, "seller_address"),
+        _proforma_value(document, "seller_address", "-"),
+        proforma_text(locale, "issue_date"),
+        _proforma_value(document, "issue_date", quote.created_at.date()),
+    )
+    append_metadata(
+        quote_text(locale, "email"),
+        seller_email,
+        quote_text(locale, "phone"),
+        seller_phone,
+    )
+    append_metadata(
+        proforma_text(locale, "buyer"),
+        quote.customer_company or quote.customer_name,
+        proforma_text(locale, "valid_until"),
+        quote.valid_until.date(),
+    )
+    append_metadata(
+        quote_text(locale, "contact"),
+        quote.customer_name,
+        quote_text(locale, "currency"),
+        quote.currency,
+    )
+    append_metadata(
+        proforma_text(locale, "buyer_address"),
+        _proforma_value(document, "buyer_address", "-"),
+        quote_text(locale, "email"),
+        quote.customer_email or "-",
+    )
+    for row_number in (3, 5):
+        sheet.cell(row_number, 6).number_format = "yyyy-mm-dd"
+
+    sheet.append([])
+    headers = [
+        quote_field_label(locale, "serial_number"),
+        quote_field_label(locale, "product_image"),
+        quote_field_label(locale, "sku_code"),
+        quote_field_label(locale, "product_name"),
+        quote_field_label(locale, "specification"),
+        quote_field_label(locale, "quantity"),
+        quote_field_label(locale, "unit_code"),
+        quote_field_label(locale, "unit_price"),
+        quote_field_label(locale, "line_total"),
+    ]
+    sheet.append(headers)
+    header_row = sheet.max_row
+    for cell in sheet[header_row]:
+        cell.fill = dark_fill
+        cell.font = white_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    sheet.row_dimensions[header_row].height = 28
+
+    for item in quote.items:
+        sheet.append([
+            item.position,
+            None,
+            _xlsx_text(item.sku_code_snapshot),
+            _xlsx_text(item.name_snapshot),
+            _xlsx_text(item.specification_snapshot),
+            float(item.quantity),
+            _xlsx_text(localize_quote_unit(locale, item.unit_code_snapshot)),
+            float(item.unit_price_snapshot),
+            float(item.line_total),
+        ])
+        row_number = sheet.max_row
+        _place_quote_image(
+            sheet,
+            row_number=row_number,
+            column_number=2,
+            image_url=item.image_url_snapshot,
+            image_loader=image_loader,
+        )
+        for cell in sheet[row_number]:
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        sheet.cell(row_number, 6).number_format = "#,##0.######"
+        sheet.cell(row_number, 8).number_format = "#,##0.00"
+        sheet.cell(row_number, 9).number_format = "#,##0.00"
+
+    freight = _proforma_freight(document)
+    total_rows = [
+        (proforma_text(locale, "subtotal"), Decimal(quote.total)),
+        (proforma_text(locale, "freight"), freight),
+        (proforma_text(locale, "grand_total"), Decimal(quote.total) + freight),
+    ]
+    for label, amount in total_rows:
+        sheet.append(["", "", "", "", "", "", "", label, float(amount)])
+        row_number = sheet.max_row
+        sheet.cell(row_number, 8).font = Font(bold=True)
+        sheet.cell(row_number, 9).font = Font(bold=True)
+        sheet.cell(row_number, 9).number_format = f'"{quote.currency}" #,##0.00'
+        if label == proforma_text(locale, "grand_total"):
+            for cell in sheet[row_number]:
+                cell.fill = light_fill
+
+    def append_section(title: str, entries: list[tuple[str, object]]) -> None:
+        populated = [(label, value) for label, value in entries if value not in (None, "")]
+        if not populated:
+            return
+        sheet.append([])
+        sheet.append([title])
+        title_row = sheet.max_row
+        sheet.merge_cells(start_row=title_row, start_column=1, end_row=title_row, end_column=9)
+        sheet.cell(title_row, 1).fill = dark_fill
+        sheet.cell(title_row, 1).font = white_font
+        for label, value in populated:
+            sheet.append([label, _xlsx_value(value)])
+            row_number = sheet.max_row
+            sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=9)
+            sheet.cell(row_number, 1).font = Font(bold=True, color=palette[0])
+            sheet.cell(row_number, 2).alignment = Alignment(vertical="top", wrap_text=True)
+
+    append_section(proforma_text(locale, "trade_terms"), [
+        (proforma_text(locale, "incoterm"), _proforma_value(document, "incoterm")),
+        (proforma_text(locale, "payment_terms"), _proforma_value(document, "payment_terms")),
+        (proforma_text(locale, "delivery_terms"), _proforma_value(document, "delivery_terms")),
+        (proforma_text(locale, "shipment_method"), _proforma_value(document, "shipment_method")),
+        (proforma_text(locale, "port_of_loading"), _proforma_value(document, "port_of_loading")),
+        (proforma_text(locale, "port_of_destination"), _proforma_value(document, "port_of_destination")),
+    ])
+    append_section(proforma_text(locale, "bank_details"), [
+        (proforma_text(locale, "beneficiary_name"), _proforma_value(document, "beneficiary_name", document.tenant_name)),
+        (proforma_text(locale, "bank_name"), _proforma_value(document, "bank_name")),
+        (proforma_text(locale, "bank_address"), _proforma_value(document, "bank_address")),
+        (proforma_text(locale, "bank_account_number"), _proforma_value(document, "bank_account_number")),
+        (proforma_text(locale, "swift_code"), _proforma_value(document, "swift_code")),
+    ] if any(_proforma_value(document, field) for field in ("bank_name", "bank_address", "bank_account_number", "swift_code")) else [])
+    append_section(proforma_text(locale, "remarks"), [
+        (proforma_text(locale, "remarks"), _proforma_value(document, "remarks")),
+        (quote_text(locale, "notes"), quote.notes or ""),
+    ])
+
+    widths = (8, 14, 18, 34, 30, 12, 12, 15, 17)
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    sheet.freeze_panes = f"A{header_row + 1}"
+    _configure_default_quote_printing(sheet, header_row=header_row, last_row=sheet.max_row)
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+    return buffer.getvalue()
+
+
 def render_public_quote_draft_xlsx(
     document: PublicQuoteDocument,
     *,
     template_path: Path | None = None,
     image_loader: QuoteImageLoader | None = None,
+    document_type: QuoteDocumentType = "quotation",
 ) -> bytes:
+    if document_type == "proforma_invoice":
+        return _render_public_proforma_invoice_xlsx(
+            document,
+            image_loader=image_loader,
+        )
     if document.excel_template is not None and template_path is not None:
         return _render_custom_quote_xlsx(
             document,

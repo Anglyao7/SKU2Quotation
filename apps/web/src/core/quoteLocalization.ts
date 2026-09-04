@@ -451,6 +451,89 @@ const FIELD_KEYS: Partial<Record<QuoteTemplateField, string>> = {
   notes: "notes",
 };
 
+const PROFORMA_STRINGS: Record<StorefrontLocale, Record<string, string>> = {
+  "zh-CN": {
+    title: "形式发票", sheet_name: "形式发票", invoice_number: "形式发票号", issue_date: "开票日期",
+    seller: "卖方", buyer: "买方", seller_address: "卖方地址", buyer_address: "买方地址", valid_until: "有效期",
+    subtotal: "商品小计", freight: "运费", grand_total: "应付总额", trade_terms: "贸易与交付",
+    incoterm: "贸易术语", payment_terms: "付款条款", delivery_terms: "交货条款", shipment_method: "运输方式",
+    port_of_loading: "装运港", port_of_destination: "目的港", bank_details: "收款银行信息", beneficiary_name: "收款人",
+    bank_name: "银行名称", bank_address: "银行地址", bank_account_number: "银行账号", swift_code: "SWIFT / BIC", remarks: "附加说明",
+  },
+  "en-US": {
+    title: "PROFORMA INVOICE", sheet_name: "Proforma Invoice", invoice_number: "PI No.", issue_date: "Issue Date",
+    seller: "Seller", buyer: "Buyer", seller_address: "Seller Address", buyer_address: "Buyer Address", valid_until: "Valid Until",
+    subtotal: "Subtotal", freight: "Freight", grand_total: "Amount Due", trade_terms: "Trade & Delivery",
+    incoterm: "Incoterm", payment_terms: "Payment Terms", delivery_terms: "Delivery Terms", shipment_method: "Shipment Method",
+    port_of_loading: "Port of Loading", port_of_destination: "Port of Destination", bank_details: "Banking Details", beneficiary_name: "Beneficiary",
+    bank_name: "Bank Name", bank_address: "Bank Address", bank_account_number: "Account Number", swift_code: "SWIFT / BIC", remarks: "Remarks",
+  },
+  es: {
+    title: "FACTURA PROFORMA", sheet_name: "Factura proforma", invoice_number: "N.º de proforma", issue_date: "Fecha de emisión",
+    seller: "Vendedor", buyer: "Comprador", seller_address: "Dirección del vendedor", buyer_address: "Dirección del comprador", valid_until: "Válida hasta",
+    subtotal: "Subtotal", freight: "Flete", grand_total: "Total a pagar", trade_terms: "Comercio y entrega",
+    incoterm: "Incoterm", payment_terms: "Condiciones de pago", delivery_terms: "Condiciones de entrega", shipment_method: "Método de envío",
+    port_of_loading: "Puerto de carga", port_of_destination: "Puerto de destino", bank_details: "Datos bancarios", beneficiary_name: "Beneficiario",
+    bank_name: "Banco", bank_address: "Dirección del banco", bank_account_number: "Número de cuenta", swift_code: "SWIFT / BIC", remarks: "Observaciones",
+  },
+  tr: {
+    title: "PROFORMA FATURA", sheet_name: "Proforma Fatura", invoice_number: "Proforma No.", issue_date: "Düzenleme tarihi",
+    seller: "Satıcı", buyer: "Alıcı", seller_address: "Satıcı adresi", buyer_address: "Alıcı adresi", valid_until: "Geçerlilik tarihi",
+    subtotal: "Ara toplam", freight: "Navlun", grand_total: "Ödenecek toplam", trade_terms: "Ticaret ve teslimat",
+    incoterm: "Incoterm", payment_terms: "Ödeme koşulları", delivery_terms: "Teslimat koşulları", shipment_method: "Sevkiyat şekli",
+    port_of_loading: "Yükleme limanı", port_of_destination: "Varış limanı", bank_details: "Banka bilgileri", beneficiary_name: "Lehtar",
+    bank_name: "Banka adı", bank_address: "Banka adresi", bank_account_number: "Hesap numarası", swift_code: "SWIFT / BIC", remarks: "Açıklamalar",
+  },
+  ar: {
+    title: "فاتورة أولية", sheet_name: "فاتورة أولية", invoice_number: "رقم الفاتورة الأولية", issue_date: "تاريخ الإصدار",
+    seller: "البائع", buyer: "المشتري", seller_address: "عنوان البائع", buyer_address: "عنوان المشتري", valid_until: "صالحة حتى",
+    subtotal: "المجموع الفرعي", freight: "الشحن", grand_total: "المبلغ المستحق", trade_terms: "التجارة والتسليم",
+    incoterm: "شرط التجارة", payment_terms: "شروط الدفع", delivery_terms: "شروط التسليم", shipment_method: "طريقة الشحن",
+    port_of_loading: "ميناء التحميل", port_of_destination: "ميناء الوصول", bank_details: "البيانات المصرفية", beneficiary_name: "المستفيد",
+    bank_name: "اسم البنك", bank_address: "عنوان البنك", bank_account_number: "رقم الحساب", swift_code: "SWIFT / BIC", remarks: "ملاحظات إضافية",
+  },
+  ja: {
+    title: "プロフォーマインボイス", sheet_name: "プロフォーマインボイス", invoice_number: "PI番号", issue_date: "発行日",
+    seller: "売主", buyer: "買主", seller_address: "売主住所", buyer_address: "買主住所", valid_until: "有効期限",
+    subtotal: "小計", freight: "運賃", grand_total: "支払総額", trade_terms: "取引・納品条件",
+    incoterm: "インコタームズ", payment_terms: "支払条件", delivery_terms: "納品条件", shipment_method: "輸送方法",
+    port_of_loading: "積出港", port_of_destination: "仕向港", bank_details: "銀行情報", beneficiary_name: "受取人",
+    bank_name: "銀行名", bank_address: "銀行住所", bank_account_number: "口座番号", swift_code: "SWIFT / BIC", remarks: "備考",
+  },
+  ko: {
+    title: "견적 송장", sheet_name: "견적 송장", invoice_number: "PI 번호", issue_date: "발행일",
+    seller: "판매자", buyer: "구매자", seller_address: "판매자 주소", buyer_address: "구매자 주소", valid_until: "유효 기간",
+    subtotal: "소계", freight: "운임", grand_total: "결제 총액", trade_terms: "거래 및 배송",
+    incoterm: "인코텀즈", payment_terms: "결제 조건", delivery_terms: "납품 조건", shipment_method: "운송 방법",
+    port_of_loading: "선적항", port_of_destination: "도착항", bank_details: "은행 정보", beneficiary_name: "수취인",
+    bank_name: "은행명", bank_address: "은행 주소", bank_account_number: "계좌 번호", swift_code: "SWIFT / BIC", remarks: "비고",
+  },
+  pt: {
+    title: "FATURA PROFORMA", sheet_name: "Fatura proforma", invoice_number: "N.º da proforma", issue_date: "Data de emissão",
+    seller: "Vendedor", buyer: "Comprador", seller_address: "Endereço do vendedor", buyer_address: "Endereço do comprador", valid_until: "Válida até",
+    subtotal: "Subtotal", freight: "Frete", grand_total: "Total a pagar", trade_terms: "Comércio e entrega",
+    incoterm: "Incoterm", payment_terms: "Condições de pagamento", delivery_terms: "Condições de entrega", shipment_method: "Método de envio",
+    port_of_loading: "Porto de embarque", port_of_destination: "Porto de destino", bank_details: "Dados bancários", beneficiary_name: "Beneficiário",
+    bank_name: "Banco", bank_address: "Endereço do banco", bank_account_number: "Número da conta", swift_code: "SWIFT / BIC", remarks: "Observações",
+  },
+  fr: {
+    title: "FACTURE PRO FORMA", sheet_name: "Facture pro forma", invoice_number: "N° de pro forma", issue_date: "Date d’émission",
+    seller: "Vendeur", buyer: "Acheteur", seller_address: "Adresse du vendeur", buyer_address: "Adresse de l’acheteur", valid_until: "Valable jusqu’au",
+    subtotal: "Sous-total", freight: "Fret", grand_total: "Total à payer", trade_terms: "Commerce et livraison",
+    incoterm: "Incoterm", payment_terms: "Conditions de paiement", delivery_terms: "Conditions de livraison", shipment_method: "Mode d’expédition",
+    port_of_loading: "Port de chargement", port_of_destination: "Port de destination", bank_details: "Coordonnées bancaires", beneficiary_name: "Bénéficiaire",
+    bank_name: "Banque", bank_address: "Adresse de la banque", bank_account_number: "Numéro de compte", swift_code: "SWIFT / BIC", remarks: "Remarques",
+  },
+  fa: {
+    title: "پیش‌فاکتور", sheet_name: "پیش‌فاکتور", invoice_number: "شماره پیش‌فاکتور", issue_date: "تاریخ صدور",
+    seller: "فروشنده", buyer: "خریدار", seller_address: "نشانی فروشنده", buyer_address: "نشانی خریدار", valid_until: "معتبر تا",
+    subtotal: "جمع جزء", freight: "هزینه حمل", grand_total: "مبلغ قابل پرداخت", trade_terms: "تجارت و تحویل",
+    incoterm: "اینکوترمز", payment_terms: "شرایط پرداخت", delivery_terms: "شرایط تحویل", shipment_method: "روش حمل",
+    port_of_loading: "بندر بارگیری", port_of_destination: "بندر مقصد", bank_details: "اطلاعات بانکی", beneficiary_name: "ذی‌نفع",
+    bank_name: "نام بانک", bank_address: "نشانی بانک", bank_account_number: "شماره حساب", swift_code: "SWIFT / BIC", remarks: "توضیحات",
+  },
+};
+
 const UNIT_TRANSLATIONS: Record<string, Record<StorefrontLocale, string>> = {
   piece: { "zh-CN": "件", "en-US": "pcs", es: "uds.", tr: "adet", ar: "قطعة", ja: "個", ko: "개", pt: "un.", fr: "pces", fa: "عدد" },
   set: { "zh-CN": "套", "en-US": "sets", es: "juegos", tr: "set", ar: "طقم", ja: "セット", ko: "세트", pt: "conj.", fr: "ensembles", fa: "مجموعه" },
@@ -469,6 +552,10 @@ const UNIT_ALIASES: Record<string, keyof typeof UNIT_TRANSLATIONS> = {
 
 export function quoteText(locale: StorefrontLocale, key: string): string {
   return STRINGS[locale]?.[key] ?? STRINGS["zh-CN"][key] ?? key;
+}
+
+export function proformaText(locale: StorefrontLocale, key: string): string {
+  return PROFORMA_STRINGS[locale]?.[key] ?? PROFORMA_STRINGS["en-US"][key] ?? key;
 }
 
 export function quoteFieldLabel(locale: StorefrontLocale, field: QuoteTemplateField, fallback?: string): string {

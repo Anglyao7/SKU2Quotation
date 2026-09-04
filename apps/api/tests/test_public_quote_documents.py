@@ -17,6 +17,7 @@ from app.public_catalog_schemas import (
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSettingsUpdate,
+    PublicProformaInvoiceSettings,
 )
 from app.quote_template_schemas import (
     QuoteExcelColumn,
@@ -142,6 +143,27 @@ def _document(
         created_at=now,
         updated_at=now,
         content_hash="a" * 64,
+        proforma_invoice=PublicProformaInvoiceSettings(
+            invoice_number="PI-20260801-0001",
+            issue_date=now.date(),
+            seller_address="No. 18 Export Road, Shanghai",
+            seller_email="pi@example.test",
+            seller_phone="+86 21 5555 0100",
+            buyer_address="100 Market Street, London",
+            incoterm="FOB Shanghai",
+            payment_terms="30% deposit, 70% before shipment",
+            delivery_terms="20 days after deposit",
+            shipment_method="Sea freight",
+            port_of_loading="Shanghai",
+            port_of_destination="Felixstowe",
+            beneficiary_name="Example Merchant Limited",
+            bank_name="Example International Bank",
+            bank_address="1 Finance Road, Shanghai",
+            bank_account_number="6222000000000000",
+            swift_code="EXAMPLESHXXX",
+            freight=Decimal("25.00"),
+            remarks="Bank charges are borne by the buyer.",
+        ),
         items=[item],
     )
     return PublicQuoteDocument(
@@ -228,6 +250,47 @@ def test_quote_pdf_settings_limit_visible_columns_to_five() -> None:
                 "line_total",
             ],
         )
+
+
+def test_proforma_invoice_pdf_contains_trade_and_banking_details() -> None:
+    document = _document()
+    document.quote.locale = "en-US"
+
+    content = render_public_quote_draft_pdf(
+        document,
+        document_type="proforma_invoice",
+    )
+
+    reader = PdfReader(BytesIO(content))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    assert "PROFORMA INVOICE" in text
+    assert "PI-20260801-0001" in text
+    assert "FOB Shanghai" in text
+    assert "Example International Bank" in text
+    assert "USD 125.00" in text
+
+
+def test_proforma_invoice_xlsx_is_standalone_and_includes_grand_total() -> None:
+    document = _document()
+    document.quote.locale = "en-US"
+
+    content = render_public_quote_draft_xlsx(
+        document,
+        document_type="proforma_invoice",
+        image_loader=lambda _url: _image_bytes(),
+    )
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    sheet = workbook["Proforma Invoice"]
+    assert sheet["A1"].value == "PROFORMA INVOICE"
+    values = [cell.value for row in sheet.iter_rows() for cell in row]
+    assert "PI-20260801-0001" in values
+    assert "FOB Shanghai" in values
+    assert "Example International Bank" in values
+    assert 125 in values
+    assert len(sheet._images) == 1
+    assert all(cell.data_type != "f" for row in sheet.iter_rows() for cell in row)
+    workbook.close()
 
 
 def test_quote_excel_template_only_maps_product_region_fields() -> None:
