@@ -137,7 +137,7 @@ export function StorefrontSupportWidget({
   config,
 }: StorefrontSupportWidgetProps) {
   const storageScope = storefrontStorageScope(tenantSlug, accountId);
-  const storefrontRoot = storefrontBasePath(tenantSlug, accountKey);
+  const storefrontRoot = storefrontBasePath(tenantSlug);
   const t = useCallback(
     (source: string, values?: Record<string, string | number>) =>
       storefrontText(locale, source, values),

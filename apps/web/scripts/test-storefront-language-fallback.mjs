@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import ts from "typescript";
 
 const source = await fs.readFile(
   new URL("../src/lib/api.ts", import.meta.url),
@@ -71,6 +72,44 @@ const storefrontTopNavigationSource = await fs.readFile(
 const storefrontFooterSource = await fs.readFile(
   new URL("../src/components/StorefrontFooter.tsx", import.meta.url),
   "utf8",
+);
+const storefrontAccountSource = await fs.readFile(
+  new URL("../src/lib/storefrontAccount.ts", import.meta.url),
+  "utf8",
+);
+const appSource = await fs.readFile(
+  new URL("../src/App.tsx", import.meta.url),
+  "utf8",
+);
+
+const storefrontAccountModule = await import(
+  `data:text/javascript;base64,${Buffer.from(ts.transpileModule(storefrontAccountSource, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ES2022,
+    },
+  }).outputText).toString("base64")}`
+);
+
+assert.equal(
+  storefrontAccountModule.storefrontBasePath("aaa"),
+  "/aaa",
+  "A child storefront's canonical root must be its own account slug",
+);
+assert.equal(
+  storefrontAccountModule.legacyStorefrontBasePath(
+    "main-merchant",
+    "aaa--11111111-1111-4111-8111-111111111111",
+  ),
+  "/main-merchant/account/aaa--11111111-1111-4111-8111-111111111111",
+  "The parent-prefixed route must remain isolated as legacy compatibility only",
+);
+assert.ok(
+  (appSource.match(/if \(accountKey && accountId\)/g) || []).length >= 4
+    && appSource.includes("`${storefrontBasePath(store.slug)}/products/")
+    && appSource.includes("`${storefrontBasePath(store.slug)}/skus/")
+    && appSource.includes('const suffix = /\\/me\\/?$/u.test(currentUrl.pathname) ? "/me" : "";'),
+  "Legacy child storefront URLs must redirect to canonical account-only paths",
 );
 
 function section(start, end) {

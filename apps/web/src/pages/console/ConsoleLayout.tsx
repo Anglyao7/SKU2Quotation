@@ -240,10 +240,7 @@ export function ConsoleLayout() {
   const storefrontPath = isCustomerSubaccount && profile?.context.storefrontPath
     ? profile.context.storefrontPath
     : activeTenantSlug
-    ? storefrontBasePath(
-        activeTenantSlug,
-        undefined,
-      )
+    ? storefrontBasePath(activeTenantSlug)
     : "/";
   const activeTenant = useMemo<Tenant | undefined>(() => activeTenantId ? {
     id: activeTenantId,

@@ -62,7 +62,7 @@ function scopedFooterUrl(url: string, store: Storefront, accountKey?: string) {
       ? rawRoot
       : undefined;
   if (!root) return url;
-  return `${storefrontBasePath(store.slug, accountKey)}${url.slice(root.length)}`;
+  return `${storefrontBasePath(store.slug)}${url.slice(root.length)}`;
 }
 
 export function StorefrontFooter({

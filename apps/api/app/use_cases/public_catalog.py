@@ -1013,6 +1013,7 @@ def get_store(
             # the merchant catalog, translations and pricing source only; it
             # must not expose the merchant's branding or storefront content.
             "name": account_name or response.name,
+            "slug": membership.storefront_slug or response.slug,
             "description": None,
             "logo_url": None,
             "contact_email": None,

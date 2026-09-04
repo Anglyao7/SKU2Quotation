@@ -103,7 +103,7 @@ export function ProductDetailPage() {
   const storefrontSearch = storefrontQuery.toString();
   const storefrontHome = shareToken
     ? `/${encodeURIComponent(store.slug)}/share/${encodeURIComponent(shareToken)}${storefrontSearch ? `?${storefrontSearch}` : ""}`
-    : `${storefrontBasePath(store.slug, accountKey)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
+    : `${storefrontBasePath(store.slug)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(storageScope),

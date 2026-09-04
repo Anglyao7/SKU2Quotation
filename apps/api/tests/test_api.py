@@ -23763,6 +23763,7 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             )
             assert dedicated_store.status_code == 200, dedicated_store.text
             dedicated_store_data = dedicated_store.json()
+            assert dedicated_store_data["slug"] == account["storefront_slug"]
             assert dedicated_store_data["storefront_scope"] == "CUSTOMER_SUBACCOUNT"
             assert dedicated_store_data["account_id"] == account["id"]
             assert dedicated_store_data["name"] == f"Downstream Customer {suffix}"

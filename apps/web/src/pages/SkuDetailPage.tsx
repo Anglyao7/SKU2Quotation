@@ -81,7 +81,7 @@ export function SkuDetailPage() {
   const localeQuery = storefrontLocaleQuery(locale);
   const storefrontHome = shareToken
     ? `/${encodeURIComponent(store.slug)}/share/${encodeURIComponent(shareToken)}${localeQuery}`
-    : `${storefrontBasePath(store.slug, accountKey)}${localeQuery}`;
+    : `${storefrontBasePath(store.slug)}${localeQuery}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(storageScope),

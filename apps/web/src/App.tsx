@@ -31,6 +31,7 @@ import {
 } from "./lib/storefrontViewState";
 import { parseStorefrontLocale } from "./lib/storefrontLocale";
 import {
+  legacyStorefrontBasePath,
   storefrontAccountMembershipId,
   storefrontBasePath,
   storefrontStorageScope,
@@ -206,10 +207,20 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   if (accountKey && !accountId) throw new Response("Not found", { status: 404 });
   const shareToken = pathShareId || currentUrl.searchParams.get("share")?.trim() || undefined;
   const storageScope = storefrontStorageScope(tenantSlug, accountId);
-  const storefrontPath = (slug: string) => pathShareId
+  const canonicalStorefrontPath = (slug: string) => pathShareId
     ? `/${encodeURIComponent(slug)}/share/${encodeURIComponent(pathShareId)}`
-    : storefrontBasePath(slug, accountKey);
+    : storefrontBasePath(slug);
+  const currentStorefrontPath = (slug: string) => pathShareId
+    ? canonicalStorefrontPath(slug)
+    : accountKey
+      ? legacyStorefrontBasePath(slug, accountKey)
+      : storefrontBasePath(slug);
   try {
+    if (accountKey && accountId) {
+      const store = await api.getStore(tenantSlug, locale, accountId);
+      const suffix = /\/me\/?$/u.test(currentUrl.pathname) ? "/me" : "";
+      return redirect(`${storefrontBasePath(store.slug)}${suffix}${currentUrl.search}${currentUrl.hash}`);
+    }
     const savedView = shareToken ? undefined : readStorefrontViewState(storageScope);
     const catalogSnapshot = shareToken || accountId || !locale
       ? null
@@ -237,7 +248,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     void catalogWarmup.catch(() => undefined);
     const store = await api.getStore(tenantSlug, locale, accountId);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
-      return redirect(`${storefrontPath(store.slug)}${currentUrl.search}${currentUrl.hash}`);
+      return redirect(`${canonicalStorefrontPath(store.slug)}${currentUrl.search}${currentUrl.hash}`);
     }
     return store;
   }
@@ -245,7 +256,7 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
     if (error instanceof ApiError && error.status === 422 && currentUrl.searchParams.has("lang")) {
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
-      return redirect(`${storefrontPath(tenantSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`);
+      return redirect(`${currentStorefrontPath(tenantSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`);
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
     throw error;
@@ -263,13 +274,19 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
   const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
+    if (accountKey && accountId) {
+      const store = await api.getStore(tenantSlug, locale, accountId);
+      return redirect(
+        `${storefrontBasePath(store.slug)}/products/${encodeURIComponent(productId)}${currentUrl.search}${currentUrl.hash}`,
+      );
+    }
     const [store, product] = await Promise.all([
       api.getStore(tenantSlug, locale, accountId),
       api.getStoreProduct(tenantSlug, productId, locale, shareToken, accountId),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
-        `${storefrontBasePath(store.slug, accountKey)}/products/${encodeURIComponent(product.id)}${currentUrl.search}${currentUrl.hash}`,
+        `${storefrontBasePath(store.slug)}/products/${encodeURIComponent(product.id)}${currentUrl.search}${currentUrl.hash}`,
       );
     }
     return { store, product };
@@ -279,7 +296,7 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
       return redirect(
-        `${storefrontBasePath(tenantSlug, accountKey)}/products/${encodeURIComponent(productId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+        `${accountKey ? legacyStorefrontBasePath(tenantSlug, accountKey) : storefrontBasePath(tenantSlug)}/products/${encodeURIComponent(productId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
       );
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });
@@ -297,13 +314,19 @@ async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArg
   const currentUrl = new URL(request.url);
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
   try {
+    if (accountKey && accountId) {
+      const store = await api.getStore(tenantSlug, locale, accountId);
+      return redirect(
+        `${storefrontBasePath(store.slug)}/pages/${encodeURIComponent(pageSlug)}${currentUrl.search}${currentUrl.hash}`,
+      );
+    }
     const [store, page] = await Promise.all([
       api.getStore(tenantSlug, locale, accountId),
       api.getStorefrontCustomPage(tenantSlug, pageSlug, accountId),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
-        `${storefrontBasePath(store.slug, accountKey)}/pages/${encodeURIComponent(page.slug)}${currentUrl.search}${currentUrl.hash}`,
+        `${storefrontBasePath(store.slug)}/pages/${encodeURIComponent(page.slug)}${currentUrl.search}${currentUrl.hash}`,
       );
     }
     return { store, page };
@@ -312,7 +335,7 @@ async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArg
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
       return redirect(
-        `${storefrontBasePath(tenantSlug, accountKey)}/pages/${encodeURIComponent(pageSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+        `${accountKey ? legacyStorefrontBasePath(tenantSlug, accountKey) : storefrontBasePath(tenantSlug)}/pages/${encodeURIComponent(pageSlug)}${query ? `?${query}` : ""}${currentUrl.hash}`,
       );
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
@@ -333,13 +356,19 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
   const shareToken = currentUrl.searchParams.get("share")?.trim() || undefined;
   try {
+    if (accountKey && accountId) {
+      const store = await api.getStore(tenantSlug, locale, accountId);
+      return redirect(
+        `${storefrontBasePath(store.slug)}/skus/${encodeURIComponent(skuId)}${currentUrl.search}${currentUrl.hash}`,
+      );
+    }
     const [store, sku] = await Promise.all([
       api.getStore(tenantSlug, locale, accountId),
       api.getStoreSku(tenantSlug, skuId, locale, shareToken, accountId),
     ]);
     if (store.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
       return redirect(
-        `${storefrontBasePath(store.slug, accountKey)}/skus/${encodeURIComponent(sku.id)}${currentUrl.search}${currentUrl.hash}`,
+        `${storefrontBasePath(store.slug)}/skus/${encodeURIComponent(sku.id)}${currentUrl.search}${currentUrl.hash}`,
       );
     }
     return { store, sku };
@@ -349,7 +378,7 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
       currentUrl.searchParams.delete("lang");
       const query = currentUrl.searchParams.toString();
       return redirect(
-        `${storefrontBasePath(tenantSlug, accountKey)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
+        `${accountKey ? legacyStorefrontBasePath(tenantSlug, accountKey) : storefrontBasePath(tenantSlug)}/skus/${encodeURIComponent(skuId)}${query ? `?${query}` : ""}${currentUrl.hash}`,
       );
     }
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) throw new Response("Not found", { status: 404 });

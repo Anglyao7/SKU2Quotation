@@ -20,7 +20,7 @@ export function StorefrontTopNavigation({
   if (!pages.length) return null;
   const localeQuery = storefrontLocaleQuery(locale);
   const t = (source: string) => storefrontText(locale, source);
-  const basePath = storefrontBasePath(store.slug, accountKey);
+  const basePath = storefrontBasePath(store.slug);
   const home = `${basePath}${localeQuery}`;
   const onCatalog = !activePageSlug && !location.pathname.includes("/pages/");
 

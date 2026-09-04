@@ -79,7 +79,7 @@ export function StorefrontVisitorEntry({
     };
   }, [load, tenantSlug]);
 
-  const centerHref = `${storefrontBasePath(tenantSlug, accountKey)}/me${storefrontLocaleQuery(locale)}`;
+  const centerHref = `${storefrontBasePath(tenantSlug)}/me${storefrontLocaleQuery(locale)}`;
   const noticeTab = notice?.status === "COMPLETED"
     ? "completed"
     : notice?.status === "CANCELLED" || notice?.status === "EXPIRED"

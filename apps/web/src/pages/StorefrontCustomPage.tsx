@@ -121,7 +121,7 @@ export function StorefrontCustomPage() {
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
-  const storefrontHome = `${storefrontBasePath(store.slug, accountKey)}${storefrontLocaleQuery(locale)}`;
+  const storefrontHome = `${storefrontBasePath(store.slug)}${storefrontLocaleQuery(locale)}`;
   const [cart, setCart] = useState<Record<string, CartLine>>(
     () => readStoreCart(storageScope),
   );

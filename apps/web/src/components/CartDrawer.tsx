@@ -142,7 +142,7 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
   );
   const currency = lines[0]?.sku.currency || "CNY";
   const isChinese = locale === "zh-CN";
-  const visitorCenterHref = `${storefrontBasePath(slug, accountKey)}/me${storefrontLocaleQuery(locale)}`;
+  const visitorCenterHref = `${storefrontBasePath(slug)}/me${storefrontLocaleQuery(locale)}`;
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );

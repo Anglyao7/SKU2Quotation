@@ -29,11 +29,12 @@ export function storefrontAccountMembershipId(accountKey?: string | null) {
   return UUID_PATTERN.test(membershipId) ? membershipId.toLocaleLowerCase() : undefined;
 }
 
-export function storefrontBasePath(tenantSlug: string, accountKey?: string | null) {
-  const root = `/${encodeURIComponent(tenantSlug)}`;
-  return accountKey
-    ? `${root}/account/${encodeURIComponent(accountKey)}`
-    : root;
+export function storefrontBasePath(storefrontSlug: string) {
+  return `/${encodeURIComponent(storefrontSlug)}`;
+}
+
+export function legacyStorefrontBasePath(tenantSlug: string, accountKey: string) {
+  return `${storefrontBasePath(tenantSlug)}/account/${encodeURIComponent(accountKey)}`;
 }
 
 export function storefrontStorageScope(tenantSlug: string, accountId?: string | null) {

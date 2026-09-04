@@ -258,7 +258,7 @@ export function StorePage() {
     const value = query.toString();
     return value ? `?${value}` : "";
   }, [locale, shareToken]);
-  const storefrontRoot = storefrontBasePath(tenantSlug, accountKey);
+  const storefrontRoot = storefrontBasePath(tenantSlug);
   const storefrontHome = shareId && shareToken
     ? `/${encodeURIComponent(tenantSlug)}/share/${encodeURIComponent(shareToken)}${storefrontLocaleQuery(locale)}`
     : `${storefrontRoot}${sharedQuery}`;
