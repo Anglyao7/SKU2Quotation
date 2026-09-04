@@ -3,8 +3,22 @@ import { ArrowClockwise, Package, WarningCircle } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useLocale } from "../core/LocaleContext";
 
-export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
-  const { t } = useLocale();
+type FixedCopyTranslator = (
+  source: string,
+  values?: Record<string, string | number>,
+) => string;
+
+export function ErrorState({
+  message,
+  onRetry,
+  translate,
+}: {
+  message: string;
+  onRetry?: () => void;
+  translate?: FixedCopyTranslator;
+}) {
+  const { t: consoleTranslate } = useLocale();
+  const t = translate ?? consoleTranslate;
   return (
     <Card className="state-card" variant="surface">
       <WarningCircle size={30} weight="duotone" />
@@ -23,12 +37,15 @@ export function EmptyState({
   title = "这里还没有内容",
   description = "添加第一条数据后，它会显示在这里。",
   action,
+  translate,
 }: {
   title?: string;
   description?: string;
   action?: ReactNode;
+  translate?: FixedCopyTranslator;
 }) {
-  const { t } = useLocale();
+  const { t: consoleTranslate } = useLocale();
+  const t = translate ?? consoleTranslate;
   return (
     <div className="empty-state">
       <span className="empty-icon"><Package size={34} weight="duotone" /></span>
@@ -39,8 +56,15 @@ export function EmptyState({
   );
 }
 
-export function ProductGridSkeleton({ count = 8 }: { count?: number }) {
-  const { t } = useLocale();
+export function ProductGridSkeleton({
+  count = 8,
+  translate,
+}: {
+  count?: number;
+  translate?: FixedCopyTranslator;
+}) {
+  const { t: consoleTranslate } = useLocale();
+  const t = translate ?? consoleTranslate;
   return (
     <div className="sku-grid" aria-label={t("商品加载中")} aria-busy="true">
       {Array.from({ length: count }, (_, index) => (

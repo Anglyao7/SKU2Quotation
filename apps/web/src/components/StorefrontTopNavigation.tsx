@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { storefrontLocaleQuery } from "../lib/storefrontLocale";
+import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
 import { storefrontBasePath } from "../lib/storefrontAccount";
 import type { Storefront, StorefrontLocale } from "../types";
 
@@ -19,12 +19,13 @@ export function StorefrontTopNavigation({
   const pages = store.custom_pages || [];
   if (!pages.length) return null;
   const localeQuery = storefrontLocaleQuery(locale);
+  const t = (source: string) => storefrontText(locale, source);
   const basePath = storefrontBasePath(store.slug, accountKey);
   const home = `${basePath}${localeQuery}`;
   const onCatalog = !activePageSlug && !location.pathname.includes("/pages/");
 
   return (
-    <nav className="storefront-top-navigation" aria-label="Storefront navigation">
+    <nav className="storefront-top-navigation" aria-label={t("商品前台导航")}>
       <div className="storefront-top-navigation-track">
         <Link to={home} className={onCatalog ? "is-active" : ""} aria-current={onCatalog ? "page" : undefined}>
           {store.name}

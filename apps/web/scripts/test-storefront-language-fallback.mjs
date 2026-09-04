@@ -48,6 +48,30 @@ const coreLanguagePackSource = await fs.readFile(
 const coreProductDetailLocalization = coreLanguagePackSource.slice(
   coreLanguagePackSource.indexOf("export function localizeCoreProductDetail("),
 );
+const fixedLocaleGeneratorSource = await fs.readFile(
+  new URL("./generate-console-locales.mjs", import.meta.url),
+  "utf8",
+);
+const visitorCenterSource = await fs.readFile(
+  new URL("../src/pages/StorefrontVisitorCenterPage.tsx", import.meta.url),
+  "utf8",
+);
+const storefrontPageSource = await fs.readFile(
+  new URL("../src/pages/StorePage.tsx", import.meta.url),
+  "utf8",
+);
+const languageTransitionSource = await fs.readFile(
+  new URL("../src/components/StorefrontLanguageTransition.tsx", import.meta.url),
+  "utf8",
+);
+const storefrontTopNavigationSource = await fs.readFile(
+  new URL("../src/components/StorefrontTopNavigation.tsx", import.meta.url),
+  "utf8",
+);
+const storefrontFooterSource = await fs.readFile(
+  new URL("../src/components/StorefrontFooter.tsx", import.meta.url),
+  "utf8",
+);
 
 function section(start, end) {
   const startIndex = source.indexOf(start);
@@ -113,6 +137,81 @@ for (const locale of ["fr", "fa"]) {
   assert.ok(
     localeTypes.includes(`| "${locale}"`),
     `StorefrontLocale must include ${locale}`,
+  );
+}
+
+assert.ok(
+  localeSource.includes("consoleLocaleMessage(locale, source)"),
+  "Storefront fixed copy must fall back to the complete pre-generated locale dictionary",
+);
+assert.ok(
+  fixedLocaleGeneratorSource.includes('path.join(sourceRoot, "components")')
+    && fixedLocaleGeneratorSource.includes('node.expression.text === "storefrontText"')
+    && fixedLocaleGeneratorSource.includes('path.join(sourceRoot, "pages", "StorefrontVisitorCenterPage.tsx")'),
+  "Fixed locale extraction must include storefront components, direct storefrontText calls, and the visitor account",
+);
+assert.ok(
+  languageTransitionSource.includes('storefrontText(transition.target, "正在切换语言 · {language}"'),
+  "The storefront language transition status must use the selected language",
+);
+assert.ok(
+  storefrontTopNavigationSource.includes('aria-label={t("商品前台导航")}')
+    && storefrontFooterSource.includes('aria-label={t("页脚链接")}'),
+  "Storefront navigation accessibility labels must use the selected language",
+);
+
+const personalAccountMessages = [
+  "访客个人中心",
+  "我的",
+  "浏览记录",
+  "我的收藏",
+  "待确认询价单",
+  "已确认询价单",
+  "已成交订单",
+  "记录仅保存在当前浏览器；商家确认询价或订单后会在这里通知你。",
+  "这里还没有内容",
+  "提交询价后，处理进度会显示在这里。",
+  "商家已确认你的询价单",
+  "前往个人中心",
+];
+for (const locale of ["es", "tr", "ar", "ja", "ko", "pt", "fr", "fa"]) {
+  const dictionary = JSON.parse(await fs.readFile(
+    new URL(`../src/core/locales/console.${locale}.json`, import.meta.url),
+    "utf8",
+  ));
+  for (const message of personalAccountMessages) {
+    assert.ok(
+      typeof dictionary[message] === "string"
+        && dictionary[message].trim()
+        && dictionary[message] !== message,
+      `${locale} must pre-translate storefront personal-account copy: ${message}`,
+    );
+  }
+}
+assert.ok(
+  visitorCenterSource.includes("storefrontText(locale, source, values)"),
+  "The storefront visitor account must render fixed copy through storefront localization",
+);
+assert.ok(
+  storefrontPageSource.includes("<ProductGridSkeleton count={8} translate={t} />")
+    && storefrontPageSource.includes("<ProductGridSkeleton translate={t} />")
+    && storefrontPageSource.includes("translate={t}"),
+  "Shared storefront loading, error, and empty states must use the visitor-selected language",
+);
+for (const message of [
+  "内容加载失败",
+  "重新加载",
+  "商品加载中",
+  "切换中…",
+  "正在切换",
+  "查看上一张图片",
+  "查看下一张图片",
+  "装箱数",
+  "未设置",
+]) {
+  assert.ok(
+    localeSource.includes(`${JSON.stringify(message)}:`),
+    `English storefront fixed copy must include: ${message}`,
   );
 }
 

@@ -94,7 +94,7 @@ function QuoteRows({ quotes, locale, slug }: { quotes: StorefrontVisitorQuote[];
     try {
       await api.downloadStorefrontVisitorQuote(slug, quote.id, type);
     } catch (reason) {
-      setDownloadError(reason instanceof Error ? reason.message : t("文件下载失败，请稍后重试。"));
+      setDownloadError(reason instanceof Error ? t(reason.message) : t("文件下载失败，请稍后重试。"));
     } finally {
       setDownloading(null);
     }
@@ -155,7 +155,7 @@ export function StorefrontVisitorCenterPage() {
         rows.filter((row) => row.status !== "PENDING_CONFIRMATION").map(quoteNotificationKey),
       );
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("记录加载失败，请稍后重试。"));
+      setError(reason instanceof Error ? t(reason.message) : t("记录加载失败，请稍后重试。"));
     } finally {
       setLoading(false);
     }

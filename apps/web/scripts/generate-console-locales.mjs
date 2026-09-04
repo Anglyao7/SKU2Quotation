@@ -143,8 +143,16 @@ async function extractMessages() {
   const roots = [
     path.join(sourceRoot, "core"),
     path.join(sourceRoot, "pages", "console"),
+    path.join(sourceRoot, "components"),
   ];
-  const files = [path.join(sourceRoot, "pages", "LoginPage.tsx")];
+  const files = [
+    path.join(sourceRoot, "pages", "LoginPage.tsx"),
+    path.join(sourceRoot, "pages", "ProductDetailPage.tsx"),
+    path.join(sourceRoot, "pages", "SkuDetailPage.tsx"),
+    path.join(sourceRoot, "pages", "StorePage.tsx"),
+    path.join(sourceRoot, "pages", "StorefrontCustomPage.tsx"),
+    path.join(sourceRoot, "pages", "StorefrontVisitorCenterPage.tsx"),
+  ];
   for (const root of roots) files.push(...await sourceFiles(root));
 
   const messages = new Set();
@@ -164,6 +172,12 @@ async function extractMessages() {
         && node.arguments[0]) {
         collectPossibleStrings(node.arguments[0], messages);
       }
+      if (ts.isCallExpression(node)
+        && ts.isIdentifier(node.expression)
+        && node.expression.text === "storefrontText"
+        && node.arguments[1]) {
+        collectPossibleStrings(node.arguments[1], messages);
+      }
       ts.forEachChild(node, visit);
     };
     visit(file);
@@ -171,9 +185,11 @@ async function extractMessages() {
 
   const localeContextSource = await fs.readFile(path.join(sourceRoot, "core", "LocaleContext.tsx"), "utf8");
   const consoleMessagesSource = await fs.readFile(path.join(sourceRoot, "core", "consoleLocaleMessages.ts"), "utf8");
+  const storefrontLocaleSource = await fs.readFile(path.join(sourceRoot, "lib", "storefrontLocale.ts"), "utf8");
   const english = new Map([
     ...objectDictionary(localeContextSource, "english"),
     ...objectDictionary(consoleMessagesSource, "en"),
+    ...objectDictionary(storefrontLocaleSource, "english"),
   ]);
   for (const message of english.keys()) messages.add(message);
 

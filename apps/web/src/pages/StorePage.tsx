@@ -455,7 +455,7 @@ export function StorePage() {
     void api.getCatalogShare(tenantSlug, shareToken)
       .then((value) => { if (active) setCatalogShare(value); })
       .catch((reason) => {
-        if (active) setShareError(reason instanceof Error ? reason.message : t("分享内容加载失败。"));
+        if (active) setShareError(reason instanceof Error ? t(reason.message) : t("分享内容加载失败。"));
       });
     return () => { active = false; };
   }, [shareToken, t, tenantSlug]);
@@ -546,9 +546,9 @@ export function StorePage() {
     } catch (caught) {
       if (currentRequest !== requestId.current) return;
       if (keepCurrentResults) {
-        setPageTransitionError(caught instanceof Error ? caught.message : t("商品加载失败。"));
+        setPageTransitionError(caught instanceof Error ? t(caught.message) : t("商品加载失败。"));
       } else if (!preserveCurrent) {
-        setError(caught instanceof Error ? caught.message : t("商品加载失败。"));
+        setError(caught instanceof Error ? t(caught.message) : t("商品加载失败。"));
         setProducts([]);
         hasCatalogResultsRef.current = false;
       }
@@ -1365,7 +1365,7 @@ export function StorePage() {
                         <span className="store-image-inline-progress-track" aria-hidden="true"><i /></span>
                       </div>
                     </div>
-                    <ProductGridSkeleton count={8} />
+                    <ProductGridSkeleton count={8} translate={t} />
                   </div>
                 ) : imageSearchState.phase === "error" ? (
                   <div className="store-image-inline-state is-error" role="alert">
@@ -1459,13 +1459,14 @@ export function StorePage() {
                   <Text size="3" weight="medium">{t("搜索中……")}</Text>
                 </div>
               ) : loading ? (
-                <ProductGridSkeleton />
+                <ProductGridSkeleton translate={t} />
               ) : error ? (
-                <ErrorState message={error} onRetry={() => void loadProducts(page)} />
+                <ErrorState message={error} onRetry={() => void loadProducts(page)} translate={t} />
               ) : products.length === 0 ? (
                 <EmptyState
                   title={t("没有匹配的商品")}
                   description={t("换一个关键词、使用场景或分类，再试一次。")}
+                  translate={t}
                 />
               ) : (
                 <div

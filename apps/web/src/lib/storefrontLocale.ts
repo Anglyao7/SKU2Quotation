@@ -1,4 +1,5 @@
 import type { StorefrontLocale } from "../types";
+import { consoleLocaleMessage } from "../core/consoleLocaleMessages";
 import { localizedStorefrontMessages } from "./storefrontMessages";
 
 export interface StorefrontLanguageOption {
@@ -81,6 +82,21 @@ export function storefrontLanguage(locale: StorefrontLocale) {
 }
 
 const english: Record<string, string> = {
+  "正在切换语言 · {language}": "Switching language · {language}",
+  "商品前台导航": "Storefront navigation",
+  "页脚链接": "Footer links",
+  "关于 {store}": "About {store}",
+  "您好，请告诉我们您正在寻找什么商品，我们会尽快回复。": "Hello. Tell us what product you are looking for and we will reply as soon as possible.",
+  "内容加载失败": "Content could not be loaded",
+  "重新加载": "Reload",
+  "商品加载中": "Loading products",
+  "数据加载中": "Loading data",
+  "切换中…": "Switching…",
+  "正在切换": "Switching",
+  "查看上一张图片": "View previous image",
+  "查看下一张图片": "View next image",
+  "装箱数": "Units per carton",
+  "未设置": "Not set",
   "SKU 商品目录": "SKU Catalog",
   "商品目录": "Product Catalog",
   "由智贸云提供": "Powered by Zhimao Cloud",
@@ -378,7 +394,10 @@ export function storefrontText(
     ? source
     : locale === "en-US"
       ? english[source] ?? source
-      : localizedStorefrontMessages[source]?.[locale] ?? english[source] ?? source;
+      : localizedStorefrontMessages[source]?.[locale]
+        ?? consoleLocaleMessage(locale, source)
+        ?? english[source]
+        ?? source;
   for (const [key, value] of Object.entries(values)) {
     result = result.replaceAll(`{${key}}`, String(value));
   }

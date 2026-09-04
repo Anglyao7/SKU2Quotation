@@ -45,10 +45,10 @@ function FooterLink({ url, children }: { url: string; children: string }) {
   );
 }
 
-function fallbackSections(store: Storefront): StorefrontFooterSection[] {
+function fallbackSections(store: Storefront, t: StorefrontTranslator): StorefrontFooterSection[] {
   return [{
-    title: `About ${store.name}`,
-    links: [{ label: "Privacy Policy", url: "/privacy" }],
+    title: t("关于 {store}", { store: store.name }),
+    links: [{ label: t("隐私政策"), url: "/privacy" }],
   }];
 }
 
@@ -74,7 +74,7 @@ export function StorefrontFooter({
   t: StorefrontTranslator;
   accountKey?: string;
 }) {
-  const sections = store.footer_sections ?? fallbackSections(store);
+  const sections = store.footer_sections ?? fallbackSections(store, t);
   const merchantInitial = Array.from(store.name.trim())[0]?.toLocaleUpperCase() || "S";
 
   return (
@@ -96,7 +96,7 @@ export function StorefrontFooter({
           </div>
 
           {sections.length ? (
-            <nav className="store-footer-navigation" aria-label="Footer links">
+            <nav className="store-footer-navigation" aria-label={t("页脚链接")}>
               {sections.map((section, sectionIndex) => (
                 <section className="store-footer-section" key={`${section.title}-${sectionIndex}`}>
                   <h2>

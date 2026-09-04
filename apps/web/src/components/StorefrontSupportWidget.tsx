@@ -173,7 +173,7 @@ export function StorefrontSupportWidget({
   const widget = config ?? {
     enabled: true,
     title: "AI 智能客服",
-    welcome_message: "您好，请告诉我们您正在寻找什么商品，我们会尽快回复。",
+    welcome_message: t("您好，请告诉我们您正在寻找什么商品，我们会尽快回复。"),
     ai_enabled: false,
     custom_actions: [],
   };
@@ -344,7 +344,7 @@ export function StorefrontSupportWidget({
         setToken("");
         setConversation(undefined);
       } else if (!quiet) {
-        setError(caught instanceof Error ? caught.message : t("消息加载失败，请稍后重试。"));
+        setError(caught instanceof Error ? t(caught.message) : t("消息加载失败，请稍后重试。"));
       }
     } finally {
       if (!quiet) setLoading(false);
@@ -508,7 +508,7 @@ export function StorefrontSupportWidget({
       next.messages.forEach((item) => knownMessageIdsRef.current.add(item.id));
       setDraft("");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("消息发送失败，请稍后重试。"));
+      setError(caught instanceof Error ? t(caught.message) : t("消息发送失败，请稍后重试。"));
     } finally {
       setSending(false);
     }

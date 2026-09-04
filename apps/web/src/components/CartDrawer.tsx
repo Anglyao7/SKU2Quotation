@@ -211,7 +211,7 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
       notifyStorefrontQuotesChanged(slug);
       setReviewReminderOpen(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("报价单生成失败，请稍后重试。"));
+      setError(caught instanceof Error ? t(caught.message) : t("报价单生成失败，请稍后重试。"));
     } finally {
       setSubmitting(false);
     }
@@ -228,7 +228,7 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
     try {
       await api.downloadStoreQuote(quote.id, type, quote.download_token);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("文件下载失败，请稍后重试。"));
+      setError(caught instanceof Error ? t(caught.message) : t("文件下载失败，请稍后重试。"));
     } finally {
       setDownloading(null);
     }

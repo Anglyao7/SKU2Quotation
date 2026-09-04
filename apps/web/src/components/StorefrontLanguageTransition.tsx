@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { storefrontLanguage } from "../lib/storefrontLocale";
+import { storefrontLanguage, storefrontText } from "../lib/storefrontLocale";
 import type { StorefrontLocale } from "../types";
 
 type LanguageTransition = {
@@ -98,6 +98,11 @@ export function StorefrontLanguageTransitionProvider({ children }: { children: R
     begin,
     complete,
   }), [begin, complete, transition]);
+  const transitionLabel = transition
+    ? storefrontText(transition.target, "正在切换语言 · {language}", {
+        language: storefrontLanguage(transition.target).label,
+      })
+    : "";
 
   return (
     <StorefrontLanguageTransitionContext.Provider value={contextValue}>
@@ -108,11 +113,11 @@ export function StorefrontLanguageTransitionProvider({ children }: { children: R
               className={`storefront-language-transition is-${transition.phase}`}
               role="status"
               aria-live="polite"
-              aria-label={`Switching language · ${storefrontLanguage(transition.target).label}`}
+              aria-label={transitionLabel}
             >
               <span className="storefront-language-transition-beam" aria-hidden="true" />
               <span className="visually-hidden">
-                Switching language · {storefrontLanguage(transition.target).label}
+                {transitionLabel}
               </span>
             </div>,
             document.body,
