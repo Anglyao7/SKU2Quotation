@@ -1,0 +1,37 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import ts from "typescript";
+const source = await fs.readFile(new URL("../src/core/packingList.ts", import.meta.url), "utf8");
+const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
+const { packingCalculation, packingErrors, packingFormat, packingParties } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const row = { itemId: "item1", barcode: "0012345678905", packingQuantity: "24", cartonLength: "50", cartonWidth: "40", cartonHeight: "30", cartonVolume: "", grossWeight: "12.5", cartonCount: "", lastCartonGrossWeight: "2" };
+const order = { id: "item1", quantity: 100, skuCode: "PET-01" };
+const result = packingCalculation(row, order);
+assert.equal(result.cartons, 5);
+assert.equal(result.quantity, 100);
+assert.equal(result.totalVolume, .3);
+assert.equal(result.totalGrossWeight, 52);
+assert.equal(packingCalculation({ ...row, lastCartonGrossWeight: "" }, order).totalGrossWeight, 62.5);
+assert.equal(packingCalculation({ ...row, packingQuantity: "", cartonCount: "" }, order).cartons, null);
+assert.equal(packingCalculation({ ...row, cartonLength: "", cartonWidth: "", cartonHeight: "" }, order).volume, null);
+assert.equal(packingCalculation({ ...row, packingQuantity: ".1" }, { ...order, quantity: .3 }).cartons, null);
+assert.equal(packingCalculation({ ...row, packingQuantity: "0.1" }, { ...order, quantity: .3 }).cartons, 3);
+assert.equal(packingFormat(null), "—");
+const settings = { packingListNumber: "PL-1", issueDate: "2026-09-05", items: [row] };
+assert.equal(packingErrors(settings, [order], "zh-CN").length, 0);
+for (const patch of [{ barcode: "123" }, { cartonCount: "4" }, { cartonCount: "5.5" }, { grossWeight: "-1" }, { cartonHeight: "" }]) {
+  assert.ok(packingErrors({ ...settings, items: [{ ...row, ...patch }] }, [order], "zh-CN").length > 0);
+}
+console.log("Packing-list calculations and validation passed");
+const customer = { customerName: "Elena", customerCompany: "Buyer Co", customerEmail: "buyer@example.test", customerPhone: "+44 123" };
+const defaults = packingParties({ ...settings, sellerAddress: "", buyerAddress: "" }, customer, "Seller Co");
+assert.equal(defaults.seller.name, "Seller Co");
+assert.equal(defaults.buyer.name, "Buyer Co");
+assert.equal(defaults.buyer.contact, "Elena");
+assert.equal(defaults.buyer.email, "buyer@example.test");
+const custom = packingParties({ ...settings, sellerName: "Export Company", buyerName: "Ship To", buyerEmail: "", buyerPhone: "+351 999" }, customer, "Seller Co");
+assert.equal(custom.seller.name, "Export Company");
+assert.equal(custom.buyer.name, "Ship To");
+assert.equal(custom.buyer.email, "");
+assert.equal(custom.buyer.phone, "+351 999");
+console.log("Packing-list seller/buyer defaults and manual overrides passed");

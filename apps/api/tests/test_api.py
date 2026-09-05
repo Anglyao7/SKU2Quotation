@@ -22142,6 +22142,14 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         proforma_settings = {
             "invoice_number": "PI-INTEGRATION-0001",
             "issue_date": "2026-09-04",
+            "seller_name": "Invoice Export Co",
+            "seller_contact": "Lena",
+            "seller_website": "https://export.example.test",
+            "seller_tax_number": "TAX-0012345",
+            "buyer_name": "Invoice Import Co",
+            "buyer_contact": "Marco",
+            "buyer_email": "invoice@example.test",
+            "buyer_phone": "+39 555 0100",
             "seller_address": "18 Export Road",
             "seller_email": "sales@example.test",
             "seller_phone": "+86 21 5555 0100",
@@ -22171,6 +22179,72 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert saved_proforma.status_code == 200, saved_proforma.text
         assert saved_proforma.json()["proforma_invoice"] == proforma_settings
         assert saved_proforma.json()["content_hash"] != original_content_hash
+
+        packing_settings = {
+            "packing_list_number": "PL-INTEGRATION-0001",
+            "issue_date": "2026-09-05",
+            "seller_name": "Packing Export Co",
+            "seller_contact": "Lin",
+            "seller_phone": "+86 574 1234",
+            "seller_email": "packing@example.test",
+            "buyer_name": "Ocean Buyer Co",
+            "buyer_contact": "Elena",
+            "buyer_phone": "+44 1234",
+            "buyer_email": "receiving@example.test",
+            "seller_address": "18 Export Road",
+            "buyer_address": "100 Market Street",
+            "remarks": "Handle with care",
+            "items": [{
+                "item_id": merchant_detail.json()["items"][0]["id"],
+                "barcode": "0012345678905",
+                "packing_quantity": "1",
+                "carton_length": "50",
+                "carton_width": "40",
+                "carton_height": "30",
+                "gross_weight": "12.50",
+            }],
+        }
+        saved_packing = client.patch(
+            f"/api/v1/public-quote-drafts/{quote_id}/settings",
+            json={"locale": "zh-CN", "style": "indigo", "packing_list": packing_settings},
+        )
+        assert saved_packing.status_code == 200, saved_packing.text
+        for field in ("seller_name", "seller_contact", "seller_phone", "seller_email", "buyer_name", "buyer_contact", "buyer_phone", "buyer_email"):
+            assert saved_packing.json()["packing_list"][field] == packing_settings[field]
+        assert saved_packing.json()["proforma_invoice"] == proforma_settings
+        reloaded_packing = client.get(f"/api/v1/public-quote-drafts/{quote_id}").json()
+        assert reloaded_packing["packing_list"] == saved_packing.json()["packing_list"]
+        assert reloaded_packing["items"][0]["quantity"] == merchant_detail.json()["items"][0]["quantity"]
+        assert reloaded_packing["items"][0]["unit_price_snapshot"] == merchant_detail.json()["items"][0]["unit_price_snapshot"]
+        packing_row = packing_settings["items"][0]
+        for invalid_row in [
+            {**packing_row, "item_id": str(uuid4())},
+            {**packing_row, "carton_height": None},
+            {**packing_row, "carton_count": 1},
+            {**packing_row, "barcode": "123"},
+        ]:
+            rejected_packing = client.patch(
+                f"/api/v1/public-quote-drafts/{quote_id}/settings",
+                json={"locale": "zh-CN", "style": "indigo", "packing_list": {**packing_settings, "items": [invalid_row]}},
+            )
+            assert rejected_packing.status_code in (400, 409, 422), rejected_packing.text
+        for extension in ("pdf", "xlsx"):
+            packing_export = client.get(
+                f"/api/v1/public-quote-drafts/{quote_id}/{extension}",
+                params={"document_type": "packing_list"},
+            )
+            assert packing_export.status_code == 200, packing_export.text
+            assert f"PL-INTEGRATION-0001.{extension}" in packing_export.headers["content-disposition"]
+            if extension == "xlsx":
+                packing_book = load_workbook(BytesIO(packing_export.content))
+                assert "Packing Export Co" in packing_book.active["A3"].value
+                assert "packing@example.test" in packing_book.active["A3"].value
+                assert "Ocean Buyer Co" in packing_book.active["A4"].value
+                assert "receiving@example.test" in packing_book.active["A4"].value
+                assert packing_book.active["D6"].value == "0012345678905"
+                assert packing_book.active["I6"].value == 2
+                assert packing_book.active["L6"].value == 25
+                packing_book.close()
 
         merchant_proforma_pdf = client.get(
             f"/api/v1/public-quote-drafts/{quote_id}/pdf",

@@ -1,4 +1,5 @@
 import type {
+  PackingListSettings,
   AttributeDefinition,
   AnnouncementContentBlock,
   AnnouncementPayload,
@@ -6680,6 +6681,69 @@ interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status:
 interface ApiStorefrontOrderPeriodStatistics { start_at: string; end_at: string; order_count: number; completed_order_count: number; cancelled_order_count: number; amounts: Array<{ currency: string; total_amount: number | string; completed_amount: number | string; order_count: number }> }
 interface ApiStorefrontOrderStatistics { timezone: string; current_month: ApiStorefrontOrderPeriodStatistics; current_year: ApiStorefrontOrderPeriodStatistics }
 
+interface ApiPackingListSettings {
+  packing_list_number: string;
+  issue_date: string;
+  seller_name?: string | null;
+  seller_contact?: string;
+  seller_phone?: string;
+  seller_email?: string;
+  seller_address?: string;
+  buyer_name?: string | null;
+  buyer_contact?: string | null;
+  buyer_phone?: string | null;
+  buyer_email?: string | null;
+  buyer_address?: string;
+  remarks?: string;
+  items: Array<{
+    item_id: string; name?: string | null; article_number?: string | null; barcode?: string | null;
+    packing_quantity?: string | number | null; carton_length?: string | number | null;
+    carton_width?: string | number | null; carton_height?: string | number | null;
+    carton_volume?: string | number | null; gross_weight?: string | number | null;
+    carton_count?: string | number | null; last_carton_gross_weight?: string | number | null;
+  }>;
+}
+interface ApiProformaInvoiceSettings {
+  seller_name?: string | null; seller_contact?: string; seller_website?: string; seller_tax_number?: string;
+  buyer_name?: string | null; buyer_contact?: string | null; buyer_email?: string | null; buyer_phone?: string | null;
+}
+interface ApiPublicQuoteDraft { packing_list?: ApiPackingListSettings | null }
+
+function mapPackingList(row: ApiPackingListSettings): PackingListSettings {
+  return {
+    packingListNumber: row.packing_list_number, issueDate: row.issue_date,
+    sellerName: row.seller_name, sellerContact: row.seller_contact ?? "", sellerPhone: row.seller_phone ?? "", sellerEmail: row.seller_email ?? "",
+    buyerName: row.buyer_name, buyerContact: row.buyer_contact, buyerPhone: row.buyer_phone, buyerEmail: row.buyer_email,
+    sellerAddress: row.seller_address ?? "", buyerAddress: row.buyer_address ?? "", remarks: row.remarks ?? "",
+    items: row.items.map((item) => ({
+      itemId: item.item_id, name: item.name, articleNumber: item.article_number, barcode: item.barcode ?? "",
+      packingQuantity: String(item.packing_quantity ?? ""), cartonLength: String(item.carton_length ?? ""),
+      cartonWidth: String(item.carton_width ?? ""), cartonHeight: String(item.carton_height ?? ""),
+      cartonVolume: String(item.carton_volume ?? ""), grossWeight: String(item.gross_weight ?? ""),
+      cartonCount: String(item.carton_count ?? ""), lastCartonGrossWeight: String(item.last_carton_gross_weight ?? ""),
+    })),
+  };
+}
+
+function packingListPayload(row: PackingListSettings): ApiPackingListSettings {
+  const numeric = (value: string) => value.trim() || null;
+  return {
+    packing_list_number: row.packingListNumber.trim(), issue_date: row.issueDate,
+    seller_name: row.sellerName?.trim() ?? null, seller_contact: row.sellerContact?.trim() ?? "",
+    seller_phone: row.sellerPhone?.trim() ?? "", seller_email: row.sellerEmail?.trim() ?? "",
+    buyer_name: row.buyerName?.trim() ?? null, buyer_contact: row.buyerContact?.trim() ?? null,
+    buyer_phone: row.buyerPhone?.trim() ?? null, buyer_email: row.buyerEmail?.trim() ?? null,
+    seller_address: row.sellerAddress.trim(), buyer_address: row.buyerAddress.trim(), remarks: row.remarks.trim(),
+    items: row.items.map((item) => ({
+      item_id: item.itemId, name: item.name?.trim() || null, article_number: item.articleNumber?.trim(), barcode: item.barcode.trim(),
+      packing_quantity: numeric(item.packingQuantity), carton_length: numeric(item.cartonLength),
+      carton_width: numeric(item.cartonWidth), carton_height: numeric(item.cartonHeight),
+      carton_volume: numeric(item.cartonVolume), gross_weight: numeric(item.grossWeight),
+      carton_count: numeric(item.cartonCount), last_carton_gross_weight: numeric(item.lastCartonGrossWeight),
+    })),
+  };
+}
+
 function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
   const replacedInvoiceNumber = row.quote_number.replace(/^(?:QD|QT)-/i, "PI-");
   const defaultInvoiceNumber = replacedInvoiceNumber === row.quote_number
@@ -6714,6 +6778,8 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     disclaimerVersion: row.disclaimer_version,
     extraInformation: (row.extra_information ?? []).map((entry) => ({ title: entry.title, content: entry.content })),
     proformaInvoice: {
+      sellerName: proforma?.seller_name, sellerContact: proforma?.seller_contact ?? "", sellerWebsite: proforma?.seller_website ?? "", sellerTaxNumber: proforma?.seller_tax_number ?? "",
+      buyerName: proforma?.buyer_name, buyerContact: proforma?.buyer_contact, buyerEmail: proforma?.buyer_email, buyerPhone: proforma?.buyer_phone,
       invoiceNumber: proforma?.invoice_number || defaultInvoiceNumber,
       issueDate: proforma?.issue_date || row.created_at.slice(0, 10),
       sellerAddress: proforma?.seller_address ?? "",
@@ -6734,6 +6800,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
       freight: Number(proforma?.freight ?? 0),
       remarks: proforma?.remarks ?? "",
     },
+    packingList: row.packing_list ? mapPackingList(row.packing_list) : undefined,
     items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, productId: item.product_id ?? item.sku_id, position: item.position, quantity: Number(item.quantity), customerNote: defined(item.customer_note), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
   };
 }
@@ -6757,6 +6824,7 @@ export async function updatePublicQuoteDraftSettings(
     visibleColumns?: QuoteTemplateField[];
     extraInformation?: QuoteExtraInformation[];
     proformaInvoice?: PublicQuoteDraft["proformaInvoice"];
+    packingList?: PackingListSettings;
   },
 ): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
@@ -6770,7 +6838,16 @@ export async function updatePublicQuoteDraftSettings(
         quote_number: input.quoteNumber?.trim() || undefined,
         visible_columns: input.visibleColumns ?? [],
         extra_information: input.extraInformation ?? [],
+        packing_list: input.packingList ? packingListPayload(input.packingList) : undefined,
         proforma_invoice: input.proformaInvoice ? {
+          seller_name: input.proformaInvoice.sellerName?.trim() ?? null,
+          seller_contact: input.proformaInvoice.sellerContact?.trim() ?? "",
+          seller_website: input.proformaInvoice.sellerWebsite?.trim() ?? "",
+          seller_tax_number: input.proformaInvoice.sellerTaxNumber?.trim() ?? "",
+          buyer_name: input.proformaInvoice.buyerName?.trim() ?? null,
+          buyer_contact: input.proformaInvoice.buyerContact?.trim() ?? null,
+          buyer_email: input.proformaInvoice.buyerEmail?.trim() ?? null,
+          buyer_phone: input.proformaInvoice.buyerPhone?.trim() ?? null,
           invoice_number: input.proformaInvoice.invoiceNumber.trim(),
           issue_date: input.proformaInvoice.issueDate,
           seller_address: input.proformaInvoice.sellerAddress.trim(),
@@ -6922,7 +6999,7 @@ export async function downloadPublicQuoteDraftDocument(
   draftId: string,
   documentNumber: string,
   type: "pdf" | "xlsx",
-  documentType: "quotation" | "proforma_invoice" = "quotation",
+  documentType: "quotation" | "proforma_invoice" | "packing_list" = "quotation",
 ): Promise<void> {
   const safeDocumentNumber = documentNumber.replace(/[^a-zA-Z0-9._-]+/g, "-") || (documentType === "proforma_invoice" ? "proforma-invoice" : "quotation");
   await downloadCoreFile(

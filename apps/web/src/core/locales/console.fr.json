@@ -1,4 +1,13 @@
 {
+  "点击选择语言，保存后生效。": "Sélectionnez les langues, puis enregistrez.",
+  "已选中": "Sélectionné",
+  "未选中": "Non sélectionné",
+  "暂不可选": "Indisponible",
+  "已选中 · 固定保留": "Sélectionné · Toujours actif",
+  "语言包未发布": "Pack de langue non publié",
+  "无权限修改": "Lecture seule",
+  "未保存": "Non enregistré",
+  "正在保存…": "Enregistrement…",
   " 另有 {count} 个商品仍包含其他来源的 SKU，因此已保留。": "{count} produits contiennent encore des SKU d'autres sources et ont été conservés.",
   "“{name}”的商品前台将停止访问，历史数据会保留，可在编辑商家时重新启用。": "La boutique « {name} » ne sera plus accessible en front-office. Les données historiques sont conservées et le marchand peut être réactivé ultérieurement.",
   "“{name}”将立即无法登录，也不能重新开通。历史订单会继续保留用于对账和追溯。": "{name} will immediately lose access and cannot be reactivated. Historical orders will remain available for reconciliationand traceability.",

@@ -17,6 +17,8 @@ import type { UiLocale } from "./types";
 const STORAGE_KEY = "zhimaoyun.console.locale";
 
 const english: Record<string, string> = {
+  "未保存": "Unsaved",
+  "正在保存…": "Saving…",
   "图片向量化完成，本次处理 {count} 张，跳过 {skipped} 张无法读取的图片。":
     "Image vectorization completed: {count} processed and {skipped} unreadable images skipped.",
   "已跳过 {count} 张无法读取的图片": "Skipped {count} unreadable source images",

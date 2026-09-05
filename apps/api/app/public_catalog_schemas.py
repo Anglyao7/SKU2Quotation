@@ -268,9 +268,17 @@ class PublicProformaInvoiceSettings(BaseModel):
 
     invoice_number: str = Field(min_length=1, max_length=80)
     issue_date: date
+    seller_name: str | None = Field(default=None, max_length=200)
+    seller_contact: str = Field(default="", max_length=200)
+    seller_website: str = Field(default="", max_length=500)
+    seller_tax_number: str = Field(default="", max_length=100)
     seller_address: str = Field(default="", max_length=2_000)
     seller_email: str = Field(default="", max_length=320)
     seller_phone: str = Field(default="", max_length=80)
+    buyer_name: str | None = Field(default=None, max_length=200)
+    buyer_contact: str | None = Field(default=None, max_length=200)
+    buyer_email: str | None = Field(default=None, max_length=320)
+    buyer_phone: str | None = Field(default=None, max_length=80)
     buyer_address: str = Field(default="", max_length=2_000)
     incoterm: str = Field(default="", max_length=120)
     payment_terms: str = Field(default="", max_length=2_000)
@@ -288,6 +296,8 @@ class PublicProformaInvoiceSettings(BaseModel):
 
     @field_validator(
         "invoice_number",
+        "seller_name", "seller_contact", "seller_website", "seller_tax_number",
+        "buyer_name", "buyer_contact", "buyer_email", "buyer_phone",
         "seller_address",
         "seller_email",
         "seller_phone",
@@ -316,6 +326,58 @@ class PublicProformaInvoiceSettings(BaseModel):
         if any(ord(character) < 32 or ord(character) == 127 for character in value):
             raise ValueError("invoice number cannot contain control characters")
         return value
+
+
+class PublicPackingListItem(BaseModel):
+    """Document-only overrides; never change SKU master data or order quantity."""
+
+    item_id: UUID
+    name: str | None = Field(default=None, min_length=1, max_length=1000)
+    article_number: str | None = Field(default=None, max_length=200)
+    barcode: str | None = Field(default=None, pattern=r"^(?:[0-9]{13})?$")
+    packing_quantity: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=4)
+    carton_length: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=4)
+    carton_width: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=4)
+    carton_height: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=4)
+    carton_volume: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=8)
+    gross_weight: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    carton_count: int | None = Field(default=None, gt=0, le=100_000_000)
+    last_carton_gross_weight: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+
+    @field_validator("name", "article_number", "barcode", mode="before")
+    @classmethod
+    def trim_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class PublicPackingListSettings(BaseModel):
+    packing_list_number: str = Field(min_length=1, max_length=80)
+    issue_date: date
+    seller_name: str | None = Field(default=None, max_length=200)
+    seller_contact: str = Field(default="", max_length=200)
+    seller_phone: str = Field(default="", max_length=100)
+    seller_email: str = Field(default="", max_length=320)
+    seller_address: str = Field(default="", max_length=2000)
+    buyer_name: str | None = Field(default=None, max_length=200)
+    buyer_contact: str | None = Field(default=None, max_length=200)
+    buyer_phone: str | None = Field(default=None, max_length=100)
+    buyer_email: str | None = Field(default=None, max_length=320)
+    buyer_address: str = Field(default="", max_length=2000)
+    remarks: str = Field(default="", max_length=5000)
+    items: list[PublicPackingListItem] = Field(default_factory=list, max_length=200)
+
+    @field_validator("packing_list_number", "seller_name", "seller_contact", "seller_phone", "seller_email", "seller_address", "buyer_name", "buyer_contact", "buyer_phone", "buyer_email", "buyer_address", "remarks", mode="before")
+    @classmethod
+    def trim_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_items(self):
+        if len({item.item_id for item in self.items}) != len(self.items):
+            raise ValueError("duplicate packing list item")
+        if any(ord(char) < 32 or ord(char) == 127 for char in self.packing_list_number):
+            raise ValueError("packing list number cannot contain control characters")
+        return self
 
 
 class PublicQuoteDraftResponse(BaseModel):
@@ -353,6 +415,7 @@ class PublicQuoteDraftResponse(BaseModel):
     disclaimer_version: str = PUBLIC_DRAFT_DISCLAIMER_VERSION
     extra_information: list[PublicQuoteExtraInformation] = Field(default_factory=list)
     proforma_invoice: PublicProformaInvoiceSettings | None = None
+    packing_list: PublicPackingListSettings | None = None
     items: list[PublicQuoteDraftItemResponse]
     download_token: str | None = None
     download_expires_at: datetime | None = None
@@ -378,6 +441,7 @@ class PublicQuoteDraftSettingsUpdate(BaseModel):
         max_length=20,
     )
     proforma_invoice: PublicProformaInvoiceSettings | None = None
+    packing_list: PublicPackingListSettings | None = None
 
     @field_validator("quote_number", mode="before")
     @classmethod

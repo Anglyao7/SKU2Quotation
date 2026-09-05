@@ -11,6 +11,13 @@ import trGenerated from "./locales/console.tr.json";
 type ConsoleDictionary = Record<string, string>;
 
 const en: ConsoleDictionary = {
+  "点击选择语言，保存后生效。": "Click to select languages, then save.",
+  "已选中": "Selected",
+  "未选中": "Not selected",
+  "暂不可选": "Unavailable",
+  "已选中 · 固定保留": "Selected · Always enabled",
+  "语言包未发布": "Language pack not published",
+  "无权限修改": "Read-only",
   "标签列表加载失败。": "Could not load tags.", "操作失败。": "The operation failed.", "标签删除失败。": "Could not delete the tag.",
   "请先从侧边栏选择一个租户，再管理标签。": "Select a merchant from the sidebar before managing tags.",
   "新建标签": "New tag", "编辑标签": "Edit tag", "标签名称": "Tag name", "标签分类": "Tag category", "使用次数": "Usage", "不分类": "Uncategorized",

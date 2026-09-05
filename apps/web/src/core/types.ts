@@ -1876,6 +1876,14 @@ export interface PublicQuoteDraftItem {
 export interface ProformaInvoiceSettings {
   invoiceNumber: string;
   issueDate: string;
+  sellerName?: string | null;
+  sellerContact?: string;
+  sellerWebsite?: string;
+  sellerTaxNumber?: string;
+  buyerName?: string | null;
+  buyerContact?: string | null;
+  buyerEmail?: string | null;
+  buyerPhone?: string | null;
   sellerAddress: string;
   sellerEmail: string;
   sellerPhone: string;
@@ -1893,6 +1901,38 @@ export interface ProformaInvoiceSettings {
   swiftCode: string;
   freight: number;
   remarks: string;
+}
+
+export interface PackingListItem {
+  itemId: string;
+  name?: string | null;
+  articleNumber?: string | null;
+  barcode: string;
+  packingQuantity: string;
+  cartonLength: string;
+  cartonWidth: string;
+  cartonHeight: string;
+  cartonVolume: string;
+  grossWeight: string;
+  cartonCount: string;
+  lastCartonGrossWeight: string;
+}
+
+export interface PackingListSettings {
+  packingListNumber: string;
+  issueDate: string;
+  sellerName?: string | null;
+  sellerContact?: string;
+  sellerPhone?: string;
+  sellerEmail?: string;
+  sellerAddress: string;
+  buyerName?: string | null;
+  buyerContact?: string | null;
+  buyerPhone?: string | null;
+  buyerEmail?: string | null;
+  buyerAddress: string;
+  remarks: string;
+  items: PackingListItem[];
 }
 
 export interface PublicQuoteDraft {
@@ -1923,6 +1963,7 @@ export interface PublicQuoteDraft {
   disclaimerVersion: string;
   extraInformation: QuoteExtraInformation[];
   proformaInvoice: ProformaInvoiceSettings;
+  packingList?: PackingListSettings;
   items: PublicQuoteDraftItem[];
 }
 

@@ -562,8 +562,24 @@ def quote_text(locale: str | None, key: str) -> str:
     )
 
 
+_PROFORMA_PARTY_LABELS = {
+    "zh-CN": {"website": "官网", "tax_id": "税号"},
+    "en-US": {"website": "Website", "tax_id": "Tax ID"},
+    "es": {"website": "Sitio web", "tax_id": "Identificación fiscal"},
+    "tr": {"website": "Web sitesi", "tax_id": "Vergi numarası"},
+    "ar": {"website": "الموقع الإلكتروني", "tax_id": "الرقم الضريبي"},
+    "ja": {"website": "ウェブサイト", "tax_id": "税務番号"},
+    "ko": {"website": "웹사이트", "tax_id": "납세자 번호"},
+    "pt": {"website": "Site", "tax_id": "Número fiscal"},
+    "fr": {"website": "Site web", "tax_id": "Numéro fiscal"},
+    "fa": {"website": "وب‌سایت", "tax_id": "شناسه مالیاتی"},
+}
+
+
 def proforma_text(locale: str | None, key: str) -> str:
     normalized = quote_locale(locale)
+    if key in _PROFORMA_PARTY_LABELS["en-US"]:
+        return _PROFORMA_PARTY_LABELS.get(normalized, _PROFORMA_PARTY_LABELS["en-US"])[key]
     return _PROFORMA_STRINGS.get(normalized, _PROFORMA_STRINGS["zh-CN"]).get(
         key,
         _PROFORMA_STRINGS["en-US"].get(key, key),

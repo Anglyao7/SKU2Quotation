@@ -31,6 +31,8 @@ from app.services.public_quote_documents import (
     render_public_quote_draft_xlsx,
 )
 from app.use_cases import public_catalog as public_catalog_use_cases
+from app.public_catalog_schemas import PublicPackingListItem, PublicPackingListSettings
+from app.services.packing_lists import default_item, dimensions, number, packing_rows, packing_settings
 
 
 def _image_bytes() -> bytes:
@@ -40,6 +42,122 @@ def _image_bytes() -> bytes:
         format="PNG",
     )
     return output.getvalue()
+
+
+def test_packing_list_uses_order_snapshots_and_preserves_barcode():
+    document = _document()
+    item = document.quote.items[0]
+    item.option_values_snapshot["13位编码"] = "0012345678905"
+    settings = packing_settings(document.quote, document.quote.items)
+    assert settings.packing_list_number == "PL-20260801-0001"
+    assert settings.items[0].barcode == "0012345678905"
+    assert settings.items[0].packing_quantity == Decimal("20")
+    document.quote.packing_list = settings
+    row = packing_rows(document.quote)[0]
+    assert row["carton_count"] == 2
+    assert row["quantity"] == 40
+    assert row["carton_volume"] == Decimal("0.06")
+    assert row["total_volume"] == Decimal("0.12")
+    assert row["total_gross_weight"] == Decimal("25")
+
+
+def test_packing_list_partial_carton_retains_actual_order_quantity():
+    document = _document()
+    document.quote.items[0].quantity = Decimal(100)
+    settings = packing_settings(document.quote, document.quote.items)
+    settings.items[0].packing_quantity = Decimal(24)
+    settings.items[0].last_carton_gross_weight = Decimal(2)
+    document.quote.packing_list = settings
+    row = packing_rows(document.quote)[0]
+    assert row["carton_count"] == 5
+    assert row["quantity"] == 100
+    assert row["total_volume"] == Decimal("0.30")
+    assert row["total_gross_weight"] == Decimal("52")
+
+
+def test_packing_list_missing_data_stays_unknown():
+    document = _document()
+    document.quote.items[0].option_values_snapshot = {}
+    row = packing_rows(document.quote)[0]
+    assert row["quantity"] == 40
+    assert all(row[key] is None for key in ("carton_count", "total_volume", "total_gross_weight"))
+
+
+def test_packing_list_snapshot_round_trip_and_order_changes():
+    document = _document()
+    item = document.quote.items[0]
+    settings = packing_settings(document.quote, document.quote.items)
+    settings.items[0].barcode = "0012345678905"
+    settings.items[0].gross_weight = Decimal("11.25")
+    draft = SimpleNamespace(quotation_number="QT-ROUNDTRIP", created_at=document.quote.created_at, snapshot={"packing_list": settings.model_dump(mode="json")})
+    item.quantity = Decimal(60)
+    restored = packing_settings(draft, [item])
+    document.quote.packing_list = restored
+    assert restored.items[0].barcode == "0012345678905"
+    assert packing_rows(document.quote)[0]["total_gross_weight"] == Decimal("33.75")
+    assert item.option_values_snapshot["毛重"] == "12.5 kg"
+    assert packing_settings(draft, []).items == []
+
+
+@pytest.mark.parametrize("field,value", [("barcode", "123"), ("barcode", "123456789012A"), ("packing_quantity", 0), ("gross_weight", -1), ("carton_count", "1.5"), ("carton_volume", "NaN")])
+def test_packing_list_invalid_fields_rejected(field, value):
+    with pytest.raises(ValidationError):
+        PublicPackingListItem(item_id=uuid4(), **{field: value})
+
+
+def test_packing_list_duplicate_items_rejected():
+    item = PublicPackingListItem(item_id=uuid4())
+    with pytest.raises(ValidationError):
+        PublicPackingListSettings(packing_list_number="PL-1", issue_date="2026-09-05", items=[item, item])
+
+
+def test_packing_list_unit_parsing_and_malformed_legacy_metadata():
+    assert dimensions("500×400×300mm") == (Decimal(50), Decimal(40), Decimal(30))
+    assert dimensions("0.5 * 0.4 * 0.3 m") == (Decimal(50), Decimal(40), Decimal(30))
+    assert number("12500 g", "weight") == Decimal("12.5")
+    assert number("60000 cm³", "volume") == Decimal("0.06")
+    assert number("12 tonnes", "weight") is None
+    assert number("12 sqcm", "volume") is None
+    assert dimensions("50 × 40") == (None, None, None)
+    assert number("24.单个含包装重量0.283kg") is None
+    item = _document().quote.items[0]
+    item.option_values_snapshot = {"毛重（kg）": "12.5", "13位编码": "not-a-barcode", "装箱数": "NaN"}
+    row = default_item(item)
+    assert row.gross_weight == Decimal("12.5")
+    assert row.barcode == "" and row.packing_quantity is None
+
+
+def test_packing_list_xlsx_has_exact_columns_images_text_codes_and_totals():
+    document = _document()
+    document.quote.items[0].option_values_snapshot["13位编码"] = "0012345678905"
+    settings = packing_settings(document.quote, document.quote.items)
+    settings.items[0].name = "=1+1"
+    document.quote.packing_list = settings
+    output = render_public_quote_draft_xlsx(document, document_type="packing_list", image_loader=lambda _: _image_bytes())
+    sheet = load_workbook(BytesIO(output)).active
+    assert sheet.max_column == 12
+    assert [cell.value for cell in sheet[5]][:4] == ["图片", "名称", "货号", "13位编码"]
+    assert sheet["D6"].value == "0012345678905" and sheet["D6"].data_type == "s"
+    assert sheet["B6"].data_type == "s" and sheet["B6"].value == "'=1+1"
+    assert sheet["I6"].value == 2 and sheet["J6"].value == 40
+    assert sheet["K7"].value == 0.12 and sheet["L7"].value == 25
+    assert len(sheet._images) == 1
+    assert sheet.freeze_panes == "E6" and sheet.page_setup.orientation == "landscape"
+    assert "USD" not in str(list(sheet.values)) and "2.50" not in str(list(sheet.values))
+
+
+def test_packing_list_pdf_is_landscape_and_contains_no_prices():
+    document = _document()
+    document.quote.locale = "en-US"
+    document.quote.items[0].name_snapshot = "Pet travel mat"
+    output = render_public_quote_draft_pdf(document, document_type="packing_list", image_loader=lambda _: _image_bytes())
+    pdf = PdfReader(BytesIO(output))
+    page = pdf.pages[0]
+    assert page.mediabox.width > page.mediabox.height
+    text = page.extract_text()
+    assert "PACKING LIST" in text and "PL-20260801-0001" in text
+    assert "Pet travel mat" in text and "Cartons" in text
+    assert "USD" not in text and "Unit price" not in text
 
 
 def test_quote_reuses_version_compatible_sku_translation_after_offer_metadata_change() -> None:
@@ -295,6 +413,68 @@ def test_proforma_invoice_xlsx_is_standalone_and_includes_grand_total() -> None:
     assert len(sheet._images) == 1
     assert all(cell.data_type != "f" for row in sheet.iter_rows() for cell in row)
     workbook.close()
+
+
+def test_proforma_party_overrides_are_saved_and_exported_without_changing_order() -> None:
+    document = _document()
+    invoice = document.quote.proforma_invoice
+    invoice.seller_name = "Independent Export Co"
+    invoice.seller_contact = "Elena"
+    invoice.seller_website = "https://export.example.test"
+    invoice.seller_tax_number = "0012345678"
+    invoice.buyer_name = "Import Trading Co"
+    invoice.buyer_contact = "Marco"
+    invoice.buyer_email = "pi-buyer@example.test"
+    invoice.buyer_phone = "+39 555 1234"
+    original_buyer = document.quote.customer_name
+    snapshot = SimpleNamespace(created_at=document.quote.created_at, quotation_number="QT-001", snapshot={"proforma_invoice": invoice.model_dump(mode="json")})
+    restored = public_catalog_use_cases._draft_proforma_invoice(snapshot)
+    assert restored == invoice
+    document.quote.proforma_invoice = restored
+    pdf = PdfReader(BytesIO(render_public_quote_draft_pdf(document, document_type="proforma_invoice", image_loader=lambda _: _image_bytes())))
+    pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert sum(len(page.images) for page in pdf.pages) == 1
+    workbook = load_workbook(BytesIO(render_public_quote_draft_xlsx(document, document_type="proforma_invoice")))
+    xlsx_text = "\n".join(str(cell.value or "") for row in workbook.active for cell in row)
+    for value in (invoice.seller_name, invoice.seller_contact, invoice.seller_website, invoice.seller_tax_number, invoice.buyer_name, invoice.buyer_contact, invoice.buyer_email, invoice.buyer_phone):
+        assert value in pdf_text
+        assert value in xlsx_text
+    assert "USD 125.00" in pdf_text
+    assert document.quote.customer_name == original_buyer
+    assert document.tenant_name == "示例商家"
+    workbook.close()
+
+
+def test_proforma_explicitly_cleared_buyer_fields_do_not_fall_back_in_exports() -> None:
+    document = _document()
+    document.quote.proforma_invoice.buyer_name = ""
+    document.quote.proforma_invoice.buyer_contact = ""
+    document.quote.proforma_invoice.buyer_email = ""
+    document.quote.proforma_invoice.buyer_phone = ""
+    pdf = PdfReader(BytesIO(render_public_quote_draft_pdf(document, document_type="proforma_invoice")))
+    pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    workbook = load_workbook(BytesIO(render_public_quote_draft_xlsx(document, document_type="proforma_invoice")))
+    xlsx_text = "\n".join(str(cell.value or "") for row in workbook.active for cell in row)
+    for value in (document.quote.customer_name, document.quote.customer_company, document.quote.customer_email, document.quote.customer_phone):
+        assert value not in pdf_text
+        assert value not in xlsx_text
+    workbook.close()
+
+
+def test_proforma_multi_page_pdf_retains_every_item_and_one_total() -> None:
+    document = _document()
+    document.quote.locale = "en-US"
+    original = document.quote.items[0]
+    document.quote.items = [original.model_copy(update={"id": uuid4(), "sku_code_snapshot": f"INVOICE-{index:03}", "position": index}) for index in range(40)]
+    document.quote.total = Decimal("4000")
+    content = render_public_quote_draft_pdf(document, document_type="proforma_invoice", image_loader=lambda _: _image_bytes())
+    reader = PdfReader(BytesIO(content))
+    assert len(reader.pages) > 1
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    for index in range(40):
+        assert f"INVOICE-{index:03}" in text
+    assert text.count("USD 4,025.00") == 1
+    assert "\x00" not in text
 
 
 def test_quote_excel_template_only_maps_product_region_fields() -> None:

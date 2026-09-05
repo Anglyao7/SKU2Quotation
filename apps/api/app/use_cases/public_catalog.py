@@ -3498,6 +3498,12 @@ def _draft_proforma_invoice(
         )
 
 
+def _draft_packing_list(draft, items):
+    from ..services.packing_lists import packing_settings
+
+    return packing_settings(draft, items)
+
+
 def _quote_specification(option_values: dict[str, object]) -> str | None:
     parts: list[str] = []
     for key, value in option_values.items():
@@ -3931,6 +3937,7 @@ def _draft_response(
         disclaimer_version=draft.disclaimer_version,
         extra_information=_draft_extra_information(draft),
         proforma_invoice=_draft_proforma_invoice(draft),
+        packing_list=_draft_packing_list(draft, items),
         items=[_item_response(item) for item in items],
         download_token=raw_token,
         download_expires_at=token_expires_at,
@@ -5311,6 +5318,25 @@ def update_tenant_quote_draft_settings(
                 conversion = dict(conversion)
                 conversion.pop("base_freight", None)
                 snapshot["currency_conversion"] = conversion
+    if request.packing_list is not None:
+        packing_items = repository.list_quote_draft_items(
+            session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
+        )
+        valid_ids = {item.id for item in packing_items}
+        if any(row.item_id not in valid_ids for row in request.packing_list.items):
+            raise ApplicationError(
+                "PACKING_LIST_ITEM_NOT_FOUND",
+                "装箱单包含不属于当前订单的商品，请刷新后重试。",
+                kind="conflict",
+            )
+        quantities = {item.id: item.quantity for item in packing_items}
+        for row in request.packing_list.items:
+            dimensions = (row.carton_length, row.carton_width, row.carton_height)
+            if any(value is not None for value in dimensions) and not all(value is not None for value in dimensions):
+                raise ApplicationError("PACKING_LIST_DIMENSIONS_INCOMPLETE", "装箱尺寸请填写完整的长、宽、高。")
+            if row.carton_count is not None and row.packing_quantity is not None and row.carton_count * row.packing_quantity < quantities[row.item_id]:
+                raise ApplicationError("PACKING_LIST_CARTONS_INSUFFICIENT", "箱数不足以容纳订单数量。")
+        snapshot["packing_list"] = request.packing_list.model_dump(mode="json")
     draft.snapshot = snapshot
     draft.content_hash = _quote_snapshot_content_hash(snapshot)
     draft.updated_at = utcnow()

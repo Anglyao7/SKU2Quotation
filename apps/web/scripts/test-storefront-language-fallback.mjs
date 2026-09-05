@@ -260,12 +260,28 @@ assert.ok(
 );
 assert.match(
   coreStyles,
-  /\.language-package-option\.is-enabled\s*\{[^}]*color:\s*white;[^}]*background:\s*color-mix\(in srgb, var\(--core-success\) 88%, var\(--core-surface\)\);/s,
+  /\.language-package-option\.is-enabled\s*\{[^}]*color:\s*white;[^}]*background:\s*#168267;/s,
   "Enabled merchant language cards must use an unmistakable green background",
 );
 assert.ok(
-  coreStyles.includes(".language-package-option.is-pending:not(.is-enabled)"),
-  "A language being disabled must not retain the green selected state",
+  !coreStyles.includes(".language-package-option.is-pending"),
+  "Unsaved selection changes must not turn available languages yellow",
+);
+assert.match(
+  coreStyles,
+  /\.language-package-option\s*\{[^}]*min-height:\s*132px;[^}]*background:\s*#fff;/s,
+  "Unselected languages must be large plain white buttons",
+);
+assert.match(
+  coreStyles,
+  /\.language-package-option\.is-unavailable\s*\{[^}]*background:\s*#fff0b3;/s,
+  "Unpublished or unavailable languages must be yellow even if previously selected",
+);
+assert.ok(
+  languageSettingsSource.includes('aria-pressed={enabled}')
+    && languageSettingsSource.includes('enabled || unavailable ? (')
+    && !languageSettingsSource.includes('<Plus'),
+  "Buttons must expose selection accessibly without decorating unselected languages",
 );
 
 assert.ok(

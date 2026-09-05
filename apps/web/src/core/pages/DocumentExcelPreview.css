@@ -1,0 +1,26 @@
+.document-preview-mode-switch,
+.packing-preview-toolbar > .document-preview-mode-switch { display: inline-flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--gray-5); border-radius: 7px; background: var(--gray-3); flex-shrink: 0; }
+.document-preview-mode-switch button,
+.packing-preview-toolbar .document-preview-mode-switch button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 76px; min-height: 30px; padding: 5px 10px; border: 0; border-radius: 4px; background: transparent; color: var(--gray-11); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s, color .15s; }
+.document-preview-mode-switch button:hover,
+.packing-preview-toolbar .document-preview-mode-switch button:hover { background: var(--gray-4); }
+.document-preview-mode-switch button[aria-pressed="true"],
+.packing-preview-toolbar .document-preview-mode-switch button[aria-pressed="true"] { color: var(--green-11); background: var(--color-panel-solid); box-shadow: 0 1px 3px rgb(20 70 50 / 12%); }
+.document-preview-mode-switch button:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 1px; }
+.document-excel { box-sizing: border-box; background: #fff; color: #26332e; margin-inline: auto; font: 14px/1.45 Arial, "Noto Sans", sans-serif; font-variant-numeric: tabular-nums; }
+.document-excel table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.document-excel th, .document-excel td { border: 1px solid #d8dfdb; padding: 6px 8px; vertical-align: middle; white-space: pre-wrap; overflow-wrap: anywhere; text-align: start; }
+.document-excel thead th, .document-excel .document-excel-row-number { padding: 4px; background: #edf1ef; color: #66736c; text-align: center; font-size: 12px; font-weight: 400; }
+.document-excel thead th { position: sticky; top: 0; z-index: 1; }
+.document-excel td.is-number { text-align: end; }
+.document-excel td.is-label { color: var(--sheet-accent); font-weight: 600; }
+.document-excel-row--title td { font-size: 24px; font-weight: 700; color: var(--sheet-accent); }
+.invoice-panel .document-excel-row--title td { text-align: center; }
+.document-excel-row--header td, .document-excel-row--section td { background: var(--sheet-accent); color: #fff; font-weight: 600; }
+.document-excel-row--header td { text-align: center; }
+.document-excel-row--blank { height: 22px; }
+.document-excel-row--blank td { padding: 0; }
+.document-excel-row--total td, .document-excel-row--grand-total td { font-weight: 600; }
+.document-excel-row--grand-total td { background: color-mix(in srgb, var(--sheet-accent) 9%, white); }
+.document-excel td img { display: block; width: 70px; height: 70px; max-width: 100%; object-fit: contain; margin: auto; }
+.document-excel-sheet-tab { display: flex; align-items: center; gap: 7px; padding: 11px 18px; border: 1px solid #d8dfdb; border-top: 3px solid var(--sheet-accent); color: var(--sheet-accent); background: #f2f6f3; font-size: 13px; font-weight: 600; }

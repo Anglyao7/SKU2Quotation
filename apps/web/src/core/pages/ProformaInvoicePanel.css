@@ -1,0 +1,31 @@
+.invoice-paper { width: 794px; min-height: 1123px; }
+.invoice-panel .packing-paper-banner, .invoice-panel .packing-paper-table th, .invoice-totals { background: var(--invoice-accent); }
+.invoice-panel .packing-paper-parties section { border-color: var(--invoice-accent); background: color-mix(in srgb, var(--invoice-accent) 8%, #fff); }
+.invoice-panel .packing-paper-banner > div { max-width: 40%; font-size: 9px; }
+.invoice-panel .packing-paper-banner > strong { font-size: 20px; }
+.invoice-panel .packing-paper-title > div:first-child { text-align: start; }
+.invoice-panel .packing-paper-title small { color: var(--invoice-accent); font-size: 11px; font-weight: 600; }
+.invoice-panel .packing-paper-title h2 { font-size: 34px; margin-top: 6px; }
+.invoice-panel .packing-paper-parties dl > div { grid-template-columns: 68px minmax(0, 1fr); }
+.invoice-product-cell { display: flex; align-items: center; gap: 9px; }
+.invoice-product-cell > div { min-width: 0; }
+.invoice-product-cell small { display: block; color: #64796f; margin-top: 5px; white-space: pre-wrap; }
+.invoice-product-cell strong { font-weight: 500; }
+.invoice-panel .packing-paper-table td img { flex-shrink: 0; width: 40px; height: 40px; }
+.invoice-totals { padding: 13px 16px; color: #fff; }
+.invoice-totals > div { display: flex; align-items: baseline; justify-content: end; gap: 26px; padding: 8px 0; font-variant-numeric: tabular-nums; }
+.invoice-totals span { font-size: 11px; }
+.invoice-totals strong { min-width: 125px; text-align: end; font-size: 14px; }
+.invoice-totals .is-grand-total { border-top: 1px solid rgb(255 255 255 / 25%); margin-top: 4px; padding-top: 12px; }
+.invoice-totals .is-grand-total strong { font-size: 19px; }
+.invoice-trade-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #cedbd3; margin-top: 20px; }
+.invoice-trade-grid > div { padding: 12px; border-inline-end: 1px solid #cedbd3; }
+.invoice-trade-grid > div:nth-child(3n) { border: 0; }
+.invoice-trade-grid span, .invoice-trade-grid strong { display: block; font-size: 10px; line-height: 1.6; }
+.invoice-trade-grid span { color: #64796f; margin-bottom: 7px; }
+.invoice-trade-grid strong { white-space: pre-wrap; overflow-wrap: anywhere; }
+.invoice-bank { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 0; font-size: 11px; }
+.invoice-bank dt { color: #64796f; margin-bottom: 5px; }
+.invoice-bank dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.invoice-field-error { color: var(--red-11); font-size: 11px; }
+.invoice-panel .quote-editor-items { padding: 0; border: 0; }

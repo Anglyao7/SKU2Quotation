@@ -1,4 +1,13 @@
 {
+  "点击选择语言，保存后生效。": "Dilleri seçin, ardından kaydedin.",
+  "已选中": "Seçili",
+  "未选中": "Seçili değil",
+  "暂不可选": "Kullanılamıyor",
+  "已选中 · 固定保留": "Seçili · Her zaman etkin",
+  "语言包未发布": "Dil paketi yayımlanmadı",
+  "无权限修改": "Salt okunur",
+  "未保存": "Kaydedilmedi",
+  "正在保存…": "Kaydediliyor…",
   " 另有 {count} 个商品仍包含其他来源的 SKU，因此已保留。": "{count} ürün hâlâ diğer kaynaklardan SKU içerdiği için korundu.",
   "“{name}”的商品前台将停止访问，历史数据会保留，可在编辑商家时重新启用。": "{name} mağazasının ön yüzü kullanılamaz hale gelecek. Geçmiş veriler korunur ve düzenleme sırasında mağaza yeniden etkinleştirilebilir.",
   "“{name}”将立即无法登录，也不能重新开通。历史订单会继续保留用于对账和追溯。": "{name} anında erişimini kaybedecek ve yeniden etkinleştirilemeyecek. Geçmiş siparişler mutabakat ve izlenebilirlik için korunmaya devam edecek.",

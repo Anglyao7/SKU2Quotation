@@ -1,10 +1,8 @@
 import { Button, Card, Heading, Select, Spinner, Text } from "@radix-ui/themes";
 import {
   Check,
-  Eye,
   GlobeHemisphereWest,
   LockSimple,
-  Plus,
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
@@ -33,10 +31,6 @@ export function StorefrontLanguageSettings() {
 
   const changed = enabledLocales.join(",") !== savedLocales.join(",")
     || defaultLocale !== savedDefaultLocale;
-  const availableCount = STOREFRONT_LANGUAGE_OPTIONS.filter(
-    (language) => language.code === "zh-CN" || configuredLocales.includes(language.code),
-  ).length;
-  const waitingCount = STOREFRONT_LANGUAGE_OPTIONS.length - availableCount;
   const enabledLanguages = STOREFRONT_LANGUAGE_OPTIONS.filter(
     (language) => enabledLocales.includes(language.code),
   );
@@ -116,7 +110,7 @@ export function StorefrontLanguageSettings() {
         <div className="language-heading-copy">
           <Heading size="5">{t("前台语言")}</Heading>
           <Text size="2" color="gray">
-            {t("选择访客可以使用的语言；只有管理员已发布语言包的语言才可以启用。")}
+            {t("点击选择语言，保存后生效。")}
           </Text>
         </div>
         <div className="language-selection-toolbar">
@@ -141,99 +135,64 @@ export function StorefrontLanguageSettings() {
         </div>
       ) : (
         <>
-          <section className="language-display-overview" aria-live="polite">
-            <div className="language-display-overview-copy">
-              <span aria-hidden="true"><Eye weight="fill" /></span>
-              <div>
-                <Text size="2" weight="bold">
-                  {t("已选择 {count} 种前台语言", { count: enabledLanguages.length })}
-                </Text>
-                <Text size="1">
-                  {t("保存后，绿色底纹的语言会出现在访客的语言菜单中。")}
-                </Text>
-              </div>
-            </div>
-            <div className="language-display-list">
-              {enabledLanguages.map((language) => (
-                <span key={language.code} lang={language.code} dir={language.direction}>
-                  <StorefrontFlag locale={language.code} />
-                  {language.label}
-                </span>
-              ))}
-            </div>
-          </section>
-
           <div className="language-options-heading">
-            <div>
-              <Text size="2" weight="bold">{t("选择展示语言")}</Text>
-              <Text size="1" color="gray">
-                {t("点击语言卡片即可开启或关闭前台展示，简体中文固定保留。")}
+            <div aria-live="polite">
+              <Text size="2" weight="bold">
+                {t("已选择 {count} 种前台语言", { count: enabledLanguages.length })}
               </Text>
             </div>
             <div className="language-state-legend" aria-label={t("语言状态说明")}>
-              <span className="is-enabled"><i />{t("已选择展示")}</span>
-              <span><i />{t("尚未展示")}</span>
-              {waitingCount ? <span className="is-waiting"><i />{t("待管理员配置")}</span> : null}
+              <span className="is-enabled"><i />{t("已选中")}</span>
+              <span><i />{t("未选中")}</span>
+              <span className="is-waiting"><i />{t("暂不可选")}</span>
             </div>
           </div>
 
           <div className="language-package-options">
             {STOREFRONT_LANGUAGE_OPTIONS.map((language) => {
               const enabled = enabledLocales.includes(language.code);
-              const saved = savedLocales.includes(language.code);
-              const pending = enabled !== saved;
               const source = language.code === "zh-CN";
               const configured = source || configuredLocales.includes(language.code);
-              let statusLabel = t("未展示 · 点击开启");
-              let indicator = <Plus weight="bold" />;
+              const unavailable = !configured || (!source && !canManageSettings);
+              let statusLabel = enabled ? t("已选中") : "";
               if (source) {
-                statusLabel = t("固定展示");
-                indicator = <LockSimple weight="bold" />;
+                statusLabel = t("已选中 · 固定保留");
               } else if (!configured) {
-                statusLabel = t("语言包未配置");
-                indicator = <WarningCircle weight="fill" />;
-              } else if (pending) {
-                statusLabel = t(enabled
-                  ? "待保存 · 将开启展示"
-                  : "待保存 · 将关闭展示");
-                indicator = <WarningCircle weight="fill" />;
-              } else if (enabled) {
-                statusLabel = t("正在展示 · 点击关闭");
-                indicator = <Check weight="bold" />;
+                statusLabel = t("语言包未发布");
+              } else if (!canManageSettings) {
+                statusLabel = t("无权限修改");
               }
               return (
                 <button
                   type="button"
                   key={language.code}
-                  className={`language-package-option${enabled ? " is-enabled" : ""}${pending ? " is-pending" : ""}${source ? " is-source" : ""}${!configured ? " is-unavailable" : ""}`}
+                  className={`language-package-option${enabled ? " is-enabled" : ""}${unavailable ? " is-unavailable" : ""}`}
                   onClick={() => toggleLanguage(language.code, !enabled)}
-                  disabled={source || !canManageSettings}
+                  disabled={source || !canManageSettings || saving}
                   aria-pressed={enabled}
-                  aria-disabled={!configured || source || !canManageSettings}
+                  aria-disabled={unavailable || source || saving}
                   title={!configured ? t("该语言包未配置，请联系管理员。") : undefined}
                 >
                   <StorefrontFlag locale={language.code} className="language-option-flag" />
                   <span className="language-option-copy">
                     <strong lang={language.code} dir={language.direction}>{language.label}</strong>
-                    <small className="language-option-status">{statusLabel}</small>
+                    {statusLabel ? <small className="language-option-status">{statusLabel}</small> : null}
                   </span>
-                  <span className="language-option-indicator" aria-hidden="true">
-                    {indicator}
-                  </span>
+                  {enabled || unavailable ? (
+                    <span className="language-option-indicator" aria-hidden="true">
+                      {enabled ? <Check weight="bold" /> : <LockSimple weight="bold" />}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
           </div>
-          <div className={`language-selection-state${changed ? " is-changed" : ""}`}>
-            {changed
-              ? <WarningCircle weight="fill" aria-hidden="true" />
-              : <Check weight="bold" aria-hidden="true" />}
-            <Text size="1" color="gray">
-              {t(changed
-                ? "有未保存的语言更改"
-                : "语言包已发布后即可选择，并显示在访客的语言菜单中。")}
-            </Text>
-          </div>
+          {changed ? (
+            <div className="language-selection-state is-changed" role="status">
+              <WarningCircle weight="fill" aria-hidden="true" />
+              <Text size="1" color="gray">{t("有未保存的语言更改")}</Text>
+            </div>
+          ) : null}
           <div className="language-default-row">
             <div>
               <Text size="2" weight="bold">{t("默认语言")}</Text>

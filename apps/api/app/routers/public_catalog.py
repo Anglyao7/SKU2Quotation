@@ -1071,7 +1071,7 @@ def _render_quote_xlsx(
     document,
     *,
     session: Session,
-    document_type: Literal["quotation", "proforma_invoice"] = "quotation",
+    document_type: Literal["quotation", "proforma_invoice", "packing_list"] = "quotation",
 ) -> bytes:
     image_loader = _quote_image_loader(session)
     template = document.excel_template
@@ -1098,8 +1098,10 @@ def _render_quote_xlsx(
 
 def _document_number(
     document,
-    document_type: Literal["quotation", "proforma_invoice"],
+    document_type: Literal["quotation", "proforma_invoice", "packing_list"],
 ) -> str:
+    if document_type == "packing_list" and document.quote.packing_list is not None:
+        return document.quote.packing_list.packing_list_number
     if document_type == "proforma_invoice":
         settings = document.quote.proforma_invoice
         if settings is not None and settings.invoice_number:
@@ -1180,7 +1182,7 @@ def download_public_quote_draft_xlsx(
 def download_tenant_quote_draft_pdf(
     quote_draft_id: UUID,
     request: Request,
-    document_type: Literal["quotation", "proforma_invoice"] = Query("quotation"),
+    document_type: Literal["quotation", "proforma_invoice", "packing_list"] = Query("quotation"),
     session: Session = Depends(get_authenticated_session),
 ) -> Response:
     context = current_context(session)
@@ -1221,7 +1223,7 @@ def download_tenant_quote_draft_pdf(
 def download_tenant_quote_draft_xlsx(
     quote_draft_id: UUID,
     request: Request,
-    document_type: Literal["quotation", "proforma_invoice"] = Query("quotation"),
+    document_type: Literal["quotation", "proforma_invoice", "packing_list"] = Query("quotation"),
     session: Session = Depends(get_authenticated_session),
 ) -> Response:
     context = current_context(session)
